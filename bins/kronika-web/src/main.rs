@@ -72,7 +72,12 @@ async fn answer(
     config: Arc<Config>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<WebBody>, Infallible> {
-    let target = match route_request(&config.account, &request) {
+    let routed = if config.authentication_required {
+        route_request(&config.account, &request)
+    } else {
+        route_request_without_authentication(&request)
+    };
+    let target = match routed {
         Ok(target) => target,
         Err(error) => return Ok(error.response()),
     };
@@ -99,8 +104,22 @@ fn route_request<B>(
     route_request_at(account, request, unix_time())
 }
 
+fn route_request_without_authentication<B>(
+    request: &Request<B>,
+) -> Result<RequestTarget, RequestError> {
+    route_request_with_authentication(None, request, unix_time())
+}
+
 fn route_request_at<B>(
     account: &config::Account,
+    request: &Request<B>,
+    now: u64,
+) -> Result<RequestTarget, RequestError> {
+    route_request_with_authentication(Some(account), request, now)
+}
+
+fn route_request_with_authentication<B>(
+    account: Option<&config::Account>,
     request: &Request<B>,
     now: u64,
 ) -> Result<RequestTarget, RequestError> {
@@ -119,10 +138,16 @@ fn route_request_at<B>(
     if path == "/auth/session" && request.uri().query().is_none() {
         if request.method() == Method::GET {
             return Ok(RequestTarget::Session(SessionTarget::Check {
-                admitted: admitted_session(account, request.headers(), now),
+                admitted: account
+                    .is_none_or(|account| admitted_session(account, request.headers(), now)),
             }));
         }
         if request.method() == Method::POST {
+            let Some(account) = account else {
+                return Ok(RequestTarget::Session(SessionTarget::Check {
+                    admitted: true,
+                }));
+            };
             let admitted = matches!(
                 authorization(request.headers()),
                 SingleHeader::Value(value) if auth::admits_basic(account, Some(value))
@@ -139,7 +164,7 @@ fn route_request_at<B>(
     if path != "/api" && !path.starts_with("/api/") {
         return Err(RequestError::Route(RouteError::NoSuchPath));
     }
-    if !admitted_api(account, request.headers(), now) {
+    if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
         return Err(RequestError::Unauthorized {
             challenge: !is_ui_request(request.headers()),
         });

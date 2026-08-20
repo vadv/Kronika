@@ -61,7 +61,7 @@ test("Process table and dock inherit one remaining viewport row", async () => {
   assert.match(app, /process-main grid min-h-0[^\n]*flex-1[^\n]*grid-rows-\[minmax\(0,1fr\)\]/)
   assert.match(table, /process-table flex min-h-0[^\n]*flex-col/)
   assert.match(entity, /\[\.process-table_&\]:h-auto \[\.process-table_&\]:min-h-0 \[\.process-table_&\]:flex-1/)
-  assert.match(detail, /h-full min-h-0 overflow-y-auto/)
+  assert.match(detail, /process-detail-dock min-h-0 bg-s2 p-3/)
   assert.doesNotMatch(entity, /\[\.process-table_&\]:h-\[min\(570px,calc\(100vh-/)
   assert.doesNotMatch(detail, /max-h-\[min\(570px,calc\(100vh-/)
 })
@@ -73,9 +73,8 @@ test("shared shells join the timeline directly to real content", async () => {
     readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
   ])
   assert.match(app, /className="lensbar !mt-0 border-t-0"/)
-  assert.match(host, /className="lensbar !mt-0 border-t-0"/)
-  assert.match(host, /modes\.length === 0 \? "mt-0"/)
-  assert.match(postgres, /className="pg-tabs !mt-0 [^"]*border-t-0/)
+  assert.match(host, /className="system-main mt-0 min-w-0"/)
+  assert.match(postgres, /className="pg-tabs !mt-0/)
 })
 
 test("slow-query detail keeps text followed by compact numeric values", () => {

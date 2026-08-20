@@ -132,7 +132,8 @@ test("mixed clusters show numeric composition without rail labels or a band", as
   }))
   assert.equal((markup.match(/data-marker-shape=/g) ?? []).length, 3)
   assert.match(markup, /data-marker-composition="event:12 known_bad:11 spike:10"/)
-  assert.match(markup, />12<.*>11<.*>10<.*>33</)
+  assert.match(markup, />33</)
+  assert.match(markup, /aria-label="[^"]*×33/)
   assert.match(markup, new RegExp(`clamp\\(${helpers.MARKER_CLUSTER_PX / 2}px`))
   assert.doesNotMatch(markup.replace(/aria-label="[^"]*"|title="[^"]*"/g, ""), /Event|Known bad|Spike|Process/)
   const [source, styles] = await Promise.all([
@@ -141,7 +142,7 @@ test("mixed clusters show numeric composition without rail labels or a band", as
   ])
   assert.doesNotMatch(source, /marker-cluster-summary|className="finding-rail"/)
   assert.doesNotMatch(styles, /\.marker-cluster-summary|\.finding-rail|\.neutral-rail/)
-  assert.match(source, /width: MARKER_CLUSTER_PX - 8/)
+  assert.match(source, /marker-cluster-badge/)
   assert.deepEqual(helpers.groupFindings([], 0, 1_000, 100), [])
 })
 
@@ -298,13 +299,20 @@ test("timeline controls stay above a full-width plot without a redundant time ti
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
   ])
+  const railMarkup = 'className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2"'
   assert.match(source, /timeline-shell[^"]*flex-col[^"]*overflow-hidden/)
-  assert.match(source, /className="flex flex-none overflow-x-auto border-b border-line2"/)
-  assert.match(chart, /\[&\.timeline-chart\]:min-h-\[128px\][\s\S]{0,120}?\[&\.timeline-chart\]:pt-\[4px\]/)
-  assert.match(chart, /\[\.timeline-chart_&\]:min-h-0/)
+  assert.ok(source.includes(railMarkup))
+  assert.match(source, /className="timeline-lanes[^"]*overflow-hidden/)
+  assert.doesNotMatch(source, /className="timeline-lanes[^"]*overflow-x-auto/)
+  assert.match(source, /data-testid="timeline-preview-metric-select"/)
+  assert.match(source, /aria-label=\{accessible\}/)
+  assert.match(styles, /\.timeline-lane-label\[data-primary="true"\] \{[^}]*flex:/s)
+  assert.match(styles, /\.timeline-open-chart \{[^}]*flex: 0 0 64px;[^}]*width: 64px;/s)
+  assert.match(styles, /\.timeline-preview \{[^}]*height: 124px;/s)
+  assert.match(chart, /variant === "preview" \? "h-\[94px\]/)
   assert.doesNotMatch(styles, /timeline-shell[^}]*uplot-host \{ min-height:/)
   // The lane strip renders above the plot; comparing by a class name that no
   // longer exists made this pass on two -1s.
-  assert.ok(source.indexOf('className="flex flex-none overflow-x-auto border-b border-line2"') < source.indexOf('className="timeline-chart"'))
+  assert.ok(source.indexOf(railMarkup) < source.indexOf('className="timeline-chart"'))
   assert.doesNotMatch(chart, /Time, browser local|Время, местное в браузере/)
 })

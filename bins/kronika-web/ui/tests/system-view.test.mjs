@@ -590,37 +590,25 @@ test("the committed hour supplies only honest System metrics with complete histo
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
-test("System keeps the audited groups and opens Overview on factual CPU history", async () => {
+test("System is one ledger: rows expand in place and the chart lives on the page", async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  // One operator question at a time: cgroup accounting is dedicated, and
-  // Storage separates device I/O, filesystems and topology.
-  assert.match(source, /storage: \["io", "filesystems", "topology"\]/)
+  // One operator question at a time inside a row: cgroup accounting stays
+  // dedicated, and Disk separates device I/O, filesystems and topology.
+  assert.match(source, /disk: \["io", "filesystems", "topology"\]/)
   assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
   assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
-  assert.doesNotMatch(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
-  assert.match(source, /const sectionMetrics = useMemo\(\(\) => referenceMode \? \[\] : available\.filter/)
-  // Overview resolves its first factual metric while an explicit URL metric
-  // remains authoritative. The chart still lives only in the dock.
-  assert.match(source, /section !== "overview" \|\| dismissedOverview \|\| first === undefined/)
-  assert.match(source, /if \(metric === null\) \{[\s\S]*autoMetric\.current = first\.spec\.id[\s\S]*onMetric\(first\.spec\.id\)/)
-  assert.match(source, /if \(autoMetric\.current !== metric\) \{[\s\S]*autoMetric\.current = null/)
-  assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
-  assert.match(source, /data-testid="system-dock"/)
-  assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
-  assert.match(source, /chartsVisible && selectedMetric !== undefined/)
+  // The ledger is the page: expansion is disclosure, the group chart renders
+  // inline, and no machinery force-opens an Inspector to fake content.
+  assert.match(source, /renderExpansion=\{renderExpansion\}/)
+  assert.match(source, /<SystemGroupChart /)
+  assert.doesNotMatch(source, /dismissedOverview|autoMetric|SystemDock|metric-choice|metric-grid/)
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
   assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
-  // The dock unfolds full-width under the resource table with a real chart
-  // height; opening scrolls it into view, and grid cells carry the open-marker.
-  assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/)
-  assert.match(source, /className="dock-tabs [^"]*overflow-x-auto/)
-  assert.match(await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"), /\[\.system-dock_&:not\(\.uplot-expanded\)\]:h-80/)
-  assert.match(source, /\[\.metric-groups_&>button\]:after:content-\['↗'\]/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

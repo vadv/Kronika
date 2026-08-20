@@ -11,18 +11,15 @@ export interface Address {
   readonly tablespaceOid: string | null
   readonly sort: { readonly column: string; readonly descending: boolean } | null
   readonly row: string | null
+  readonly panel: InspectorPanel
   readonly find: string
   readonly metric: string | null
-  readonly mode: HostMode | null
 }
 
+export type InspectorPanel = "chart" | "detail" | null
+
 export type View =
-  | "host.overview"
-  | "host.cpu"
-  | "host.memory"
-  | "host.storage"
-  | "host.network"
-  | "host.cgroups"
+  | "host"
   | "processes"
   | "pg.overview"
   | "pg.activity"
@@ -35,11 +32,6 @@ export type View =
   | "events"
 
 type Lens = "generic" | "cpu" | "memory" | "disk"
-// The machine is read one resource at a time; the overview says which one is
-// tight and the rest answer for themselves.
-export type HostSection = "overview" | "cpu" | "memory" | "storage" | "network" | "cgroups"
-export const HOST_SECTIONS: readonly HostSection[] = ["overview", "cpu", "memory", "storage", "network", "cgroups"]
-export type HostMode = "history" | "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
 export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
@@ -47,7 +39,7 @@ export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "t
 export type PgLevel = "database" | "schema" | "tablespace" | "object"
 
 const VIEWS: readonly View[] = [
-  "host.overview", "host.cpu", "host.memory", "host.storage", "host.network", "host.cgroups",
+  "host",
   "processes",
   "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
   "events",
@@ -70,9 +62,9 @@ export const DEFAULT_ADDRESS: Address = {
   tablespaceOid: null,
   sort: null,
   row: null,
+  panel: null,
   find: "",
   metric: null,
-  mode: null,
 }
 
 export function readAddress(search: string): Address {
@@ -82,14 +74,21 @@ export function readAddress(search: string): Address {
   const lens = parameters.get("lens")
   const pgLens = parameters.get("pg_lens")
   const pgLevel = PG_LEVELS.find((known) => known === parameters.get("level")) ?? DEFAULT_ADDRESS.pgLevel
-  const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
+  // Links written before the Host ledger carried a section suffix; they all
+  // land on the one Host page now.
+  const resolvedView = VIEWS.find((known) => known === view)
+    ?? (view !== null && view.startsWith("host.") ? "host" as View : DEFAULT_ADDRESS.view)
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
   const postgresEntity = isPostgresEntityView(resolvedView)
-  const host = resolvedView.startsWith("host.")
-  const hostSection = hostSectionOf(resolvedView)
+  const host = resolvedView === "host"
   const datid = relation && (pgLevel === "schema" || pgLevel === "object") ? oid(parameters.get("datid")) : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
+  const row = postgresEntity
+    ? postgresEntityRow(parameters.get("row"))
+    : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null
+  const metric = host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null
+  const requestedPanel = parameters.get("panel")
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
     view: resolvedView,
@@ -102,12 +101,12 @@ export function readAddress(search: string): Address {
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid(parameters.get("indexrelid")) : null,
     tablespaceOid: relation && pgLevel === "object" ? oid(parameters.get("tablespace_oid")) : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: postgresEntity
-      ? postgresEntityRow(parameters.get("row"))
-      : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null,
+    row,
+    // Row-only links predate Inspector and continue to open Detail. Chart is
+    // source-neutral and can therefore be linked without an entity row.
+    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" ? "detail" : null,
     find: parameters.get("find") ?? "",
-    metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
-    mode: hostModeOf(hostSection, parameters.get("mode")),
+    metric,
   }
 }
 
@@ -125,12 +124,12 @@ export function writeAddress(address: Address): string {
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
   if (relation && address.pgLevel === "object" && address.tablespaceOid !== null) parameters.set("tablespace_oid", address.tablespaceOid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events"
+  if ((address.view === "processes" || relation || address.view === "host" || address.view === "events"
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
+  if (address.panel === "chart") parameters.set("panel", "chart")
   if (address.find !== "") parameters.set("find", address.find)
-  if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
-  if (address.view.startsWith("host.") && address.mode !== null && address.mode !== defaultHostMode(hostSectionOf(address.view))) parameters.set("mode", address.mode)
+  if (address.view === "host" && address.metric !== null) parameters.set("metric", address.metric)
   const query = parameters.toString()
   return query === "" ? "/" : `/?${query}`
 }
@@ -148,40 +147,16 @@ function postgresEntityRow(stored: string | null): string | null {
   return stored !== null && /^[^:]+:\d+:[^:]+$/.test(stored) ? stored : null
 }
 
-export function viewOf(source: string, hostSection: string, pgSection: string): View {
+export function viewOf(source: string, pgSection: string): View {
   if (source === "events") return "events"
   if (source === "processes") return "processes"
   if (source === "postgresql") return `pg.${pgSection}` as View
-  return `host.${hostSection}` as View
+  return "host"
 }
 
 export function sourceOf(view: View): Source {
   if (view === "events" || view === "processes") return view
   return view.startsWith("pg.") ? "postgresql" : "host"
-}
-
-export function hostSectionOf(view: View): HostSection {
-  const section = view.startsWith("host.") ? view.slice(5) : "overview"
-  return HOST_SECTIONS.includes(section as HostSection) ? section as HostSection : "overview"
-}
-
-export function defaultHostMode(section: HostSection): HostMode | null {
-  if (section === "cpu") return "history"
-  if (section === "storage") return "io"
-  if (section === "cgroups") return "cpu"
-  return null
-}
-
-export function hostModeOf(section: HostSection, stored: string | null): HostMode | null {
-  const allowed: Readonly<Record<HostSection, readonly HostMode[]>> = {
-    overview: [],
-    cpu: ["history", "topology"],
-    memory: [],
-    storage: ["io", "filesystems", "topology"],
-    network: [],
-    cgroups: ["cpu", "memory", "io", "tasks"],
-  }
-  return allowed[section].find((mode) => mode === stored) ?? defaultHostMode(section)
 }
 
 export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {

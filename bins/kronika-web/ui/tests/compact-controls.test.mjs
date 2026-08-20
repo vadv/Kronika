@@ -8,27 +8,25 @@ test("metric selection and help use sibling controls", async () => {
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
   ])
   assert.match(timeline, /className="lane-select[^"]*"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
-  assert.match(system, /className="metric-choice[^"]*"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
   assert.doesNotMatch(timeline, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
   assert.doesNotMatch(system, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
 })
 
 test("narrow controls stay bounded and coarse-pointer table help is immediately reachable", async () => {
-  const [styles, picker, entityTable, help, app] = await Promise.all([
+  const [styles, picker, entityTable, help] = await Promise.all([
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/hour-picker.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/help.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
   ])
   assert.match(picker.match(/<div[^>]*data-testid="hour-popover"[^>]*>/s)?.[0] ?? "", /\bfixed\b/)
-  assert.match(app, /max-\[520px\]:flex-wrap/)
+  assert.match(styles, /\.lensbar \{ flex-wrap: wrap;/)
   assert.match(help, /coarse:\[\.entity-header-cell>&\]:opacity-100 coarse:\[\.entity-header-cell>&\]:pointer-events-auto/)
   // 36x36 around a 14px mark: the mark steps in by its own reach so the target
   // fits inside the cell instead of being clipped by the column edge.
   assert.match(help, /coarse:\[\.entity-header-cell>&\]:mr-\[11px\]/)
   assert.match(help, /coarse:\[\.entity-header-cell_&\]:after:-inset-\[11px\]/)
-  assert.match(entityTable, /scroll-padding-inline-end:15px/)
+  assert.match(entityTable, /scroll-padding-inline-end:8px/)
   assert.doesNotMatch(help, /w-11/)
 })
 

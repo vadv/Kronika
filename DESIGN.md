@@ -509,8 +509,14 @@ buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
 both dictionaries; Russian help explains their semantics in Russian.
 
-The interface covers one selected calendar hour. Host contains dense System
-metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
+The interface covers one selected calendar hour. Host is one
+utilisation/saturation/errors ledger: a row per resource whose cells carry the
+hour's shape at sparkline size with the cursor reading beside it, expanding in
+place — several rows at once — into the group's metric chips, its inline
+composition chart with measured statistics, its entity tables and its
+topology references. There are no per-resource tabs and no overview apart
+from the ledger itself; a metric link opens its row. Processes keeps its
+virtualized lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
@@ -584,10 +590,14 @@ topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
 whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
 opens its one-hour history.
 
-A persisted local preference can remove every large chart panel from the layout,
-so tables immediately use the released viewport height. Process-summary loads
-retain the last successful rows and distinguish loading, request failure, and a
-successful empty result. PostgreSQL navigation and visuals are absent when the
+A large chart never occupies the primary workspace. Every main surface instead
+keeps the shared 124 px time preview visible above its table or list. The preview
+has an explicit zero-based or semantic scale, exact sample cursor, recorded
+finding shapes, missing intervals and the uncollected future tail; it is not a
+silent sparkline. Its Chart action opens the full chart in the shared Inspector.
+Process-summary loads retain the last successful rows and distinguish loading,
+request failure, and a successful empty result. PostgreSQL navigation and
+visuals are absent when the
 selected current data has PostgreSQL disabled; a historical hour that contains
 PostgreSQL telemetry remains available, and disabled PostgreSQL leaves overall
 health equal to OS health. A selected Linux process links to the nearest
@@ -595,12 +605,29 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
-Processes uses the whole viewport row left after the timeline, controls and
-summary. Its virtual table and adjacent selected-process dock share that row
-and scroll independently on wide screens; the narrow dock remains bounded.
+Processes uses the whole viewport row left after the time preview and compact
+controls. Its four summary readings live in the lens bar instead of a separate
+height band. The virtual table is the primary surface. A selected row uses the
+same Inspector as Host, PostgreSQL and Events: an adjacent resizable region on
+desktop, a right overlay on tablet and a bottom sheet on phone. The table and
+Inspector scroll independently, and closing the Inspector restores the entire
+row without leaving a band. The fixed Inspector header is outside its vertical
+scrollport. Its Chart panel uses one full-width native metric selector rather
+than a second horizontal scrollbar, and the body reserves its own scrollbar
+gutter without exposing horizontal overflow.
 CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
+
+The compact preview control rail is never a horizontal scroll region. Its Chart
+action owns a fixed edge slot, while lane labels and readings share only the
+remaining width: the selected reading receives priority and every shortened
+label or value uses ellipsis with its complete text retained in the accessible
+name and title. On a phone, one compact native lane selector replaces the row of
+lane buttons. Opening the adjacent desktop Inspector therefore cannot introduce
+a native bar above the 124 px preview. The Inspector chart keeps its legend and
+current reading on separate bounded rows so both remain readable at its minimum
+width.
 
 Every displayed duration uses one adaptive formatter across tables, details,
 current readings, axes, hover and statistics. It chooses ns, µs, ms, s, min or
@@ -612,18 +639,53 @@ that setting the converted reading is unavailable. Buffer hits remain buffer
 activity and are not relabelled as physical disk I/O.
 
 Shared charts reserve room at the end for the last time label after accounting
-for every visible side axis. The compact 128 px timeline keeps its x-axis,
-cursor and labels inside the figure before the following navigation. Charts
+for every visible side axis. The compact timeline shell is exactly 124 px; its
+94 px figure keeps a dedicated marker lane above the plot — finding markers
+never occlude the drawn lines — and the x-axis, cursor and labels inside the
+instrument before the following navigation. A marker cluster names the kinds
+present by shape and sizes the cluster with one count; the per-kind split
+lives in the accessible name and the events console. The Inspector's Chart
+panel belongs to the selection: a selected row shows its own metric history
+there, with a wrapped metric-button selector instead of a hidden horizontal
+scrollbar, while the Detail panel keeps the facts. Only without such a history
+does the panel hold the preview's full chart — and then the preview yields its
+figure and keeps its rail, so the plot and its marker lane exist once on
+screen. An explicit control on the Inspector expands its chart across the
+viewport below the top bar; Escape or the same control restores the docked
+width. While the hour itself loads, the
+workspace paints its own shape — the timeline band, one status line carrying
+the received bytes and elapsed time, and table rows — not a modal card. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
-reserving large framed boards. A boundary is draggable only when it controls a
-real split; otherwise the layout stays light. The exact current `pg_wal` file
+reserving large framed boards. Their required horizontal rail does not create
+a vertical scroll owner when every rendered row fits; a stable end gutter keeps
+the final header control and cell clear of the real Inspector splitter. Dense
+tables retain independent vertical scrolling. Short PostgreSQL sibling sections
+stack directly by content; only a long result receives the remaining viewport row, and opening
+the independently scrolling Inspector does not stretch either sibling. A
+boundary is draggable only when it controls a real split; otherwise the layout
+stays light. The exact current `pg_wal` file
 size is a subordinate value with optional history, not a primary overview
 chart.
-The shared Processes, Host and PostgreSQL shells join their timeline and
-primary controls directly with a light content-sized boundary. Empty spacer
-tracks and strong nonfunctional splitter bands are forbidden; a visible resize
-handle exists only for a real bounded accessible split.
+The shared Processes, Host, PostgreSQL and Events shells join the timeline and
+primary controls directly with a light content-sized separator. Surface
+hierarchy comes from Steel background levels, spacing, typography, a selection
+rail and restrained semantic tint rather than a border/card/panel grid. Empty
+spacer tracks and strong nonfunctional splitter bands are forbidden; a visible
+resize handle exists only for the real bounded accessible Inspector split.
+Recorded findings and direct thresholds guide attention with shape, weight and
+a marker rail as well as colour. Ordinary workload volume remains neutral, and
+the interface does not add diagnosis, scoring or causal claims.
+
+Two typefaces carry fixed roles: a UI sans for chrome — navigation, labels,
+buttons, prose — and a monospaced face for data — values, identifiers,
+timestamps, queries. Both ship embedded in the single artifact. Labels are
+sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
+a small radius scale and brief 80–120 ms transitions, honoring reduced-motion.
+Chart series identity uses its own palette, validated for colour-vision
+separation and contrast against both theme surfaces, and is never taken from
+the status colours; a loading table shows skeleton rows matching its columns,
+and a table filtered to zero offers clearing the filter in place.
 
 PostgreSQL Tables and Indexes use lens-specific details at database, schema,
 object and cluster-wide tablespace level. Tablespace identity is its effective

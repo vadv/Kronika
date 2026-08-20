@@ -154,16 +154,16 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     return () => controller.abort()
   }, [hour])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2">
+  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden max-[760px]:flex-wrap max-[760px]:overflow-visible" data-status={status}>
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="relative flex min-h-[42px] min-w-0 items-center gap-2 border-b border-r border-line px-2 pr-7" key={metric.field}>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase text-fg3">{t(metric.key)}</span>
-        <strong className="flex-none text-md font-[560] tabular-nums text-fg">{output}</strong>
+      return <div className="flex h-[25px] flex-none items-baseline gap-1.5 px-2" key={metric.field}>
+        <span className="whitespace-nowrap text-xs font-medium text-fg3">{t(metric.key)}</span>
+        <strong className="flex-none font-mono text-xs tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
-    {statusKey !== null && <p aria-live="polite" className="col-[1/-1] m-0 min-h-[26px] px-2 py-[7px] text-xs text-fg3" data-testid="process-summary-status">{t(statusKey)}</p>}
+    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center px-2 text-xs font-medium text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
   </section>
 }
 
@@ -273,8 +273,9 @@ export function ProcessTable({
   })}</strong>
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <EntityTable
-    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-line2 bg-s1"
+    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-s1"
     columns={columns}
+    loading={rows.length === 0 && densePageState === "loading"}
     contextLabel={contextLabel}
     empty={t("table.empty")}
     finding={finding}
@@ -328,7 +329,7 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
   const cell = field.field === undefined ? null : value(row, field.field)
   const output = field.kind === "command" ? processCommand(row) : field.kind === "user" ? processUser(row, field) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
     ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
     : output}</span>
 }

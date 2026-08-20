@@ -38,6 +38,7 @@ interface TimelineLane {
 }
 
 export type FindingShape = "circle" | "diamond" | "triangle"
+export type TimelinePresentation = "preview" | "inspector"
 
 export function Timeline({
   cursor,
@@ -49,7 +50,11 @@ export function Timeline({
   navigationTimestamps,
   onCursor,
   onFinding,
+  onOpenChart,
+  onSelectedLane,
   primaryLane = "health",
+  presentation = "preview",
+  selectedLane: controlledLane,
   shownAt,
   t,
 }: {
@@ -62,7 +67,11 @@ export function Timeline({
   readonly navigationTimestamps?: readonly number[] | undefined
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
+  readonly onOpenChart?: (() => void) | undefined
+  readonly onSelectedLane?: ((lane: string) => void) | undefined
   readonly primaryLane?: string | undefined
+  readonly presentation?: TimelinePresentation | undefined
+  readonly selectedLane?: string | undefined
   readonly shownAt?: number | null
   readonly t: Translate
 }) {
@@ -87,7 +96,12 @@ export function Timeline({
       ? lane.series.some((line) => line.points.length !== 0)
       : lane.series.some((line) => line.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
-  const [selectedLane, setSelectedLane] = useState(primaryLane)
+  const [localLane, setLocalLane] = useState(primaryLane)
+  const selectedLane = controlledLane ?? localLane
+  const setSelectedLane = (lane: string) => {
+    if (controlledLane === undefined) setLocalLane(lane)
+    onSelectedLane?.(lane)
+  }
   const previousPrimary = useRef(primaryLane)
   useEffect(() => {
     if (previousPrimary.current === primaryLane) return
@@ -132,6 +146,7 @@ export function Timeline({
     [end, hour, lanes, selected],
   )
   const threshold = useMemo(() => selected?.threshold === undefined ? undefined : { below: selected.threshold, seriesId: "overall_health" }, [selected])
+  const selectedReading = selected === undefined ? "—" : laneReading(selected, cursor, locale, t)
   const markerLayer = <>{markers.map((marker, index) => {
     const first = marker.findings[0]
     if (first === undefined) return null
@@ -149,20 +164,29 @@ export function Timeline({
   })}</>
   if (selected === undefined) {
     return findings.length === 0
-      ? <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
-      : <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t("status.no_data")}</section>
+      ? <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
+      : <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
-  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className="timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1">
-    <div className="flex flex-none overflow-x-auto border-b border-line2">
-      {lanes.map((lane) => <LaneLabel
-        help={`lane.${lane.key}.help`}
-        key={lane.key}
-        label={`lane.${lane.key}.label`}
-        onSelect={() => setSelectedLane(lane.key)}
-        primary={lane.key === selected.key}
-        reading={laneReading(lane, cursor, locale, t)}
-        t={t}
-      />)}
+  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
+    <div className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2">
+      {presentation === "inspector"
+        ? <label className="timeline-metric-picker"><span>{t("inspector.timeline")}</span><select aria-label={t("inspector.timeline")} data-testid="timeline-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select></label>
+        : <><div className="timeline-lanes flex min-w-0 flex-1 gap-0.5 overflow-hidden px-1">
+          {lanes.map((lane) => <LaneLabel
+            help={`lane.${lane.key}.help`}
+            key={lane.key}
+            label={`lane.${lane.key}.label`}
+            onSelect={() => setSelectedLane(lane.key)}
+            primary={lane.key === selected.key}
+            reading={lane.key === selected.key ? laneReading(lane, cursor, locale, t) : compactLaneReading(lane, cursor, locale, t)}
+            fullReading={laneReading(lane, cursor, locale, t)}
+            t={t}
+          />)}
+        </div><div className="timeline-preview-picker min-w-0 flex-1 items-center gap-1 px-1">
+          <select aria-label={t("inspector.timeline")} data-testid="timeline-preview-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select>
+          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-sm tabular-nums text-fg" data-testid="timeline-preview-reading" title={selectedReading}>{selectedReading}</span>
+        </div></>}
+      {presentation === "preview" && onOpenChart !== undefined && <button aria-label={t("inspector.open_chart")} className="timeline-open-chart" onClick={onOpenChart} title={t("inspector.open_chart")} type="button"><span aria-hidden="true">↗</span><span>{t("inspector.chart")}</span></button>}
     </div>
     <UPlotChart
       className="timeline-chart"
@@ -177,9 +201,11 @@ export function Timeline({
       reading={current}
       referenceTimestamp={shownAt ?? undefined}
       series={recorded}
+      stats={presentation === "inspector"}
       t={t}
       testId="hour-timeline"
       threshold={threshold}
+      variant={presentation}
     />
   </section>
 }
@@ -235,11 +261,12 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
   }))
 }
 
-function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  return <div data-primary={primary || undefined} className={`lane-label flex min-h-[34px] flex-[1_0_140px] items-center gap-2 border-r border-line px-[9px] text-sm uppercase text-fg3 last:border-r-0 max-[760px]:pl-0.5 max-[760px]:text-xs max-[520px]:flex-[0_0_124px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s2 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
-    <button aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-2 self-stretch border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
-      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
-      <span data-testid="lane-reading" className={`ml-auto flex-none whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`}>{reading}</span>
+function LaneLabel({ label, help, fullReading, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly fullReading: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
+  const accessible = `${t(label)}: ${fullReading}`
+  return <div data-primary={primary || undefined} className={`lane-label timeline-lane-label flex h-7 min-w-0 items-center gap-1.5 overflow-hidden rounded-t-[var(--radius-xs)] px-[7px] text-left font-sans text-xs font-medium text-fg3 hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`} title={accessible}>
+    <button aria-label={accessible} aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-1.5 self-stretch overflow-hidden border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
+      <span className="timeline-lane-name min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
+      <span data-testid="lane-reading" className={`timeline-lane-reading ml-auto min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right font-mono font-normal tabular-nums ${primary ? "text-md text-accent3" : "text-sm text-fg"}`} title={reading}>{reading}</span>
     </button>
     <LabelHelp helpKey={help} iconOnly labelKey={label} t={t} />
   </div>
@@ -267,6 +294,18 @@ function format(number: number, key: string, locale: Locale): string {
   return humanPercent(number, locale)
 }
 
+// An unselected health chip has no room for the three-part split: it shows
+// the overall number alone; the split stays in the accessible name and title
+// and appears when the lane is selected.
+export function compactLaneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
+  if (lane.key !== "health") return laneReading(lane, cursor, locale, t)
+  const line = lane.series.find((candidate) => candidate.field === "overall_health") ?? lane.series[0]
+  if (line === undefined) return "—"
+  const healthAt = healthEvaluationAtOrBefore(lane.series, cursor)
+  const number = healthAt === null ? null : exactValue(line.points, healthAt)
+  return number === null ? "—" : format(number, lane.key, locale)
+}
+
 export function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
   const healthAt = lane.key === "health" ? healthEvaluationAtOrBefore(lane.series, cursor) : null
   return lane.series.map((line) => {
@@ -290,7 +329,7 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   const timeSummary = first.timestamp === last.timestamp ? time(first.timestamp) : `${time(first.timestamp)}–${time(last.timestamp)}`
   return <button
     aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
-    className={`marker-button pointer-events-auto absolute top-[17px] z-[2] flex h-7 w-[82px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
+    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
     data-marker-composition={marker.composition.map(({ count, kind }) => `${kind}:${count}`).join(" ")}
     data-marker-count={count}
     data-marker-kinds={marker.composition.map(({ kind }) => kind).join(" ")}
@@ -305,11 +344,18 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   >
     {count === 1
       ? <FindingGlyph kind={first.kind} />
-      : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-[19px] items-center justify-between rounded-[10px] border border-line4 bg-s2 pl-1 pr-[3px] shadow-[0_1px_3px_var(--color-shadow)]" style={{ width: MARKER_CLUSTER_PX - 8 }}>
-        <span className="flex items-center [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ count, kind }) => <span className="flex items-center [&_small]:max-w-2.5 [&_small]:overflow-hidden [&_small]:text-[8px] [&_small]:leading-none [&_small]:text-fg2" key={kind}><FindingGlyph kind={kind} /><small>{count}</small></span>)}</span>
-        <strong className="min-w-[14px] rounded-[7px] bg-s4 px-0.5 text-center text-xs leading-[13px] tabular-nums text-fg">{count}</strong>
+      : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-4 items-center gap-1 rounded-full border border-line3 bg-s2/95 pl-1.5 pr-1.5 shadow-[0_1px_3px_var(--color-shadow)]">
+        <span className="flex items-center gap-0.5 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ kind }) => <FindingGlyph key={kind} kind={kind} />)}</span>
+        <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(count)}</strong>
       </span>}
   </button>
+}
+
+// The badge names the kinds by shape and sizes the cluster by one number; the
+// per-kind split lives in the accessible label and the events console. Counts
+// above 999 stop informing at marker size.
+function markerCount(count: number): string {
+  return count > 999 ? "999+" : String(count)
 }
 
 function series(rows: readonly DataRow[], field: string): readonly SeriesPoint[] {

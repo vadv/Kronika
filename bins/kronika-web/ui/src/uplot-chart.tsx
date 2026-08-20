@@ -1,11 +1,12 @@
 import uPlot, { type AlignedData } from "uplot"
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { orderedRecordedTimes } from "./keyboard"
 import { humanDurationAxis, type Locale } from "./model"
+import { niceCeiling } from "./spark"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
 
@@ -53,6 +54,12 @@ export interface ChartThreshold {
   readonly below: number
   readonly seriesId: string
 }
+
+export type ChartVariant = "default" | "preview" | "inspector"
+
+// Finding markers get their own horizontal lane above the plot, so they never
+// occlude the drawn lines. The lane exists only when a marker layer is passed.
+export const MARKER_LANE_PX = 20
 
 // Many series on one chart read as spaghetti: the legend becomes the picker,
 // one series at a time, with "All" returning the composition.
@@ -129,6 +136,7 @@ export function UPlotChart({
   testId,
   threshold,
   t,
+  variant = "default",
 }: {
   readonly className?: string | undefined
   readonly cursor?: number | undefined
@@ -148,6 +156,7 @@ export function UPlotChart({
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
   readonly t: Translate
+  readonly variant?: ChartVariant | undefined
 }) {
   const time = useDisplayTime()
   const titleId = useId()
@@ -158,12 +167,8 @@ export function UPlotChart({
   const onCursorRef = useRef(onCursor)
   const onPlotWidthRef = useRef(onPlotWidth)
   const selectedRef = useRef<number | null>(null)
-  const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState<number | null>(null)
   const [keyboardIndex, setKeyboardIndex] = useState(0)
-  const opener = useRef<HTMLButtonElement>(null)
-  const pagePosition = useRef({ left: 0, top: 0 })
-  const returnFocus = useRef(false)
   const end = hour + 3_600_000_000
   const [isolatedChoice, setIsolatedChoice] = useState<string | null | undefined>(undefined)
   const isolatedId = isolate === undefined
@@ -191,7 +196,7 @@ export function UPlotChart({
     const element = host.current
     if (element === null || frame.timestamps.length === 0) return
     const initialBounds = element.getBoundingClientRect()
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), (chart) => {
+    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), variant === "preview", markerLayer !== undefined, (chart) => {
       const index = chart.cursor.idx
       const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
       setHovered(timestamp)
@@ -237,7 +242,7 @@ export function UPlotChart({
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, expanded, frame, hour, locale, navigationTimes, referenceTimestamp, themeRevision, threshold, time, visibleSeries])
+  }, [decorations, end, frame, hour, locale, markerLayer !== undefined, navigationTimes, referenceTimestamp, themeRevision, threshold, time, variant, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -247,7 +252,7 @@ export function UPlotChart({
 
   useEffect(() => {
     plot.current?.redraw()
-  }, [expanded, frame, referenceTimestamp, selected])
+  }, [frame, referenceTimestamp, selected])
 
   useEffect(() => {
     if (selected === null) return
@@ -260,121 +265,48 @@ export function UPlotChart({
     setKeyboardIndex((index) => Math.min(index, Math.max(0, navigationTimes.length - 1)))
   }, [navigationTimes.length])
 
-  useEffect(() => {
-    if (!expanded) return
-    const rootOverflow = document.documentElement.style.overflow
-    const bodyOverflow = document.body.style.overflow
-    const pageScrollLeft = pagePosition.current.left
-    const pageScrollTop = pagePosition.current.top
-    const blockPageScroll = (event: Event) => event.preventDefault()
-    document.documentElement.style.overflow = "hidden"
-    document.body.style.overflow = "hidden"
-    opener.current?.focus({ preventScroll: true })
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault()
-        collapse()
-        return
-      }
-      if (event.key !== "Tab") return
-      const root = shell.current
-      if (root === null) return
-      const focusable = [...root.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-      const first = focusable[0]
-      const last = focusable.at(-1)
-      if (first === undefined || last === undefined) return
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-    window.addEventListener("keydown", keydown)
-    window.addEventListener("touchmove", blockPageScroll, { passive: false })
-    window.addEventListener("wheel", blockPageScroll, { passive: false })
-    return () => {
-      document.documentElement.style.overflow = rootOverflow
-      document.body.style.overflow = bodyOverflow
-      window.removeEventListener("keydown", keydown)
-      window.removeEventListener("touchmove", blockPageScroll)
-      window.removeEventListener("wheel", blockPageScroll)
-      window.scrollTo(pageScrollLeft, pageScrollTop)
-    }
-  }, [expanded])
-
-  useLayoutEffect(() => {
-    if (expanded || !returnFocus.current) return
-    returnFocus.current = false
-    opener.current?.focus({ preventScroll: true })
-    window.scrollTo(pagePosition.current.left, pagePosition.current.top)
-  }, [expanded])
-
-  function collapse() {
-    const active = document.activeElement
-    if (active instanceof HTMLElement && shell.current?.contains(active)) active.blur()
-    returnFocus.current = true
-    setExpanded(false)
-  }
-
-  function expand() {
-    pagePosition.current = { left: window.scrollX, top: window.scrollY }
-    setExpanded(true)
-  }
-
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
   const isolatable = isolate !== undefined && series.length > 1
   const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
-    aria-labelledby={expanded ? titleId : undefined}
-    aria-modal={expanded ? "true" : undefined}
-    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${stats ? "h-[244px]" : "h-[200px]"} [&.timeline-chart]:h-[128px] [&.timeline-chart]:min-h-[128px] [&.timeline-chart]:basis-[128px] [&.timeline-chart]:px-[7px] [&.timeline-chart]:pb-[3px] [&.timeline-chart]:pt-[4px] [&.uplot-expanded]:fixed [&.uplot-expanded]:inset-0 [&.uplot-expanded]:z-[120] [&.uplot-expanded]:w-dvw [&.uplot-expanded]:overflow-hidden [&.uplot-expanded]:m-0 [&.uplot-expanded]:h-dvh [&.uplot-expanded]:max-w-none [&.uplot-expanded]:bg-bg [&.uplot-expanded]:p-[max(12px,env(safe-area-inset-top,0px))_max(12px,env(safe-area-inset-right,0px))_max(12px,env(safe-area-inset-bottom,0px))_max(12px,env(safe-area-inset-left,0px))] [&.uplot-expanded]:[--chart-marker-end-reserve:52px] [&.timeline-chart.uplot-expanded]:h-dvh [&.timeline-chart.uplot-expanded]:min-h-0 [&.timeline-chart.uplot-expanded]:flex-none [&.timeline-chart]:max-[520px]:h-[128px] [&.timeline-chart]:max-[520px]:px-0.5 [&.uplot-expanded]:max-[520px]:p-[max(8px,env(safe-area-inset-top,0px))_max(4px,env(safe-area-inset-right,0px))_max(8px,env(safe-area-inset-bottom,0px))_max(4px,env(safe-area-inset-left,0px))] [.system-dock_&:not(.uplot-expanded)]:h-80 [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:max-h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:flex-none${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
+    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[94px] min-h-[94px] basis-[94px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     data-navigation-count={navigationTimes.length}
     data-selected-timestamp={selected ?? undefined}
     ref={shell}
-    role={expanded ? "dialog" : undefined}
   >
-    <figcaption className="mb-[5px] grid min-h-[24px] flex-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs uppercase text-fg3 [.uplot-expanded_&]:min-h-11 [.uplot-expanded_&]:grid-cols-[minmax(0,1fr)_auto_44px] [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1 [.uplot-expanded_&]:max-[520px]:gap-1" id={titleId}>
+    {variant !== "preview" && <figcaption className="mb-[5px] grid min-h-[24px] flex-none grid-cols-[minmax(0,1fr)_auto] items-center gap-2 font-sans text-xs font-medium text-fg3 [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1" id={titleId}>
       <span className={`chart-series-labels flex min-w-0 flex-auto items-center gap-1.5 [&::-webkit-scrollbar]:hidden ${isolatable ? "flex-wrap gap-y-1 overflow-visible whitespace-normal" : "overflow-x-auto whitespace-nowrap [scrollbar-width:none]"}`}>{isolatable && <button
         aria-pressed={isolatedId === null}
-        className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
+        className="series-pick min-h-5 cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
         data-testid={testId === undefined ? undefined : `${testId}-all`}
         onClick={() => setIsolatedChoice(null)}
         type="button"
-      ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 bg-fg4" />{t("chart.series.all")}</button>}{series.map((line) => isolatable
+      ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-fg4" />{t("chart.series.all")}</button>}{series.map((line) => isolatable
         ? <span className="inline-flex min-w-0 items-center gap-0.5" key={line.id}><button
           aria-pressed={isolatedId === line.id}
-          className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
+          className="series-pick min-h-5 cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
           data-testid={testId === undefined ? undefined : `${testId}-series-${line.id}`}
           onClick={() => setIsolatedChoice(isolatedId === line.id ? null : line.id)}
           type="button"
-        ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
-        : <span className="inline-flex min-w-0 items-center gap-1" key={line.id}><span aria-hidden="true" className="h-1.5 w-1.5 flex-none" style={{ backgroundColor: `var(${chartColor(line.color)})` }} /><LabelHelp helpKey={line.helpKey} labelKey={line.labelKey} t={t} /></span>)}</span>
-      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none [.timeline-chart_&]:max-w-[55%] [.timeline-chart_&]:overflow-hidden [.timeline-chart_&]:text-ellipsis [.uplot-expanded_&]:max-w-[min(42vw,36rem)] max-[520px]:[.uplot-expanded_&]:max-w-[40vw] overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
-      <button
-        aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
-        className={`chart-expand col-start-3 cursor-pointer border border-line3 bg-s2 p-0 ${expanded ? "inline-flex h-11 min-w-11 items-center justify-center text-lg" : "h-[22px] min-w-[22px]"}`}
-        onClick={() => expanded ? collapse() : expand()}
-        ref={opener}
-        type="button"
-      >{expanded ? "×" : "↗"}</button>
-    </figcaption>
+        ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
+        : <span className="inline-flex min-w-0 items-center gap-1" key={line.id}><span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} /><LabelHelp helpKey={line.helpKey} labelKey={line.labelKey} t={t} /></span>)}</span>
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-mono font-normal tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
+    </figcaption>}
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0 [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
-    {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 text-sm tabular-nums text-fg3" data-testid="chart-stats">
-      {statsRows.length !== 0 && <div className="grid min-w-0 grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] gap-x-2 px-1 text-right max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1 [&>*:first-child]:text-left">
-        <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className="max-[760px]:hidden">{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[760px]:hidden">{t("chart.stats.p50")}</span><span className="max-[760px]:hidden">{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0" ref={host} role="img" />
+    {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 font-mono text-sm tabular-nums text-fg3" data-testid="chart-stats">
+      {statsRows.length !== 0 && <div className={`grid min-w-0 gap-x-2 px-1 text-right [&>*:first-child]:text-left ${variant === "inspector" ? "grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] gap-x-1" : "grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1"}`}>
+        <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.p50")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
         {statsRows.map(({ line, stats: measured }) => <div className="contents" key={line.id}>
-          <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg2">{line.value(measured.last, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.min, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.max, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p50, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p90, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.p99, locale)}</span>
+          <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-sans font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg2">{line.value(measured.last, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.min, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.max, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.p50, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.p90, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.p99, locale)}</span>
         </div>)}
       </div>}
     </div>}
     {status !== undefined && <div className="uplot-status pointer-events-none absolute bottom-7 right-0 z-[8] flex items-center justify-center left-[var(--chart-plot-left,0)] top-[var(--chart-plot-top,26px)] [&_[data-testid=series-status]]:min-h-0 [&_[data-testid=series-status]]:border [&_[data-testid=series-status]]:border-line2 [&_[data-testid=series-status]]:bg-s2 [&_[data-testid=series-status]]:px-[9px] [&_[data-testid=series-status]]:py-[3px]">{status}</div>}
-    {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] h-[34px] left-[var(--chart-plot-left,62px)] top-[var(--chart-plot-top,25px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track">{markerLayer}</div>}
-    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] border border-line4 bg-s2/95 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2" data-testid="chart-hover-readout">
+    {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] left-[var(--chart-plot-left,62px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track" style={{ height: MARKER_LANE_PX - 2, top: `max(0px, calc(var(--chart-plot-top, 44px) - ${MARKER_LANE_PX}px))` }}>{markerLayer}</div>}
+    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
     </div>}
@@ -526,11 +458,15 @@ function chartOptions(
   referenceTimestamp: number | undefined,
   width: number,
   height: number,
+  compact: boolean,
+  markerLane: boolean,
   onHover: (chart: uPlot) => void,
   onGeometry: (chart: uPlot) => void,
 ): uPlot.Options {
   const styles = getComputedStyle(document.documentElement)
   const color = (name: string) => styles.getPropertyValue(name).trim()
+  const mono = styles.getPropertyValue("--font-mono").trim() || "ui-monospace, monospace"
+  const axisFont = `${compact ? 10 : 11}px ${mono}`
   const partitions = scalePartitions(series)
   const scales = Object.fromEntries(partitions.map(({ key, scale: semantic }) => {
     const grouped = series.flatMap((line, ordinal) => scaleKey(line) === key
@@ -597,19 +533,30 @@ function chartOptions(
     }
     context.restore()
   }
+  const singleSeries = series.length === 1
+  const areaFill = (chart: uPlot, base: string) => {
+    // Alpha suffixes only compose with 6-digit hex tokens; anything else
+    // draws the plain colour instead of a broken gradient.
+    if (!/^#[0-9a-fA-F]{6}$/.test(base)) return base
+    const gradient = chart.ctx.createLinearGradient(0, chart.bbox.top, 0, chart.bbox.top + chart.bbox.height)
+    gradient.addColorStop(0, `${base}2b`)
+    gradient.addColorStop(1, `${base}00`)
+    return gradient
+  }
   return {
     width,
     height,
     ms: 1,
     pxAlign: true,
     legend: { show: false },
-    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, 52, partitions.length * 70), time: false }, ...scales },
+    ...(markerLane ? { padding: [MARKER_LANE_PX + 2, null, null, null] } : {}),
+    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, compact ? 38 : 52, partitions.length * (compact ? 46 : 70)), time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 30, font: "12px system-ui, sans-serif", space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
+      { scale: "x", side: 2, size: compact ? 18 : 30, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, font: axisFont, space: (_chart, _axis, _scale, _increment, space) => Math.max(compact ? 62 : 84, space), stroke: color("--color-fg3"), grid: { show: false }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), font: "12px system-ui, sans-serif", scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+        return { ...(!compact && unit !== "" && line.tickAxis !== "duration" ? { label: unit } : {}), font: axisFont, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: compact ? 46 : 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)
@@ -637,7 +584,8 @@ function chartOptions(
         label: line.label,
         scale: scaleKey(line),
         stroke: color(chartColor(line.color)),
-        width: 1.6,
+        width: compact ? 1.5 : 2,
+        ...(singleSeries ? { fill: (chart: uPlot) => areaFill(chart, color(chartColor(line.color))) } : {}),
         points: { filter: [...(frame.isolated.get(index + 1) ?? [])], show: true, size: 5 },
       })),
     ],
@@ -645,13 +593,13 @@ function chartOptions(
 }
 
 function chartColor(tone: RecordedSeries["color"]): string {
-  if (tone === "cyan") return "--color-accent"
-  if (tone === "amber") return "--color-warn"
-  if (tone === "violet") return "--color-event"
-  if (tone === "green") return "--color-ok"
-  if (tone === "red") return "--color-bad"
-  if (tone === "blue") return "--color-accent2"
-  if (tone === "rose") return "--color-bad-edge"
+  if (tone === "cyan") return "--color-series-1"
+  if (tone === "amber") return "--color-series-2"
+  if (tone === "violet") return "--color-series-4"
+  if (tone === "green") return "--color-series-3"
+  if (tone === "red") return "--color-series-5"
+  if (tone === "blue") return "--color-series-6"
+  if (tone === "rose") return "--color-series-7"
   return "--color-fg3"
 }
 
@@ -712,9 +660,4 @@ function compactTimePart(output: string): string {
   return output.trim().split(/\s+/)[0] ?? output
 }
 
-function niceCeiling(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
-}
+

@@ -182,7 +182,7 @@ test("tooltip uses seconds only when two samples share a displayed minute", () =
 
 test("y-axis labels carry only the unit, series names live in the caption", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
+  assert.match(source, /!compact && unit !== "" && line\.tickAxis !== "duration" \? \{ label: unit \} : \{\}/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
   assert.match(source, /chart-series-labels/)
 })
@@ -207,46 +207,29 @@ test("the built-in legend stays hidden and chart titles use portal help metadata
   assert.match(help, /\[\.chart-series-labels_&\]:flex-none/)
 })
 
-test("expanded charts keep one bounded action and restore both page scroll locks", async () => {
-  const [source, markerSource, stylesheet, html] = await Promise.all([
+test("full charts live only in the bounded shared Inspector", async () => {
+  const [source, markerSource, stylesheet, inspector, events, relations, system] = await Promise.all([
     readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-    readFile(new URL("../src/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/events-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
   ])
-
-  assert.equal((source.match(/chart-expand/g) ?? []).length, 1)
-  assert.doesNotMatch(source, /className="chart-close"/)
-  assert.doesNotMatch(stylesheet, /\.chart-close/)
-  assert.match(source, /const rootOverflow = document\.documentElement\.style\.overflow/)
-  assert.match(source, /const bodyOverflow = document\.body\.style\.overflow/)
-  assert.match(source, /document\.documentElement\.style\.overflow = "hidden"/)
-  assert.match(source, /document\.body\.style\.overflow = "hidden"/)
-  assert.match(source, /document\.documentElement\.style\.overflow = rootOverflow/)
-  assert.match(source, /document\.body\.style\.overflow = bodyOverflow/)
-  assert.match(source, /window\.addEventListener\("touchmove", blockPageScroll, \{ passive: false \}\)/)
-  assert.match(source, /window\.addEventListener\("wheel", blockPageScroll, \{ passive: false \}\)/)
-  assert.match(source, /pagePosition\.current = \{ left: window\.scrollX, top: window\.scrollY \}/)
-  assert.match(source, /window\.scrollTo\(pageScrollLeft, pageScrollTop\)/)
-  assert.match(source, /useLayoutEffect\(\(\) => \{[\s\S]*if \(expanded \|\| !returnFocus\.current\) return[\s\S]*opener\.current\?\.focus\(\{ preventScroll: true \}\)[\s\S]*window\.scrollTo\(pagePosition\.current\.left, pagePosition\.current\.top\)/)
-  assert.match(source, /active instanceof HTMLElement && shell\.current\?\.contains\(active\)/)
+  assert.doesNotMatch(source, /uplot-expanded|chart-expand|setExpanded/)
+  assert.match(inspector, /className=\{`inspector\$\{maximized \? " inspector-maximized" : ""\}`\}/)
+  assert.match(inspector, /data-testid="inspector-maximize"/)
+  assert.match(inspector, /role="separator"/)
+  assert.match(stylesheet, /@media \(max-width: 1000px\)[\s\S]*?\.inspector \{[\s\S]*?position: fixed;/)
+  assert.match(stylesheet, /@media \(max-width: 520px\)[\s\S]*?max-height: min\(480px/)
   assert.match(source, /--chart-plot-top/)
   assert.match(source, /getPropertyValue\("--chart-marker-end-reserve"\)/)
   assert.match(source, /Math\.max\(1, width - endReserve\)/)
   assert.doesNotMatch(markerSource, /--chart-marker-end-reserve/)
-  assert.doesNotMatch(html, /viewport-fit=cover/)
-
-  assert.match(source, /grid-cols-\[minmax\(0,1fr\)_auto_auto\]/)
   assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
-  assert.match(source, /\[\.uplot-expanded_&\]:grid-cols-\[minmax\(0,1fr\)_auto_44px\]/)
-  assert.match(source, /expanded \? "inline-flex h-11 min-w-11/)
-  assert.match(source, /\[--chart-marker-end-reserve:52px\]/)
   assert.match(source, /w-\[max\(1px,calc\(var\(--chart-plot-width,calc\(100%_-_70px\)\)_-_var\(--chart-marker-end-reserve,0px\)\)\)\]/)
-  // Both the ordinary expanded padding and the narrow-screen one clear the
-  // notch on every side; one lives in the stylesheet, one on the markup.
-  for (const side of ["top", "right", "bottom", "left"]) {
-    const inStylesheet = (stylesheet.match(new RegExp(`env\\(safe-area-inset-${side}, 0px\\)`, "g")) ?? []).length
-    const inMarkup = (source.match(new RegExp(`env\\(safe-area-inset-${side},0px\\)`, "g")) ?? []).length
-    assert.equal(inStylesheet + inMarkup, 2, side)
-  }
+  assert.match(events, /<InspectorChartPortal identity=\{`event:/)
+  assert.match(relations, /<InspectorChartPortal identity=\{`pg:\$\{row\.logicalName\}/)
+  assert.match(system, /<InspectorChartPortal identity=\{`system:\$\{section\}:\$\{entityRowKey\(selectedRow\)\}:history`\}/)
 })

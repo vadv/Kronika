@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react"
+import { Check, CircleHelp, Search, X } from "lucide-react"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
@@ -13,6 +13,7 @@ export function TableFilter({
   pattern,
   grouped = false,
   surface,
+  status,
   t,
   total,
 }: {
@@ -23,6 +24,7 @@ export function TableFilter({
   readonly pattern: string
   readonly grouped?: boolean | undefined
   readonly surface: SearchSurface
+  readonly status?: ReactNode | undefined
   readonly t: Translate
   readonly total: number
 }) {
@@ -56,20 +58,20 @@ export function TableFilter({
   }
   return <div className="border-b border-line2 bg-s2 px-[7px] py-1 text-fg3" data-search-surface={surface}>
     <div className="flex min-h-[28px] min-w-0 flex-wrap items-center gap-1.5">
-      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap border border-accent2 bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
+      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--radius-xs)] bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
         <strong className="overflow-hidden text-ellipsis font-semibold">{context}</strong>
         <button className="inline-flex cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
       </span>}
-      {context !== undefined && onPattern !== undefined && <span className="text-xs uppercase text-fg4">{t("filter.and")}</span>}
+      {context !== undefined && onPattern !== undefined && <span className="text-xs text-fg4">{t("filter.and")}</span>}
       {onPattern !== undefined && <form className="flex min-w-[210px] flex-1 items-center" onSubmit={(event) => { event.preventDefault(); apply() }}>
-        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
+        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center rounded-[var(--radius-sm)] border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
           <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
           <input
             aria-describedby={error === null ? undefined : errorId}
             aria-errormessage={error === null ? undefined : errorId}
             aria-invalid={error === null ? undefined : true}
             aria-label={t("filter.label")}
-            className="min-w-0 w-full border-0 bg-transparent px-1 py-1 text-sm text-fg outline-none [font-family:inherit] placeholder:text-fg4 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
+            className="min-w-0 w-full border-0 bg-transparent px-1 py-1 font-mono text-sm text-fg outline-none placeholder:font-sans placeholder:text-fg4 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
             data-testid="table-filter"
             onChange={(event) => { setDraft(event.target.value); setSubmitted(false) }}
             onKeyDown={(event) => {
@@ -86,13 +88,14 @@ export function TableFilter({
             value={draft}
           />
         </label>
-        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center border border-line4 bg-s3 px-1.5 text-xs font-semibold text-accent3" type="submit">✓</button>
+        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-7 flex-none cursor-pointer items-center rounded-[var(--radius-sm)] border-0 bg-s3 px-2 text-accent3 transition-colors hover:bg-s4" type="submit"><Check aria-hidden="true" size={14} /></button>
       </form>}
-      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center border border-line3 bg-transparent text-sm font-semibold text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button">?</button>}
+      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-[var(--radius-sm)] border-0 bg-transparent text-accent3 transition-colors hover:bg-s3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button"><CircleHelp aria-hidden="true" size={14} /></button>}
       {pattern !== "" && <>
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
       </>}
+      {status !== undefined && <span className="ml-auto flex flex-none items-center gap-x-[14px] whitespace-nowrap text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{status}</span>}
     </div>
     {applied?.structured === true && applied.expr !== null && <div aria-label={`${t("filter.tokens")}: ${applied.canonical}`} className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="search-chips">
       <SearchChips expr={applied.expr} onRemove={(index) => onPattern?.(withoutSearchClause(applied, index))} t={t} />
@@ -109,7 +112,7 @@ function SearchChips({ expr, onRemove, t }: { readonly expr: SearchExpr; readonl
       const index = clauseIndex
       clauseIndex += 1
       const clause = current.predicate
-      return [<span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" data-search-predicate="" key={`${path}:${clause.key}:${clause.value}`}>
+      return [<span className="inline-flex h-[19px] max-w-full items-center rounded-[var(--radius-xs)] bg-accent-soft text-xs text-fg" data-search-predicate="" key={`${path}:${clause.key}:${clause.value}`}>
         <SearchChip clause={clause} t={t} />
         <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onRemove(index)} type="button"><X aria-hidden="true" size={11} /></button>
       </span>]
@@ -168,11 +171,11 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
       <header className="flex items-center justify-between gap-2"><h2 className="m-0 text-md">{t("filter.help.title")}</h2><button aria-label={t("help.close")} className="icon-button" onClick={onClose} ref={close} type="button">×</button></header>
       <p className="leading-relaxed text-fg2">{t("filter.help.grammar")}</p>
       <p className="leading-relaxed text-fg3">{t("filter.help.rules")}</p>
-      <h3 className="mt-3 text-xs uppercase tracking-[.05em] text-fg3">{t("filter.help.fields")}</h3>
+      <h3 className="mt-3 text-xs font-medium text-fg3">{t("filter.help.fields")}</h3>
       <dl className="m-0 grid gap-2">
         {fields.map((field) => <div className="border-t border-line2 pt-2" key={field.key}><dt><code className="text-accent3">{field.key}</code>{field.aliases.length === 0 ? null : <span className="ml-2 text-xs text-fg4">{t("filter.help.aliases", { aliases: field.aliases.join(", ") })}</span>}</dt><dd className="m-0 mt-1 text-fg3">{t(field.help)}</dd></div>)}
       </dl>
-      <h3 className="mt-3 text-xs uppercase tracking-[.05em] text-fg3">{t("filter.help.examples")}</h3>
+      <h3 className="mt-3 text-xs font-medium text-fg3">{t("filter.help.examples")}</h3>
       <div className="grid gap-1.5">{examples.map((example) => <button aria-label={`${t("filter.help.copy")}: ${example}`} className="min-w-0 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void navigator.clipboard?.writeText(example)} type="button"><code>{example}</code></button>)}</div>
     </aside>
   </div>
