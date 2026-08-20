@@ -250,6 +250,25 @@ fn user_reference_dump_resolves_the_captured_name() {
 }
 
 #[test]
+fn section_limit_bounds_rows_and_keeps_the_total() {
+    let (_directory, segment) = health_segment();
+    let mut json = Vec::new();
+    section(&mut json, true, &segment, 1_107_001, 2).expect("dump limited PSI rows");
+    assert_eq!(
+        json.split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
+        2
+    );
+
+    let mut table = Vec::new();
+    section(&mut table, false, &segment, 1_107_001, 2).expect("show limited PSI rows");
+    let table = String::from_utf8(table).expect("UTF-8 table");
+    assert!(table.contains("rows=6"));
+    assert!(table.contains("… 4 more rows"));
+}
+
+#[test]
 fn a_size_report_accounts_for_the_captured_file() {
     let (_directory, segment) = dictionary_segment();
     let mut output = Vec::new();

@@ -1,10 +1,11 @@
 //! Printing a segment as a table or as JSON.
 
+use std::collections::HashSet;
 use std::io::Write;
 
 use kronika_index::SeriesBlock;
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Segment, SegmentRef, StoreWarning};
-use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
+use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, contract, section_name};
 use serde_json::{Map, Value, json};
 
 use crate::DumpError;
@@ -302,25 +303,50 @@ pub(crate) fn section(
     type_id: u32,
     limit: usize,
 ) -> Result<(), DumpError> {
-    let dictionary = segment.dictionary()?;
     if matches!(type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
+        let dictionary = segment.dictionary()?;
         return dictionary_section(output, json_output, segment, type_id, limit, &dictionary);
     }
 
-    let rows = segment.rows(type_id)?;
+    let contract = contract(type_id).ok_or_else(|| kronika_reader::ReaderError::Section {
+        type_id,
+        source: kronika_registry::CodecError::UnknownType { type_id },
+    })?;
+    let columns = contract
+        .columns
+        .iter()
+        .map(|column| column.name)
+        .collect::<Vec<_>>();
+    let total_rows = segment.rows_of(type_id).unwrap_or(0);
+    let row_limit = if limit == 0 { usize::MAX } else { limit };
+    let mut rows = Vec::with_capacity(if limit == 0 {
+        0
+    } else {
+        limit.min(usize::try_from(total_rows).unwrap_or(usize::MAX))
+    });
+    segment.visit_rows(type_id, &columns, 0, row_limit, |_ordinal, row| {
+        rows.push(row);
+        true
+    })?;
+    let ids = rows
+        .iter()
+        .flat_map(kronika_reader::Row::iter)
+        .filter_map(|(_name, cell)| match cell {
+            Cell::StrId(id) => Some(*id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let dictionary = segment.dictionary_for(&ids)?;
     if !json_output {
         writeln!(
             output,
             "{}  {} ({type_id})  rows={}",
             segment.path().display(),
             section_name(type_id).unwrap_or("unknown"),
-            rows.len()
+            total_rows
         )?;
     }
-    for row in rows
-        .iter()
-        .take(if limit == 0 { rows.len() } else { limit })
-    {
+    for row in &rows {
         if json_output {
             let object: Map<String, Value> = row
                 .iter()
@@ -339,8 +365,9 @@ pub(crate) fn section(
             writeln!(output, "  {}", body.join(" "))?;
         }
     }
-    if !json_output && limit != 0 && rows.len() > limit {
-        writeln!(output, "  … {} more rows", rows.len() - limit)?;
+    let shown = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+    if !json_output && limit != 0 && total_rows > shown {
+        writeln!(output, "  … {} more rows", total_rows - shown)?;
     }
     Ok(())
 }
