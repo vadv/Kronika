@@ -585,7 +585,7 @@ whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
 opens its one-hour history.
 
 A large chart never occupies the primary workspace. Every main surface instead
-keeps the shared 104 px time preview visible above its table or list. The preview
+keeps the shared 124 px time preview visible above its table or list. The preview
 has an explicit zero-based or semantic scale, exact sample cursor, recorded
 finding shapes, missing intervals and the uncollected future tail; it is not a
 silent sparkline. Its Chart action opens the full chart in the shared Inspector.
@@ -619,7 +619,7 @@ remaining width: the selected reading receives priority and every shortened
 label or value uses ellipsis with its complete text retained in the accessible
 name and title. On a phone, one compact native lane selector replaces the row of
 lane buttons. Opening the adjacent desktop Inspector therefore cannot introduce
-a native bar above the 104 px preview. The Inspector chart keeps its legend and
+a native bar above the 124 px preview. The Inspector chart keeps its legend and
 current reading on separate bounded rows so both remain readable at its minimum
 width.
 
@@ -633,9 +633,12 @@ that setting the converted reading is unavailable. Buffer hits remain buffer
 activity and are not relabelled as physical disk I/O.
 
 Shared charts reserve room at the end for the last time label after accounting
-for every visible side axis. The compact timeline shell is exactly 104 px; its
-74 px figure keeps the x-axis, cursor and labels inside the instrument before
-the following navigation. Charts
+for every visible side axis. The compact timeline shell is exactly 124 px; its
+94 px figure keeps a dedicated marker lane above the plot — finding markers
+never occlude the drawn lines — and the x-axis, cursor and labels inside the
+instrument before the following navigation. A marker cluster names the kinds
+present by shape and sizes the cluster with one count; the per-kind split
+lives in the accessible name and the events console. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. Their required horizontal rail does not create
@@ -657,6 +660,16 @@ resize handle exists only for the real bounded accessible Inspector split.
 Recorded findings and direct thresholds guide attention with shape, weight and
 a marker rail as well as colour. Ordinary workload volume remains neutral, and
 the interface does not add diagnosis, scoring or causal claims.
+
+Two typefaces carry fixed roles: a UI sans for chrome — navigation, labels,
+buttons, prose — and a monospaced face for data — values, identifiers,
+timestamps, queries. Both ship embedded in the single artifact. Labels are
+sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
+a small radius scale and brief 80–120 ms transitions, honoring reduced-motion.
+Chart series identity uses its own palette, validated for colour-vision
+separation and contrast against both theme surfaces, and is never taken from
+the status colours; a loading table shows skeleton rows matching its columns,
+and a table filtered to zero offers clearing the filter in place.
 
 PostgreSQL Tables and Indexes use lens-specific details at database, schema,
 object and cluster-wide tablespace level. Tablespace identity is its effective

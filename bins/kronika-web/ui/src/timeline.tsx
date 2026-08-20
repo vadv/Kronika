@@ -200,6 +200,7 @@ export function Timeline({
       reading={current}
       referenceTimestamp={shownAt ?? undefined}
       series={recorded}
+      stats={presentation === "inspector"}
       t={t}
       testId="hour-timeline"
       threshold={threshold}

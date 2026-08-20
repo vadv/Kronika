@@ -260,8 +260,17 @@ export function EntityTable({
             ? null
             : loading
           // Loading and empty are different truths; never report one as the other.
-              ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
-              : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
+              ? <div role="status">
+                <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
+                <div aria-hidden="true" data-testid="table-skeleton">
+                  {Array.from({ length: 8 }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
+                    {table.getVisibleLeafColumns().map((column, columnIndex) => <span className="px-[7px]" key={column.id} style={{ width: column.getSize() }}>
+                      <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * 90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
+                    </span>)}
+                  </div>)}
+                </div>
+              </div>
+              : <p className="table-empty flex items-center gap-2.5">{pattern === "" ? empty : <>{t("filter.none")}{onPattern !== undefined && <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="table-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button>}</>}</p>
         : <div className="relative" data-testid="virtual-body" style={{ height: virtualHeight, width: contentWidth }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]
