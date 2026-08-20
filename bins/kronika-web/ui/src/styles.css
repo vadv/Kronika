@@ -328,11 +328,25 @@
   height: 74px !important;
   min-height: 74px !important;
 }
+.timeline-lanes { min-width: 0; overflow: hidden; }
+.timeline-lane-label { flex: 1 1 84px; }
+.timeline-lane-label[data-primary="true"] { flex: 2.4 1 220px; }
+.timeline-lane-name { flex: 0 1 auto; }
+.timeline-lane-reading { flex: 1 1 auto; }
+.timeline-preview-picker { display: none; }
 .timeline-inspector {
   border-top: 0;
   margin-top: 0;
 }
 .timeline-inspector .timeline-rail { height: 34px; min-height: 34px; }
+.timeline-inspector .uplot-figure > figcaption {
+  gap: 2px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  min-height: 40px;
+}
+.timeline-inspector .chart-series-labels { overflow: hidden; }
+.timeline-inspector .chart-current { grid-column: 1; grid-row: 2; justify-self: start; max-width: 100%; }
 .timeline-metric-picker {
   align-items: center;
   display: grid;
@@ -362,12 +376,13 @@
   color: var(--color-accent3);
   cursor: pointer;
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 0 60px;
   font: inherit;
   font-size: var(--text-xs);
   gap: 5px;
   padding: 0 8px;
   text-transform: uppercase;
+  width: 60px;
 }
 .timeline-open-chart:hover { background: var(--color-s3); }
 .snapshot-time { flex: 0 0 auto; white-space: nowrap; }
@@ -533,6 +548,20 @@
   }
   .inspector-head { padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
   .inspector-body { padding-bottom: env(safe-area-inset-bottom); }
+  .timeline-lanes { display: none; }
+  .timeline-preview-picker { display: grid; grid-template-columns: 88px minmax(0, 1fr); }
+  .timeline-preview-picker > select {
+    background: var(--color-s2);
+    border: 1px solid var(--color-line3);
+    color: var(--color-fg2);
+    font: inherit;
+    font-size: var(--text-xs);
+    height: 24px;
+    min-width: 0;
+    padding-inline: 5px;
+    text-transform: uppercase;
+    width: 88px;
+  }
   .timeline-open-chart span:last-child { display: none; }
-  .timeline-open-chart { padding-inline: 9px; }
+  .timeline-open-chart { flex-basis: 36px; padding-inline: 9px; width: 36px; }
 }

@@ -146,6 +146,7 @@ export function Timeline({
     [end, hour, lanes, selected],
   )
   const threshold = useMemo(() => selected?.threshold === undefined ? undefined : { below: selected.threshold, seriesId: "overall_health" }, [selected])
+  const selectedReading = selected === undefined ? "—" : laneReading(selected, cursor, locale, t)
   const markerLayer = <>{markers.map((marker, index) => {
     const first = marker.findings[0]
     if (first === undefined) return null
@@ -167,10 +168,10 @@ export function Timeline({
       : <section className="flex h-[104px] min-h-[104px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
   return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
-    <div className="timeline-rail flex h-7 flex-none border-b border-line2">
+    <div className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2">
       {presentation === "inspector"
         ? <label className="timeline-metric-picker"><span>{t("inspector.timeline")}</span><select aria-label={t("inspector.timeline")} data-testid="timeline-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select></label>
-        : <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto px-1">
+        : <><div className="timeline-lanes flex min-w-0 flex-1 gap-0.5 overflow-hidden px-1">
           {lanes.map((lane) => <LaneLabel
             help={`lane.${lane.key}.help`}
             key={lane.key}
@@ -180,7 +181,10 @@ export function Timeline({
             reading={laneReading(lane, cursor, locale, t)}
             t={t}
           />)}
-        </div>}
+        </div><div className="timeline-preview-picker min-w-0 flex-1 items-center gap-1 px-1">
+          <select aria-label={t("inspector.timeline")} data-testid="timeline-preview-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select>
+          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-sm tabular-nums text-fg" data-testid="timeline-preview-reading" title={selectedReading}>{selectedReading}</span>
+        </div></>}
       {presentation === "preview" && onOpenChart !== undefined && <button aria-label={t("inspector.open_chart")} className="timeline-open-chart" onClick={onOpenChart} title={t("inspector.open_chart")} type="button"><span aria-hidden="true">↗</span><span>{t("inspector.chart")}</span></button>}
     </div>
     <UPlotChart
@@ -256,10 +260,11 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
 }
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  return <div data-primary={primary || undefined} className={`lane-label flex h-7 flex-[1_0_140px] items-center gap-2 rounded-t-[2px] px-[7px] text-xs uppercase text-fg3 max-[760px]:pl-1 max-[520px]:flex-[0_0_120px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
-    <button aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-2 self-stretch border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
-      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
-      <span data-testid="lane-reading" className={`ml-auto flex-none whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`}>{reading}</span>
+  const accessible = `${t(label)}: ${reading}`
+  return <div data-primary={primary || undefined} className={`lane-label timeline-lane-label flex h-7 min-w-0 items-center gap-1.5 overflow-hidden rounded-t-[2px] px-[7px] text-left text-xs uppercase text-fg3 hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`} title={accessible}>
+    <button aria-label={accessible} aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-1.5 self-stretch overflow-hidden border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
+      <span className="timeline-lane-name min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
+      <span data-testid="lane-reading" className={`timeline-lane-reading ml-auto min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`} title={reading}>{reading}</span>
     </button>
     <LabelHelp helpKey={help} iconOnly labelKey={label} t={t} />
   </div>

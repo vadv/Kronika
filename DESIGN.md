@@ -613,6 +613,16 @@ CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
 
+The compact preview control rail is never a horizontal scroll region. Its Chart
+action owns a fixed edge slot, while lane labels and readings share only the
+remaining width: the selected reading receives priority and every shortened
+label or value uses ellipsis with its complete text retained in the accessible
+name and title. On a phone, one compact native lane selector replaces the row of
+lane buttons. Opening the adjacent desktop Inspector therefore cannot introduce
+a native bar above the 104 px preview. The Inspector chart keeps its legend and
+current reading on separate bounded rows so both remain readable at its minimum
+width.
+
 Every displayed duration uses one adaptive formatter across tables, details,
 current readings, axes, hover and statistics. It chooses ns, µs, ms, s, min or
 h from magnitude and preserves semantic denominators such as `/s` and `/call`;

@@ -298,13 +298,20 @@ test("timeline controls stay above a full-width plot without a redundant time ti
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
   ])
+  const railMarkup = 'className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2"'
   assert.match(source, /timeline-shell[^"]*flex-col[^"]*overflow-hidden/)
-  assert.match(source, /className="timeline-rail flex h-7 flex-none border-b border-line2"/)
+  assert.ok(source.includes(railMarkup))
+  assert.match(source, /className="timeline-lanes[^"]*overflow-hidden/)
+  assert.doesNotMatch(source, /className="timeline-lanes[^"]*overflow-x-auto/)
+  assert.match(source, /data-testid="timeline-preview-metric-select"/)
+  assert.match(source, /aria-label=\{accessible\}/)
+  assert.match(styles, /\.timeline-lane-label\[data-primary="true"\] \{[^}]*flex:/s)
+  assert.match(styles, /\.timeline-open-chart \{[^}]*flex: 0 0 60px;[^}]*width: 60px;/s)
   assert.match(styles, /\.timeline-preview \{[^}]*height: 104px;/s)
   assert.match(chart, /variant === "preview" \? "h-\[76px\]/)
   assert.doesNotMatch(styles, /timeline-shell[^}]*uplot-host \{ min-height:/)
   // The lane strip renders above the plot; comparing by a class name that no
   // longer exists made this pass on two -1s.
-  assert.ok(source.indexOf('className="timeline-rail flex h-7 flex-none border-b border-line2"') < source.indexOf('className="timeline-chart"'))
+  assert.ok(source.indexOf(railMarkup) < source.indexOf('className="timeline-chart"'))
   assert.doesNotMatch(chart, /Time, browser local|Время, местное в браузере/)
 })

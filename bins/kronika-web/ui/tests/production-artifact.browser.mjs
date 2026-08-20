@@ -4249,6 +4249,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         const picker = body.querySelector('.timeline-metric-picker')
         const select = body.querySelector('[data-testid="timeline-metric-select"]')
         const figure = body.querySelector('.uplot-figure')
+        const preview = document.querySelector('.timeline-preview')
+        const previewRail = preview.querySelector('.timeline-rail')
+        const previewLanes = preview.querySelector('.timeline-lanes')
+        const previewPicker = preview.querySelector('.timeline-preview-picker')
+        const previewTrigger = preview.querySelector('.timeline-open-chart')
         const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
         const bodyRect = rect(body)
         const headerRect = rect(header)
@@ -4263,6 +4268,16 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
           laneButtons: body.querySelectorAll('.lane-label').length,
           optionCount: select.options.length,
           picker: rect(picker),
+          preview: {
+            ...rect(preview),
+            action: rect(previewTrigger),
+            actionAtEdge: Math.abs(previewTrigger.getBoundingClientRect().right - previewRail.getBoundingClientRect().right) <= .5,
+            labelsInside: getComputedStyle(previewLanes).display === 'none' || [...previewLanes.children].every((child) => { const box = child.getBoundingClientRect(); const parent = previewLanes.getBoundingClientRect(); return box.left >= parent.left - .5 && box.right <= parent.right + .5 }),
+            lanesDisplay: getComputedStyle(previewLanes).display,
+            ownerCount: [preview, ...preview.querySelectorAll('*')].filter((node) => /(auto|scroll)/.test(getComputedStyle(node).overflowX) && node.scrollWidth > node.clientWidth + 1).length,
+            pickerDisplay: getComputedStyle(previewPicker).display,
+            selectedAccess: previewLanes.querySelector('[data-primary="true"]')?.getAttribute('title') ?? previewPicker.querySelector('[data-testid="timeline-preview-reading"]')?.getAttribute('title'),
+          },
           rail: rect(rail),
           selected: next,
           titleFits: title.scrollWidth <= title.clientWidth + 1 && title.scrollHeight <= title.clientHeight + 1,
@@ -4278,12 +4293,95 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(chartGeometry.laneButtons, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.picker.left >= chartGeometry.body.left - .5 && chartGeometry.picker.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.figure.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.ok(Math.abs(chartGeometry.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.equal(chartGeometry.preview.ownerCount, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.equal(chartGeometry.preview.actionAtEdge, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.equal(chartGeometry.preview.labelsInside, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.match(chartGeometry.preview.selectedAccess, /\S/)
+      if (viewport.kind === "phone") {
+        assert.equal(chartGeometry.preview.lanesDisplay, "none", JSON.stringify(chartGeometry.preview))
+        assert.equal(chartGeometry.preview.pickerDisplay, "grid", JSON.stringify(chartGeometry.preview))
+        assert.ok(Math.abs(chartGeometry.preview.action.width - 36) <= 1, JSON.stringify(chartGeometry.preview))
+      } else {
+        assert.equal(chartGeometry.preview.lanesDisplay, "flex", JSON.stringify(chartGeometry.preview))
+        assert.equal(chartGeometry.preview.pickerDisplay, "none", JSON.stringify(chartGeometry.preview))
+        assert.ok(Math.abs(chartGeometry.preview.action.width - 60) <= 1, JSON.stringify(chartGeometry.preview))
+      }
+      const legend = await cdp.evaluate(`(() => {
+        const figure = document.querySelector('[data-testid="inspector-chart"] .uplot-figure')
+        const labels = figure.querySelector('.chart-series-labels')
+        const current = figure.querySelector('.chart-current')
+        const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+        const labelRect = rect(labels)
+        const currentRect = rect(current)
+        return {
+          childrenInside: [...labels.children].every((child) => { const box = child.getBoundingClientRect(); return box.left >= labelRect.left - .5 && box.right <= labelRect.right + .5 }),
+          current: currentRect,
+          currentInside: currentRect.left >= rect(figure).left - .5 && currentRect.right <= rect(figure).right + .5,
+          labels: labelRect,
+          overflowX: getComputedStyle(labels).overflowX,
+          rowsSeparated: labelRect.bottom <= currentRect.top + .5,
+          scrollWidth: labels.scrollWidth,
+          clientWidth: labels.clientWidth,
+        }
+      })()`)
+      assert.equal(legend.overflowX, "hidden", `${viewport.kind}: ${JSON.stringify(legend)}`)
+      assert.ok(legend.scrollWidth <= legend.clientWidth + 1, `${viewport.kind}: ${JSON.stringify(legend)}`)
+      assert.equal(legend.childrenInside, true, `${viewport.kind}: ${JSON.stringify(legend)}`)
+      assert.equal(legend.currentInside, true, `${viewport.kind}: ${JSON.stringify(legend)}`)
+      assert.equal(legend.rowsSeparated, true, `${viewport.kind}: ${JSON.stringify(legend)}`)
       const fixedHeader = await cdp.evaluate(`(() => { const body = document.querySelector('.inspector-body'); const header = document.querySelector('.inspector-head'); const before = header.getBoundingClientRect().top; body.scrollTop = body.scrollHeight; return { after: header.getBoundingClientRect().top, before } })()`)
       assert.ok(Math.abs(fixedHeader.after - fixedHeader.before) <= .5, `${viewport.kind}: ${JSON.stringify(fixedHeader)}`)
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null && new URL(location.href).searchParams.get('row') === null && new URL(location.href).searchParams.get('panel') === null`, `${viewport.kind} closed Inspector`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity&panel=chart` })
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]') !== null && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, "exact adjacent PostgreSQL Chart state")
+    await cdp.evaluate(`(() => {
+      const style = document.createElement('style')
+      style.textContent = '#classic-scrollbar-sentinel::-webkit-scrollbar,.timeline-lanes::-webkit-scrollbar{height:15px;width:15px}'
+      document.head.append(style)
+      const sentinel = document.createElement('div')
+      sentinel.id = 'classic-scrollbar-sentinel'
+      sentinel.style.cssText = 'position:fixed;left:-1000px;top:0;width:40px;height:30px;overflow:scroll'
+      sentinel.innerHTML = '<div style="width:80px;height:1px"></div>'
+      document.body.append(sentinel)
+    })()`)
+    await settleLayout(cdp)
+    const classicPreview = await cdp.evaluate(`(() => {
+      const preview = document.querySelector('.timeline-preview')
+      const rail = preview.querySelector('.timeline-rail')
+      const lanes = preview.querySelector('.timeline-lanes')
+      const trigger = preview.querySelector('.timeline-open-chart')
+      const sentinel = document.querySelector('#classic-scrollbar-sentinel')
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      const laneRect = rect(lanes)
+      const railRect = rect(rail)
+      return {
+        actionAtEdge: Math.abs(rect(trigger).right - railRect.right) <= .5,
+        actionWidth: rect(trigger).width,
+        classicRail: sentinel.offsetHeight - sentinel.clientHeight,
+        height: rect(preview).height,
+        labelsInside: [...lanes.children].every((child) => { const box = child.getBoundingClientRect(); return box.left >= laneRect.left - .5 && box.right <= laneRect.right + .5 }),
+        laneClientWidth: lanes.clientWidth,
+        laneOverflowX: getComputedStyle(lanes).overflowX,
+        laneScrollWidth: lanes.scrollWidth,
+        ownerCount: [preview, ...preview.querySelectorAll('*')].filter((node) => /(auto|scroll)/.test(getComputedStyle(node).overflowX) && node.scrollWidth > node.clientWidth + 1).length,
+        panel: new URL(location.href).searchParams.get('panel'),
+        url: location.href,
+      }
+    })()`)
+    assert.equal(classicPreview.classicRail, 15, JSON.stringify(classicPreview))
+    assert.equal(classicPreview.panel, "chart", JSON.stringify(classicPreview))
+    assert.match(classicPreview.url, /view=pg\.activity/)
+    assert.ok(Math.abs(classicPreview.height - 104) <= .5, JSON.stringify(classicPreview))
+    assert.equal(classicPreview.laneOverflowX, "hidden", JSON.stringify(classicPreview))
+    assert.ok(classicPreview.laneScrollWidth <= classicPreview.laneClientWidth + 1, JSON.stringify(classicPreview))
+    assert.equal(classicPreview.ownerCount, 0, JSON.stringify(classicPreview))
+    assert.equal(classicPreview.labelsInside, true, JSON.stringify(classicPreview))
+    assert.equal(classicPreview.actionAtEdge, true, JSON.stringify(classicPreview))
+    assert.ok(Math.abs(classicPreview.actionWidth - 60) <= 1, JSON.stringify(classicPreview))
     await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="use-row-disk"]') !== null`, "Host resource table")
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
