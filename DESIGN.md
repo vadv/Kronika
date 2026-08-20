@@ -433,7 +433,8 @@ Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
 and similar display values would duplicate the largest fields in the segment.
-After a heatmap selects its identities, a projected raw response supplies only
+After a heatmap selects its identities, a projected raw response supplies the
+heavy display values — query text, plans, command lines — for only
 the display labels for those identities.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
@@ -980,7 +981,8 @@ columns. The first pass scans the whole window and selects the top K identities.
 Only the second pass allocates the K-by-column result and fills its cells. The
 requested K limits the returned identities, not the work needed to rank them.
 A counter ranks by its whole-window delta and a gauge by its whole-window
-maximum. The response also carries a totals band — the per-column sum of every
+maximum; a band total aggregates entity totals the same way — sum for
+counters, maximum for gauges. The response also carries a totals band — the per-column sum of every
 entity's cell — and an others band equal to totals minus the ranked rows, so
 the ranked strips always reconcile with the whole instance. Both bands are
 plain arithmetic on the same cells.

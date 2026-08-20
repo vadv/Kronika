@@ -295,7 +295,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 text = Some(usize::try_from(kept).unwrap_or(usize::MAX));
             }
             "page_size" if page_size.is_none() => {
-                page_size = Some(snapshot_page_size(raw_value)?);
+                page_size = Some(bounded("page_size", raw_value, MAX_SNAPSHOT_PAGE_SIZE)?);
             }
             "cursor" if cursor.is_none() => {
                 let value = decoded("cursor", raw_value, true)?;
@@ -370,13 +370,6 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         type_id,
         row_ordinal,
     })
-}
-
-fn snapshot_page_size(raw: &str) -> Result<usize, RouteError> {
-    raw.parse::<usize>()
-        .ok()
-        .filter(|size| (1..=MAX_SNAPSHOT_PAGE_SIZE).contains(size))
-        .ok_or_else(|| RouteError::BadParameter("page_size".to_owned()))
 }
 
 fn snapshot_search(raw: &str) -> Result<String, RouteError> {
@@ -649,11 +642,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
                 saw_order = true;
             }
             "page_size" if !saw_page_size => {
-                page_size = value
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|size| (1..=MAX_PAGE_SIZE).contains(size))
-                    .ok_or_else(|| RouteError::BadParameter(name.clone()))?;
+                page_size = bounded("page_size", &value, MAX_PAGE_SIZE)?;
                 saw_page_size = true;
             }
             "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),

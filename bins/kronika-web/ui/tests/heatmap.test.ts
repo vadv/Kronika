@@ -14,8 +14,8 @@ test("intervals carry exact boundaries and cover the hour", () => {
   const intervals = heatmapIntervals(HOUR, 12)
   assert.equal(intervals.length, 12)
   assert.equal(intervals[0]?.start, HOUR)
-  assert.equal(intervals[0]?.end, HOUR + 300 * 1_000_000)
-  assert.equal(intervals[11]?.end, HOUR + 3_600_000_000)
+  assert.equal(intervals[0]?.end, HOUR + 300 * 1_000_000 - 1)
+  assert.equal(intervals[11]?.end, HOUR + 3_600_000_000 - 1)
 })
 
 test("a counter cell is the interval delta over the observed elapsed time", () => {

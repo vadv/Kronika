@@ -1,6 +1,12 @@
 use serde_json::{Value, json};
 
-use super::{Fold, Obs, column_of, entity_key, interval_end, interval_start};
+use super::{Fold, Obs, column_of, entity_key_into, interval_end, interval_start};
+
+fn entity_key(type_id: u32, identity: &[Value]) -> String {
+    let mut key = String::new();
+    entity_key_into(&mut key, type_id, identity);
+    key
+}
 
 const HOUR: i64 = 1_000_000_000_000;
 const SPAN: i64 = 3_600_000_000;

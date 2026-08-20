@@ -8,14 +8,14 @@
 //! the second pass allocates the top-K-by-columns result and fills its cells
 //! and labels. The others band is the totals band minus the ranked rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
+use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, logical_section_name, registry};
 use serde_json::{Value, json};
 
-use super::query::{Plan, chunk_dictionary, plans};
+use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, record};
 use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::route::{DataRequest, HeatmapRequest, SegmentRequest};
@@ -143,23 +143,35 @@ impl PreparedHeatmap {
                 Err(error) => return Err(error),
             };
             for plan in &ranked_plans {
-                if plan
-                    .fields
-                    .first()
-                    .is_none_or(|field| field.column.is_none())
-                {
+                let Some(field) = plan.fields.first().and_then(|output| output.column) else {
                     continue;
-                }
+                };
                 seen_rows.insert((segment_ref.id(), plan.type_id), plan.rows);
-                let connected = visit_plan(
-                    &segment,
-                    plan,
-                    plan.rows,
-                    cancelled,
-                    |ts, identity, value, _labels| {
-                        fold.observe(plan.type_id, identity, ts, value);
-                    },
-                )?;
+                let mut cache = RenderCache::new(&segment)?;
+                let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
+                let connected = pump_rows(&segment, plan, plan.rows, cancelled, |chunk| {
+                    cache.ensure(&segment, chunk)?;
+                    for (_ordinal, row) in chunk.drain(..) {
+                        let Some(Cell::Ts(ts)) = plan.timestamp.and_then(|column| row.get(column))
+                        else {
+                            continue;
+                        };
+                        let ts = *ts;
+                        if ts < request.from || ts > request.to {
+                            continue;
+                        }
+                        identity.clear();
+                        for name in plan.contract.identity {
+                            identity.push(match row.get(name) {
+                                Some(stored) => cache.value(stored)?,
+                                None => Value::Null,
+                            });
+                        }
+                        let value = row.get(field).and_then(numeric);
+                        fold.observe(plan.type_id, &identity, ts, value);
+                    }
+                    Ok(true)
+                })?;
                 if !connected {
                     return Ok(None);
                 }
@@ -177,15 +189,19 @@ impl PreparedHeatmap {
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<(Vec<Vec<Obs>>, Vec<Vec<(i64, Value)>>)>, ApiError> {
         let request = &self.request;
-        let winners: HashMap<String, usize> = ranked
+        let winners: HashMap<&str, usize> = ranked
             .rows
             .iter()
             .enumerate()
-            .map(|(index, row)| (row.key.clone(), index))
+            .map(|(index, row)| (row.key.as_str(), index))
             .collect();
+        let winner_types: HashSet<u32> = ranked.rows.iter().map(|row| row.type_id).collect();
         let mut cells = vec![vec![Obs::default(); request.columns]; ranked.rows.len()];
         let mut labels =
             vec![vec![(i64::MIN, Value::Null); request.labels.len()]; ranked.rows.len()];
+        if ranked.rows.is_empty() {
+            return Ok(Some((cells, labels)));
+        }
         for segment_ref in &self.segments {
             if cancelled() {
                 return Ok(None);
@@ -200,31 +216,62 @@ impl PreparedHeatmap {
                 let Some(rows) = seen_rows.get(&(segment_ref.id(), plan.type_id)).copied() else {
                     continue;
                 };
-                let type_id = plan.type_id;
+                if !winner_types.contains(&plan.type_id) {
+                    continue;
+                }
+                let field = plan.fields.first().and_then(|output| output.column);
+                let label_columns: Vec<Option<&'static str>> = plan
+                    .fields
+                    .iter()
+                    .skip(1)
+                    .map(|output| output.column)
+                    .collect();
                 let (from, to, columns) = (request.from, request.to, request.columns);
-                let connected = visit_plan(
-                    &segment,
-                    plan,
-                    rows,
-                    cancelled,
-                    |ts, identity, value, row_labels| {
-                        let Some(index) = winners.get(&entity_key(type_id, identity)).copied()
+                let mut cache = RenderCache::new(&segment)?;
+                let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
+                let mut key = String::new();
+                let connected = pump_rows(&segment, plan, rows, cancelled, |chunk| {
+                    cache.ensure(&segment, chunk)?;
+                    for (_ordinal, row) in chunk.drain(..) {
+                        let Some(Cell::Ts(ts)) = plan.timestamp.and_then(|column| row.get(column))
                         else {
-                            return;
+                            continue;
                         };
+                        let ts = *ts;
                         if ts < from || ts > to {
-                            return;
+                            continue;
                         }
-                        if let Some(value) = value {
+                        identity.clear();
+                        for name in plan.contract.identity {
+                            identity.push(match row.get(name) {
+                                Some(stored) => cache.value(stored)?,
+                                None => Value::Null,
+                            });
+                        }
+                        entity_key_into(&mut key, plan.type_id, &identity);
+                        let Some(index) = winners.get(key.as_str()).copied() else {
+                            continue;
+                        };
+                        if let Some(value) =
+                            field.and_then(|column| row.get(column)).and_then(numeric)
+                        {
                             cells[index][column_of(ts, from, to, columns)].observe(ts, value);
                         }
-                        for (slot, stored) in labels[index].iter_mut().zip(row_labels) {
-                            if !stored.is_null() && ts >= slot.0 {
-                                *slot = (ts, stored.clone());
+                        for (slot, column) in labels[index].iter_mut().zip(&label_columns) {
+                            if ts < slot.0 {
+                                continue;
+                            }
+                            let Some(stored) = column.and_then(|name| row.get(name)) else {
+                                continue;
+                            };
+                            let rendered = cache.value(stored)?;
+                            if !rendered.is_null() {
+                                *slot = (ts, rendered);
                             }
                         }
-                    },
-                )?;
+                    }
+                    Ok(true)
+                })?;
                 if !connected {
                     return Ok(None);
                 }
@@ -348,60 +395,18 @@ impl PreparedHeatmap {
     }
 }
 
-/// Walk one plan's first `rows` physical rows in chunks and hand each row's
-/// timestamp, decoded identity, numeric value and decoded non-field outputs to
-/// the callback.
-fn visit_plan(
+/// Feed one plan's first `rows` physical rows to `flush` in bounded chunks.
+fn pump_rows(
     segment: &Segment,
     plan: &Plan,
     rows: u64,
     cancelled: &impl Fn() -> bool,
-    mut observe: impl FnMut(i64, &[Value], Option<f64>, &[Value]),
+    mut flush: impl FnMut(&mut Vec<(u64, Row)>) -> Result<bool, ApiError>,
 ) -> Result<bool, ApiError> {
     let take = usize::try_from(rows).unwrap_or(usize::MAX);
     let mut chunk: Vec<(u64, Row)> = Vec::with_capacity(ROW_CHUNK_ROWS);
     let mut connected = true;
     let mut failure: Option<ApiError> = None;
-    let timestamp = plan.timestamp;
-    let field = plan.fields.first().and_then(|output| output.column);
-    let label_columns: Vec<Option<&'static str>> = plan
-        .fields
-        .iter()
-        .skip(1)
-        .map(|output| output.column)
-        .collect();
-    let mut flush = |chunk: &mut Vec<(u64, Row)>| -> Result<bool, ApiError> {
-        if cancelled() {
-            return Ok(false);
-        }
-        let dictionary = chunk_dictionary(segment, chunk)?;
-        for (_ordinal, row) in chunk.drain(..) {
-            let Some(Cell::Ts(ts)) = timestamp.and_then(|column| row.get(column)) else {
-                continue;
-            };
-            let ts = *ts;
-            let identity = plan
-                .contract
-                .identity
-                .iter()
-                .map(|name| {
-                    row.get(name)
-                        .map_or(Ok(Value::Null), |stored| cell(stored, &dictionary))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let value = field.and_then(|column| row.get(column)).and_then(numeric);
-            let labels = label_columns
-                .iter()
-                .map(|column| {
-                    column
-                        .and_then(|name| row.get(name))
-                        .map_or(Ok(Value::Null), |stored| cell(stored, &dictionary))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            observe(ts, &identity, value, &labels);
-        }
-        Ok(true)
-    };
     segment.visit_rows(plan.type_id, &plan.projection, 0, take, |ordinal, row| {
         if cancelled() {
             connected = false;
@@ -429,6 +434,56 @@ fn visit_plan(
     Ok(connected)
 }
 
+/// Renders cells to JSON values while fetching every distinct dictionary id
+/// once per plan. Refetching the dictionary per chunk would re-read and
+/// re-checksum the whole dictionary section — the one that stores every query
+/// text — thousands of times per request.
+struct RenderCache {
+    rendered: HashMap<u64, Value>,
+    empty: Dictionary,
+}
+
+impl RenderCache {
+    fn new(segment: &Segment) -> Result<Self, ApiError> {
+        Ok(Self {
+            rendered: HashMap::new(),
+            empty: segment.dictionary_for(&HashSet::new())?,
+        })
+    }
+
+    fn ensure(&mut self, segment: &Segment, chunk: &[(u64, Row)]) -> Result<(), ApiError> {
+        let missing: HashSet<u64> = chunk
+            .iter()
+            .flat_map(|(_ordinal, row)| row.iter())
+            .filter_map(|(_name, stored)| match stored {
+                Cell::StrId(id) if !self.rendered.contains_key(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let dictionary = resolved_dictionary(segment, &missing)?;
+        for id in missing {
+            let rendered = cell(&Cell::StrId(id), &dictionary)?;
+            self.rendered.insert(id, rendered);
+        }
+        Ok(())
+    }
+
+    fn value(&self, stored: &Cell) -> Result<Value, ApiError> {
+        if let Cell::StrId(id) = stored {
+            return self.rendered.get(id).cloned().ok_or_else(|| {
+                ApiError::Unreadable(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unresolved dictionary id {id}"),
+                )))
+            });
+        }
+        cell(stored, &self.empty)
+    }
+}
+
 fn numeric(stored: &Cell) -> Option<f64> {
     #[expect(
         clippy::cast_precision_loss,
@@ -451,13 +506,22 @@ fn number(stored: Option<f64>) -> Value {
         .map_or(Value::Null, Value::Number)
 }
 
-pub(super) fn entity_key(type_id: u32, identity: &[Value]) -> String {
-    let mut key = type_id.to_string();
+/// A unit separator joins the parts; a null part is a control marker so it can
+/// never collide with the string "null".
+pub(super) fn entity_key_into(key: &mut String, type_id: u32, identity: &[Value]) {
+    use std::fmt::Write as _;
+    key.clear();
+    let _ = write!(key, "{type_id}");
     for value in identity {
         key.push('\u{1f}');
-        key.push_str(&value.to_string());
+        match value {
+            Value::String(text) => key.push_str(text),
+            Value::Null => key.push('\u{0}'),
+            other => {
+                let _ = write!(key, "{other}");
+            }
+        }
     }
-    key
 }
 
 pub(super) fn interval_start(from: i64, to: i64, columns: usize, index: usize) -> i64 {
@@ -624,6 +688,7 @@ pub(super) struct Fold {
     cumulative: bool,
     entities: HashMap<String, EntityState>,
     totals: Vec<CellSum>,
+    key: String,
     out_of_order: u64,
 }
 
@@ -636,6 +701,7 @@ impl Fold {
             cumulative,
             entities: HashMap::new(),
             totals: vec![CellSum::default(); columns],
+            key: String::new(),
             out_of_order: 0,
         }
     }
@@ -653,15 +719,23 @@ impl Fold {
         let Some(value) = value else {
             return;
         };
-        let key = entity_key(type_id, identity);
+        let mut key = std::mem::take(&mut self.key);
+        entity_key_into(&mut key, type_id, identity);
         let column = column_of(ts, self.from, self.to, self.columns);
-        let state = self.entities.entry(key).or_insert_with(|| EntityState {
-            type_id,
-            identity: identity.to_vec(),
-            window: Obs::default(),
-            column,
-            current: Obs::default(),
-        });
+        let state = if let Some(state) = self.entities.get_mut(key.as_str()) {
+            self.key = key;
+            state
+        } else {
+            let owned = key.clone();
+            self.key = key;
+            self.entities.entry(owned).or_insert_with(|| EntityState {
+                type_id,
+                identity: identity.to_vec(),
+                window: Obs::default(),
+                column,
+                current: Obs::default(),
+            })
+        };
         state.window.observe(ts, value);
         if column < state.column {
             self.out_of_order = self.out_of_order.saturating_add(1);

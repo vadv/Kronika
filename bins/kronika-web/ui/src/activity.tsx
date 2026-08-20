@@ -108,8 +108,6 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
       </div>
     </section>
   }
-  if (view.entityCount === 0) return null
-
   const drill = (row: HeatmapViewRow) => {
     const queryId = rowQueryId(row)
     if (queryId === null) return
@@ -126,9 +124,17 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
   const label = (row: HeatmapViewRow) => {
     const queryId = rowQueryId(row)
     const text = queryId === null ? undefined : tableTexts.get(queryId) ?? fetchedTexts.get(queryId)
+    // The identity is (queryid, userid, dbid, toplevel): the same query under
+    // two roles or nested under track=all ranks as separate rows, so the
+    // prefix must carry enough of the identity to tell them apart.
+    const parts = [
+      ...(row.labels[0] == null ? [] : [row.labels[0]]),
+      ...(row.labels[1] == null || row.labels[1] === row.labels[0] ? [] : [row.labels[1]]),
+      ...(row.identity[3] === "false" ? [t("activity.nested")] : []),
+    ]
     return {
       text: text === undefined ? `queryid ${queryId ?? "—"}` : statementPreview(text),
-      prefix: row.labels[0] ?? null,
+      prefix: parts.length === 0 ? null : parts.join(" · "),
     }
   }
 
@@ -251,14 +257,15 @@ function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, ma
         <button aria-label={t(maximized ? "activity.restore" : "activity.maximize")} aria-pressed={maximized} className="inspector-maximize" data-testid="activity-maximize" onClick={() => onMaximized(!maximized)} type="button">{maximized ? <Minimize2 aria-hidden="true" size={13} /> : <Maximize2 aria-hidden="true" size={13} />}</button>
       </div>
     </header>
-    <div className={maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}>
+    {view.entityCount === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
+    {view.entityCount > 0 && <div className={maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}>
       <ActivityRow cells={view.totals.cells} cursor={cursor} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
         return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={() => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
       {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t("activity.others", { count: String(view.othersCount) })} total={total(view.others.total)} />}
-    </div>
+    </div>}
   </section>
 }
 

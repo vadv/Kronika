@@ -1,7 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
-import { heatmap, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -545,7 +545,7 @@ function fixtureHeatmap(
       const stored = row.values[name]
       return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
     })
-    const entity = JSON.stringify([row.typeId, ...identity])
+    const entity = heatmapEntityKey([row.typeId, ...identity])
     if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
     const raw = row.values[field]
     const numeric = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null

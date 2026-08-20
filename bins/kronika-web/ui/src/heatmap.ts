@@ -1,11 +1,13 @@
-// The heatmap contract from DESIGN.md "Heatmap values": the ranked top view is
-// derived in the client from raw samples. A counter cell is the last value
-// minus the first value observed inside the interval, divided by the elapsed
-// time between those two observations; missing input, fewer than two usable
-// observations, a non-positive observed duration or a negative delta produce
-// null, a zero delta produces 0. A gauge cell is the last sample in the
-// interval, or null. Ranking uses the whole requested window and does not
-// change with the number of columns.
+// The heatmap contract from DESIGN.md "Heatmap values", plus the view model
+// the renderer consumes. The server derives the ranked top view next to the
+// segments; the bundled-fixture build derives the same shape here, in the
+// client. A counter cell is the last value minus the first value observed
+// inside the interval, divided by the elapsed time between those two
+// observations; missing input, fewer than two usable observations, a
+// non-positive observed duration or a negative delta produce null, a zero
+// delta produces 0. A gauge cell is the last sample in the interval, or null.
+// Ranking uses the whole requested window and does not change with the number
+// of columns.
 
 export const HOUR_MICROS = 3_600_000_000
 
@@ -59,7 +61,7 @@ interface EntityState {
 export function heatmapIntervals(hour: number, columns: number): readonly HeatmapInterval[] {
   return Array.from({ length: columns }, (_, index) => ({
     start: hour + Math.floor((index * HOUR_MICROS) / columns),
-    end: hour + Math.floor(((index + 1) * HOUR_MICROS) / columns),
+    end: hour + Math.floor(((index + 1) * HOUR_MICROS) / columns) - 1,
   }))
 }
 
