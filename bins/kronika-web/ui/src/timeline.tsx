@@ -178,7 +178,8 @@ export function Timeline({
             label={`lane.${lane.key}.label`}
             onSelect={() => setSelectedLane(lane.key)}
             primary={lane.key === selected.key}
-            reading={laneReading(lane, cursor, locale, t)}
+            reading={lane.key === selected.key ? laneReading(lane, cursor, locale, t) : compactLaneReading(lane, cursor, locale, t)}
+            fullReading={laneReading(lane, cursor, locale, t)}
             t={t}
           />)}
         </div><div className="timeline-preview-picker min-w-0 flex-1 items-center gap-1 px-1">
@@ -260,8 +261,8 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
   }))
 }
 
-function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  const accessible = `${t(label)}: ${reading}`
+function LaneLabel({ label, help, fullReading, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly fullReading: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
+  const accessible = `${t(label)}: ${fullReading}`
   return <div data-primary={primary || undefined} className={`lane-label timeline-lane-label flex h-7 min-w-0 items-center gap-1.5 overflow-hidden rounded-t-[var(--radius-xs)] px-[7px] text-left font-sans text-xs font-medium text-fg3 hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`} title={accessible}>
     <button aria-label={accessible} aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-1.5 self-stretch overflow-hidden border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
       <span className="timeline-lane-name min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
@@ -291,6 +292,18 @@ function format(number: number, key: string, locale: Locale): string {
   if (key === "oldest_xact") return humanDuration(number * 1_000, locale)
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
   return humanPercent(number, locale)
+}
+
+// An unselected health chip has no room for the three-part split: it shows
+// the overall number alone; the split stays in the accessible name and title
+// and appears when the lane is selected.
+export function compactLaneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
+  if (lane.key !== "health") return laneReading(lane, cursor, locale, t)
+  const line = lane.series.find((candidate) => candidate.field === "overall_health") ?? lane.series[0]
+  if (line === undefined) return "—"
+  const healthAt = healthEvaluationAtOrBefore(lane.series, cursor)
+  const number = healthAt === null ? null : exactValue(line.points, healthAt)
+  return number === null ? "—" : format(number, lane.key, locale)
 }
 
 export function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
