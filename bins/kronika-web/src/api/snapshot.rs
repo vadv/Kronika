@@ -33,6 +33,7 @@ pub(crate) struct PreparedSnapshot {
     anchor: SegmentRef,
     prior_sources: Vec<SegmentRef>,
     relation_predecessors: Vec<SegmentRef>,
+    relation_moments: RetainedRelationMoments,
     at: i64,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
@@ -375,6 +376,8 @@ thread_local! {
     static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static RELATION_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
+    static PARTITION_PREDECESSOR_VISITS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
@@ -416,6 +419,20 @@ pub(crate) fn context_operations() -> (usize, usize, usize) {
         CONTEXT_CHUNK_ROWS.get(),
         CONTEXT_STAGED_ROWS.get(),
         CONTEXT_SELECTION_DICTIONARIES.get(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_relation_snapshot_operations() {
+    RELATION_MOMENT_VISITS.set(0);
+    PARTITION_PREDECESSOR_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn relation_snapshot_operations() -> (usize, usize) {
+    (
+        RELATION_MOMENT_VISITS.get(),
+        PARTITION_PREDECESSOR_VISITS.get(),
     )
 }
 
@@ -495,7 +512,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     } else {
         Vec::new()
     };
-    let relation_predecessors = if has_relation {
+    let (relation_predecessors, relation_moments) = if has_relation {
         relation_preceding(
             &reader,
             &segment_ref,
@@ -506,7 +523,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             request.at,
         )?
     } else {
-        Vec::new()
+        (Vec::new(), BTreeMap::new())
     };
     validate_search_projection(search.as_deref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
@@ -516,6 +533,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         anchor: segment_ref,
         prior_sources,
         relation_predecessors,
+        relation_moments,
         at: request.at,
         sections,
         relation_filters,
@@ -1864,7 +1882,7 @@ impl PreparedSnapshot {
         let Some(spec) = SnapshotViewSpec::for_logical_name(&section.logical_name) else {
             return Ok(Vec::new());
         };
-        let selected = self.selected_partitions(section, spec, cancelled)?;
+        let selected = self.selected_partitions(section, cancelled);
         if cancelled() {
             return Ok(Vec::new());
         }
@@ -1899,59 +1917,57 @@ impl PreparedSnapshot {
     fn selected_partitions(
         &self,
         section: &SectionPlans,
-        spec: SnapshotViewSpec,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<BTreeMap<IdentityCell, SelectedPartition>, ApiError> {
+    ) -> BTreeMap<IdentityCell, SelectedPartition> {
+        let source_by_id = std::iter::once((self.anchor.id(), PartitionSource::Current))
+            .chain(
+                self.relation_predecessors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, source)| (source.id(), PartitionSource::Earlier(index))),
+            )
+            .collect::<HashMap<_, _>>();
         let mut selected = BTreeMap::<IdentityCell, SelectedPartition>::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
             if !plan.applies() || cancelled() {
                 continue;
             }
-            let Some(timestamp) = plan.timestamp else {
+            if plan.timestamp.is_none() {
                 continue;
-            };
-            let mut moments = BTreeMap::new();
-            let anchor = self.reader.open_segment(&self.anchor)?;
-            Self::partition_moments(
-                &anchor,
-                plan,
-                timestamp,
-                spec.temporal_partition,
-                self.at,
-                PartitionSource::Current,
-                &mut moments,
-                cancelled,
-            )?;
-            drop(anchor);
-            for (source_index, earlier_ref) in self.relation_predecessors.iter().enumerate() {
-                let earlier = self.reader.open_segment(earlier_ref)?;
-                Self::partition_moments(
-                    &earlier,
-                    plan,
-                    timestamp,
-                    spec.temporal_partition,
-                    self.at,
-                    PartitionSource::Earlier(source_index),
-                    &mut moments,
-                    cancelled,
-                )?;
             }
-            for (partition, moments) in moments {
+            for ((type_id, partition), retained) in &self.relation_moments {
+                if *type_id != plan.type_id {
+                    continue;
+                }
+                let Some(current) = retained
+                    .current
+                    .as_ref()
+                    .and_then(|moment| located_moment(moment, &source_by_id))
+                else {
+                    continue;
+                };
+                let moments = PartitionMoments {
+                    current,
+                    previous: retained
+                        .previous
+                        .as_ref()
+                        .and_then(|moment| located_moment(moment, &source_by_id)),
+                };
                 let candidate = SelectedPartition {
                     layout_index,
                     type_id: plan.type_id,
                     moments,
                 };
-                let replace = selected.get(&partition).is_none_or(|chosen| {
+                let replace = selected.get(partition).is_none_or(|chosen| {
                     (candidate.moments.current.at, candidate.type_id)
                         > (chosen.moments.current.at, chosen.type_id)
                 });
                 if replace {
-                    selected.insert(partition, candidate);
+                    selected.insert(partition.clone(), candidate);
                 }
             }
         }
-        Ok(selected)
+        selected
     }
 
     fn partition_rate_state(
@@ -1972,6 +1988,8 @@ impl PreparedSnapshot {
         let mut elapsed_by_partition = BTreeMap::new();
         let mut sample_from: Option<i64> = None;
         let mut sample_to: Option<i64> = None;
+        let mut before_by_source =
+            BTreeMap::<i64, (&SegmentRef, BTreeMap<IdentityCell, i64>)>::new();
         for (partition, selection) in selected {
             if selection.layout_index != layout_index {
                 continue;
@@ -1991,30 +2009,29 @@ impl PreparedSnapshot {
             else {
                 continue;
             };
-            let mut before_sources = before
-                .sources
-                .iter()
-                .filter_map(|source| {
-                    self.partition_source(*source)
-                        .map(|reference| (reference.id(), reference))
-                })
-                .collect::<Vec<_>>();
-            before_sources.sort_unstable_by_key(|(segment_id, _reference)| *segment_id);
-            for (_segment_id, before_source_ref) in before_sources {
-                let before_source = self.reader.open_segment(before_source_ref)?;
-                previous.extend(Self::collect_partition(
-                    &before_source,
-                    plan,
-                    timestamp,
-                    before.at,
-                    spec.temporal_partition,
-                    partition,
-                    &order_columns,
-                    cancelled,
-                )?);
+            for source in &before.sources {
+                if let Some(reference) = self.partition_source(*source) {
+                    before_by_source
+                        .entry(reference.id())
+                        .or_insert_with(|| (reference, BTreeMap::new()))
+                        .1
+                        .insert(partition.clone(), before.at);
+                }
             }
             elapsed_by_partition.insert(partition.clone(), elapsed);
             sample_from = Some(sample_from.map_or(before.at, |chosen| chosen.min(before.at)));
+        }
+        for (_segment_id, (before_source_ref, partitions)) in before_by_source {
+            let before_source = self.reader.open_segment(before_source_ref)?;
+            previous.extend(Self::collect_partitions(
+                &before_source,
+                plan,
+                timestamp,
+                spec.temporal_partition,
+                &partitions,
+                &order_columns,
+                cancelled,
+            )?);
         }
         Ok(PartitionRateState {
             previous: Arc::new(previous),
@@ -2104,67 +2121,17 @@ impl PreparedSnapshot {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the scan coordinates are explicit to prevent cross-database samples"
-    )]
-    fn partition_moments(
+    fn collect_partitions(
         segment: &Segment,
         plan: &Plan,
         timestamp: &'static str,
         partition_column: &'static str,
-        at: i64,
-        source: PartitionSource,
-        moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if segment.rows_of(plan.type_id).is_none() {
-            return Ok(());
-        }
-        segment.visit_rows(
-            plan.type_id,
-            &[timestamp, partition_column],
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                let (Some(stored), Some(partition)) =
-                    (row_timestamp(&row, timestamp), row.get(partition_column))
-                else {
-                    return true;
-                };
-                if stored <= at {
-                    record_partition_moment(
-                        moments,
-                        identity_cell(partition),
-                        LocatedMoment {
-                            at: stored,
-                            sources: BTreeSet::from([source]),
-                        },
-                    );
-                }
-                true
-            },
-        )?;
-        Ok(())
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the exact timestamp and partition keep database predecessors isolated"
-    )]
-    fn collect_partition(
-        segment: &Segment,
-        plan: &Plan,
-        timestamp: &'static str,
-        at: i64,
-        partition_column: &'static str,
-        partition: &IdentityCell,
+        partitions: &BTreeMap<IdentityCell, i64>,
         extra_columns: &[&'static str],
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
+        #[cfg(test)]
+        PARTITION_PREDECESSOR_VISITS.set(PARTITION_PREDECESSOR_VISITS.get().saturating_add(1));
         let mut collected = BTreeMap::new();
         let mut counters = projected_rate_columns(plan);
         if plan.contract.column("starttime").is_some() {
@@ -2192,11 +2159,13 @@ impl PreparedSnapshot {
             if cancelled() {
                 return false;
             }
-            if row_timestamp(&row, timestamp) != Some(at)
-                || row
-                    .get(partition_column)
-                    .is_none_or(|stored| &identity_cell(stored) != partition)
-            {
+            let Some(partition) = row.get(partition_column).map(identity_cell) else {
+                return true;
+            };
+            let Some(at) = partitions.get(&partition) else {
+                return true;
+            };
+            if row_timestamp(&row, timestamp) != Some(*at) {
                 return true;
             }
             let Some(key) = identity_of(plan, &row) else {
@@ -3741,37 +3710,6 @@ const fn timed_context_index(
     layout_index * source_count + source_index
 }
 
-fn record_partition_moment(
-    moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
-    partition: IdentityCell,
-    located: LocatedMoment,
-) {
-    let Some(chosen) = moments.get_mut(&partition) else {
-        moments.insert(
-            partition,
-            PartitionMoments {
-                current: located,
-                previous: None,
-            },
-        );
-        return;
-    };
-    match located.at.cmp(&chosen.current.at) {
-        Ordering::Equal => chosen.current.sources.extend(located.sources),
-        Ordering::Greater => {
-            chosen.previous = Some(std::mem::replace(&mut chosen.current, located));
-        }
-        Ordering::Less => match chosen.previous.as_mut() {
-            Some(before) => match located.at.cmp(&before.at) {
-                Ordering::Equal => before.sources.extend(located.sources),
-                Ordering::Greater => *before = located,
-                Ordering::Less => {}
-            },
-            None => chosen.previous = Some(located),
-        },
-    }
-}
-
 fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef, ApiError> {
     let Some(cursor) = cursor else {
         return Ok(current);
@@ -3877,6 +3815,23 @@ struct RetainedMoments {
     previous: Option<RetainedMoment>,
 }
 
+type RetainedRelationMoments = BTreeMap<(u32, IdentityCell), RetainedMoments>;
+
+fn located_moment(
+    retained: &RetainedMoment,
+    source_by_id: &HashMap<i64, PartitionSource>,
+) -> Option<LocatedMoment> {
+    let sources = retained
+        .segment_ids
+        .iter()
+        .filter_map(|segment_id| source_by_id.get(segment_id).copied())
+        .collect::<BTreeSet<_>>();
+    (!sources.is_empty()).then_some(LocatedMoment {
+        at: retained.at,
+        sources,
+    })
+}
+
 fn relation_preceding(
     reader: &Reader,
     segment_ref: &SegmentRef,
@@ -3885,7 +3840,7 @@ fn relation_preceding(
     sections: &[SectionPlans],
     filters: &[crate::route::Filter],
     at: i64,
-) -> Result<Vec<SegmentRef>, ApiError> {
+) -> Result<(Vec<SegmentRef>, RetainedRelationMoments), ApiError> {
     let requested_datid = filters
         .iter()
         .find(|filter| filter.column == "datid")
@@ -3958,7 +3913,7 @@ fn relation_preceding(
         .filter(|candidate| retained.contains(&candidate.id()))
         .collect::<Vec<_>>();
     selected.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
-    Ok(selected)
+    Ok((selected, moments))
 }
 
 fn partitioned_plans(sections: &[SectionPlans]) -> impl Iterator<Item = &Plan> {
@@ -3986,6 +3941,8 @@ fn scan_relation_moments(
         if segment.rows_of(plan.type_id).is_none() {
             continue;
         }
+        #[cfg(test)]
+        RELATION_MOMENT_VISITS.set(RELATION_MOMENT_VISITS.get().saturating_add(1));
         segment.visit_rows(
             plan.type_id,
             &[timestamp, "datid"],

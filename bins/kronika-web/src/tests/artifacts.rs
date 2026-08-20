@@ -29,7 +29,8 @@ use serde_json::Value;
 
 use crate::api::{
     ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
-    reset_context_operations, reset_first_match_rows, reset_page_operations,
+    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
+    reset_page_operations, reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -4319,7 +4320,9 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=datid&field=relid&field=seq_scan&by=seq_scan&page_size=1"
     );
+    reset_relation_snapshot_operations();
     let first = stream(fixture.prepare(&base, None)).expect("first table page");
+    assert_eq!(relation_snapshot_operations(), (1, 1));
     assert_eq!(
         row_records(&first)[0]["values"],
         serde_json::json!([2, 77, 2.0])
@@ -4335,6 +4338,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
 
     let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
         .expect("second table page");
+    assert_eq!(relation_snapshot_operations(), (2, 2));
     assert_eq!(
         row_records(&second)[0]["values"],
         serde_json::json!([1, 77, 1.0])
