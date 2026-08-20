@@ -38,6 +38,8 @@ pub(crate) struct Config {
     pub(crate) listen: SocketAddr,
     /// Required account used by centralized authentication.
     pub(crate) account: Account,
+    /// Whether API and browser session authentication is enforced.
+    pub(crate) authentication_required: bool,
     /// Whether browser session cookies are restricted to TLS connections.
     pub(crate) cookie_secure: bool,
     /// Explicit source bitset persisted in every derived index.
@@ -79,6 +81,8 @@ impl Config {
             std::env::var("KRONIKA_WEB_USER").ok(),
             std::env::var("KRONIKA_WEB_PASSWORD").ok(),
         )?;
+        let authentication_required =
+            authentication_required(std::env::var("KRONIKA_WEB_AUTH").ok().as_deref())?;
         let raw_cookie_secure = std::env::var("KRONIKA_WEB_COOKIE_SECURE").ok();
         let cookie_secure = cookie_secure(raw_cookie_secure.as_deref())?;
         let sources = source_set(std::env::var("KRONIKA_WEB_SOURCES").ok())?;
@@ -86,9 +90,18 @@ impl Config {
             data_root,
             listen,
             account,
+            authentication_required,
             cookie_secure,
             sources,
         })
+    }
+}
+
+fn authentication_required(raw: Option<&str>) -> Result<bool> {
+    match raw {
+        None | Some("required") => Ok(true),
+        Some("disabled") => Ok(false),
+        Some(value) => anyhow::bail!("KRONIKA_WEB_AUTH={value:?} is not required or disabled"),
     }
 }
 

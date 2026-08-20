@@ -1,4 +1,4 @@
-use super::{account, cookie_secure, source_set};
+use super::{account, authentication_required, cookie_secure, source_set};
 
 #[test]
 fn both_nonempty_credentials_are_required() {
@@ -17,6 +17,15 @@ fn account_debug_output_redacts_credentials() {
     assert_eq!(debug, "Account { credentials: [redacted] }");
     assert!(!debug.contains("dba"));
     assert!(!debug.contains("secret"));
+}
+
+#[test]
+fn authentication_is_disabled_only_explicitly() {
+    assert!(authentication_required(None).expect("default"));
+    assert!(authentication_required(Some("required")).expect("required"));
+    assert!(!authentication_required(Some("disabled")).expect("disabled"));
+    assert!(authentication_required(Some("false")).is_err());
+    assert!(authentication_required(Some("")).is_err());
 }
 
 #[test]
