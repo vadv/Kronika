@@ -3041,6 +3041,53 @@ fn plan_pages_rank_each_displayed_composite_before_slicing() {
 }
 
 #[test]
+fn descending_rows_cross_a_page_boundary_without_repeating_or_skipping() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..33)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.finish();
+    let base = target("rows", "field=minor&page_size=20&order=desc");
+    let first = stream(fixture.prepare(&base, None)).expect("first descending page");
+    assert_eq!(
+        row_records(&first)
+            .iter()
+            .map(|row| row["ordinal"].as_str().expect("ordinal"))
+            .collect::<Vec<_>>(),
+        (13..33)
+            .rev()
+            .map(|ordinal| ordinal.to_string())
+            .collect::<Vec<_>>()
+    );
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "page")
+        .and_then(|record| record["next_cursor"].as_str())
+        .expect("descending cursor");
+    let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("second descending page");
+    assert_eq!(
+        row_records(&second)
+            .iter()
+            .map(|row| row["ordinal"].as_str().expect("ordinal"))
+            .collect::<Vec<_>>(),
+        (0..13)
+            .rev()
+            .map(|ordinal| ordinal.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second
+            .iter()
+            .find(|record| record["record"] == "page")
+            .expect("page trailer")["next_cursor"],
+        Value::Null
+    );
+}
+
+#[test]
 fn composite_statement_cursor_keeps_the_exact_global_order() {
     let mut fixture = Fixture::new();
     fixture.append_ranked_statements();
