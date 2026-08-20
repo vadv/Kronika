@@ -1,4 +1,4 @@
-import { Activity, ChartLine, Moon, Sun } from "lucide-react"
+import { Activity, ChartLine, CircleHelp, LogOut, Moon, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
@@ -946,14 +946,14 @@ function App({ locale, onLocale, t }: {
       <div aria-live="polite" className="cursor-time max-[760px]:order-9">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
-        {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
-        {cursorState === "missing" && <span className="cursor-missing ml-2 text-xs uppercase text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
+        {cursorState === "loading" && <span className="flex items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
+        {cursorState === "missing" && <span className="cursor-missing ml-2 font-sans text-xs text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
       </div>
 
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
-        <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
+        <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -961,8 +961,8 @@ function App({ locale, onLocale, t }: {
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
-        <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button">×</button>
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button">?</button>
+        <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
 
@@ -1031,7 +1031,7 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   const age = humanAge((now - at) / 1_000_000, locale)
   // Its own lane, so the freshness never reads as part of the cursor time. The
   // word steps aside on narrow bars; the title keeps it.
-  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-medium uppercase text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
+  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-sans font-medium text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
 }
 
 interface LoadProgress {

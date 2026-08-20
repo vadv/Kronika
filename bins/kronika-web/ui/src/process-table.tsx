@@ -158,12 +158,12 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="relative flex h-[25px] min-w-0 flex-[1_0_116px] items-baseline gap-1.5 px-2 pr-6" key={metric.field}>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[9px] uppercase text-fg4">{t(metric.key)}</span>
-        <strong className="flex-none text-xs font-[650] tabular-nums text-fg">{output}</strong>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-medium text-fg4">{t(metric.key)}</span>
+        <strong className="flex-none font-mono text-xs tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
-    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center px-2 text-[9px] uppercase text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
+    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center px-2 text-[10px] font-medium text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
   </section>
 }
 
@@ -328,7 +328,7 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
   const cell = field.field === undefined ? null : value(row, field.field)
   const output = field.kind === "command" ? processCommand(row) : field.kind === "user" ? processUser(row, field) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
     ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
     : output}</span>
 }

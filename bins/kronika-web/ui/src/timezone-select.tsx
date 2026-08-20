@@ -1,4 +1,5 @@
 import { Select } from "@base-ui/react/select"
+import { ChevronDown, Globe } from "lucide-react"
 
 import type { DisplayTimeZone } from "./display-time"
 import type { Translate } from "./help"
@@ -15,15 +16,16 @@ export function TimezoneSelect({ mode, setMode, t }: {
 }) {
   return (
     <Select.Root<DisplayTimeZone> onValueChange={(value) => { if (value !== null) setMode(value) }} value={mode}>
-      <Select.Trigger aria-label={t("timezone.switch")} className="timezone-select flex h-6 cursor-pointer items-center gap-1 border border-line3 bg-s2 pl-1.5 pr-1 text-xs text-fg2" data-testid="timezone-select" data-value={mode}>
+      <Select.Trigger aria-label={t("timezone.switch")} className="timezone-select flex h-7 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 text-xs font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg" data-testid="timezone-select" data-value={mode}>
+        <Globe aria-hidden="true" size={13} />
         <Select.Value className="overflow-hidden text-ellipsis whitespace-nowrap" data-testid="timezone-value">{() => t(`timezone.${mode}`)}</Select.Value>
-        <Select.Icon aria-hidden="true" className="text-[8px] text-fg4">▾</Select.Icon>
+        <Select.Icon aria-hidden="true" className="flex text-fg4"><ChevronDown size={12} /></Select.Icon>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Positioner alignItemWithTrigger={false} className="z-[1150]" side="bottom" sideOffset={3}>
-          <Select.Popup className="min-w-[var(--trigger-width)] border border-line4 bg-s1 p-[3px] shadow-[0_8px_24px_var(--color-shadow-a)]">
+        <Select.Positioner alignItemWithTrigger={false} className="z-[1150]" side="bottom" sideOffset={4}>
+          <Select.Popup className="min-w-[var(--trigger-width)] rounded-[var(--radius-md)] border border-line3 bg-s1 p-1 shadow-[var(--shadow-pop)]">
             {ZONES.map((zone) => (
-              <Select.Item className="cursor-pointer select-none whitespace-nowrap px-2 py-[5px] text-xs text-fg2 outline-none data-[highlighted]:bg-s3 data-[highlighted]:text-fg data-[selected]:text-accent3" data-testid={`timezone-option-${zone}`} key={zone} value={zone}>
+              <Select.Item className="cursor-pointer select-none whitespace-nowrap rounded-[var(--radius-xs)] px-2 py-1.5 text-xs text-fg2 outline-none data-[highlighted]:bg-s3 data-[highlighted]:text-fg data-[selected]:font-medium data-[selected]:text-accent3" data-testid={`timezone-option-${zone}`} key={zone} value={zone}>
                 <Select.ItemText>{t(`timezone.${zone}`)}</Select.ItemText>
               </Select.Item>
             ))}

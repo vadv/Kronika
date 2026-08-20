@@ -10,5 +10,5 @@ test("the compact timeline is permanent and the full chart opens in Inspector", 
   assert.match(app, /presentation="inspector"/)
   assert.doesNotMatch(app, /kronika\.charts|chartsVisible|ChartVisibilityProvider/)
   assert.match(timeline, /presentation = "preview"/)
-  assert.match(styles, /\.timeline-preview \{[^}]*height: 104px;/s)
+  assert.match(styles, /\.timeline-preview \{[^}]*height: 124px;/s)
 })

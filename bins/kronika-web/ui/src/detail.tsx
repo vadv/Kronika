@@ -147,7 +147,7 @@ export function DetailDock({
     >
       <section className="mt-2 flex items-center gap-1.5 border-y border-line2 bg-s1 px-1.5 py-[5px]" title={commandPath}>
         <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg [font-family:inherit] hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
-        <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
+        <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
       <DetailList>
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
@@ -189,7 +189,7 @@ export function DetailDock({
 
       {activity !== null && <section className="mt-[13px] border-t border-line4 pt-3">
         <div className="flex items-center">
-          <h3 className="m-0 text-sm font-[560] text-fg">{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
+          <h3 className="m-0 font-sans text-sm font-medium text-fg">{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
         </div>
         <DetailList>
           <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
@@ -202,7 +202,7 @@ export function DetailDock({
             : formatActivity(value(activity, field), kind, locale, t)} />)}
         </DetailList>
         <section className="query-block">
-          <span className="flex items-center justify-between text-xs uppercase text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
+          <span className="flex items-center justify-between text-xs font-medium text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
           <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
         </section>
       </section>}

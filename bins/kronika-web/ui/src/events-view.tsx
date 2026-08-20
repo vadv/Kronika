@@ -129,7 +129,7 @@ export function EventsView({
           {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px]" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
         </div>
         <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
-        {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
+        {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
       <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
       <div className="grid min-h-[430px] grid-cols-[minmax(0,1fr)]">
@@ -145,7 +145,7 @@ export function EventsView({
               return <div className="absolute left-0 top-0 w-full border-b border-line" data-testid="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
                 <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} className="event-finding grid h-full min-h-[44px] w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3 aria-pressed:bg-s4" data-kind={finding.kind} onClick={() => onFinding(finding)} type="button">
                   <KindIcon kind={finding.kind} />
-                  <span><strong className="block text-xs font-medium uppercase">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
+                  <span><strong className="block text-xs font-medium">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
                   <time className="whitespace-nowrap text-xs text-fg3">{time.timestamp(finding.timestamp)}</time>
                 </button>
               </div>
@@ -176,7 +176,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
   return <aside className="p-[11px]" data-testid="event-detail">
-    <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs uppercase text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="text-xs text-fg2">{time.timestamp(finding.timestamp)}</time></header>
+    <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs font-medium text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="text-xs text-fg2">{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}
     {resolution === "ready" && row !== null && <>

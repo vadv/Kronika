@@ -21,8 +21,23 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-const maximumRawBytes = fixtureOutput === null ? 1_200_000 : 40_000_000
-const maximumGzipBytes = fixtureOutput === null ? 320_000 : 8_000_000
+const maximumRawBytes = fixtureOutput === null ? 1_600_000 : 40_000_000
+const maximumGzipBytes = fixtureOutput === null ? 560_000 : 8_000_000
+/* The UI ships self-contained, so the two product typefaces are embedded as
+   data: URIs (the CSP allows font-src data:). Subsets stay binary in
+   ui/assets/; this keeps styles.css readable and the build reproducible. */
+const LATIN_RANGE = "U+0000-00FF, U+2000-206F, U+2190-21BB, U+2212, U+FEFF"
+const CYRILLIC_RANGE = "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116"
+const FONT_FILES = [
+  ["IBM Plex Sans", 400, "PlexSans-Latin-400.woff2", LATIN_RANGE],
+  ["IBM Plex Sans", 400, "PlexSans-Cyrillic-400.woff2", CYRILLIC_RANGE],
+  ["IBM Plex Sans", 500, "PlexSans-Latin-500.woff2", LATIN_RANGE],
+  ["IBM Plex Sans", 500, "PlexSans-Cyrillic-500.woff2", CYRILLIC_RANGE],
+  ["IBM Plex Sans", 600, "PlexSans-Latin-600.woff2", LATIN_RANGE],
+  ["IBM Plex Sans", 600, "PlexSans-Cyrillic-600.woff2", CYRILLIC_RANGE],
+  ["JetBrains Mono", 400, "JetBrainsMono-Latin.woff2", LATIN_RANGE],
+  ["JetBrains Mono", 400, "JetBrainsMono-Cyrillic.woff2", CYRILLIC_RANGE],
+]
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })
   .match(/^host: (.+)$/m)?.[1]
@@ -39,7 +54,7 @@ try {
   )
   const translations = await dictionaryModule(new URL("./", import.meta.url))
   const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null)
-  const stylesheet = await compileStylesheet(temporary)
+  const stylesheet = (await fontFaces()) + (await compileStylesheet(temporary))
   const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
   const fixture = fixtureOutput === null ? "" : await fixtureScript()
   const html = template
@@ -121,6 +136,15 @@ async function bundleJavascript(registry, translations, includeFixture) {
     throw new Error("esbuild produced no JavaScript")
   }
   return output.text
+}
+
+async function fontFaces() {
+  const faces = await Promise.all(FONT_FILES.map(async ([family, weight, name, range]) => {
+    const bytes = await readFile(join(uiDirectory, "assets", name))
+    return `@font-face{font-family:"${family}";font-style:normal;font-weight:${weight};font-display:swap;`
+      + `src:url(data:font/woff2;base64,${bytes.toString("base64")}) format("woff2");unicode-range:${range}}`
+  }))
+  return faces.join("")
 }
 
 async function fixtureScript() {

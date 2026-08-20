@@ -82,7 +82,7 @@ test("semantic tones coexist with exact locator classes", async () => {
   assert.match(table, /value-tone-\$\{tone\}.*locator-cell/)
   assert.match(table, /aria-label=\{toneText === null \|\| field === undefined \? undefined : `\$\{toneText\}: \$\{cellAriaValue\(stored, field, locale, t\)\}`\}/)
   assert.doesNotMatch(table, /\$\{toneText\}: \$\{rawText\(stored\)/)
-  assert.match(table, /critical: "\[&_\.entity-value\]:font-\[700\] \[&_\.entity-value\]:text-bad"/)
+  assert.match(table, /critical: "\[&_\.entity-value\]:text-bad"/)
   assert.match(table, /border-l-2 border-current/)
   assert.doesNotMatch(table, /value-tone-critical[^"]*box-shadow/)
   assert.match(table, /known_bad: "[^"]*\[&_\.entity-value\]:text-fg-hi"/)
