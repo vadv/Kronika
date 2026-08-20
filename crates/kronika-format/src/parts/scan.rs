@@ -1,6 +1,8 @@
 //! Walking a journal's frames through a reader.
 
-use super::{Error, FRAME_HEADER_LEN, FrameHeader, MAX_PART_LEN, ReadAt, fmt, io, validate_part};
+use super::{
+    Catalog, Error, FRAME_HEADER_LEN, FrameHeader, MAX_PART_LEN, ReadAt, fmt, io, validate_part,
+};
 
 /// Limits used while scanning a journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,39 @@ pub fn scan_journal_streaming_strict_from<R: ReadAt>(
     limits: JournalLimits,
     max_parts: usize,
 ) -> Result<ScanReport, JournalScanError> {
+    let mut parts = Vec::new();
+    let valid_len = visit_journal_streaming_strict_from(
+        reader,
+        start_at,
+        limits,
+        max_parts,
+        |part, _catalog, _part_buffer_capacity| {
+            parts.push(part);
+            Ok(())
+        },
+    )?;
+    Ok(ScanReport { parts, valid_len })
+}
+
+/// Visits a journal and hands each validated catalog to `visitor` before the
+/// reusable part buffer is overwritten.
+///
+/// Unlike [`scan_journal_streaming_strict_from`], this function does not retain
+/// a vector of part references. Its result is the length of the valid prefix.
+/// The final visitor argument is the retained capacity of the reusable part
+/// buffer, for callers that enforce a memory budget.
+///
+/// # Errors
+///
+/// Returns the same failures as [`scan_journal_streaming_strict_from`], plus
+/// I/O errors returned by `visitor`.
+pub fn visit_journal_streaming_strict_from<R: ReadAt>(
+    reader: &R,
+    start_at: u64,
+    limits: JournalLimits,
+    max_parts: usize,
+    mut visitor: impl FnMut(PartRef, Catalog, usize) -> io::Result<()>,
+) -> Result<usize, JournalScanError> {
     let total_len = usize::try_from(reader.byte_len()?).map_err(|_overflow| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -117,36 +152,34 @@ pub fn scan_journal_streaming_strict_from<R: ReadAt>(
         .into());
     }
 
-    let mut report = ScanReport {
-        valid_len: pos,
-        ..ScanReport::default()
-    };
+    let mut part_count = 0_usize;
     let mut part_buf = Vec::new();
 
     while pos < total_len {
         match streaming_frame_at(reader, total_len, pos, limits, &mut part_buf)? {
-            StreamingFrame::Valid { body_len } => {
-                if report.parts.len() >= max_parts {
+            StreamingFrame::Valid { body_len, catalog } => {
+                if part_count >= max_parts {
                     return Err(JournalScanError::PartLimitExceeded { limit: max_parts });
                 }
-                report.parts.push(PartRef {
+                let part = PartRef {
                     offset: pos + FRAME_HEADER_LEN,
                     len: body_len,
-                });
+                };
+                part_count += 1;
                 pos += FRAME_HEADER_LEN + body_len;
-                report.valid_len = pos;
+                visitor(part, catalog, part_buf.capacity())?;
             }
-            StreamingFrame::Damaged => return Ok(report),
+            StreamingFrame::Damaged => return Ok(pos),
         }
     }
 
-    Ok(report)
+    Ok(pos)
 }
 
 /// One frame position as the streaming scanner found it.
 enum StreamingFrame {
     /// A complete, fully validated frame body of this length.
-    Valid { body_len: usize },
+    Valid { body_len: usize, catalog: Catalog },
     /// The position holds no usable frame, whatever the reason.
     Damaged,
 }
@@ -189,5 +222,5 @@ fn streaming_frame_at<R: ReadAt>(
     {
         return Ok(StreamingFrame::Damaged);
     }
-    Ok(StreamingFrame::Valid { body_len })
+    Ok(StreamingFrame::Valid { body_len, catalog })
 }

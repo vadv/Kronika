@@ -7,9 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kronika_format::{
-    JOURNAL_HEADER_LEN, JournalHeader, JournalHeaderError, JournalLimits, JournalScanError,
-    JournalState, MAX_JOURNAL_LEN, RESET_MARKER_LEN, ReadAt, ResetMarker, ScanReport,
-    scan_journal_streaming_strict_from,
+    Catalog, JOURNAL_HEADER_LEN, JournalHeader, JournalHeaderError, JournalLimits,
+    JournalScanError, JournalState, MAX_JOURNAL_LEN, PartRef, RESET_MARKER_LEN, ReadAt,
+    ResetMarker, visit_journal_streaming_strict_from,
 };
 use kronika_layout::{LayoutError, SegmentId};
 
@@ -108,20 +108,22 @@ pub(super) fn active_part_limit_io(journal_path: &Path, limit: usize) -> io::Err
     )
 }
 
-pub(super) fn scan_journal_frames<R: ReadAt>(
+pub(super) fn visit_journal_frames<R: ReadAt>(
     reader: &R,
     start_at: u64,
     remaining_parts: usize,
     total_part_limit: usize,
     journal_path: &Path,
-) -> io::Result<ScanReport> {
-    match scan_journal_streaming_strict_from(
+    visitor: impl FnMut(PartRef, Catalog, usize) -> io::Result<()>,
+) -> io::Result<usize> {
+    match visit_journal_streaming_strict_from(
         reader,
         start_at,
         JournalLimits::default(),
         remaining_parts,
+        visitor,
     ) {
-        Ok(report) => Ok(report),
+        Ok(valid_len) => Ok(valid_len),
         Err(JournalScanError::Io(error)) if is_stale_journal(&error) => Err(io::Error::new(
             io::ErrorKind::Interrupted,
             format!("{} changed during scan: {error}", journal_path.display()),

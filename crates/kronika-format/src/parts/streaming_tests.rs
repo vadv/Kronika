@@ -79,6 +79,29 @@ fn a_clean_journal_reads_to_its_end() {
 }
 
 #[test]
+fn catalog_visitor_receives_each_validated_part_once() {
+    let p = sample_part();
+    let buf = framed(&[&p, &p]);
+    let mut catalogs = Vec::new();
+    let valid_len = visit_journal_streaming_strict_from(
+        &buf.as_slice(),
+        0,
+        JournalLimits::default(),
+        TEST_MAX_PARTS,
+        |part, catalog, part_buffer_capacity| {
+            assert_eq!(part.len, p.len());
+            assert!(part_buffer_capacity >= part.len);
+            catalogs.push(catalog);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(valid_len, buf.len());
+    assert_eq!(catalogs.len(), 2);
+    assert!(catalogs.iter().all(|catalog| catalog.min_ts == 1));
+}
+
+#[test]
 fn bounded_streaming_scan_stops_before_exceeding_the_part_limit() {
     let part = sample_part();
     let bytes = framed(&[&part, &part]);

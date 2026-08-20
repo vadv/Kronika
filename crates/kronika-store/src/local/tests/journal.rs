@@ -501,27 +501,25 @@ fn scan_reports_journal_truncated_at_second_frame_as_interrupted() {
 }
 
 #[test]
-fn scan_reports_journal_shrink_after_streaming_scan_as_interrupted() {
+fn scan_retains_the_catalog_without_rereading_the_part() {
     let dir = tempfile::tempdir().unwrap();
     let journal_path = dir.path().join("active.wal");
     let p = part(2000);
     let data = journal(2_000, &[p]);
-    let mock = ShrinksAfterScan {
+    let mock = RejectsRepeatedOffsets {
         data,
         seen: std::cell::RefCell::new(std::collections::HashSet::new()),
     };
 
     let local = LocalDir::open(dir.path()).unwrap();
-    assert_eq!(
-        local
-            .scan_journal_reader_from(
-                &mock,
-                JOURNAL_HEADER_LEN as u64,
-                Arc::new(Vec::new()),
-                &journal_path,
-            )
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
+    let scan = local
+        .scan_journal_reader_from(
+            &mock,
+            JOURNAL_HEADER_LEN as u64,
+            Arc::new(Vec::new()),
+            &journal_path,
+        )
+        .unwrap();
+    assert_eq!(scan.active.len(), 1);
+    assert_eq!(scan.active[0].catalog.min_ts, 2_000);
 }

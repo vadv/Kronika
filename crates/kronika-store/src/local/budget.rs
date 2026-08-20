@@ -6,9 +6,7 @@ use std::fs::File;
 use std::io;
 use std::sync::Arc;
 
-use kronika_format::{
-    ENTRY_LEN, Entry, MAGIC, META_LEN, PartRef, ReadAt, ScanReport, TAIL_INDEX_LEN, TailIndex,
-};
+use kronika_format::{Catalog, Entry};
 use kronika_layout::{FileIdentity, LayoutError, LimitKind};
 
 use crate::catalog_summary::CatalogSummary;
@@ -132,75 +130,11 @@ pub(super) const fn summary_allocation_bytes() -> usize {
     size_of::<CatalogSummary>() + ARC_ALLOCATION_OVERHEAD
 }
 
-pub(super) fn active_part_catalog_metadata_bytes<R: ReadAt>(
-    reader: &R,
-    part: PartRef,
-) -> io::Result<usize> {
-    let minimum = MAGIC
-        .len()
-        .checked_add(META_LEN)
-        .and_then(|bytes| bytes.checked_add(TAIL_INDEX_LEN))
-        .ok_or_else(metadata_size_overflow)?;
-    if part.len < minimum {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("active part at offset {} is too short", part.offset),
-        ));
-    }
-    let tail_offset = part
-        .offset
-        .checked_add(part.len - TAIL_INDEX_LEN)
-        .ok_or_else(metadata_size_overflow)?;
-    let mut tail_bytes = [0_u8; TAIL_INDEX_LEN];
-    reader.read_exact_at(
-        &mut tail_bytes,
-        u64::try_from(tail_offset)
-            .map_err(|_overflow| io::Error::from(io::ErrorKind::UnexpectedEof))?,
-    )?;
-    let tail = TailIndex::decode(tail_bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "active part at offset {} has an invalid tail index: {error}",
-                part.offset
-            ),
-        )
-    })?;
-    let catalog_len =
-        usize::try_from(tail.catalog_len).map_err(|_overflow| metadata_size_overflow())?;
-    let Some(entries_bytes) = catalog_len.checked_sub(META_LEN) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "active part at offset {} has an invalid catalog length",
-                part.offset
-            ),
-        ));
-    };
-    if !entries_bytes.is_multiple_of(ENTRY_LEN)
-        || catalog_len
-            .checked_add(TAIL_INDEX_LEN + MAGIC.len())
-            .is_none_or(|minimum_part_len| minimum_part_len > part.len)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "active part at offset {} has an invalid catalog length",
-                part.offset
-            ),
-        ));
-    }
-    let entry_count = entries_bytes / ENTRY_LEN;
-    entry_count
-        .checked_mul(size_of::<Entry>())
-        .ok_or_else(metadata_size_overflow)
-}
-
-pub(super) fn scan_report_metadata_bytes(report: &ScanReport) -> io::Result<usize> {
-    report
-        .parts
+pub(super) fn catalog_metadata_bytes(catalog: &Catalog) -> io::Result<usize> {
+    catalog
+        .entries
         .capacity()
-        .checked_mul(size_of::<PartRef>())
+        .checked_mul(size_of::<Entry>())
         .ok_or_else(metadata_size_overflow)
 }
 
@@ -250,10 +184,10 @@ pub(super) fn reserve_active_slots(
     active: &mut Arc<Vec<ActivePart>>,
     additional: usize,
     retained_metadata: usize,
-    report_metadata: usize,
+    transient_metadata: usize,
     previous_active_metadata: usize,
     limit: usize,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     let final_len = active
         .len()
         .checked_add(additional)
@@ -261,7 +195,7 @@ pub(super) fn reserve_active_slots(
     if additional != 0 {
         let clone_peak = previous_active_metadata
             .checked_add(retained_metadata)
-            .and_then(|peak| peak.checked_add(report_metadata))
+            .and_then(|peak| peak.checked_add(transient_metadata))
             .is_some_and(|peak| peak <= limit);
         if !clone_peak {
             return Err(metadata_limit_io(limit));
@@ -276,7 +210,7 @@ pub(super) fn reserve_active_slots(
             .ok_or_else(metadata_size_overflow)?;
         let admitted = previous_active_metadata
             .checked_add(retained_metadata)
-            .and_then(|peak| peak.checked_add(report_metadata))
+            .and_then(|peak| peak.checked_add(transient_metadata))
             .and_then(|peak| peak.checked_add(replacement_allocation))
             .is_some_and(|peak| peak <= limit);
         if !admitted {
@@ -289,12 +223,12 @@ pub(super) fn reserve_active_slots(
     let retained_after = active_metadata_bytes(active, active.capacity())?;
     if previous_active_metadata
         .checked_add(retained_after)
-        .and_then(|peak| peak.checked_add(report_metadata))
+        .and_then(|peak| peak.checked_add(transient_metadata))
         .is_none_or(|peak| peak > limit)
     {
         return Err(metadata_limit_io(limit));
     }
-    Ok(())
+    Ok(retained_after)
 }
 
 pub(super) fn metadata_size_overflow() -> io::Error {
