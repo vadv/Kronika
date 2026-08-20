@@ -325,7 +325,9 @@ fn build_selected_series(
             if raw_requested || needs_pg_health {
                 activity.insert(type_id, active_backend_points(&samples));
             }
-            active_samples.insert(type_id, samples);
+            if finding_requested {
+                active_samples.insert(type_id, samples);
+            }
         }
     }
     let combined_active = combined_active_points(&activity);
