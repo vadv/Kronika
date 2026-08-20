@@ -193,6 +193,28 @@ pub(super) fn chunk_dictionary(
     segment: &Segment,
     rows: &[(u64, Row)],
 ) -> Result<Dictionary, ApiError> {
+    let (dictionary, ids) = dictionary_for_chunk(segment, rows)?;
+    if let Some(unresolved) = ids
+        .iter()
+        .copied()
+        .find(|id| dictionary.resolve(*id).is_none())
+    {
+        return Err(unresolved_dictionary(unresolved));
+    }
+    Ok(dictionary)
+}
+
+pub(super) fn streaming_chunk_dictionary(
+    segment: &Segment,
+    rows: &[(u64, Row)],
+) -> Result<Dictionary, ApiError> {
+    dictionary_for_chunk(segment, rows).map(|(dictionary, _ids)| dictionary)
+}
+
+fn dictionary_for_chunk(
+    segment: &Segment,
+    rows: &[(u64, Row)],
+) -> Result<(Dictionary, HashSet<u64>), ApiError> {
     let ids: HashSet<u64> = rows
         .iter()
         .flat_map(|(_ordinal, row)| row.iter())
@@ -201,7 +223,8 @@ pub(super) fn chunk_dictionary(
             _ => None,
         })
         .collect();
-    resolved_dictionary(segment, &ids)
+    let dictionary = segment.dictionary_for(&ids)?;
+    Ok((dictionary, ids))
 }
 
 pub(super) fn resolved_dictionary(
@@ -224,6 +247,16 @@ fn unresolved_dictionary(id: u64) -> ApiError {
         std::io::ErrorKind::InvalidData,
         format!("unresolved dictionary id {id}"),
     )))
+}
+
+pub(super) fn validate_row_dictionary(row: &Row, dictionary: &Dictionary) -> Result<(), ApiError> {
+    if let Some(unresolved) = row.iter().find_map(|(_name, cell)| match cell {
+        Cell::StrId(id) if dictionary.resolve(*id).is_none() => Some(*id),
+        _ => None,
+    }) {
+        return Err(unresolved_dictionary(unresolved));
+    }
+    Ok(())
 }
 
 impl Plan {
