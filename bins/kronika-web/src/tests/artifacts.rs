@@ -4322,7 +4322,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
     );
     reset_relation_snapshot_operations();
     let first = stream(fixture.prepare(&base, None)).expect("first table page");
-    assert_eq!(relation_snapshot_operations(), (1, 1));
+    assert_eq!(relation_snapshot_operations(), (1, 1, 0));
     assert_eq!(
         row_records(&first)[0]["values"],
         serde_json::json!([2, 77, 2.0])
@@ -4338,7 +4338,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
 
     let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
         .expect("second table page");
-    assert_eq!(relation_snapshot_operations(), (2, 2));
+    assert_eq!(relation_snapshot_operations(), (2, 2, 0));
     assert_eq!(
         row_records(&second)[0]["values"],
         serde_json::json!([1, 77, 1.0])
@@ -5473,8 +5473,10 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&field=dml_total&field=insert_share_pct&by=derived.dml_total&direction=desc"
     );
+    reset_relation_snapshot_operations();
     let objects = stream(fixture.prepare(&format!("{base}&group=object&page_size=1"), None))
         .expect("derived relation page");
+    assert_eq!(relation_snapshot_operations().2, 2);
     let rows = relation_records(&objects);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["key"]["relid"], "13");

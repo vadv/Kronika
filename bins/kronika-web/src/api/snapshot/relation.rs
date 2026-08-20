@@ -2156,7 +2156,6 @@ pub(super) fn stream_history(
         let row = RelationRow {
             key: aggregate.key,
             metrics,
-            sort: None,
             source: aggregate.source,
             from: aggregate.from,
             to: aggregate.to,
@@ -2329,7 +2328,6 @@ fn stream_tablespace_history(
         let row = RelationRow {
             key: aggregate.key,
             metrics,
-            sort: None,
             source,
             from: aggregate.from,
             to: aggregate.to,
@@ -3213,7 +3211,6 @@ fn process_history_chunk(
 struct RelationRow {
     key: GroupKey,
     metrics: BTreeMap<String, Option<Metric>>,
-    sort: Option<Metric>,
     source: Source,
     from: Option<i64>,
     to: Option<i64>,
@@ -3268,45 +3265,41 @@ impl PreparedSnapshot {
         });
         let eligible = u64::try_from(aggregates.len()).unwrap_or(u64::MAX);
         let order_by = self.by.first().map(|name| sort_name(name));
-        let mut rows = aggregates
+        let mut ranked = aggregates
             .into_values()
             .map(|aggregate| {
-                let metrics = self
-                    .relation_fields
-                    .iter()
-                    .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
-                    .collect();
                 let sort = order_by.and_then(|name| {
                     aggregate
                         .metric(kind, group, name)
                         .or_else(|| aggregate.key.metric(name))
                 });
-                RelationRow {
-                    key: aggregate.key,
-                    metrics,
-                    sort,
-                    source: aggregate.source,
-                    from: aggregate.from,
-                    to: aggregate.to,
-                }
+                (aggregate, sort)
             })
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| compare_rows(left, right, self.direction));
+        ranked.sort_by(|(left, left_sort), (right, right_sort)| {
+            compare_relation_order(
+                &left.key,
+                left_sort.as_ref(),
+                &right.key,
+                right_sort.as_ref(),
+                self.direction,
+            )
+        });
         let start = match self.cursor {
-            Some(cursor) => rows
+            Some(cursor) => ranked
                 .iter()
-                .position(|row| {
-                    row.source.context_index == cursor.context_index
-                        && row.source.ordinal == cursor.ordinal
+                .position(|(aggregate, _sort)| {
+                    aggregate.source.context_index == cursor.context_index
+                        && aggregate.source.ordinal == cursor.ordinal
                 })
                 .ok_or(ApiError::BadCursor)?,
             None => 0,
         };
         let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
-        let end = start.saturating_add(page_size).min(rows.len());
-        let has_more = end < rows.len();
+        let end = start.saturating_add(page_size).min(ranked.len());
+        let has_more = end < ranked.len();
         let next_cursor = has_more.then(|| {
-            let source = rows[end].source;
+            let source = ranked[end].0.source;
             SnapshotCursor {
                 segment_id: self.anchor.id(),
                 active_position: self.anchor.active_position().unwrap_or(0),
@@ -3317,21 +3310,39 @@ impl PreparedSnapshot {
             .encode()
         });
         let returned = end.saturating_sub(start);
-        for row in &rows[start..end] {
+        let from = ranked.iter().filter_map(|(row, _sort)| row.from).min();
+        let to = ranked.iter().filter_map(|(row, _sort)| row.to).max();
+        for (aggregate, _sort) in ranked.drain(start..end) {
+            #[cfg(test)]
+            super::RELATION_PROJECTED_METRICS.set(
+                super::RELATION_PROJECTED_METRICS
+                    .get()
+                    .saturating_add(self.relation_fields.len()),
+            );
+            let metrics = self
+                .relation_fields
+                .iter()
+                .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
+                .collect();
+            let row = RelationRow {
+                key: aggregate.key,
+                metrics,
+                source: aggregate.source,
+                from: aggregate.from,
+                to: aggregate.to,
+            };
             if cancelled()
                 || !emit(relation_record(
                     section,
                     kind,
                     group,
-                    row,
+                    &row,
                     group == RelationGroup::Object,
                 )?)
             {
                 return Ok(());
             }
         }
-        let from = rows.iter().filter_map(|row| row.from).min();
-        let to = rows.iter().filter_map(|row| row.to).max();
         let _connected = emit(record(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
@@ -3548,13 +3559,19 @@ fn relation_values(metrics: &BTreeMap<String, Option<Metric>>) -> Map<String, Va
         .collect()
 }
 
-fn compare_rows(left: &RelationRow, right: &RelationRow, direction: Order) -> Ordering {
-    let left_value = left.sort.as_ref().and_then(Metric::order_value);
-    let right_value = right.sort.as_ref().and_then(Metric::order_value);
+fn compare_relation_order(
+    left_key: &GroupKey,
+    left_sort: Option<&Metric>,
+    right_key: &GroupKey,
+    right_sort: Option<&Metric>,
+    direction: Order,
+) -> Ordering {
+    let left_value = left_sort.and_then(Metric::order_value);
+    let right_value = right_sort.and_then(Metric::order_value);
     // The physical helper ranks greatest first and keeps nulls last.
     let ordered =
         compare_page_order_values(left_value.as_ref(), right_value.as_ref(), direction).reverse();
-    ordered.then_with(|| left.key.cmp(&right.key))
+    ordered.then_with(|| left_key.cmp(right_key))
 }
 
 fn counter_input(
@@ -4048,7 +4065,6 @@ mod tests {
         let row = RelationRow {
             key: key(7),
             metrics: BTreeMap::from([("idx_scan".to_owned(), Some(Metric::Integer(3)))]),
-            sort: None,
             source: source(4, 91),
             from: Some(10),
             to: Some(20),
@@ -4688,32 +4704,39 @@ mod tests {
 
     #[test]
     fn derived_hidden_sort_has_stable_key_ties_and_cursor_coordinates() {
-        let row = |datid, sort| RelationRow {
-            key: key(datid),
-            metrics: BTreeMap::new(),
-            sort,
-            source: source(usize::try_from(datid).unwrap(), u64::from(datid)),
-            from: Some(1),
-            to: Some(2),
-        };
-        let high = row(2, Some(Metric::Integer(20)));
-        let low = row(1, Some(Metric::Integer(10)));
-        assert_eq!(compare_rows(&high, &low, Order::Desc), Ordering::Less);
-        assert_eq!(compare_rows(&low, &high, Order::Asc), Ordering::Less);
-        let tied_left = row(1, Some(Metric::Integer(10)));
-        let tied_right = row(2, Some(Metric::Integer(10)));
+        let high_key = key(2);
+        let low_key = key(1);
+        let high = Metric::Integer(20);
+        let low = Metric::Integer(10);
         assert_eq!(
-            compare_rows(&tied_left, &tied_right, Order::Desc),
+            compare_relation_order(&high_key, Some(&high), &low_key, Some(&low), Order::Desc),
             Ordering::Less
         );
-        assert!(tied_left.metrics.is_empty(), "sort need not be projected");
+        assert_eq!(
+            compare_relation_order(&low_key, Some(&low), &high_key, Some(&high), Order::Asc),
+            Ordering::Less
+        );
+        let tied_left = key(1);
+        let tied_right = key(2);
+        let tied = Metric::Integer(10);
+        assert_eq!(
+            compare_relation_order(
+                &tied_left,
+                Some(&tied),
+                &tied_right,
+                Some(&tied),
+                Order::Desc,
+            ),
+            Ordering::Less
+        );
         assert_eq!(sort_name("derived.state_severity"), "state_severity");
 
+        let high_source = source(2, 2);
         let cursor = SnapshotCursor {
             segment_id: 7,
             active_position: 11,
-            context_index: high.source.context_index,
-            ordinal: high.source.ordinal,
+            context_index: high_source.context_index,
+            ordinal: high_source.ordinal,
             binding: 13,
         };
         assert_eq!(SnapshotCursor::parse(&cursor.encode()).unwrap(), cursor);

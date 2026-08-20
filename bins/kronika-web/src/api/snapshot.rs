@@ -378,6 +378,7 @@ thread_local! {
     static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
     static RELATION_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
     static PARTITION_PREDECESSOR_VISITS: Counter<usize> = const { Counter::new(0) };
+    static RELATION_PROJECTED_METRICS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
@@ -426,13 +427,15 @@ pub(crate) fn context_operations() -> (usize, usize, usize) {
 pub(crate) fn reset_relation_snapshot_operations() {
     RELATION_MOMENT_VISITS.set(0);
     PARTITION_PREDECESSOR_VISITS.set(0);
+    RELATION_PROJECTED_METRICS.set(0);
 }
 
 #[cfg(test)]
-pub(crate) fn relation_snapshot_operations() -> (usize, usize) {
+pub(crate) fn relation_snapshot_operations() -> (usize, usize, usize) {
     (
         RELATION_MOMENT_VISITS.get(),
         PARTITION_PREDECESSOR_VISITS.get(),
+        RELATION_PROJECTED_METRICS.get(),
     )
 }
 
