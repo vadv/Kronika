@@ -20,6 +20,7 @@ test("the resource table selects a resource per row and keeps the network pair i
   assert.match(source, /data-testid=\{`use-row-\$\{resource\.key\}`\}/)
   assert.match(source, /aria-expanded=\{open\}/)
   assert.match(source, /<SparkCell /)
-  assert.match(source, /cell\.second === undefined \? null : currentLaneReading/)
+  assert.match(source, /second === undefined \? null : seriesReading/)
+  assert.match(source, /lanePointsByLane\(lanePoints\)/)
 })
 

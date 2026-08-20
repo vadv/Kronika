@@ -811,8 +811,9 @@ function SystemEntityPanel({
     ? []
     : metricColumns.filter((column) => Object.hasOwn(selectedRow.values, physicalField(column, selectedRow.typeId))), [metricColumns, selectedRow])
   useEffect(() => {
-    if (selectedKey !== null && selectedRow === null && !tablesLoading) onSelectedKey(null)
-  }, [onSelectedKey, selectedKey, selectedRow, tablesLoading])
+    if (selectedKey !== null && selectedRow === null && !tablesLoading
+      && entityKeyOwnedBySection(selectedKey, section)) onSelectedKey(null)
+  }, [onSelectedKey, section, selectedKey, selectedRow, tablesLoading])
   useEffect(() => {
     if (selectedRow === null) return
     if (availableColumns.some((column) => column.field === selectedField)) return
@@ -968,6 +969,25 @@ function entityRowLabel(row: DataRow): string {
     .map((field) => rawText(value(row, field)))
     .filter((part): part is string => part !== null && part !== "")
   return parts.length === 0 ? entityRowKey(row) : parts.join(" · ")
+}
+
+// A selection key embeds its typeId; a panel owns the key only when one of
+// its section's layouts carries that typeId. Foreign panels leave the shared
+// selection alone, so several expanded ledger rows coexist.
+export function entityKeyOwnedBySection(key: string, section: string): boolean {
+  let typeId: string | null = null
+  if (key.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(key)
+      if (Array.isArray(parsed) && typeof parsed[1] === "string") typeId = parsed[1]
+    } catch {
+      typeId = null
+    }
+  } else {
+    typeId = key.split(":")[1] ?? null
+  }
+  if (typeId === null) return false
+  return registry.some((layout) => layout.typeId === typeId && layout.logicalName === section)
 }
 
 function entityRowKey(row: DataRow): string {
