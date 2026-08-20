@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use kronika_reader::{Cell, Segment};
 
 use crate::Index;
-use crate::build::{ActiveBackendSample, BuildError, INSTANCE_METADATA_TYPE_ID};
+use crate::build::{ActiveBackendSample, BuildError};
 use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
@@ -437,19 +437,19 @@ impl FindingBuilder {
 
     pub(super) fn find_active_backends(
         &self,
-        segment: &Segment,
         samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
+        postgres_cpus: Option<u32>,
         hits: &mut BTreeMap<u32, Vec<Finding>>,
-    ) -> Result<(), BuildError> {
+    ) {
         let requested: Vec<u32> = activity_layouts()
             .into_iter()
             .filter(|type_id| self.requested.contains(type_id))
             .collect();
         if requested.is_empty() {
-            return Ok(());
+            return;
         }
-        let Some(cpus) = postgres_cpus(segment)? else {
-            return Ok(());
+        let Some(cpus) = postgres_cpus else {
+            return;
         };
         let mut combined = BTreeMap::<i64, Option<ActiveSnapshot>>::new();
         for type_id in requested {
@@ -484,7 +484,6 @@ impl FindingBuilder {
                 });
             }
         }
-        Ok(())
     }
 
     pub(super) fn find_overall_health(
@@ -569,30 +568,4 @@ const fn cpu_columns() -> &'static [&'static str] {
 
 const fn activity_state_field(type_id: u32) -> u16 {
     if type_id == 1_001_001 { 7 } else { 8 }
-}
-
-fn postgres_cpus(segment: &Segment) -> Result<Option<u32>, BuildError> {
-    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
-        return Ok(None);
-    }
-    let mut value = None;
-    let mut rows = 0_u32;
-    segment.visit_rows(
-        INSTANCE_METADATA_TYPE_ID,
-        &["postgresql_enabled", "postgresql_effective_cpus"],
-        0,
-        usize::MAX,
-        |_ordinal, row| {
-            rows = rows.saturating_add(1);
-            value = match (
-                row.get("postgresql_enabled"),
-                row.get("postgresql_effective_cpus"),
-            ) {
-                (Some(Cell::Bool(true)), Some(Cell::U32(cpus))) if *cpus > 0 => Some(*cpus),
-                _ => None,
-            };
-            true
-        },
-    )?;
-    Ok((rows == 1).then_some(value).flatten())
 }

@@ -156,6 +156,7 @@ impl FindingBuilder {
         segment: &Segment,
         index: &Index,
         active_samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
+        postgres_cpus: Option<u32>,
     ) -> Result<Vec<SeriesBlock>, BuildError> {
         let mut hits = BTreeMap::<u32, Vec<Finding>>::new();
         for type_id in &self.requested {
@@ -173,7 +174,7 @@ impl FindingBuilder {
                 self.find_deadlocks(segment, type_id, &mut hits)?;
             }
         }
-        self.find_active_backends(segment, active_samples, &mut hits)?;
+        self.find_active_backends(active_samples, postgres_cpus, &mut hits);
         self.find_overall_health(index, &mut hits);
 
         Ok(hits

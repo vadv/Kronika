@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    HealthMetadata, combined_active_points, overall_points, postgres_health_points,
-    transaction_rate,
+    HealthMetadata, MetadataProjection, combined_active_points, overall_points,
+    postgres_health_points, transaction_rate,
 };
 use crate::{ActiveBackendPoint, HealthPoint};
 
@@ -25,6 +25,41 @@ fn metadata() -> HealthMetadata {
         postgresql_effective_cpus: Some(2),
         postgresql_interval_seconds: 30,
     }
+}
+
+#[test]
+fn shared_metadata_projection_only_exposes_valid_postgres_capacity() {
+    let projection = MetadataProjection {
+        rows: 1,
+        postgresql_enabled: Some(true),
+        postgresql_effective_cpus: Some(4),
+        ..MetadataProjection::default()
+    };
+    assert_eq!(projection.postgres_cpus(), Some(4));
+    assert_eq!(
+        MetadataProjection {
+            rows: 2,
+            ..projection
+        }
+        .postgres_cpus(),
+        None
+    );
+    assert_eq!(
+        MetadataProjection {
+            postgresql_enabled: Some(false),
+            ..projection
+        }
+        .postgres_cpus(),
+        None
+    );
+    assert_eq!(
+        MetadataProjection {
+            postgresql_effective_cpus: Some(0),
+            ..projection
+        }
+        .postgres_cpus(),
+        None
+    );
 }
 
 #[test]

@@ -55,6 +55,30 @@ pub(crate) struct ActiveBackendSample {
     pub(crate) count: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct MetadataProjection {
+    rows: u32,
+    timestamp: Option<i64>,
+    environment: Option<u32>,
+    boot_time: Option<i64>,
+    postgresql_enabled: Option<bool>,
+    postgresql_effective_cpus: Option<u32>,
+    postgresql_interval_seconds: Option<u64>,
+}
+
+impl MetadataProjection {
+    fn postgres_cpus(self) -> Option<u32> {
+        if self.rows == 1 && self.postgresql_enabled == Some(true) {
+            match self.postgresql_effective_cpus {
+                Some(cpus) if cpus > 0 => Some(cpus),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
 /// Why an allowlisted series could not be derived.
 #[derive(Debug)]
 pub enum BuildError {
@@ -128,13 +152,14 @@ fn predecessor_health_seed(
     }
 
     let segment = reader.open_segment(predecessor)?;
+    let metadata_projection = metadata_projection(&segment)?;
     let os = if needs_os && has_psi {
-        last_stall_snapshot(&segment)?
+        last_stall_snapshot(&segment, metadata_projection.as_ref())?
     } else {
         None
     };
     let postgres = if needs_postgres && has_metadata {
-        let metadata = health_metadata(&segment)?;
+        let metadata = health_metadata(&segment, metadata_projection.as_ref())?;
         if metadata.postgresql_enabled == Some(true) {
             let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
             for type_id in segment
@@ -210,15 +235,17 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
     let finder = FindingBuilder::new(segment, requested);
     let mut active_samples = BTreeMap::new();
+    let mut postgres_cpus = None;
     let mut index = build_selected_series(
         segment,
         requested,
         HealthSeed::default(),
         &mut active_samples,
+        &mut postgres_cpus,
     )?;
     index
         .blocks
-        .extend(finder.finish(segment, &index, &active_samples)?);
+        .extend(finder.finish(segment, &index, &active_samples, postgres_cpus)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
@@ -271,10 +298,17 @@ pub(crate) fn build_selected_from_reader(
         finder.observe_prior(&prior)?;
     }
     let mut active_samples = BTreeMap::new();
-    let mut index = build_selected_series(segment, requested, health_seed, &mut active_samples)?;
+    let mut postgres_cpus = None;
+    let mut index = build_selected_series(
+        segment,
+        requested,
+        health_seed,
+        &mut active_samples,
+        &mut postgres_cpus,
+    )?;
     index
         .blocks
-        .extend(finder.finish(segment, &index, &active_samples)?);
+        .extend(finder.finish(segment, &index, &active_samples, postgres_cpus)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
@@ -284,6 +318,7 @@ fn build_selected_series(
     requested: &[SeriesKey],
     health_seed: HealthSeed,
     active_samples: &mut BTreeMap<u32, Vec<ActiveBackendSample>>,
+    postgres_cpus: &mut Option<u32>,
 ) -> Result<Index, BuildError> {
     let mut requested = requested.to_vec();
     requested.sort_unstable();
@@ -295,9 +330,20 @@ fn build_selected_series(
             SeriesKind::OsHealth | SeriesKind::OverallHealth | SeriesKind::PostgresHealth
         )
     });
-    let metadata = wants_health.then(|| health_metadata(segment)).transpose()?;
+    let needs_metadata = wants_health
+        || requested
+            .iter()
+            .any(|key| key.kind == SeriesKind::Findings && pg_activity_layout(key.type_id));
+    let metadata_projection = needs_metadata
+        .then(|| metadata_projection(segment))
+        .transpose()?
+        .flatten();
+    *postgres_cpus = metadata_projection.and_then(MetadataProjection::postgres_cpus);
+    let metadata = wants_health
+        .then(|| health_metadata(segment, metadata_projection.as_ref()))
+        .transpose()?;
     let os_points = if wants_health {
-        health_points(segment, health_seed.os)?
+        health_points(segment, health_seed.os, metadata_projection.as_ref())?
     } else {
         Vec::new()
     };
@@ -385,21 +431,47 @@ struct HealthMetadata {
     postgresql_interval_seconds: u64,
 }
 
-fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
-    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
+const fn health_metadata(
+    segment: &Segment,
+    projection: Option<&MetadataProjection>,
+) -> Result<HealthMetadata, BuildError> {
+    let Some(projection) = projection else {
         return Ok(HealthMetadata {
             timestamp: segment.min_ts(),
             postgresql_enabled: None,
             postgresql_effective_cpus: None,
             postgresql_interval_seconds: 0,
         });
+    };
+    if projection.rows != 1 {
+        return Err(BuildError::InvalidMetadata);
     }
-    let mut facts = None;
-    let mut rows = 0_usize;
+    let (Some(timestamp), Some(postgresql_enabled), Some(postgresql_interval_seconds)) = (
+        projection.timestamp,
+        projection.postgresql_enabled,
+        projection.postgresql_interval_seconds,
+    ) else {
+        return Err(BuildError::InvalidMetadata);
+    };
+    Ok(HealthMetadata {
+        timestamp,
+        postgresql_enabled: Some(postgresql_enabled),
+        postgresql_effective_cpus: projection.postgresql_effective_cpus,
+        postgresql_interval_seconds,
+    })
+}
+
+fn metadata_projection(segment: &Segment) -> Result<Option<MetadataProjection>, ReaderError> {
+    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
+        return Ok(None);
+    }
+    let mut projection = MetadataProjection::default();
     segment.visit_rows(
         INSTANCE_METADATA_TYPE_ID,
         &[
             "ts",
+            "environment",
+            "btime",
             "postgresql_enabled",
             "postgresql_effective_cpus",
             "postgresql_interval_seconds",
@@ -407,35 +479,35 @@ fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
         0,
         usize::MAX,
         |_ordinal, row| {
-            rows = rows.saturating_add(1);
-            let capacity = match row.get("postgresql_effective_cpus") {
-                Some(Cell::U32(value)) => Some(*value),
-                Some(Cell::Null) => None,
-                _ => return true,
+            projection.rows = projection.rows.saturating_add(1);
+            projection.timestamp = match row.get("ts") {
+                Some(Cell::Ts(value)) => Some(*value),
+                _ => None,
             };
-            if let (
-                Some(Cell::Ts(timestamp)),
-                Some(Cell::Bool(postgresql_enabled)),
-                Some(Cell::U64(postgresql_interval_seconds)),
-            ) = (
-                row.get("ts"),
-                row.get("postgresql_enabled"),
-                row.get("postgresql_interval_seconds"),
-            ) {
-                facts = Some(HealthMetadata {
-                    timestamp: *timestamp,
-                    postgresql_enabled: Some(*postgresql_enabled),
-                    postgresql_effective_cpus: capacity,
-                    postgresql_interval_seconds: *postgresql_interval_seconds,
-                });
-            }
+            projection.environment = match row.get("environment") {
+                Some(Cell::U32(value)) => Some(*value),
+                _ => None,
+            };
+            projection.boot_time = match row.get("btime") {
+                Some(Cell::Ts(value)) => Some(*value),
+                _ => None,
+            };
+            projection.postgresql_enabled = match row.get("postgresql_enabled") {
+                Some(Cell::Bool(value)) => Some(*value),
+                _ => None,
+            };
+            projection.postgresql_effective_cpus = match row.get("postgresql_effective_cpus") {
+                Some(Cell::U32(value)) => Some(*value),
+                _ => None,
+            };
+            projection.postgresql_interval_seconds = match row.get("postgresql_interval_seconds") {
+                Some(Cell::U64(value)) => Some(*value),
+                _ => None,
+            };
             true
         },
     )?;
-    if rows != 1 {
-        return Err(BuildError::InvalidMetadata);
-    }
-    facts.ok_or(BuildError::InvalidMetadata)
+    Ok(Some(projection))
 }
 
 fn combined_active_points(
@@ -676,17 +748,18 @@ pub fn visit_health_points(
     keep_going: impl FnMut() -> bool,
     visitor: impl FnMut(HealthPoint) -> bool,
 ) -> Result<(), ReaderError> {
-    visit_health_points_with_seed(segment, None, keep_going, visitor)
+    visit_health_points_with_seed(segment, None, None, keep_going, visitor)
 }
 
 fn visit_health_points_with_seed(
     segment: &Segment,
     mut seed: Option<StallSnapshot>,
+    metadata: Option<&MetadataProjection>,
     keep_going: impl FnMut() -> bool,
     mut visitor: impl FnMut(HealthPoint) -> bool,
 ) -> Result<(), ReaderError> {
     let mut previous = None;
-    visit_stall_snapshots(segment, keep_going, |snapshot| {
+    visit_stall_snapshots(segment, metadata, keep_going, |snapshot| {
         if let Some(seed) = seed.take()
             && seed.identity == snapshot.identity
         {
@@ -707,6 +780,7 @@ fn visit_health_points_with_seed(
 
 fn visit_stall_snapshots(
     segment: &Segment,
+    metadata: Option<&MetadataProjection>,
     mut keep_going: impl FnMut() -> bool,
     mut visitor: impl FnMut(StallSnapshot) -> bool,
 ) -> Result<(), ReaderError> {
@@ -714,39 +788,10 @@ fn visit_stall_snapshots(
         return Ok(());
     }
     let mut running = true;
-    let mut environment = None;
-    let mut boot_time = None;
-    let metadata_type_id = if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
-        Some(INSTANCE_METADATA_TYPE_ID)
-    } else if segment.rows_of(INSTANCE_METADATA_V1_TYPE_ID).is_some() {
-        Some(INSTANCE_METADATA_V1_TYPE_ID)
-    } else {
-        None
-    };
-    if let Some(metadata_type_id) = metadata_type_id {
-        segment.visit_rows(
-            metadata_type_id,
-            &["environment", "btime"],
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                running = keep_going();
-                if !running {
-                    return false;
-                }
-                if let Some(Cell::U32(value)) = row.get("environment") {
-                    environment = Some(*value);
-                }
-                if let Some(Cell::Ts(value)) = row.get("btime") {
-                    boot_time = Some(*value);
-                }
-                true
-            },
-        )?;
-    }
-    if !running {
+    let Some(identity) = stall_snapshot_identity(segment, metadata, &mut keep_going)? else {
         return Ok(());
-    }
+    };
+    let environment = identity.environment;
     let mut snapshots: BTreeMap<i64, PartialStall> = BTreeMap::new();
     segment.visit_rows(
         OS_PSI_TYPE_ID,
@@ -799,10 +844,7 @@ fn visit_stall_snapshots(
         };
         if !visitor(StallSnapshot {
             timestamp,
-            identity: SnapshotIdentity {
-                environment,
-                boot_time,
-            },
+            identity,
             stall: current,
         }) {
             break;
@@ -811,10 +853,62 @@ fn visit_stall_snapshots(
     Ok(())
 }
 
-fn last_stall_snapshot(segment: &Segment) -> Result<Option<StallSnapshot>, ReaderError> {
+fn stall_snapshot_identity(
+    segment: &Segment,
+    metadata: Option<&MetadataProjection>,
+    mut keep_going: impl FnMut() -> bool,
+) -> Result<Option<SnapshotIdentity>, ReaderError> {
+    if let Some(metadata) = metadata {
+        return Ok(Some(SnapshotIdentity {
+            environment: metadata.environment,
+            boot_time: metadata.boot_time,
+        }));
+    }
+    let mut running = true;
+    let mut identity = SnapshotIdentity {
+        environment: None,
+        boot_time: None,
+    };
+    if let Some(metadata_type_id) = segment
+        .rows_of(INSTANCE_METADATA_TYPE_ID)
+        .map(|_| INSTANCE_METADATA_TYPE_ID)
+        .or_else(|| {
+            segment
+                .rows_of(INSTANCE_METADATA_V1_TYPE_ID)
+                .map(|_| INSTANCE_METADATA_V1_TYPE_ID)
+        })
+    {
+        segment.visit_rows(
+            metadata_type_id,
+            &["environment", "btime"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                running = keep_going();
+                if !running {
+                    return false;
+                }
+                if let Some(Cell::U32(value)) = row.get("environment") {
+                    identity.environment = Some(*value);
+                }
+                if let Some(Cell::Ts(value)) = row.get("btime") {
+                    identity.boot_time = Some(*value);
+                }
+                true
+            },
+        )?;
+    }
+    Ok(running.then_some(identity))
+}
+
+fn last_stall_snapshot(
+    segment: &Segment,
+    metadata: Option<&MetadataProjection>,
+) -> Result<Option<StallSnapshot>, ReaderError> {
     let mut last = None;
     visit_stall_snapshots(
         segment,
+        metadata,
         || true,
         |snapshot| {
             last = Some(snapshot);
@@ -827,11 +921,13 @@ fn last_stall_snapshot(segment: &Segment) -> Result<Option<StallSnapshot>, Reade
 fn health_points(
     segment: &Segment,
     seed: Option<StallSnapshot>,
+    metadata: Option<&MetadataProjection>,
 ) -> Result<Vec<HealthPoint>, ReaderError> {
     let mut points = Vec::new();
     visit_health_points_with_seed(
         segment,
         seed,
+        metadata,
         || true,
         |point| {
             points.push(point);
