@@ -5,7 +5,8 @@ import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
-import { EntityTable, type EntityColumn } from "./entity-table"
+import { DetailList, DetailRow } from "./detail-list"
+import { cellAriaValue, EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
@@ -884,7 +885,9 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     </div>
-    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
+      <DetailList>{columns.filter((column) => (column.available?.(selectedRow) ?? true) && value(selectedRow, column.field) !== null).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{column.render === undefined ? cellAriaValue(value(selectedRow, column.field), column, locale, t) : column.render(selectedRow)}</DetailRow>)}</DetailList>
+      <InspectorChartPortal identity={`system:${section}:${entityRowKey(selectedRow)}:history`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start px-[7px] pt-1.5">
         {mountPair
           ? <div className="system-history-selector flex max-w-full overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
@@ -925,7 +928,8 @@ function SystemEntityPanel({
             t={t}
             unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
           />}
-    </section></InspectorPortal>}
+      </section></InspectorChartPortal>
+    </aside></InspectorPortal>}
   </section>
 }
 

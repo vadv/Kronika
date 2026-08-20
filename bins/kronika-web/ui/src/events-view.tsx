@@ -18,7 +18,7 @@ import {
 } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
-import { InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -191,7 +191,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       </section>}
       <DetailList>{findingDetailFields(row, finding).map(([field, cell]) => <DetailRow key={field} term={eventFieldLabel(field, t)}>{eventValue(finding, field, cell, locale, t)}</DetailRow>)}</DetailList>
     </>}
-    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
+    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <InspectorChartPortal identity={`event:${findingKey(finding)}:history`}><SeriesChart
       cursor={cursor}
       durationAxis={metric.unit === "milliseconds"}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
@@ -204,7 +204,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
       t={t}
       unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
-    />}
+    /></InspectorChartPortal>}
   </aside>
 }
 

@@ -2021,20 +2021,35 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.equal(landscape.numeric[0]?.text, "3")
     assert.equal(landscape.numeric[1]?.text, "6,29 с")
     assert.equal(landscape.numeric[2]?.text, "12,6 с")
-    assert.equal(landscape.chart.current, "6,29 с")
+    assert.equal(landscape.chart.current, "")
     assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
-    assert.doesNotMatch(landscape.chart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
+    assert.equal(landscape.chart.label, "")
+
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .u-over') !== null`, "the selected event Chart")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    const eventPreviewHeight = await cdp.evaluate(`document.querySelector('.timeline-preview')?.getBoundingClientRect().height ?? null`)
+    if (eventPreviewHeight !== null) assert.ok(Math.abs(eventPreviewHeight - 124) <= .5)
+    const eventChart = await cdp.evaluate(`(() => ({
+      current: document.querySelector('.inspector-chart-slot .chart-current')?.textContent.trim() ?? '',
+      label: document.querySelector('.inspector-chart-slot .uplot-host')?.getAttribute('aria-label') ?? '',
+    }))()`)
+    assert.equal(eventChart.current, "6,29 с")
+    assert.doesNotMatch(eventChart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
 
     const hoverPoint = await cdp.evaluate(`(() => {
-      const bounds = document.querySelector('[data-testid="event-detail"] .u-over').getBoundingClientRect()
+      const bounds = document.querySelector('.inspector-chart-slot .u-over').getBoundingClientRect()
       return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
     })()`)
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
-    await cdp.waitFor(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
-    const hover = await cdp.evaluate(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]').textContent`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
+    const hover = await cdp.evaluate(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]').textContent`)
     assert.match(hover, /6,29\sс/u)
     assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
+
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the selected event Detail")
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
@@ -2194,7 +2209,13 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "comparison clear")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host canvas') !== null`, "the aggregate history chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') !== null`, "the aggregate detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host') === null`), true)
+    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
+    assert.match(detailText, /fast_ssd/)
+    assert.match(detailText, /1663/)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .pg-metric-history .uplot-host canvas') !== null`, "the aggregate history Chart")
     await settleLayout(cdp)
 
     const historyRequests = requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("group"))
@@ -2207,30 +2228,30 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.equal(query.get("type_id"), null)
     assert.deepEqual(query.getAll("field"), ["index_count", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"])
     const layout = await cdp.evaluate(`(() => {
-      const detail = document.querySelector('[data-testid="pg-relation-detail"]')
-      const chart = detail.querySelector('.uplot-host')
-      const plot = detail.querySelector('.u-over')
+      const slot = document.querySelector('.inspector-chart-slot')
+      const chart = slot.querySelector('.uplot-host')
+      const plot = slot.querySelector('.u-over')
       const table = document.querySelector('[data-testid="pg-indexes-table"]')
-      const selectors = [...detail.querySelectorAll('.history-selector button')]
+      const selectors = [...slot.querySelectorAll('.history-selector button')]
       return {
         chartWidth: chart.getBoundingClientRect().width,
-        detailWidth: detail.getBoundingClientRect().width,
+        slotWidth: slot.getBoundingClientRect().width,
         plotWidth: plot.getBoundingClientRect().width,
         tableWidth: table.getBoundingClientRect().width,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         selectors: selectors.map((button) => button.textContent),
       }
     })()`)
-    assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
+    assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.slotWidth, JSON.stringify(layout))
     assert.ok(layout.plotWidth > 176, JSON.stringify(layout))
     assert.ok(layout.tableWidth >= 500, JSON.stringify(layout))
     assert.equal(layout.overflow, false)
     assert.equal(layout.selectors.length, 6)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"] [data-testid="pg-relation-detail"] .uplot-host canvas') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand, [role="dialog"].uplot-expanded') === null`), true)
-    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
-    assert.match(detailText, /fast_ssd/)
-    assert.match(detailText, /1663/)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the aggregate Detail restored")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-drill"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get('level') === null && new URL(location.href).searchParams.get('tablespace_oid') === '1663'`, "the exact tablespace member URL")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the tablespace members")
@@ -3505,7 +3526,12 @@ test("production System projections show exact CPU memory and device readings", 
     assert.equal(sdb["Write latency"], "—")
 
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats"] .entity-row')].find((row) => row.textContent.includes('sda'))).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"]') !== null`, "the device detail chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-detail"] dl > .detail-row') !== null`, "the device Detail facts")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-os_diskstats-detail"] .uplot-host') === null`), true)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="system-os_diskstats-history"]') !== null`, "the device history Chart")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats-history"] .system-history-selector button')].find((button) => button.textContent.includes('Read latency'))).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"] .chart-current')?.textContent === "5 ms"`, "the selected read-latency value", 15_000)
     await hoverContractChart(cdp, "system-os_diskstats-history")
