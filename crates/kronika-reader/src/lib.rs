@@ -191,7 +191,7 @@ impl Reader {
     ///
     /// Returns an I/O error when the directory cannot be walked.
     pub fn segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, true)
+        self.list_segments(range, true, false)
     }
 
     /// List segment catalogs without reading finished section bodies.
@@ -206,21 +206,48 @@ impl Reader {
     /// Returns an I/O error when the directory or a segment catalog cannot be
     /// read safely.
     pub fn catalog_segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false)
+        self.list_segments(range, false, false)
+    }
+
+    /// List segment catalogs in `range` plus the closest finished predecessor.
+    ///
+    /// The predecessor is selected from scan summaries before section catalogs
+    /// are opened. This supports bounded counter lookback without opening every
+    /// older segment merely to locate the adjacent sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory or a selected segment catalog
+    /// cannot be read safely.
+    pub fn catalog_segments_with_predecessor<R: RangeBounds<i64>>(
+        &self,
+        range: R,
+    ) -> Result<Listing, ReaderError> {
+        self.list_segments(range, false, true)
     }
 
     fn list_segments<R: RangeBounds<i64>>(
         &self,
         range: R,
         validate_bodies: bool,
+        include_predecessor: bool,
     ) -> Result<Listing, ReaderError> {
         let mut scan = self.dir.scan_catalogs()?;
         let mut segments = Vec::new();
         let finished = Arc::clone(&scan.finished);
-        for unit in finished
-            .iter()
-            .filter(|unit| overlaps(&range, unit.summary.min_ts, unit.summary.max_ts))
-        {
+        let predecessor = include_predecessor
+            .then(|| {
+                finished
+                    .iter()
+                    .filter(|unit| before_start(&range, unit.summary.max_ts))
+                    .max_by_key(|unit| (unit.summary.max_ts, unit.address.id))
+                    .map(|unit| unit.address.id)
+            })
+            .flatten();
+        for unit in finished.iter().filter(|unit| {
+            overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
+                || predecessor == Some(unit.address.id)
+        }) {
             if validate_bodies && !self.dir.validate_finished(&mut scan, unit)? {
                 continue;
             }
@@ -357,6 +384,14 @@ fn overlaps<R: RangeBounds<i64>>(range: &R, min_ts: i64, max_ts: i64) -> bool {
         }
     };
     min_ts.max(start) <= max_ts.min(end)
+}
+
+fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
+    match range.start_bound() {
+        Bound::Unbounded => false,
+        Bound::Included(start) => max_ts < *start,
+        Bound::Excluded(start) => max_ts <= *start,
+    }
 }
 
 #[cfg(test)]

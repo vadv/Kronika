@@ -1,4 +1,4 @@
-use super::overlaps;
+use super::{before_start, overlaps};
 
 use std::collections::HashSet;
 
@@ -55,6 +55,17 @@ fn an_unbounded_range_takes_every_segment() {
 fn a_segment_entirely_before_the_range_is_out() {
     assert!(!overlaps(&(21..), MIN, MAX));
     assert!(!overlaps(&(21..30), MIN, MAX));
+}
+
+#[test]
+fn predecessor_bounds_follow_range_inclusivity() {
+    assert!(before_start(&(21..), 20));
+    assert!(!before_start(&(21..), 21));
+    assert!(before_start(
+        &(std::ops::Bound::Excluded(20), std::ops::Bound::Unbounded),
+        20
+    ));
+    assert!(!before_start(&(..), 20));
 }
 
 #[test]
@@ -585,5 +596,17 @@ fn range_discovery_checks_bodies_only_after_selection() {
     assert!(
         selected.rows(OsTopology::CONTRACT.type_id.get()).is_err(),
         "the production row path must reject the damaged selected body"
+    );
+
+    let with_predecessor = reader
+        .catalog_segments_with_predecessor(200..=200)
+        .expect("bounded catalogs with predecessor");
+    assert_eq!(
+        with_predecessor
+            .segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        vec![first_address.id.get(), second_address.id.get()]
     );
 }
