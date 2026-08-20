@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use kronika_reader::{Cell, Segment, SegmentRef};
 
 use crate::Index;
-use crate::build::BuildError;
+use crate::build::{ActiveBackendSample, BuildError};
 use crate::findings::{
     Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK, MAX_LOG_ERROR_CATEGORY,
     PG_LOG_ERRORS_TYPE_ID,
@@ -155,6 +155,7 @@ impl FindingBuilder {
         mut self,
         segment: &Segment,
         index: &Index,
+        active_samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
     ) -> Result<Vec<SeriesBlock>, BuildError> {
         let mut hits = BTreeMap::<u32, Vec<Finding>>::new();
         for type_id in &self.requested {
@@ -172,7 +173,7 @@ impl FindingBuilder {
                 self.find_deadlocks(segment, type_id, &mut hits)?;
             }
         }
-        self.find_active_backends(segment, &mut hits)?;
+        self.find_active_backends(segment, active_samples, &mut hits)?;
         self.find_overall_health(index, &mut hits);
 
         Ok(hits

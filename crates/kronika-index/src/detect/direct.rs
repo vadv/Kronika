@@ -1,11 +1,11 @@
 //! Explicit known-bad comparisons.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use kronika_reader::{Cell, Resolved, Segment};
+use kronika_reader::{Cell, Segment};
 
 use crate::Index;
-use crate::build::{BuildError, INSTANCE_METADATA_TYPE_ID};
+use crate::build::{ActiveBackendSample, BuildError, INSTANCE_METADATA_TYPE_ID};
 use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
@@ -438,6 +438,7 @@ impl FindingBuilder {
     pub(super) fn find_active_backends(
         &self,
         segment: &Segment,
+        samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
         hits: &mut BTreeMap<u32, Vec<Finding>>,
     ) -> Result<(), BuildError> {
         let requested: Vec<u32> = activity_layouts()
@@ -452,14 +453,20 @@ impl FindingBuilder {
         };
         let mut combined = BTreeMap::<i64, Option<ActiveSnapshot>>::new();
         for type_id in requested {
-            for (timestamp, row_ordinal, count) in active_snapshots(segment, type_id)? {
+            let Some(samples) = samples.get(&type_id) else {
+                continue;
+            };
+            for sample in samples {
+                let Some(row_ordinal) = sample.first_active_ordinal else {
+                    continue;
+                };
                 combined
-                    .entry(timestamp)
+                    .entry(sample.timestamp)
                     .and_modify(|sample| *sample = None)
                     .or_insert(Some(ActiveSnapshot {
                         type_id,
                         row_ordinal,
-                        count,
+                        count: sample.count,
                     }));
             }
         }
@@ -588,46 +595,4 @@ fn postgres_cpus(segment: &Segment) -> Result<Option<u32>, BuildError> {
         },
     )?;
     Ok((rows == 1).then_some(value).flatten())
-}
-
-fn active_snapshots(segment: &Segment, type_id: u32) -> Result<Vec<(i64, u32, u32)>, BuildError> {
-    if segment.rows_of(type_id).is_none() {
-        return Ok(Vec::new());
-    }
-    let mut ids = HashSet::new();
-    let mut samples = Vec::new();
-    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |ordinal, row| {
-        if let (Some(Cell::Ts(timestamp)), Some(Cell::StrId(id)), Some(ordinal)) =
-            (row.get("ts"), row.get("state"), u32::try_from(ordinal).ok())
-        {
-            ids.insert(*id);
-            samples.push((*timestamp, *id, ordinal));
-        }
-        true
-    })?;
-    let dictionary = segment.dictionary_for(&ids)?;
-    let mut active_ids = HashSet::new();
-    for id in ids {
-        match dictionary.resolve(id) {
-            Some(Resolved::Str(b"active")) => {
-                active_ids.insert(id);
-            }
-            Some(Resolved::Str(_) | Resolved::Blob(_)) => {}
-            None => return Err(BuildError::UnresolvedState(id)),
-        }
-    }
-    let mut snapshots = BTreeMap::<i64, (Option<u32>, u32)>::new();
-    for (timestamp, state, ordinal) in samples {
-        if active_ids.contains(&state) {
-            let sample = snapshots.entry(timestamp).or_default();
-            sample.0 = sample.0.or(Some(ordinal));
-            sample.1 = sample.1.saturating_add(1);
-        }
-    }
-    Ok(snapshots
-        .into_iter()
-        .filter_map(|(timestamp, (ordinal, count))| {
-            ordinal.map(|ordinal| (timestamp, ordinal, count))
-        })
-        .collect())
 }

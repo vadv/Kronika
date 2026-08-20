@@ -48,6 +48,13 @@ struct StallSnapshot {
     stall: Option<Stall>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActiveBackendSample {
+    pub(crate) timestamp: i64,
+    pub(crate) first_active_ordinal: Option<u32>,
+    pub(crate) count: u32,
+}
+
 /// Why an allowlisted series could not be derived.
 #[derive(Debug)]
 pub enum BuildError {
@@ -134,7 +141,10 @@ fn predecessor_health_seed(
                 .type_ids()
                 .filter(|type_id| pg_activity_layout(*type_id))
             {
-                activity.insert(type_id, active_backend_points(&segment, type_id)?);
+                activity.insert(
+                    type_id,
+                    active_backend_points(&active_backend_samples(&segment, type_id)?),
+                );
             }
             postgres_health_points(&metadata, &combined_active_points(&activity))
                 .and_then(|points| points.last().copied())
@@ -199,8 +209,16 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 /// Returns a production-reader or dictionary-resolution failure.
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
     let finder = FindingBuilder::new(segment, requested);
-    let mut index = build_selected_series(segment, requested, HealthSeed::default())?;
-    index.blocks.extend(finder.finish(segment, &index)?);
+    let mut active_samples = BTreeMap::new();
+    let mut index = build_selected_series(
+        segment,
+        requested,
+        HealthSeed::default(),
+        &mut active_samples,
+    )?;
+    index
+        .blocks
+        .extend(finder.finish(segment, &index, &active_samples)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
@@ -252,8 +270,11 @@ pub(crate) fn build_selected_from_reader(
         let prior = reader.open_segment(&prior_ref)?;
         finder.observe_prior(&prior)?;
     }
-    let mut index = build_selected_series(segment, requested, health_seed)?;
-    index.blocks.extend(finder.finish(segment, &index)?);
+    let mut active_samples = BTreeMap::new();
+    let mut index = build_selected_series(segment, requested, health_seed, &mut active_samples)?;
+    index
+        .blocks
+        .extend(finder.finish(segment, &index, &active_samples)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
@@ -262,6 +283,7 @@ fn build_selected_series(
     segment: &Segment,
     requested: &[SeriesKey],
     health_seed: HealthSeed,
+    active_samples: &mut BTreeMap<u32, Vec<ActiveBackendSample>>,
 ) -> Result<Index, BuildError> {
     let mut requested = requested.to_vec();
     requested.sort_unstable();
@@ -294,8 +316,16 @@ fn build_selected_series(
             kind: SeriesKind::PgActiveBackends,
             type_id,
         });
-        if raw_requested || needs_pg_health {
-            activity.insert(type_id, active_backend_points(segment, type_id)?);
+        let finding_requested = requested.contains(&SeriesKey {
+            kind: SeriesKind::Findings,
+            type_id,
+        });
+        if raw_requested || needs_pg_health || finding_requested {
+            let samples = active_backend_samples(segment, type_id)?;
+            if raw_requested || needs_pg_health {
+                activity.insert(type_id, active_backend_points(&samples));
+            }
+            active_samples.insert(type_id, samples);
         }
     }
     let combined_active = combined_active_points(&activity);
@@ -565,13 +595,23 @@ pub(crate) fn integer_as_f64(value: i128) -> Option<f64> {
     }))
 }
 
-fn active_backend_points(
+fn active_backend_points(samples: &[ActiveBackendSample]) -> Vec<ActiveBackendPoint> {
+    samples
+        .iter()
+        .map(|sample| ActiveBackendPoint {
+            timestamp: sample.timestamp,
+            count: sample.count,
+        })
+        .collect()
+}
+
+fn active_backend_samples(
     segment: &Segment,
     type_id: u32,
-) -> Result<Vec<ActiveBackendPoint>, BuildError> {
+) -> Result<Vec<ActiveBackendSample>, BuildError> {
     let mut ids = HashSet::new();
     let mut samples = Vec::new();
-    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |_ordinal, row| {
+    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |ordinal, row| {
         let Some(Cell::Ts(timestamp)) = row.get("ts") else {
             return true;
         };
@@ -582,7 +622,7 @@ fn active_backend_points(
             }
             _ => None,
         };
-        samples.push((*timestamp, state));
+        samples.push((*timestamp, state, u32::try_from(ordinal).ok()));
         true
     })?;
     let dictionary = segment.dictionary_for(&ids)?;
@@ -597,16 +637,23 @@ fn active_backend_points(
         }
     }
 
-    let mut counts = BTreeMap::<i64, u32>::new();
-    for (timestamp, state) in samples {
-        let count = counts.entry(timestamp).or_default();
+    let mut counts = BTreeMap::<i64, (Option<u32>, u32)>::new();
+    for (timestamp, state, ordinal) in samples {
+        let sample = counts.entry(timestamp).or_default();
         if state.is_some_and(|id| active_ids.contains(&id)) {
-            *count = count.saturating_add(1);
+            sample.0 = sample.0.or(ordinal);
+            sample.1 = sample.1.saturating_add(1);
         }
     }
     Ok(counts
         .into_iter()
-        .map(|(timestamp, count)| ActiveBackendPoint { timestamp, count })
+        .map(
+            |(timestamp, (first_active_ordinal, count))| ActiveBackendSample {
+                timestamp,
+                first_active_ordinal,
+                count,
+            },
+        )
         .collect())
 }
 

@@ -747,6 +747,58 @@ fn overall_uses_fresh_predecessor_postgres_without_copying_its_point() {
 }
 
 #[test]
+fn activity_series_and_finding_share_the_same_active_snapshot() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time: SEGMENT_ID - 1_000_000,
+            environment: 0,
+            postgres: Some((SEGMENT_ID + 1_000_000, 5)),
+        },
+        &[(SEGMENT_ID, [Some(0), Some(0), Some(0)])],
+    );
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Finished);
+    let selected =
+        resource(directory.path(), &reader, &segment, "pg_stat_activity").expect("activity index");
+    let active = selected
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            SeriesBlock::PgActiveBackends { points, .. } => Some(points),
+            _ => None,
+        })
+        .expect("active series");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].timestamp, SEGMENT_ID + 1_000_000);
+    assert_eq!(active[0].count, 5);
+    let finding = selected
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            SeriesBlock::Findings(block) if block.type_id == 1_001_004 => block.findings.first(),
+            _ => None,
+        })
+        .expect("active overload finding");
+    assert_eq!(finding.kind, FindingKind::KnownBad);
+    assert_eq!(finding.field_ordinal, 8);
+    assert_eq!(finding.row_ordinal, 0);
+    assert_eq!(finding.timestamp, SEGMENT_ID + 1_000_000);
+}
+
+#[test]
 fn unusable_nearest_inputs_block_older_health_values() {
     let directory = tempfile::tempdir().expect("tempdir");
     let data_root = DataRoot::open(directory.path()).expect("data root");
