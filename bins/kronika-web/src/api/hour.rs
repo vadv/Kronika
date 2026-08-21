@@ -49,6 +49,7 @@ pub(super) fn prepare(
     root: &Path,
     request: HourRequest,
     configured_sources: u32,
+    synthetic_demo: bool,
 ) -> Result<PreparedHour, ApiError> {
     let started = std::time::Instant::now();
     let requested = request.window;
@@ -86,6 +87,7 @@ pub(super) fn prepare(
             },
             window,
             configured_sources,
+            synthetic_demo,
         )
     });
     Ok(PreparedHour {

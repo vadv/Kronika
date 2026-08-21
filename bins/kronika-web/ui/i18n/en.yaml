@@ -1,5 +1,6 @@
 # Flat source dictionary. Values are quoted so validation stays deterministic.
 app.title: "KRONIKA"
+demo.synthetic: "DEMO · synthetic data"
 auth.title: "Sign in to Kronika"
 auth.subtitle: "Browser session. Password is not saved."
 auth.user: "Username"

@@ -876,7 +876,7 @@ test("timeline source presence does not trust a straddling segment inventory", a
   globalThis.fetch = async () => ndjson([
     { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
     {
-      record: "catalog", from: String(START), to: String(START + 3_600_000_000 - 1),
+      record: "catalog", from: String(START), to: String(START + 3_600_000_000 - 1), demo: "synthetic",
       source_families: [{ name: "postgresql", configured: false, present: true, metrics_present: false }],
     },
     {
@@ -889,6 +889,7 @@ test("timeline source presence does not trust a straddling segment inventory", a
     assert.deepEqual(timeline.availableSections, ["pg_stat_database"])
     assert.equal(timeline.postgresqlConfigured, false)
     assert.equal(timeline.postgresqlPresent, false)
+    assert.equal(timeline.syntheticDemo, true)
   } finally {
     globalThis.fetch = originalFetch
   }

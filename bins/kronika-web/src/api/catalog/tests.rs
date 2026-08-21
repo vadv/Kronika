@@ -1,4 +1,4 @@
-use kronika_reader::SegmentSection;
+use kronika_reader::{Listing, SegmentSection};
 use serde_json::json;
 
 use super::{
@@ -7,6 +7,7 @@ use super::{
 };
 use crate::api::CachePolicy;
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
+use crate::route::Window;
 
 #[test]
 fn catalog_is_private_and_revalidated() {
@@ -72,4 +73,29 @@ fn catalog_reports_configured_and_present_source_families_separately() {
     assert_eq!(metric_source_bit(1_005_004), Some(SOURCE_POSTGRESQL));
     assert_eq!(metric_source_bit(2_001_001), None);
     assert_eq!(source_bit(1_021_001), None);
+}
+
+#[test]
+fn catalog_labels_only_explicit_synthetic_demo_data() {
+    let catalog = PreparedCatalog::from_listing(
+        Listing {
+            segments: Vec::new(),
+            warnings: Vec::new(),
+        },
+        Window::default(),
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        true,
+    );
+    let mut records = Vec::new();
+    catalog
+        .stream(
+            &mut |record| {
+                records.push(record);
+                true
+            },
+            &|| false,
+        )
+        .expect("catalog stream");
+    let header: serde_json::Value = serde_json::from_slice(&records[0]).expect("catalog record");
+    assert_eq!(header["demo"], "synthetic");
 }

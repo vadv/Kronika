@@ -44,6 +44,8 @@ pub(crate) struct Config {
     pub(crate) cookie_secure: bool,
     /// Explicit source bitset persisted in every derived index.
     pub(crate) sources: u32,
+    /// Whether the server exposes the bundled synthetic demo dataset.
+    pub(crate) synthetic_demo: bool,
 }
 
 /// Credentials accepted directly and used to derive browser sessions.
@@ -86,6 +88,7 @@ impl Config {
         let raw_cookie_secure = std::env::var("KRONIKA_WEB_COOKIE_SECURE").ok();
         let cookie_secure = cookie_secure(raw_cookie_secure.as_deref())?;
         let sources = source_set(std::env::var("KRONIKA_WEB_SOURCES").ok())?;
+        let synthetic_demo = synthetic_demo(std::env::var("KRONIKA_WEB_DEMO").ok().as_deref())?;
         Ok(Self {
             data_root,
             listen,
@@ -93,7 +96,16 @@ impl Config {
             authentication_required,
             cookie_secure,
             sources,
+            synthetic_demo,
         })
+    }
+}
+
+fn synthetic_demo(raw: Option<&str>) -> Result<bool> {
+    match raw {
+        None => Ok(false),
+        Some("synthetic") => Ok(true),
+        Some(value) => anyhow::bail!("KRONIKA_WEB_DEMO={value:?} is not synthetic"),
     }
 }
 

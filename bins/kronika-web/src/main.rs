@@ -310,9 +310,10 @@ async fn streamed(
 ) -> Response<WebBody> {
     blocking_stream_with_replay(
         move || {
-            api::prepare(
+            api::prepare_with_demo(
                 &config.data_root,
                 config.sources,
+                config.synthetic_demo,
                 route.clone(),
                 if_none_match.as_deref(),
             )

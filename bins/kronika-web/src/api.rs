@@ -206,17 +206,33 @@ impl From<serde_json::Error> for ApiError {
 }
 
 /// Perform request validation and initial I/O outside the Tokio worker.
+#[cfg(test)]
 pub(crate) fn prepare(
     root: &Path,
     sources: u32,
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
+    prepare_with_demo(root, sources, false, route, if_none_match)
+}
+
+/// Prepare a response with the deployment identity exposed in its catalog.
+pub(crate) fn prepare_with_demo(
+    root: &Path,
+    sources: u32,
+    synthetic_demo: bool,
+    route: Route,
+    if_none_match: Option<&str>,
+) -> Result<Prepared, ApiError> {
     match route {
-        Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
+        Route::Catalog(window) => {
+            catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
+        }
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
-        Route::Hour(request) => hour::prepare(root, request, sources).map(Prepared::Hour),
+        Route::Hour(request) => {
+            hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
+        }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, *request).map(Prepared::Snapshot),
     }
