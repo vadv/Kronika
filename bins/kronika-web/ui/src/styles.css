@@ -653,6 +653,19 @@
 .timeline-lanes .lane-label:hover .label-help,
 .timeline-lanes .label-help:focus-within { opacity: 1; }
 
+/* A ledger row is one click target — the row itself. Its lanes are explained
+   through their own names: the term carries a dotted rule and the sign that
+   would have sat in every cell is an invisible target over it, so the row has
+   no second mark to hit and the keyboard still reaches the help. */
+.use-lane > .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.use-lane > .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
+.use-lane > .label-help > .help-dot:focus-visible { opacity: 1; }
+
+/* The column names carry what the ledger's three readings mean. */
+.use-header-cell .help-dot { opacity: .45; transition: opacity 120ms var(--ease-out); }
+.use-header-cell:hover .help-dot,
+.use-header-cell .help-dot:focus-visible { opacity: 1; }
+
 /* The summary help marks stay reachable but quiet until pointed at. */
 .process-summary-inline .label-help { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .process-summary-inline div:hover > .label-help,
