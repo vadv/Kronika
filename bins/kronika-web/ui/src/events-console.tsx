@@ -9,6 +9,7 @@ import type { Translate } from "./help"
 import { compact, humanDuration, rawText, type Locale } from "./model"
 
 const MINUTE_US = 60_000_000
+const TIER_ROWS = 100
 const RAW_PAGE = 20
 
 const TIER_DOT: Readonly<Record<EventTier, string>> = {
@@ -118,21 +119,32 @@ export function EventStrip({ entry, hour, onCursor, t }: {
   readonly t: Translate
 }) {
   const peak = Math.max(...entry.minutes, 1)
-  return <span className="flex h-[20px] w-[120px] flex-none items-end gap-0" data-testid="event-strip">
-    {entry.minutes.map((count, minute) => {
-      const height = count === 0 ? 1 : Math.max(2, Math.round((count / peak) * 20))
-      return <button
-        aria-label={t("events.strip.minute", { minute, count })}
-        className="relative block h-full w-[2px] flex-none cursor-pointer border-0 bg-transparent p-0"
+  const columns = entry.minutes.length
+  return <button
+    aria-label={t("events.strip")}
+    className="block h-[20px] w-[120px] flex-none cursor-pointer border-0 bg-transparent p-0"
+    data-testid="event-strip"
+    onClick={(event) => {
+      event.stopPropagation()
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const minute = Math.min(columns - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
+      onCursor(hour + minute * MINUTE_US)
+    }}
+    tabIndex={-1}
+    type="button"
+  >
+    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 20`}>
+      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="19.5" y2="19.5" />
+      {entry.minutes.map((count, minute) => count === 0 ? null : <rect
+        className="fill-accent3"
+        height={Math.max(2, Math.round((count / peak) * 20))}
         key={minute}
-        onClick={(event) => { event.stopPropagation(); onCursor(hour + minute * MINUTE_US) }}
-        tabIndex={-1}
-        type="button"
-      >
-        <span className={`absolute bottom-0 left-0 w-full ${count === 0 ? "bg-line2" : "bg-accent3"}`} style={{ height }} />
-      </button>
-    })}
-  </span>
+        width="2"
+        x={minute * 2}
+        y={20 - Math.max(2, Math.round((count / peak) * 20))}
+      />)}
+    </svg>
+  </button>
 }
 
 export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggle, t }: {
@@ -377,11 +389,18 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
   readonly tier: EventTier
 }) {
   const [open, setOpen] = useState(tier !== "routine")
+  const [shown, setShown] = useState(TIER_ROWS)
   const opened = useRef(false)
+  useEffect(() => setShown(TIER_ROWS), [hour])
   useEffect(() => {
-    if (opened.current || expandedKey === null || !entries.some((entry) => entry.key === expandedKey)) return
-    opened.current = true
-    setOpen(true)
+    if (expandedKey === null) return
+    const index = entries.findIndex((entry) => entry.key === expandedKey)
+    if (index < 0) return
+    if (!opened.current) {
+      opened.current = true
+      setOpen(true)
+    }
+    setShown((current) => index < current ? current : index + 1)
   }, [entries, expandedKey])
   if (entries.length === 0) return null
   const total = entries.reduce((sum, entry) => sum + entry.count, 0)
@@ -396,7 +415,7 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
       <span className="text-xs font-medium text-fg2">{t(`events.tier.${tier}`)}</span>
       <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: entries.length, count: total })}</span>
     </button>
-    {open && entries.map((entry) => <EventEntryRow
+    {open && entries.slice(0, shown).map((entry) => <EventEntryRow
       entry={entry}
       expanded={expandedKey === entry.key}
       hour={hour}
@@ -406,6 +425,11 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
       onToggle={() => onToggle(entry.key)}
       t={t}
     />)}
+    {open && entries.length > shown && <button
+      className="m-1.5 cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4"
+      onClick={() => setShown((current) => current + TIER_ROWS)}
+      type="button"
+    >{t("events.more_groups", { count: entries.length - shown })}</button>}
   </section>
 }
 
