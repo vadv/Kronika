@@ -1,12 +1,14 @@
 import { Activity, ChevronDown, ChevronRight, Gauge, HardDrive, Hourglass, ShieldAlert } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { loadSeries, type DataRow, type HourData, type LanePoint } from "./api"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { compact, humanBytes, humanDuration, humanPercent, type Locale } from "./model"
+import { asNumber, compact, humanBytes, humanDuration, humanPercent, value, type Locale } from "./model"
 import {
+  anchoredSeries,
+  counterGroups,
   countSeries,
   gaugeSeries,
   lastValue,
@@ -52,7 +54,7 @@ const STREAM_FIELDS: Readonly<Record<keyof VitalStreams, readonly [string, reado
   archiver: ["pg_stat_archiver", ["archived_count", "failed_count"]],
   walStorage: ["pg_wal_storage", ["wal_files_bytes"]],
   prepared: ["pg_prepared_xacts", ["datname", "prepared_count", "max_age_us"]],
-  vacuum: ["pg_stat_progress_vacuum", ["pid"]],
+  vacuum: ["pg_stat_progress_vacuum", ["pid", "is_autovacuum"]],
   settings: ["pg_settings", ["name", "setting", "unit"]],
   lifecycle: ["pg_log_lifecycle", ["kind", "message"]],
 }
@@ -67,6 +69,8 @@ interface VitalRow {
   readonly reading: (cursor: number) => string
   readonly limit?: number | undefined
   readonly unit?: string | undefined
+  // Chart-axis formatting when the plain kind number is wrong (durations).
+  readonly chart?: ((value: number | null, locale: Locale) => string) | undefined
 }
 
 interface VitalBand {
@@ -88,9 +92,19 @@ export function PostgresOverview({ cursor, data, historyRevision, hour, locale, 
     .filter(([, [section]]) => data.availableSections.includes(section))
     .map(([key]) => key)
     .join(","), [data.availableSections])
+  // The live hour bumps historyRevision every few seconds; one re-read per
+  // minute is enough for whole-hour vitals.
+  const [coarseRevision, setCoarseRevision] = useState(0)
+  const lastRead = useRef(0)
+  useEffect(() => {
+    const now = Date.now()
+    if (now - lastRead.current < 60_000) return
+    lastRead.current = now
+    setCoarseRevision((current) => current + 1)
+  }, [historyRevision])
   const streams = useHistoryRequest<VitalStreams>(
     present === "" ? null : JSON.stringify([hour, "pg-vitals", present]),
-    historyRevision,
+    coarseRevision,
     present === "" ? null : async (signal) => {
       const wanted = present.split(",") as (keyof VitalStreams)[]
       const loaded = await Promise.all(wanted.map(async (key) => {
@@ -173,7 +187,7 @@ function Band({ band, cursor, hour, locale, onCursor, t }: {
         {open && <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]">
           <SeriesChart
             cursor={cursor}
-            format={(number, place) => vitalNumber(row.kind, number, place)}
+            format={(number, place) => row.chart === undefined ? vitalNumber(row.kind, number, place) : row.chart(number, place)}
             helpKey={`pg.vitals.row.${row.key}.help`}
             hour={hour}
             labelKey={`pg.vitals.row.${row.key}`}
@@ -182,7 +196,12 @@ function Band({ band, cursor, hour, locale, onCursor, t }: {
             points={row.points}
             scale="nonnegative"
             second={row.second}
+            {...(row.second === undefined ? {} : {
+              secondHelpKey: `pg.vitals.row.${row.key}.second.help`,
+              secondLabelKey: `pg.vitals.row.${row.key}.second`,
+            })}
             t={t}
+            tickFormat={(number, place) => row.chart === undefined ? vitalNumber(row.kind, number, place) : row.chart(number, place)}
             unit={row.unit ?? ""}
           />
         </div>}
@@ -260,47 +279,65 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
   const clients = countSeries(streams.activity, (row) => backendType(row) === "client backend")
   const idleInTx = countSeries(streams.activity, (row) => String(row.values.state ?? "").startsWith("idle in transaction"))
   const oldestXmin = gaugeSeries(streams.activity, "backend_xmin_age", "max")
-  const preparedCount = gaugeSeries(streams.prepared, "prepared_count", "sum")
-  const preparedAge = gaugeSeries(streams.prepared, "max_age_us", "max")
+  const preparedCount = anchoredSeries(streams.prepared, streams.database, (pass) =>
+    pass.reduce((sum, row) => sum + (asNumber(value(row, "prepared_count")) ?? 0), 0))
+  const preparedAge = anchoredSeries(streams.prepared, streams.database, (pass) => {
+    let oldest: number | null = null
+    for (const row of pass) {
+      const age = asNumber(value(row, "max_age_us"))
+      if (age !== null && (oldest === null || age > oldest)) oldest = age
+    }
+    return oldest
+  })
 
-  const tps = sumCounterVital(streams.database, ["xact_commit", "xact_rollback"])
-  const rollback = sumCounterVital(streams.database, ["xact_rollback"])
+  const database = counterGroups(streams.database)
+  const wal = counterGroups(streams.wal)
+  const checkpointer = counterGroups(streams.checkpointer)
+  const bgwriter = counterGroups(streams.bgwriter)
+  const archiver = counterGroups(streams.archiver)
+
+  const tps = sumCounterVital(database, ["xact_commit", "xact_rollback"])
+  const rollback = sumCounterVital(database, ["xact_rollback"])
   const rollbackShare = shareOfTotals(rollback, tps)
-  const tupRead = sumCounterVital(streams.database, ["tup_returned"])
-  const tupFetched = sumCounterVital(streams.database, ["tup_fetched"])
-  const tupWritten = sumCounterVital(streams.database, ["tup_inserted", "tup_updated", "tup_deleted"])
-  const hits = sumCounterVital(streams.database, ["blks_hit"])
-  const reads = sumCounterVital(streams.database, ["blks_read"])
+  const tupRead = sumCounterVital(database, ["tup_returned"])
+  const tupFetched = sumCounterVital(database, ["tup_fetched"])
+  const tupWritten = sumCounterVital(database, ["tup_inserted", "tup_updated", "tup_deleted"])
+  const hits = sumCounterVital(database, ["blks_hit"])
+  const reads = sumCounterVital(database, ["blks_read"])
   const cacheHit = ratioPoints(hits.points, reads.points)
-  const ioTime = sumCounterVital(streams.database, ["blk_read_time", "blk_write_time"])
+  const ioTime = sumCounterVital(database, ["blk_read_time", "blk_write_time"])
 
-  const temp = sumCounterVital(streams.database, ["temp_bytes"])
-  const deadlocks = sumCounterVital(streams.database, ["deadlocks"])
-  const checksums = sumCounterVital(streams.database, ["checksum_failures"])
-  const sessionEnds = sumCounterVital(streams.database, ["sessions_fatal", "sessions_killed"])
+  const temp = sumCounterVital(database, ["temp_bytes"])
+  const deadlocks = sumCounterVital(database, ["deadlocks"])
+  const checksums = sumCounterVital(database, ["checksum_failures"])
+  const sessionEnds = sumCounterVital(database, ["sessions_fatal", "sessions_killed"])
 
-  const walBytes = sumCounterVital(streams.wal, ["wal_bytes"])
-  const walBuffersFull = sumCounterVital(streams.wal, ["wal_buffers_full"])
+  const walBytes = sumCounterVital(wal, ["wal_bytes"])
+  const walBuffersFull = sumCounterVital(wal, ["wal_buffers_full"])
   const checkpointsTimed = firstVital(
-    sumCounterVital(streams.checkpointer, ["num_timed"]),
-    sumCounterVital(streams.bgwriter, ["checkpoints_timed"]),
+    sumCounterVital(checkpointer, ["num_timed"]),
+    sumCounterVital(bgwriter, ["checkpoints_timed"]),
   )
   const checkpointsRequested = firstVital(
-    sumCounterVital(streams.checkpointer, ["num_requested"]),
-    sumCounterVital(streams.bgwriter, ["checkpoints_req"]),
+    sumCounterVital(checkpointer, ["num_requested"]),
+    sumCounterVital(bgwriter, ["checkpoints_req"]),
   )
   const checkpointBuffers = firstVital(
-    sumCounterVital(streams.bgwriter, ["buffers_checkpoint"]),
-    sumCounterVital(streams.checkpointer, ["buffers_written"]),
+    sumCounterVital(bgwriter, ["buffers_checkpoint"]),
+    sumCounterVital(checkpointer, ["buffers_written"]),
   )
-  const backendBuffers = sumCounterVital(streams.bgwriter, ["buffers_backend"])
-  const archived = sumCounterVital(streams.archiver, ["archived_count"])
-  const archiveFailed = sumCounterVital(streams.archiver, ["failed_count"])
+  const backendBuffers = sumCounterVital(bgwriter, ["buffers_backend"])
+  const archived = sumCounterVital(archiver, ["archived_count"])
+  const archiveFailed = sumCounterVital(archiver, ["failed_count"])
   const walSize = gaugeSeries(streams.walStorage, "wal_files_bytes", "max")
 
   const xidAge = gaugeSeries(streams.database, "frozen_xid_age", "max")
   const mxidAge = gaugeSeries(streams.database, "min_mxid_age", "max")
-  const vacuumWorkers = countSeries(streams.vacuum, () => true)
+  const vacuumWorkers = anchoredSeries(
+    streams.vacuum.filter((row) => row.values.is_autovacuum === true),
+    streams.database,
+    (pass) => pass.length,
+  )
 
   const maxConnections = numberSetting(streams.settings, "max_connections")
   const freezeMax = numberSetting(streams.settings, "autovacuum_freeze_max_age")
@@ -337,6 +374,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
             const stored = readingAt(lane("pg_oldest_xact"), cursor)
             return stored === null ? "—" : humanDuration(stored * 1000, locale)
           },
+          chart: (stored, place) => stored === null ? "—" : humanDuration(stored * 1000, place),
         },
         { key: "oldest_xmin", points: oldestXmin, kind: "count", headline: counted(oldestXmin), reading: readCount(oldestXmin) },
         {
@@ -399,6 +437,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
             const stored = readingAt(ioTime.points, cursor)
             return stored === null ? "—" : humanDuration(stored, locale)
           },
+          chart: (stored, place) => stored === null ? "—" : humanDuration(stored, place),
         },
       ],
     },

@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const vitals = await importModule('export { countSeries, gaugeSeries, lastValue, peakPoint, settingAt, settingChanges, shareOfTotals, sumCounterVital } from "../src/postgres-vitals.ts"', { plugins: [registryPlugin([])] })
+const vitals = await importModule('export { anchoredSeries, counterGroups, countSeries, gaugeSeries, lastValue, peakPoint, settingAt, settingChanges, shareOfTotals, sumCounterVital } from "../src/postgres-vitals.ts"', { plugins: [registryPlugin([])] })
 
 const T0 = 1_780_000_000_000_000
 const SECOND = 1_000_000
@@ -20,7 +20,7 @@ test("counters sum across databases into one instance rate and hour total", () =
     row(3, T0 + 10 * SECOND, { datid: 2, xact_commit: 80 }),
     row(4, T0 + 20 * SECOND, { datid: 1, xact_commit: 260 }),
   ]
-  const vital = vitals.sumCounterVital(rows, ["xact_commit"])
+  const vital = vitals.sumCounterVital(vitals.counterGroups(rows), ["xact_commit"])
   assert.equal(vital.points.length, 2)
   assert.equal(vital.points[0].timestamp, T0 + 10 * SECOND)
   assert.equal(vital.points[0].value, (100 + 30) / 10)
@@ -33,7 +33,7 @@ test("a multi-field counter vital sums the fields", () => {
     row(0, T0, { datid: 1, xact_commit: 10, xact_rollback: 1 }),
     row(1, T0 + 10 * SECOND, { datid: 1, xact_commit: 30, xact_rollback: 5 }),
   ]
-  const vital = vitals.sumCounterVital(rows, ["xact_commit", "xact_rollback"])
+  const vital = vitals.sumCounterVital(vitals.counterGroups(rows), ["xact_commit", "xact_rollback"])
   assert.equal(vital.total, 24)
   assert.equal(vital.points[0].value, 2.4)
 })
@@ -44,7 +44,7 @@ test("a counter that goes backwards yields no delta for that pair", () => {
     row(1, T0 + 10 * SECOND, { datid: 1, deadlocks: 2 }),
     row(2, T0 + 20 * SECOND, { datid: 1, deadlocks: 4 }),
   ]
-  const vital = vitals.sumCounterVital(rows, ["deadlocks"])
+  const vital = vitals.sumCounterVital(vitals.counterGroups(rows), ["deadlocks"])
   assert.equal(vital.points.length, 1)
   assert.equal(vital.total, 2)
 })
@@ -103,4 +103,30 @@ test("setting changes are every later recorded value of a name", () => {
   assert.equal(vitals.settingAt(rows, "work_mem", T0 + 130 * SECOND), "4MB")
   assert.equal(vitals.settingAt(rows, "shared_buffers", T0 + 130 * SECOND), null)
   assert.equal(vitals.settingAt(rows, "work_mem", T0 - SECOND), "4MB")
+})
+
+test("a gauge moment whose rows are all null keeps a null point", () => {
+  const rows = [
+    row(0, T0, { datid: 1, frozen_xid_age: 100 }),
+    row(1, T0 + 10 * SECOND, { datid: 1, frozen_xid_age: null }),
+  ]
+  assert.deepEqual(vitals.gaugeSeries(rows, "frozen_xid_age", "max").map(({ value }) => value), [100, null])
+})
+
+test("anchored series read zero at pass moments with no rows and bin rows to the earlier pass", () => {
+  const anchor = (ordinal, timestamp) => row(ordinal, timestamp, { datid: 1 })
+  const vacuum = (ordinal, timestamp) => row(ordinal, timestamp, { pid: 7 }, "1012001")
+  const anchors = [anchor(0, T0), anchor(1, T0 + 10 * SECOND), anchor(2, T0 + 20 * SECOND)]
+  const points = vitals.anchoredSeries(
+    [vacuum(0, T0 + SECOND), vacuum(1, T0 + SECOND + 1), vacuum(2, T0 + 11 * SECOND)],
+    anchors,
+    (pass) => pass.length,
+  )
+  assert.deepEqual(points.map(({ timestamp, value }) => [timestamp - T0, value]), [
+    [0, 2],
+    [10 * SECOND, 1],
+    [20 * SECOND, 0],
+  ])
+  assert.deepEqual(vitals.anchoredSeries([], anchors, (pass) => pass.length).map(({ value }) => value), [0, 0, 0])
+  assert.deepEqual(vitals.anchoredSeries([], [], (pass) => pass.length), [])
 })

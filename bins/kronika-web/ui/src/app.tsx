@@ -88,7 +88,7 @@ type Theme = "dark" | "light"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
+  points: [], lanePoints: [], findings: [], findingGroups: [],
 }
 
 interface CurrentSnapshot {

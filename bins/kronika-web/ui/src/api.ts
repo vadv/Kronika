@@ -131,7 +131,6 @@ export interface HourData {
   readonly memory: readonly DataRow[]
   readonly pressure: readonly DataRow[]
   readonly health: readonly DataRow[]
-  readonly pgOverview: readonly DataRow[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
@@ -954,7 +953,6 @@ function hourData(input: {
     memory: rows("os_meminfo"),
     pressure: rows("os_psi"),
     health: rows("health"),
-    pgOverview: flatten(PRODUCT_SECTION_GROUPS.postgresqlOverview),
   }
 }
 

@@ -17,9 +17,16 @@ export interface VitalSeries {
 
 const EMPTY_VITAL: VitalSeries = { points: [], total: null }
 
+// One time-ordered row series per identity, shared by every counter vital of
+// the section so the sort happens once.
+export type CounterGroups = ReadonlyMap<string, readonly DataRow[]>
+
+export function counterGroups(rows: readonly DataRow[], identity = "datid"): CounterGroups {
+  return byIdentity(rows, identity)
+}
+
 // Sum the per-second rates of `fields` over every identity in the section.
-export function sumCounterVital(rows: readonly DataRow[], fields: readonly string[], identity = "datid"): VitalSeries {
-  const ordered = byIdentity(rows, identity)
+export function sumCounterVital(ordered: CounterGroups, fields: readonly string[]): VitalSeries {
   const rates = new Map<number, { segmentId: string; value: number }>()
   let total: number | null = null
   for (const series of ordered.values()) {
@@ -46,19 +53,51 @@ export function sumCounterVital(rows: readonly DataRow[], fields: readonly strin
   }
 }
 
-// One point per snapshot moment: the sum (or the maximum) of a recorded gauge.
+// One point per snapshot moment: the sum (or the maximum) of a recorded
+// gauge. A moment whose rows all carry null keeps a null point, so the line
+// breaks and the cursor reads nothing instead of an older value.
 export function gaugeSeries(rows: readonly DataRow[], field: string, reduce: "sum" | "max"): readonly ChartPoint[] {
-  const moments = new Map<number, { segmentId: string; value: number }>()
+  const moments = new Map<number, { segmentId: string; value: number | null }>()
   for (const row of rows) {
     const stored = asNumber(value(row, field))
-    if (stored === null) continue
     const slot = moments.get(row.timestamp)
-    if (slot === undefined) moments.set(row.timestamp, { segmentId: row.segmentId, value: stored })
-    else slot.value = reduce === "sum" ? slot.value + stored : Math.max(slot.value, stored)
+    if (slot === undefined) {
+      moments.set(row.timestamp, { segmentId: row.segmentId, value: stored })
+      continue
+    }
+    if (stored === null) continue
+    slot.value = slot.value === null ? stored : reduce === "sum" ? slot.value + stored : Math.max(slot.value, stored)
   }
   return [...moments.entries()]
     .sort(([left], [right]) => left - right)
     .map(([timestamp, slot]) => ({ segmentId: slot.segmentId, timestamp, value: slot.value }))
+}
+
+// Sections such as pg_stat_progress_vacuum and pg_prepared_xacts emit rows
+// only while their phenomenon exists, so an empty collection pass records no
+// rows at all. The anchor section opens every pass before them, which makes
+// its moments the pass moments: rows between two anchors belong to the
+// earlier one, and an anchor with none recorded exactly zero.
+export function anchoredSeries(
+  rows: readonly DataRow[],
+  anchors: readonly DataRow[],
+  reduce: (pass: readonly DataRow[]) => number | null,
+): readonly ChartPoint[] {
+  const moments = new Map<number, string>()
+  for (const anchor of anchors) {
+    if (!moments.has(anchor.timestamp)) moments.set(anchor.timestamp, anchor.segmentId)
+  }
+  if (moments.size === 0) return []
+  const ordered = [...moments.entries()].sort(([left], [right]) => left - right)
+  const sorted = [...rows].sort((left, right) => left.timestamp - right.timestamp)
+  let at = 0
+  return ordered.map(([timestamp, segmentId], index) => {
+    const next = ordered[index + 1]?.[0] ?? Number.POSITIVE_INFINITY
+    while (at < sorted.length && (sorted[at]?.timestamp ?? Number.POSITIVE_INFINITY) <= timestamp) at += 1
+    const start = at
+    while (at < sorted.length && (sorted[at]?.timestamp ?? Number.POSITIVE_INFINITY) < next) at += 1
+    return { segmentId, timestamp, value: reduce(sorted.slice(start, at)) }
+  })
 }
 
 // One point per snapshot moment: how many rows match.
