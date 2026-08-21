@@ -5215,6 +5215,7 @@ fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
     reason = "the staggered fixture keeps independent database snapshots and expected points together"
 )]
 fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
+    crate::api::reset_history_operations();
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[
         (
@@ -5331,6 +5332,11 @@ fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
     assert_eq!(rows[2]["values"]["table_count"], "1");
     assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
     assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
+    assert_eq!(
+        crate::api::tablespace_moment_visits(),
+        1,
+        "the selected layout discovers databases and predecessor moments together",
+    );
 }
 
 #[test]

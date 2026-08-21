@@ -16,7 +16,7 @@ use super::search::{
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
     resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
@@ -29,17 +29,24 @@ const INDEXES: &str = "pg_stat_user_indexes";
 thread_local! {
     static HISTORY_SELECTION_VISITS: Counter<usize> = const { Counter::new(0) };
     static HISTORY_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
+    static TABLESPACE_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn reset_history_operations() {
     HISTORY_SELECTION_VISITS.set(0);
     HISTORY_SOURCE_VISITS.set(0);
+    TABLESPACE_MOMENT_VISITS.set(0);
 }
 
 #[cfg(test)]
 pub(crate) fn history_operations() -> (usize, usize) {
     (HISTORY_SELECTION_VISITS.get(), HISTORY_SOURCE_VISITS.get())
+}
+
+#[cfg(test)]
+pub(crate) fn tablespace_moment_visits() -> usize {
+    TABLESPACE_MOMENT_VISITS.get()
 }
 
 const TABLE_RATES: &[&str] = &[
@@ -1375,6 +1382,7 @@ impl Aggregate {
         Ok(())
     }
 
+    #[cfg(test)]
     fn matches_derived_filters(&self, kind: RelationKind, filters: &[Filter]) -> bool {
         filters
             .iter()
@@ -1955,57 +1963,6 @@ const fn exact_scale(scale: f64) -> Option<u128> {
     }
 }
 
-/// Compare products without overflowing. Limbs use base 2^32 so each multiply
-/// and carry fits in `u64`, even when each input factor spans all of `u128`.
-fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
-    let left = product_limbs(left);
-    let right = product_limbs(right);
-    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each cast deliberately selects one base-2^32 limb after shifting"
-)]
-fn product_limbs(factors: &[u128]) -> Vec<u32> {
-    let mut product = vec![1_u32];
-    for factor in factors {
-        let digits = [
-            *factor as u32,
-            (*factor >> 32) as u32,
-            (*factor >> 64) as u32,
-            (*factor >> 96) as u32,
-        ];
-        let mut multiplied = vec![0_u32; product.len() + digits.len()];
-        for (left_index, left) in product.iter().copied().enumerate() {
-            let mut carry = 0_u64;
-            for (right_index, right) in digits.iter().copied().enumerate() {
-                let index = left_index + right_index;
-                let value =
-                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-            }
-            let mut index = left_index + digits.len();
-            while carry > 0 {
-                let value = u64::from(multiplied[index]) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-                index += 1;
-                if index == multiplied.len() && carry > 0 {
-                    multiplied.push(0);
-                }
-            }
-        }
-        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
-            multiplied.pop();
-        }
-        product = multiplied;
-    }
-    product.reverse();
-    product
-}
-
 fn finite_json(value: f64) -> Value {
     if value.is_finite() {
         json!(value)
@@ -2381,6 +2338,7 @@ fn tablespace_history_segments(
         .cloned()
         .collect::<Vec<_>>();
     let mut predecessors = BTreeMap::<(u32, u32), Vec<i64>>::new();
+    let mut required = HashSet::new();
     for segment_ref in &selected {
         collect_tablespace_moments(
             reader,
@@ -2389,23 +2347,15 @@ fn tablespace_history_segments(
             from,
             to,
             true,
+            &mut required,
             &mut predecessors,
             cancelled,
         )?;
     }
-    for segment_ref in &selected {
-        collect_tablespace_moments(
-            reader,
-            segment_ref,
-            logical_name,
-            from,
-            to,
-            false,
-            &mut predecessors,
-            cancelled,
-        )?;
+    predecessors.retain(|key, _moments| required.contains(key));
+    for key in &required {
+        predecessors.entry(*key).or_default();
     }
-    let required = predecessors.keys().copied().collect::<Vec<_>>();
     let selected_ids = selected.iter().map(SegmentRef::id).collect::<HashSet<_>>();
     let mut candidates = listed
         .iter()
@@ -2431,6 +2381,7 @@ fn tablespace_history_segments(
             from,
             to,
             false,
+            &mut required,
             &mut predecessors,
             cancelled,
         )?;
@@ -2458,6 +2409,7 @@ fn collect_tablespace_moments(
     from: i64,
     to: i64,
     discover: bool,
+    required: &mut HashSet<(u32, u32)>,
     moments: &mut BTreeMap<(u32, u32), Vec<i64>>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -2490,20 +2442,28 @@ fn collect_tablespace_moments(
                 };
                 let key = (datid, type_id);
                 if discover && (from..=to).contains(&stored) {
-                    moments.entry(key).or_default();
+                    required.insert(key);
                 }
-                if stored < from
-                    && let Some(known) = moments.get_mut(&key)
-                    && !known.contains(&stored)
-                {
-                    known.push(stored);
-                    known.sort_unstable_by(|left, right| right.cmp(left));
-                    known.truncate(2);
-                    changed = true;
+                if stored < from {
+                    let known = if discover {
+                        Some(moments.entry(key).or_default())
+                    } else {
+                        moments.get_mut(&key)
+                    };
+                    if let Some(known) = known
+                        && !known.contains(&stored)
+                    {
+                        known.push(stored);
+                        known.sort_unstable_by(|left, right| right.cmp(left));
+                        known.truncate(2);
+                        changed = true;
+                    }
                 }
                 true
             },
         )?;
+        #[cfg(test)]
+        TABLESPACE_MOMENT_VISITS.set(TABLESPACE_MOMENT_VISITS.get().saturating_add(1));
     }
     Ok(changed)
 }
@@ -3429,11 +3389,6 @@ fn scan_context(
             let Some(identity) = identity_of(context.plan, &row) else {
                 continue;
             };
-            let Some(object_key) =
-                GroupKey::from_row(kind, RelationGroup::Object, &row, &dictionary)?
-            else {
-                continue;
-            };
             let Some(timestamp) = context
                 .plan
                 .timestamp
@@ -3452,28 +3407,19 @@ fn scan_context(
                 .previous
                 .as_ref()
                 .and_then(|previous| previous.get(&identity));
-            if !prepared.relation_filters.is_empty() {
-                let mut object = Aggregate::new(object_key.clone(), source);
-                object.add(
-                    kind,
-                    context.plan,
-                    &row,
-                    before,
-                    context.elapsed_for(&row),
-                    &dictionary,
-                    source,
-                )?;
-                if !object.matches_derived_filters(kind, &prepared.relation_filters) {
-                    continue;
-                }
+            let elapsed = context.elapsed_for(&row);
+            if !matches_derived_filters(
+                kind,
+                &prepared.relation_filters,
+                context.plan,
+                &row,
+                before,
+                elapsed,
+            ) {
+                continue;
             }
-            let key = if group == RelationGroup::Tablespace {
-                let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
-                    continue;
-                };
-                key
-            } else {
-                object_key.for_group(kind, group)
+            let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
+                continue;
             };
             aggregates
                 .entry(key.clone())
@@ -3483,13 +3429,33 @@ fn scan_context(
                     context.plan,
                     &row,
                     before,
-                    context.elapsed_for(&row),
+                    elapsed,
                     &dictionary,
                     source,
                 )?;
         }
     }
     Ok(())
+}
+
+fn matches_derived_filters(
+    kind: RelationKind,
+    filters: &[Filter],
+    plan: &Plan,
+    row: &Row,
+    before: Option<&CounterReadings>,
+    elapsed: Option<i64>,
+) -> bool {
+    filters
+        .iter()
+        .all(|filter| match (kind, filter.column.as_str()) {
+            (RelationKind::Indexes, "no_scans") => {
+                let mut scans = RateAggregate::default();
+                scans.add(counter_input(plan, row, before, "idx_scan", false), elapsed);
+                scans.metric().is_some_and(|metric| metric_is_zero(&metric))
+            }
+            _ => false,
+        })
 }
 
 fn relation_layout(
