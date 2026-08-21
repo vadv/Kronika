@@ -242,16 +242,30 @@ pub struct LockWait {
     pub lock_target: Option<String>,
     /// How long the wait lasted, ms.
     pub duration_ms: Option<f64>,
-    /// The pids `DETAIL` names as holding the lock, as listed.
-    pub holding_pids: Option<String>,
-    /// The pids `DETAIL` names as the wait queue, as listed.
-    pub wait_queue: Option<String>,
     /// `DETAIL`, which names the holder.
     pub detail: Option<String>,
     /// `CONTEXT`.
     pub context: Option<String>,
     /// The statement that waited.
     pub statement: Option<String>,
+}
+
+impl LockWait {
+    /// The pids `DETAIL` names as holding the lock, as listed.
+    #[must_use]
+    pub fn holding_pids(&self) -> Option<&str> {
+        self.detail
+            .as_deref()
+            .and_then(|detail| detail_list(detail, "holding the lock: "))
+    }
+
+    /// The pids `DETAIL` names as the wait queue, as listed.
+    #[must_use]
+    pub fn wait_queue(&self) -> Option<&str> {
+        self.detail
+            .as_deref()
+            .and_then(|detail| detail_list(detail, "Wait queue: "))
+    }
 }
 
 /// One server lifecycle record.
@@ -355,10 +369,6 @@ impl Events {
         } else if let Some((duration_ms, sql)) = parse_slow_query(message) {
             self.add_slow_query(record.ts, duration_ms, &sql);
         } else if let Some(mut event) = parse_lock_wait(message, record.ts) {
-            if let Some(detail) = record.detail.as_deref() {
-                event.holding_pids = detail_list(detail, "holding the lock: ");
-                event.wait_queue = detail_list(detail, "Wait queue: ");
-            }
             event.detail.clone_from(&record.detail);
             event.context.clone_from(&record.context);
             event.statement.clone_from(&record.statement);
@@ -593,8 +603,6 @@ fn parse_lock_wait(message: &str, ts: i64) -> Option<LockWait> {
         lock_mode: bounded(tail.get(..at)?),
         lock_target: bounded(tail.get(at + " on ".len()..duration_at)?),
         duration_ms: duration_after(tail, " after "),
-        holding_pids: None,
-        wait_queue: None,
         detail: None,
         context: None,
         statement: None,
@@ -604,11 +612,12 @@ fn parse_lock_wait(message: &str, ts: i64) -> Option<LockWait> {
 /// The pid list a lock-wait `DETAIL` names after `marker`, up to the period.
 /// Covers both `Process holding the lock: 1.` and `Processes holding the
 /// lock: 1, 2.`.
-fn detail_list(detail: &str, marker: &str) -> Option<String> {
+fn detail_list<'a>(detail: &'a str, marker: &str) -> Option<&'a str> {
     let at = detail.find(marker)?;
     let rest = detail.get(at + marker.len()..)?;
     let end = rest.find('.').unwrap_or(rest.len());
-    bounded(rest.get(..end)?)
+    let value = rest.get(..end)?.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 /// `temporary file: path "base/pgsql_tmp/pgsql_tmp1.0", size 1048576`.

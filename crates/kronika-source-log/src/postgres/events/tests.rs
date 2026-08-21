@@ -169,21 +169,21 @@ fn a_lock_wait_detail_yields_the_holders_and_the_queue() {
             "Process holding the lock: 583. Wait queue: 2078, 456.",
             "holding the lock: "
         ),
-        Some("583".to_owned())
+        Some("583")
     );
     assert_eq!(
         detail_list(
             "Processes holding the lock: 101, 102. Wait queue: 2078.",
             "holding the lock: "
         ),
-        Some("101, 102".to_owned())
+        Some("101, 102")
     );
     assert_eq!(
         detail_list(
             "Process holding the lock: 583. Wait queue: 2078, 456.",
             "Wait queue: "
         ),
-        Some("2078, 456".to_owned())
+        Some("2078, 456")
     );
     assert_eq!(
         detail_list("Key (id)=(1) already exists.", "Wait queue: "),

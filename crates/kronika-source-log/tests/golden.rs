@@ -89,8 +89,16 @@ fn a_stderr_log_yields_every_shape_it_carries() {
     assert_eq!(wait.kind, LockWaitKind::Waiting);
     assert_eq!(wait.pid, Some(12_348));
     assert_eq!(wait.lock_target.as_deref(), Some("transaction 987"));
-    assert_eq!(wait.holding_pids.as_deref(), Some("12347"));
-    assert_eq!(wait.wait_queue.as_deref(), Some("12348"));
+    assert_eq!(wait.holding_pids(), Some("12347"));
+    assert_eq!(wait.wait_queue(), Some("12348"));
+    let detail = wait.detail.as_deref().expect("lock detail");
+    for borrowed in [wait.holding_pids(), wait.wait_queue()]
+        .into_iter()
+        .flatten()
+    {
+        let offset = borrowed.as_ptr() as usize - detail.as_ptr() as usize;
+        assert!(offset < detail.len(), "participant list borrows DETAIL");
+    }
     assert_eq!(
         wait.detail.as_deref(),
         Some("Process holding the lock: 12347. Wait queue: 12348.")
