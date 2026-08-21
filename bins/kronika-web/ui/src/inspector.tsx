@@ -100,6 +100,7 @@ export function Inspector({
   chart,
   detail,
   detailAvailable,
+  related,
   entityChart,
   entityChartAvailable,
   onClose,
@@ -111,6 +112,9 @@ export function Inspector({
   readonly chart: ReactNode
   readonly detail: ReactNode
   readonly detailAvailable: boolean
+  // Panels beyond Detail and Chart: rows of another recorded section that
+  // carry the selection's identity. Each is a peer tab, never a scroll below.
+  readonly related?: readonly { readonly id: string; readonly label: string; readonly panel: ReactNode }[] | undefined
   readonly entityChart: ReactNode
   readonly entityChartAvailable: boolean
   readonly onClose: () => void
@@ -200,6 +204,7 @@ export function Inspector({
         <div className="inspector-tabs" role="tablist">
           <button aria-selected={panel === "detail"} disabled={!detailAvailable} onClick={() => onPanel("detail")} role="tab" type="button">{t("inspector.detail")}</button>
           <button aria-selected={panel === "chart"} onClick={() => onPanel("chart")} role="tab" type="button">{t("inspector.chart")}</button>
+          {(related ?? []).map((tab) => <button aria-selected={panel === tab.id} data-testid={`inspector-tab-${tab.id}`} key={tab.id} onClick={() => onPanel(tab.id as Exclude<InspectorPanel, null>)} role="tab" type="button">{tab.label}</button>)}
         </div>
         <strong title={title}>{title}</strong>
         <div className="flex flex-none items-center gap-1">
@@ -211,7 +216,8 @@ export function Inspector({
         {/* The detail stays mounted while the Chart tab is open: the selected
             entity's history section portals from it into the chart slot. */}
         {detailAvailable && <div className={panel === "detail" ? "contents" : "hidden"}>{detail}</div>}
-        {(panel === "chart" || !detailAvailable) && (entityChartAvailable && detailAvailable ? entityChart : chart)}
+        {(panel === "chart" || (!detailAvailable && (related ?? []).every((tab) => tab.id !== panel))) && (entityChartAvailable && detailAvailable ? entityChart : chart)}
+        {(related ?? []).map((tab) => panel === tab.id ? <div key={tab.id}>{tab.panel}</div> : null)}
       </div>
     </aside>
   </>

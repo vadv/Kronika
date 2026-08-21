@@ -16,7 +16,11 @@ export interface Address {
   readonly metric: string | null
 }
 
-export type InspectorPanel = "chart" | "detail" | null
+// A closed set: Detail, Chart, and the relation panels a selection can open.
+// Back must land on the panel the reader left, so the panel is addressed.
+export const INSPECTOR_PANELS = ["chart", "detail", "pg_stat_activity"] as const
+
+export type InspectorPanel = (typeof INSPECTOR_PANELS)[number] | null
 
 export type View =
   | "host"
@@ -104,7 +108,9 @@ export function readAddress(search: string): Address {
     row,
     // Row-only links predate Inspector and continue to open Detail. Chart is
     // source-neutral and can therefore be linked without an entity row.
-    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" ? "detail" : null,
+    panel: requestedPanel === "chart" || requestedPanel === "pg_stat_activity"
+      ? requestedPanel
+      : row !== null && row !== "" ? "detail" : null,
     find: parameters.get("find") ?? "",
     metric,
   }
@@ -127,7 +133,7 @@ export function writeAddress(address: Address): string {
   if ((address.view === "processes" || relation || address.view === "host" || address.view === "events"
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
-  if (address.panel === "chart") parameters.set("panel", "chart")
+  if (address.panel === "chart" || address.panel === "pg_stat_activity") parameters.set("panel", address.panel)
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view === "host" && address.metric !== null) parameters.set("metric", address.metric)
   const query = parameters.toString()

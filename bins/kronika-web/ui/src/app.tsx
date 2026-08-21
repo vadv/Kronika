@@ -30,6 +30,7 @@ import {
 } from "./api"
 import type { TableOrder } from "./entity-table"
 import { pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type InspectorPanel, type PgLens, type Source } from "./address"
+import { ActivityFacts } from "./detail-activity"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
@@ -952,11 +953,18 @@ function App({ locale, onLocale, t }: {
       chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />}
       detail={selectedProcess === null
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
-        : <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} onRelated={openRelated} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
+        : <DetailDock activity={joinedActivity.row} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
       detailAvailable={detailAvailable}
       entityChart={<div className="inspector-chart-slot" ref={setInspectorChartRoot} />}
       entityChartAvailable={entityChartAvailable}
       onClose={closeInspector}
+      related={selectedProcess !== null && joinedActivity.row !== null
+        ? [{
+          id: "pg_stat_activity",
+          label: t("pg.section.activity"),
+          panel: <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={openRelated} t={t} />,
+        }]
+        : undefined}
       onPanel={setInspectorPanel}
       panel={inspectorPanel ?? "chart"}
       t={t}

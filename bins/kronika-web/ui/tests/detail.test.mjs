@@ -110,7 +110,7 @@ test("process history requests project PID without process start time", async ()
 })
 
 test("linked Activity detail shows elapsed values instead of repeatable absolute starts", async () => {
-  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail-activity.tsx", import.meta.url), "utf8"))
   const fields = /const ACTIVITY_FIELDS = \[([\s\S]*?)\] as const/.exec(source)?.[1] ?? ""
   for (const field of ["backend_start", "xact_start", "query_start", "state_change"]) assert.doesNotMatch(fields, new RegExp(field))
   for (const field of ["backend_age_ms", "transaction_duration_ms", "query_duration_ms", "state_duration_ms"]) assert.match(source, new RegExp(`\\["${field}"`))
@@ -126,4 +126,26 @@ test("Process detail delegates Escape and focus return to the shared Inspector",
   assert.doesNotMatch(source, /useDetailDismiss|addEventListener\("keydown"/)
   assert.match(inspector, /event\.key === "Escape"/)
   assert.match(inspector, /opener\.current\.focus\(\{ preventScroll: true \}\)/)
+})
+
+test("a recorded PostgreSQL backend is its own Inspector panel, not a tail under the process facts", async () => {
+  const fs = await import("node:fs/promises")
+  const [dock, panel, app, inspector, address] = await Promise.all([
+    fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/detail-activity.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/address.ts", import.meta.url), "utf8"),
+  ])
+  // The facts moved whole: the dock keeps none of them.
+  assert.doesNotMatch(dock, /pg-exact-query|ACTIVITY_FIELDS|ACTIVITY_DURATIONS|detail\.pg_pid/)
+  assert.match(panel, /data-testid="process-activity-panel"/)
+  assert.match(panel, /pg-exact-query/)
+  // The tab exists only when a backend was recorded under the selected PID.
+  assert.match(app, /joinedActivity\.row !== null/)
+  assert.match(app, /id: "pg_stat_activity"/)
+  assert.match(inspector, /data-testid=\{`inspector-tab-\$\{tab\.id\}`\}/)
+  // Back must return to the panel it left, so the panel is addressed.
+  assert.match(address, /INSPECTOR_PANELS = \["chart", "detail", "pg_stat_activity"\]/)
+  assert.match(address, /address\.panel === "chart" \|\| address\.panel === "pg_stat_activity"/)
 })

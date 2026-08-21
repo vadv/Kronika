@@ -24,7 +24,6 @@ import {
 import { activityDurationMs, backendAgeMs, stateDurationMs, transactionDurationMs } from "./postgres-activity"
 import { CellValue, formatCell, LENS_FIELDS, PROCESS_USER_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
-import { statementsForActivity, type RelatedNavigation } from "./statement-navigation"
 
 interface HistoryField {
   readonly field: string
@@ -75,46 +74,26 @@ export const PROCESS_HISTORY_FIELDS: readonly string[] = [
   ...new Set(Object.values(PROCESS_HISTORY).flatMap((lens) => lens.map((field) => field.field))),
 ]
 
-const ACTIVITY_FIELDS = [
-  ["leader_pid", "pg.leader_pid", "id"], ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
-  ["usename", "pg.usename", "text"],
-  ["application_name", "pg.application_name", "text"], ["client_addr", "pg.client_addr", "text"],
-  ["state", "pg.state", "text"],
-  ["wait_event_type", "pg.wait_event_type", "text"], ["wait_event", "pg.wait_event", "text"],
-  ["query_id", "pg.query_id", "id"], ["backend_xid_age", "pg.backend_xid_age", "number"],
-  ["backend_xmin_age", "pg.backend_xmin_age", "number"],
-] as const
-
-const ACTIVITY_DURATIONS = [
-  ["backend_age_ms", backendAgeMs],
-  ["transaction_duration_ms", transactionDurationMs],
-  ["query_duration_ms", activityDurationMs],
-  ["state_duration_ms", stateDurationMs],
-] as const
-
 export function DetailDock({
   activity,
   cursor,
-  activityTime,
   hour,
   lens,
   locale,
   onCursor,
-  onRelated,
   process,
   processHistory,
   processHistoryStatus,
   t,
   ticksPerSecond,
 }: {
+  // Only to mark the dock as linked; its facts live in their own panel.
   readonly activity: DataRow | null
-  readonly activityTime: number | null
   readonly cursor: number
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
-  readonly onRelated: (target: RelatedNavigation) => void
   readonly process: DataRow
   readonly processHistory: readonly DataRow[]
   readonly processHistoryStatus: HistoryStatus
@@ -139,7 +118,6 @@ export function DetailDock({
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
   )
-  const relatedActivity = activity === null ? null : statementsForActivity(activity)
   return (
     <aside
       aria-label={t("detail.process.title")}
@@ -190,25 +168,6 @@ export function DetailDock({
       </section>
       </InspectorChartPortal>
 
-      {activity !== null && <section className="mt-[13px] border-t border-line4 pt-3">
-        <div className="flex items-center">
-          <h3 className="m-0 font-sans text-sm font-medium text-fg">{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
-        </div>
-        <DetailList>
-          <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
-          {ACTIVITY_DURATIONS.flatMap(([field, duration]) => {
-            const elapsed = duration(activity)
-            return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
-          })}
-          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && relatedActivity !== null
-            ? <button aria-label={t("pg.related.open_statements", { id: relatedActivity.queryId ?? "" })} className="cursor-pointer border-0 bg-transparent p-0 text-accent3 underline decoration-dotted underline-offset-2" onClick={() => onRelated(relatedActivity)} type="button">{identifier(value(activity, field))}</button>
-            : formatActivity(value(activity, field), kind, locale, t)} />)}
-        </DetailList>
-        <section className="query-block">
-          <span className="flex items-center justify-between text-xs font-medium text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
-          <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
-        </section>
-      </section>}
     </aside>
   )
 }
