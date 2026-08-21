@@ -5,8 +5,8 @@
 //! keeps one small accumulator per entity — the whole-window ranking value and
 //! the running column cell that feeds the totals band — so memory stays
 //! proportional to the number of entities, not entities times columns. Only
-//! the second pass allocates the top-K-by-columns result and fills its cells
-//! and labels. The others band is the totals band minus the ranked rows.
+//! later passes fill only a bounded batch of ranked rows or groups at a time.
+//! The others band is the totals band minus the ranked rows.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -24,6 +24,7 @@ use crate::route::{DataRequest, HeatmapRequest, SegmentRequest};
 mod tests;
 
 const ROW_CHUNK_ROWS: usize = 64;
+const UNGROUPED_CELL_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) struct PreparedHeatmap {
     reader: Reader,
@@ -122,10 +123,7 @@ impl PreparedHeatmap {
             let ranked = fold.finish(self.request.top);
             entities = ranked.entity_count;
             out_of_order = ranked.out_of_order;
-            let Some((cells, labels)) = self.fill(&ranked, &seen_rows, cancelled)? else {
-                return Ok(());
-            };
-            self.emit_all(&ranked, &cells, &labels, emit, cancelled)?;
+            self.emit_ungrouped(&ranked, &seen_rows, emit, cancelled)?;
         } else {
             let mut grouped = fold.finish_grouped(self.request.top);
             entities = grouped.group_count;
@@ -247,24 +245,22 @@ impl PreparedHeatmap {
     )]
     fn fill(
         &self,
-        ranked: &Ranked,
+        rows: &[RankedRow],
         seen_rows: &HashMap<(i64, u32), u64>,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<(Vec<Vec<Obs>>, Vec<Vec<(i64, Value)>>)>, ApiError> {
         let request = &self.request;
-        let winners: HashMap<&str, usize> = ranked
-            .rows
+        let winners: HashMap<&str, usize> = rows
             .iter()
             .enumerate()
             .map(|(index, row)| (row.key.as_str(), index))
             .collect();
-        let winner_types: HashSet<u32> = ranked.rows.iter().map(|row| row.type_id).collect();
+        let winner_types: HashSet<u32> = rows.iter().map(|row| row.type_id).collect();
         let cumulative = self.cumulative;
-        let mut cells = vec![vec![Obs::default(); request.columns]; ranked.rows.len()];
-        let mut carries: Vec<Option<(i64, f64)>> = vec![None; ranked.rows.len()];
-        let mut labels =
-            vec![vec![(i64::MIN, Value::Null); request.labels.len()]; ranked.rows.len()];
-        if ranked.rows.is_empty() {
+        let mut cells = vec![vec![Obs::default(); request.columns]; rows.len()];
+        let mut carries: Vec<Option<(i64, f64)>> = vec![None; rows.len()];
+        let mut labels = vec![vec![(i64::MIN, Value::Null); request.labels.len()]; rows.len()];
+        if rows.is_empty() {
             return Ok(Some((cells, labels)));
         }
         for segment_ref in &self.segments {
@@ -453,44 +449,15 @@ impl PreparedHeatmap {
         Ok(Some(fold.finish()))
     }
 
-    fn emit_all(
+    fn emit_ungrouped(
         &self,
         ranked: &Ranked,
-        cells: &[Vec<Obs>],
-        labels: &[Vec<(i64, Value)>],
+        seen_rows: &HashMap<(i64, u32), u64>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let request = &self.request;
         let cumulative = self.cumulative;
-        let mut winner_sums = vec![CellSum::default(); request.columns];
-        let rendered_rows: Vec<Value> = ranked
-            .rows
-            .iter()
-            .zip(cells)
-            .zip(labels)
-            .map(|((row, row_cells), row_labels)| {
-                let rendered: Vec<Value> = row_cells
-                    .iter()
-                    .enumerate()
-                    .map(|(index, observed)| {
-                        let stored = observed.cell(cumulative);
-                        if let Some(stored) = stored {
-                            winner_sums[index].add(stored);
-                        }
-                        number(stored)
-                    })
-                    .collect();
-                json!({
-                    "record": "heatmap_row",
-                    "type_id": row.type_id.to_string(),
-                    "identity": row.identity,
-                    "labels": row_labels.iter().map(|(_ts, value)| value.clone()).collect::<Vec<_>>(),
-                    "total": number(row.total),
-                    "cells": rendered,
-                })
-            })
-            .collect();
         let header = json!({
             "record": "heatmap",
             "from": request.from.to_string(),
@@ -511,9 +478,35 @@ impl PreparedHeatmap {
         if cancelled() || !emit(record(header)?) {
             return Ok(());
         }
-        for rendered in rendered_rows {
-            if cancelled() || !emit(record(rendered)?) {
+        let mut winner_sums = vec![CellSum::default(); request.columns];
+        let batch_rows = ungrouped_batch_rows(request.columns, request.labels.len());
+        for rows in ranked.rows.chunks(batch_rows) {
+            let Some((cells, labels)) = self.fill(rows, seen_rows, cancelled)? else {
                 return Ok(());
+            };
+            for ((row, row_cells), row_labels) in rows.iter().zip(cells).zip(labels) {
+                let rendered: Vec<Value> = row_cells
+                    .iter()
+                    .enumerate()
+                    .map(|(index, observed)| {
+                        let stored = observed.cell(cumulative);
+                        if let Some(stored) = stored {
+                            winner_sums[index].add(stored);
+                        }
+                        number(stored)
+                    })
+                    .collect();
+                let rendered = json!({
+                    "record": "heatmap_row",
+                    "type_id": row.type_id.to_string(),
+                    "identity": row.identity,
+                    "labels": row_labels.into_iter().map(|(_ts, value)| value).collect::<Vec<_>>(),
+                    "total": number(row.total),
+                    "cells": rendered,
+                });
+                if cancelled() || !emit(record(rendered)?) {
+                    return Ok(());
+                }
             }
         }
         let totals: Vec<Value> = ranked
@@ -692,6 +685,21 @@ fn pump_rows(
         return Err(error);
     }
     Ok(connected)
+}
+
+/// Number of winners whose observation and label storage fits the bounded
+/// ungrouped working set. Every requested winner is still emitted; larger
+/// products make additional sequential passes over the fixed row prefix.
+fn ungrouped_batch_rows(columns: usize, labels: usize) -> usize {
+    let cell_bytes = columns.saturating_mul(size_of::<Obs>());
+    let label_bytes = labels.saturating_mul(size_of::<(i64, Value)>());
+    let row_bytes = cell_bytes
+        .saturating_add(label_bytes)
+        .saturating_add(size_of::<Vec<Obs>>())
+        .saturating_add(size_of::<Vec<(i64, Value)>>())
+        .saturating_add(size_of::<Option<(i64, f64)>>())
+        .max(1);
+    (UNGROUPED_CELL_BUDGET_BYTES / row_bytes).max(1)
 }
 
 /// Renders cells to JSON values after resolving every distinct dictionary id

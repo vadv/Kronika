@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 
-use super::{Fold, GroupedFill, Obs, column_of, entity_key_into, interval_end, interval_start};
+use super::{
+    Fold, GroupedFill, Obs, column_of, entity_key_into, interval_end, interval_start,
+    ungrouped_batch_rows,
+};
 
 fn entity_key(type_id: u32, identity: &[Value]) -> String {
     let mut key = String::new();
@@ -27,6 +30,14 @@ fn intervals_carry_exact_boundaries_and_cover_the_window() {
     assert_eq!(interval_end(HOUR, end(), 12, 11), end());
     assert_eq!(column_of(HOUR, HOUR, end(), 60), 0);
     assert_eq!(column_of(end(), HOUR, end(), 60), 59);
+}
+
+#[test]
+fn ungrouped_work_is_batched_without_lowering_the_requested_shape() {
+    assert!(ungrouped_batch_rows(60, 2) >= 100);
+    let public_max_batch = ungrouped_batch_rows(1_440, 2);
+    assert!(public_max_batch > 0);
+    assert!(public_max_batch < 500);
 }
 
 #[test]
@@ -243,6 +254,10 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one production-format fixture verifies grouped and batched ungrouped output"
+)]
 fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     use kronika_format::DictLimits;
     use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
@@ -326,4 +341,47 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     assert_eq!(records[3]["band"], "others");
     assert_eq!(records[3]["total"], json!(8_128.0));
     assert_eq!(records[3]["cells"], json!([8_128.0]));
+
+    let ungrouped = super::prepare(
+        directory.path(),
+        crate::route::HeatmapRequest {
+            from: ts,
+            to: ts,
+            section: "os_mountinfo".to_owned(),
+            fields: vec!["total_bytes".to_owned()],
+            columns: 1_440,
+            top: 129,
+            labels: vec!["fstype".to_owned()],
+            group: Vec::new(),
+            type_id: None,
+        },
+    )
+    .expect("prepare ungrouped heatmap");
+    let mut response = Vec::new();
+    ungrouped
+        .stream(
+            &mut |record| {
+                response.extend_from_slice(&record);
+                true
+            },
+            &|| false,
+        )
+        .expect("stream ungrouped heatmap");
+    let lines: Vec<&[u8]> = response
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(lines.len(), 132, "header, every row, and two bands");
+    let header: Value = serde_json::from_slice(lines[0]).expect("ungrouped header");
+    let first: Value = serde_json::from_slice(lines[1]).expect("first ungrouped row");
+    assert_eq!(header["top"], 129);
+    assert_eq!(first["identity"], json!([128, 0, "/mount-128"]));
+    assert_eq!(first["labels"], json!(["/mount-128"]));
+    assert_eq!(first["cells"].as_array().map(Vec::len), Some(1_440));
+    assert_eq!(first["cells"][0], json!(128.0));
+    assert!(first["cells"][1].is_null());
+    let totals: Value = serde_json::from_slice(lines[130]).expect("totals band");
+    let others: Value = serde_json::from_slice(lines[131]).expect("others band");
+    assert_eq!(totals["band"], "totals");
+    assert_eq!(others["band"], "others");
 }
