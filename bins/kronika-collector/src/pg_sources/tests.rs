@@ -539,7 +539,7 @@ fn server_statement_timeout_is_timeout_telemetry_not_capability_loss() {
     let mut observations = Vec::new();
     let mut observe = |observation| observations.push(observation);
     measure(&mut observe, "probe", "monitor@db.example:5432", "postgres")
-        .server_timeout(&"canceling statement due to statement timeout");
+        .server_timeout("canceling statement due to statement timeout".to_owned());
 
     let PgObservation::Query(observation) = observations.pop().expect("one observation") else {
         panic!("expected a query observation");
