@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { INDEX_CUTS, PLAN_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, type ActivityCut } from "./activity-cuts"
+import { INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { loadHeatmap, loadRelatedStatementTextRow, type DataRow, type HourData, type SegmentBound } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
@@ -82,8 +82,7 @@ interface RowLabel {
 // The shared hour activity ledger: ranked heatmap strips over one section,
 // collapsed until the operator opens it. Wrappers supply the curated cuts,
 // the row labels and the drill action of their section.
-function ActivityLedger({ blockSize, columns, cursor, cuts, defaultCut, drill, hour, keys, label, labels, locale, onCursor, onView, section, storageKey, t }: {
-  readonly blockSize: number | null
+function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
   readonly columns: number
   readonly cursor: number
   readonly cuts: readonly ActivityCut[]
@@ -96,6 +95,7 @@ function ActivityLedger({ blockSize, columns, cursor, cuts, defaultCut, drill, h
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onView?: ((view: HeatmapView) => void) | undefined
+  readonly scales: ActivityScales
   readonly section: string
   readonly storageKey: string
   readonly t: Translate
@@ -166,7 +166,6 @@ function ActivityLedger({ blockSize, columns, cursor, cuts, defaultCut, drill, h
   }
 
   const panel = <ActivityPanel
-    blockScale={cut.blockScaled === true ? blockSize : 1}
     columns={columns}
     cursor={cursor}
     cut={cut}
@@ -184,6 +183,7 @@ function ActivityLedger({ blockSize, columns, cursor, cuts, defaultCut, drill, h
     onScale={setScale}
     onTop={setTop}
     scale={scale}
+    scales={scales}
     section={section}
     t={t}
     top={top}
@@ -281,7 +281,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
     }
   }
 
-  return <ActivityLedger blockSize={blockSize} columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} onView={setView} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} onView={setView} scales={{ blockSize, clockTicks: null }} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
 }
 
 export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, t }: {
@@ -309,7 +309,7 @@ export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor,
       prefix: identityPrefix(row.labels, null),
     }
   }
-  return <ActivityLedger blockSize={blockSize} columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
 }
 
 // Tables and indexes snapshot every five minutes, so their hour is twelve
@@ -339,9 +339,40 @@ export function RelationsActivity({ blockSize, cursor, hour, locale, onCursor, o
       prefix: datname ?? null,
     }
   }
-  return <ActivityLedger blockSize={blockSize} columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={indexes ? INDEX_LABELS : TABLE_LABELS} locale={locale} onCursor={onCursor} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
+  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={indexes ? INDEX_LABELS : TABLE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
 }
 
+export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t, ticksPerSecond }: {
+  readonly cursor: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onPattern: (pattern: string) => void
+  readonly t: Translate
+  readonly ticksPerSecond: number | null
+}) {
+  const drill = (row: HeatmapViewRow) => {
+    const comm = row.labels[0]
+    if (comm != null && comm !== "") onPattern(comm)
+  }
+  const label = (row: HeatmapViewRow): RowLabel => {
+    const [comm, cmdline] = row.labels
+    const text = cmdline != null && cmdline !== "" ? activityPreview(cmdline) : comm ?? "—"
+    return { text, prefix: row.identity[0] == null ? null : `PID ${row.identity[0]}` }
+  }
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} hour={hour} keys={PROCESS_KEYS} label={label} labels={PROCESS_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
+}
+
+const PROCESS_KEYS: LedgerKeys = {
+  title: "activity.processes.title",
+  titleHelp: "activity.processes.title.help",
+  others: "activity.processes.others",
+  othersLabel: "activity.processes.others_label",
+  othersHelp: "activity.processes.others.help",
+  totalsHelp: "activity.processes.totals.help",
+}
+
+const PROCESS_LABELS = ["comm", "cmdline"] as const
 const STATEMENT_LABELS = ["datname", "usename"] as const
 const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
 const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const
@@ -425,8 +456,7 @@ function useStatementTexts(
   return texts
 }
 
-function ActivityPanel({ blockScale, columns, cursor, cut, cuts, drill, hour, keys, label, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, section, t, top, view }: {
-  readonly blockScale: number | null
+function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
   readonly columns: number
   readonly cursor: number
   readonly cut: ActivityCut
@@ -444,14 +474,13 @@ function ActivityPanel({ blockScale, columns, cursor, cut, cuts, drill, hour, ke
   readonly onScale: (scale: ScaleMode) => void
   readonly onTop: (top: number) => void
   readonly scale: ScaleMode
+  readonly scales: ActivityScales
   readonly section: string
   readonly t: Translate
   readonly top: number
   readonly view: HeatmapView
 }) {
-  // Without a recorded block size the block counters stay honest block counts.
-  const kind = cut.blockScaled === true && blockScale === null ? "count" : cut.kind
-  const valueScale = blockScale ?? 1
+  const { kind, scale: valueScale } = cutScale(cut, scales)
   // A gauge cell is a plain reading, not a rate.
   const suffix = view.cumulative ? t("unit.per_second") : ""
   const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
@@ -561,5 +590,7 @@ function ActivityStrip({ cells, cursor, hour, max, onCursor }: {
 function formatValue(stored: number, kind: ActivityCut["kind"], locale: Locale, suffix = ""): string {
   if (kind === "bytes") return humanBytes(stored, locale, suffix)
   if (kind === "milliseconds") return humanDuration(stored, locale, "milliseconds", suffix)
+  if (kind === "seconds") return humanDuration(stored, locale, "seconds", suffix)
+  if (kind === "nanoseconds") return humanDuration(stored, locale, "nanoseconds", suffix)
   return measure(stored, locale, suffix)
 }

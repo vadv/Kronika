@@ -140,3 +140,13 @@ test("collapsing a view folds the tail rows into the others band", () => {
   assert.deepEqual(collapsed.others.cells, [2])
   assert.equal(collapseHeatmapView(view, 3), view)
 })
+
+test("cut scales fall back to honest raw counts without the recorded fact", async () => {
+  const { cutScale } = await import("../src/activity-cuts.ts")
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: 8192, clockTicks: null }), { scale: 8192, kind: "bytes" })
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: 100 }), { scale: 0.01, kind: "seconds" })
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "kib" }, { blockSize: null, clockTicks: null }), { scale: 1024, kind: "bytes" })
+  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "count" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+})

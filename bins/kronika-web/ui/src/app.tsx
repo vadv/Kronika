@@ -1,5 +1,6 @@
 import { Activity, ChartLine, CircleHelp, LogOut, Moon, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
+import { ProcessesActivity } from "./activity"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 
@@ -968,6 +969,7 @@ function App({ locale, onLocale, t }: {
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
         </div>
+        <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} densePageState={densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
