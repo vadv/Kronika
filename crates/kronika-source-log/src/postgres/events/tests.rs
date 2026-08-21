@@ -284,3 +284,43 @@ fn a_log_record_that_matches_no_shape_produces_nothing() {
 
     assert!(events.is_empty());
 }
+
+#[test]
+fn an_aggressive_autovacuum_report_is_still_a_vacuum() {
+    let event = parse_autovacuum(
+        "automatic aggressive vacuum of table \"shop.public.orders\": index scans: 1",
+        TS,
+    )
+    .expect("an aggressive vacuum report");
+    assert_eq!(event.kind, AutovacuumKind::Vacuum);
+    assert_eq!(event.relation, Some("shop.public.orders".to_owned()));
+
+    let wraparound = parse_autovacuum(
+        "automatic vacuum to prevent wraparound of table \"shop.public.orders\": index scans: 0",
+        TS,
+    )
+    .expect("a wraparound vacuum report");
+    assert_eq!(wraparound.kind, AutovacuumKind::Vacuum);
+}
+
+#[test]
+fn an_extended_protocol_execute_is_a_slow_statement() {
+    let (duration_ms, sql) =
+        parse_slow_query("duration: 250.500 ms  execute stmt_7: select * from orders")
+            .expect("an execute line");
+    close(duration_ms, 250.5);
+    assert_eq!(sql, "select * from orders");
+
+    let (_, unnamed) = parse_slow_query("duration: 9.100 ms  execute <unnamed>: select 1")
+        .expect("an unnamed execute line");
+    assert_eq!(unnamed, "select 1");
+
+    assert_eq!(
+        parse_slow_query("duration: 1.000 ms  bind stmt_7: select 1"),
+        None
+    );
+    assert_eq!(
+        parse_slow_query("duration: 1.000 ms  parse stmt_7: select 1"),
+        None
+    );
+}

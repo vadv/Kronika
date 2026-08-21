@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import type { DataRow } from "./api"
+import { acceptResponse, loadSnapshot, type DataRow } from "./api"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { EVENT_TIERS, type EventEntry, type EventStat, type EventTier } from "./events-groups"
@@ -54,6 +54,7 @@ export function entryTitle(entry: EventEntry, t: Translate, locale: Locale): str
   }
   if (stat.kind === "pg.locks") {
     const duration = stat.maxMs === null ? "?" : humanDuration(stat.maxMs, locale)
+    if (stat.acquired) return t("events.entry.locks_acquired", { waiters: stat.waiters, duration })
     return stat.holders === null
       ? t("events.entry.locks_unknown", { waiters: stat.waiters, duration })
       : t("events.entry.locks", { holders: stat.holders, waiters: stat.waiters, duration })
@@ -257,11 +258,35 @@ function entryFacts(entry: EventEntry, locale: Locale, t: Translate): readonly (
   return stat.database === null ? [] : [[field("database"), stat.database]]
 }
 
+// The per-row hour fetch carries only the sample; the first occurrence's
+// larger texts are read once, when the entry is opened.
+const ERROR_TEXT_FIELDS = ["detail", "hint", "context", "statement"]
+
 function ErrorSample({ row, t }: { readonly row: DataRow | undefined; readonly t: Translate }) {
+  const [texts, setTexts] = useState<DataRow | null>(null)
+  useEffect(() => {
+    setTexts(null)
+    if (row === undefined) return
+    const controller = new AbortController()
+    acceptResponse(
+      loadSnapshot(
+        row.segmentId,
+        row.timestamp,
+        [{ section: row.logicalName, fields: ERROR_TEXT_FIELDS, typeId: row.typeId }],
+        controller.signal,
+        undefined,
+        { typeId: row.typeId, rowOrdinal: row.ordinal, fullText: true },
+      ),
+      controller.signal,
+      (page) => setTexts(page.sections[row.logicalName]?.[0] ?? null),
+    )
+    return () => controller.abort()
+  }, [row])
   if (row === undefined) return null
+  const values = { ...row.values, ...(texts?.values ?? {}) }
   const parts = (["sample", "detail", "hint", "context", "statement"] as const)
     .flatMap((field) => {
-      const content = rawText(row.values[field] ?? null)
+      const content = rawText(values[field] ?? null)
       return content === null || content === "" ? [] : [[field, content] as const]
     })
   if (parts.length === 0) return null
@@ -390,16 +415,16 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
 }) {
   const [open, setOpen] = useState(tier !== "routine")
   const [shown, setShown] = useState(TIER_ROWS)
-  const opened = useRef(false)
+  // The last expandedKey this section reacted to; a collapse by hand must not
+  // be undone by a refetch, but every new selection must still reveal itself.
+  const opened = useRef<string | null>(null)
   useEffect(() => setShown(TIER_ROWS), [hour])
   useEffect(() => {
-    if (expandedKey === null) return
+    if (expandedKey === null || opened.current === expandedKey) return
     const index = entries.findIndex((entry) => entry.key === expandedKey)
     if (index < 0) return
-    if (!opened.current) {
-      opened.current = true
-      setOpen(true)
-    }
+    opened.current = expandedKey
+    setOpen(true)
     setShown((current) => index < current ? current : index + 1)
   }, [entries, expandedKey])
   if (entries.length === 0) return null

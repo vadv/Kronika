@@ -432,6 +432,7 @@ const CHECKPOINT_COMPLETE: &str = "checkpoint complete:";
 const CHECKPOINT_TOO_FREQUENT: &str = "checkpoints are occurring too frequently";
 const DURATION_PREFIX: &str = "duration: ";
 const STATEMENT_MARKER: &str = " ms  statement: ";
+const EXECUTE_MARKER: &str = " ms  execute ";
 const TEMP_FILE_PREFIX: &str = "temporary file:";
 const CRASH_PREFIX: &str = "server process (PID ";
 const READY_MESSAGE: &str = "database system is ready to accept connections";
@@ -442,7 +443,23 @@ const SHUTDOWN_REQUESTS: &[(&str, &str)] = &[
 ];
 const AUTOVACUUM_PREFIXES: &[(&str, AutovacuumKind)] = &[
     ("automatic vacuum of table", AutovacuumKind::Vacuum),
+    (
+        "automatic aggressive vacuum of table",
+        AutovacuumKind::Vacuum,
+    ),
+    (
+        "automatic vacuum to prevent wraparound of table",
+        AutovacuumKind::Vacuum,
+    ),
+    (
+        "automatic aggressive vacuum to prevent wraparound of table",
+        AutovacuumKind::Vacuum,
+    ),
     ("automatic analyze of table", AutovacuumKind::Analyze),
+    (
+        "automatic aggressive analyze of table",
+        AutovacuumKind::Analyze,
+    ),
 ];
 
 fn parse_checkpoint(message: &str, ts: i64) -> Option<CheckpointEvent> {
@@ -534,15 +551,24 @@ fn parse_autovacuum(message: &str, ts: i64) -> Option<AutovacuumEvent> {
     })
 }
 
-/// `duration: 12.345 ms  statement: SELECT 1`.
+/// `duration: 12.345 ms  statement: SELECT 1`, or the extended protocol's
+/// `duration: 12.345 ms  execute <name>: SELECT 1`. Parse and bind steps stay
+/// dropped: their duration is not the statement's.
 fn parse_slow_query(message: &str) -> Option<(f64, String)> {
     let rest = message.strip_prefix(DURATION_PREFIX)?;
-    let at = rest.find(STATEMENT_MARKER)?;
+    let (at, sql_at) = if let Some(at) = rest.find(STATEMENT_MARKER) {
+        (at, at + STATEMENT_MARKER.len())
+    } else {
+        let at = rest.find(EXECUTE_MARKER)?;
+        let named = rest.get(at + EXECUTE_MARKER.len()..)?;
+        let colon = named.find(": ")?;
+        (at, at + EXECUTE_MARKER.len() + colon + ": ".len())
+    };
     let duration_ms = rest.get(..at)?.parse::<f64>().ok()?;
     if !duration_ms.is_finite() || duration_ms < 0.0 {
         return None;
     }
-    let sql = rest.get(at + STATEMENT_MARKER.len()..)?.trim();
+    let sql = rest.get(sql_at..)?.trim();
     Some((duration_ms, truncate(sql, MAX_TEXT_BYTES).to_owned()))
 }
 

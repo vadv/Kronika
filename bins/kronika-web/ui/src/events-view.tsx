@@ -11,20 +11,16 @@ import { findingCategory, findingKey, findingOrder, findingSource } from "./find
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
 import { shownMoment, type Locale } from "./model"
-import { parseSearch } from "./search"
+import { evaluateExpr, parseSearch } from "./search"
 import { TableFilter } from "./table-filter"
 import { Timeline } from "./timeline"
-
-export type FindingResolution = "idle" | "loading" | "ready" | "unavailable"
 
 // Threshold marks rendered before the list states how many were left out.
 const MARK_ROWS = 120
 
-export { categoryLabel, eventFieldLabel, eventValue, formatMetric } from "./events-format"
-
 // The streams the console reads, with the columns each entry renders.
 const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[] }[] = [
-  { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "detail", "hint", "context", "statement", "database", "username"] },
+  { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
   { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
   { section: "pg_log_autovacuum", fields: ["kind", "relation", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms"] },
   { section: "pg_log_slow_queries", fields: ["pattern", "sample", "count", "max_duration_ms", "total_duration_ms"] },
@@ -77,13 +73,24 @@ export function EventsView({
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
   const selectedEntry = useMemo(() => selected === null || entries === null ? null : entryOf(entries, selected), [entries, selected])
+  // Expand once per selected finding; a later refetch must not undo a collapse.
+  const expandedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (selectedEntry !== null) setExpandedKey(selectedEntry.key)
-  }, [selectedEntry])
+    if (selected === null || selectedEntry === null) return
+    const key = findingKey(selected)
+    if (expandedFor.current === key) return
+    expandedFor.current = key
+    setExpandedKey(selectedEntry.key)
+  }, [selected, selectedEntry])
   const list = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (expandedKey === null || selectedEntry?.key !== expandedKey) return
-    list.current?.querySelector(`[data-entry-key=${JSON.stringify(expandedKey)}]`)?.scrollIntoView({ block: "nearest" })
+    for (const node of list.current?.querySelectorAll("[data-entry-key]") ?? []) {
+      if (node.getAttribute("data-entry-key") === expandedKey) {
+        node.scrollIntoView({ block: "nearest" })
+        return
+      }
+    }
   }, [expandedKey, selectedEntry])
   const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
   const scoped = useMemo(() => {
@@ -100,10 +107,12 @@ export function EventsView({
       source: [sectionLabel(entry.section, t), entry.section],
       category: errorCategory(entry.stat) === null ? [] : [categoryLabel(errorCategory(entry.stat) ?? 0, t)],
     }
-    const clauses = parsedSearch.query.structured
-      ? parsedSearch.query.clauses
-      : [{ key: "text", value: parsedSearch.query.freeText ?? "" }]
-    return clauses.every((clause) => fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true)
+    const matches = (clause: { readonly key: string; readonly value: string }) =>
+      fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true
+    if (!parsedSearch.query.structured || parsedSearch.query.expr === null) {
+      return matches({ key: "text", value: parsedSearch.query.freeText ?? "" })
+    }
+    return evaluateExpr(parsedSearch.query.expr, (clause) => matches({ key: clause.key, value: clause.value }))
   }), [locale, parsedSearch, scoped, t])
   const marks = useMemo(() => (scope ?? data.findings)
     .filter((finding) => finding.kind !== "event" && !finding.logicalName.startsWith("pg_log_"))
@@ -122,7 +131,8 @@ export function EventsView({
       </header>
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={scoped?.length ?? 0} />
       <div className={`min-h-[390px] ${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
-        {visible === null && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
+        {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
+        {visible === null && !streams.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
         {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
         {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
           entries={tierEntries}
@@ -185,33 +195,52 @@ interface StreamState {
   readonly key: string
   readonly rows: Readonly<Record<string, readonly DataRow[]>> | null
   readonly loading: boolean
+  readonly failed: boolean
 }
+
+// The current hour refreshes every few seconds; re-reading whole log sections
+// that often is waste. One re-read per minute is enough for a log console.
+const STREAM_REFRESH_MIN_MS = 60_000
 
 function useEventStreams(data: HourData, hour: number, revision: number): StreamState {
   const wanted = EVENT_STREAMS
     .filter((stream) => data.availableSections.includes(stream.section))
     .map((stream) => stream.section)
     .join(",")
-  const key = `${hour}:${revision}:${wanted}`
-  const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false })
+  const key = `${hour}:${wanted}`
+  const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false, failed: false })
+  const lastRead = useRef({ key: "", at: 0 })
   useEffect(() => {
     if (wanted === "") {
-      setState({ key, rows: {}, loading: false })
+      setState({ key, rows: {}, loading: false, failed: false })
       return
     }
-    setState((current) => ({ ...current, key, loading: true }))
+    const now = Date.now()
+    if (lastRead.current.key === key && now - lastRead.current.at < STREAM_REFRESH_MIN_MS) return
+    lastRead.current = { key, at: now }
+    setState((current) => current.key === key
+      ? { ...current, loading: true }
+      : { key, rows: null, loading: true, failed: false })
     const controller = new AbortController()
     const streams = EVENT_STREAMS.filter((stream) => wanted.split(",").includes(stream.section))
+    const loads = Promise.all(streams.map((stream) => loadSeries(hour, stream.section, {}, stream.fields, controller.signal)))
     acceptResponse(
-      Promise.all(streams.map((stream) => loadSeries(hour, stream.section, {}, stream.fields, controller.signal).catch(() => []))),
+      loads,
       controller.signal,
       (loaded) => setState({
         key,
         rows: Object.fromEntries(streams.map((stream, index) => [stream.section, loaded[index] ?? []])),
         loading: false,
+        failed: false,
       }),
-      () => setState((current) => ({ ...current, loading: false })),
+      () => {
+        lastRead.current = { key: "", at: 0 }
+        setState((current) => ({ ...current, key, loading: false, failed: true }))
+      },
     )
+    loads.catch((error: unknown) => {
+      if (!controller.signal.aborted) console.error("events streams load failed", error)
+    })
     return () => controller.abort()
   }, [hour, key, revision, wanted])
   return state

@@ -15,7 +15,7 @@ export type EventStat =
   | { readonly kind: "pg.autovacuum"; readonly analyze: boolean; readonly runs: number; readonly totalMs: number | null; readonly tuplesRemoved: number | null; readonly tuplesDead: number | null }
   | { readonly kind: "pg.checkpoints"; readonly completes: number; readonly timed: number; readonly requested: number; readonly maxSyncMs: number | null; readonly buffers: number | null }
   | { readonly kind: "pg.checkpoint_warning"; readonly secondsApart: number | null }
-  | { readonly kind: "pg.locks"; readonly holders: string | null; readonly waiters: number; readonly maxMs: number | null; readonly targets: readonly string[] }
+  | { readonly kind: "pg.locks"; readonly holders: string | null; readonly acquired: boolean; readonly waiters: number; readonly maxMs: number | null; readonly targets: readonly string[] }
   | { readonly kind: "pg.lifecycle"; readonly lifecycle: number; readonly pid: number | null; readonly signal: number | null; readonly mode: string | null }
   | { readonly kind: "pgbouncer.events"; readonly level: number; readonly database: string | null }
 
@@ -159,23 +159,54 @@ function groupCheckpoints(rows: readonly DataRow[], hour: number): readonly Even
 }
 
 function groupLockEpisodes(rows: readonly DataRow[], hour: number): readonly EventEntry[] {
-  return grouped(rows, (row) => text(row, "holding_pids") ?? "")
-    .map(({ key, members }) => {
-      const waits = members.filter((row) => number(row, "kind") === 0)
-      const waiters = new Set(members.map((row) => text(row, "pid") ?? "")).size
-      return build(`locks:${key}`, "pg_log_lock_waits", members, hour, null, {
-        tier: "notable",
-        text: null,
-        count: Math.max(waits.length, 1),
-        stat: {
-          kind: "pg.locks",
-          holders: key === "" ? null : key,
-          waiters,
-          maxMs: max(members, "duration_ms"),
-          targets: unique(members.map((row) => text(row, "lock_target") ?? "")).filter((target) => target !== ""),
-        },
-      })
-    })
+  // Only a still-waiting record carries a holder list; an acquired record has
+  // no DETAIL. Episodes come from the waiting rows, and an acquired row joins
+  // the episode whose waiting rows share its recorded pid and target.
+  const episodes = grouped(rows.filter((row) => number(row, "kind") === 0), (row) => text(row, "holding_pids") ?? "")
+  const waiterOf = new Map<string, string>()
+  for (const { key, members } of episodes) {
+    for (const row of members) waiterOf.set(`${text(row, "pid") ?? ""}\u{1f}${text(row, "lock_target") ?? ""}`, key)
+  }
+  const attached = new Map<string, DataRow[]>()
+  const leftovers: DataRow[] = []
+  for (const row of rows.filter((row) => number(row, "kind") !== 0)) {
+    const key = waiterOf.get(`${text(row, "pid") ?? ""}\u{1f}${text(row, "lock_target") ?? ""}`)
+    if (key === undefined) {
+      leftovers.push(row)
+      continue
+    }
+    const joined = attached.get(key)
+    if (joined === undefined) attached.set(key, [row])
+    else joined.push(row)
+  }
+  const lockEntry = (key: string, waits: number, acquired: boolean, members: readonly DataRow[]) => build(
+    `locks:${acquired ? "acquired" : key}`,
+    "pg_log_lock_waits",
+    members,
+    hour,
+    null,
+    {
+      tier: "notable",
+      text: null,
+      count: Math.max(waits, 1),
+      stat: {
+        kind: "pg.locks",
+        holders: key === "" ? null : key,
+        acquired,
+        waiters: new Set(members.map((row) => text(row, "pid") ?? "")).size,
+        maxMs: max(members, "duration_ms"),
+        targets: unique(members.map((row) => text(row, "lock_target") ?? "")).filter((target) => target !== ""),
+      },
+    },
+  )
+  const entries = episodes.map(({ key, members }) => lockEntry(
+    key,
+    members.length,
+    false,
+    [...members, ...(attached.get(key) ?? [])].sort((left, right) => left.timestamp - right.timestamp),
+  ))
+  if (leftovers.length > 0) entries.push(lockEntry("", leftovers.length, true, leftovers))
+  return entries
 }
 
 function lifecycleEntries(rows: readonly DataRow[], hour: number): readonly EventEntry[] {
@@ -241,15 +272,21 @@ function build(
     const bucket = Math.floor((row.timestamp - hour) / MINUTE_US)
     if (bucket >= 0 && bucket < MINUTE_COLUMNS) minutes[bucket] = (minutes[bucket] ?? 0) + (weights?.[index] ?? 1)
   })
-  const timestamps = members.map((row) => row.timestamp)
+  // A group can hold more members than a spread argument list allows.
+  let firstTs = Number.POSITIVE_INFINITY
+  let lastTs = Number.NEGATIVE_INFINITY
+  for (const row of members) {
+    if (row.timestamp < firstTs) firstTs = row.timestamp
+    if (row.timestamp > lastTs) lastTs = row.timestamp
+  }
   return {
     key,
     section,
     tier: shape.tier,
     text: shape.text,
     count: shape.count ?? (weights === null ? members.length : weights.reduce((total, weight) => total + weight, 0)),
-    firstTs: Math.min(...timestamps),
-    lastTs: Math.max(...timestamps),
+    firstTs,
+    lastTs,
     minutes,
     stat: shape.stat,
     rows: members,
@@ -277,13 +314,21 @@ function sum(members: readonly DataRow[], field: string): number | null {
 }
 
 function max(members: readonly DataRow[], field: string): number | null {
-  const values = members.map((row) => number(row, field)).filter((value): value is number => value !== null)
-  return values.length === 0 ? null : Math.max(...values)
+  let found: number | null = null
+  for (const row of members) {
+    const value = number(row, field)
+    if (value !== null && (found === null || value > found)) found = value
+  }
+  return found
 }
 
 function min(members: readonly DataRow[], field: string): number | null {
-  const values = members.map((row) => number(row, field)).filter((value): value is number => value !== null)
-  return values.length === 0 ? null : Math.min(...values)
+  let found: number | null = null
+  for (const row of members) {
+    const value = number(row, field)
+    if (value !== null && (found === null || value < found)) found = value
+  }
+  return found
 }
 
 function unique(values: readonly string[]): readonly string[] {

@@ -36,8 +36,8 @@ import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "
 import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
 import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
-import { EventsView, type FindingResolution } from "./events-view"
-import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
+import { EventsView } from "./events-view"
+import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
@@ -232,16 +232,12 @@ function App({ locale, onLocale, t }: {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
   const [findingRow, setFindingRow] = useState<DataRow | null>(null)
-  const [findingResolution, setFindingResolution] = useState<FindingResolution>("idle")
-  const [findingPoints, setFindingPoints] = useState<readonly ChartPoint[]>([])
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const context = useMemo(() => selectedFinding === null ? null : entityContext(selectedFinding, findingRow, t), [findingRow, selectedFinding, t])
   const clearEntityContext = useCallback(() => {
     setSelectedFinding(null)
     setEventScope(null)
     setFindingRow(null)
-    setFindingResolution("idle")
-    setFindingPoints([])
     setSystemFocus(null)
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
@@ -626,27 +622,20 @@ function App({ locale, onLocale, t }: {
   useEffect(() => {
     if (selectedFinding === null) {
       setFindingRow(null)
-      setFindingResolution("idle")
       return
     }
-    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) {
-      setFindingResolution("ready")
-      return
-    }
+    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) return
     const loaded = resolveLocator(data, selectedFinding)?.row ?? null
     if (loaded !== null) {
       setFindingRow(loaded)
-      setFindingResolution("ready")
       return
     }
     const fields = findingProjection(selectedFinding)
     if (selectedFinding.typeId === "0" || fields.length === 0) {
       setFindingRow(null)
-      setFindingResolution("unavailable")
       return
     }
     setFindingRow(null)
-    setFindingResolution("loading")
     const controller = new AbortController()
     acceptResponse(loadSnapshot(
       selectedFinding.segmentId,
@@ -656,26 +645,10 @@ function App({ locale, onLocale, t }: {
       undefined,
       { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal, fullText: true },
     ), controller.signal, (incoming) => {
-      const row = incoming.sections[selectedFinding.logicalName]?.[0] ?? null
-      setFindingRow(row)
-      setFindingResolution(row === null ? "unavailable" : "ready")
-    }, () => setFindingResolution("unavailable"))
+      setFindingRow(incoming.sections[selectedFinding.logicalName]?.[0] ?? null)
+    })
     return () => controller.abort()
   }, [data, findingRow, selectedFinding])
-  useEffect(() => {
-    setFindingPoints([])
-    if (selectedFinding === null || findingRow === null || hour === null) return
-    const request = findingHistoryRequest(selectedFinding, findingRow)
-    if (request === null) {
-      setFindingPoints(findingHistory(selectedFinding, [findingRow], data))
-      return
-    }
-    const controller = new AbortController()
-    const historyTypeId = selectedFinding.logicalName === "os_process" ? undefined : selectedFinding.typeId
-    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, historyTypeId), controller.signal,
-      (rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)), () => setFindingPoints([]))
-    return () => controller.abort()
-  }, [data, findingRow, hour, selectedFinding])
   const pgFocus = selectedFinding !== null && selectedFinding.logicalName.startsWith("pg_") ? contextRow : null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
@@ -823,11 +796,8 @@ function App({ locale, onLocale, t }: {
     followsLatest.current = false
     setCursor(finding.timestamp)
     setFindingRow(null)
-    setFindingResolution("loading")
-    setFindingPoints([])
     if (grouped.length > 1) {
       setSelectedFinding(null)
-      setFindingResolution("idle")
       setEventScope(grouped)
       setInspectorPanel(null)
       navigateSearchSurface("events")
@@ -838,10 +808,7 @@ function App({ locale, onLocale, t }: {
     setEventScope(null)
     setOrder(null)
     const resolved = resolveLocator(data, finding)
-    if (resolved !== null) {
-      setFindingRow(resolved.row)
-      setFindingResolution("ready")
-    }
+    if (resolved !== null) setFindingRow(resolved.row)
     const route = findingRoute(finding)
     if (route === "processes") {
       navigateSearchSurface("os_process")

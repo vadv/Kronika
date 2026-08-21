@@ -62,19 +62,34 @@ test("lock waits group into one episode per recorded holder list", () => {
     pg_log_lock_waits: [
       lockWait(0, 10, { kind: 0, pid: 2078, lock_mode: "ShareLock", lock_target: "transaction 987", duration_ms: 1000.1, holding_pids: "583", statement: "update orders" }),
       lockWait(1, 10, { kind: 0, pid: 456, lock_mode: "ShareLock", lock_target: "transaction 987", duration_ms: 1000.2, holding_pids: "583", statement: "delete from orders" }),
-      lockWait(2, 11, { kind: 1, pid: 2078, lock_mode: "ShareLock", lock_target: "transaction 987", duration_ms: 40_000, holding_pids: "583" }),
+      lockWait(2, 11, { kind: 1, pid: 2078, lock_mode: "ShareLock", lock_target: "transaction 987", duration_ms: 40_000 }),
       lockWait(3, 40, { kind: 0, pid: 900, lock_mode: "AccessExclusiveLock", lock_target: "relation 16384 of database 5", duration_ms: 1000.0, holding_pids: "77, 78" }),
     ],
   }, HOUR)
 
   assert.equal(entries.length, 2)
   const episode = entries.find((entry) => entry.stat.holders === "583")
+  assert.equal(episode.stat.acquired, false)
   assert.equal(episode.stat.waiters, 2)
   assert.equal(episode.stat.maxMs, 40_000)
   assert.deepEqual(episode.stat.targets, ["transaction 987"])
   assert.equal(episode.count, 2)
+  assert.equal(episode.rows.length, 3)
   const composite = entries.find((entry) => entry.stat.holders === "77, 78")
   assert.equal(composite.stat.waiters, 1)
+})
+
+test("an acquired record without a matching wait forms its own entry", () => {
+  const entries = events.groupEvents({
+    pg_log_lock_waits: [
+      lockWait(0, 5, { kind: 1, pid: 999, lock_mode: "RowExclusiveLock", lock_target: "transaction 44", duration_ms: 1200.0 }),
+    ],
+  }, HOUR)
+
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].stat.acquired, true)
+  assert.equal(entries[0].stat.holders, null)
+  assert.equal(entries[0].stat.maxMs, 1200)
 })
 
 test("checkpoints collapse into one entry with the trigger mix and a separate too-frequent warning", () => {

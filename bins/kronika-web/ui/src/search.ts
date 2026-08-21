@@ -470,7 +470,7 @@ function renderExpr(expr: SearchExpr, parentPrecedence = 0): string {
   return precedence < parentPrecedence ? `(${rendered})` : rendered
 }
 
-function evaluateExpr(expr: SearchExpr, predicate: (clause: SearchClause) => boolean): boolean {
+export function evaluateExpr(expr: SearchExpr, predicate: (clause: SearchClause) => boolean): boolean {
   if (expr.kind === "predicate") return predicate(expr.predicate)
   if (expr.kind === "and") return evaluateExpr(expr.left, predicate) && evaluateExpr(expr.right, predicate)
   return evaluateExpr(expr.left, predicate) || evaluateExpr(expr.right, predicate)

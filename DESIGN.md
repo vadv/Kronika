@@ -597,10 +597,12 @@ presentation-side ordering the activity ledger already uses.
 
 Lock waits group into episodes by the recorded `holding_pids` list: one entry
 per holder set, the waiters under it with their recorded modes, targets,
-durations and statements, exactly as the rows carry them. The log does not
-carry the holder's own statement, and the console says so instead of guessing;
-the structured lock graph at a snapshot remains `pg_locks` on the Locks
-surface.
+durations and statements, exactly as the rows carry them. An acquired record
+carries no holder list; it joins the episode whose waiting rows share its
+recorded pid and target, and the leftovers form their own entry. The log does
+not carry the holder's own statement, and the console says so instead of
+guessing; the structured lock graph at a snapshot remains `pg_locks` on the
+Locks surface.
 
 Each event type carries one fixed tier in the client dictionary — routine,
 notable, or critical — an attribute of the type written once and translated

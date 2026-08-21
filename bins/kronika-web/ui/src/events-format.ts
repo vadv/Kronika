@@ -16,11 +16,6 @@ export function categoryLabel(category: number, t: Translate): string {
   return key === undefined ? String(category) : t(key)
 }
 
-export function eventFieldLabel(field: string, t: Translate): string {
-  const translated = t(`events.field.${field}`)
-  return translated === `events.field.${field}` ? field : translated
-}
-
 export function eventValue(finding: { readonly logicalName: string }, field: string, cell: Cell, locale: Locale, t: Translate): string {
   if (field === "category") {
     const category = asNumber(cell)
