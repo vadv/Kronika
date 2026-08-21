@@ -95,26 +95,37 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
     await settleLayout(cdp)
 
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
+    assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
+    assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
     const ledger = await cdp.evaluate(`(() => ({
-      top: document.querySelector('[data-testid="statements-activity"] header span')?.textContent ?? "",
+      top: document.querySelector('[data-testid="activity-top-count"]')?.textContent ?? "",
       totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
       others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
       cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
+      help: document.querySelectorAll('[data-testid="statements-activity"] .help-dot').length,
     }))()`)
     assert.equal(ledger.totals, true)
     assert.match(ledger.top, /2/)
     assert.match(ledger.others, /1/)
     assert.equal(ledger.cells, 6)
+    assert.ok(ledger.help >= 3)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-top-50"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-top-50"]')?.getAttribute("aria-pressed") === "true"`, "the deeper rank")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-overlay"] [data-testid="activity-row"]').length === 2`, "the reloaded full-screen ledger", 15_000)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') === null`, "the restored ledger")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-exec_time"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the default cut back")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the ledger collapsed again")
     const browserMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",

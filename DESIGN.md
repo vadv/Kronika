@@ -524,17 +524,19 @@ always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
 
-The Statements page opens with an hour activity ledger above its table: the
-server's ranked heatmap for one curated cut — execution time, calls, rows,
-shared blocks read or dirtied, temp blocks written, WAL bytes — drawn as one
-strip per statement with the hour total and the at-cursor reading beside it. A
+The Statements page carries an hour activity ledger above its table,
+collapsed by default: nothing is requested until the operator opens it, and
+the open state persists locally. Opening it requests the server's ranked
+heatmap for one curated cut — execution time, calls, rows, shared blocks read
+or dirtied, temp blocks written, WAL bytes — drawn as one strip per statement
+with the hour total and the at-cursor reading beside it. A
 pinned totals band shows the whole instance's rhythm and a pinned others band
 carries everything beyond the ranked rows. Cells share one global color scale
 by default with an explicit per-row alternative; a missing interval draws
 nothing and a real zero draws the faintest step. The strips follow the shared
 cursor, a cell click moves it, a row click filters the table to that statement,
-and an explicit control expands the ledger to full screen with more ranked
-rows. Block counters scale to bytes with the recorded block size and stay
+and an explicit control expands the ledger to full screen, where the rank
+depth is selectable. Block counters scale to bytes with the recorded block size and stay
 block counts without one. Query text never travels with the ranking response:
 the loaded table page labels most ranked rows and the rest fetch one bounded
 text row each.
