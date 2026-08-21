@@ -7,6 +7,8 @@
 //! `n_ins_since_vacuum`, PG16 the new-page updates and the last-scan
 //! timestamps, PG18 the cumulative vacuum and analyze times.
 
+use std::sync::Arc;
+
 use kronika_registry::pg_stat_user_tables::{
     PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4,
 };
@@ -149,7 +151,7 @@ pub struct UserTablesRow {
     /// Database oid of the connection that produced this row.
     pub datid: u32,
     /// Database name of the connection.
-    pub datname: String,
+    pub datname: Arc<str>,
     /// Table oid.
     pub relid: u32,
     /// Schema name.
@@ -483,14 +485,15 @@ pub fn to_v1<E>(
 
 /// Read a raw row, filling in the database the connection is attached to.
 fn row_from_pg(
-    row: &tokio_postgres::Row,
-    database: &Database,
+    row: query::IndexedRow<'_>,
+    datid: u32,
+    datname: &Arc<str>,
     version: UserTablesVersion,
 ) -> anyhow::Result<UserTablesRow> {
     Ok(UserTablesRow {
         ts: row.try_get("ts_us")?,
-        datid: database.oid,
-        datname: database.name.clone(),
+        datid,
+        datname: Arc::clone(datname),
         relid: row.try_get("relid")?,
         schemaname: row.try_get("schemaname")?,
         relname: row.try_get("relname")?,
@@ -574,13 +577,14 @@ pub async fn collect_user_tables<E>(
     sink: impl FnMut(Batch<UserTablesRow>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>> {
     let version = user_tables_version(major);
+    let datname = Arc::<str>::from(database.name.as_str());
     query::read_batched(
         session,
         &user_tables_query(version),
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| row_from_pg(row, database, version),
+        |row| row_from_pg(row, database.oid, &datname, version),
         |_row| 0,
         sink,
     )

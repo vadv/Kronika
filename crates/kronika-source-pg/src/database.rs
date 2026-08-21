@@ -383,7 +383,10 @@ pub fn to_v1<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: DatabaseVersion) -> anyhow::Result<DatabaseRow> {
+fn row_from_pg(
+    row: query::IndexedRow<'_>,
+    version: DatabaseVersion,
+) -> anyhow::Result<DatabaseRow> {
     let has_checksum = matches!(
         version,
         DatabaseVersion::V2 | DatabaseVersion::V3 | DatabaseVersion::V4

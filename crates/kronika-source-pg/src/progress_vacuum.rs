@@ -278,7 +278,7 @@ pub fn to_v3<E>(
 }
 
 fn row_from_pg(
-    row: &tokio_postgres::Row,
+    row: query::IndexedRow<'_>,
     version: ProgressVacuumVersion,
 ) -> anyhow::Result<ProgressVacuumRow> {
     Ok(match version {

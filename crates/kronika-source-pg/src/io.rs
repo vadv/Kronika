@@ -182,7 +182,7 @@ pub fn to_v2<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: IoVersion) -> anyhow::Result<IoRow> {
+fn row_from_pg(row: query::IndexedRow<'_>, version: IoVersion) -> anyhow::Result<IoRow> {
     let is_v2 = matches!(version, IoVersion::V2);
     Ok(IoRow {
         ts: row.try_get("ts_us")?,
