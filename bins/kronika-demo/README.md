@@ -103,10 +103,10 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Tables per schema. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Concurrent setup connections. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Long-lived DML sessions. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Independent lock chains per round. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Transactions in each lock chain. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Lock hold time per link, milliseconds. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Pause between lock rounds, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Total lock chains: one remains contended and the others run in rounds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Transactions in each lock chain; must be at least two. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Lock hold time per link in the cycling chains, milliseconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Pause between cycling lock rounds, seconds. |
 
 Each session uses a fixed pseudo-random sequence. Four table shapes produce
 varied statements across 160 tables without pathological setup load. Steady

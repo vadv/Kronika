@@ -33,7 +33,7 @@ pub(crate) struct WorkloadConfig {
     pub(crate) ddl_concurrency: u32,
     /// How many long-lived sessions run steady-state DML.
     pub(crate) sessions: u32,
-    /// How many independent lock chains run in each round.
+    /// Total independent lock chains: one continuous and the rest periodic.
     pub(crate) lock_chains: u32,
     /// How many transactions make up one lock chain.
     pub(crate) lock_chain_depth: u32,
@@ -119,13 +119,13 @@ impl WorkloadConfig {
             ),
             ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions),
             ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains),
-            (
-                "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH",
-                self.lock_chain_depth,
-            ),
         ] {
             anyhow::ensure!(value > 0, "{key} must be greater than zero");
         }
+        anyhow::ensure!(
+            self.lock_chain_depth > 1,
+            "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH must be at least two"
+        );
         anyhow::ensure!(
             self.lock_hold_ms > 0,
             "KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS must be greater than zero"

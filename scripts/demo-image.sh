@@ -37,6 +37,10 @@ clean)
     ;;
 status)
     "${COMPOSE[@]}" ps
+    container=$("${COMPOSE[@]}" ps --quiet kronika)
+    if [[ -n $container ]]; then
+        docker inspect --format '{{json .State.Health}}' "$container"
+    fi
     ;;
 logs)
     "${COMPOSE[@]}" logs --follow

@@ -104,10 +104,10 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Таблиц в каждой схеме. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Параллельных соединений при настройке. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Долгоживущих DML-сессий. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Независимых цепочек блокировок в раунде. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Транзакций в цепочке блокировок. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Время удержания блокировки звеном, мс. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Пауза между раундами, с. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Общее число цепочек: одна постоянно ожидает блокировку, остальные запускаются раундами. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Число транзакций в каждой цепочке, не меньше двух. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Время удержания блокировки звеном циклической цепочки, мс. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Пауза между раундами циклических цепочек, с. |
 
 Каждая сессия использует фиксированную псевдослучайную последовательность.
 Четыре формы создают разные операторы для 160 таблиц без патологической

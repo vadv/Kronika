@@ -1,7 +1,8 @@
 //! Lock-wait chains: several independent groups of transactions that
 //! deliberately serialize on the same row, so `pg_locks`, blocked sessions in
 //! `pg_stat_activity`, and `pg_log_lock_waits` events are real, not
-//! simulated.
+//! simulated. One chain stays contended so collection cadence cannot miss the
+//! complete `pg_locks` surface; the remaining chains cycle.
 //!
 //! Each chain targets its own row. Every link in a chain issues the exact
 //! same `UPDATE ... WHERE id = <chain key>` inside its own transaction and
@@ -22,10 +23,20 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
         eprintln!("kronika-demo: could not seed lock-chain keys: {error:#}");
         return;
     }
+
+    let continuous = tokio::spawn({
+        let dsn = config.dsn.clone();
+        let table = table.clone();
+        let depth = config.lock_chain_depth;
+        let stop = Arc::clone(stop);
+        async move { hold_continuous_chain(&dsn, &table, depth, &stop).await }
+    });
+
     while !stop.load(Ordering::Relaxed) {
         run_one_round(config, &table).await;
         tokio::time::sleep(Duration::from_secs(config.lock_round_interval_s)).await;
     }
+    let _joined = continuous.await;
 }
 
 /// Insert one row per chain, so every chain's `UPDATE` has a row to lock.
@@ -46,7 +57,7 @@ async fn ensure_keys(dsn: &str, table: &str, chains: u32) -> anyhow::Result<()> 
 
 async fn run_one_round(config: &WorkloadConfig, table: &str) {
     let mut links = Vec::new();
-    for chain in 0..config.lock_chains {
+    for chain in 1..config.lock_chains {
         for _link in 0..config.lock_chain_depth {
             let dsn = config.dsn.clone();
             let table = table.to_owned();
@@ -58,6 +69,65 @@ async fn run_one_round(config: &WorkloadConfig, table: &str) {
     }
     for link in links {
         let _joined = link.await;
+    }
+}
+
+/// Keep one real wait chain present until shutdown.
+///
+/// The open transaction pins each `PgBouncer` client to one server connection.
+/// Local timeout changes live only for these synthetic transactions.
+async fn hold_continuous_chain(dsn: &str, table: &str, depth: u32, stop: &AtomicBool) {
+    let holder = match connect(dsn).await {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("kronika-demo: continuous lock holder could not connect: {error:#}");
+            return;
+        }
+    };
+    let key = 0_i64;
+    if let Err(error) = holder
+        .batch_execute(&format!(
+            "begin; set local idle_in_transaction_session_timeout = 0; \
+             update {table} set id = id where id = {key}"
+        ))
+        .await
+    {
+        eprintln!("kronika-demo: continuous lock holder could not lock row: {error:?}");
+        return;
+    }
+
+    let mut waiters = Vec::new();
+    for _link in 1..depth {
+        let dsn = dsn.to_owned();
+        let table = table.to_owned();
+        waiters.push(tokio::spawn(async move {
+            let client = match connect(&dsn).await {
+                Ok(client) => client,
+                Err(error) => {
+                    eprintln!("kronika-demo: continuous lock waiter could not connect: {error:#}");
+                    return;
+                }
+            };
+            if let Err(error) = client
+                .batch_execute(&format!(
+                    "begin; set local statement_timeout = 0; \
+                     update {table} set id = id where id = {key}; commit"
+                ))
+                .await
+            {
+                eprintln!("kronika-demo: continuous lock waiter failed: {error:?}");
+            }
+        }));
+    }
+
+    while !stop.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if let Err(error) = holder.batch_execute("commit").await {
+        eprintln!("kronika-demo: continuous lock holder could not commit: {error:?}");
+    }
+    for waiter in waiters {
+        let _joined = waiter.await;
     }
 }
 

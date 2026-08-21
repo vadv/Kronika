@@ -33,10 +33,15 @@ fn workload_dimensions_and_timers_must_be_positive() {
         |value: &mut WorkloadConfig| value.ddl_concurrency = 0,
         |value: &mut WorkloadConfig| value.sessions = 0,
         |value: &mut WorkloadConfig| value.lock_chains = 0,
-        |value: &mut WorkloadConfig| value.lock_chain_depth = 0,
     ] {
         let mut invalid = valid.clone();
         invalidate(&mut invalid);
+        assert!(invalid.validate().is_err());
+    }
+
+    for depth in [0, 1] {
+        let mut invalid = valid.clone();
+        invalid.lock_chain_depth = depth;
         assert!(invalid.validate().is_err());
     }
 
