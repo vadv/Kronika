@@ -148,7 +148,9 @@
 }
 @utility lens-tabs {
   display: flex; gap: 2px;
-  & > button { background: transparent; border: 0; border-radius: var(--radius-xs); color: var(--color-fg3); cursor: pointer; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; min-width: 56px; padding: 4px 10px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+  /* Every control on a lens bar shares one 25px line, so the tabs, the metric
+     chips and the status read as one row rather than three heights. */
+  & > button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs); color: var(--color-fg3); cursor: pointer; display: inline-flex; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; justify-content: center; min-height: 25px; min-width: 56px; padding: 2px 10px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
   & > button:hover { background: var(--color-s3); color: var(--color-fg2); }
   & > button:is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"]) { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
 }
@@ -225,9 +227,14 @@
   &:first-child { border-top: 0; }
 }
 @utility activity-row-link {
+  border-left: 2px solid transparent;
   cursor: pointer;
   transition: background-color 80ms var(--ease-out);
   &:hover { background: var(--color-s3); }
+  /* The drilled row stays marked: its filter now owns the table below, which
+     the reader reaches only after the ledger steps out of the way. */
+  &[data-active] { background: var(--color-accent-soft); border-left-color: var(--color-accent); }
+  &[data-active]:hover { background: var(--color-accent-soft); }
 }
 @utility activity-strip {
   display: block;
@@ -485,7 +492,7 @@
   width: 64px;
 }
 .timeline-open-chart:hover { background: var(--color-s3); }
-.snapshot-time { flex: 0 0 auto; white-space: nowrap; }
+.snapshot-time { align-items: center; display: inline-flex; flex: 0 0 auto; min-height: 25px; white-space: nowrap; }
 
 /* While the Inspector holds the full chart, the preview yields its figure and
    keeps its rail: the plot and its marker lane exist once. */

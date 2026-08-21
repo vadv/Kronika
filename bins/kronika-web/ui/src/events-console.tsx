@@ -459,9 +459,12 @@ function rawParts(row: DataRow, stat: EventStat, locale: Locale, t: Translate): 
   ]
 }
 
-export function EventTierSection({ entries, expandedKey, hour, locale, onCursor, onToggle, t, tier }: {
+export function EventTierSection({ entries, expandedKey, filtered, hour, locale, onCursor, onToggle, t, tier }: {
   readonly entries: readonly EventEntry[]
   readonly expandedKey: string | null
+  // A digest tile or a search narrows the console to what the reader asked
+  // for; a tier that stays folded then answers with nothing.
+  readonly filtered: boolean
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
@@ -471,6 +474,11 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
 }) {
   const [open, setOpen] = useState(tier !== "routine")
   const [shown, setShown] = useState(TIER_ROWS)
+  const folded = useRef(false)
+  useEffect(() => {
+    if (!filtered || folded.current) return
+    setOpen(true)
+  }, [filtered])
   // Do not reopen a manually collapsed section after a refetch.
   const opened = useRef<string | null>(null)
   useEffect(() => setShown(TIER_ROWS), [hour])
@@ -488,7 +496,7 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
     <button
       aria-expanded={open}
       className="flex w-full cursor-pointer items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[6px] text-left transition-colors hover:bg-s3"
-      onClick={() => setOpen((current) => !current)}
+      onClick={() => setOpen((current) => { folded.current = current; return !current })}
       type="button"
     >
       <ChevronRight aria-hidden="true" className={`flex-none text-fg3 transition-transform duration-100 motion-reduce:transition-none ${open ? "rotate-90" : ""}`} size={13} />

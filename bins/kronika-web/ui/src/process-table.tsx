@@ -157,7 +157,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
   return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden max-[760px]:flex-wrap max-[760px]:overflow-visible" data-status={status}>
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="flex h-[25px] flex-none items-baseline gap-1.5 px-2" key={metric.field}>
+      return <div className="flex h-[25px] flex-none items-center gap-1.5 px-2" key={metric.field}>
         <span className="whitespace-nowrap text-xs font-medium text-fg3">{t(metric.key)}</span>
         <strong className="flex-none font-mono text-xs tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />

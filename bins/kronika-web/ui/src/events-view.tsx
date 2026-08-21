@@ -126,6 +126,7 @@ export function EventsView({
     .filter((finding) => finding.kind !== "event" && !finding.logicalName.startsWith("pg_log_"))
     .slice()
     .sort((left, right) => findingOrder(right, left)), [data.findings, scope])
+  const markGroups = useMemo(() => groupMarks(marks, hour, t), [hour, marks, t])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
   const busy = loading || streams.loading
@@ -146,6 +147,7 @@ export function EventsView({
         {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
           entries={tierEntries}
           expandedKey={expandedKey}
+          filtered={digest !== null || pattern !== "" || scope !== null}
           hour={hour}
           key={tier}
           locale={locale}
@@ -154,14 +156,23 @@ export function EventsView({
           t={t}
           tier={tier}
         />)}
-        {marks.length > 0 && <section data-testid="event-marks">
-          <header className="flex items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[5px]">
+        {markGroups.length > 0 && <section data-testid="event-marks">
+          <header className="flex items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[6px]">
             <Diamond aria-hidden="true" className="text-bad" size={13} />
             <span className="text-xs font-medium text-fg2">{t("events.marks")}</span>
-            <span className="text-xs tabular-nums text-fg3">{marks.length}</span>
+            <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: markGroups.length, count: marks.length })}</span>
           </header>
-          {marks.slice(0, MARK_ROWS).map((finding) => <MarkRow finding={finding} key={findingKey(finding)} onFinding={onFinding} t={t} />)}
-          {marks.length > MARK_ROWS && <p className="px-[9px] py-1.5 text-xs text-fg3">{t("events.marks.more", { count: marks.length - MARK_ROWS })}</p>}
+          {markGroups.map((group) => <MarkGroupRow
+            expanded={expandedKey === group.key}
+            group={group}
+            hour={hour}
+            key={group.key}
+            locale={locale}
+            onCursor={onCursor}
+            onFinding={onFinding}
+            onToggle={() => setExpandedKey((current) => current === group.key ? null : group.key)}
+            t={t}
+          />)}
         </section>}
       </div>
     </section>
@@ -242,26 +253,134 @@ function DigestStrip({ bad, minutes }: { readonly bad: boolean; readonly minutes
   </svg>
 }
 
-function MarkRow({ finding, onFinding, t }: {
-  readonly finding: Finding
+// A threshold crossing repeats for as long as the value stays across, so one
+// hour of a busy host is dozens of identical rows. They group the way log
+// events do: one entry per crossed metric, with the hour's shape under it.
+interface MarkGroup {
+  readonly key: string
+  readonly kind: Finding["kind"]
+  readonly title: string
+  readonly source: string
+  readonly findings: readonly Finding[]
+  readonly minutes: readonly number[]
+}
+
+function groupMarks(marks: readonly Finding[], hour: number, t: Translate): readonly MarkGroup[] {
+  const groups = new Map<string, Finding[]>()
+  for (const finding of marks) {
+    const key = `${finding.kind}\u{1f}${finding.logicalName}\u{1f}${finding.typeId}\u{1f}${finding.fieldOrdinal}`
+    const members = groups.get(key)
+    if (members === undefined) groups.set(key, [finding])
+    else members.push(finding)
+  }
+  return [...groups.entries()].flatMap(([key, findings]) => {
+    const [first] = findings
+    if (first === undefined) return []
+    const minutes = Array.from({ length: MINUTE_COLUMNS }, () => 0)
+    for (const finding of findings) {
+      const minute = Math.floor((finding.timestamp - hour) / 60_000_000)
+      if (minute >= 0 && minute < MINUTE_COLUMNS) minutes[minute] = (minutes[minute] ?? 0) + 1
+    }
+    return [{
+      key: `mark:${key}`,
+      kind: first.kind,
+      title: findingCategory(first, t),
+      source: findingSource(first, t),
+      findings: findings.slice().sort((left, right) => findingOrder(right, left)),
+      minutes,
+    }]
+  }).sort((left, right) => right.findings.length - left.findings.length || left.key.localeCompare(right.key))
+}
+
+function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFinding, onToggle, t }: {
+  readonly expanded: boolean
+  readonly group: MarkGroup
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding) => void
+  readonly onToggle: () => void
   readonly t: Translate
 }) {
   const time = useDisplayTime()
+  const [shown, setShown] = useState(MARK_ROWS)
+  const first = group.findings[group.findings.length - 1]
+  const last = group.findings[0]
+  const moments = first === undefined || last === undefined
+    ? ""
+    : first.timestamp === last.timestamp
+      ? time.timestamp(first.timestamp)
+      : `${time.timestamp(first.timestamp)}–${time.timestamp(last.timestamp)}`
+  const Icon = group.kind === "spike" ? TriangleAlert : Diamond
   return <div className="border-b border-line" data-testid="event-mark">
     <button
-      aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`}
-      className="grid w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3"
-      onClick={() => onFinding(finding)}
+      aria-expanded={expanded}
+      className="grid w-full cursor-pointer grid-cols-[26px_minmax(0,1fr)_auto_120px_auto] items-center gap-2.5 border-0 bg-transparent px-[9px] py-[7px] text-left text-fg2 transition-colors hover:bg-s3 aria-expanded:bg-s2 max-[760px]:grid-cols-[26px_minmax(0,1fr)_auto]"
+      onClick={onToggle}
       type="button"
     >
-      {finding.kind === "spike"
-        ? <TriangleAlert aria-hidden="true" className="text-warn" size={15} />
-        : <Diamond aria-hidden="true" className="text-bad" size={15} />}
-      <span><strong className="block text-xs font-medium">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
-      <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(finding.timestamp)}</time>
+      <span aria-hidden="true" className={`flex h-[24px] w-[24px] items-center justify-center rounded-[var(--radius-sm)] ${group.kind === "spike" ? "bg-warn/15 text-warn" : "bg-bad/15 text-bad"}`}>
+        <Icon size={13} />
+      </span>
+      <span className="min-w-0">
+        <strong className="block truncate text-xs font-medium text-fg">{group.source}</strong>
+        <small className="mt-[3px] block truncate text-xs text-fg3">{group.title}</small>
+      </span>
+      <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(group.findings.length, locale)}</span>
+      <span className="max-[760px]:hidden"><MarkStrip group={group} hour={hour} onCursor={onCursor} t={t} /></span>
+      <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
+    {expanded && <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]">
+      <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
+        {group.findings.slice(0, shown).map((finding) => <button
+          className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2.5 border-0 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-s3"
+          data-testid="event-mark-crossing"
+          key={findingKey(finding)}
+          onClick={() => onFinding(finding)}
+          type="button"
+        >
+          <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(finding.timestamp)}</time>
+          <span className="truncate text-xs text-fg2">{findingSource(finding, t)}</span>
+        </button>)}
+      </div>
+      {group.findings.length > shown && <button className="mt-1.5 cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" onClick={() => setShown((current) => current + MARK_ROWS)} type="button">{t("events.marks.more", { count: group.findings.length - shown })}</button>}
+    </div>}
   </div>
+}
+
+function MarkStrip({ group, hour, onCursor, t }: {
+  readonly group: MarkGroup
+  readonly hour: number
+  readonly onCursor: (timestamp: number) => void
+  readonly t: Translate
+}) {
+  const peak = Math.max(...group.minutes, 1)
+  const columns = group.minutes.length
+  return <button
+    aria-label={t("events.strip")}
+    className="block h-[24px] w-[120px] flex-none cursor-pointer rounded-[var(--radius-xs)] border-0 bg-transparent p-0 transition-colors hover:bg-s2"
+    onClick={(event) => {
+      event.stopPropagation()
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const minute = Math.min(columns - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
+      onCursor(hour + minute * 60_000_000)
+    }}
+    tabIndex={-1}
+    type="button"
+  >
+    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 24`}>
+      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="23.5" y2="23.5" />
+      {group.minutes.map((count, minute) => count === 0 ? null : <rect
+        className={group.kind === "spike" ? "fill-warn" : "fill-bad"}
+        height={Math.max(2, Math.round((count / peak) * 21))}
+        key={minute}
+        rx="0.5"
+        width="1.6"
+        x={minute * 2 + 0.2}
+        y={23 - Math.max(2, Math.round((count / peak) * 21))}
+      />)}
+    </svg>
+  </button>
 }
 
 function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {

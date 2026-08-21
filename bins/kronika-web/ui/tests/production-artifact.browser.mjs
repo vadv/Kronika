@@ -1141,7 +1141,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await assertSearchControlContained(cdp, "Events search")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark-crossing"]') !== null`, "the grouped crossings of one mark")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark-crossing"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
@@ -4441,7 +4443,9 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
-    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark-crossing"]') !== null`, "the grouped crossings of one mark")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark-crossing"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark leaves the Events console")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])

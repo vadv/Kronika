@@ -121,7 +121,7 @@ export function LabelHelp({
       </span>
       {open && typeof document !== "undefined" && createPortal(
         <span
-          className="fixed z-[1000] max-h-[calc(100vh_-_16px)] w-max max-w-[min(310px,70vw,calc(100vw_-_16px))] overflow-auto border border-line4 bg-s2 px-[9px] py-2 text-left text-sm normal-case leading-normal text-fg shadow-[0_8px_24px_var(--color-shadow-a)]"
+          className="fixed z-[1000] max-h-[calc(100vh_-_16px)] w-max max-w-[min(310px,70vw,calc(100vw_-_16px))] overflow-auto rounded-[var(--radius-sm)] border border-line3 bg-s2 px-[10px] py-[7px] text-left text-sm normal-case leading-[1.45] text-fg shadow-pop"
           data-placement={position?.placement}
           data-testid="help-tooltip"
           id={id}
