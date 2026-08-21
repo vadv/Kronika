@@ -38,7 +38,7 @@ test("all detail key/value rows share a readable label track and bounded value t
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)
   assert.match(composition, /className={`detail-dd/)
-  for (const view of ["detail.tsx", "postgres-view.tsx", "events-view.tsx", "postgres-relations-view.tsx"]) {
+  for (const view of ["detail.tsx", "postgres-view.tsx", "events-console.tsx", "postgres-relations-view.tsx"]) {
     const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
     assert.match(source, /DetailList/, view)
     assert.match(source, /DetailRow/, view)

@@ -440,6 +440,8 @@ fn append_log_event_rows_2_004_to_2_007(
             lock_mode: Some(label),
             lock_target: Some(label),
             duration_ms: Some(1.0),
+            holding_pids: Some(label),
+            wait_queue: Some(label),
             detail: Some(label),
             context: Some(label),
             statement: Some(label),
@@ -1043,7 +1045,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("pg_log_checkpoints", 2_002_001),
         ("pg_log_autovacuum", 2_003_001),
         ("pg_log_slow_queries", 2_004_001),
-        ("pg_log_lock_waits", 2_005_001),
+        ("pg_log_lock_waits", 2_005_002),
         ("pg_log_lifecycle", 2_006_001),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)

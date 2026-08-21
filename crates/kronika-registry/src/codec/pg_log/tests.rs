@@ -99,6 +99,8 @@ fn lock_wait(ts: i64, kind: u8, pid: i32) -> PgLogLockWaits {
         lock_mode: Some(StrId(1)),
         lock_target: Some(StrId(2)),
         duration_ms: Some(1000.123),
+        holding_pids: Some(StrId(5)),
+        wait_queue: Some(StrId(6)),
         detail: Some(StrId(3)),
         context: None,
         statement: Some(StrId(4)),
@@ -164,7 +166,7 @@ fn contract_shapes() {
     assert_eq!(PgLogCheckpoints::CONTRACT.columns.len(), 18);
     assert_eq!(PgLogAutovacuum::CONTRACT.columns.len(), 22);
     assert_eq!(PgLogSlowQueries::CONTRACT.columns.len(), 8);
-    assert_eq!(PgLogLockWaits::CONTRACT.columns.len(), 11);
+    assert_eq!(PgLogLockWaits::CONTRACT.columns.len(), 13);
     assert_eq!(PgLogLifecycle::CONTRACT.columns.len(), 9);
     assert_eq!(PgLogTempFiles::CONTRACT.columns.len(), 6);
 }
