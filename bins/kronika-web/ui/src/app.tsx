@@ -857,7 +857,10 @@ function App({ locale, onLocale, t }: {
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
-  const inspectorOpen = inspectorPanel === "chart" || inspectorPanel === "detail" && detailAvailable
+  // Chart stands alone; Detail and every relation panel need a selection to
+  // describe, and a panel outside this set would close the Inspector on its
+  // own tab click.
+  const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
     // Closing destroys the detail whichever tab is active; the registered
     // dismiss keeps the owning view's selection in step.

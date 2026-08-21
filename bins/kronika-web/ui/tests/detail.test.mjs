@@ -149,3 +149,10 @@ test("a recorded PostgreSQL backend is its own Inspector panel, not a tail under
   assert.match(address, /INSPECTOR_PANELS = \["chart", "detail", "pg_stat_activity"\]/)
   assert.match(address, /address\.panel === "chart" \|\| address\.panel === "pg_stat_activity"/)
 })
+
+test("a relation panel keeps the Inspector open rather than closing it on its own tab", async () => {
+  const app = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/app.tsx", import.meta.url), "utf8"))
+  const open = /const inspectorOpen = ([^\n]*)/.exec(app)?.[1] ?? ""
+  assert.doesNotMatch(open, /inspectorPanel === "detail"/)
+  assert.match(open, /inspectorPanel !== null && detailAvailable/)
+})
