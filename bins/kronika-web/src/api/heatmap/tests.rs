@@ -100,9 +100,11 @@ fn the_totals_band_folds_each_finished_column_in_recording_order() {
     fold.observe(1, &identity("a"), HOUR + 55 * MINUTE, Some(1_800.0));
     let ranked = fold.finish(1);
     let first = ranked.totals[0].value().unwrap_or_default();
+    // The second column measures from the boundary carry at minute 15, so
+    // its 900 delta spreads over the 40 observed minutes.
     let second = ranked.totals[1].value().unwrap_or_default();
     assert!((first - 1.0).abs() < 1e-9);
-    assert!((second - 1.0).abs() < 1e-9);
+    assert!((second - 0.375).abs() < 1e-9);
     assert_eq!(ranked.out_of_order, 0);
 }
 
@@ -137,6 +139,28 @@ fn entities_with_a_null_ranking_value_sort_after_real_totals() {
     let ranked = fold.finish(5);
     assert_eq!(ranked.rows[0].identity, identity("steady"));
     assert_eq!(ranked.rows[1].total, None);
+}
+
+#[test]
+fn a_sparse_cadence_fills_every_later_column_through_the_boundary_carry() {
+    // One sample per column, as tables and indexes record: the first column
+    // has no baseline, every later one measures from the carried boundary.
+    let mut fold = Fold::new(HOUR, end(), 12, true);
+    for column in 0..12_i64 {
+        #[expect(clippy::cast_precision_loss, reason = "twelve small columns")]
+        fold.observe(
+            1,
+            &identity("a"),
+            HOUR + column * 5 * MINUTE,
+            Some(600.0 * column as f64),
+        );
+    }
+    let ranked = fold.finish(1);
+    assert_eq!(ranked.totals[0].value(), None);
+    for column in 1..12 {
+        let cell = ranked.totals[column].value().unwrap_or_default();
+        assert!((cell - 2.0).abs() < 1e-9, "column {column}: {cell}");
+    }
 }
 
 #[test]

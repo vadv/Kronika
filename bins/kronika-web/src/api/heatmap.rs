@@ -190,6 +190,10 @@ impl PreparedHeatmap {
 
     /// Second pass: the top-K-by-columns cells and last-seen labels.
     #[expect(clippy::type_complexity, reason = "one internal tuple, used once")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass, one loop, no branches to split"
+    )]
     fn fill(
         &self,
         ranked: &Ranked,
@@ -204,7 +208,9 @@ impl PreparedHeatmap {
             .map(|(index, row)| (row.key.as_str(), index))
             .collect();
         let winner_types: HashSet<u32> = ranked.rows.iter().map(|row| row.type_id).collect();
+        let cumulative = self.cumulative;
         let mut cells = vec![vec![Obs::default(); request.columns]; ranked.rows.len()];
+        let mut carries: Vec<Option<(i64, f64)>> = vec![None; ranked.rows.len()];
         let mut labels =
             vec![vec![(i64::MIN, Value::Null); request.labels.len()]; ranked.rows.len()];
         if ranked.rows.is_empty() {
@@ -261,7 +267,18 @@ impl PreparedHeatmap {
                             continue;
                         };
                         if let Some(value) = summed(&row, &cut) {
-                            cells[index][column_of(ts, from, to, columns)].observe(ts, value);
+                            let column = column_of(ts, from, to, columns);
+                            if cumulative
+                                && cells[index][column].count == 0
+                                && let Some((carry_ts, carry_value)) = carries[index]
+                                && carry_ts < ts
+                            {
+                                cells[index][column].observe(carry_ts, carry_value);
+                            }
+                            cells[index][column].observe(ts, value);
+                            if carries[index].is_none_or(|(carry_ts, _value)| carry_ts <= ts) {
+                                carries[index] = Some((ts, value));
+                            }
                         }
                         for (slot, column) in labels[index].iter_mut().zip(&label_columns) {
                             if ts < slot.0 {
@@ -583,11 +600,11 @@ fn clamped(offset: i128) -> i64 {
 /// First/last observation of one entity inside one span of time.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Obs {
-    count: u32,
+    pub(super) count: u32,
     first_ts: i64,
     first_value: f64,
-    last_ts: i64,
-    last_value: f64,
+    pub(super) last_ts: i64,
+    pub(super) last_value: f64,
     max_value: f64,
 }
 
@@ -688,6 +705,7 @@ struct EntityState {
     window: Obs,
     column: usize,
     current: Obs,
+    carry: Option<(i64, f64)>,
 }
 
 pub(super) struct RankedRow {
@@ -763,6 +781,7 @@ impl Fold {
                 window: Obs::default(),
                 column,
                 current: Obs::default(),
+                carry: None,
             })
         };
         state.window.observe(ts, value);
@@ -774,8 +793,18 @@ impl Fold {
             if let Some(finished) = state.current.cell(self.cumulative) {
                 self.totals[state.column].add(finished);
             }
+            if state.current.count > 0 {
+                state.carry = Some((state.current.last_ts, state.current.last_value));
+            }
             state.column = column;
             state.current = Obs::default();
+            // A counter cell measures from the latest observation at or
+            // before the interval start, so one in-interval sample is enough.
+            if self.cumulative
+                && let Some((carry_ts, carry_value)) = state.carry
+            {
+                state.current.observe(carry_ts, carry_value);
+            }
         }
         state.current.observe(ts, value);
     }

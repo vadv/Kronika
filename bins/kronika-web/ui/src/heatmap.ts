@@ -1,13 +1,13 @@
 // The heatmap contract from DESIGN.md "Heatmap values", plus the view model
 // the renderer consumes. The server derives the ranked top view next to the
 // segments; the bundled-fixture build derives the same shape here, in the
-// client. A counter cell is the last value minus the first value observed
-// inside the interval, divided by the elapsed time between those two
-// observations; missing input, fewer than two usable observations, a
-// non-positive observed duration or a negative delta produce null, a zero
-// delta produces 0. A gauge cell is the last sample in the interval, or null.
-// Ranking uses the whole requested window and does not change with the number
-// of columns.
+// client. A counter cell is the last value in the interval minus the
+// identity's latest value at or before the interval's start, divided by the
+// elapsed time between those two observations — one in-interval sample plus a
+// preceding baseline is enough. Missing input, no baseline, a non-positive
+// observed duration or a negative delta produce null, a zero delta produces
+// 0. A gauge cell is the last sample in the interval, or null. Ranking uses
+// the whole requested window and does not change with the number of columns.
 
 export const HOUR_MICROS = 3_600_000_000
 
@@ -92,7 +92,7 @@ export function heatmap(
     .map(([entity, state]) => ({
       entity,
       total: cumulative ? counterDelta(state.window) : state.gaugeMax ?? null,
-      cells: state.columns.map((column) => cellValue(column, cumulative)),
+      cells: carriedCells(state.columns, cumulative),
     }))
     .sort((left, right) => compareTotals(left.total, right.total) || (left.entity < right.entity ? -1 : 1))
 
@@ -131,13 +131,23 @@ function observe(state: ColumnState | undefined, timestamp: number, value: numbe
   return state
 }
 
-function cellValue(state: ColumnState | undefined, cumulative: boolean): number | null {
-  if (state === undefined) return null
-  if (!cumulative) return state.lastValue
-  if (state.count < 2 || state.lastTs <= state.firstTs) return null
-  const delta = state.lastValue - state.firstValue
-  if (delta < 0) return null
-  return delta === 0 ? 0 : delta / ((state.lastTs - state.firstTs) / 1e6)
+// A counter cell measures from the latest observation at or before the
+// interval start, carried across empty and boundary intervals, so a sparse
+// cadence still fills every later column.
+function carriedCells(columns: readonly (ColumnState | undefined)[], cumulative: boolean): (number | null)[] {
+  let carry: { readonly ts: number; readonly value: number } | null = null
+  return columns.map((state) => {
+    if (state === undefined) return null
+    if (!cumulative) return state.lastValue
+    const base = carry !== null && carry.ts < state.firstTs
+      ? carry
+      : { ts: state.firstTs, value: state.firstValue }
+    carry = { ts: state.lastTs, value: state.lastValue }
+    if (state.lastTs <= base.ts) return null
+    const delta = state.lastValue - base.value
+    if (delta < 0) return null
+    return delta === 0 ? 0 : delta / ((state.lastTs - base.ts) / 1e6)
+  })
 }
 
 function counterDelta(state: ColumnState | undefined): number | null {

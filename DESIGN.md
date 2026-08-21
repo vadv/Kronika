@@ -524,22 +524,27 @@ always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
 
-The Statements page carries an hour activity ledger above its table,
-collapsed by default: nothing is requested until the operator opens it, and
-the open state persists locally. Opening it requests the server's ranked
-heatmap for one curated cut — execution time, calls, rows, shared blocks read
-or dirtied, temp blocks written, WAL bytes — drawn as one strip per statement
-with the hour total and the at-cursor reading beside it. A
+The Statements, Plans, Tables, Indexes and Processes pages carry an hour
+activity ledger above their tables, collapsed by default: nothing is
+requested until the operator opens one, and each open state persists locally.
+Opening a ledger requests the server's ranked heatmap for one curated cut of
+that section — for Statements execution time, calls, rows, shared blocks read
+or dirtied, temp blocks written and WAL bytes; other sections carry their own
+short menus. A cut may sum several counters, and a cut may scale through a
+recorded fact — blocks through the block size, jiffies through the clock
+rate — falling back to honest raw counts without it. The ledger draws one
+strip per entity with the hour total and the at-cursor reading beside it. A
 pinned totals band shows the whole instance's rhythm and a pinned others band
 carries everything beyond the ranked rows. Cells share one global color scale
 by default with an explicit per-row alternative; a missing interval draws
 nothing and a real zero draws the faintest step. The strips follow the shared
 cursor, a cell click moves it, a row click filters the table to that statement,
 and an explicit control expands the ledger to full screen, where the rank
-depth is selectable. Block counters scale to bytes with the recorded block size and stay
-block counts without one. Query text never travels with the ranking response:
-the loaded table page labels most ranked rows and the rest fetch one bounded
-text row each.
+depth is selectable. Query text never travels with the ranking response: the
+loaded table page labels most ranked rows and the rest fetch one bounded text
+row each. Tables and indexes draw twelve wide cells matching their
+five-minute cadence; a gauge cut ranks by the window maximum and reads as a
+plain value, not a rate.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -972,11 +977,13 @@ limit.
 ### Heatmap values
 
 Every heatmap column carries its exact interval boundaries. For a counter, a
-cell is the last value minus the first value for that identity in the interval,
-divided by the elapsed time between those two observations. Missing input,
-fewer than two usable observations, a non-positive observed duration or a
-negative delta produces `null`. A zero delta produces `0`. For a gauge, the
-cell is the last sample in the interval, or `null` when no usable sample exists.
+cell is the last value in the interval minus the identity's latest value at or
+before the interval's start, divided by the elapsed time between those two
+observations; one in-interval sample plus a preceding baseline is enough, so a
+cadence as coarse as the column width still fills every later column. Missing
+input, no baseline, a non-positive observed duration or a negative delta
+produces `null`. A zero delta produces `0`. For a gauge, the cell is the last
+sample in the interval, or `null` when no usable sample exists.
 
 Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.
