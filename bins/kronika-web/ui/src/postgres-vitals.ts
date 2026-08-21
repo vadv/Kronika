@@ -21,7 +21,7 @@ const EMPTY_VITAL: VitalSeries = { points: [], total: null }
 // the section so the sort happens once.
 export type CounterGroups = ReadonlyMap<string, readonly DataRow[]>
 
-export function counterGroups(rows: readonly DataRow[], identity = "datid"): CounterGroups {
+export function counterGroups(rows: readonly DataRow[], identity: readonly string[] = ["datid"]): CounterGroups {
   return byIdentity(rows, identity)
 }
 
@@ -188,10 +188,10 @@ export function settingAt(rows: readonly DataRow[], name: string, cursor: number
   return found === null ? null : rawText(value(found, "setting"))
 }
 
-function byIdentity(rows: readonly DataRow[], identity: string): ReadonlyMap<string, readonly DataRow[]> {
+function byIdentity(rows: readonly DataRow[], identity: readonly string[]): ReadonlyMap<string, readonly DataRow[]> {
   const ordered = new Map<string, DataRow[]>()
   for (const row of [...rows].sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))) {
-    const key = `${row.typeId}\u{1f}${rawText(value(row, identity)) ?? ""}`
+    const key = [row.typeId, ...identity.map((field) => rawText(value(row, field)) ?? "")].join("\u{1f}")
     const series = ordered.get(key)
     if (series === undefined) ordered.set(key, [row])
     else series.push(row)

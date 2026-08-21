@@ -130,3 +130,18 @@ test("anchored series read zero at pass moments with no rows and bin rows to the
   assert.deepEqual(vitals.anchoredSeries([], anchors, (pass) => pass.length).map(({ value }) => value), [0, 0, 0])
   assert.deepEqual(vitals.anchoredSeries([], [], (pass) => pass.length), [])
 })
+
+test("composite identities keep pg_stat_io rows of one backend, object and context apart", () => {
+  const io = (ordinal, timestamp, values) => row(ordinal, timestamp, values, "1009002")
+  const rows = [
+    io(0, T0, { backend_type: "client backend", object: "relation", context: "normal", evictions: 10 }),
+    io(1, T0, { backend_type: "autovacuum worker", object: "relation", context: "vacuum", evictions: 4 }),
+    io(2, T0 + 10 * SECOND, { backend_type: "client backend", object: "relation", context: "normal", evictions: 30 }),
+    io(3, T0 + 10 * SECOND, { backend_type: "autovacuum worker", object: "relation", context: "vacuum", evictions: 9 }),
+  ]
+  const groups = vitals.counterGroups(rows, ["backend_type", "object", "context"])
+  assert.equal(groups.size, 2)
+  const vital = vitals.sumCounterVital(groups, ["evictions"])
+  assert.equal(vital.total, 25)
+  assert.equal(vital.points[0].value, 2.5)
+})

@@ -1,4 +1,4 @@
-import { Activity, ChevronDown, ChevronRight, Gauge, HardDrive, Hourglass, ShieldAlert } from "lucide-react"
+import { Activity, ChevronDown, ChevronRight, Gauge, HardDrive, Hourglass, Layers, ShieldAlert } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { loadSeries, type DataRow, type HourData, type LanePoint } from "./api"
@@ -30,6 +30,10 @@ import { sparkScaleMax } from "./spark"
 // aggregates of the recorded sections.
 
 const HOUR_US = 3_600_000_000
+// pg_stat_io keys one row per backend type, object and context.
+const IO_IDENTITY = ["backend_type", "object", "context"]
+// One row per snapshot; the section itself is the identity.
+const SINGLETON_IDENTITY: readonly string[] = []
 
 interface VitalStreams {
   readonly database: readonly DataRow[]
@@ -38,6 +42,7 @@ interface VitalStreams {
   readonly checkpointer: readonly DataRow[]
   readonly bgwriter: readonly DataRow[]
   readonly archiver: readonly DataRow[]
+  readonly io: readonly DataRow[]
   readonly walStorage: readonly DataRow[]
   readonly prepared: readonly DataRow[]
   readonly vacuum: readonly DataRow[]
@@ -52,6 +57,7 @@ const STREAM_FIELDS: Readonly<Record<keyof VitalStreams, readonly [string, reado
   checkpointer: ["pg_stat_checkpointer", ["num_timed", "num_requested", "buffers_written"]],
   bgwriter: ["pg_stat_bgwriter", ["checkpoints_timed", "checkpoints_req", "buffers_checkpoint", "buffers_clean", "buffers_backend"]],
   archiver: ["pg_stat_archiver", ["archived_count", "failed_count"]],
+  io: ["pg_stat_io", ["backend_type", "object", "context", "reads", "writes", "extends", "evictions", "reuses", "fsyncs"]],
   walStorage: ["pg_wal_storage", ["wal_files_bytes"]],
   prepared: ["pg_prepared_xacts", ["datname", "prepared_count", "max_age_us"]],
   vacuum: ["pg_stat_progress_vacuum", ["pid", "is_autovacuum"]],
@@ -111,7 +117,7 @@ export function PostgresOverview({ cursor, data, historyRevision, hour, locale, 
         const [section, fields] = STREAM_FIELDS[key]
         return [key, await loadSeries(hour, section, {}, fields, signal)] as const
       }))
-      const empty: VitalStreams = { database: [], activity: [], wal: [], checkpointer: [], bgwriter: [], archiver: [], walStorage: [], prepared: [], vacuum: [], settings: [], lifecycle: [] }
+      const empty: VitalStreams = { database: [], activity: [], wal: [], checkpointer: [], bgwriter: [], archiver: [], io: [], walStorage: [], prepared: [], vacuum: [], settings: [], lifecycle: [] }
       return { ...empty, ...Object.fromEntries(loaded) }
     },
   )
@@ -291,10 +297,12 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
   })
 
   const database = counterGroups(streams.database)
-  const wal = counterGroups(streams.wal)
-  const checkpointer = counterGroups(streams.checkpointer)
-  const bgwriter = counterGroups(streams.bgwriter)
-  const archiver = counterGroups(streams.archiver)
+  const io = counterGroups(streams.io, IO_IDENTITY)
+  const vacuumIo = counterGroups(streams.io.filter((row) => row.values.context === "vacuum"), IO_IDENTITY)
+  const wal = counterGroups(streams.wal, SINGLETON_IDENTITY)
+  const checkpointer = counterGroups(streams.checkpointer, SINGLETON_IDENTITY)
+  const bgwriter = counterGroups(streams.bgwriter, SINGLETON_IDENTITY)
+  const archiver = counterGroups(streams.archiver, SINGLETON_IDENTITY)
 
   const tps = sumCounterVital(database, ["xact_commit", "xact_rollback"])
   const rollback = sumCounterVital(database, ["xact_rollback"])
@@ -329,6 +337,11 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
   const backendBuffers = sumCounterVital(bgwriter, ["buffers_backend"])
   const archived = sumCounterVital(archiver, ["archived_count"])
   const archiveFailed = sumCounterVital(archiver, ["failed_count"])
+  const evictions = sumCounterVital(io, ["evictions"])
+  const reuses = sumCounterVital(io, ["reuses"])
+  const extendOps = sumCounterVital(io, ["extends"])
+  const fsyncs = sumCounterVital(io, ["fsyncs"])
+  const vacuumReads = sumCounterVital(vacuumIo, ["reads"])
   const walSize = gaugeSeries(streams.walStorage, "wal_files_bytes", "max")
 
   const xidAge = gaugeSeries(streams.database, "frozen_xid_age", "max")
@@ -500,6 +513,17 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           headline: walSize.length === 0 ? "—" : humanBytes(lastValue(walSize) ?? 0, locale),
           reading: readBytes(walSize),
         },
+      ],
+    },
+    {
+      key: "buffers",
+      icon: Layers,
+      rows: [
+        { key: "evictions", points: evictions.points, kind: "rate", headline: totalHeadline(evictions, locale, (total) => compact(total, locale)), reading: readCount(evictions.points) },
+        { key: "reuses", points: reuses.points, kind: "rate", headline: totalHeadline(reuses, locale, (total) => compact(total, locale)), reading: readCount(reuses.points) },
+        { key: "extends", points: extendOps.points, kind: "rate", headline: totalHeadline(extendOps, locale, (total) => compact(total, locale)), reading: readCount(extendOps.points) },
+        { key: "fsyncs", points: fsyncs.points, kind: "rate", headline: totalHeadline(fsyncs, locale, (total) => compact(total, locale)), reading: readCount(fsyncs.points) },
+        { key: "vacuum_reads", points: vacuumReads.points, kind: "rate", headline: totalHeadline(vacuumReads, locale, (total) => compact(total, locale)), reading: readCount(vacuumReads.points) },
       ],
     },
     {
