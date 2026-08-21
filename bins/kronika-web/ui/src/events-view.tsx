@@ -1,58 +1,52 @@
-import { CircleAlert, Diamond, TriangleAlert } from "lucide-react"
-import { useVirtualizer } from "@tanstack/react-virtual"
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-import type { Cell, DataRow, Finding, HourData } from "./api"
-import { DetailList, DetailRow } from "./detail-list"
+import { Diamond, TriangleAlert } from "lucide-react"
+
+import { acceptResponse, loadSeries, type DataRow, type Finding, type HourData } from "./api"
 import { useDisplayTime } from "./display-time-context"
-import {
-  findingCategory,
-  findingDetailFields,
-  findingEntity,
-  findingHistory,
-  findingKey,
-  findingMetric,
-  findingOrder,
-  findingReadings,
-  findingSource,
-} from "./finding-presentation"
+import { EventTierSection, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
+import { categoryLabel } from "./events-format"
+import { errorCategory, groupEvents, type EventEntry } from "./events-groups"
+import { findingCategory, findingKey, findingOrder, findingSource } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
-import { InspectorChartPortal, InspectorPortal } from "./inspector"
-import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
-import { SeriesChart, type ChartPoint } from "./series-chart"
-import { Timeline } from "./timeline"
+import { shownMoment, type Locale } from "./model"
 import { parseSearch } from "./search"
 import { TableFilter } from "./table-filter"
+import { Timeline } from "./timeline"
 
-type Filter = "all" | "event" | "known_bad"
 export type FindingResolution = "idle" | "loading" | "ready" | "unavailable"
 
-const ERROR_CATEGORIES = [
-  "events.category.lock", "events.category.constraint", "events.category.serialization",
-  "events.category.timeout", "events.category.resource", "events.category.data_corruption",
-  "events.category.system", "events.category.connection", "events.category.auth",
-  "events.category.syntax", "events.category.other",
-] as const
-const EVENT_PREFIX = "events."
+// Threshold marks rendered before the list states how many were left out.
+const MARK_ROWS = 120
+
+export { categoryLabel, eventFieldLabel, eventValue, formatMetric } from "./events-format"
+
+// The streams the console reads, with the columns each entry renders.
+const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[] }[] = [
+  { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "detail", "hint", "context", "statement", "database", "username"] },
+  { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
+  { section: "pg_log_autovacuum", fields: ["kind", "relation", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms"] },
+  { section: "pg_log_slow_queries", fields: ["pattern", "sample", "count", "max_duration_ms", "total_duration_ms"] },
+  { section: "pg_log_lock_waits", fields: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "holding_pids", "wait_queue", "statement"] },
+  { section: "pg_log_lifecycle", fields: ["kind", "pid", "signal", "shutdown_mode", "message", "query_detail"] },
+  { section: "pgbouncer_events", fields: ["level", "database", "username", "host", "text"] },
+]
 
 export function EventsView({
   cursor,
   data,
-  history,
   hour,
   loading = false,
   locale,
   navigationTimestamps,
   onCursor,
-  onClose,
   onFinding,
   onOpenChart,
   onPattern,
   onShowAll,
   onSelectedLane,
-  resolution,
-  resolved,
+  revision,
   scope,
   pattern,
   selected,
@@ -61,217 +55,164 @@ export function EventsView({
 }: {
   readonly cursor: number
   readonly data: HourData
-  readonly history: readonly ChartPoint[]
   readonly hour: number
   readonly loading?: boolean | undefined
   readonly locale: Locale
   readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
-  readonly onClose: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
   readonly onPattern: (pattern: string) => void
   readonly onShowAll: () => void
   readonly onSelectedLane: (lane: string) => void
-  readonly resolution: FindingResolution
-  readonly resolved: DataRow | null
+  readonly revision: number
   readonly scope: readonly Finding[] | null
   readonly pattern: string
   readonly selected: Finding | null
   readonly selectedLane: string
   readonly t: Translate
 }) {
-  const time = useDisplayTime()
-  const [filter, setFilter] = useState<Filter>("all")
+  const streams = useEventStreams(data, hour, revision)
+  const entries = useMemo(() => streams.rows === null ? null : groupEvents(streams.rows, hour), [hour, streams.rows])
+  const [expandedKey, setExpandedKey] = useState<string | null>(null)
+  useEffect(() => setExpandedKey(null), [hour])
+  const selectedEntry = useMemo(() => selected === null || entries === null ? null : entryOf(entries, selected), [entries, selected])
   useEffect(() => {
-    if (scope === null) return
-    setFilter("all")
-  }, [scope])
-  const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
-  const visible = useMemo(() => (scope ?? data.findings)
-    .filter((finding) => {
-      if (filter !== "all" && finding.kind !== filter) return false
-      if (!parsedSearch.ok || parsedSearch.query.canonical === "") return true
-      const selectedRow = selected !== null && findingKey(finding) === findingKey(selected) ? resolved : null
-      const text = [findingCategory(finding, t), findingSource(finding, t), finding.logicalName,
-        ...Object.values(selectedRow?.values ?? {}).map((cell) => rawText(cell) ?? "")]
-      const fields: Readonly<Record<string, readonly string[]>> = {
-        text,
-        kind: [finding.kind],
-        source: [findingSource(finding, t), finding.logicalName],
-        category: [findingCategory(finding, t)],
-      }
-      const clauses = parsedSearch.query.structured
-        ? parsedSearch.query.clauses
-        : [{ key: "text", value: parsedSearch.query.freeText ?? "" }]
-      return clauses.every((clause) => fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true)
-    })
-    .slice()
-    .sort((left, right) => findingOrder(right, left)), [data.findings, filter, parsedSearch, resolved, scope, selected, t])
-  const active = selected !== null && visible.some((finding) => findingKey(finding) === findingKey(selected)) ? selected : null
+    if (selectedEntry !== null) setExpandedKey(selectedEntry.key)
+  }, [selectedEntry])
   const list = useRef<HTMLDivElement>(null)
-  const virtual = useVirtualizer({ count: visible.length, estimateSize: () => 50, getScrollElement: () => list.current, overscan: 12 })
   useEffect(() => {
-    if (active === null) return
-    const index = visible.findIndex((finding) => findingKey(finding) === findingKey(active))
-    if (index >= 0) virtual.scrollToIndex(index, { align: "auto" })
-  }, [active, virtual, visible])
+    if (expandedKey === null || selectedEntry?.key !== expandedKey) return
+    list.current?.querySelector(`[data-entry-key=${JSON.stringify(expandedKey)}]`)?.scrollIntoView({ block: "nearest" })
+  }, [expandedKey, selectedEntry])
+  const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
+  const scoped = useMemo(() => {
+    if (entries === null) return null
+    if (scope === null) return entries
+    return entries.filter((entry) => scope.some((finding) => entryContains(entry, finding)))
+  }, [entries, scope])
+  const visible = useMemo(() => scoped === null ? null : scoped.filter((entry) => {
+    if (!parsedSearch.ok || parsedSearch.query.canonical === "") return true
+    const title = entryTitle(entry, t, locale)
+    const fields: Readonly<Record<string, readonly string[]>> = {
+      text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t)],
+      kind: [entry.tier],
+      source: [sectionLabel(entry.section, t), entry.section],
+      category: errorCategory(entry.stat) === null ? [] : [categoryLabel(errorCategory(entry.stat) ?? 0, t)],
+    }
+    const clauses = parsedSearch.query.structured
+      ? parsedSearch.query.clauses
+      : [{ key: "text", value: parsedSearch.query.freeText ?? "" }]
+    return clauses.every((clause) => fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true)
+  }), [locale, parsedSearch, scoped, t])
+  const marks = useMemo(() => (scope ?? data.findings)
+    .filter((finding) => finding.kind !== "event" && !finding.logicalName.startsWith("pg_log_"))
+    .slice()
+    .sort((left, right) => findingOrder(right, left)), [data.findings, scope])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
-  const original = scope === null
-    ? data.findingGroups.reduce((total, group) => total + group.totalHits, 0) || data.findings.length
-    : scope.length
-  const omitted = scope === null ? Math.max(0, original - data.findings.length) : 0
+  const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
+  const busy = loading || streams.loading
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
     <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
-        <div className="lens-tabs flex" role="group" aria-label={t("events.filters")}>
-          {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px]" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
-        </div>
-        <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
+        <span className="text-xs font-medium text-fg2">{t("events.console")}</span>
+        <span className="text-xs tabular-nums text-fg3">{busy && visible !== null ? t("table.loading") : t("events.console.count", { groups: visible?.length ?? 0, count: totalCount })}</span>
         {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
-      <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
-      <div className="grid min-h-[430px] grid-cols-[minmax(0,1fr)]">
-        <div className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 max-[760px]:h-[260px] max-[760px]:min-h-[180px]" ref={list} role="list">
-          {visible.length === 0 && (loading
-        ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
-        : <div className="table-empty flex items-center gap-2.5">{pattern === "" ? t("events.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button></>}</div>)}
-          <div className="relative" style={{ height: virtual.getTotalSize() }}>
-            {virtual.getVirtualItems().map((item) => {
-              const finding = visible[item.index]
-              if (finding === undefined) return null
-              const pressed = active !== null && findingKey(active) === findingKey(finding)
-              return <div className="absolute left-0 top-0 w-full border-b border-line" data-testid="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
-                <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} className="event-finding grid h-full min-h-[44px] w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3 aria-pressed:bg-s4" data-kind={finding.kind} onClick={() => onFinding(finding)} type="button">
-                  <KindIcon kind={finding.kind} />
-                  <span><strong className="block text-xs font-medium">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
-                  <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(finding.timestamp)}</time>
-                </button>
-              </div>
-            })}
-          </div>
-        </div>
-        {active !== null && <InspectorPortal identity={`event:${findingKey(active)}`} onClose={onClose} title={findingSource(active, t)}><FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onCursor={onCursor} resolution={resolution} row={resolved} t={t} /></InspectorPortal>}
+      <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={scoped?.length ?? 0} />
+      <div className={`min-h-[390px] ${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
+        {visible === null && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
+        {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
+        {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
+          entries={tierEntries}
+          expandedKey={expandedKey}
+          hour={hour}
+          key={tier}
+          locale={locale}
+          onCursor={onCursor}
+          onToggle={(key) => setExpandedKey((current) => current === key ? null : key)}
+          t={t}
+          tier={tier}
+        />)}
+        {marks.length > 0 && <section data-testid="event-marks">
+          <header className="flex items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[5px]">
+            <Diamond aria-hidden="true" className="text-bad" size={13} />
+            <span className="text-xs font-medium text-fg2">{t("events.marks")}</span>
+            <span className="text-xs tabular-nums text-fg3">{marks.length}</span>
+          </header>
+          {marks.slice(0, MARK_ROWS).map((finding) => <MarkRow finding={finding} key={findingKey(finding)} onFinding={onFinding} t={t} />)}
+          {marks.length > MARK_ROWS && <p className="px-[9px] py-1.5 text-xs text-fg3">{t("events.marks.more", { count: marks.length - MARK_ROWS })}</p>}
+        </section>}
       </div>
     </section>
   </>
 }
 
-function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor, resolution, row, t }: {
-  readonly cursor: number
-  readonly data: HourData
+function MarkRow({ finding, onFinding, t }: {
   readonly finding: Finding
-  readonly history: readonly ChartPoint[]
-  readonly hour: number
-  readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
-  readonly resolution: FindingResolution
-  readonly row: DataRow | null
+  readonly onFinding: (finding: Finding) => void
   readonly t: Translate
 }) {
   const time = useDisplayTime()
-  const metric = findingMetric(finding, t)
-  const points = history.length === 0 ? findingHistory(finding, row === null ? [] : [row], data) : history
-  const readings = findingReadings(finding, row, points, data)
-  const entity = findingEntity(row)
-  return <aside className="p-[11px]" data-testid="event-detail">
-    <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs font-medium text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="font-mono text-xs tabular-nums text-fg2">{time.timestamp(finding.timestamp)}</time></header>
-    {resolution === "loading" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.loading_row")}</p>}
-    {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}
-    {resolution === "ready" && row !== null && <>
-      {entity !== null && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{entity}</p>}
-      {finding.category !== null && <p className="mt-[9px] inline-block bg-s3 px-[7px] py-[5px] text-xs text-fg2">{t("events.category", { "category": categoryLabel(finding.category, t) })}</p>}
-      {metric.field !== null && <section className="mt-[9px] grid gap-1 border-y border-line2 bg-s2 px-[9px] py-[7px]" aria-label={t("events.change")}>
-        <span className="text-xs text-fg3">{metric.label}</span>
-        <strong className="text-sm tabular-nums text-fg">{readings.previous === null
-          ? formatMetric(readings.current, metric.unit, locale, t)
-          : `${formatMetric(readings.previous, metric.unit, locale, t)} → ${formatMetric(readings.current, metric.unit, locale, t)}`}</strong>
-        {metric.boundary !== null && <small className="text-xs text-fg3">{t("events.boundary", { "boundary": metric.boundary })}</small>}
-      </section>}
-      <DetailList>{findingDetailFields(row, finding).map(([field, cell]) => <DetailRow key={field} term={eventFieldLabel(field, t)}>{eventValue(finding, field, cell, locale, t)}</DetailRow>)}</DetailList>
-    </>}
-    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <InspectorChartPortal identity={`event:${findingKey(finding)}:history`}><SeriesChart
-      cursor={cursor}
-      durationAxis={metric.unit === "milliseconds"}
-      format={(number, place) => formatMetric(number, metric.unit, place, t)}
-      helpKey={metric.helpKey}
-      hour={hour}
-      labelKey={metric.labelKey}
-      locale={locale}
-      onCursor={onCursor}
-      points={points}
-      scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
-      t={t}
-      unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
-    /></InspectorChartPortal>}
-  </aside>
+  return <div className="border-b border-line" data-testid="event-mark">
+    <button
+      aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`}
+      className="grid w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3"
+      onClick={() => onFinding(finding)}
+      type="button"
+    >
+      {finding.kind === "spike"
+        ? <TriangleAlert aria-hidden="true" className="text-warn" size={15} />
+        : <Diamond aria-hidden="true" className="text-bad" size={15} />}
+      <span><strong className="block text-xs font-medium">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
+      <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(finding.timestamp)}</time>
+    </button>
+  </div>
 }
 
-function KindIcon({ kind }: { readonly kind: Finding["kind"] }): ReactNode {
-  if (kind === "event") return <CircleAlert aria-hidden="true" className="text-event" size={15} />
-  if (kind === "known_bad") return <Diamond aria-hidden="true" className="text-bad" size={15} />
-  return <TriangleAlert aria-hidden="true" className="text-warn" size={15} />
+function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
+  return entries.find((entry) => entryContains(entry, finding)) ?? null
 }
 
-export function categoryLabel(category: number, t: Translate): string {
-  const key = ERROR_CATEGORIES[category]
-  return key === undefined ? String(category) : t(key)
+function entryContains(entry: EventEntry, finding: Finding): boolean {
+  return entry.rows.some((row) => row.segmentId === finding.segmentId
+    && row.typeId === finding.typeId
+    && row.ordinal === finding.rowOrdinal)
 }
 
-export function eventFieldLabel(field: string, t: Translate): string {
-  const translated = t(`events.field.${field}`)
-  return translated === `events.field.${field}` ? field : translated
+interface StreamState {
+  readonly key: string
+  readonly rows: Readonly<Record<string, readonly DataRow[]>> | null
+  readonly loading: boolean
 }
 
-export function eventValue(finding: Finding, field: string, cell: Cell, locale: Locale, t: Translate): string {
-  if (field === "category") {
-    const category = asNumber(cell)
-    return category === null ? "—" : categoryLabel(category, t)
-  }
-  const enumKey = enumValueKey(finding.logicalName, field, asNumber(cell))
-  if (enumKey !== null) return t(enumKey)
-  if (identityField(field)) return identifier(cell)
-  const number = asNumber(cell)
-  if (number !== null && field.endsWith("_bytes")) return humanBytes(number, locale)
-  if (number !== null && field.endsWith("_kb")) return `${compact(number, locale)} KiB`
-  if (number !== null && field.endsWith("_ms")) return humanDuration(number, locale)
-  if (number !== null && field.endsWith("_mbs")) return `${compact(number, locale)} MB/s`
-  if (number !== null) return compact(number, locale)
-  return rawText(cell) ?? "—"
-}
-
-function enumValueKey(logicalName: string, field: string, number: number | null): string | null {
-  if (number === null) return null
-  const name = (values: readonly string[], prefix: string) => values[number] === undefined ? null : `${prefix}.${values[number]}`
-  if (logicalName === "pg_log_errors" && field === "severity") return name(["error", "fatal", "panic", "warning", "log"], `${EVENT_PREFIX}severity`)
-  if (logicalName === "pg_log_checkpoints" && field === "phase") return name(["started", "completed", "too_frequent"], `${EVENT_PREFIX}checkpoint`)
-  if (logicalName === "pg_log_autovacuum" && field === "kind") return name(["vacuum", "analyze"], `${EVENT_PREFIX}autovacuum`)
-  if (logicalName === "pg_log_lock_waits" && field === "kind") return name(["waiting", "acquired"], `${EVENT_PREFIX}lock_wait`)
-  if (logicalName === "pg_log_lifecycle" && field === "kind") return name(["crash", "shutdown", "ready"], `${EVENT_PREFIX}lifecycle`)
-  if (logicalName === "pgbouncer_events" && field === "level") return name(["fatal", "error", "warning", "log", "debug", "noise"], `${EVENT_PREFIX}pgbouncer`)
-  return null
-}
-
-export function formatMetric(value: number | null, unit: ReturnType<typeof findingMetric>["unit"], locale: Locale, t: Translate): string {
-  if (value === null) return "—"
-  if (unit === "percent") return humanPercent(value, locale)
-  if (unit === "milliseconds") return humanDuration(value, locale)
-  if (unit === "milliseconds_per_call") return humanDuration(value, locale, "milliseconds", t("unit.per_call"))
-  if (unit === "bytes_per_second") return `${humanBytes(value, locale)}${t("unit.per_second")}`
-  return compact(value, locale)
-}
-
-function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Locale): string {
-  if (unit === "percent") return "%"
-  if (unit === "milliseconds") return ""
-  if (unit === "milliseconds_per_call") return ""
-  if (unit === "bytes_per_second") return "bytes/s"
-  if (unit === "count") return locale === "ru" ? "количество" : "count"
-  return locale === "ru" ? "значение" : "value"
-}
-
-function identityField(field: string): boolean {
-  const name = field.toLowerCase()
-  return name === "pid" || name === "oid" || name.endsWith("id") || name.endsWith("_id")
+function useEventStreams(data: HourData, hour: number, revision: number): StreamState {
+  const wanted = EVENT_STREAMS
+    .filter((stream) => data.availableSections.includes(stream.section))
+    .map((stream) => stream.section)
+    .join(",")
+  const key = `${hour}:${revision}:${wanted}`
+  const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false })
+  useEffect(() => {
+    if (wanted === "") {
+      setState({ key, rows: {}, loading: false })
+      return
+    }
+    setState((current) => ({ ...current, key, loading: true }))
+    const controller = new AbortController()
+    const streams = EVENT_STREAMS.filter((stream) => wanted.split(",").includes(stream.section))
+    acceptResponse(
+      Promise.all(streams.map((stream) => loadSeries(hour, stream.section, {}, stream.fields, controller.signal).catch(() => []))),
+      controller.signal,
+      (loaded) => setState({
+        key,
+        rows: Object.fromEntries(streams.map((stream, index) => [stream.section, loaded[index] ?? []])),
+        loading: false,
+      }),
+      () => setState((current) => ({ ...current, loading: false })),
+    )
+    return () => controller.abort()
+  }, [hour, key, revision, wanted])
+  return state
 }
