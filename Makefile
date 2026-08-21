@@ -3,7 +3,7 @@ TARGET ?= $(shell rustc +$(RUST_TOOLCHAIN) -vV | sed -n 's/^host: //p')
 CARGO_BUILD = cargo +$(RUST_TOOLCHAIN) build --locked --target $(TARGET)
 UI_DIR = bins/kronika-web/ui
 
-.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check lint test bdd-check check test-bdd demo-run
+.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs
 
 build: ## Build every binary for the selected target.
 	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo -p kronika-web
@@ -53,3 +53,24 @@ demo-run: ## Run the collector for a bounded window and report its cost.
 	@$(CARGO_BUILD) -p kronika-collector -p kronika-demo
 	@KRONIKA_COLLECTOR_BIN=target/$(TARGET)/debug/kronika-collector \
 		target/$(TARGET)/debug/kronika-demo
+
+demo-image: ## Build the demo Docker image (PostgreSQL, PgBouncer, collector, web).
+	@scripts/demo-image.sh build
+
+demo-image-run: ## Build and run the demo image, publishing web on :8080.
+	@scripts/demo-image.sh up
+
+demo-up: ## Build and start the interactive demo, then wait until it is usable.
+	@scripts/demo-image.sh up
+
+demo-stop: ## Stop the demo while preserving collected demo data.
+	@scripts/demo-image.sh stop
+
+demo-clean: ## Stop the demo and remove its containers, network, and data volume.
+	@scripts/demo-image.sh clean
+
+demo-status: ## Show the demo container and health state.
+	@scripts/demo-image.sh status
+
+demo-logs: ## Follow all demo service logs.
+	@scripts/demo-image.sh logs

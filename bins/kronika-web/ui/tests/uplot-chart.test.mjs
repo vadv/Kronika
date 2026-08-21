@@ -79,7 +79,7 @@ test("an explicit cursor domain does not add samples to the drawn frame", () => 
   assert.match(chart.navigationSampleText(series, frame, navigation, 5_000_000, "en", time), /^00:00:05$/)
 })
 
-test("aligned mode joins identical boundary samples and rejects conflicting values at one timestamp", () => {
+test("aligned mode joins identical boundaries, preserves resets and rejects conflicting values", () => {
   const joined = chart.alignRecordedSeries([
     line("one", "%", "percent", [
       { segmentId: "a", timestamp: 1, value: 4 },
@@ -87,6 +87,14 @@ test("aligned mode joins identical boundary samples and rejects conflicting valu
     ]),
   ])
   assert.deepEqual(joined.data[1], [4])
+  const reset = chart.alignRecordedSeries([
+    line("one", "%", "percent", [
+      { segmentId: "a", timestamp: 1, value: 4 },
+      { segmentId: "b", timestamp: 1, value: null },
+      { segmentId: "b", timestamp: 2, value: 5 },
+    ]),
+  ])
+  assert.deepEqual(reset.data[1], [null, 5])
   assert.throws(() => chart.alignRecordedSeries([
     line("one", "%", "percent", [
       { segmentId: "a", timestamp: 1, value: 4 },

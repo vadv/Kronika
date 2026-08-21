@@ -1,4 +1,4 @@
-use super::{account, authentication_required, cookie_secure, source_set};
+use super::{account, authentication_required, cookie_secure, source_set, synthetic_demo};
 
 #[test]
 fn both_nonempty_credentials_are_required() {
@@ -44,4 +44,12 @@ fn the_source_bitset_is_explicit_and_typed() {
     assert!(source_set(None).is_err());
     assert!(source_set(Some("postgres".to_owned())).is_err());
     assert!(source_set(Some("4".to_owned())).is_err());
+}
+
+#[test]
+fn synthetic_demo_mode_is_explicit() {
+    assert!(!synthetic_demo(None).expect("production default"));
+    assert!(synthetic_demo(Some("synthetic")).expect("demo"));
+    assert!(synthetic_demo(Some("true")).is_err());
+    assert!(synthetic_demo(Some("")).is_err());
 }

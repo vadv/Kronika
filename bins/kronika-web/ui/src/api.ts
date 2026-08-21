@@ -125,6 +125,7 @@ export interface HourData {
   readonly rateColumns: Readonly<Record<string, readonly string[]>>
   readonly snapshotRows: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
+  readonly syntheticDemo?: boolean
   readonly postgresqlConfigured?: boolean
   readonly postgresqlPresent?: boolean
   readonly processes: readonly DataRow[]
@@ -190,6 +191,7 @@ export function mergeSnapshotData(current: HourData, incoming: HourData, appendS
     rateColumns,
     snapshotRows: incoming.snapshotRows.length === 0 ? current.snapshotRows : incoming.snapshotRows,
     availableSections: unique([...current.availableSections, ...incoming.availableSections]),
+    syntheticDemo: current.syntheticDemo === true || incoming.syntheticDemo === true,
     postgresqlConfigured: current.postgresqlConfigured === true || incoming.postgresqlConfigured === true,
     postgresqlPresent: current.postgresqlPresent === true || incoming.postgresqlPresent === true,
     points: [],
@@ -216,6 +218,7 @@ export interface TimelineData {
   readonly findings: readonly Finding[]
   readonly findingGroups: readonly FindingGroup[]
   readonly availableSections: readonly string[]
+  readonly syntheticDemo?: boolean
   readonly postgresqlConfigured?: boolean
   readonly postgresqlPresent?: boolean
 }
@@ -236,6 +239,7 @@ export function hourOf(timeline: TimelineData): HourData {
   return hourData({
     sections: timeline.lanes,
     availableSections: timeline.availableSections,
+    syntheticDemo: timeline.syntheticDemo ?? false,
     postgresqlConfigured: timeline.postgresqlConfigured ?? false,
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
@@ -259,6 +263,7 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     rateColumns: current.rateColumns,
     snapshotRows: current.snapshotRows,
     availableSections: timeline.availableSections,
+    syntheticDemo: timeline.syntheticDemo ?? false,
     postgresqlConfigured: timeline.postgresqlConfigured ?? false,
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
@@ -296,6 +301,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
       findings: fixture.findings,
       findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
+      syntheticDemo: false,
       postgresqlConfigured: fixture.availableSections.some((name) => name.startsWith("pg_")),
       postgresqlPresent: fixture.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_")),
     }
@@ -383,6 +389,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     findings,
     findingGroups: resolvedFindingGroups,
     availableSections: availableSectionNames(all),
+    syntheticDemo: catalog?.demo === "synthetic",
     postgresqlConfigured: sourceConfigured(catalog, "postgresql"),
     postgresqlPresent: sourceMetricsPresent(catalog, "postgresql"),
   }
@@ -729,6 +736,7 @@ function hourData(input: {
   readonly rateColumns?: Readonly<Record<string, readonly string[]>>
   readonly snapshotRows?: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
+  readonly syntheticDemo?: boolean
   readonly postgresqlConfigured?: boolean
   readonly postgresqlPresent?: boolean
   readonly points: readonly Point[]
@@ -740,6 +748,7 @@ function hourData(input: {
   const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
+    syntheticDemo: input.syntheticDemo ?? false,
     postgresqlConfigured: input.postgresqlConfigured ?? false,
     postgresqlPresent: input.postgresqlPresent ?? false,
     rateColumns: input.rateColumns ?? {},

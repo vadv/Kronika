@@ -61,6 +61,7 @@ fn query_builds_a_bounded_backend_graph() {
     assert_eq!(v1.matches("current_setting('application_name')").count(), 2);
     assert!(v1.contains("own.application_name IS NOT DISTINCT FROM"));
     assert!(v1.contains("SELECT DISTINCT ON (l.pid)"));
+    assert!(v1.contains("l.transactionid::text"));
     assert!(!v1.contains("WITH RECURSIVE"));
     assert!(!v1.contains("root_pid"));
     assert!(!v1.contains("depth"));

@@ -16,6 +16,7 @@ pub(crate) struct PreparedCatalog {
     listing: Listing,
     window: Window,
     configured_sources: u32,
+    synthetic_demo: bool,
     present_sources: Option<u32>,
     metric_sources: Option<u32>,
 }
@@ -24,6 +25,7 @@ pub(super) fn prepare(
     root: &Path,
     window: Window,
     configured_sources: u32,
+    synthetic_demo: bool,
 ) -> Result<PreparedCatalog, ApiError> {
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
@@ -36,6 +38,7 @@ pub(super) fn prepare(
         listing,
         window,
         configured_sources,
+        synthetic_demo,
     ))
 }
 
@@ -44,11 +47,13 @@ impl PreparedCatalog {
         listing: Listing,
         window: Window,
         configured_sources: u32,
+        synthetic_demo: bool,
     ) -> Self {
         Self {
             listing,
             window,
             configured_sources,
+            synthetic_demo,
             present_sources: None,
             metric_sources: None,
         }
@@ -94,6 +99,7 @@ impl PreparedCatalog {
                 "record": "catalog",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
+                "demo": self.synthetic_demo.then_some("synthetic"),
                 "source_families": source_family_values(
                     self.configured_sources,
                     present_sources,
