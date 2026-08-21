@@ -50,3 +50,29 @@ jobs:
         run: |
           echo "BDD dependency key: $(./scripts/bdd-image.sh deps-key)"
       - run: ./scripts/bdd-image.sh run
+
+  demo:
+    name: demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the documented demo
+        run: make demo-up
+      - name: Verify the live synthetic catalog
+        run: |
+          curl --compressed --fail --silent --show-error --user demo:forensics \
+            http://127.0.0.1:8080/api/catalog > demo-catalog.ndjson
+          grep -F '"demo":"synthetic"' demo-catalog.ndjson
+          grep -F '"logical_name":"os_process"' demo-catalog.ndjson
+          grep -F '"logical_name":"pg_stat_activity"' demo-catalog.ndjson
+          grep -F '"logical_name":"pg_store_plans"' demo-catalog.ndjson
+          grep -F '"logical_name":"pgbouncer_events"' demo-catalog.ndjson
+      - name: Show diagnostics after a failure
+        if: failure()
+        run: |
+          make demo-status
+          docker compose --file compose.demo.yml logs --no-color --tail=300
+      - name: Remove demo resources
+        if: always()
+        run: make demo-clean

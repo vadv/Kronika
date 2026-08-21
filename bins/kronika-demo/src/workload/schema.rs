@@ -1,7 +1,7 @@
 //! Creates the workload's schemas and tables.
 //!
 //! Table shapes rotate through a fixed set so the workload's queries and
-//! rows are not one shape repeated thousands of times: `pg_stat_statements`
+//! rows are not one shape repeated throughout: `pg_stat_statements`
 //! and the system tables view get something genuinely varied to show.
 
 use super::{WorkloadConfig, connect, naming};
