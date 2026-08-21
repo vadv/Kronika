@@ -1,10 +1,5 @@
-// The curated cuts of every activity ledger. Each answers one forensic
-// question; the menus stay short on purpose. A cut may sum several physical
-// counters — the server adds the present fields per row, so the delta of the
-// sum stays a counter. A cut may also scale into display units through a
-// recorded fact: block counters through the block size, jiffies through the
-// clock rate, kibibytes into bytes. Without the recorded fact the values stay
-// honest raw counts.
+// A cut may sum physical counters and scale values with recorded block-size or
+// clock-rate metadata. Missing metadata leaves the values as raw counts.
 export interface ActivityCut {
   readonly id: string
   readonly fields: readonly string[]
@@ -17,12 +12,7 @@ export interface ActivityScales {
   readonly clockTicks: number | null
 }
 
-export interface ResolvedScale {
-  readonly scale: number
-  readonly kind: ActivityCut["kind"]
-}
-
-export function cutScale(cut: ActivityCut, scales: ActivityScales): ResolvedScale {
+export function cutScale(cut: ActivityCut, scales: ActivityScales): { readonly scale: number; readonly kind: ActivityCut["kind"] } {
   if (cut.scaleBy === "block_size") {
     return scales.blockSize === null || scales.blockSize <= 0
       ? { scale: 1, kind: "count" }

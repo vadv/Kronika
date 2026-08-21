@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { HEATMAP_STEPS, collapseHeatmapView, heatmap, heatmapIntensity, heatmapIntervals, heatmapEntityKey } from "../src/heatmap.ts"
+import { HEATMAP_STEPS, collapseHeatmapView, heatmap, heatmapIntensity, heatmapIntervals, heatmapEntityKey, heatmapViewMax } from "../src/heatmap.ts"
 
 const HOUR = 7_200_000_000_000
 const MINUTE = 60_000_000
@@ -63,7 +63,7 @@ test("gauges rank by the window maximum", () => {
   assert.deepEqual(result.rows.map((row) => [row.entity, row.total]), [["spiky", 90], ["flat", 40]])
 })
 
-test("top slicing feeds the others band and totals cover every entity", () => {
+test("top slicing assigns omitted entities to Others and totals include all entities", () => {
   const samples = [
     ...counterSamples("a", [[0, 0], [30, 3600]]),
     ...counterSamples("b", [[0, 0], [30, 1800]]),
@@ -79,17 +79,7 @@ test("top slicing feeds the others band and totals cover every entity", () => {
   assert.equal(result.totalsTotal, 6300)
 })
 
-test("the shared scale covers ranked rows and others but not totals", () => {
-  const samples = [
-    ...counterSamples("a", [[0, 0], [30, 3600]]),
-    ...counterSamples("b", [[0, 0], [30, 3600]]),
-  ]
-  const result = heatmap(samples, true, HOUR, 1, 1)
-  assert.equal(result.max, 2)
-  assert.equal(result.totals[0], 4)
-})
-
-test("samples outside the hour are ignored and unsorted input works", () => {
+test("unsorted in-hour samples are ordered and out-of-hour samples are ignored", () => {
   const result = heatmap([
     { entity: "a", timestamp: HOUR - 1, value: 0 },
     { entity: "a", timestamp: HOUR + 30 * MINUTE, value: 300 },
@@ -108,14 +98,14 @@ test("entities with a null ranking value sort after real totals", () => {
   assert.deepEqual(result.rows.map((row) => [row.entity, row.total]), [["steady", 60], ["resettled", null]])
 })
 
-test("intensity steps: zero at 0, sqrt keeps quarter-of-max three steps up, max at the top", () => {
+test("intensity uses square-root steps with a distinct zero", () => {
   assert.equal(heatmapIntensity(0, 100), 0)
   assert.equal(heatmapIntensity(100, 100), HEATMAP_STEPS)
   assert.equal(heatmapIntensity(25, 100), HEATMAP_STEPS / 2)
   assert.equal(heatmapIntensity(0.0001, 100), 1)
 })
 
-test("entity keys survive null identity parts", () => {
+test("entity keys distinguish null from the string null", () => {
   assert.notEqual(heatmapEntityKey(["1", null]), heatmapEntityKey(["1", "null"]))
 })
 
@@ -134,6 +124,7 @@ test("collapsing a view folds the tail rows into the others band", () => {
     entityCount: 4,
   }
   const collapsed = collapseHeatmapView(view, 1)
+  assert.equal(heatmapViewMax(view), 2)
   assert.equal(collapsed.rows.length, 1)
   assert.equal(collapsed.othersCount, 3)
   assert.equal(collapsed.others.total, 100)
@@ -141,7 +132,7 @@ test("collapsing a view folds the tail rows into the others band", () => {
   assert.equal(collapseHeatmapView(view, 3), view)
 })
 
-test("cut scales fall back to honest raw counts without the recorded fact", async () => {
+test("cut scales fall back to raw counts without scale metadata", async () => {
   const { cutScale } = await import("../src/activity-cuts.ts")
   assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: 8192, clockTicks: null }), { scale: 8192, kind: "bytes" })
   assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })

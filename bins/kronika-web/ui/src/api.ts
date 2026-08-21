@@ -55,10 +55,6 @@ export interface SectionRequest {
   readonly filters?: Readonly<Record<string, string>>
 }
 
-// The Overview reads its vitals as whole-hour series on its own; the cursor
-// snapshot pipeline carries nothing extra for it.
-export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = []
-
 export const POSTGRESQL_CONTEXT_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_settings", fields: ["name", "setting"] },
 ]
@@ -448,9 +444,6 @@ export async function loadSeries(
   return rows
 }
 
-// The ranked top view of one section over the hour. The server derives it
-// next to the segments and answers with kilobytes; the bundled fixture
-// derives the same shape locally through the heatmap module.
 export async function loadHeatmap(
   selectedHour: number,
   section: string,
@@ -519,8 +512,6 @@ export async function loadHeatmap(
   return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
 }
 
-// The fixture branch runs the same contract locally: group the bundled hour's
-// rows into per-entity samples and derive the ranked view in the client.
 function fixtureHeatmap(
   from: number,
   section: string,
@@ -537,6 +528,7 @@ function fixtureHeatmap(
   const samples: HeatmapSample[] = []
   const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
   const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
+  const groupOf = new Map<string, readonly (string | null)[]>()
   for (const row of rows) {
     const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
     if (layout === undefined || layout.logicalName !== section) continue
@@ -546,7 +538,12 @@ function fixtureHeatmap(
     })
     const entity = heatmapEntityKey([row.typeId, ...identity])
     if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
-    // A summed cut adds the present fields; null only when none is usable.
+    if (group !== undefined && group.length > 0 && !groupOf.has(entity)) {
+      groupOf.set(entity, group.map((name) => {
+        const stored = row.values[name]
+        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+      }))
+    }
     let numeric: number | null = null
     for (const field of fields) {
       const raw = row.values[field]
@@ -583,24 +580,6 @@ function fixtureHeatmap(
       others: { total: derived.othersTotal, cells: [...derived.others] },
       othersCount: derived.othersCount,
       entityCount: derived.entityCount,
-    }
-  }
-  // Grouped: per-identity cells first, then summed under the group values,
-  // exactly as the server folds them.
-  const groupOf = new Map<string, readonly (string | null)[]>()
-  for (const row of rows) {
-    const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
-    if (layout === undefined || layout.logicalName !== section) continue
-    const identity = layout.identity.map((name) => {
-      const stored = row.values[name]
-      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-    })
-    const entity = heatmapEntityKey([row.typeId, ...identity])
-    if (!groupOf.has(entity)) {
-      groupOf.set(entity, group.map((name) => {
-        const stored = row.values[name]
-        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-      }))
     }
   }
   const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
@@ -938,7 +917,6 @@ function hourData(input: {
   readonly findingGroups?: readonly FindingGroup[]
 }): HourData {
   const rows = (name: string) => input.sections[name] ?? []
-  const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
     syntheticDemo: input.syntheticDemo ?? false,

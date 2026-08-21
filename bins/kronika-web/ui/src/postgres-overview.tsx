@@ -23,16 +23,8 @@ import { SeriesChart, readingAt, type ChartPoint } from "./series-chart"
 import { SparkCell } from "./spark-cell"
 import { sparkScaleMax } from "./spark"
 
-// The Overview is the instance's vitals for the recorded hour: one row per
-// fact, its shape over the hour beside the hour's headline number and the
-// reading at the cursor. Per-query, per-backend, per-lock and per-relation
-// stories live on their own surfaces; this page carries only instance-wide
-// aggregates of the recorded sections.
-
 const HOUR_US = 3_600_000_000
-// pg_stat_io keys one row per backend type, object and context.
 const IO_IDENTITY = ["backend_type", "object", "context"]
-// One row per snapshot; the section itself is the identity.
 const SINGLETON_IDENTITY: readonly string[] = []
 
 interface VitalStreams {
@@ -67,7 +59,7 @@ const STREAM_FIELDS: Readonly<Record<keyof VitalStreams, readonly [string, reado
 
 interface VitalRow {
   readonly key: string
-  // The hour's shape; empty means the fact was not recorded and the row hides.
+  // Empty points hide the row because the fact was not recorded.
   readonly points: readonly ChartPoint[]
   readonly second?: readonly ChartPoint[] | undefined
   readonly kind: "share" | "rate" | "count" | "bytes"
@@ -75,7 +67,7 @@ interface VitalRow {
   readonly reading: (cursor: number) => string
   readonly limit?: number | undefined
   readonly unit?: string | undefined
-  // Chart-axis formatting when the plain kind number is wrong (durations).
+  // Optional duration-aware chart formatting.
   readonly chart?: ((value: number | null, locale: Locale) => string) | undefined
 }
 
@@ -98,8 +90,7 @@ export function PostgresOverview({ cursor, data, historyRevision, hour, locale, 
     .filter(([, [section]]) => data.availableSections.includes(section))
     .map(([key]) => key)
     .join(","), [data.availableSections])
-  // The live hour bumps historyRevision every few seconds; one re-read per
-  // minute is enough for whole-hour vitals.
+  // Live-hour revisions are frequent; whole-hour values refresh at most once per minute.
   const [coarseRevision, setCoarseRevision] = useState(0)
   const lastRead = useRef(0)
   useEffect(() => {
@@ -408,7 +399,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           points: tps.points,
           second: rollback.points,
           kind: "rate",
-          headline: totalHeadline(tps, locale, (total) => rollbackShare === null ? compact(total, locale) : `${compact(total, locale)} · ${humanPercent(rollbackShare * 100, locale)}`),
+          headline: totalHeadline(tps, (total) => rollbackShare === null ? compact(total, locale) : `${compact(total, locale)} · ${humanPercent(rollbackShare * 100, locale)}`),
           reading: readCount(tps.points),
           unit: perSecond,
         },
@@ -417,7 +408,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           points: tupRead.points,
           second: tupFetched.points,
           kind: "rate",
-          headline: totalHeadline(tupRead, locale, (total) => compact(total, locale)),
+          headline: totalHeadline(tupRead, (total) => compact(total, locale)),
           reading: readCount(tupRead.points),
           unit: perSecond,
         },
@@ -425,7 +416,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           key: "tuples_written",
           points: tupWritten.points,
           kind: "rate",
-          headline: totalHeadline(tupWritten, locale, (total) => compact(total, locale)),
+          headline: totalHeadline(tupWritten, (total) => compact(total, locale)),
           reading: readCount(tupWritten.points),
           unit: perSecond,
         },
@@ -445,7 +436,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           key: "io_time",
           points: ioTime.points,
           kind: "rate",
-          headline: totalHeadline(ioTime, locale, (total) => humanDuration(total, locale)),
+          headline: totalHeadline(ioTime, (total) => humanDuration(total, locale)),
           reading: (cursor) => {
             const stored = readingAt(ioTime.points, cursor)
             return stored === null ? "—" : humanDuration(stored, locale)
@@ -462,12 +453,12 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           key: "temp",
           points: temp.points,
           kind: "bytes",
-          headline: totalHeadline(temp, locale, (total) => humanBytes(total, locale)),
+          headline: totalHeadline(temp, (total) => humanBytes(total, locale)),
           reading: readBytes(temp.points),
         },
-        { key: "deadlocks", points: deadlocks.points, kind: "rate", headline: totalHeadline(deadlocks, locale, (total) => compact(total, locale)), reading: readCount(deadlocks.points) },
-        { key: "checksum_failures", points: checksums.points, kind: "rate", headline: totalHeadline(checksums, locale, (total) => compact(total, locale)), reading: readCount(checksums.points) },
-        { key: "session_ends", points: sessionEnds.points, kind: "rate", headline: totalHeadline(sessionEnds, locale, (total) => compact(total, locale)), reading: readCount(sessionEnds.points) },
+        { key: "deadlocks", points: deadlocks.points, kind: "rate", headline: totalHeadline(deadlocks, (total) => compact(total, locale)), reading: readCount(deadlocks.points) },
+        { key: "checksum_failures", points: checksums.points, kind: "rate", headline: totalHeadline(checksums, (total) => compact(total, locale)), reading: readCount(checksums.points) },
+        { key: "session_ends", points: sessionEnds.points, kind: "rate", headline: totalHeadline(sessionEnds, (total) => compact(total, locale)), reading: readCount(sessionEnds.points) },
       ],
     },
     {
@@ -478,7 +469,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           key: "wal",
           points: walBytes.points,
           kind: "bytes",
-          headline: totalHeadline(walBytes, locale, (total) => humanBytes(total, locale)),
+          headline: totalHeadline(walBytes, (total) => humanBytes(total, locale)),
           reading: readBytes(walBytes.points),
         },
         {
@@ -494,7 +485,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           points: checkpointBuffers.points,
           second: backendBuffers.points,
           kind: "rate",
-          headline: totalHeadline(checkpointBuffers, locale, (total) => compact(total, locale)),
+          headline: totalHeadline(checkpointBuffers, (total) => compact(total, locale)),
           reading: readCount(checkpointBuffers.points),
         },
         {
@@ -505,7 +496,7 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
           headline: archiverHeadline(archived, archiveFailed, locale, t),
           reading: readCount(archived.points),
         },
-        { key: "wal_buffers_full", points: walBuffersFull.points, kind: "rate", headline: totalHeadline(walBuffersFull, locale, (total) => compact(total, locale)), reading: readCount(walBuffersFull.points) },
+        { key: "wal_buffers_full", points: walBuffersFull.points, kind: "rate", headline: totalHeadline(walBuffersFull, (total) => compact(total, locale)), reading: readCount(walBuffersFull.points) },
         {
           key: "wal_size",
           points: walSize,
@@ -519,11 +510,11 @@ function buildBands(streams: VitalStreams, lanePoints: readonly LanePoint[], loc
       key: "buffers",
       icon: Layers,
       rows: [
-        { key: "evictions", points: evictions.points, kind: "rate", headline: totalHeadline(evictions, locale, (total) => compact(total, locale)), reading: readCount(evictions.points) },
-        { key: "reuses", points: reuses.points, kind: "rate", headline: totalHeadline(reuses, locale, (total) => compact(total, locale)), reading: readCount(reuses.points) },
-        { key: "extends", points: extendOps.points, kind: "rate", headline: totalHeadline(extendOps, locale, (total) => compact(total, locale)), reading: readCount(extendOps.points) },
-        { key: "fsyncs", points: fsyncs.points, kind: "rate", headline: totalHeadline(fsyncs, locale, (total) => compact(total, locale)), reading: readCount(fsyncs.points) },
-        { key: "vacuum_reads", points: vacuumReads.points, kind: "rate", headline: totalHeadline(vacuumReads, locale, (total) => compact(total, locale)), reading: readCount(vacuumReads.points) },
+        { key: "evictions", points: evictions.points, kind: "rate", headline: totalHeadline(evictions, (total) => compact(total, locale)), reading: readCount(evictions.points) },
+        { key: "reuses", points: reuses.points, kind: "rate", headline: totalHeadline(reuses, (total) => compact(total, locale)), reading: readCount(reuses.points) },
+        { key: "extends", points: extendOps.points, kind: "rate", headline: totalHeadline(extendOps, (total) => compact(total, locale)), reading: readCount(extendOps.points) },
+        { key: "fsyncs", points: fsyncs.points, kind: "rate", headline: totalHeadline(fsyncs, (total) => compact(total, locale)), reading: readCount(fsyncs.points) },
+        { key: "vacuum_reads", points: vacuumReads.points, kind: "rate", headline: totalHeadline(vacuumReads, (total) => compact(total, locale)), reading: readCount(vacuumReads.points) },
       ],
     },
     {
@@ -561,7 +552,7 @@ function firstVital(preferred: VitalSeries, fallback: VitalSeries): VitalSeries 
   return preferred.points.length > 0 ? preferred : fallback
 }
 
-function totalHeadline(vital: VitalSeries, locale: Locale, format: (total: number) => string): string {
+function totalHeadline(vital: VitalSeries, format: (total: number) => string): string {
   return vital.total === null ? "—" : format(vital.total)
 }
 
@@ -601,7 +592,7 @@ function numberSetting(rows: readonly DataRow[], name: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-// shared_buffers-style settings measure in a recorded unit such as 8kB.
+// Settings such as `shared_buffers` use a recorded unit such as `8kB`.
 function settingBytes(rows: readonly DataRow[], name: string, cursor: number, locale: Locale): string | null {
   const stored = settingAt(rows, name, cursor)
   if (stored === null) return null
@@ -621,7 +612,6 @@ function unitBytesOf(rows: readonly DataRow[], name: string): number | null {
   return (match[1] === "" ? 1 : Number(match[1])) * scale
 }
 
-// The recorded share of hits among hits+reads at each shared snapshot moment.
 function ratioPoints(hits: readonly ChartPoint[], reads: readonly ChartPoint[]): readonly ChartPoint[] {
   const readAt = new Map(reads.map((point) => [point.timestamp, point.value]))
   return hits.flatMap((point) => {
@@ -638,4 +628,3 @@ function vitalNumber(kind: VitalRow["kind"], value: number | null, locale: Local
   if (kind === "share") return humanPercent(value, locale)
   return compact(value, locale)
 }
-

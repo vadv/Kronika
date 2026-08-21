@@ -1,15 +1,3 @@
-// The heatmap contract from DESIGN.md "Heatmap values", plus the view model
-// the renderer consumes. The server derives the ranked top view next to the
-// segments; the bundled-fixture build derives the same shape here, in the
-// client. A counter cell is the last value in the interval minus the
-// identity's latest value at or before the interval's start within the
-// requested window, divided by the
-// elapsed time between those two observations — one in-interval sample plus a
-// preceding baseline is enough. Missing input, no baseline, a non-positive
-// observed duration or a negative delta produce null, a zero delta produces
-// 0. A gauge cell is the last sample in the interval, or null. Ranking uses
-// the whole requested window and does not change with the number of columns.
-
 export const HOUR_MICROS = 3_600_000_000
 
 export interface HeatmapSample {
@@ -25,8 +13,7 @@ export interface HeatmapInterval {
 
 export interface HeatmapRow {
   readonly entity: string
-  // Counter: absolute delta over the whole window. Gauge: maximum sample.
-  // Null when the window has no usable ranking value (a reset, one sample).
+  // Whole-window counter delta or gauge maximum; null without a usable total.
   readonly total: number | null
   readonly cells: readonly (number | null)[]
 }
@@ -40,9 +27,6 @@ export interface Heatmap {
   readonly othersTotal: number | null
   readonly othersCount: number
   readonly entityCount: number
-  // Shared color scale over the ranked rows and the others band. The totals
-  // band dwarfs individual entities and gets its own scale in the renderer.
-  readonly max: number
 }
 
 interface ColumnState {
@@ -101,10 +85,6 @@ export function heatmap(
   const rest = ranked.slice(top)
   const totals = sumCells(ranked, columns)
   const others = sumCells(rest, columns)
-  let max = 0
-  for (const row of [...rows.map((row) => row.cells), others]) {
-    for (const cell of row) if (cell !== null && cell > max) max = cell
-  }
   return {
     intervals,
     rows,
@@ -114,7 +94,6 @@ export function heatmap(
     othersTotal: sumTotals(rest, cumulative),
     othersCount: rest.length,
     entityCount: ranked.length,
-    max,
   }
 }
 
@@ -132,9 +111,7 @@ function observe(state: ColumnState | undefined, timestamp: number, value: numbe
   return state
 }
 
-// A counter cell measures from the latest observation at or before the
-// interval start, carried across empty and boundary intervals, so a sparse
-// cadence still fills every later column.
+// Carry the latest earlier sample across empty counter intervals.
 function carriedCells(columns: readonly (ColumnState | undefined)[], cumulative: boolean): (number | null)[] {
   let carry: { readonly ts: number; readonly value: number } | null = null
   return columns.map((state) => {
@@ -186,9 +163,7 @@ function sumTotals(rows: readonly HeatmapRow[], cumulative: boolean): number | n
 
 export const HEATMAP_STEPS = 6
 
-// Square-root stepping keeps the long tail of a skewed hour visible: a cell at
-// a quarter of the maximum still lands three steps up, not one. Zero is step
-// 0, a real value distinct from null, which draws nothing at all.
+// Square-root steps preserve contrast in skewed rows. Zero is distinct from null.
 export function heatmapIntensity(value: number, max: number): number {
   if (value <= 0 || max <= 0) return 0
   return Math.max(1, Math.min(HEATMAP_STEPS, Math.ceil(Math.sqrt(value / max) * HEATMAP_STEPS)))
@@ -198,8 +173,6 @@ export function heatmapEntityKey(values: readonly (string | null)[]): string {
   return JSON.stringify(values)
 }
 
-// The server's /api/heatmap response and the bundled-fixture derivation share
-// this shape; the renderer never knows which produced it.
 export interface HeatmapBand {
   readonly total: number | null
   readonly cells: readonly (number | null)[]
@@ -209,7 +182,7 @@ export interface HeatmapViewRow {
   readonly typeId: string
   readonly identity: readonly (string | null)[]
   readonly labels: readonly (string | null)[]
-  // Distinct identities aggregated into the row when the request grouped.
+  // Distinct identities represented by a grouped row; otherwise null.
   readonly members: number | null
   readonly total: number | null
   readonly cells: readonly (number | null)[]
@@ -225,8 +198,7 @@ export interface HeatmapView {
   readonly entityCount: number
 }
 
-// The block shows fewer rows than the server ranked; the rows beyond the fold
-// join the others band with plain null-aware arithmetic.
+// Fold rows hidden by the compact view into the Others band.
 export function collapseHeatmapView(view: HeatmapView, top: number): HeatmapView {
   if (view.rows.length <= top) return view
   const kept = view.rows.slice(0, top)

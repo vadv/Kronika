@@ -781,11 +781,6 @@ test("the current view replaces every prior snapshot while the hour line remains
   assert.deepEqual(activityView.availableSections, ["os_process", "pg_stat_activity"])
 })
 
-test("PostgreSQL Overview adds nothing to the cursor snapshot pipeline", async () => {
-  const api = await bundledApi()
-  assert.deepEqual(api.POSTGRESQL_OVERVIEW_REQUESTS, [])
-})
-
 test("the timeline carries every finding without per-section index requests", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")

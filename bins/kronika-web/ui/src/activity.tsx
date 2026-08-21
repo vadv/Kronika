@@ -16,34 +16,24 @@ const DEFAULT_TOP = 25
 
 type ScaleMode = "global" | "row"
 
-// The section-specific words of one ledger: its title and the names of the
-// bands that speak about the section's entities.
 interface LedgerKeys {
   readonly title: string
-  readonly titleHelp: string
-  readonly others: string
-  readonly othersLabel: string
-  readonly othersHelp: string
-  readonly totalsHelp: string
+  readonly bands: string
 }
 
 interface HeatmapState {
   readonly loading: boolean
   readonly error: boolean
   readonly view: HeatmapView | null
-  // The cut the loaded view was built for: values keep formatting with it
-  // until the newly selected cut's data arrives.
+  // Keep the displayed units aligned with the loaded data during a reload.
   readonly viewCut: ActivityCut | null
 }
 
-// One small request per (hour, cut, top): the server ranks next to the
-// segments and answers with kilobytes, so switching cuts stays instant even
-// over a slow link. Nothing is requested while the ledger stays collapsed.
 function useHeatmapView(
   section: string,
   columns: number,
   labels: readonly string[],
-  group: string | undefined,
+  group: readonly string[] | undefined,
   hour: number,
   cut: ActivityCut,
   top: number,
@@ -51,12 +41,11 @@ function useHeatmapView(
   enabled: boolean,
 ): HeatmapState {
   const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null, viewCut: null })
-  const fields = cut.fields.join(",")
   useEffect(() => {
     if (!enabled) return
     const controller = new AbortController()
     setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
-    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal, group?.split(","))
+    loadHeatmap(hour, section, cut.fields, labels, columns, top, controller.signal, group)
       .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -64,7 +53,7 @@ function useHeatmapView(
         }
       })
     return () => controller.abort()
-  }, [columns, enabled, fields, group, hour, labels, revision, section, top])
+  }, [columns, cut, enabled, group, hour, labels, revision, section, top])
   return state
 }
 
@@ -87,9 +76,6 @@ interface RowLabel {
   readonly prefix: string | null
 }
 
-// The shared hour activity ledger: ranked heatmap strips over one section,
-// collapsed until the operator opens it. Wrappers supply the curated cuts,
-// the row labels and the drill action of their section.
 function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
   readonly columns: number
   readonly cursor: number
@@ -116,7 +102,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   const [maximized, setMaximized] = useState(false)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, labels, group?.join(","), hour, cut, top, revision, open)
+  const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -144,18 +130,18 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   }
 
   if (!open) {
-    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
       <header className="flex items-center gap-1 px-2 py-[6px]">
         <button aria-expanded={false} className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-sm font-medium text-fg2" data-testid="activity-toggle" onClick={() => toggle(true)} type="button">
           <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />
-          {t(keys.title)}
+          {t(`${keys.title}.title`)}
         </button>
-        <LabelHelp helpKey={keys.titleHelp} iconOnly labelKey={keys.title} t={t} />
+        <LabelHelp helpKey={`${keys.title}.title.help`} iconOnly labelKey={`${keys.title}.title`} t={t} />
       </header>
     </section>
   }
   if (state.error && state.view === null) {
-    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
       <div className="flex items-center gap-3 px-3 py-2 font-sans text-sm text-fg3">
         <span>{t("activity.error")}</span>
         <button className="cursor-pointer border-0 bg-transparent p-0 font-sans text-sm text-accent3 underline decoration-dotted underline-offset-2" onClick={() => setRevision((current) => current + 1)} type="button">{t("activity.retry")}</button>
@@ -163,9 +149,9 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     </section>
   }
   if (view === null) {
-    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
       <header className="flex items-center gap-2 border-b border-line px-3 py-[6px]">
-        <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t(keys.title)}</h2>
+        <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t(`${keys.title}.title`)}</h2>
         <span className="font-sans text-xs text-fg4">{t("activity.loading")}</span>
       </header>
       <div aria-hidden="true" className="px-3 py-2">
@@ -202,46 +188,15 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   />
   if (!maximized) return panel
   return <>
-    <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}-placeholder`} />
-    {createPortal(<div aria-label={t(keys.title)} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
+    <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}-placeholder`} />
+    {createPortal(<div aria-label={t(`${keys.title}.title`)} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
   </>
 }
 
-const STATEMENT_KEYS: LedgerKeys = {
-  title: "activity.title",
-  titleHelp: "activity.title.help",
-  others: "activity.others",
-  othersLabel: "activity.others_label",
-  othersHelp: "activity.others.help",
-  totalsHelp: "activity.totals.help",
-}
-
-const PLAN_KEYS: LedgerKeys = {
-  title: "activity.plans.title",
-  titleHelp: "activity.plans.title.help",
-  others: "activity.plans.others",
-  othersLabel: "activity.plans.others_label",
-  othersHelp: "activity.plans.others.help",
-  totalsHelp: "activity.plans.totals.help",
-}
-
-const TABLE_KEYS: LedgerKeys = {
-  title: "activity.tables.title",
-  titleHelp: "activity.tables.title.help",
-  others: "activity.tables.others",
-  othersLabel: "activity.tables.others_label",
-  othersHelp: "activity.tables.others.help",
-  totalsHelp: "activity.tables.totals.help",
-}
-
-const INDEX_KEYS: LedgerKeys = {
-  title: "activity.indexes.title",
-  titleHelp: "activity.indexes.title.help",
-  others: "activity.indexes.others",
-  othersLabel: "activity.indexes.others_label",
-  othersHelp: "activity.indexes.others.help",
-  totalsHelp: "activity.indexes.totals.help",
-}
+const STATEMENT_KEYS: LedgerKeys = { title: "activity", bands: "activity" }
+const PLAN_KEYS: LedgerKeys = { title: "activity.plans", bands: "activity.plans" }
+const TABLE_KEYS: LedgerKeys = { title: "activity.tables", bands: "activity.tables" }
+const INDEX_KEYS: LedgerKeys = { title: "activity.indexes", bands: "activity.indexes" }
 
 export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
   readonly blockSize: number | null
@@ -256,8 +211,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
 }) {
   const [view, setView] = useState<HeatmapView | null>(null)
   const tableTexts = useMemo(() => statementTextsByQueryId(data.sections.pg_stat_statements ?? []), [data.sections.pg_stat_statements])
-  // Text lookups land on the newest interval that actually carries data: the
-  // cursor may sit on an empty stretch of the hour.
+  // Query text lookup uses the latest interval with data, not an empty cursor interval.
   const textAt = useMemo(() => {
     const totals = view?.totals.cells ?? []
     for (let index = totals.length - 1; index >= 0; index -= 1) {
@@ -285,9 +239,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
     const text = queryId === null ? undefined : tableTexts.get(queryId) ?? fetchedTexts.get(queryId)
     return {
       text: text === undefined ? `Query ID ${queryId ?? "—"}` : activityPreview(text),
-      // The identity is (queryid, userid, dbid, toplevel): the same query
-      // under two roles or nested under track=all ranks as separate rows, so
-      // the prefix must carry enough of the identity to tell them apart.
+      // Query identity includes role, database, and top-level status.
       prefix: identityPrefix(row.labels, row.identity[3] === "false" ? t("activity.nested") : null),
     }
   }
@@ -323,8 +275,6 @@ export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor,
   return <ActivityLedger columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
 }
 
-// Tables and indexes snapshot every five minutes, so their hour is twelve
-// honest wide cells rather than sixty.
 export type RelationActivityLevel = "object" | "schema" | "database" | "tablespace"
 
 const RELATION_GROUPS: Readonly<Record<Exclude<RelationActivityLevel, "object">, readonly string[]>> = {
@@ -345,8 +295,7 @@ export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCu
   readonly t: Translate
 }) {
   const indexes = section === "pg_stat_user_indexes"
-  // The ledger follows the view's synthetic grouping: per object, or summed
-  // per schema, database or tablespace like the table below it.
+  // Match the grouping selected for the relation table.
   const group = level === "object" ? undefined : RELATION_GROUPS[level]
   const drill = (row: HeatmapViewRow) => {
     const name = level === "object" ? row.labels[indexes ? 3 : 2] : row.identity[row.identity.length - 1]
@@ -383,15 +332,12 @@ export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t
   readonly t: Translate
   readonly ticksPerSecond: number | null
 }) {
-  // Grouped by command: short-lived workers fold into one stable row instead
-  // of thousands of dead PIDs.
   const drill = (row: HeatmapViewRow) => {
     const comm = row.identity[0]
     if (comm != null && comm !== "") onPattern(comm)
   }
   const label = (row: HeatmapViewRow): RowLabel => ({
     text: row.identity[0] ?? "—",
-    // A single-process command needs no member count.
     prefix: row.members === null || row.members < 2 ? null : t("activity.members", { count: row.members }),
   })
   return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group={PROCESS_GROUP} hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
@@ -417,8 +363,6 @@ export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, o
   return <ActivityLedger columns={60} cursor={cursor} cuts={DATABASE_CUTS} defaultCut="commits" drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} labels={DATABASE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_database" storageKey="kronika.activity-open.databases" t={t} />
 }
 
-// The two container ledgers: which cgroup burned CPU and which one drove the
-// block layer, each over its own recorded section.
 export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
   readonly cursor: number
   readonly hour: number
@@ -434,43 +378,13 @@ export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
   return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
 }
 
-const DATABASE_KEYS: LedgerKeys = {
-  title: "activity.databases.title",
-  titleHelp: "activity.databases.title.help",
-  others: "activity.databases.others",
-  othersLabel: "activity.databases.others_label",
-  othersHelp: "activity.databases.others.help",
-  totalsHelp: "activity.databases.totals.help",
-}
-
-const CGROUP_CPU_KEYS: LedgerKeys = {
-  title: "activity.cgroup_cpu.title",
-  titleHelp: "activity.cgroup_cpu.title.help",
-  others: "activity.cgroups.others",
-  othersLabel: "activity.cgroups.others_label",
-  othersHelp: "activity.cgroups.others.help",
-  totalsHelp: "activity.cgroups.totals.help",
-}
-
-const CGROUP_IO_KEYS: LedgerKeys = {
-  title: "activity.cgroup_io.title",
-  titleHelp: "activity.cgroup_io.title.help",
-  others: "activity.cgroups.others",
-  othersLabel: "activity.cgroups.others_label",
-  othersHelp: "activity.cgroups.others.help",
-  totalsHelp: "activity.cgroups.totals.help",
-}
+const DATABASE_KEYS: LedgerKeys = { title: "activity.databases", bands: "activity.databases" }
+const CGROUP_CPU_KEYS: LedgerKeys = { title: "activity.cgroup_cpu", bands: "activity.cgroups" }
+const CGROUP_IO_KEYS: LedgerKeys = { title: "activity.cgroup_io", bands: "activity.cgroups" }
 
 const DATABASE_LABELS = ["datname"] as const
 
-const PROCESS_KEYS: LedgerKeys = {
-  title: "activity.processes.title",
-  titleHelp: "activity.processes.title.help",
-  others: "activity.processes.others",
-  othersLabel: "activity.processes.others_label",
-  othersHelp: "activity.processes.others.help",
-  totalsHelp: "activity.processes.totals.help",
-}
+const PROCESS_KEYS: LedgerKeys = { title: "activity.processes", bands: "activity.processes" }
 
 const NO_LABELS = [] as const
 const PROCESS_GROUP = ["comm"] as const
@@ -492,9 +406,8 @@ function rowQueryId(row: HeatmapViewRow): string | null {
   return stored == null || stored === "0" ? null : stored
 }
 
-// Query text is the one heavy label: it never travels with the ranking
-// response. The loaded table page answers most of the ranked entities; the
-// remainder is fetched one bounded text row per queryid, after ranking.
+// The heatmap omits query text. Fetch one bounded row for each label absent
+// from the loaded table page.
 function statementTextsByQueryId(tableRows: readonly DataRow[]): ReadonlyMap<string, string> {
   const texts = new Map<string, string>()
   for (const row of tableRows) {
@@ -506,8 +419,7 @@ function statementTextsByQueryId(tableRows: readonly DataRow[]): ReadonlyMap<str
   return texts
 }
 
-// Plan text reaches the ledger only through the loaded table page; there is
-// no bounded single-plan text fetch, so an unlabeled row keeps its plan id.
+// There is no single-plan text request; missing labels retain the plan id.
 function planTextsByPlanId(tableRows: readonly DataRow[]): ReadonlyMap<string, string> {
   const texts = new Map<string, string>()
   for (const row of tableRows) {
@@ -584,7 +496,6 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
   readonly view: HeatmapView
 }) {
   const { kind, scale: valueScale } = cutScale(loadedCut, scales)
-  // A gauge cell is a plain reading, not a rate.
   const suffix = view.cumulative ? t("unit.per_second") : ""
   const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
     ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
@@ -600,13 +511,13 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
   }
   const total = (stored: number | null) => stored === null ? "—" : formatValue(stored * valueScale, kind, locale)
 
-  return <section aria-label={t(keys.title)} className={`activity-block${maximized ? " activity-max" : ""}`} data-testid={`activity-${section}`}>
+  return <section aria-label={t(`${keys.title}.title`)} className={`activity-block${maximized ? " activity-max" : ""}`} data-testid={`activity-${section}`}>
     <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3 py-[6px]">
       <button aria-expanded className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-sm font-medium text-fg2" data-testid="activity-toggle" onClick={onCollapse} type="button">
         <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} />
-        {t(keys.title)}
+        {t(`${keys.title}.title`)}
       </button>
-      <LabelHelp helpKey={keys.titleHelp} iconOnly labelKey={keys.title} t={t} />
+      <LabelHelp helpKey={`${keys.title}.title.help`} iconOnly labelKey={`${keys.title}.title`} t={t} />
       <div aria-label={t("activity.cut_label")} className="lens-tabs" role="group">
         {cuts.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
       </div>
@@ -626,12 +537,12 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
     </header>
     {view.entityCount === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
     {view.entityCount > 0 && <div className={`${maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}${loading ? " animate-pulse opacity-55 transition-opacity" : ""}`} data-loading={loading || undefined}>
-      <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={keys.totalsHelp} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
+      <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.totals.help`} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
         return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
-      {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={keys.othersHelp} iconOnly labelKey={keys.othersLabel} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(keys.others, { count: String(view.othersCount) })} total={total(view.others.total)} />}
+      {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.othersCount) })} total={total(view.others.total)} />}
     </div>}
   </section>
 }

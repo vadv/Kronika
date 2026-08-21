@@ -3,29 +3,31 @@ import { asNumber, rawText, value } from "./model"
 import { intervalMetric } from "./postgres-metrics"
 import type { ChartPoint } from "./series-chart"
 
-// Instance vitals for the Overview: recorded per-database counters summed
-// into one instance series, gauges reduced per snapshot moment, and plain
-// row counts. Pairing follows the shipped convention: adjacent rows of one
-// (typeId, identity) in time order, deltas through intervalMetric.
+// Counter deltas pair adjacent rows with the same type and identity.
 
 export interface VitalSeries {
-  // Rate per second at each snapshot moment that had a previous reading.
+  // Rates at snapshots with a previous reading.
   readonly points: readonly ChartPoint[]
-  // The hour's total: the sum of every recorded delta, null when none.
+  // Sum of recorded deltas for the hour.
   readonly total: number | null
 }
 
 const EMPTY_VITAL: VitalSeries = { points: [], total: null }
 
-// One time-ordered row series per identity, shared by every counter vital of
-// the section so the sort happens once.
 export type CounterGroups = ReadonlyMap<string, readonly DataRow[]>
 
 export function counterGroups(rows: readonly DataRow[], identity: readonly string[] = ["datid"]): CounterGroups {
-  return byIdentity(rows, identity)
+  const ordered = new Map<string, DataRow[]>()
+  for (const row of [...rows].sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))) {
+    const key = [row.typeId, ...identity.map((field) => rawText(value(row, field)) ?? "")].join("\u{1f}")
+    const series = ordered.get(key)
+    if (series === undefined) ordered.set(key, [row])
+    else series.push(row)
+  }
+  return ordered
 }
 
-// Sum the per-second rates of `fields` over every identity in the section.
+// Sums field rates across identities.
 export function sumCounterVital(ordered: CounterGroups, fields: readonly string[]): VitalSeries {
   const rates = new Map<number, { segmentId: string; value: number }>()
   let total: number | null = null
@@ -53,9 +55,7 @@ export function sumCounterVital(ordered: CounterGroups, fields: readonly string[
   }
 }
 
-// One point per snapshot moment: the sum (or the maximum) of a recorded
-// gauge. A moment whose rows all carry null keeps a null point, so the line
-// breaks and the cursor reads nothing instead of an older value.
+// Reduces gauges at each snapshot. An all-null snapshot remains null.
 export function gaugeSeries(rows: readonly DataRow[], field: string, reduce: "sum" | "max"): readonly ChartPoint[] {
   const moments = new Map<number, { segmentId: string; value: number | null }>()
   for (const row of rows) {
@@ -73,11 +73,8 @@ export function gaugeSeries(rows: readonly DataRow[], field: string, reduce: "su
     .map(([timestamp, slot]) => ({ segmentId: slot.segmentId, timestamp, value: slot.value }))
 }
 
-// Sections such as pg_stat_progress_vacuum and pg_prepared_xacts emit rows
-// only while their phenomenon exists, so an empty collection pass records no
-// rows at all. The anchor section opens every pass before them, which makes
-// its moments the pass moments: rows between two anchors belong to the
-// earlier one, and an anchor with none recorded exactly zero.
+// Sparse sections emit no row for an empty pass. Anchor timestamps delimit
+// passes so the reducer can emit an explicit zero.
 export function anchoredSeries(
   rows: readonly DataRow[],
   anchors: readonly DataRow[],
@@ -100,7 +97,6 @@ export function anchoredSeries(
   })
 }
 
-// One point per snapshot moment: how many rows match.
 export function countSeries(rows: readonly DataRow[], matches: (row: DataRow) => boolean): readonly ChartPoint[] {
   const moments = new Map<number, { segmentId: string; value: number }>()
   for (const row of rows) {
@@ -130,7 +126,6 @@ export function lastValue(points: readonly ChartPoint[]): number | null {
   return null
 }
 
-// The hour share of `part` in `whole`, from the totals of two counter vitals.
 export function shareOfTotals(part: VitalSeries, whole: VitalSeries): number | null {
   if (part.total === null || whole.total === null || whole.total <= 0) return null
   return part.total / whole.total
@@ -143,8 +138,7 @@ export interface SettingChange {
   readonly to: string | null
 }
 
-// pg_settings records rows on change; every row after a name's first recorded
-// moment in the hour is a change of that setting.
+// `pg_settings` records on change; the first row for a name is the baseline.
 export function settingChanges(rows: readonly DataRow[]): readonly SettingChange[] {
   const byName = new Map<string, DataRow[]>()
   for (const row of [...rows].sort((left, right) => left.timestamp - right.timestamp)) {
@@ -169,10 +163,8 @@ export function settingChanges(rows: readonly DataRow[]): readonly SettingChange
   return changes.sort((left, right) => left.timestamp - right.timestamp || left.name.localeCompare(right.name))
 }
 
-// The value of one setting at the cursor: the last recorded row at or before
-// it. The section records on change, so when the hour's first row for a name
-// comes later than the cursor, no change happened in between and that first
-// row already carries the cursor's value.
+// Before the first row in the hour, use that row because the section records
+// only changes.
 export function settingAt(rows: readonly DataRow[], name: string, cursor: number): string | null {
   let before: DataRow | null = null
   let after: DataRow | null = null
@@ -186,15 +178,4 @@ export function settingAt(rows: readonly DataRow[], name: string, cursor: number
   }
   const found = before ?? after
   return found === null ? null : rawText(value(found, "setting"))
-}
-
-function byIdentity(rows: readonly DataRow[], identity: readonly string[]): ReadonlyMap<string, readonly DataRow[]> {
-  const ordered = new Map<string, DataRow[]>()
-  for (const row of [...rows].sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))) {
-    const key = [row.typeId, ...identity.map((field) => rawText(value(row, field)) ?? "")].join("\u{1f}")
-    const series = ordered.get(key)
-    if (series === undefined) ordered.set(key, [row])
-    else series.push(row)
-  }
-  return ordered
 }

@@ -1,10 +1,6 @@
 import type { DataRow } from "./api"
 import { asNumber, rawText } from "./model"
 
-// The console shows one entry per group of identical recorded rows. Every
-// group key is a value the rows themselves carry; nothing is synthesized
-// across streams.
-
 export type EventTier = "critical" | "notable" | "routine"
 
 export const EVENT_TIERS: readonly EventTier[] = ["critical", "notable", "routine"]
@@ -20,21 +16,18 @@ export type EventStat =
   | { readonly kind: "pgbouncer.events"; readonly level: number; readonly database: string | null }
 
 export interface EventEntry {
-  // Unique within one hour's console.
   readonly key: string
   readonly section: string
   readonly tier: EventTier
-  // The recorded text the entry leads with: a pattern, a statement, a
-  // relation, a message. Null when the title is built from `stat` alone.
+  // Pattern, statement, relation, or message; null for stat-only titles.
   readonly text: string | null
-  // Recorded occurrences: the sum of stored counts, or the row count.
+  // Sum of stored counts, or the row count when no count is stored.
   readonly count: number
   readonly firstTs: number
   readonly lastTs: number
-  // Per-minute occurrence counts across the hour.
   readonly minutes: readonly number[]
   readonly stat: EventStat
-  // The raw rows behind the group, in time order.
+  // Source rows in timestamp order.
   readonly rows: readonly DataRow[]
 }
 
@@ -46,16 +39,7 @@ const ERROR_TIERS: readonly EventTier[] = ["notable", "critical", "critical", "r
 const LIFECYCLE_TIERS: readonly EventTier[] = ["critical", "notable", "notable"]
 const PGBOUNCER_TIERS: readonly EventTier[] = ["critical", "notable", "notable", "routine", "routine", "routine"]
 
-export interface EventStreams {
-  readonly [section: string]: readonly DataRow[]
-}
-
-// The recorded error category of an entry, when the entry is an error group.
-export function errorCategory(stat: EventStat): number | null {
-  return stat.kind === "pg.errors" ? stat.category : null
-}
-
-export function groupEvents(streams: EventStreams, hour: number): readonly EventEntry[] {
+export function groupEvents(streams: Readonly<Record<string, readonly DataRow[]>>, hour: number): readonly EventEntry[] {
   const entries = [
     ...groupErrors(streams.pg_log_errors ?? [], hour),
     ...groupSlowQueries(streams.pg_log_slow_queries ?? [], hour),
@@ -159,9 +143,7 @@ function groupCheckpoints(rows: readonly DataRow[], hour: number): readonly Even
 }
 
 function groupLockEpisodes(rows: readonly DataRow[], hour: number): readonly EventEntry[] {
-  // Only a still-waiting record carries a holder list; an acquired record has
-  // no DETAIL. Episodes come from the waiting rows, and an acquired row joins
-  // the episode whose waiting rows share its recorded pid and target.
+  // Acquired rows omit holder DETAIL and join waits with the same pid and target.
   const episodes = grouped(rows.filter((row) => number(row, "kind") === 0), (row) => text(row, "holding_pids") ?? "")
   const waiterOf = new Map<string, string>()
   for (const { key, members } of episodes) {
@@ -240,7 +222,7 @@ function groupPgbouncer(rows: readonly DataRow[], hour: number): readonly EventE
 
 interface Group {
   readonly key: string
-  // The earliest member; every group has at least one row.
+  // `grouped` never returns an empty group.
   readonly first: DataRow
   readonly members: readonly DataRow[]
 }
@@ -272,7 +254,7 @@ function build(
     const bucket = Math.floor((row.timestamp - hour) / MINUTE_US)
     if (bucket >= 0 && bucket < MINUTE_COLUMNS) minutes[bucket] = (minutes[bucket] ?? 0) + (weights?.[index] ?? 1)
   })
-  // A group can hold more members than a spread argument list allows.
+  // Avoid spread argument limits for large groups.
   let firstTs = Number.POSITIVE_INFINITY
   let lastTs = Number.NEGATIVE_INFINITY
   for (const row of members) {
@@ -301,7 +283,7 @@ function number(row: DataRow, field: string): number | null {
   return asNumber(row.values[field] ?? null)
 }
 
-// The value every member shares, or null when they differ.
+// Returns the shared value, or null when members differ.
 function shared(members: readonly DataRow[], field: string): string | null {
   const values = unique(members.map((row) => text(row, field) ?? ""))
   const [only] = values

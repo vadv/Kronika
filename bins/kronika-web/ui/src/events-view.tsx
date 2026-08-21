@@ -6,7 +6,7 @@ import { acceptResponse, loadSeries, type DataRow, type Finding, type HourData }
 import { useDisplayTime } from "./display-time-context"
 import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
-import { MINUTE_COLUMNS, errorCategory, groupEvents, type EventEntry } from "./events-groups"
+import { MINUTE_COLUMNS, groupEvents, type EventEntry } from "./events-groups"
 import { findingCategory, findingKey, findingOrder, findingSource } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
@@ -15,10 +15,8 @@ import { evaluateExpr, parseSearch } from "./search"
 import { TableFilter } from "./table-filter"
 import { Timeline } from "./timeline"
 
-// Threshold marks rendered before the list states how many were left out.
 const MARK_ROWS = 120
 
-// The streams the console reads, with the columns each entry renders.
 const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[] }[] = [
   { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
   { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
@@ -73,7 +71,7 @@ export function EventsView({
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
   const selectedEntry = useMemo(() => selected === null || entries === null ? null : entryOf(entries, selected), [entries, selected])
-  // Expand once per selected finding; a later refetch must not undo a collapse.
+  // A refetch must not reopen an entry that the user collapsed.
   const expandedFor = useRef<string | null>(null)
   useEffect(() => {
     if (selected === null || selectedEntry === null) return
@@ -107,11 +105,12 @@ export function EventsView({
   const visible = useMemo(() => chosen === null ? null : chosen.filter((entry) => {
     if (!parsedSearch.ok || parsedSearch.query.canonical === "") return true
     const title = entryTitle(entry, t, locale)
+    const category = "category" in entry.stat ? entry.stat.category : null
     const fields: Readonly<Record<string, readonly string[]>> = {
       text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
       kind: [entry.tier],
       source: [sectionLabel(entry.section, t), entry.section],
-      category: errorCategory(entry.stat) === null ? [] : [categoryLabel(errorCategory(entry.stat) ?? 0, t)],
+      category: category === null ? [] : [categoryLabel(category, t)],
     }
     const matches = (clause: { readonly key: string; readonly value: string }) =>
       fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true
@@ -279,8 +278,7 @@ interface StreamState {
   readonly failed: boolean
 }
 
-// The current hour refreshes every few seconds; re-reading whole log sections
-// that often is waste. One re-read per minute is enough for a log console.
+// Live-hour revisions are frequent; full log sections refresh at most once per minute.
 const STREAM_REFRESH_MIN_MS = 60_000
 
 function useEventStreams(data: HourData, hour: number, revision: number): StreamState {
