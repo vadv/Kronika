@@ -161,14 +161,33 @@ impl Tail {
         continues: Continues,
         max_records: usize,
     ) -> io::Result<TailBatch> {
-        self.read_batch_with_limit(continues, max_records, MAX_READ_BYTES)
+        self.read_batch_configured(continues, max_records, MAX_READ_BYTES, true)
     }
 
+    pub(crate) fn read_batch_without_quote_tracking(
+        &mut self,
+        continues: Continues,
+        max_records: usize,
+    ) -> io::Result<TailBatch> {
+        self.read_batch_configured(continues, max_records, MAX_READ_BYTES, false)
+    }
+
+    #[cfg(test)]
     fn read_batch_with_limit(
         &mut self,
         continues: Continues,
         max_records: usize,
         raw_limit: usize,
+    ) -> io::Result<TailBatch> {
+        self.read_batch_configured(continues, max_records, raw_limit, true)
+    }
+
+    fn read_batch_configured(
+        &mut self,
+        continues: Continues,
+        max_records: usize,
+        raw_limit: usize,
+        track_quotes: bool,
     ) -> io::Result<TailBatch> {
         if max_records == 0 {
             return Err(io::Error::new(
@@ -200,7 +219,14 @@ impl Tail {
         }
 
         file.seek(SeekFrom::Start(self.scan_offset))?;
-        match self.scan(&mut file, size, continues, max_records, raw_limit) {
+        match self.scan(
+            &mut file,
+            size,
+            continues,
+            max_records,
+            raw_limit,
+            track_quotes,
+        ) {
             Ok(batch) => Ok(batch),
             Err(error) => {
                 // No candidate was handed to the caller. Re-scan from the last
@@ -218,6 +244,7 @@ impl Tail {
         continues: Continues,
         max_records: usize,
         raw_limit: usize,
+        track_quotes: bool,
     ) -> io::Result<TailBatch> {
         let mut records = Vec::new();
         let mut candidate_end = None;
@@ -248,8 +275,11 @@ impl Tail {
             );
         }
 
-        let mut buf = vec![0_u8; READ_BUF_BYTES];
         let mut stop = !records.is_empty() && records.len() >= max_records;
+        let mut buf = Vec::new();
+        if !stop && raw_bytes < raw_limit && self.scan_offset < size {
+            buf.resize(READ_BUF_BYTES, 0);
+        }
         while !stop && raw_bytes < raw_limit && self.scan_offset < size {
             let remaining_file = usize::try_from(size - self.scan_offset).unwrap_or(usize::MAX);
             let want = READ_BUF_BYTES
@@ -264,13 +294,13 @@ impl Tail {
             while at < read {
                 let chunk = buf.get(at..read).unwrap_or_default();
                 let Some(end) = memchr(b'\n', chunk) else {
-                    self.keep_partial(chunk);
+                    self.keep_partial(chunk, track_quotes);
                     self.scan_offset = self.scan_offset.saturating_add(as_u64(chunk.len()));
                     break;
                 };
 
                 let before_newline = chunk.get(..end).unwrap_or_default();
-                self.keep_partial(before_newline);
+                self.keep_partial(before_newline, track_quotes);
                 self.scan_offset = self
                     .scan_offset
                     .saturating_add(as_u64(before_newline.len() + 1));
@@ -335,8 +365,10 @@ impl Tail {
         false
     }
 
-    fn keep_partial(&mut self, chunk: &[u8]) {
-        self.partial.quotes_odd ^= quote_parity(chunk);
+    fn keep_partial(&mut self, chunk: &[u8], track_quotes: bool) {
+        if track_quotes {
+            self.partial.quotes_odd ^= quote_parity(chunk);
+        }
         if self.partial.truncated {
             return;
         }
@@ -383,7 +415,7 @@ impl Tail {
         open.quotes_odd ^= line.quotes_odd;
         open.truncated |= line.truncated;
 
-        let Some(text) = line.text else {
+        let Some(mut text) = line.text else {
             return;
         };
         let separator = usize::from(!open.lines.is_empty());
@@ -398,11 +430,12 @@ impl Tail {
         if retained.len() < text.len() {
             open.truncated = true;
         }
+        text.truncate(retained.len());
         if separator != 0 {
             open.bytes += 1;
         }
-        open.bytes += retained.len();
-        open.lines.push(retained.to_owned());
+        open.bytes += text.len();
+        open.lines.push(text);
     }
 
     fn flush_open(&mut self, records: &mut Vec<Record>, candidate_end: &mut Option<u64>) {

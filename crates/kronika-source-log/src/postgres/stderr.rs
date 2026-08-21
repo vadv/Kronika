@@ -9,6 +9,7 @@ use super::prefix::LinePrefix;
 use super::{PgRecord, Severity};
 use crate::tail::Record;
 use crate::text::{append, append_str};
+use memchr::memmem::find_iter;
 
 /// Severity markers, longest first so `WARNING` is not read as the tail of a
 /// message that happens to contain `LOG:  `.
@@ -41,7 +42,7 @@ const PARTS: &[(&str, Part)] = &[
 /// A wrapped line starts with a tab; a `DETAIL:` and its kin carry the prefix
 /// again and are found by their marker.
 pub(super) fn continues(_open: &[String], line: &str, _raw_quotes_odd: bool) -> bool {
-    line.starts_with('\t') || PARTS.iter().any(|(marker, _part)| line.contains(marker))
+    line.starts_with('\t') || find_marker(line, PARTS).is_some()
 }
 
 pub(super) fn parse(record: &Record, prefix: Option<&LinePrefix>, now: i64) -> Option<PgRecord> {
@@ -99,10 +100,19 @@ fn find_marker<T: Copy>(
     line: &str,
     markers: &[(&'static str, T)],
 ) -> Option<(usize, &'static str, T)> {
-    markers
-        .iter()
-        .filter_map(|(marker, value)| line.find(marker).map(|at| (at, *marker, *value)))
-        .min_by_key(|(at, _marker, _value)| *at)
+    let bytes = line.as_bytes();
+    for colon in find_iter(bytes, b":  ") {
+        let end = colon + 3;
+        for (marker, value) in markers {
+            let Some(start) = end.checked_sub(marker.len()) else {
+                continue;
+            };
+            if bytes.get(start..end) == Some(marker.as_bytes()) {
+                return Some((start, *marker, *value));
+            }
+        }
+    }
+    None
 }
 
 /// Strip the `42P01: ` a `log_error_verbosity = verbose` record starts with.
@@ -122,4 +132,18 @@ fn strip_sqlstate(message: &str) -> (Option<&str>, &str) {
         );
     }
     (None, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PARTS, Part, find_marker};
+
+    #[test]
+    fn marker_scan_returns_the_first_recognized_marker() {
+        let line = "prefix HINT:  quoted DETAIL:  later";
+        let (at, marker, part) = find_marker(line, PARTS).expect("recognized marker");
+
+        assert_eq!(line.get(at..at + marker.len()), Some("HINT:  "));
+        assert_eq!(part, Part::Hint);
+    }
 }

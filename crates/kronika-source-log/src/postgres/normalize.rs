@@ -58,20 +58,21 @@ impl ErrorCategory {
 #[must_use]
 pub fn normalize_error(message: &str) -> String {
     let mut value = strip_at_character(message).to_owned();
-    value = replace_quoted(&value, '"', "\"...\"");
-    value = replace_quoted(&value, '\'', "'...'");
-    value = replace_delimited(&value, '(', ')', "(...)");
-    value = replace_delimited(&value, '[', ']', "[...]");
-    value = replace_word_patterns(&value);
-    truncate(&value, MAX_PATTERN_BYTES).to_owned()
+    value = replace_quoted(value, '"', "\"...\"");
+    value = replace_quoted(value, '\'', "'...'");
+    value = replace_delimited(value, '(', ')', "(...)");
+    value = replace_delimited(value, '[', ']', "[...]");
+    replace_word_patterns(&mut value);
+    truncate_owned(value, MAX_PATTERN_BYTES)
 }
 
 /// Normalize a statement for grouping: the error normalization plus the bare
 /// numeric literals SQL carries.
 #[must_use]
 pub fn normalize_sql(sql: &str) -> String {
-    let normalized = replace_numeric_literals(&normalize_error(sql));
-    truncate(&normalized, MAX_PATTERN_BYTES).to_owned()
+    let error = normalize_error(sql);
+    let normalized = replace_numeric_literals(&error);
+    truncate_owned(normalized, MAX_PATTERN_BYTES)
 }
 
 /// Decide which family a normalized message belongs to.
@@ -214,7 +215,10 @@ fn strip_at_character(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-fn replace_quoted(value: &str, quote: char, replacement: &str) -> String {
+fn replace_quoted(value: String, quote: char, replacement: &str) -> String {
+    if !value.contains(quote) {
+        return value;
+    }
     let mut out = String::with_capacity(value.len());
     let mut chars = value.char_indices();
     while let Some((start, c)) = chars.next() {
@@ -241,7 +245,10 @@ fn replace_quoted(value: &str, quote: char, replacement: &str) -> String {
     out
 }
 
-fn replace_delimited(value: &str, open: char, close: char, replacement: &str) -> String {
+fn replace_delimited(value: String, open: char, close: char, replacement: &str) -> String {
+    if !value.contains(open) {
+        return value;
+    }
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(c) = chars.next() {
@@ -258,8 +265,7 @@ fn replace_delimited(value: &str, open: char, close: char, replacement: &str) ->
     out
 }
 
-fn replace_word_patterns(value: &str) -> String {
-    let mut out = value.to_owned();
+fn replace_word_patterns(out: &mut String) {
     for prefix in [
         "transaction ",
         "relation ",
@@ -269,16 +275,17 @@ fn replace_word_patterns(value: &str) -> String {
         "signal ",
         "on page ",
     ] {
-        out = replace_after(&out, prefix, |b| b.is_ascii_digit());
+        replace_after(out, prefix, |b| b.is_ascii_digit());
     }
-    out = replace_after(&out, "after ", |b| b.is_ascii_digit() || b == b'.');
-    out = replace_wal_address(&out);
+    replace_after(out, "after ", |b| b.is_ascii_digit() || b == b'.');
+    replace_wal_address(out);
     if let Some(pos) = out.find("invalid input syntax for ")
         && let Some(colon) = out.get(pos..).and_then(|tail| tail.find(": "))
     {
         out.truncate(pos + colon + 2);
         out.push_str("...");
     }
+    let lower = out.to_ascii_lowercase();
     for object in [
         "permission denied for table ",
         "permission denied for schema ",
@@ -286,7 +293,7 @@ fn replace_word_patterns(value: &str) -> String {
         "permission denied for function ",
         "permission denied for database ",
     ] {
-        if let Some(pos) = out.to_ascii_lowercase().find(object) {
+        if let Some(pos) = lower.find(object) {
             out.truncate(pos + object.len());
             out.push_str("...");
             break;
@@ -296,29 +303,31 @@ fn replace_word_patterns(value: &str) -> String {
         out.truncate(pos + "byte sequence for encoding".len());
         out.push_str(" ...");
     }
-    out
 }
 
-fn replace_after(value: &str, prefix: &str, keep: impl Fn(u8) -> bool) -> String {
+fn replace_after(value: &mut String, prefix: &str, keep: impl Fn(u8) -> bool) {
     let Some(pos) = value.find(prefix) else {
-        return value.to_owned();
+        return;
     };
     let after = pos + prefix.len();
     let rest = value.as_bytes().get(after..).unwrap_or_default();
     if !rest.first().is_some_and(|b| keep(*b)) {
-        return value.to_owned();
+        return;
     }
     let end = rest.iter().position(|b| !keep(*b)).unwrap_or(rest.len());
-    let mut out = String::with_capacity(value.len());
-    push_range(&mut out, value, 0, after);
-    out.push_str("...");
-    push_range(&mut out, value, after + end, value.len());
-    out
+    value.replace_range(after..after + end, "...");
 }
 
 /// Collapse a `0/16B3D40` WAL address, which is unique to one moment in the
 /// write-ahead log and would give every occurrence its own group.
-fn replace_wal_address(value: &str) -> String {
+fn replace_wal_address(value: &mut String) {
+    if !value.as_bytes().contains(&b'/') {
+        return;
+    }
+    *value = replace_wal_address_copy(value);
+}
+
+fn replace_wal_address_copy(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
     let mut idx = 0;
@@ -396,6 +405,12 @@ fn push_range(out: &mut String, value: &str, start: usize, end: usize) {
     if let Some(slice) = value.get(start..end) {
         out.push_str(slice);
     }
+}
+
+fn truncate_owned(mut value: String, max_bytes: usize) -> String {
+    let retained = truncate(&value, max_bytes).len();
+    value.truncate(retained);
+    value
 }
 
 #[cfg(test)]

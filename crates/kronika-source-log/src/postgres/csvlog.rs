@@ -7,6 +7,7 @@
 use super::{PgRecord, Severity};
 use crate::text::bounded;
 use crate::timestamp;
+use std::borrow::Cow;
 
 const LOG_TIME: usize = 0;
 const USER_NAME: usize = 1;
@@ -46,30 +47,55 @@ pub(super) fn parse(record: &str, now: i64) -> Option<PgRecord> {
     Some(parsed)
 }
 
-fn field(fields: &[String], index: usize) -> Option<&str> {
-    fields.get(index).map(String::as_str)
+fn field<'a>(fields: &'a [Cow<'_, str>], index: usize) -> Option<&'a str> {
+    fields.get(index).map(AsRef::as_ref)
 }
 
 /// Split one CSV record: fields are comma-separated, a quoted field runs to the
 /// next lone `"`, and `""` inside one is a literal quote.
-fn split(record: &str) -> Vec<String> {
+fn split(record: &str) -> Vec<Cow<'_, str>> {
     let mut fields = Vec::new();
-    let mut current = String::new();
+    let mut start = 0_usize;
     let mut quoted = false;
-    let mut chars = record.chars().peekable();
+    let mut chars = record.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek().is_some_and(|(_at, next)| *next == '"') => {
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                fields.push(decode_field(record.get(start..at).unwrap_or_default()));
+                start = at + 1;
+                if fields.len() == MIN_FIELDS {
+                    return fields;
+                }
+            }
+            _ => {}
+        }
+    }
+    fields.push(decode_field(record.get(start..).unwrap_or_default()));
+    fields
+}
+
+fn decode_field(field: &str) -> Cow<'_, str> {
+    if !field.contains('"') {
+        return Cow::Borrowed(field);
+    }
+    let mut out = String::with_capacity(field.len());
+    let mut quoted = false;
+    let mut chars = field.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '"' if quoted && chars.peek() == Some(&'"') => {
                 chars.next();
-                current.push('"');
+                out.push('"');
             }
             '"' => quoted = !quoted,
-            ',' if !quoted => fields.push(std::mem::take(&mut current)),
-            _ => current.push(c),
+            _ => out.push(c),
         }
     }
-    fields.push(current);
-    fields
+    Cow::Owned(out)
 }
 
 #[cfg(test)]

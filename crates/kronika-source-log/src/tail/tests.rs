@@ -236,6 +236,20 @@ fn a_newline_complete_record_is_emitted_on_the_next_idle_read() {
 }
 
 #[test]
+fn text_records_can_skip_csv_quote_tracking() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pgbouncer.log");
+    write(&path, "a \"quote\nb plain\nsentinel\n");
+    let mut tail = Tail::new(path, Position::default());
+
+    let batch = tail
+        .read_batch_without_quote_tracking(never, 8)
+        .expect("read text records");
+
+    assert_eq!(texts(&batch.records), ["a \"quote", "b plain"]);
+}
+
+#[test]
 fn an_open_csv_quote_is_not_flushed_by_an_idle_read() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("postgresql.csv");
