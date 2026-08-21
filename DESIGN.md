@@ -1001,14 +1001,23 @@ limit.
 
 ### Heatmap values
 
-Every heatmap column carries its exact interval boundaries. For a counter, a
-cell is the last value in the interval minus the identity's latest value at or
-before the interval start within the requested window, divided by the elapsed
-time between those observations. One in-interval sample plus a preceding
-baseline is enough, so a cadence equal to the column width fills later columns.
-Missing input, no baseline, a non-positive observed duration or a negative
-delta produces `null`. A zero delta produces `0`. For a gauge, the cell is the
-last sample in the interval, or `null` when no usable sample exists.
+Every heatmap column carries its exact interval boundaries. A sample is drawn
+in the column holding the middle of the span it measures, which runs from the
+identity's previous sample within the requested window to this one, not in the
+column holding the moment it was taken. A section read once per five minutes
+describes five minutes around itself, and drawing it there is what keeps a
+cadence as coarse as a column readable: collection drifts across a boundary,
+and attributing a reading to the moment of the read would pair two readings in
+one column and leave the next one empty.
+
+For a counter, a cell is the last value attributed to the column minus the
+first, divided by the elapsed time between those two observations; a column
+whose span starts on the previous column's last sample keeps that sample as the
+baseline. Missing input, no baseline, a non-positive observed duration or a
+negative delta produces `null`. A zero delta produces `0`. For a gauge, the
+cell is the last sample attributed to the column, or `null` when no usable
+sample exists. An hour holds one fewer span than it holds samples, so an edge
+column reads only when a recorded span reaches into it.
 
 Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.

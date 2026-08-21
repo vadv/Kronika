@@ -314,7 +314,8 @@ impl PreparedHeatmap {
                             continue;
                         };
                         if let Some(value) = summed(&row, &cut) {
-                            let column = column_of(ts, from, to, columns);
+                            let previous_ts = carries[index].map(|(carry_ts, _value)| carry_ts);
+                            let column = column_of_span(previous_ts, ts, from, to, columns);
                             if cumulative
                                 && cells[index][column].count == 0
                                 && let Some((carry_ts, carry_value)) = carries[index]
@@ -816,6 +817,25 @@ pub(super) fn interval_end(from: i64, to: i64, columns: usize, index: usize) -> 
     interval_start(from, to, columns, index + 1).saturating_sub(1)
 }
 
+/// The column a sample is drawn in: the one holding the middle of the span it
+/// measures, which runs from the previous sample of the same entity to this
+/// one. A section collected once per column width would otherwise leave a
+/// column empty whenever collection drifted across its boundary, and every
+/// reading would be drawn a column later than the work it describes.
+pub(super) fn column_of_span(
+    previous_ts: Option<i64>,
+    ts: i64,
+    from: i64,
+    to: i64,
+    columns: usize,
+) -> usize {
+    let middle = match previous_ts {
+        Some(previous) if previous < ts => previous + (ts - previous) / 2,
+        _ => ts,
+    };
+    column_of(middle.max(from), from, to, columns)
+}
+
 pub(super) fn column_of(ts: i64, from: i64, to: i64, columns: usize) -> usize {
     let span = (i128::from(to) - i128::from(from) + 1).max(1);
     let offset = i128::from(ts) - i128::from(from);
@@ -956,6 +976,15 @@ struct GroupFillState {
 }
 
 impl GroupFillState {
+    /// The last sample seen for this entity. Under a cumulative cut the open
+    /// column starts seeded with it, so `current` answers whenever it is open.
+    fn previous_ts(&self) -> Option<i64> {
+        if self.current.count > 0 {
+            return Some(self.current.last_ts);
+        }
+        self.carry.map(|(carry_ts, _value)| carry_ts)
+    }
+
     fn observe(
         &mut self,
         column: usize,
@@ -1041,7 +1070,11 @@ impl GroupedFill {
             return;
         };
         entity_key_into(&mut self.entity_key, type_id, identity);
-        let column = column_of(ts, self.from, self.to, self.columns);
+        let previous_ts = self
+            .entities
+            .get(self.entity_key.as_str())
+            .and_then(GroupFillState::previous_ts);
+        let column = column_of_span(previous_ts, ts, self.from, self.to, self.columns);
         let state = if let Some(state) = self.entities.get_mut(self.entity_key.as_str()) {
             state
         } else {
@@ -1191,7 +1224,11 @@ impl Fold {
         };
         let mut key = std::mem::take(&mut self.key);
         entity_key_into(&mut key, type_id, identity);
-        let column = column_of(ts, self.from, self.to, self.columns);
+        let previous_ts = self
+            .entities
+            .get(key.as_str())
+            .and_then(|state| (state.window.count > 0).then_some(state.window.last_ts));
+        let column = column_of_span(previous_ts, ts, self.from, self.to, self.columns);
         let state = if let Some(state) = self.entities.get_mut(key.as_str()) {
             self.key = key;
             state
