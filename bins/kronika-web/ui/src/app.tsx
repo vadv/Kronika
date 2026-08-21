@@ -770,6 +770,10 @@ function App({ locale, onLocale, t }: {
     setRelationFilters((current) => relationFiltersForSection(current, next))
   }, [navigateSearchSurface, pgSection])
   const openRelated = useCallback((target: RelatedNavigation) => {
+    // A drill names a new subject. The context pinned by an earlier finding
+    // would otherwise be ANDed into the request beside the drilled filter,
+    // and the two together select nothing.
+    clearEntityContext()
     navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
     setSource("postgresql")
     setPgSection(target.section)
@@ -778,7 +782,7 @@ function App({ locale, onLocale, t }: {
     setSelectedKey(null)
     setInspectorPanel(null)
     setOrder(null)
-  }, [navigateSearchSurface])
+  }, [clearEntityContext, navigateSearchSurface])
   const chooseRelationLens = useCallback((next: RelationLens) => {
     if (next !== relationLens) setOrder(null)
     setRelationLens(next)

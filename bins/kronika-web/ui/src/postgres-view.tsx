@@ -596,14 +596,17 @@ function PgEntityView({
     && (densePageState === "loading" || !ranked.some((row) => contextMatches(row, activeContext)))
     ? densePageState === "loading" ? "loading" : "outside"
     : null
-  const snapshotStatus = dense
-    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t, time, focusPreview)
-    : undefined
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const displayedRows = useMemo(
     () => filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
     [dense, pattern, rows, section, visibleColumns],
   )
+  // The count describes the rows under it, not the page before the context
+  // and the filter narrowed it; the two disagreeing is what made an empty
+  // table read as a loaded one.
+  const snapshotStatus = dense
+    ? tableState(metadata, displayedRows.length, cursor, pattern, activeOrder, locale, t, time, focusPreview)
+    : undefined
   const contentSized = displayedRows.length < 10 && !canLoadMore
   const paging = dense && (densePageState !== "idle" || canLoadMore)
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">

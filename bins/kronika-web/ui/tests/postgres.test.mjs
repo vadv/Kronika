@@ -436,7 +436,9 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
-  assert.match(source, /tableState\([^)]*ranked\.length/)
+  // The count belongs to the rows under it: an entity context or a filter
+  // that empties the body must empty the count with it.
+  assert.match(source, /tableState\([^)]*displayedRows\.length/)
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
