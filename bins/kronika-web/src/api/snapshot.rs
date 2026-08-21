@@ -3,6 +3,7 @@
 mod relation;
 mod search;
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
@@ -33,6 +34,7 @@ pub(crate) struct PreparedSnapshot {
     anchor: SegmentRef,
     prior_sources: Vec<SegmentRef>,
     relation_predecessors: Vec<SegmentRef>,
+    relation_moments: RetainedRelationMoments,
     at: i64,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
@@ -285,6 +287,29 @@ struct PageMetadata {
     page_size: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+struct PageFacts {
+    clock_ticks_per_second: CachedFact,
+    block_size: CachedFact,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CachedFact {
+    #[default]
+    Unknown,
+    Absent,
+    Value(u128),
+}
+
+impl CachedFact {
+    const fn value(self) -> Option<u128> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Unknown | Self::Absent => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GlobPattern(Vec<GlobToken>);
 
@@ -295,7 +320,9 @@ enum GlobToken {
     Literal(char),
 }
 
-const SNAPSHOT_CHUNK_ROWS: usize = 16;
+// One bounded batch covers the maximum public page while amortizing projected
+// section and dictionary reads for snapshot and relation-history consumers.
+const SNAPSHOT_CHUNK_ROWS: usize = 1_024;
 const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
 const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
 const MAX_PROCESS_USERS: usize = 4 * 1024;
@@ -373,6 +400,9 @@ thread_local! {
     static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static RELATION_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
+    static PARTITION_PREDECESSOR_VISITS: Counter<usize> = const { Counter::new(0) };
+    static RELATION_PROJECTED_METRICS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
@@ -417,6 +447,22 @@ pub(crate) fn context_operations() -> (usize, usize, usize) {
     )
 }
 
+#[cfg(test)]
+pub(crate) fn reset_relation_snapshot_operations() {
+    RELATION_MOMENT_VISITS.set(0);
+    PARTITION_PREDECESSOR_VISITS.set(0);
+    RELATION_PROJECTED_METRICS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn relation_snapshot_operations() -> (usize, usize, usize) {
+    (
+        RELATION_MOMENT_VISITS.get(),
+        PARTITION_PREDECESSOR_VISITS.get(),
+        RELATION_PROJECTED_METRICS.get(),
+    )
+}
+
 pub(super) fn stream_relation_history(
     reader: &Reader,
     listed: &[SegmentRef],
@@ -429,7 +475,7 @@ pub(super) fn stream_relation_history(
 }
 
 #[cfg(test)]
-pub(crate) use relation::{history_operations, reset_history_operations};
+pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
     let cursor = request
@@ -493,7 +539,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     } else {
         Vec::new()
     };
-    let relation_predecessors = if has_relation {
+    let (relation_predecessors, relation_moments) = if has_relation {
         relation_preceding(
             &reader,
             &segment_ref,
@@ -504,7 +550,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             request.at,
         )?
     } else {
-        Vec::new()
+        (Vec::new(), BTreeMap::new())
     };
     validate_search_projection(search.as_deref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
@@ -514,6 +560,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         anchor: segment_ref,
         prior_sources,
         relation_predecessors,
+        relation_moments,
         at: request.at,
         sections,
         relation_filters,
@@ -956,6 +1003,7 @@ impl PreparedSnapshot {
             }
             return self.emit_page(emit, cancelled);
         }
+        let mut facts = HashMap::new();
         for section in &self.sections {
             if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
                 if !self.emit_partitioned_section(section, emit, cancelled)? {
@@ -966,7 +1014,14 @@ impl PreparedSnapshot {
                     if cancelled() {
                         return Ok(());
                     }
-                    if !self.emit_section(section, layout_index, plan, emit, cancelled)? {
+                    if !self.emit_section(
+                        section,
+                        layout_index,
+                        plan,
+                        emit,
+                        cancelled,
+                        &mut facts,
+                    )? {
                         return Ok(());
                     }
                 }
@@ -1134,6 +1189,7 @@ impl PreparedSnapshot {
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
+        facts: &mut HashMap<i64, PageFacts>,
     ) -> Result<bool, ApiError> {
         if !Self::emit_layout(section, plan, emit)? {
             return Ok(false);
@@ -1144,7 +1200,9 @@ impl PreparedSnapshot {
         let Some(timestamp) = plan.timestamp else {
             return self.emit_untimed(plan, emit, cancelled);
         };
-        for context in self.timed_contexts(section, layout_index, plan, timestamp, cancelled)? {
+        for context in
+            self.timed_contexts(section, layout_index, plan, timestamp, cancelled, facts)?
+        {
             if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
@@ -1616,11 +1674,13 @@ impl PreparedSnapshot {
             return self.partitioned_contexts(section, cancelled);
         }
         let mut contexts = Vec::with_capacity(section.plans.len());
+        let mut facts = HashMap::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
             if !plan.applies() || cancelled() {
                 continue;
             }
             let Some(timestamp) = plan.timestamp else {
+                let facts = self.page_facts(&section.logical_name, &self.anchor, &mut facts)?;
                 contexts.push(PageContext {
                     context_index: layout_index,
                     plan,
@@ -1637,19 +1697,8 @@ impl PreparedSnapshot {
                     search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
                         search_columns(&section.logical_name, plan, search)
                     }),
-                    clock_ticks_per_second: if section.logical_name == "os_process" {
-                        clock_ticks_per_second(&self.reader.open_segment(&self.anchor)?)?
-                    } else {
-                        None
-                    },
-                    block_size: if matches!(
-                        section.logical_name.as_str(),
-                        "pg_stat_statements" | "pg_store_plans"
-                    ) {
-                        postgres_block_size(&self.reader.open_segment(&self.anchor)?)?
-                    } else {
-                        None
-                    },
+                    clock_ticks_per_second: facts.clock_ticks_per_second.value(),
+                    block_size: facts.block_size.value(),
                 });
                 continue;
             };
@@ -1659,9 +1708,43 @@ impl PreparedSnapshot {
                 plan,
                 timestamp,
                 cancelled,
+                &mut facts,
             )?);
         }
         Ok(contexts)
+    }
+
+    fn page_facts(
+        &self,
+        logical_name: &str,
+        source_ref: &SegmentRef,
+        cached: &mut HashMap<i64, PageFacts>,
+    ) -> Result<PageFacts, ApiError> {
+        if !matches!(
+            logical_name,
+            "os_process" | "pg_stat_statements" | "pg_store_plans"
+        ) {
+            return Ok(PageFacts::default());
+        }
+        let mut facts = cached.get(&source_ref.id()).copied().unwrap_or_default();
+        let present = if logical_name == "os_process" {
+            facts.clock_ticks_per_second != CachedFact::Unknown
+        } else {
+            facts.block_size != CachedFact::Unknown
+        };
+        if present {
+            return Ok(facts);
+        }
+        let source = self.reader.open_segment(source_ref)?;
+        if logical_name == "os_process" {
+            facts.clock_ticks_per_second =
+                clock_ticks_per_second(&source)?.map_or(CachedFact::Absent, CachedFact::Value);
+        } else {
+            facts.block_size =
+                postgres_block_size(&source)?.map_or(CachedFact::Absent, CachedFact::Value);
+        }
+        cached.insert(source_ref.id(), facts);
+        Ok(facts)
     }
 
     fn first_match_contexts<'a>(
@@ -1729,6 +1812,7 @@ impl PreparedSnapshot {
         plan: &'a Plan,
         timestamp: &'static str,
         cancelled: &impl Fn() -> bool,
+        facts: &mut HashMap<i64, PageFacts>,
     ) -> Result<Vec<PageContext<'a>>, ApiError> {
         let Some(moments) = self.shared_moments(plan, timestamp, cancelled)? else {
             return Ok(Vec::new());
@@ -1769,6 +1853,7 @@ impl PreparedSnapshot {
             {
                 continue;
             }
+            let facts = self.page_facts(&section.logical_name, source_ref, facts)?;
             contexts.push(PageContext {
                 context_index: timed_context_index(layout_index, source_index, self.source_count()),
                 plan,
@@ -1788,19 +1873,8 @@ impl PreparedSnapshot {
                 search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
                     search_columns(&section.logical_name, plan, search)
                 }),
-                clock_ticks_per_second: if section.logical_name == "os_process" {
-                    clock_ticks_per_second(&source)?
-                } else {
-                    None
-                },
-                block_size: if matches!(
-                    section.logical_name.as_str(),
-                    "pg_stat_statements" | "pg_store_plans"
-                ) {
-                    postgres_block_size(&source)?
-                } else {
-                    None
-                },
+                clock_ticks_per_second: facts.clock_ticks_per_second.value(),
+                block_size: facts.block_size.value(),
             });
         }
         Ok(contexts)
@@ -1862,7 +1936,7 @@ impl PreparedSnapshot {
         let Some(spec) = SnapshotViewSpec::for_logical_name(&section.logical_name) else {
             return Ok(Vec::new());
         };
-        let selected = self.selected_partitions(section, spec, cancelled)?;
+        let selected = self.selected_partitions(section, cancelled);
         if cancelled() {
             return Ok(Vec::new());
         }
@@ -1897,59 +1971,57 @@ impl PreparedSnapshot {
     fn selected_partitions(
         &self,
         section: &SectionPlans,
-        spec: SnapshotViewSpec,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<BTreeMap<IdentityCell, SelectedPartition>, ApiError> {
+    ) -> BTreeMap<IdentityCell, SelectedPartition> {
+        let source_by_id = std::iter::once((self.anchor.id(), PartitionSource::Current))
+            .chain(
+                self.relation_predecessors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, source)| (source.id(), PartitionSource::Earlier(index))),
+            )
+            .collect::<HashMap<_, _>>();
         let mut selected = BTreeMap::<IdentityCell, SelectedPartition>::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
             if !plan.applies() || cancelled() {
                 continue;
             }
-            let Some(timestamp) = plan.timestamp else {
+            if plan.timestamp.is_none() {
                 continue;
-            };
-            let mut moments = BTreeMap::new();
-            let anchor = self.reader.open_segment(&self.anchor)?;
-            Self::partition_moments(
-                &anchor,
-                plan,
-                timestamp,
-                spec.temporal_partition,
-                self.at,
-                PartitionSource::Current,
-                &mut moments,
-                cancelled,
-            )?;
-            drop(anchor);
-            for (source_index, earlier_ref) in self.relation_predecessors.iter().enumerate() {
-                let earlier = self.reader.open_segment(earlier_ref)?;
-                Self::partition_moments(
-                    &earlier,
-                    plan,
-                    timestamp,
-                    spec.temporal_partition,
-                    self.at,
-                    PartitionSource::Earlier(source_index),
-                    &mut moments,
-                    cancelled,
-                )?;
             }
-            for (partition, moments) in moments {
+            for ((type_id, partition), retained) in &self.relation_moments {
+                if *type_id != plan.type_id {
+                    continue;
+                }
+                let Some(current) = retained
+                    .current
+                    .as_ref()
+                    .and_then(|moment| located_moment(moment, &source_by_id))
+                else {
+                    continue;
+                };
+                let moments = PartitionMoments {
+                    current,
+                    previous: retained
+                        .previous
+                        .as_ref()
+                        .and_then(|moment| located_moment(moment, &source_by_id)),
+                };
                 let candidate = SelectedPartition {
                     layout_index,
                     type_id: plan.type_id,
                     moments,
                 };
-                let replace = selected.get(&partition).is_none_or(|chosen| {
+                let replace = selected.get(partition).is_none_or(|chosen| {
                     (candidate.moments.current.at, candidate.type_id)
                         > (chosen.moments.current.at, chosen.type_id)
                 });
                 if replace {
-                    selected.insert(partition, candidate);
+                    selected.insert(partition.clone(), candidate);
                 }
             }
         }
-        Ok(selected)
+        selected
     }
 
     fn partition_rate_state(
@@ -1970,6 +2042,8 @@ impl PreparedSnapshot {
         let mut elapsed_by_partition = BTreeMap::new();
         let mut sample_from: Option<i64> = None;
         let mut sample_to: Option<i64> = None;
+        let mut before_by_source =
+            BTreeMap::<i64, (&SegmentRef, BTreeMap<IdentityCell, i64>)>::new();
         for (partition, selection) in selected {
             if selection.layout_index != layout_index {
                 continue;
@@ -1989,30 +2063,29 @@ impl PreparedSnapshot {
             else {
                 continue;
             };
-            let mut before_sources = before
-                .sources
-                .iter()
-                .filter_map(|source| {
-                    self.partition_source(*source)
-                        .map(|reference| (reference.id(), reference))
-                })
-                .collect::<Vec<_>>();
-            before_sources.sort_unstable_by_key(|(segment_id, _reference)| *segment_id);
-            for (_segment_id, before_source_ref) in before_sources {
-                let before_source = self.reader.open_segment(before_source_ref)?;
-                previous.extend(Self::collect_partition(
-                    &before_source,
-                    plan,
-                    timestamp,
-                    before.at,
-                    spec.temporal_partition,
-                    partition,
-                    &order_columns,
-                    cancelled,
-                )?);
+            for source in &before.sources {
+                if let Some(reference) = self.partition_source(*source) {
+                    before_by_source
+                        .entry(reference.id())
+                        .or_insert_with(|| (reference, BTreeMap::new()))
+                        .1
+                        .insert(partition.clone(), before.at);
+                }
             }
             elapsed_by_partition.insert(partition.clone(), elapsed);
             sample_from = Some(sample_from.map_or(before.at, |chosen| chosen.min(before.at)));
+        }
+        for (_segment_id, (before_source_ref, partitions)) in before_by_source {
+            let before_source = self.reader.open_segment(before_source_ref)?;
+            previous.extend(Self::collect_partitions(
+                &before_source,
+                plan,
+                timestamp,
+                spec.temporal_partition,
+                &partitions,
+                &order_columns,
+                cancelled,
+            )?);
         }
         Ok(PartitionRateState {
             previous: Arc::new(previous),
@@ -2102,67 +2175,17 @@ impl PreparedSnapshot {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the scan coordinates are explicit to prevent cross-database samples"
-    )]
-    fn partition_moments(
+    fn collect_partitions(
         segment: &Segment,
         plan: &Plan,
         timestamp: &'static str,
         partition_column: &'static str,
-        at: i64,
-        source: PartitionSource,
-        moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if segment.rows_of(plan.type_id).is_none() {
-            return Ok(());
-        }
-        segment.visit_rows(
-            plan.type_id,
-            &[timestamp, partition_column],
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                let (Some(stored), Some(partition)) =
-                    (row_timestamp(&row, timestamp), row.get(partition_column))
-                else {
-                    return true;
-                };
-                if stored <= at {
-                    record_partition_moment(
-                        moments,
-                        identity_cell(partition),
-                        LocatedMoment {
-                            at: stored,
-                            sources: BTreeSet::from([source]),
-                        },
-                    );
-                }
-                true
-            },
-        )?;
-        Ok(())
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the exact timestamp and partition keep database predecessors isolated"
-    )]
-    fn collect_partition(
-        segment: &Segment,
-        plan: &Plan,
-        timestamp: &'static str,
-        at: i64,
-        partition_column: &'static str,
-        partition: &IdentityCell,
+        partitions: &BTreeMap<IdentityCell, i64>,
         extra_columns: &[&'static str],
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
+        #[cfg(test)]
+        PARTITION_PREDECESSOR_VISITS.set(PARTITION_PREDECESSOR_VISITS.get().saturating_add(1));
         let mut collected = BTreeMap::new();
         let mut counters = projected_rate_columns(plan);
         if plan.contract.column("starttime").is_some() {
@@ -2190,11 +2213,13 @@ impl PreparedSnapshot {
             if cancelled() {
                 return false;
             }
-            if row_timestamp(&row, timestamp) != Some(at)
-                || row
-                    .get(partition_column)
-                    .is_none_or(|stored| &identity_cell(stored) != partition)
-            {
+            let Some(partition) = row.get(partition_column).map(identity_cell) else {
+                return true;
+            };
+            let Some(at) = partitions.get(&partition) else {
+                return true;
+            };
+            if row_timestamp(&row, timestamp) != Some(*at) {
                 return true;
             }
             let Some(key) = identity_of(plan, &row) else {
@@ -2518,31 +2543,26 @@ impl PreparedSnapshot {
         projection.push(timestamp);
         projection.sort_unstable();
         projection.dedup();
-        let mut rows = Vec::new();
-        segment.visit_rows(plan.type_id, &projection, 0, usize::MAX, |ordinal, row| {
+        segment.visit_rows(plan.type_id, &projection, 0, usize::MAX, |_ordinal, row| {
             if cancelled() {
                 return false;
             }
             if row_timestamp(&row, timestamp) != Some(at) {
                 return true;
             }
-            rows.push((ordinal, row));
+            let Some(key) = identity_of(plan, &row) else {
+                return true;
+            };
+            let stored = counters
+                .iter()
+                .filter_map(|name| row.get(name).cloned().map(|value| (*name, value)))
+                .collect();
+            collected.insert(key, stored);
             true
         })?;
         if cancelled() {
+            collected.clear();
             return Ok(collected);
-        }
-        for (_ordinal, row) in rows {
-            let Some(key) = identity_of(plan, &row) else {
-                continue;
-            };
-            let mut stored = BTreeMap::new();
-            for name in &counters {
-                if let Some(value) = row.get(name) {
-                    stored.insert(*name, value.clone());
-                }
-            }
-            collected.insert(key, stored);
         }
         Ok(collected)
     }
@@ -3082,12 +3102,49 @@ fn postgres_block_size(segment: &Segment) -> Result<Option<u128>, ApiError> {
     Ok(None)
 }
 
+#[expect(
+    variant_size_differences,
+    reason = "exact quantity factors stay inline so per-row comparisons do not allocate"
+)]
 enum SearchMetricValue {
     Exact {
-        numerator: Vec<u128>,
-        denominator: Vec<u128>,
+        numerator: ProductFactors,
+        denominator: ProductFactors,
     },
     Float(f64),
+}
+
+#[derive(Clone, Copy)]
+struct ProductFactors {
+    values: [u128; 4],
+    len: usize,
+}
+
+impl ProductFactors {
+    const fn one(value: u128) -> Self {
+        Self {
+            values: [value, 1, 1, 1],
+            len: 1,
+        }
+    }
+
+    const fn two(first: u128, second: u128) -> Self {
+        Self {
+            values: [first, second, 1, 1],
+            len: 2,
+        }
+    }
+
+    fn push(mut self, value: u128) -> Option<Self> {
+        let slot = self.values.get_mut(self.len)?;
+        *slot = value;
+        self.len += 1;
+        Some(self)
+    }
+
+    fn as_slice(&self) -> &[u128] {
+        &self.values[..self.len]
+    }
 }
 
 impl SearchMetricValue {
@@ -3098,16 +3155,12 @@ impl SearchMetricValue {
     fn scale(self, numerator_scale: u128, denominator_scale: u128) -> Option<Self> {
         match self {
             Self::Exact {
-                mut numerator,
-                mut denominator,
-            } => {
-                numerator.push(numerator_scale);
-                denominator.push(denominator_scale);
-                Some(Self::Exact {
-                    numerator,
-                    denominator,
-                })
-            }
+                numerator,
+                denominator,
+            } => Some(Self::Exact {
+                numerator: numerator.push(numerator_scale)?,
+                denominator: denominator.push(denominator_scale)?,
+            }),
             Self::Float(value) => {
                 let scaled = value * numerator_scale as f64 / denominator_scale as f64;
                 scaled.is_finite().then_some(Self::Float(scaled))
@@ -3125,11 +3178,13 @@ impl SearchMetricValue {
                 numerator,
                 denominator,
             } => {
-                let mut left = numerator.clone();
-                left.push(quantity.denominator);
-                let mut right = denominator.clone();
-                right.push(quantity.numerator);
-                compare_products(&left, &right)
+                let (Some(left), Some(right)) = (
+                    numerator.push(quantity.denominator),
+                    denominator.push(quantity.numerator),
+                ) else {
+                    return false;
+                };
+                compare_products(left.as_slice(), right.as_slice())
             }
             Self::Float(value) => {
                 let threshold = quantity.numerator as f64 / quantity.denominator as f64;
@@ -3387,8 +3442,8 @@ fn rate_metric(
     let delta = counter_sum(row, before, columns, false)?;
     match delta {
         OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
-            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
-            denominator: vec![elapsed, denominator_scale],
+            numerator: ProductFactors::two(u128::try_from(value).ok()?, numerator_scale),
+            denominator: ProductFactors::two(elapsed, denominator_scale),
         }),
         OrderedNumber::Float(value) => {
             let converted =
@@ -3443,8 +3498,8 @@ fn ratio_metric(
             if numerator >= 0 && denominator > 0 =>
         {
             Some(SearchMetricValue::Exact {
-                numerator: vec![u128::try_from(numerator).ok()?, scale],
-                denominator: vec![u128::try_from(denominator).ok()?],
+                numerator: ProductFactors::two(u128::try_from(numerator).ok()?, scale),
+                denominator: ProductFactors::one(u128::try_from(denominator).ok()?),
             })
         }
         (numerator, denominator) => {
@@ -3466,8 +3521,8 @@ fn ordered_metric(
 ) -> Option<SearchMetricValue> {
     match value {
         OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
-            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
-            denominator: vec![denominator_scale],
+            numerator: ProductFactors::two(u128::try_from(value).ok()?, numerator_scale),
+            denominator: ProductFactors::one(denominator_scale),
         }),
         OrderedNumber::Float(value) => {
             let converted = value * numerator_scale as f64 / denominator_scale as f64;
@@ -3480,16 +3535,82 @@ fn ordered_metric(
 }
 
 fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
-    let left = product_limbs(left);
-    let right = product_limbs(right);
-    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
+    if let (Some(left), Some(right)) = (fixed_product_limbs(left), fixed_product_limbs(right)) {
+        left.len.cmp(&right.len).then_with(|| {
+            left.digits[..left.len]
+                .iter()
+                .rev()
+                .cmp(right.digits[..right.len].iter().rev())
+        })
+    } else {
+        let left = heap_product_limbs(left);
+        let right = heap_product_limbs(right);
+        left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
+    }
+}
+
+struct FixedProduct {
+    digits: [u32; 16],
+    len: usize,
 }
 
 #[expect(
     clippy::cast_possible_truncation,
     reason = "each cast selects one base-2^32 limb after shifting"
 )]
-fn product_limbs(factors: &[u128]) -> Vec<u32> {
+fn fixed_product_limbs(factors: &[u128]) -> Option<FixedProduct> {
+    if factors.len() > 4 {
+        return None;
+    }
+    let mut product = FixedProduct {
+        digits: [0; 16],
+        len: 1,
+    };
+    product.digits[0] = 1;
+    for factor in factors {
+        let factor_digits = [
+            *factor as u32,
+            (*factor >> 32) as u32,
+            (*factor >> 64) as u32,
+            (*factor >> 96) as u32,
+        ];
+        let mut result_digits = [0_u32; 16];
+        for left_index in 0..product.len {
+            let left = product.digits[left_index];
+            let mut carry = 0_u64;
+            for (right_index, right) in factor_digits.iter().copied().enumerate() {
+                let index = left_index + right_index;
+                let slot = result_digits.get_mut(index)?;
+                let value = u64::from(*slot) + u64::from(left) * u64::from(right) + carry;
+                *slot = value as u32;
+                carry = value >> 32;
+            }
+            let mut index = left_index + factor_digits.len();
+            while carry > 0 {
+                let slot = result_digits.get_mut(index)?;
+                let value = u64::from(*slot) + carry;
+                *slot = value as u32;
+                carry = value >> 32;
+                index += 1;
+            }
+        }
+        let mut len = (product.len + factor_digits.len()).min(result_digits.len());
+        while len > 1 && result_digits[len - 1] == 0 {
+            len -= 1;
+        }
+        product = FixedProduct {
+            digits: result_digits,
+            len,
+        };
+    }
+    Some(product)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast selects one base-2^32 limb after shifting"
+)]
+fn heap_product_limbs(factors: &[u128]) -> Vec<u32> {
     let mut product = vec![1_u32];
     for factor in factors {
         let digits = [
@@ -3589,13 +3710,16 @@ fn search_clause_matches(
             _ => {}
         }
     }
-    search_clause_columns(logical_name, plan, clause.key)
-        .iter()
-        .any(|column| {
-            row.get(column)
-                .and_then(|value| searchable_text(value, dictionary))
-                .is_some_and(|text| search_value_matches(&text, &clause.value))
-        })
+    let columns = if logical_name == "pg_store_plans" && clause.key == "query_id" {
+        plan_statement_query_id_columns(plan.type_id)
+    } else {
+        clause.columns
+    };
+    columns.iter().any(|column| {
+        row.get(column)
+            .and_then(|value| searchable_text(value, dictionary))
+            .is_some_and(|text| search_value_matches(&text, &clause.value))
+    })
 }
 
 fn search_matches(
@@ -3618,19 +3742,19 @@ fn search_value_matches(text: &str, value: &SearchValue) -> bool {
         SearchValue::Quantity(_) => false,
     }
 }
-fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {
+fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'a, str>> {
     match value {
-        Cell::I16(value) => Some(value.to_string()),
-        Cell::I32(value) => Some(value.to_string()),
-        Cell::I64(value) | Cell::Ts(value) => Some(value.to_string()),
-        Cell::U32(value) => Some(value.to_string()),
-        Cell::U64(value) => Some(value.to_string()),
-        Cell::F64(value) if value.is_finite() => Some(value.to_string()),
-        Cell::Bool(value) => Some(value.to_string()),
+        Cell::I16(value) => Some(Cow::Owned(value.to_string())),
+        Cell::I32(value) => Some(Cow::Owned(value.to_string())),
+        Cell::I64(value) | Cell::Ts(value) => Some(Cow::Owned(value.to_string())),
+        Cell::U32(value) => Some(Cow::Owned(value.to_string())),
+        Cell::U64(value) => Some(Cow::Owned(value.to_string())),
+        Cell::F64(value) if value.is_finite() => Some(Cow::Owned(value.to_string())),
+        Cell::Bool(value) => Some(Cow::Owned(value.to_string())),
         Cell::StrId(id) => dictionary
             .resolve(*id)
             .and_then(|resolved| std::str::from_utf8(stored_bytes(resolved)).ok())
-            .map(ToOwned::to_owned),
+            .map(Cow::Borrowed),
         Cell::Null | Cell::ListI32(_) | Cell::F64(_) => None,
     }
 }
@@ -3655,32 +3779,41 @@ impl GlobPattern {
     }
 
     fn matches(&self, candidate: &str) -> bool {
-        let candidate = candidate.chars().collect::<Vec<_>>();
         let mut pattern_index = 0;
         let mut candidate_index = 0;
         let mut star = None;
         let mut retry = 0;
         while candidate_index < candidate.len() {
+            let Some(character) = candidate
+                .get(candidate_index..)
+                .and_then(|remaining| remaining.chars().next())
+            else {
+                return false;
+            };
             match self.0.get(pattern_index) {
-                Some(GlobToken::Literal(wanted))
-                    if unicode_char_equal(*wanted, candidate[candidate_index]) =>
-                {
+                Some(GlobToken::Literal(wanted)) if unicode_char_equal(*wanted, character) => {
                     pattern_index += 1;
-                    candidate_index += 1;
+                    candidate_index += character.len_utf8();
                 }
                 Some(GlobToken::Any) => {
                     pattern_index += 1;
-                    candidate_index += 1;
+                    candidate_index += character.len_utf8();
                 }
                 Some(GlobToken::Star) => {
                     star = Some(pattern_index);
                     pattern_index += 1;
                     retry = candidate_index;
                 }
-                _ if star.is_some() => {
-                    retry += 1;
+                _ if let Some(star_index) = star => {
+                    let Some(retry_character) = candidate
+                        .get(retry..)
+                        .and_then(|remaining| remaining.chars().next())
+                    else {
+                        return false;
+                    };
+                    retry += retry_character.len_utf8();
                     candidate_index = retry;
-                    pattern_index = star.unwrap_or(0) + 1;
+                    pattern_index = star_index + 1;
                 }
                 _ => return false,
             }
@@ -3737,37 +3870,6 @@ const fn timed_context_index(
     source_count: usize,
 ) -> usize {
     layout_index * source_count + source_index
-}
-
-fn record_partition_moment(
-    moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
-    partition: IdentityCell,
-    located: LocatedMoment,
-) {
-    let Some(chosen) = moments.get_mut(&partition) else {
-        moments.insert(
-            partition,
-            PartitionMoments {
-                current: located,
-                previous: None,
-            },
-        );
-        return;
-    };
-    match located.at.cmp(&chosen.current.at) {
-        Ordering::Equal => chosen.current.sources.extend(located.sources),
-        Ordering::Greater => {
-            chosen.previous = Some(std::mem::replace(&mut chosen.current, located));
-        }
-        Ordering::Less => match chosen.previous.as_mut() {
-            Some(before) => match located.at.cmp(&before.at) {
-                Ordering::Equal => before.sources.extend(located.sources),
-                Ordering::Greater => *before = located,
-                Ordering::Less => {}
-            },
-            None => chosen.previous = Some(located),
-        },
-    }
 }
 
 fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef, ApiError> {
@@ -3875,6 +3977,23 @@ struct RetainedMoments {
     previous: Option<RetainedMoment>,
 }
 
+type RetainedRelationMoments = BTreeMap<(u32, IdentityCell), RetainedMoments>;
+
+fn located_moment(
+    retained: &RetainedMoment,
+    source_by_id: &HashMap<i64, PartitionSource>,
+) -> Option<LocatedMoment> {
+    let sources = retained
+        .segment_ids
+        .iter()
+        .filter_map(|segment_id| source_by_id.get(segment_id).copied())
+        .collect::<BTreeSet<_>>();
+    (!sources.is_empty()).then_some(LocatedMoment {
+        at: retained.at,
+        sources,
+    })
+}
+
 fn relation_preceding(
     reader: &Reader,
     segment_ref: &SegmentRef,
@@ -3883,7 +4002,7 @@ fn relation_preceding(
     sections: &[SectionPlans],
     filters: &[crate::route::Filter],
     at: i64,
-) -> Result<Vec<SegmentRef>, ApiError> {
+) -> Result<(Vec<SegmentRef>, RetainedRelationMoments), ApiError> {
     let requested_datid = filters
         .iter()
         .find(|filter| filter.column == "datid")
@@ -3956,7 +4075,7 @@ fn relation_preceding(
         .filter(|candidate| retained.contains(&candidate.id()))
         .collect::<Vec<_>>();
     selected.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
-    Ok(selected)
+    Ok((selected, moments))
 }
 
 fn partitioned_plans(sections: &[SectionPlans]) -> impl Iterator<Item = &Plan> {
@@ -3984,6 +4103,8 @@ fn scan_relation_moments(
         if segment.rows_of(plan.type_id).is_none() {
             continue;
         }
+        #[cfg(test)]
+        RELATION_MOMENT_VISITS.set(RELATION_MOMENT_VISITS.get().saturating_add(1));
         segment.visit_rows(
             plan.type_id,
             &[timestamp, "datid"],

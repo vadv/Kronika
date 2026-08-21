@@ -8,7 +8,7 @@ fn sample_row() -> UserTablesRow {
     UserTablesRow {
         ts: 2_000,
         datid: 16_400,
-        datname: "appdb".to_owned(),
+        datname: "appdb".into(),
         relid: 16_499,
         schemaname: "public".to_owned(),
         relname: "orders".to_owned(),

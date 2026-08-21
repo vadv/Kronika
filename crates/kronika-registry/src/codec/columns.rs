@@ -73,14 +73,15 @@ pub fn write_required<T: ArrowPrimitiveType>(values: impl Iterator<Item = T::Nat
 /// # Errors
 /// Returns [`CodecError`] if the child value count exceeds the row or section
 /// cap.
-pub fn write_list_i32(
+pub fn write_list_i32<T: AsRef<[i32]>>(
     name: &'static str,
-    rows: impl Iterator<Item = Vec<i32>>,
+    rows: impl Iterator<Item = T>,
 ) -> Result<ArrayRef, CodecError> {
     let item = Arc::new(Field::new("item", DataType::Int32, false));
     let mut builder = ListBuilder::new(Int32Builder::new()).with_field(item);
     let mut total = 0_usize;
     for row in rows {
+        let row = row.as_ref();
         if row.len() > MAX_LIST_I32_VALUES_PER_ROW {
             return Err(CodecError::TooManyListValues {
                 name,
@@ -102,7 +103,7 @@ pub fn write_list_i32(
                 max: MAX_LIST_I32_VALUES_PER_SECTION,
             });
         }
-        for value in row {
+        for &value in row {
             builder.values().append_value(value);
         }
         builder.append(true);
@@ -174,6 +175,11 @@ pub(super) fn validate_list_i32_array(
     if array.null_count() != 0 {
         return Err(CodecError::NullInRequiredColumn { name });
     }
+    let ints = array
+        .values()
+        .as_any()
+        .downcast_ref::<PrimitiveArray<Int32Type>>()
+        .ok_or(CodecError::ColumnType { name })?;
 
     let mut total = 0_usize;
     for i in 0..array.len() {
@@ -205,12 +211,13 @@ pub(super) fn validate_list_i32_array(
                 max: MAX_LIST_I32_VALUES_PER_SECTION,
             });
         }
-        let values = array.value(i);
-        let ints = values
-            .as_any()
-            .downcast_ref::<PrimitiveArray<Int32Type>>()
-            .ok_or(CodecError::ColumnType { name })?;
-        if ints.null_count() != 0 {
+    }
+    let offsets = array.value_offsets();
+    let start = usize::try_from(offsets[0]).map_err(|_negative| CodecError::ColumnType { name })?;
+    let end = usize::try_from(offsets[array.len()])
+        .map_err(|_negative| CodecError::ColumnType { name })?;
+    for i in start..end {
+        if ints.is_null(i) {
             return Err(CodecError::NullInRequiredColumn { name });
         }
     }

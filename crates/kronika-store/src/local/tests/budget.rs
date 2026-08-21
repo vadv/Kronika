@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn active_part_budget_includes_retained_report_and_transient_body() {
+fn active_part_budget_includes_retained_metadata_and_transient_body() {
     assert!(ensure_active_part_budget(100, 20, 30, 150).is_ok());
     let error = ensure_active_part_budget(100, 20, 30, 149).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);

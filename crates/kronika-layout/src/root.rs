@@ -135,6 +135,32 @@ pub struct DataRoot {
     diagnostic_path: Arc<Path>,
 }
 
+/// An already-open UTC day directory for a bounded batch of segment opens.
+#[derive(Debug)]
+pub struct DayDirectory {
+    day: UtcDay,
+    directory: File,
+}
+
+impl DayDirectory {
+    /// Opens one ZMS whose address belongs to this day.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address names another day or the final file is
+    /// missing, symbolic, or not regular.
+    pub fn open_zms(&self, address: SegmentAddress) -> Result<File, LayoutError> {
+        if address.day != self.day {
+            return Err(LayoutError::MisbucketedSegment {
+                id: address.id,
+                actual: self.day,
+                expected: address.day,
+            });
+        }
+        open_regular_at(&self.directory, &address.zms_name(), OFlags::RDONLY)
+    }
+}
+
 impl DataRoot {
     /// Opens an existing data root without following a symbolic link.
     ///
@@ -230,7 +256,20 @@ impl DataRoot {
     /// Returns an error if a calendar component or final file is missing,
     /// replaced by a symbolic link, or has the wrong type.
     pub fn open_zms(&self, address: SegmentAddress) -> Result<File, LayoutError> {
-        self.open_final(address, FileKind::Zms)
+        self.day_directory(address.day)?.open_zms(address)
+    }
+
+    /// Opens one UTC day directory for a bounded batch of segment reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a calendar component is missing, symbolic, or not
+    /// a directory.
+    pub fn day_directory(&self, day: UtcDay) -> Result<DayDirectory, LayoutError> {
+        Ok(DayDirectory {
+            day,
+            directory: self.open_day(day)?,
+        })
     }
 
     /// Opens a verified IDX relative to the root descriptor when it exists.
@@ -396,15 +435,6 @@ impl DataRoot {
                 Err(error) => return Err(LayoutError::Io(errno_to_io(error))),
             }
         }
-    }
-
-    fn open_final(&self, address: SegmentAddress, kind: FileKind) -> Result<File, LayoutError> {
-        let day = self.open_day(address.day)?;
-        let name = match kind {
-            FileKind::Zms => address.zms_name(),
-            FileKind::Idx => address.idx_name(),
-        };
-        open_regular_at(&day, &name, OFlags::RDONLY)
     }
 
     fn open_day(&self, day: UtcDay) -> Result<File, LayoutError> {

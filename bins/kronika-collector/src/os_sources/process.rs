@@ -1,7 +1,7 @@
 use super::{
-    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
-    UserReferences, intern_str, log_collection_finish, log_count_degraded, log_degraded,
-    process_facts, read_process_with_cgroup,
+    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, ProcessReader,
+    SourceKind, Ts, UserReferences, cgroup, intern_str, log_collection_finish, log_count_degraded,
+    log_degraded, process_facts,
 };
 
 #[allow(
@@ -16,15 +16,15 @@ pub(super) fn collect_process_sections(
     scope: u8,
     ts: i64,
     due: &DueSet,
-    collect_cgroups: bool,
+    mut workload_memberships: Option<&mut cgroup::WorkloadMemberships>,
     os: &mut OsSources,
-) -> Vec<String> {
+) {
     let hot_due = due.has(SourceKind::OsProcesses);
     let status_due = due.has(SourceKind::OsProcessStatus);
     let mapping_due = due.has(SourceKind::OsCgroupMapping);
-    let cgroup_due = collect_cgroups;
+    let cgroup_due = workload_memberships.is_some();
     if !hot_due && !status_due && !mapping_due && !cgroup_due {
-        return Vec::new();
+        return;
     }
 
     let hot_type_id = 1_100_001_u32;
@@ -42,7 +42,7 @@ pub(super) fn collect_process_sections(
                     log_degraded(type_id, "process", &err);
                 }
             }
-            return Vec::new();
+            return;
         }
     };
     let facts = match process_facts(fs) {
@@ -56,29 +56,34 @@ pub(super) fn collect_process_sections(
                     log_degraded(type_id, "process", &err);
                 }
             }
-            return if cgroup_due {
-                pids.into_iter()
-                    .filter_map(|pid| fs.read_raw(&format!("{pid}/cgroup")).ok())
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            if let Some(memberships) = workload_memberships {
+                let mut reader = ProcessReader::new(fs);
+                for pid in pids {
+                    if let Some(content) = reader.cgroup_membership(pid) {
+                        memberships.observe(content);
+                    }
+                }
+            }
+            return;
         }
     };
     let mut skipped = 0_usize;
     let mut io_nulls = 0_usize;
     let mut mapping_nulls = 0_usize;
-    let mut cgroup_memberships = Vec::new();
+    let mut reader = ProcessReader::new(fs);
     for pid in pids {
-        let membership = if mapping_due || cgroup_due {
-            fs.read_raw(&format!("{pid}/cgroup")).ok()
+        let cgroup_path = if mapping_due || cgroup_due {
+            let membership = reader.cgroup_membership(pid);
+            if let (Some(memberships), Some(membership)) =
+                (workload_memberships.as_deref_mut(), membership)
+            {
+                memberships.observe(membership);
+            }
+            membership.and_then(kronika_source_os::proc::process::parse_cgroup_path)
         } else {
             None
         };
-        if cgroup_due && let Some(membership) = &membership {
-            cgroup_memberships.push(membership.clone());
-        }
-        let read = match read_process_with_cgroup(fs, pid, facts, ts, membership) {
+        let read = match reader.read(pid, facts, ts, cgroup_path) {
             Ok(read) => read,
             Err(ProcessError::Gone(_)) => continue,
             Err(_) => {
@@ -180,5 +185,4 @@ pub(super) fn collect_process_sections(
             started.elapsed(),
         );
     }
-    cgroup_memberships
 }

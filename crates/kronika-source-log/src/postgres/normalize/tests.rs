@@ -27,6 +27,10 @@ fn the_values_an_error_carries_are_replaced() {
         normalize_error("requested WAL segment 0/16B3D40 has already been removed"),
         "requested WAL segment x/x has already been removed"
     );
+    assert_eq!(
+        normalize_error("PERMISSION DENIED FOR DATABASE tenant_42"),
+        "PERMISSION DENIED FOR DATABASE ..."
+    );
 }
 
 #[test]

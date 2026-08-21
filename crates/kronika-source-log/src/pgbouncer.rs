@@ -124,7 +124,9 @@ impl PgBouncerLog {
     ///
     /// Returns the operating system's error for reading the file.
     pub fn read_batch(&mut self, max_records: usize) -> io::Result<ReadBatch> {
-        let batch = self.tail.read_batch(continues, max_records)?;
+        let batch = self
+            .tail
+            .read_batch_without_quote_tracking(continues, max_records)?;
         Ok(ReadBatch {
             events: batch.records.iter().filter_map(parse).collect(),
             raw_bytes: batch.raw_bytes,

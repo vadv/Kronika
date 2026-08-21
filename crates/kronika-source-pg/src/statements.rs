@@ -636,7 +636,7 @@ pub fn to_v1<E>(
 
 /// Read a raw row using the layout's column set.
 fn row_from_pg(
-    row: &tokio_postgres::Row,
+    row: query::IndexedRow<'_>,
     version: StatementsVersion,
 ) -> anyhow::Result<StatementsRow> {
     let planning = since_v2(version);

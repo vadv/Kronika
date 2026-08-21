@@ -249,15 +249,13 @@ impl ReadAt for TruncatedAfterHeader {
 }
 
 // A mock ReadAt that serves each offset once, then returns UnexpectedEof on
-// any re-read of the same offset — simulating the journal shrinking AFTER
-// the streaming scan validated a part but BEFORE scan_journal_reader's own
-// per-part re-read (the second stale-catch point, inside the loop).
-struct ShrinksAfterScan {
+// any re-read of the same offset.
+struct RejectsRepeatedOffsets {
     data: Vec<u8>,
     seen: std::cell::RefCell<std::collections::HashSet<u64>>,
 }
 
-impl ReadAt for ShrinksAfterScan {
+impl ReadAt for RejectsRepeatedOffsets {
     fn byte_len(&self) -> io::Result<u64> {
         Ok(self.data.len() as u64)
     }

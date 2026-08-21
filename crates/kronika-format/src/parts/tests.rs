@@ -204,6 +204,55 @@ fn build_part_round_trips_through_validate_part() {
 }
 
 #[test]
+fn build_part_appends_the_exact_catalog_encoding() {
+    let bodies: [&[u8]; 2] = [b"first", b"second"];
+    let part = build_part(
+        &[
+            SectionInput {
+                type_id: 1_006_001,
+                rows: 3,
+                body: bodies[0],
+            },
+            SectionInput {
+                type_id: 1_021_001,
+                rows: 4,
+                body: bodies[1],
+            },
+        ],
+        PartMeta {
+            min_ts: 100,
+            max_ts: 900,
+        },
+    );
+    let first_offset = MAGIC.len() as u64;
+    let catalog = Catalog {
+        entries: vec![
+            Entry {
+                type_id: 1_006_001,
+                flags: 0,
+                offset: first_offset,
+                len: bodies[0].len() as u64,
+                rows: 3,
+                crc32c: crc32c(bodies[0]),
+            },
+            Entry {
+                type_id: 1_021_001,
+                flags: 0,
+                offset: first_offset + bodies[0].len() as u64,
+                len: bodies[1].len() as u64,
+                rows: 4,
+                crc32c: crc32c(bodies[1]),
+            },
+        ],
+        min_ts: 100,
+        max_ts: 900,
+        format_version: crate::FORMAT_VERSION,
+        window_count: 1,
+    };
+    assert!(part.ends_with(&catalog.encode()));
+}
+
+#[test]
 fn build_part_accepts_no_sections() {
     let part = build_part(
         &[],

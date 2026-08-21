@@ -543,6 +543,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         &mut journal,
         &writer,
         &config,
+        false,
         &first_batch,
         &[],
         BASE_TS + 10,
@@ -575,6 +576,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         &mut journal,
         &writer,
         &config,
+        false,
         &second_batch,
         &[],
         BASE_TS + 20,
@@ -1444,7 +1446,7 @@ fn relation_table_row(
     UserTablesRow {
         ts,
         datid: 16_384_u32.saturating_add(u32::try_from(object % 8).unwrap_or_default()),
-        datname: format!("app_{}", object % 8),
+        datname: format!("app_{}", object % 8).into(),
         relid: 100_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX)),
         schemaname: format!("schema_{}", object % 32),
         relname: format!("table_{object:05}"),
@@ -1534,7 +1536,7 @@ fn relation_index_row(
     UserIndexesRow {
         ts,
         datid: 16_384_u32.saturating_add(u32::try_from(object % 8).unwrap_or_default()),
-        datname: format!("app_{}", object % 8),
+        datname: format!("app_{}", object % 8).into(),
         indexrelid: 200_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX)),
         relid: 100_000_u32.saturating_add(u32::try_from(object / 2).unwrap_or(u32::MAX)),
         schemaname: format!("schema_{}", object % 32),

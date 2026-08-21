@@ -308,6 +308,8 @@ pub fn build_part(sections: &[SectionInput<'_>], meta: PartMeta) -> Vec<u8> {
         format_version: crate::FORMAT_VERSION,
         window_count: 1,
     };
-    out.extend_from_slice(&catalog.encode());
+    catalog
+        .write_encoded(&mut out)
+        .expect("catalog length fits the precomputed part capacity");
     out
 }

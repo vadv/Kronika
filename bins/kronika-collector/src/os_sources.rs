@@ -38,7 +38,7 @@ use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
 use kronika_source_os::proc::meminfo::parse_meminfo;
 use kronika_source_os::proc::pressure::parse_pressure;
-use kronika_source_os::proc::process::{ProcessError, process_facts, read_process_with_cgroup};
+use kronika_source_os::proc::process::{ProcessError, ProcessReader, process_facts};
 use kronika_source_os::proc::stat::{parse_cpu, parse_stat_misc};
 use kronika_source_os::proc::vmstat::parse_vmstat;
 use kronika_source_os::proc::{
@@ -102,7 +102,6 @@ pub(crate) struct OsSources {
     cgroup_memory: Vec<OsCgroupMemory>,
     cgroup_io: Vec<OsCgroupIo>,
     cgroup_pids: Vec<OsCgroupPids>,
-    mount_entries: Vec<MountEntry>,
 }
 
 impl OsSources {
@@ -140,7 +139,6 @@ impl OsSources {
             cgroup_memory: Vec::new(),
             cgroup_io: Vec::new(),
             cgroup_pids: Vec::new(),
-            mount_entries: Vec::new(),
         }
     }
 
@@ -273,16 +271,18 @@ pub(crate) fn collect_os_sources(
     if due.has(SourceKind::OsCore) {
         singletons::collect_singletons(fs, scope, ts, &mut os);
     }
-    // Mountinfo is parsed whenever either OsCore or OsMountTopo is due:
-    // OsCore needs it for the container device filter in diskstats;
+    // OsCore needs mountinfo for the container device filter in diskstats;
     // OsMountTopo needs it to build the attribution section rows.
-    let mounts = procfs_sections::mountinfo_entries(fs);
-    os.mount_entries.clone_from(&mounts);
+    let mounts = if due.has(SourceKind::OsCore) || due.has(SourceKind::OsMountTopo) {
+        procfs_sections::mountinfo_entries(fs)
+    } else {
+        Vec::new()
+    };
 
     if due.has(SourceKind::OsCore) {
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
-        let net_scope_id = net_scope(fs).as_u8();
+        let net_scope_id = net_scope(in_container).as_u8();
         os.diskstats =
             procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
@@ -307,17 +307,18 @@ pub(crate) fn collect_os_sources(
     cpufreq::collect_cpufreq(&sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
-    let process_memberships = process::collect_process_sections(
+    let mut process_memberships = cgroup_due.then(|| cgroup::WorkloadMemberships::new(&sys));
+    process::collect_process_sections(
         fs,
         interner,
         users,
         entity_scope,
         ts,
         due,
-        cgroup_due,
+        process_memberships.as_mut(),
         &mut os,
     );
-    if cgroup_due {
+    if let Some(process_memberships) = process_memberships {
         cgroups::collect_cgroup_sections(
             &sys,
             interner,
@@ -325,7 +326,7 @@ pub(crate) fn collect_os_sources(
             ts,
             fs,
             due,
-            &process_memberships,
+            process_memberships,
             &mut os,
         );
     }

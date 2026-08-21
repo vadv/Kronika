@@ -6,6 +6,8 @@
 //! so a row says both how the index was used and what it is. `last_idx_scan`
 //! arrives in PG16 and selects the layout.
 
+use std::sync::Arc;
+
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
@@ -90,7 +92,7 @@ pub struct UserIndexesRow {
     /// Database oid of the connection that produced this row.
     pub datid: u32,
     /// Database name of the connection.
-    pub datname: String,
+    pub datname: Arc<str>,
     /// Index oid.
     pub indexrelid: u32,
     /// Table oid the index belongs to.
@@ -208,14 +210,15 @@ pub fn to_v1<E>(
 
 /// Read a raw row, filling in the database the connection is attached to.
 fn row_from_pg(
-    row: &tokio_postgres::Row,
-    database: &Database,
+    row: query::IndexedRow<'_>,
+    datid: u32,
+    datname: &Arc<str>,
     version: UserIndexesVersion,
 ) -> anyhow::Result<UserIndexesRow> {
     Ok(UserIndexesRow {
         ts: row.try_get("ts_us")?,
-        datid: database.oid,
-        datname: database.name.clone(),
+        datid,
+        datname: Arc::clone(datname),
         indexrelid: row.try_get("indexrelid")?,
         relid: row.try_get("relid")?,
         schemaname: row.try_get("schemaname")?,
@@ -255,13 +258,14 @@ pub async fn collect_user_indexes<E>(
     sink: impl FnMut(Batch<UserIndexesRow>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>> {
     let version = user_indexes_version(major);
+    let datname = Arc::<str>::from(database.name.as_str());
     query::read_batched(
         session,
         &user_indexes_query(version),
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| row_from_pg(row, database, version),
+        |row| row_from_pg(row, database.oid, &datname, version),
         |_row| 0,
         sink,
     )

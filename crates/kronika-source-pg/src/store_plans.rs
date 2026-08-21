@@ -438,7 +438,7 @@ pub fn to_vadv<E>(
     })
 }
 
-fn ossc_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<OsscRow> {
+fn ossc_row_from_pg(row: query::IndexedRow<'_>) -> anyhow::Result<OsscRow> {
     Ok(OsscRow {
         ts: row.try_get("ts_us")?,
         queryid: row.try_get("queryid")?,
@@ -476,7 +476,7 @@ fn ossc_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<OsscRow> {
     })
 }
 
-fn datasentinel_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<DatasentinelRow> {
+fn datasentinel_row_from_pg(row: query::IndexedRow<'_>) -> anyhow::Result<DatasentinelRow> {
     let calls = row.try_get("calls")?;
     Ok(DatasentinelRow {
         base: OsscRow {
@@ -521,7 +521,7 @@ fn datasentinel_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<Datasen
     })
 }
 
-fn vadv_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<VadvRow> {
+fn vadv_row_from_pg(row: query::IndexedRow<'_>) -> anyhow::Result<VadvRow> {
     Ok(VadvRow {
         ts: row.try_get("ts_us")?,
         userid: row.try_get("userid")?,

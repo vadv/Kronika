@@ -70,7 +70,7 @@ pub(super) fn build_encode(columns: &[ColumnDef]) -> TokenStream2 {
         let name = &c.name;
         if c.column_type == "ListI32" {
             return quote! {
-                ::kronika_registry::write_list_i32(#name, rows.iter().map(|r| r.#field.clone()))?
+                ::kronika_registry::write_list_i32(#name, rows.iter().map(|r| r.#field.as_slice()))?
             };
         }
         let values = match (&c.wrapper, c.nullable) {

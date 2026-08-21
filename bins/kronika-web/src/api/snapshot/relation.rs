@@ -16,7 +16,7 @@ use super::search::{
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
     resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
@@ -29,17 +29,24 @@ const INDEXES: &str = "pg_stat_user_indexes";
 thread_local! {
     static HISTORY_SELECTION_VISITS: Counter<usize> = const { Counter::new(0) };
     static HISTORY_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
+    static TABLESPACE_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn reset_history_operations() {
     HISTORY_SELECTION_VISITS.set(0);
     HISTORY_SOURCE_VISITS.set(0);
+    TABLESPACE_MOMENT_VISITS.set(0);
 }
 
 #[cfg(test)]
 pub(crate) fn history_operations() -> (usize, usize) {
     (HISTORY_SELECTION_VISITS.get(), HISTORY_SOURCE_VISITS.get())
+}
+
+#[cfg(test)]
+pub(crate) fn tablespace_moment_visits() -> usize {
+    TABLESPACE_MOMENT_VISITS.get()
 }
 
 const TABLE_RATES: &[&str] = &[
@@ -1375,6 +1382,7 @@ impl Aggregate {
         Ok(())
     }
 
+    #[cfg(test)]
     fn matches_derived_filters(&self, kind: RelationKind, filters: &[Filter]) -> bool {
         filters
             .iter()
@@ -1955,57 +1963,6 @@ const fn exact_scale(scale: f64) -> Option<u128> {
     }
 }
 
-/// Compare products without overflowing. Limbs use base 2^32 so each multiply
-/// and carry fits in `u64`, even when each input factor spans all of `u128`.
-fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
-    let left = product_limbs(left);
-    let right = product_limbs(right);
-    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each cast deliberately selects one base-2^32 limb after shifting"
-)]
-fn product_limbs(factors: &[u128]) -> Vec<u32> {
-    let mut product = vec![1_u32];
-    for factor in factors {
-        let digits = [
-            *factor as u32,
-            (*factor >> 32) as u32,
-            (*factor >> 64) as u32,
-            (*factor >> 96) as u32,
-        ];
-        let mut multiplied = vec![0_u32; product.len() + digits.len()];
-        for (left_index, left) in product.iter().copied().enumerate() {
-            let mut carry = 0_u64;
-            for (right_index, right) in digits.iter().copied().enumerate() {
-                let index = left_index + right_index;
-                let value =
-                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-            }
-            let mut index = left_index + digits.len();
-            while carry > 0 {
-                let value = u64::from(multiplied[index]) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-                index += 1;
-                if index == multiplied.len() && carry > 0 {
-                    multiplied.push(0);
-                }
-            }
-        }
-        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
-            multiplied.pop();
-        }
-        product = multiplied;
-    }
-    product.reverse();
-    product
-}
-
 fn finite_json(value: f64) -> Value {
     if value.is_finite() {
         json!(value)
@@ -2156,7 +2113,6 @@ pub(super) fn stream_history(
         let row = RelationRow {
             key: aggregate.key,
             metrics,
-            sort: None,
             source: aggregate.source,
             from: aggregate.from,
             to: aggregate.to,
@@ -2329,7 +2285,6 @@ fn stream_tablespace_history(
         let row = RelationRow {
             key: aggregate.key,
             metrics,
-            sort: None,
             source,
             from: aggregate.from,
             to: aggregate.to,
@@ -2383,6 +2338,7 @@ fn tablespace_history_segments(
         .cloned()
         .collect::<Vec<_>>();
     let mut predecessors = BTreeMap::<(u32, u32), Vec<i64>>::new();
+    let mut required = HashSet::new();
     for segment_ref in &selected {
         collect_tablespace_moments(
             reader,
@@ -2391,23 +2347,15 @@ fn tablespace_history_segments(
             from,
             to,
             true,
+            &mut required,
             &mut predecessors,
             cancelled,
         )?;
     }
-    for segment_ref in &selected {
-        collect_tablespace_moments(
-            reader,
-            segment_ref,
-            logical_name,
-            from,
-            to,
-            false,
-            &mut predecessors,
-            cancelled,
-        )?;
+    predecessors.retain(|key, _moments| required.contains(key));
+    for key in &required {
+        predecessors.entry(*key).or_default();
     }
-    let required = predecessors.keys().copied().collect::<Vec<_>>();
     let selected_ids = selected.iter().map(SegmentRef::id).collect::<HashSet<_>>();
     let mut candidates = listed
         .iter()
@@ -2433,6 +2381,7 @@ fn tablespace_history_segments(
             from,
             to,
             false,
+            &mut required,
             &mut predecessors,
             cancelled,
         )?;
@@ -2460,6 +2409,7 @@ fn collect_tablespace_moments(
     from: i64,
     to: i64,
     discover: bool,
+    required: &mut HashSet<(u32, u32)>,
     moments: &mut BTreeMap<(u32, u32), Vec<i64>>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -2492,20 +2442,28 @@ fn collect_tablespace_moments(
                 };
                 let key = (datid, type_id);
                 if discover && (from..=to).contains(&stored) {
-                    moments.entry(key).or_default();
+                    required.insert(key);
                 }
-                if stored < from
-                    && let Some(known) = moments.get_mut(&key)
-                    && !known.contains(&stored)
-                {
-                    known.push(stored);
-                    known.sort_unstable_by(|left, right| right.cmp(left));
-                    known.truncate(2);
-                    changed = true;
+                if stored < from {
+                    let known = if discover {
+                        Some(moments.entry(key).or_default())
+                    } else {
+                        moments.get_mut(&key)
+                    };
+                    if let Some(known) = known
+                        && !known.contains(&stored)
+                    {
+                        known.push(stored);
+                        known.sort_unstable_by(|left, right| right.cmp(left));
+                        known.truncate(2);
+                        changed = true;
+                    }
                 }
                 true
             },
         )?;
+        #[cfg(test)]
+        TABLESPACE_MOMENT_VISITS.set(TABLESPACE_MOMENT_VISITS.get().saturating_add(1));
     }
     Ok(changed)
 }
@@ -3213,7 +3171,6 @@ fn process_history_chunk(
 struct RelationRow {
     key: GroupKey,
     metrics: BTreeMap<String, Option<Metric>>,
-    sort: Option<Metric>,
     source: Source,
     from: Option<i64>,
     to: Option<i64>,
@@ -3268,45 +3225,41 @@ impl PreparedSnapshot {
         });
         let eligible = u64::try_from(aggregates.len()).unwrap_or(u64::MAX);
         let order_by = self.by.first().map(|name| sort_name(name));
-        let mut rows = aggregates
+        let mut ranked = aggregates
             .into_values()
             .map(|aggregate| {
-                let metrics = self
-                    .relation_fields
-                    .iter()
-                    .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
-                    .collect();
                 let sort = order_by.and_then(|name| {
                     aggregate
                         .metric(kind, group, name)
                         .or_else(|| aggregate.key.metric(name))
                 });
-                RelationRow {
-                    key: aggregate.key,
-                    metrics,
-                    sort,
-                    source: aggregate.source,
-                    from: aggregate.from,
-                    to: aggregate.to,
-                }
+                (aggregate, sort)
             })
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| compare_rows(left, right, self.direction));
+        ranked.sort_by(|(left, left_sort), (right, right_sort)| {
+            compare_relation_order(
+                &left.key,
+                left_sort.as_ref(),
+                &right.key,
+                right_sort.as_ref(),
+                self.direction,
+            )
+        });
         let start = match self.cursor {
-            Some(cursor) => rows
+            Some(cursor) => ranked
                 .iter()
-                .position(|row| {
-                    row.source.context_index == cursor.context_index
-                        && row.source.ordinal == cursor.ordinal
+                .position(|(aggregate, _sort)| {
+                    aggregate.source.context_index == cursor.context_index
+                        && aggregate.source.ordinal == cursor.ordinal
                 })
                 .ok_or(ApiError::BadCursor)?,
             None => 0,
         };
         let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
-        let end = start.saturating_add(page_size).min(rows.len());
-        let has_more = end < rows.len();
+        let end = start.saturating_add(page_size).min(ranked.len());
+        let has_more = end < ranked.len();
         let next_cursor = has_more.then(|| {
-            let source = rows[end].source;
+            let source = ranked[end].0.source;
             SnapshotCursor {
                 segment_id: self.anchor.id(),
                 active_position: self.anchor.active_position().unwrap_or(0),
@@ -3317,21 +3270,39 @@ impl PreparedSnapshot {
             .encode()
         });
         let returned = end.saturating_sub(start);
-        for row in &rows[start..end] {
+        let from = ranked.iter().filter_map(|(row, _sort)| row.from).min();
+        let to = ranked.iter().filter_map(|(row, _sort)| row.to).max();
+        for (aggregate, _sort) in ranked.drain(start..end) {
+            #[cfg(test)]
+            super::RELATION_PROJECTED_METRICS.set(
+                super::RELATION_PROJECTED_METRICS
+                    .get()
+                    .saturating_add(self.relation_fields.len()),
+            );
+            let metrics = self
+                .relation_fields
+                .iter()
+                .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
+                .collect();
+            let row = RelationRow {
+                key: aggregate.key,
+                metrics,
+                source: aggregate.source,
+                from: aggregate.from,
+                to: aggregate.to,
+            };
             if cancelled()
                 || !emit(relation_record(
                     section,
                     kind,
                     group,
-                    row,
+                    &row,
                     group == RelationGroup::Object,
                 )?)
             {
                 return Ok(());
             }
         }
-        let from = rows.iter().filter_map(|row| row.from).min();
-        let to = rows.iter().filter_map(|row| row.to).max();
         let _connected = emit(record(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
@@ -3418,11 +3389,6 @@ fn scan_context(
             let Some(identity) = identity_of(context.plan, &row) else {
                 continue;
             };
-            let Some(object_key) =
-                GroupKey::from_row(kind, RelationGroup::Object, &row, &dictionary)?
-            else {
-                continue;
-            };
             let Some(timestamp) = context
                 .plan
                 .timestamp
@@ -3441,28 +3407,19 @@ fn scan_context(
                 .previous
                 .as_ref()
                 .and_then(|previous| previous.get(&identity));
-            if !prepared.relation_filters.is_empty() {
-                let mut object = Aggregate::new(object_key.clone(), source);
-                object.add(
-                    kind,
-                    context.plan,
-                    &row,
-                    before,
-                    context.elapsed_for(&row),
-                    &dictionary,
-                    source,
-                )?;
-                if !object.matches_derived_filters(kind, &prepared.relation_filters) {
-                    continue;
-                }
+            let elapsed = context.elapsed_for(&row);
+            if !matches_derived_filters(
+                kind,
+                &prepared.relation_filters,
+                context.plan,
+                &row,
+                before,
+                elapsed,
+            ) {
+                continue;
             }
-            let key = if group == RelationGroup::Tablespace {
-                let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
-                    continue;
-                };
-                key
-            } else {
-                object_key.for_group(kind, group)
+            let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
+                continue;
             };
             aggregates
                 .entry(key.clone())
@@ -3472,13 +3429,33 @@ fn scan_context(
                     context.plan,
                     &row,
                     before,
-                    context.elapsed_for(&row),
+                    elapsed,
                     &dictionary,
                     source,
                 )?;
         }
     }
     Ok(())
+}
+
+fn matches_derived_filters(
+    kind: RelationKind,
+    filters: &[Filter],
+    plan: &Plan,
+    row: &Row,
+    before: Option<&CounterReadings>,
+    elapsed: Option<i64>,
+) -> bool {
+    filters
+        .iter()
+        .all(|filter| match (kind, filter.column.as_str()) {
+            (RelationKind::Indexes, "no_scans") => {
+                let mut scans = RateAggregate::default();
+                scans.add(counter_input(plan, row, before, "idx_scan", false), elapsed);
+                scans.metric().is_some_and(|metric| metric_is_zero(&metric))
+            }
+            _ => false,
+        })
 }
 
 fn relation_layout(
@@ -3548,13 +3525,19 @@ fn relation_values(metrics: &BTreeMap<String, Option<Metric>>) -> Map<String, Va
         .collect()
 }
 
-fn compare_rows(left: &RelationRow, right: &RelationRow, direction: Order) -> Ordering {
-    let left_value = left.sort.as_ref().and_then(Metric::order_value);
-    let right_value = right.sort.as_ref().and_then(Metric::order_value);
+fn compare_relation_order(
+    left_key: &GroupKey,
+    left_sort: Option<&Metric>,
+    right_key: &GroupKey,
+    right_sort: Option<&Metric>,
+    direction: Order,
+) -> Ordering {
+    let left_value = left_sort.and_then(Metric::order_value);
+    let right_value = right_sort.and_then(Metric::order_value);
     // The physical helper ranks greatest first and keeps nulls last.
     let ordered =
         compare_page_order_values(left_value.as_ref(), right_value.as_ref(), direction).reverse();
-    ordered.then_with(|| left.key.cmp(&right.key))
+    ordered.then_with(|| left_key.cmp(right_key))
 }
 
 fn counter_input(
@@ -4048,7 +4031,6 @@ mod tests {
         let row = RelationRow {
             key: key(7),
             metrics: BTreeMap::from([("idx_scan".to_owned(), Some(Metric::Integer(3)))]),
-            sort: None,
             source: source(4, 91),
             from: Some(10),
             to: Some(20),
@@ -4688,32 +4670,39 @@ mod tests {
 
     #[test]
     fn derived_hidden_sort_has_stable_key_ties_and_cursor_coordinates() {
-        let row = |datid, sort| RelationRow {
-            key: key(datid),
-            metrics: BTreeMap::new(),
-            sort,
-            source: source(usize::try_from(datid).unwrap(), u64::from(datid)),
-            from: Some(1),
-            to: Some(2),
-        };
-        let high = row(2, Some(Metric::Integer(20)));
-        let low = row(1, Some(Metric::Integer(10)));
-        assert_eq!(compare_rows(&high, &low, Order::Desc), Ordering::Less);
-        assert_eq!(compare_rows(&low, &high, Order::Asc), Ordering::Less);
-        let tied_left = row(1, Some(Metric::Integer(10)));
-        let tied_right = row(2, Some(Metric::Integer(10)));
+        let high_key = key(2);
+        let low_key = key(1);
+        let high = Metric::Integer(20);
+        let low = Metric::Integer(10);
         assert_eq!(
-            compare_rows(&tied_left, &tied_right, Order::Desc),
+            compare_relation_order(&high_key, Some(&high), &low_key, Some(&low), Order::Desc),
             Ordering::Less
         );
-        assert!(tied_left.metrics.is_empty(), "sort need not be projected");
+        assert_eq!(
+            compare_relation_order(&low_key, Some(&low), &high_key, Some(&high), Order::Asc),
+            Ordering::Less
+        );
+        let tied_left = key(1);
+        let tied_right = key(2);
+        let tied = Metric::Integer(10);
+        assert_eq!(
+            compare_relation_order(
+                &tied_left,
+                Some(&tied),
+                &tied_right,
+                Some(&tied),
+                Order::Desc,
+            ),
+            Ordering::Less
+        );
         assert_eq!(sort_name("derived.state_severity"), "state_severity");
 
+        let high_source = source(2, 2);
         let cursor = SnapshotCursor {
             segment_id: 7,
             active_position: 11,
-            context_index: high.source.context_index,
-            ordinal: high.source.ordinal,
+            context_index: high_source.context_index,
+            ordinal: high_source.ordinal,
             binding: 13,
         };
         assert_eq!(SnapshotCursor::parse(&cursor.encode()).unwrap(), cursor);

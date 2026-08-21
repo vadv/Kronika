@@ -7,12 +7,12 @@ use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
 use kronika_reader::{Cell, Row, Segment, SegmentKind};
 use serde_json::json;
 
-use super::query::{Plan, apply_tail, chunk_dictionary, plans};
+use super::query::{Plan, apply_tail, plans, streaming_chunk_dictionary, validate_row_dictionary};
 use super::render::{cell, projected_layout, record};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{ActiveCursor, DataRequest, Window};
 
-const ROW_CHUNK_ROWS: usize = 16;
+const ROW_CHUNK_ROWS: usize = 512;
 
 pub(crate) struct PreparedHistory {
     segment: Segment,
@@ -217,11 +217,12 @@ fn emit_chunk(
     if cancelled() {
         return Ok(false);
     }
-    let dictionary = chunk_dictionary(segment, rows)?;
+    let dictionary = streaming_chunk_dictionary(segment, rows)?;
     for (ordinal, row) in rows.drain(..) {
         if cancelled() {
             return Ok(false);
         }
+        validate_row_dictionary(&row, &dictionary)?;
         if !plan.matches(&row, &dictionary) {
             continue;
         }

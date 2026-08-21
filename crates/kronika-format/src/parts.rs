@@ -25,6 +25,7 @@ pub use header::{
 };
 pub use scan::{
     JournalLimits, JournalScanError, PartRef, ScanReport, scan_journal_streaming_strict_from,
+    visit_journal_streaming_strict_from,
 };
 
 /// Magic bytes opening every journal frame.

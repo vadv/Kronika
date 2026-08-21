@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use kronika_reader::{Cell, Row};
 use kronika_registry::contract;
 
-use super::{Counters, counter_sum, cpu_busy_ticks, current_points, points, rate};
+use super::{
+    ActivitySample, Counters, activity_sample, counter_sum, cpu_busy_ticks, current_points, points,
+    rate,
+};
 use crate::route::Window;
 
 #[test]
@@ -38,6 +41,40 @@ fn a_segment_boundary_keeps_the_preceding_counter_reading() {
         .expect("current busy point");
     assert_eq!(busy.ts, 200);
     assert_eq!(busy.value, Some(100_000.0));
+}
+
+#[test]
+fn only_the_latest_sample_is_carried_into_the_next_segment() {
+    let mut counters = Counters {
+        busy_ticks: BTreeMap::from([(1_000_000, 10), (2_000_000, 20)]),
+        memory: BTreeMap::from([(1_000_000, 50.0), (2_000_000, 60.0)]),
+        swap: BTreeMap::from([(1_000_000, None), (2_000_000, Some(4))]),
+        ..Counters::default()
+    };
+
+    counters.retain_latest();
+
+    assert_eq!(counters.busy_ticks, BTreeMap::from([(2_000_000, 20)]));
+    assert_eq!(counters.memory, BTreeMap::from([(2_000_000, 60.0)]));
+    assert_eq!(counters.swap, BTreeMap::from([(2_000_000, Some(4))]));
+    counters.busy_ticks.insert(3_000_000, 30);
+    let next = current_points(
+        &counters,
+        100,
+        1,
+        3_000_000,
+        3_000_000,
+        Window {
+            from: Some(3_000_000),
+            to: Some(3_000_000),
+        },
+    );
+    assert_eq!(
+        next.iter()
+            .find(|point| point.key == "cpu_busy")
+            .and_then(|point| point.value),
+        Some(10.0)
+    );
 }
 
 #[test]
@@ -119,6 +156,33 @@ fn nullable_swap_and_oom_do_not_bridge_null_samples() {
             .collect::<Vec<_>>();
         assert_eq!(values, [None, None, None, Some(10.0)], "{key}");
     }
+}
+
+#[test]
+fn activity_rows_are_reduced_to_the_lane_fields() {
+    let row = row(
+        1_001_004,
+        &[
+            ("ts", Cell::Ts(5_000_000)),
+            ("backend_type", Cell::StrId(11)),
+            ("state", Cell::StrId(12)),
+            ("wait_event_type", Cell::StrId(13)),
+            ("leader_pid", Cell::I32(42)),
+            ("xact_start", Cell::Ts(3_000_000)),
+        ],
+    );
+
+    assert_eq!(
+        activity_sample(&row),
+        ActivitySample {
+            ts: Some(5_000_000),
+            backend_type: Some(11),
+            state: Some(12),
+            waiting: true,
+            leader: true,
+            xact_start: Some(3_000_000),
+        }
+    );
 }
 
 fn row(type_id: u32, values: &[(&str, Cell)]) -> Row {

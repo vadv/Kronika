@@ -1,11 +1,11 @@
 //! Explicit known-bad comparisons.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use kronika_reader::{Cell, Resolved, Segment};
+use kronika_reader::{Cell, Segment};
 
 use crate::Index;
-use crate::build::{BuildError, INSTANCE_METADATA_TYPE_ID};
+use crate::build::{ActiveBackendSample, BuildError};
 use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
@@ -437,29 +437,36 @@ impl FindingBuilder {
 
     pub(super) fn find_active_backends(
         &self,
-        segment: &Segment,
+        samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
+        postgres_cpus: Option<u32>,
         hits: &mut BTreeMap<u32, Vec<Finding>>,
-    ) -> Result<(), BuildError> {
+    ) {
         let requested: Vec<u32> = activity_layouts()
             .into_iter()
             .filter(|type_id| self.requested.contains(type_id))
             .collect();
         if requested.is_empty() {
-            return Ok(());
+            return;
         }
-        let Some(cpus) = postgres_cpus(segment)? else {
-            return Ok(());
+        let Some(cpus) = postgres_cpus else {
+            return;
         };
         let mut combined = BTreeMap::<i64, Option<ActiveSnapshot>>::new();
         for type_id in requested {
-            for (timestamp, row_ordinal, count) in active_snapshots(segment, type_id)? {
+            let Some(samples) = samples.get(&type_id) else {
+                continue;
+            };
+            for sample in samples {
+                let Some(row_ordinal) = sample.first_active_ordinal else {
+                    continue;
+                };
                 combined
-                    .entry(timestamp)
+                    .entry(sample.timestamp)
                     .and_modify(|sample| *sample = None)
                     .or_insert(Some(ActiveSnapshot {
                         type_id,
                         row_ordinal,
-                        count,
+                        count: sample.count,
                     }));
             }
         }
@@ -477,7 +484,6 @@ impl FindingBuilder {
                 });
             }
         }
-        Ok(())
     }
 
     pub(super) fn find_overall_health(
@@ -562,75 +568,4 @@ const fn cpu_columns() -> &'static [&'static str] {
 
 const fn activity_state_field(type_id: u32) -> u16 {
     if type_id == 1_001_001 { 7 } else { 8 }
-}
-
-fn postgres_cpus(segment: &Segment) -> Result<Option<u32>, BuildError> {
-    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
-        return Ok(None);
-    }
-    let mut value = None;
-    let mut rows = 0_u32;
-    segment.visit_rows(
-        INSTANCE_METADATA_TYPE_ID,
-        &["postgresql_enabled", "postgresql_effective_cpus"],
-        0,
-        usize::MAX,
-        |_ordinal, row| {
-            rows = rows.saturating_add(1);
-            value = match (
-                row.get("postgresql_enabled"),
-                row.get("postgresql_effective_cpus"),
-            ) {
-                (Some(Cell::Bool(true)), Some(Cell::U32(cpus))) if *cpus > 0 => Some(*cpus),
-                _ => None,
-            };
-            true
-        },
-    )?;
-    Ok((rows == 1).then_some(value).flatten())
-}
-
-fn active_snapshots(segment: &Segment, type_id: u32) -> Result<Vec<(i64, u32, u32)>, BuildError> {
-    if segment.rows_of(type_id).is_none() {
-        return Ok(Vec::new());
-    }
-    let mut ids = HashSet::new();
-    segment.visit_rows(type_id, &["state"], 0, usize::MAX, |_ordinal, row| {
-        if let Some(Cell::StrId(id)) = row.get("state") {
-            ids.insert(*id);
-        }
-        true
-    })?;
-    let dictionary = segment.dictionary_for(&ids)?;
-    let mut active_ids = HashSet::new();
-    for id in ids {
-        match dictionary.resolve(id) {
-            Some(Resolved::Str(b"active")) => {
-                active_ids.insert(id);
-            }
-            Some(Resolved::Str(_) | Resolved::Blob(_)) => {}
-            None => return Err(BuildError::UnresolvedState(id)),
-        }
-    }
-    let mut snapshots = BTreeMap::<i64, (Option<u32>, u32)>::new();
-    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |ordinal, row| {
-        let Some(Cell::Ts(timestamp)) = row.get("ts") else {
-            return true;
-        };
-        let sample = snapshots.entry(*timestamp).or_default();
-        if row
-            .get("state")
-            .is_some_and(|cell| matches!(cell, Cell::StrId(id) if active_ids.contains(id)))
-        {
-            sample.0 = sample.0.or_else(|| u32::try_from(ordinal).ok());
-            sample.1 = sample.1.saturating_add(1);
-        }
-        true
-    })?;
-    Ok(snapshots
-        .into_iter()
-        .filter_map(|(timestamp, (ordinal, count))| {
-            ordinal.map(|ordinal| (timestamp, ordinal, count))
-        })
-        .collect())
 }

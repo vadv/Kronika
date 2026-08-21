@@ -243,7 +243,10 @@ pub fn to_v1<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: ActivityVersion) -> anyhow::Result<ActivityRow> {
+fn row_from_pg(
+    row: query::IndexedRow<'_>,
+    version: ActivityVersion,
+) -> anyhow::Result<ActivityRow> {
     Ok(ActivityRow {
         ts: row.try_get("ts_us")?,
         pid: row.try_get("pid")?,

@@ -7,7 +7,7 @@ fn sample_row() -> UserIndexesRow {
     UserIndexesRow {
         ts: 2_000,
         datid: 16_400,
-        datname: "appdb".to_owned(),
+        datname: "appdb".into(),
         indexrelid: 16_500,
         relid: 16_499,
         schemaname: "public".to_owned(),

@@ -4,9 +4,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use kronika_format::{
-    JOURNAL_HEADER_LEN, MAX_JOURNAL_PARTS, MAX_PART_LEN, ReadAt, validate_part_catalog,
-};
+use kronika_format::{JOURNAL_HEADER_LEN, MAX_JOURNAL_PARTS, MAX_PART_LEN, ReadAt};
 use kronika_layout::FileIdentity;
 
 use crate::catalog_summary::CatalogDigest;
@@ -16,21 +14,26 @@ use crate::source::{
 };
 
 use super::budget::{
-    accounted_scan_metadata_bytes, active_metadata_bytes, active_part_catalog_metadata_bytes,
-    advance_previous, ensure_active_part_budget, ensure_retained_metadata,
-    ensure_scan_metadata_budget, layout_io, metadata_limit_io, push_warning_bounded,
-    reserve_active_slots, retained_metadata_with_warnings, scan_report_metadata_bytes,
+    accounted_scan_metadata_bytes, active_metadata_bytes, advance_previous, catalog_metadata_bytes,
+    ensure_active_part_budget, ensure_retained_metadata, ensure_scan_metadata_budget, layout_io,
+    metadata_limit_io, push_warning_bounded, reserve_active_slots, retained_metadata_with_warnings,
     summary_allocation_bytes,
 };
 use super::journal::{
     PrefixReader, active_journal_source, active_part_limit_io, is_stale_journal, read_journal_plan,
-    scan_journal_frames,
+    visit_journal_frames,
 };
 use super::segment::{
     FinishedValidation, ZmsInvalid, ZmsOpen, classify_zms_validation, invalid_zms_warning,
     read_zms_summary,
 };
 use super::{ACTIVE_ARC_ALLOCATION_BYTES, LocalDir};
+
+fn active_growth(capacity: usize, len: usize, max_parts: usize) -> Option<usize> {
+    let available = max_parts.checked_sub(len)?;
+    let additional = capacity.max(4).min(available);
+    (additional != 0).then_some(additional)
+}
 
 impl LocalDir {
     #[expect(
@@ -117,24 +120,97 @@ impl LocalDir {
         let Some(remaining_parts) = max_parts.checked_sub(prev_active.len()) else {
             return Err(active_part_limit_io(journal_path, max_parts));
         };
-        let report = scan_journal_frames(
-            &body_reader,
-            start_at,
-            remaining_parts,
-            max_parts,
-            journal_path,
-        )?;
-
         let mut active = prev_active;
         let mut active_metadata = active_metadata_bytes(&active, active.capacity())?;
-        let report_metadata = scan_report_metadata_bytes(&report)?;
-        if active_metadata
-            .checked_add(report_metadata)
+        let mut previous_active_metadata = 0_usize;
+        let scanned_valid_len = if plan.committed_reset {
+            visit_journal_frames(
+                &body_reader,
+                start_at,
+                remaining_parts,
+                max_parts,
+                journal_path,
+                |_part_ref, _catalog, _part_buffer_capacity| Ok(()),
+            )?
+        } else {
+            visit_journal_frames(
+                &body_reader,
+                start_at,
+                remaining_parts,
+                max_parts,
+                journal_path,
+                |part_ref, catalog, part_buffer_capacity| {
+                    if part_ref.len as u64 > MAX_PART_LEN {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "active part at offset {} exceeds the max part length",
+                                part_ref.offset
+                            ),
+                        ));
+                    }
+                    let part_metadata = catalog_metadata_bytes(&catalog)?;
+                    if previous_active_metadata == 0 && Arc::strong_count(&active) > 1 {
+                        previous_active_metadata = active_metadata;
+                    }
+                    let needs_capacity = active.len() == active.capacity();
+                    let needs_detach = Arc::strong_count(&active) > 1;
+                    if needs_capacity || needs_detach {
+                        let additional = if needs_capacity {
+                            active_growth(active.capacity(), active.len(), max_parts)
+                                .ok_or_else(|| active_part_limit_io(journal_path, max_parts))?
+                        } else {
+                            1
+                        };
+                        let transient = part_metadata
+                            .checked_add(part_buffer_capacity)
+                            .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
+                        active_metadata = reserve_active_slots(
+                            &mut active,
+                            additional,
+                            active_metadata,
+                            transient,
+                            previous_active_metadata,
+                            self.limits.max_metadata_bytes,
+                        )?;
+                    } else {
+                        let retained = previous_active_metadata
+                            .checked_add(active_metadata)
+                            .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
+                        ensure_active_part_budget(
+                            retained,
+                            part_metadata,
+                            part_buffer_capacity,
+                            self.limits.max_metadata_bytes,
+                        )?;
+                    }
+                    let catalog_digest = CatalogDigest::from_catalog(&catalog);
+                    Arc::make_mut(&mut active).push(ActivePart {
+                        segment_id,
+                        part: part_ref,
+                        catalog,
+                        catalog_digest,
+                    });
+                    active_metadata = active_metadata
+                        .checked_add(part_metadata)
+                        .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
+                    if previous_active_metadata
+                        .checked_add(active_metadata)
+                        .is_none_or(|bytes| bytes > self.limits.max_metadata_bytes)
+                    {
+                        return Err(metadata_limit_io(self.limits.max_metadata_bytes));
+                    }
+                    Ok(())
+                },
+            )?
+        };
+        if previous_active_metadata
+            .checked_add(active_metadata)
             .is_none_or(|peak| peak > self.limits.max_metadata_bytes)
         {
             return Err(metadata_limit_io(self.limits.max_metadata_bytes));
         }
-        if u64::try_from(report.valid_len).unwrap_or(u64::MAX) != plan.scan_len {
+        if u64::try_from(scanned_valid_len).unwrap_or(u64::MAX) != plan.scan_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -143,92 +219,6 @@ impl LocalDir {
                 ),
             ));
         }
-        let appending_to_shared_baseline =
-            !plan.committed_reset && !report.parts.is_empty() && Arc::strong_count(&active) > 1;
-        let previous_active_metadata = if appending_to_shared_baseline {
-            active_metadata
-        } else {
-            0
-        };
-        if !plan.committed_reset {
-            reserve_active_slots(
-                &mut active,
-                report.parts.len(),
-                active_metadata,
-                report_metadata,
-                previous_active_metadata,
-                self.limits.max_metadata_bytes,
-            )?;
-            active_metadata = active_metadata_bytes(&active, active.capacity())?;
-        }
-        for part_ref in report.parts {
-            if part_ref.len as u64 > MAX_PART_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "active part at offset {} exceeds the max part length",
-                        part_ref.offset
-                    ),
-                ));
-            }
-            let part_metadata = match active_part_catalog_metadata_bytes(&body_reader, part_ref) {
-                Ok(metadata) => metadata,
-                Err(error) if is_stale_journal(&error) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        format!("{} changed during scan: {error}", journal_path.display()),
-                    ));
-                }
-                Err(error) => return Err(error),
-            };
-            ensure_active_part_budget(
-                previous_active_metadata
-                    .checked_add(active_metadata)
-                    .and_then(|peak| peak.checked_add(report_metadata))
-                    .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?,
-                part_metadata,
-                part_ref.len,
-                self.limits.max_metadata_bytes,
-            )?;
-            let mut buf = vec![0_u8; part_ref.len];
-            match body_reader.read_exact_at(&mut buf, part_ref.offset as u64) {
-                Ok(()) => {}
-                Err(err) if is_stale_journal(&err) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        format!("{} changed during scan: {err}", journal_path.display()),
-                    ));
-                }
-                Err(err) => return Err(err),
-            }
-            let catalog = validate_part_catalog(&buf).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "active part at offset {} failed catalog decode: {error}",
-                        part_ref.offset
-                    ),
-                )
-            })?;
-            let catalog_digest = CatalogDigest::from_catalog(&catalog);
-            if !plan.committed_reset {
-                Arc::make_mut(&mut active).push(ActivePart {
-                    segment_id,
-                    part: part_ref,
-                    catalog,
-                    catalog_digest,
-                });
-                active_metadata = active_metadata_bytes(&active, active.capacity())?;
-                if previous_active_metadata
-                    .checked_add(active_metadata)
-                    .and_then(|peak| peak.checked_add(report_metadata))
-                    .is_none_or(|peak| peak > self.limits.max_metadata_bytes)
-                {
-                    return Err(metadata_limit_io(self.limits.max_metadata_bytes));
-                }
-            }
-        }
-
         Ok(JournalScan {
             active,
             valid_len: plan.valid_len,
@@ -294,6 +284,7 @@ impl LocalDir {
             )?;
         }
         let mut previous_at = 0_usize;
+        let mut open_day = None;
         for artifact in layout.segments {
             advance_previous(previous_finished, &mut previous_at, artifact.address);
             if let Some(previous) = previous_finished.get(previous_at).filter(|previous| {
@@ -303,7 +294,23 @@ impl LocalDir {
                 continue;
             }
 
-            let file = match self.open_pinned_zms(artifact.address, artifact.zms_identity)? {
+            if open_day
+                .as_ref()
+                .is_none_or(|(day, _directory)| *day != artifact.address.day)
+            {
+                open_day = Some((
+                    artifact.address.day,
+                    self.root
+                        .day_directory(artifact.address.day)
+                        .map_err(layout_io)?,
+                ));
+            }
+            let day = open_day
+                .as_ref()
+                .map(|(_day, directory)| directory)
+                .ok_or_else(|| io::Error::other("selected segment day is not open"))?;
+            let file = match Self::open_pinned_zms_in(day, artifact.address, artifact.zms_identity)?
+            {
                 ZmsOpen::Open(file) => file,
                 ZmsOpen::Invalid(failure) => {
                     push_warning_bounded(

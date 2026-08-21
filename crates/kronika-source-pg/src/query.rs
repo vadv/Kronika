@@ -5,13 +5,14 @@
 //! use Simple Protocol when their text representation is unambiguous. Neither
 //! path creates named server-side statement state.
 
+use std::collections::HashMap;
 use std::pin::pin;
 use std::time::{Duration, Instant};
 use std::{error::Error, fmt};
 
 use anyhow::{Context as _, Result};
 use futures_util::TryStreamExt as _;
-use tokio_postgres::types::{BorrowToSql, Type};
+use tokio_postgres::types::{BorrowToSql, FromSqlOwned, Type};
 use tokio_postgres::{
     CancelToken, Client, NoTls, Row, RowStream, SimpleQueryMessage, SimpleQueryStream,
 };
@@ -147,6 +148,57 @@ pub struct Batch<T> {
     pub rows: Vec<T>,
     /// Approximate decoded application payload in the rows.
     pub logical_bytes: usize,
+}
+
+#[derive(Debug)]
+struct ColumnLookup {
+    indexes: HashMap<Box<str>, usize>,
+}
+
+impl ColumnLookup {
+    fn new(row: &Row) -> Self {
+        Self::from_names(row.columns().iter().map(tokio_postgres::Column::name))
+    }
+
+    fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let names = names.into_iter();
+        let mut indexes = HashMap::with_capacity(names.size_hint().0);
+        for (index, name) in names.enumerate() {
+            indexes
+                .entry(Box::<str>::from(name.as_ref()))
+                .or_insert(index);
+        }
+        Self { indexes }
+    }
+}
+
+/// One streamed row with query-scoped column-name indexes.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexedRow<'a> {
+    row: &'a Row,
+    columns: &'a ColumnLookup,
+}
+
+impl IndexedRow<'_> {
+    /// Decode a column by name without rescanning the row description.
+    ///
+    /// # Errors
+    /// Returns the standard `tokio-postgres` missing-column or conversion error.
+    pub fn try_get<I, T>(&self, name: I) -> Result<T, tokio_postgres::Error>
+    where
+        I: AsRef<str>,
+        T: FromSqlOwned,
+    {
+        let name = name.as_ref();
+        self.columns
+            .indexes
+            .get(name)
+            .map_or_else(|| self.row.try_get(name), |index| self.row.try_get(*index))
+    }
 }
 
 /// Journal work attributable to one `PostgreSQL` batch.
@@ -292,19 +344,28 @@ async fn timeout_at<T>(
     deadline: tokio::time::Instant,
     future: impl Future<Output = T>,
 ) -> Result<T, tokio::time::error::Elapsed> {
-    let cancel = session.client.cancel_token();
-    timeout_at_with_cancel(deadline, future, send_cancel(cancel)).await
-}
-
-async fn timeout_at_with_cancel<T>(
-    deadline: tokio::time::Instant,
-    future: impl Future<Output = T>,
-    cancel: impl Future<Output = ()>,
-) -> Result<T, tokio::time::error::Elapsed> {
     match tokio::time::timeout_at(deadline, future).await {
         Ok(value) => Ok(value),
         Err(elapsed) => {
-            cancel.await;
+            send_cancel(session.client.cancel_token()).await;
+            Err(elapsed)
+        }
+    }
+}
+
+#[cfg(test)]
+async fn timeout_at_with_cancel<T, C>(
+    deadline: tokio::time::Instant,
+    future: impl Future<Output = T>,
+    cancel: impl FnOnce() -> C,
+) -> Result<T, tokio::time::error::Elapsed>
+where
+    C: Future<Output = ()>,
+{
+    match tokio::time::timeout_at(deadline, future).await {
+        Ok(value) => Ok(value),
+        Err(elapsed) => {
+            cancel().await;
             Err(elapsed)
         }
     }
@@ -428,7 +489,7 @@ pub async fn read_batched<P, I, T, E>(
     params: I,
     parameter_bytes: usize,
     stats: &mut QueryStats,
-    mut decode: impl FnMut(&Row) -> Result<T>,
+    mut decode: impl FnMut(IndexedRow<'_>) -> Result<T>,
     mut decoded_logical_bytes: impl FnMut(&T) -> usize,
     mut sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>>
@@ -447,13 +508,15 @@ where
     .map_err(BatchError::PostgreSql)?;
     let mut stream = pin!(stream);
     let mut pending = PendingBatch::new();
+    let mut columns = None;
     while let Some(row) = timeout_at(session, deadline, stream.try_next())
         .await
         .map_err(|_elapsed| BatchError::Timeout)?
         .map_err(BatchError::PostgreSql)?
     {
         let row_bytes = stats.received(&row);
-        let decoded = decode(&row).map_err(BatchError::Decode)?;
+        let columns = columns.get_or_insert_with(|| ColumnLookup::new(&row));
+        let decoded = decode(IndexedRow { row: &row, columns }).map_err(BatchError::Decode)?;
         let bytes = stats.add_decoded_payload(row_bytes, decoded_logical_bytes(&decoded));
         if let Some(batch) = pending.push(decoded, bytes) {
             extend_fetch_deadline(&mut deadline, deliver_batch(batch, stats, &mut sink)?);
@@ -645,9 +708,9 @@ mod tests {
 
     use super::{
         BATCH_LOGICAL_BYTES, BATCH_ROWS, Batch, BatchError, BatchWrite, CANCEL_REQUEST_TIMEOUT,
-        PendingBatch, QUERY_FETCH_TIMEOUT, QueryStats, SERVER_STATEMENT_TIMEOUT, SESSION_SETUP_SQL,
-        Session, TEXT_PREFIX_CHARS, batch_limit_reached, deliver_batch, extend_fetch_deadline,
-        is_query_cancelled, read_batched, timeout_at_with_cancel,
+        ColumnLookup, PendingBatch, QUERY_FETCH_TIMEOUT, QueryStats, SERVER_STATEMENT_TIMEOUT,
+        SESSION_SETUP_SQL, Session, TEXT_PREFIX_CHARS, batch_limit_reached, deliver_batch,
+        extend_fetch_deadline, is_query_cancelled, read_batched, timeout_at_with_cancel,
     };
 
     #[test]
@@ -658,6 +721,14 @@ mod tests {
         ));
         assert!(batch_limit_reached(BATCH_ROWS, 1));
         assert!(batch_limit_reached(1, BATCH_LOGICAL_BYTES));
+    }
+
+    #[test]
+    fn column_lookup_keeps_the_first_index_for_duplicate_names() {
+        let lookup = ColumnLookup::from_names(["first", "duplicate", "duplicate", "last"]);
+        assert_eq!(lookup.indexes.get("first"), Some(&0));
+        assert_eq!(lookup.indexes.get("duplicate"), Some(&1));
+        assert_eq!(lookup.indexes.get("last"), Some(&3));
     }
 
     #[test]
@@ -818,7 +889,7 @@ mod tests {
         let result = timeout_at_with_cancel(
             tokio::time::Instant::now() + Duration::from_secs(30),
             std::future::pending::<()>(),
-            async move {
+            move || async move {
                 mark.store(true, Ordering::SeqCst);
             },
         )
@@ -826,6 +897,24 @@ mod tests {
 
         assert!(result.is_err());
         assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_successful_query_does_not_construct_a_cancel_step() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mark = Arc::clone(&cancelled);
+        let result = timeout_at_with_cancel(
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            std::future::ready(7),
+            move || {
+                mark.store(true, Ordering::SeqCst);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert_eq!(result.expect("future completes"), 7);
+        assert!(!cancelled.load(Ordering::SeqCst));
     }
 
     #[tokio::test(start_paused = true)]

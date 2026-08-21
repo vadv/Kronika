@@ -9,6 +9,7 @@ use kronika_source_pg::Pool;
 use kronika_source_pg::databases::Database;
 use kronika_source_pg::extension::{ExtensionSchema, InventoryEntry};
 use kronika_source_pg::query::BatchError;
+use kronika_source_pg::settings::SettingsRow;
 use kronika_source_pg::statements::{StatementsCapability, StatementsVersion};
 use kronika_source_pg::store_plans::{Flavour, StorePlansCapability};
 
@@ -18,7 +19,7 @@ use super::{
     cached_settings_for_generation, capabilities_from_inventory, capabilities_match_generation,
     capability_sqlstate, discovery_due, finish_batched_kind, fixed_source_can_continue, measure,
     selected_statements, selected_statements_info, selected_store_plans, selected_store_plans_info,
-    session_for_generation, try_another_database,
+    session_for_generation, settings_equal_ignoring_ts, try_another_database,
 };
 
 fn statements(version: StatementsVersion) -> StatementsCapability {
@@ -330,6 +331,40 @@ fn settings_cache_is_scoped_to_one_connection_generation() {
     });
     assert!(cached_settings_for_generation(cached.as_ref(), 7).is_some());
     assert!(cached_settings_for_generation(cached.as_ref(), 8).is_none());
+}
+
+#[test]
+fn settings_equality_ignores_only_the_collection_timestamp() {
+    let original = SettingsRow {
+        ts: 1,
+        datid: 16_384,
+        datname: "app".to_owned(),
+        usesysid: 16_385,
+        usename: "monitor".to_owned(),
+        name: "work_mem".to_owned(),
+        setting: "4096".to_owned(),
+        unit: Some("kB".to_owned()),
+        source: "configuration file".to_owned(),
+        sourcefile: Some("/etc/postgresql/postgresql.conf".to_owned()),
+        sourceline: Some(42),
+        pending_restart: false,
+        context: "user".to_owned(),
+        vartype: "integer".to_owned(),
+        boot_val: Some("4096".to_owned()),
+        reset_val: Some("4096".to_owned()),
+    };
+    let mut refreshed = original.clone();
+    refreshed.ts = 2;
+    assert!(settings_equal_ignoring_ts(
+        std::slice::from_ref(&original),
+        std::slice::from_ref(&refreshed)
+    ));
+
+    refreshed.setting = "8192".to_owned();
+    assert!(!settings_equal_ignoring_ts(
+        std::slice::from_ref(&original),
+        std::slice::from_ref(&refreshed)
+    ));
 }
 
 #[test]

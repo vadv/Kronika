@@ -63,6 +63,10 @@ impl Format {
             Self::Stderr => stderr::continues,
         }
     }
+
+    const fn tracks_quotes(self) -> bool {
+        matches!(self, Self::Csvlog)
+    }
 }
 
 /// The severity `PostgreSQL` gave a record.
@@ -224,7 +228,12 @@ impl PgLog {
     ///
     /// Returns the operating system's error for reading the file.
     pub fn read_batch(&mut self, now: i64, max_records: usize) -> io::Result<ReadBatch> {
-        let batch = self.tail.read_batch(self.format.continues(), max_records)?;
+        let batch = if self.format.tracks_quotes() {
+            self.tail.read_batch(self.format.continues(), max_records)?
+        } else {
+            self.tail
+                .read_batch_without_quote_tracking(self.format.continues(), max_records)?
+        };
         let mut events = Events::default();
         for record in &batch.records {
             // A CSV prefix cannot be parsed safely. Tail still follows its raw

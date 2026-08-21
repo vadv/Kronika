@@ -10,8 +10,6 @@ use super::render::{cell, projected_layout, record};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{Order, RowsRequest};
 
-const ROW_CHUNK_ROWS: usize = 16;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cursor {
     segment_id: i64,
@@ -190,7 +188,7 @@ impl PreparedRows {
             } else {
                 plan.start_row
             };
-            let chunk_rows = self.page_size.saturating_add(1).min(ROW_CHUNK_ROWS);
+            let chunk_rows = self.page_size.saturating_add(1);
             let mut chunk = Vec::with_capacity(chunk_rows);
             self.segment.visit_rows(
                 plan.type_id,
@@ -298,7 +296,7 @@ impl PreparedRows {
                 plan.rows
             };
             while upper > plan.start_row && connected && next.is_none() {
-                let chunk_rows = self.page_size.saturating_add(1).min(ROW_CHUNK_ROWS);
+                let chunk_rows = self.page_size.saturating_add(1);
                 let lower = upper.saturating_sub(chunk_rows as u64).max(plan.start_row);
                 let limit =
                     usize::try_from(upper - lower).map_err(|_overflow| ApiError::BadCursor)?;

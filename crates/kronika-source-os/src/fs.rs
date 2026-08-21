@@ -129,12 +129,12 @@ impl ProcFs {
     /// # Errors
     /// Returns the underlying `io::Error` (with the path) or an empty-file error.
     pub fn read(&self, rel: &str) -> io::Result<String> {
-        let trimmed = self.read_raw(rel)?;
-        let trimmed = trimmed.trim();
-        if trimmed.is_empty() {
+        let mut content = self.read_raw(rel)?;
+        trim_string(&mut content);
+        if content.is_empty() {
             return Err(io::Error::other(format!("{rel}: empty")));
         }
-        Ok(trimmed.to_owned())
+        Ok(content)
     }
 
     /// Read `<root>/<rel>` without trimming.
@@ -143,20 +143,34 @@ impl ProcFs {
     /// Returns an error if `rel` is empty, escapes the root, exceeds
     /// [`MAX_PROC_FILE_BYTES`], or cannot be read as UTF-8.
     pub fn read_raw(&self, rel: &str) -> io::Result<String> {
-        let rel_path = checked_relative_path(rel)?;
-        let path = self.root.join(rel_path);
-        let mut file = std::fs::File::open(&path).map_err(|err| tag_io_error(rel, &err))?;
+        let mut path = PathBuf::new();
         let mut content = String::new();
+        self.read_raw_into(rel, &mut path, &mut content)?;
+        Ok(content)
+    }
+
+    pub(crate) fn read_raw_into(
+        &self,
+        rel: &str,
+        path: &mut PathBuf,
+        content: &mut String,
+    ) -> io::Result<()> {
+        let rel_path = checked_relative_path(rel)?;
+        path.clear();
+        path.push(&self.root);
+        path.push(rel_path);
+        let mut file = std::fs::File::open(&path).map_err(|err| tag_io_error(rel, &err))?;
+        content.clear();
         file.by_ref()
             .take((MAX_PROC_FILE_BYTES + 1) as u64)
-            .read_to_string(&mut content)
+            .read_to_string(content)
             .map_err(|err| tag_io_error(rel, &err))?;
         if content.len() > MAX_PROC_FILE_BYTES {
             return Err(io::Error::other(format!(
                 "{rel}: exceeds {MAX_PROC_FILE_BYTES} byte procfs read limit"
             )));
         }
-        Ok(content)
+        Ok(())
     }
 
     /// Every numeric `/proc` directory name, sorted ascending.
@@ -230,11 +244,11 @@ impl SysFs {
                 "{rel}: exceeds {MAX_PROC_FILE_BYTES} byte sysfs read limit"
             )));
         }
-        let trimmed = content.trim();
-        if trimmed.is_empty() {
+        trim_string(&mut content);
+        if content.is_empty() {
             return Err(io::Error::other(format!("{rel}: empty")));
         }
-        Ok(trimmed.to_owned())
+        Ok(content)
     }
 
     /// Return the absolute path for a checked relative sysfs path.
@@ -286,6 +300,16 @@ impl SysFs {
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
+    }
+}
+
+fn trim_string(value: &mut String) {
+    let trimmed = value.trim();
+    let start = trimmed.as_ptr() as usize - value.as_ptr() as usize;
+    let end = start + trimmed.len();
+    value.truncate(end);
+    if start != 0 {
+        value.drain(..start);
     }
 }
 

@@ -48,7 +48,7 @@ pub use parts::{
     JournalState, MAX_JOURNAL_LEN, MAX_JOURNAL_PARTS, MAX_PART_LEN, PartError, PartMeta, PartRef,
     RECOVERY_SCAN_CHUNK_LEN, RESET_MARKER_LEN, RESET_MARKER_MAGIC, ResetHeaderTransition,
     ResetMarker, ScanReport, SectionInput, build_part, scan_journal_streaming_strict_from,
-    validate_part, validate_part_catalog,
+    validate_part, validate_part_catalog, visit_journal_streaming_strict_from,
 };
 pub use read_at::ReadAt;
 pub use str_id::StrId;

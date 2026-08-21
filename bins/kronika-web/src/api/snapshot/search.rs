@@ -30,6 +30,7 @@ pub(super) enum Expr {
 pub(super) struct SearchClause {
     canonical: String,
     pub(super) key: &'static str,
+    pub(super) columns: &'static [&'static str],
     pub(super) operator: SearchOperator,
     pub(super) value: SearchValue,
 }
@@ -120,6 +121,10 @@ impl StructuredSearch {
             let clause = SearchClause {
                 canonical: value.to_owned(),
                 key: "text",
+                columns: fields
+                    .iter()
+                    .find(|field| field.key == "text")
+                    .map_or(&[], |field| field.columns),
                 operator: SearchOperator::Colon,
                 value: SearchValue::Pattern(GlobPattern::new(value)),
             };
@@ -537,6 +542,7 @@ impl<'a> Parser<'a> {
         let clause = SearchClause {
             canonical: format!("{}{operator_text}{canonical_value}", field.key),
             key: field.key,
+            columns: field.columns,
             operator,
             value: parsed_value,
         };

@@ -29,7 +29,8 @@ use serde_json::Value;
 
 use crate::api::{
     ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
-    reset_context_operations, reset_first_match_rows, reset_page_operations,
+    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
+    reset_page_operations, reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -931,6 +932,33 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named table snapshots");
+    }
+
+    fn append_large_named_table_snapshots(&mut self, objects: u32) {
+        let mut interner = Interner::new(DictLimits::default());
+        let database = fixture_label(&mut interner, "fixture_db");
+        let schema = fixture_label(&mut interner, "public");
+        let tablespace = fixture_label(&mut interner, "pg_default");
+        let mut buffers = SectionBuffers::new();
+        for relid in 0..objects {
+            let relation = fixture_label(&mut interner, &format!("relation_{relid:05}"));
+            for (timestamp, seq_scan) in [(100, i64::from(relid)), (200, i64::from(relid) + 10)] {
+                let mut row = user_table(timestamp, 1, relid + 1, seq_scan);
+                row.datname = database;
+                row.schemaname = schema;
+                row.relname = relation;
+                row.tablespace = Some(tablespace);
+                buffers.push(row).expect("large named table row fits");
+            }
+        }
+        let dictionary = dict::encode(interner.window()).expect("large relation dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode large relation fixture")
+            .expect("nonempty large relation fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append large relation fixture");
     }
 
     fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
@@ -2549,6 +2577,32 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
+fn an_hour_lists_all_available_hours_but_only_selected_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_600_000_000);
+    fixture.append_diskstats(&[(3_600_000_100, 0, 2)]);
+    fixture.finish();
+
+    let records =
+        stream(fixture.prepare("/api/hour?from=100&to=200", None)).expect("selected hour response");
+    let hour = records
+        .iter()
+        .find(|record| record["record"] == "hour")
+        .expect("hour header");
+    assert_eq!(
+        hour["available_hours"],
+        serde_json::json!(["0", "3600000000"])
+    );
+    let segments = records
+        .iter()
+        .filter(|record| record["record"] == "finished_segment")
+        .map(|record| record["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(segments, [SEGMENT_ID.to_string()].map(Value::from));
+}
+
+#[test]
 fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(99, 0, 9), (100, 0, 0), (200, 0, 2), (201, 0, 1)]);
@@ -2583,6 +2637,28 @@ fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
     for timestamp in ["100", "200"] {
         assert!(lanes.iter().any(|lane| lane["ts"] == timestamp));
     }
+}
+
+#[test]
+fn history_resolves_dictionary_values_across_bounded_chunks() {
+    let mut fixture = Fixture::new();
+    let source = (0_i32..1_025)
+        .map(|minor| (minor, "nvme0n1"))
+        .collect::<Vec<_>>();
+    fixture.append_named_diskstats(&source);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!("/api/segments/{SEGMENT_ID}/sections/os_diskstats/history?field=device"),
+        None,
+    ))
+    .expect("bounded history response");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), source.len());
+    assert!(
+        rows.iter()
+            .all(|row| row["values"] == serde_json::json!(["nvme0n1"]))
+    );
 }
 
 #[test]
@@ -3038,6 +3114,53 @@ fn plan_pages_rank_each_displayed_composite_before_slicing() {
         assert_eq!(page["eligible"], "3");
         assert_eq!(page["order_by"], serde_json::json!([semantic]));
     }
+}
+
+#[test]
+fn descending_rows_cross_a_page_boundary_without_repeating_or_skipping() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..33)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.finish();
+    let base = target("rows", "field=minor&page_size=20&order=desc");
+    let first = stream(fixture.prepare(&base, None)).expect("first descending page");
+    assert_eq!(
+        row_records(&first)
+            .iter()
+            .map(|row| row["ordinal"].as_str().expect("ordinal"))
+            .collect::<Vec<_>>(),
+        (13..33)
+            .rev()
+            .map(|ordinal| ordinal.to_string())
+            .collect::<Vec<_>>()
+    );
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "page")
+        .and_then(|record| record["next_cursor"].as_str())
+        .expect("descending cursor");
+    let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("second descending page");
+    assert_eq!(
+        row_records(&second)
+            .iter()
+            .map(|row| row["ordinal"].as_str().expect("ordinal"))
+            .collect::<Vec<_>>(),
+        (0..13)
+            .rev()
+            .map(|ordinal| ordinal.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second
+            .iter()
+            .find(|record| record["record"] == "page")
+            .expect("page trailer")["next_cursor"],
+        Value::Null
+    );
 }
 
 #[test]
@@ -4146,7 +4269,7 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
     let (maximum_chunk, staged, selection_dictionaries) = context_operations();
-    assert_eq!(maximum_chunk, 16);
+    assert_eq!(maximum_chunk, 1_024);
     assert_eq!(staged, 1);
     assert_eq!(selection_dictionaries, 1);
 }
@@ -4197,7 +4320,9 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=datid&field=relid&field=seq_scan&by=seq_scan&page_size=1"
     );
+    reset_relation_snapshot_operations();
     let first = stream(fixture.prepare(&base, None)).expect("first table page");
+    assert_eq!(relation_snapshot_operations(), (1, 1, 0));
     assert_eq!(
         row_records(&first)[0]["values"],
         serde_json::json!([2, 77, 2.0])
@@ -4213,6 +4338,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
 
     let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
         .expect("second table page");
+    assert_eq!(relation_snapshot_operations(), (2, 2, 0));
     assert_eq!(
         row_records(&second)[0]["values"],
         serde_json::json!([1, 77, 1.0])
@@ -4631,6 +4757,38 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(index_rates["1"], serde_json::json!(0.3));
     assert_eq!(index_rates["2"], serde_json::json!(0.2));
+}
+
+#[test]
+fn relation_snapshot_and_history_cross_the_bounded_chunk_without_loss() {
+    const OBJECTS: u32 = 513;
+    let mut fixture = Fixture::new();
+    fixture.append_large_named_table_snapshots(OBJECTS);
+    fixture.finish();
+
+    let snapshot = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&page_size=1000&where.datid=1"
+        ),
+        None,
+    ))
+    .expect("relation snapshot across a chunk boundary");
+    let snapshot_rows = relation_records(&snapshot);
+    assert_eq!(snapshot_rows.len(), OBJECTS as usize);
+    assert!(
+        snapshot_rows
+            .iter()
+            .all(|row| row["values"]["seq_scan"] == 100_000.0)
+    );
+
+    let history = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=1",
+        None,
+    ))
+    .expect("relation history across a chunk boundary");
+    let history_rows = relation_records(&history);
+    assert_eq!(history_rows.len(), 1);
+    assert_eq!(history_rows[0]["values"]["seq_scan"], 51_300_000.0);
 }
 
 #[test]
@@ -5057,6 +5215,7 @@ fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
     reason = "the staggered fixture keeps independent database snapshots and expected points together"
 )]
 fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
+    crate::api::reset_history_operations();
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[
         (
@@ -5173,6 +5332,11 @@ fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
     assert_eq!(rows[2]["values"]["table_count"], "1");
     assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
     assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
+    assert_eq!(
+        crate::api::tablespace_moment_visits(),
+        1,
+        "the selected layout discovers databases and predecessor moments together",
+    );
 }
 
 #[test]
@@ -5315,8 +5479,10 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&field=dml_total&field=insert_share_pct&by=derived.dml_total&direction=desc"
     );
+    reset_relation_snapshot_operations();
     let objects = stream(fixture.prepare(&format!("{base}&group=object&page_size=1"), None))
         .expect("derived relation page");
+    assert_eq!(relation_snapshot_operations().2, 2);
     let rows = relation_records(&objects);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["key"]["relid"], "13");

@@ -230,7 +230,7 @@ pub fn to_v2<E>(
 }
 
 fn from_pg(
-    row: &tokio_postgres::Row,
+    row: query::IndexedRow<'_>,
     version: LocksVersion,
 ) -> Result<LockRow, tokio_postgres::Error> {
     Ok(LockRow {

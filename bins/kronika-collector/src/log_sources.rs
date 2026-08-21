@@ -303,16 +303,22 @@ impl LogSources {
         if !due.has(SourceKind::Logs) {
             return Ok(true);
         }
-        if !self.collect_postgres(now, &mut admit)? {
-            return Ok(false);
+        let mut offsets_changed = false;
+        let result = match self.collect_postgres(now, &mut admit, &mut offsets_changed) {
+            Ok(true) => self.collect_pgbouncer(&mut admit, &mut offsets_changed),
+            other => other,
+        };
+        if offsets_changed {
+            save_offsets(&self.offsets);
         }
-        self.collect_pgbouncer(&mut admit)
+        result
     }
 
     fn collect_postgres(
         &mut self,
         now: i64,
         admit: &mut impl FnMut(&LogRows) -> anyhow::Result<bool>,
+        offsets_changed: &mut bool,
     ) -> anyhow::Result<bool> {
         for source in &mut self.postgres {
             let started = Instant::now();
@@ -363,7 +369,7 @@ impl LogSources {
                         .acknowledge()
                         .context("acknowledge the admitted PostgreSQL log batch")?;
                     self.offsets.set(&key(source.log.path()), position);
-                    save_offsets(&self.offsets);
+                    *offsets_changed = true;
                 }
                 if at_eof || !made_progress {
                     break;
@@ -379,6 +385,7 @@ impl LogSources {
     fn collect_pgbouncer(
         &mut self,
         admit: &mut impl FnMut(&LogRows) -> anyhow::Result<bool>,
+        offsets_changed: &mut bool,
     ) -> anyhow::Result<bool> {
         for log in &mut self.pgbouncer {
             let started = Instant::now();
@@ -431,7 +438,7 @@ impl LogSources {
                         .acknowledge()
                         .context("acknowledge the admitted PgBouncer log batch")?;
                     self.offsets.set(&key(log.path()), position);
-                    save_offsets(&self.offsets);
+                    *offsets_changed = true;
                 }
                 if at_eof || !made_progress {
                     break;
