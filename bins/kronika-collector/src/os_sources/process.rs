@@ -1,7 +1,7 @@
 use super::{
-    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
-    UserReferences, cgroup, intern_str, log_collection_finish, log_count_degraded, log_degraded,
-    process_facts, read_process_with_cgroup,
+    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, ProcessReader,
+    SourceKind, Ts, UserReferences, cgroup, intern_str, log_collection_finish, log_count_degraded,
+    log_degraded, process_facts,
 };
 
 #[allow(
@@ -57,11 +57,11 @@ pub(super) fn collect_process_sections(
                 }
             }
             if let Some(memberships) = workload_memberships {
-                for content in pids
-                    .into_iter()
-                    .filter_map(|pid| fs.read_raw(&format!("{pid}/cgroup")).ok())
-                {
-                    memberships.observe(&content);
+                let mut reader = ProcessReader::new(fs);
+                for pid in pids {
+                    if let Some(content) = reader.cgroup_membership(pid) {
+                        memberships.observe(content);
+                    }
                 }
             }
             return;
@@ -70,18 +70,20 @@ pub(super) fn collect_process_sections(
     let mut skipped = 0_usize;
     let mut io_nulls = 0_usize;
     let mut mapping_nulls = 0_usize;
+    let mut reader = ProcessReader::new(fs);
     for pid in pids {
-        let membership = if mapping_due || cgroup_due {
-            fs.read_raw(&format!("{pid}/cgroup")).ok()
+        let cgroup_path = if mapping_due || cgroup_due {
+            let membership = reader.cgroup_membership(pid);
+            if let (Some(memberships), Some(membership)) =
+                (workload_memberships.as_deref_mut(), membership)
+            {
+                memberships.observe(membership);
+            }
+            membership.and_then(kronika_source_os::proc::process::parse_cgroup_path)
         } else {
             None
         };
-        if let (Some(memberships), Some(membership)) =
-            (workload_memberships.as_deref_mut(), membership.as_deref())
-        {
-            memberships.observe(membership);
-        }
-        let read = match read_process_with_cgroup(fs, pid, facts, ts, membership.as_deref()) {
+        let read = match reader.read(pid, facts, ts, cgroup_path) {
             Ok(read) => read,
             Err(ProcessError::Gone(_)) => continue,
             Err(_) => {

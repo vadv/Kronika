@@ -1,6 +1,8 @@
 //! Parse and read per-process `/proc/PID/*` files.
 
+use std::fmt::Write as _;
 use std::io;
+use std::path::PathBuf;
 
 use crate::ProcFs;
 
@@ -19,8 +21,8 @@ pub use parse::{parse_cgroup_path, parse_io, parse_stat, parse_status};
 pub use sections::{to_hot_section, to_status_section};
 
 use parse::{
-    i8_from_i64, i16_from_i64, i32_from_i64, parse_btime, process_starttime_usec, rss_kb,
-    u8_from_i64, u32_from_i64,
+    i8_from_i64, i16_from_i64, i32_from_i64, normalize_cmdline, parse_btime,
+    process_starttime_usec, rss_kb, u8_from_i64, u32_from_i64,
 };
 
 /// Read process conversion facts from the same procfs root as process rows.
@@ -52,8 +54,9 @@ pub fn read_process(
     facts: ProcessFacts,
     ts: i64,
 ) -> Result<ProcessRead, ProcessError> {
-    let cgroup_membership = read_cgroup_membership(fs, pid);
-    read_process_with_cgroup(fs, pid, facts, ts, cgroup_membership.as_deref())
+    let mut reader = ProcessReader::new(fs);
+    let cgroup_path = reader.cgroup_membership(pid).and_then(parse_cgroup_path);
+    reader.read(pid, facts, ts, cgroup_path)
 }
 
 /// Read one process while reusing an optional, already-read cgroup membership.
@@ -67,113 +70,180 @@ pub fn read_process_with_cgroup(
     ts: i64,
     cgroup_membership: Option<&str>,
 ) -> Result<ProcessRead, ProcessError> {
-    let stat_path = format!("{pid}/stat");
-    let stat_content = read_required(fs, pid, &stat_path)?;
-    let stat = parse_stat(&stat_content).map_err(|source| ProcessError::Parse {
-        path: stat_path,
-        source,
-    })?;
+    let mut reader = ProcessReader::new(fs);
+    reader.read(
+        pid,
+        facts,
+        ts,
+        cgroup_membership.and_then(parse_cgroup_path),
+    )
+}
 
-    let status_path = format!("{pid}/status");
-    let status_content = read_required(fs, pid, &status_path)?;
-    let status = parse_status(&status_content).map_err(|source| ProcessError::Parse {
-        path: status_path,
-        source,
-    })?;
+/// Reusable scratch storage for sequential `/proc/PID/*` reads.
+#[derive(Debug)]
+pub struct ProcessReader<'a> {
+    fs: &'a ProcFs,
+    rel: String,
+    path: PathBuf,
+    content: String,
+}
 
-    let io = read_io(fs, pid, status.uid, status.gid);
-    let rundelay_ns = read_schedstat(fs, pid).unwrap_or(0);
-    let cmdline = read_cmdline(fs, pid);
-    let comm = read_comm(fs, pid).unwrap_or_else(|| stat.comm.clone());
-    let starttime = process_starttime_usec(facts, stat.starttime_ticks);
-    let cgroup = cgroup_membership
-        .and_then(parse_cgroup_path)
-        .map(|cgroup_path| ProcessCgroupRow {
+impl<'a> ProcessReader<'a> {
+    /// Create a reader for one sequential process scan.
+    #[must_use]
+    pub fn new(fs: &'a ProcFs) -> Self {
+        Self {
+            fs,
+            rel: String::with_capacity(32),
+            path: PathBuf::new(),
+            content: String::with_capacity(2 * 1024),
+        }
+    }
+
+    /// Read one process cgroup membership, returning `None` on a transient read failure.
+    pub fn cgroup_membership(&mut self, pid: i32) -> Option<&str> {
+        self.read_raw(pid, "cgroup").ok()
+    }
+
+    /// Read one process while reusing this scan's path and content buffers.
+    ///
+    /// # Errors
+    /// Returns [`ProcessError`] under the same conditions as [`read_process`].
+    pub fn read(
+        &mut self,
+        pid: i32,
+        facts: ProcessFacts,
+        ts: i64,
+        cgroup_path: Option<String>,
+    ) -> Result<ProcessRead, ProcessError> {
+        let stat =
+            parse_stat(self.read_required(pid, "stat")?).map_err(|source| ProcessError::Parse {
+                path: format!("{pid}/stat"),
+                source,
+            })?;
+
+        let status = parse_status(self.read_required(pid, "status")?).map_err(|source| {
+            ProcessError::Parse {
+                path: format!("{pid}/status"),
+                source,
+            }
+        })?;
+
+        let io = self.read_io(pid, status.uid, status.gid);
+        let rundelay_ns = self.read_schedstat(pid).unwrap_or(0);
+        let cmdline = self.read_cmdline(pid);
+        let comm = self.read_comm(pid).unwrap_or_else(|| stat.comm.clone());
+        let starttime = process_starttime_usec(facts, stat.starttime_ticks);
+        let cgroup = cgroup_path.map(|cgroup_path| ProcessCgroupRow {
             ts,
             pid,
             starttime,
             cgroup_path,
         });
 
-    let hot = ProcessHotRow {
-        ts,
-        pid: stat.pid,
-        starttime,
-        ppid: stat.ppid,
-        uid: status.uid,
-        euid: status.euid,
-        gid: status.gid,
-        egid: status.egid,
-        state: stat.state,
-        num_threads: u32_from_i64(stat.num_threads),
-        tty: u16::try_from(stat.tty_nr).unwrap_or(0),
-        comm,
-        cmdline,
-        utime: stat.utime,
-        stime: stat.stime,
-        nice: i8_from_i64(stat.nice),
-        prio: i16_from_i64(stat.priority),
-        rtprio: i16_from_i64(stat.rt_priority),
-        policy: u8_from_i64(stat.policy),
-        curcpu: i32_from_i64(stat.processor),
-        rundelay_ns,
-        blkdelay_ticks: stat.delayacct_blkio_ticks,
-        nvcsw: status.voluntary_ctxt_switches,
-        nivcsw: status.nonvoluntary_ctxt_switches,
-        minflt: stat.minflt,
-        majflt: stat.majflt,
-        vmem_kb: stat.vsize_bytes / 1024,
-        rmem_kb: rss_kb(stat.rss_pages, facts.page_size_bytes),
-        vswap_kb: status.vm_swap,
-        io,
-        exit_signal: i32_from_i64(stat.exit_signal),
-    };
-    let status = ProcessStatusRow {
-        ts,
-        pid: stat.pid,
-        starttime,
-        status,
-    };
-    Ok(ProcessRead {
-        hot,
-        status,
-        cgroup,
-    })
-}
-
-fn read_required(fs: &ProcFs, pid: i32, rel: &str) -> Result<String, ProcessError> {
-    fs.read_raw(rel).map_err(|source| {
-        if source.kind() == io::ErrorKind::NotFound {
-            ProcessError::Gone(pid)
-        } else {
-            ProcessError::Read {
-                path: rel.to_owned(),
-                source,
-            }
-        }
-    })
-}
-
-fn read_io(fs: &ProcFs, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
-    let rel = format!("{pid}/io");
-    match fs.read_raw(&rel) {
-        Ok(content) => Some(parse_io(&content)),
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            read_io_with_fs_creds(fs, &rel, uid, gid)
-        }
-        Err(_) => None,
+        let hot = ProcessHotRow {
+            ts,
+            pid: stat.pid,
+            starttime,
+            ppid: stat.ppid,
+            uid: status.uid,
+            euid: status.euid,
+            gid: status.gid,
+            egid: status.egid,
+            state: stat.state,
+            num_threads: u32_from_i64(stat.num_threads),
+            tty: u16::try_from(stat.tty_nr).unwrap_or(0),
+            comm,
+            cmdline,
+            utime: stat.utime,
+            stime: stat.stime,
+            nice: i8_from_i64(stat.nice),
+            prio: i16_from_i64(stat.priority),
+            rtprio: i16_from_i64(stat.rt_priority),
+            policy: u8_from_i64(stat.policy),
+            curcpu: i32_from_i64(stat.processor),
+            rundelay_ns,
+            blkdelay_ticks: stat.delayacct_blkio_ticks,
+            nvcsw: status.voluntary_ctxt_switches,
+            nivcsw: status.nonvoluntary_ctxt_switches,
+            minflt: stat.minflt,
+            majflt: stat.majflt,
+            vmem_kb: stat.vsize_bytes / 1024,
+            rmem_kb: rss_kb(stat.rss_pages, facts.page_size_bytes),
+            vswap_kb: status.vm_swap,
+            io,
+            exit_signal: i32_from_i64(stat.exit_signal),
+        };
+        let status = ProcessStatusRow {
+            ts,
+            pid: stat.pid,
+            starttime,
+            status,
+        };
+        Ok(ProcessRead {
+            hot,
+            status,
+            cgroup,
+        })
     }
-}
 
-#[cfg(target_os = "linux")]
-fn read_io_with_fs_creds(fs: &ProcFs, rel: &str, uid: u32, gid: u32) -> Option<ProcIo> {
-    let _guard = FsCredGuard::switch(uid, gid);
-    fs.read_raw(rel).ok().map(|content| parse_io(&content))
-}
+    fn read_required(&mut self, pid: i32, file: &str) -> Result<&str, ProcessError> {
+        match self.read_raw(pid, file) {
+            Ok(content) => Ok(content),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Err(ProcessError::Gone(pid)),
+            Err(source) => Err(ProcessError::Read {
+                path: format!("{pid}/{file}"),
+                source,
+            }),
+        }
+    }
 
-#[cfg(not(target_os = "linux"))]
-const fn read_io_with_fs_creds(_fs: &ProcFs, _rel: &str, _uid: u32, _gid: u32) -> Option<ProcIo> {
-    None
+    fn read_raw(&mut self, pid: i32, file: &str) -> io::Result<&str> {
+        self.rel.clear();
+        write!(&mut self.rel, "{pid}/{file}")
+            .map_err(|_| io::Error::other("failed to construct procfs-relative path"))?;
+        self.fs
+            .read_raw_into(&self.rel, &mut self.path, &mut self.content)?;
+        Ok(&self.content)
+    }
+
+    fn read_io(&mut self, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
+        match self.read_raw(pid, "io") {
+            Ok(content) => Some(parse_io(content)),
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                self.read_io_with_fs_creds(pid, uid, gid)
+            }
+            Err(_) => None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_io_with_fs_creds(&mut self, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
+        let _guard = FsCredGuard::switch(uid, gid);
+        self.read_raw(pid, "io").ok().map(parse_io)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    const fn read_io_with_fs_creds(&mut self, _pid: i32, _uid: u32, _gid: u32) -> Option<ProcIo> {
+        None
+    }
+
+    fn read_schedstat(&mut self, pid: i32) -> Option<i64> {
+        let content = self.read_raw(pid, "schedstat").ok()?;
+        let mut fields = content.split_whitespace();
+        let _run_time_ns = fields.next()?;
+        fields.next()?.parse().ok()
+    }
+
+    fn read_cmdline(&mut self, pid: i32) -> Option<String> {
+        let content = self.read_raw(pid, "cmdline").ok()?;
+        normalize_cmdline(content)
+    }
+
+    fn read_comm(&mut self, pid: i32) -> Option<String> {
+        let comm = self.read_raw(pid, "comm").ok()?.trim();
+        (!comm.is_empty()).then(|| comm.to_owned())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -201,25 +271,58 @@ impl Drop for FsCredGuard {
     }
 }
 
-fn read_schedstat(fs: &ProcFs, pid: i32) -> Option<i64> {
-    let content = fs.read_raw(&format!("{pid}/schedstat")).ok()?;
-    let mut fields = content.split_whitespace();
-    let _run_time_ns = fields.next()?;
-    fields.next()?.parse().ok()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn read_cmdline(fs: &ProcFs, pid: i32) -> Option<String> {
-    let content = fs.read_raw(&format!("{pid}/cmdline")).ok()?;
-    let cmdline = content.replace('\0', " ").trim().to_owned();
-    (!cmdline.is_empty()).then_some(cmdline)
-}
+    fn stat_line(pid: i32, comm: &str) -> String {
+        format!(
+            "{pid} ({comm}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 -5 16 17 190 204800 12 21 22 23 24 25 26 27 28 29 30 31 32 33 15 2 7 8 9 10 11 12 13 14 15"
+        )
+    }
 
-fn read_comm(fs: &ProcFs, pid: i32) -> Option<String> {
-    let comm = fs.read_raw(&format!("{pid}/comm")).ok()?;
-    let comm = comm.trim().to_owned();
-    (!comm.is_empty()).then_some(comm)
-}
+    #[test]
+    fn process_reader_reuses_scratch_without_leaking_optional_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for pid in [1, 2] {
+            let process = dir.path().join(pid.to_string());
+            std::fs::create_dir(&process).expect("create process");
+            std::fs::write(
+                process.join("stat"),
+                stat_line(pid, &format!("worker-{pid}")),
+            )
+            .expect("write stat");
+            std::fs::write(
+                process.join("status"),
+                "Uid:\t1000\t1001\t1002\t1003\nGid:\t2000\t2001\t2002\t2003\n",
+            )
+            .expect("write status");
+        }
+        std::fs::write(dir.path().join("1/cgroup"), "0::/workers/one\n").expect("write cgroup");
+        std::fs::write(dir.path().join("1/cmdline"), b"worker\0--first\0").expect("write cmdline");
+        std::fs::write(dir.path().join("1/comm"), "first-worker\n").expect("write comm");
 
-fn read_cgroup_membership(fs: &ProcFs, pid: i32) -> Option<String> {
-    fs.read_raw(&format!("{pid}/cgroup")).ok()
+        let fs = ProcFs::new(dir.path().to_path_buf());
+        let facts = ProcessFacts {
+            btime_usec: 1_700_000_000_000_000,
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4096,
+        };
+        let mut reader = ProcessReader::new(&fs);
+        let cgroup_path = reader.cgroup_membership(1).and_then(parse_cgroup_path);
+        let first = reader
+            .read(1, facts, 7, cgroup_path)
+            .expect("first process");
+        let second = reader.read(2, facts, 7, None).expect("second process");
+
+        assert_eq!(first.hot.comm, "first-worker");
+        assert_eq!(first.hot.cmdline.as_deref(), Some("worker --first"));
+        assert_eq!(
+            first.cgroup.as_ref().map(|row| row.cgroup_path.as_str()),
+            Some("/workers/one")
+        );
+        assert_eq!(second.hot.comm, "worker-2");
+        assert_eq!(second.hot.cmdline, None);
+        assert_eq!(second.cgroup, None);
+    }
 }

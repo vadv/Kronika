@@ -38,7 +38,7 @@ use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
 use kronika_source_os::proc::meminfo::parse_meminfo;
 use kronika_source_os::proc::pressure::parse_pressure;
-use kronika_source_os::proc::process::{ProcessError, process_facts, read_process_with_cgroup};
+use kronika_source_os::proc::process::{ProcessError, ProcessReader, process_facts};
 use kronika_source_os::proc::stat::{parse_cpu, parse_stat_misc};
 use kronika_source_os::proc::vmstat::parse_vmstat;
 use kronika_source_os::proc::{

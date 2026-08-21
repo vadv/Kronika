@@ -135,6 +135,14 @@ fn sysfs_reads_block_dev_under_root() {
 }
 
 #[test]
+fn sysfs_trims_in_place_without_changing_content() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("value"), " \tprobe value\r\n ").expect("write value");
+    let sys = SysFs::new(dir.path().to_path_buf());
+    assert_eq!(sys.read("value").expect("read"), "probe value");
+}
+
+#[test]
 fn sysfs_rejects_escape_and_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sys = SysFs::new(dir.path().to_path_buf());

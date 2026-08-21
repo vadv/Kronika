@@ -32,12 +32,15 @@ pub fn parse_stat(content: &str) -> Result<ProcStat, ParseError> {
         .trim()
         .parse::<i32>()
         .map_err(|err| ParseError(format!("stat pid: {err}")))?;
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    if fields.len() < 40 {
-        return Err(ParseError(format!(
-            "stat: expected at least 40 fields after comm, got {}",
-            fields.len()
-        )));
+    let mut fields = [""; 40];
+    let mut source = rest.split_whitespace();
+    for (index, field) in fields.iter_mut().enumerate() {
+        let Some(value) = source.next() else {
+            return Err(ParseError(format!(
+                "stat: expected at least 40 fields after comm, got {index}"
+            )));
+        };
+        *field = value;
     }
     Ok(ProcStat {
         pid,
@@ -190,6 +193,12 @@ pub(super) fn rss_kb(rss_pages: i64, page_size_bytes: i64) -> i64 {
     }
     i64::try_from(i128::from(rss_pages).saturating_mul(i128::from(page_size_bytes)) / 1024)
         .unwrap_or(i64::MAX)
+}
+
+pub(super) fn normalize_cmdline(content: &str) -> Option<String> {
+    let trimmed =
+        content.trim_matches(|character: char| character == '\0' || character.is_whitespace());
+    (!trimmed.is_empty()).then(|| trimmed.replace('\0', " "))
 }
 
 fn parse_id_quad(value: &str, key: &str) -> Result<[u32; 4], ParseError> {
@@ -352,5 +361,14 @@ mod tests {
         };
         assert_eq!(process_starttime_usec(facts, 500), 1_700_000_002_000_000);
         assert_eq!(rss_kb(2, facts.page_size_bytes), 16);
+    }
+
+    #[test]
+    fn cmdline_trims_raw_boundaries_before_replacing_separators() {
+        assert_eq!(
+            normalize_cmdline(" \tpostgres\0-D\0/data\0\n"),
+            Some("postgres -D /data".to_owned())
+        );
+        assert_eq!(normalize_cmdline("\0 \t\n\0"), None);
     }
 }

@@ -53,14 +53,14 @@ enum MemoryLimit {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct SelfCgroupPaths {
-    unified: Option<String>,
-    cpu: Option<String>,
-    cpuacct: Option<String>,
-    memory: Option<String>,
-    io: Option<String>,
-    pids: Option<String>,
-    cpuset: Option<String>,
+struct SelfCgroupPaths<'a> {
+    unified: Option<&'a str>,
+    cpu: Option<&'a str>,
+    cpuacct: Option<&'a str>,
+    memory: Option<&'a str>,
+    io: Option<&'a str>,
+    pids: Option<&'a str>,
+    cpuset: Option<&'a str>,
 }
 
 #[derive(Debug, Default)]
@@ -75,7 +75,7 @@ struct WorkloadCgroupPaths {
 }
 
 impl WorkloadCgroupPaths {
-    fn insert(&mut self, controller: CgroupController, path: String) -> io::Result<()> {
+    fn insert(&mut self, controller: CgroupController, path: &str) -> io::Result<()> {
         let paths = match controller {
             CgroupController::Unified => &mut self.unified,
             CgroupController::Cpu => &mut self.cpu,
@@ -83,10 +83,11 @@ impl WorkloadCgroupPaths {
             CgroupController::Io => &mut self.io,
             CgroupController::Pids => &mut self.pids,
         };
-        let path_len = path.len();
-        if !paths.insert(path) {
+        if paths.contains(path) {
             return Ok(());
         }
+        let path_len = path.len();
+        paths.insert(path.to_owned());
         self.candidates = self.candidates.saturating_add(1);
         self.path_bytes = self.path_bytes.saturating_add(path_len);
         if self.candidates > MAX_CGROUP_CANDIDATES {
@@ -197,7 +198,8 @@ impl WorkloadMemberships {
 /// # Errors
 /// Returns the procfs read error when `self/cgroup` is unavailable.
 pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<CgroupContextRow> {
-    let parsed = parse_self_cgroup(&procfs.read_raw("self/cgroup")?);
+    let content = procfs.read_raw("self/cgroup")?;
+    let parsed = parse_self_cgroup(&content);
     let unified_v2 = is_v2(sys);
     let has_unified = parsed.unified.is_some();
     let has_v1 = parsed.cpu.is_some()
@@ -207,7 +209,7 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
         || parsed.cpuset.is_some();
 
     if unified_v2 && has_unified {
-        let path = parsed.unified;
+        let path = parsed.unified.map(str::to_owned);
         let cpuset_cpus = path.as_deref().and_then(|path| {
             sys.read(&rel(path, "cpuset.cpus.effective"))
                 .ok()
@@ -236,14 +238,18 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
     }
 
     if !unified_v2 && has_v1 {
-        let cpu_path =
-            matching_cpu_path(parsed.cpu, parsed.cpuacct).filter(|path| usable_cpu_v1(sys, path));
-        let cpuset_cpus = parsed.cpuset.as_deref().and_then(|path| {
+        let cpu_path = matching_cpu_path(parsed.cpu, parsed.cpuacct)
+            .map(str::to_owned)
+            .filter(|path| usable_cpu_v1(sys, path));
+        let cpuset_cpus = parsed.cpuset.and_then(|path| {
             let root = bind_v1_controller_root(sys, CPUSET_V1_DIRS, path, "cpuset.effective_cpus")?;
             read_bound_v1(sys, &root, path, "cpuset.effective_cpus")
                 .and_then(|content| parse_cpuset_count(&content))
         });
-        let memory_path = parsed.memory.filter(|path| usable_memory_v1(sys, path));
+        let memory_path = parsed
+            .memory
+            .map(str::to_owned)
+            .filter(|path| usable_memory_v1(sys, path));
         let (effective_cpu_quota_usec, effective_cpu_period_usec) = cpu_path
             .as_deref()
             .and_then(|path| effective_cpu_v1(sys, path))
@@ -256,7 +262,10 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
             cgroup_version: 1,
             cpu_path,
             memory_path,
-            io_path: parsed.io.filter(|path| usable_io_v1(sys, path)),
+            io_path: parsed
+                .io
+                .map(str::to_owned)
+                .filter(|path| usable_io_v1(sys, path)),
             cpuset_cpus,
             effective_cpu_quota_usec,
             effective_cpu_period_usec,
@@ -270,7 +279,7 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
     })
 }
 
-fn matching_cpu_path(cpu: Option<String>, cpuacct: Option<String>) -> Option<String> {
+fn matching_cpu_path<'a>(cpu: Option<&'a str>, cpuacct: Option<&'a str>) -> Option<&'a str> {
     match (cpu, cpuacct) {
         (Some(cpu), Some(cpuacct)) if cpu == cpuacct => Some(cpu),
         _ => None,
@@ -352,7 +361,7 @@ fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
     candidates.iter().any(|key| keys.contains(key))
 }
 
-fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
+fn parse_self_cgroup(content: &str) -> SelfCgroupPaths<'_> {
     let mut paths = SelfCgroupPaths::default();
     for line in content.lines() {
         let mut fields = line.splitn(3, ':');
@@ -365,17 +374,17 @@ fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
             continue;
         };
         if controllers.is_empty() {
-            set_exact_path(&mut paths.unified, &path);
+            set_exact_path(&mut paths.unified, path);
             continue;
         }
         for controller in controllers.split(',') {
             match controller {
-                "cpu" => set_exact_path(&mut paths.cpu, &path),
-                "cpuacct" => set_exact_path(&mut paths.cpuacct, &path),
-                "memory" => set_exact_path(&mut paths.memory, &path),
-                "blkio" => set_exact_path(&mut paths.io, &path),
-                "pids" => set_exact_path(&mut paths.pids, &path),
-                "cpuset" => set_exact_path(&mut paths.cpuset, &path),
+                "cpu" => set_exact_path(&mut paths.cpu, path),
+                "cpuacct" => set_exact_path(&mut paths.cpuacct, path),
+                "memory" => set_exact_path(&mut paths.memory, path),
+                "blkio" => set_exact_path(&mut paths.io, path),
+                "pids" => set_exact_path(&mut paths.pids, path),
+                "cpuset" => set_exact_path(&mut paths.cpuset, path),
                 _ => {}
             }
         }
@@ -383,15 +392,15 @@ fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
     paths
 }
 
-fn set_exact_path(stored: &mut Option<String>, path: &str) {
-    if stored.as_deref().is_none_or(|current| current == path) {
-        *stored = Some(path.to_owned());
-    } else {
+fn set_exact_path<'a>(stored: &mut Option<&'a str>, path: &'a str) {
+    if stored.is_none() {
+        *stored = Some(path);
+    } else if *stored != Some(path) {
         *stored = None;
     }
 }
 
-fn normalize_self_cgroup_path(path: &str) -> Option<String> {
+fn normalize_self_cgroup_path(path: &str) -> Option<&str> {
     let path = path.trim();
     if !path.starts_with('/')
         || path
@@ -402,9 +411,9 @@ fn normalize_self_cgroup_path(path: &str) -> Option<String> {
     }
     let normalized = path.trim_end_matches('/');
     Some(if normalized.is_empty() {
-        "/".to_owned()
+        "/"
     } else {
-        normalized.to_owned()
+        normalized
     })
 }
 
@@ -609,7 +618,7 @@ fn parse_exact_stat_value(content: &str, wanted: &str) -> Option<i64> {
 }
 
 fn hierarchy_paths(path: &str) -> Option<Vec<String>> {
-    if normalize_self_cgroup_path(path).as_deref() != Some(path) {
+    if normalize_self_cgroup_path(path) != Some(path) {
         return None;
     }
     let mut paths = vec!["/".to_owned()];
