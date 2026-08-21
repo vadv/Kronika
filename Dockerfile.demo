@@ -75,9 +75,11 @@ RUN curl --fail --location --retry 3 \
     && install -D -m 0644 source/LICENSE /opt/pg-store-plans/usr/share/doc/pg-store-plans/LICENSE
 
 FROM ${RUNTIME_BASE} AS demo
+ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="Kronika interactive demo" \
       org.opencontainers.image.description="Local PostgreSQL, PgBouncer, Kronika collector, workload, and web UI" \
       org.opencontainers.image.source="https://github.com/vadv/Kronika" \
+      org.opencontainers.image.revision="$VCS_REF" \
       org.opencontainers.image.licenses="MIT AND BSD-3-Clause"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl pgbouncer postgresql-15 \

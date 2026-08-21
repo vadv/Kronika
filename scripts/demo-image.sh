@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export DEMO_IMAGE=${DEMO_IMAGE:-kronika-demo:local}
+export DEMO_VCS_REF=${DEMO_VCS_REF:-$(git rev-parse --verify HEAD 2>/dev/null || printf unknown)}
 DEMO_PORT=${DEMO_PORT:-8080}
 DEMO_BIND_ADDRESS=${DEMO_BIND_ADDRESS:-127.0.0.1}
 export DEMO_PORT DEMO_BIND_ADDRESS
