@@ -31,19 +31,20 @@ feature.
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | unset | Where the workload connects, normally through PgBouncer. Unset disables the workload entirely. |
-| `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 5 | How many schemas to create. |
-| `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 400 | How many tables to create in each schema. |
-| `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 16 | How many connections run `CREATE TABLE` concurrently during setup. |
-| `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 8 | How many long-lived sessions run steady-state DML. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 4 | How many independent lock chains run in each round. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 6 | How many transactions make up one lock chain. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 3000 | How long each link in a chain holds its lock before committing. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 45 | Pause between lock-chain rounds. |
+| `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 4 | How many schemas to create. |
+| `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | How many tables to create in each schema. |
+| `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | How many connections run `CREATE TABLE` concurrently during setup. |
+| `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | How many long-lived sessions run steady-state DML. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | How many independent lock chains run in each round. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | How many transactions make up one lock chain. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | How long each link in a chain holds its lock before committing. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Pause between lock-chain rounds. |
 
-Table shapes rotate through a fixed set (orders-like, events-like,
-jsonb-profile-like, wide-numeric) so `pg_stat_statements` and the system
-tables view see genuinely different shapes, not one shape copied thousands
-of times. Steady sessions mostly run ordinary insert/update/select/delete,
+Each session uses a fixed pseudo-random sequence, so the workload mix is
+repeatable across clean runs. Table shapes rotate through a fixed set
+(orders-like, events-like, jsonb-profile-like, wide-numeric) so
+`pg_stat_statements` and the system tables view see genuinely different
+shapes, not one shape copied thousands of times. Steady sessions mostly run ordinary insert/update/select/delete,
 with a small, fixed share of deliberately slow queries (crossing the 5s
 known-bad boundary) and deliberately bad statements (a syntax error, a
 connection to a nonexistent database through PgBouncer), so the log-derived

@@ -13,6 +13,7 @@ mod naming;
 mod schema;
 
 use anyhow::{Context, Result};
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -20,7 +21,7 @@ use tokio::runtime::{Builder, Runtime};
 use tokio_postgres::{Client, NoTls};
 
 /// Validated workload configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WorkloadConfig {
     /// Where the workload connects, normally through `PgBouncer`.
     pub(crate) dsn: String,
@@ -40,6 +41,23 @@ pub(crate) struct WorkloadConfig {
     pub(crate) lock_hold_ms: u64,
     /// Pause between lock-chain rounds, seconds.
     pub(crate) lock_round_interval_s: u64,
+}
+
+impl fmt::Debug for WorkloadConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkloadConfig")
+            .field("dsn", &"[redacted]")
+            .field("schemas", &self.schemas)
+            .field("tables_per_schema", &self.tables_per_schema)
+            .field("ddl_concurrency", &self.ddl_concurrency)
+            .field("sessions", &self.sessions)
+            .field("lock_chains", &self.lock_chains)
+            .field("lock_chain_depth", &self.lock_chain_depth)
+            .field("lock_hold_ms", &self.lock_hold_ms)
+            .field("lock_round_interval_s", &self.lock_round_interval_s)
+            .finish()
+    }
 }
 
 fn env_u32(key: &str, default: u32) -> Result<u32> {
@@ -74,17 +92,50 @@ impl WorkloadConfig {
         let Ok(dsn) = std::env::var("KRONIKA_DEMO_WORKLOAD_DSN") else {
             return Ok(None);
         };
-        Ok(Some(Self {
+        let config = Self {
             dsn,
-            schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 5)?,
-            tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 400)?,
-            ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 16)?,
-            sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 8)?,
-            lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 4)?,
-            lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 6)?,
-            lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 3_000)?,
-            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
-        }))
+            schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 4)?,
+            tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 40)?,
+            ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
+            sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 4)?,
+            lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 2)?,
+            lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 3)?,
+            lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 1_500)?,
+            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 30)?,
+        };
+        config.validate()?;
+        Ok(Some(config))
+    }
+
+    fn validate(&self) -> Result<()> {
+        for (key, value) in [
+            ("KRONIKA_DEMO_WORKLOAD_SCHEMAS", self.schemas),
+            (
+                "KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA",
+                self.tables_per_schema,
+            ),
+            (
+                "KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY",
+                self.ddl_concurrency,
+            ),
+            ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions),
+            ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains),
+            (
+                "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH",
+                self.lock_chain_depth,
+            ),
+        ] {
+            anyhow::ensure!(value > 0, "{key} must be greater than zero");
+        }
+        anyhow::ensure!(
+            self.lock_hold_ms > 0,
+            "KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.lock_round_interval_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S must be greater than zero"
+        );
+        Ok(())
     }
 }
 
@@ -96,7 +147,7 @@ impl WorkloadConfig {
 pub(crate) async fn connect(dsn: &str) -> Result<Client> {
     let (client, connection) = tokio_postgres::connect(dsn, NoTls)
         .await
-        .with_context(|| format!("connect to {dsn}"))?;
+        .context("connect to the demo PostgreSQL workload")?;
     tokio::spawn(async move {
         if let Err(error) = connection.await {
             eprintln!("kronika-demo: workload connection ended: {error}");
@@ -167,3 +218,6 @@ async fn run(config: WorkloadConfig, stop: Arc<AtomicBool>) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -3,7 +3,8 @@
 //! and the log-derived findings have more than a happy path to show.
 
 use super::{WorkloadConfig, connect, naming};
-use rand::Rng as _;
+use rand::rngs::StdRng;
+use rand::{Rng as _, SeedableRng as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -46,6 +47,11 @@ pub(crate) const fn next_action(roll: u32) -> Action {
 }
 
 const JITTER_MS: [u64; 3] = [200, 500, 900];
+const WORKLOAD_SEED: u64 = 0x4b52_4f4e_494b_4100;
+
+fn session_rng(session: u32) -> StdRng {
+    StdRng::seed_from_u64(WORKLOAD_SEED ^ u64::from(session))
+}
 
 /// Run one session until `stop` is set.
 pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
@@ -53,21 +59,16 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
         eprintln!("kronika-demo: workload session {session} could not connect");
         return;
     };
+    let mut rng = session_rng(session);
     while !stop.load(Ordering::Relaxed) {
-        // `ThreadRng` is not `Send`, so it must not be held across an
-        // `.await`: draw everything this iteration needs up front, in a
-        // block that ends before the first await point.
-        let (table, action, pause_ms) = {
-            let mut rng = rand::thread_rng();
-            let table = naming::table_name(
-                rng.gen_range(0..config.schemas.max(1)),
-                rng.gen_range(0..config.tables_per_schema.max(1)),
-            );
-            let action = next_action(rng.gen_range(0..100));
-            let pause_ms = JITTER_MS[rng.gen_range(0..JITTER_MS.len())];
-            (table, action, pause_ms)
-        };
-        if let Err(error) = perform(&client, config, &table, action).await {
+        let table = naming::table_name(
+            rng.gen_range(0..config.schemas),
+            rng.gen_range(0..config.tables_per_schema),
+        );
+        let action = next_action(rng.gen_range(0..100));
+        let pause_ms = JITTER_MS[rng.gen_range(0..JITTER_MS.len())];
+        let id = rng.gen_range(0..i64::MAX);
+        if let Err(error) = perform(&client, config, &table, action, id).await {
             eprintln!("kronika-demo: session {session} {action:?} on {table} failed: {error:#}");
         }
         tokio::time::sleep(Duration::from_millis(pause_ms)).await;
@@ -86,10 +87,10 @@ async fn perform(
     config: &WorkloadConfig,
     table: &str,
     action: Action,
+    id: i64,
 ) -> anyhow::Result<()> {
     match action {
         Action::Insert => {
-            let id: i64 = rand::thread_rng().gen_range(0..i64::MAX);
             client
                 .batch_execute(&format!(
                     "insert into {table} (id) values ({id}) on conflict do nothing"
