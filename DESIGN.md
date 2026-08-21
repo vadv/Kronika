@@ -370,7 +370,9 @@ the numeric category only on an error event locator.
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 an operator event: it has no finding locator and does not appear in Events or
 on the shared timeline. Raw temporary-file rows remain available through
-ordinary history and row reads.
+ordinary history and row reads. `pgbouncer_events` likewise has no finding
+locator and no timeline mark, but its rows do reach the Events console through
+ordinary row reads.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,
@@ -398,6 +400,12 @@ mark, anomaly, alert, incident, severity, cause, diagnosis, or correlation.
 Kronika does not group marks into incidents or infer a main symptom, severity,
 cause, relationship, confidence, or diagnosis. Several unrelated problems may
 coexist, and the person examining the recorded data is the sole judge.
+
+The Events console groups identical recorded rows under a key the rows
+themselves carry — a pattern, a relation, a holder list. That is presentation
+of recorded facts, like a ledger row, not an incident: nothing is synthesized
+across streams, and no group carries a computed judgement about this
+particular hour.
 
 ## Reading
 
@@ -518,7 +526,8 @@ topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
 virtualized lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
-Events expands the same findings drawn on the shared healthline. The timeline
+Events is the grouped log console described below; the same findings stay
+drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
@@ -543,6 +552,39 @@ day shows time only; a value outside that day, or either endpoint of a
 cross-day comparison, shows the full date. One contextual formatter owns this
 presentation, while stored instants, addresses, joins and copied exact values
 remain unchanged.
+
+Events is one grouped console over the hour's recorded log events, read from
+the log sections through ordinary row reads, not through locator resolution.
+One entry is one group: a typed title from the dictionary built on recorded
+values, the group's count, a per-minute strip of occurrences on the shared
+hour axis, the first and last recorded moment, and one recorded sample. A
+group opens in place into its stream's own columns and, page by page, the raw
+rows behind it. Every group states the key it is grouped by, and the raw rows
+stay reachable under it; nothing is visible only in aggregate.
+
+The keys are the recorded ones. Error groups merge the collector's
+`(severity, category, pattern)` windows across the hour. Slow queries merge on
+their normalized pattern and keep the slowest recorded sample. Autovacuum and
+autoanalyze group by the relation the server named. Checkpoints collapse to
+one entry carrying the recorded trigger mix — how many were requested rather
+than timed — with each record in the expansion. PgBouncer events group by
+their recorded level and message. A lifecycle record never groups: each is its
+own entry. Ordering groups by their recorded counts or durations is the same
+presentation-side ordering the activity ledger already uses.
+
+Lock waits group into episodes by the recorded `holding_pids` list: one entry
+per holder set, the waiters under it with their recorded modes, targets,
+durations and statements, exactly as the rows carry them. The log does not
+carry the holder's own statement, and the console says so instead of guessing;
+the structured lock graph at a snapshot remains `pg_locks` on the Locks
+surface.
+
+Each event type carries one fixed tier in the client dictionary — routine,
+notable, or critical — an attribute of the type written once and translated
+like any label, never computed from the data. Routine groups render collapsed
+behind their count by default and open on demand. The tier orders the console
+and sets that default; it adds no score and no claim about this particular
+hour.
 
 System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
