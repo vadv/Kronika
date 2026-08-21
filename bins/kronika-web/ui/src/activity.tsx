@@ -56,7 +56,7 @@ function useHeatmapView(
     if (!enabled) return
     const controller = new AbortController()
     setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
-    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal, group)
+    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal, group?.split(","))
       .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -96,7 +96,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   readonly cuts: readonly ActivityCut[]
   readonly defaultCut: string
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
-  readonly group?: string | undefined
+  readonly group?: readonly string[] | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
@@ -116,7 +116,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   const [maximized, setMaximized] = useState(false)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
+  const state = useHeatmapView(section, columns, labels, group?.join(","), hour, cut, top, revision, open)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -325,10 +325,19 @@ export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor,
 
 // Tables and indexes snapshot every five minutes, so their hour is twelve
 // honest wide cells rather than sixty.
-export function RelationsActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, section, t }: {
+export type RelationActivityLevel = "object" | "schema" | "database" | "tablespace"
+
+const RELATION_GROUPS: Readonly<Record<Exclude<RelationActivityLevel, "object">, readonly string[]>> = {
+  schema: ["datname", "schemaname"],
+  database: ["datname"],
+  tablespace: ["tablespace"],
+}
+
+export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCursor, onPattern, section, t }: {
   readonly blockSize: number | null
   readonly cursor: number
   readonly hour: number
+  readonly level: RelationActivityLevel
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onPattern: (pattern: string) => void
@@ -336,11 +345,23 @@ export function RelationsActivity({ blockSize, cursor, hour, locale, onCursor, o
   readonly t: Translate
 }) {
   const indexes = section === "pg_stat_user_indexes"
+  // The ledger follows the view's synthetic grouping: per object, or summed
+  // per schema, database or tablespace like the table below it.
+  const group = level === "object" ? undefined : RELATION_GROUPS[level]
   const drill = (row: HeatmapViewRow) => {
-    const name = row.labels[indexes ? 3 : 2]
-    if (name != null) onPattern(name)
+    const name = level === "object" ? row.labels[indexes ? 3 : 2] : row.identity[row.identity.length - 1]
+    if (name != null && name !== "") onPattern(name)
   }
   const label = (row: HeatmapViewRow): RowLabel => {
+    if (level !== "object") {
+      const parts = row.identity.filter((part): part is string => part != null)
+      return {
+        text: parts.length === 0 ? "—" : parts.join("."),
+        prefix: row.members === null || row.members < 2
+          ? null
+          : t(indexes ? "activity.indexes.members" : "activity.tables.members", { count: row.members }),
+      }
+    }
     const [datname, schemaname, relname, indexrelname] = row.labels
     const object = [schemaname, indexes ? indexrelname ?? relname : relname]
       .filter((part): part is string => part != null)
@@ -350,7 +371,7 @@ export function RelationsActivity({ blockSize, cursor, hour, locale, onCursor, o
       prefix: datname ?? null,
     }
   }
-  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={indexes ? INDEX_LABELS : TABLE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
+  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} group={group} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={level === "object" ? (indexes ? INDEX_LABELS : TABLE_LABELS) : NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
 }
 
 export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t, ticksPerSecond }: {
@@ -373,7 +394,7 @@ export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t
     // A single-process command needs no member count.
     prefix: row.members === null || row.members < 2 ? null : t("activity.members", { count: row.members }),
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group="comm" hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group={PROCESS_GROUP} hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
 }
 
 export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, t }: {
@@ -452,6 +473,7 @@ const PROCESS_KEYS: LedgerKeys = {
 }
 
 const NO_LABELS = [] as const
+const PROCESS_GROUP = ["comm"] as const
 const STATEMENT_LABELS = ["datname", "usename"] as const
 const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
 const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const

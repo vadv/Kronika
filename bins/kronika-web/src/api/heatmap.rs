@@ -118,7 +118,7 @@ impl PreparedHeatmap {
             return Ok(());
         };
         let (entities, out_of_order);
-        if self.request.group.is_none() {
+        if self.request.group.is_empty() {
             let ranked = fold.finish(self.request.top);
             entities = ranked.entity_count;
             out_of_order = ranked.out_of_order;
@@ -170,12 +170,17 @@ impl PreparedHeatmap {
                 if cut.is_empty() {
                     continue;
                 }
-                let group_column = self.request.group.as_ref().and_then(|group| {
-                    plan.fields
-                        .iter()
-                        .find(|output| &output.name == group)
-                        .and_then(|output| output.column)
-                });
+                let group_columns: Vec<Option<&'static str>> = self
+                    .request
+                    .group
+                    .iter()
+                    .map(|group| {
+                        plan.fields
+                            .iter()
+                            .find(|output| &output.name == group)
+                            .and_then(|output| output.column)
+                    })
+                    .collect();
                 seen_rows.insert((segment_ref.id(), plan.type_id), plan.rows);
                 let mut cache = RenderCache::new(&segment)?;
                 let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
@@ -197,9 +202,17 @@ impl PreparedHeatmap {
                                 None => Value::Null,
                             });
                         }
-                        let group = match group_column.and_then(|column| row.get(column)) {
-                            Some(stored) => Some(cache.value(stored)?),
-                            None => None,
+                        let group = if group_columns.is_empty() {
+                            None
+                        } else {
+                            let mut values = Vec::with_capacity(group_columns.len());
+                            for column in &group_columns {
+                                values.push(match column.and_then(|name| row.get(name)) {
+                                    Some(stored) => cache.value(stored)?,
+                                    None => Value::Null,
+                                });
+                            }
+                            Some(values)
                         };
                         let value = summed(&row, &cut);
                         fold.observe(plan.type_id, &identity, group, ts, value);
@@ -483,7 +496,7 @@ impl PreparedHeatmap {
                 || !emit(record(json!({
                     "record": "heatmap_row",
                     "type_id": "0",
-                    "identity": [row.value],
+                    "identity": row.values,
                     "labels": [],
                     "members": row.members,
                     "total": number(row.total),
@@ -514,10 +527,10 @@ impl PreparedHeatmap {
 
     fn data_request(&self, segment: &SegmentRef, with_labels: bool) -> DataRequest {
         let mut fields = self.request.fields.clone();
-        if let Some(group) = &self.request.group
-            && !fields.contains(group)
-        {
-            fields.push(group.clone());
+        for group in &self.request.group {
+            if !fields.contains(group) {
+                fields.push(group.clone());
+            }
         }
         if with_labels {
             for label in &self.request.labels {
@@ -833,13 +846,13 @@ struct EntityState {
 /// One ranked group: per-identity cells summed under one shared value, the
 /// way the totals band sums the whole section.
 struct GroupState {
-    value: Value,
+    values: Vec<Value>,
     members: u32,
     cells: Vec<CellSum>,
 }
 
 pub(super) struct GroupedRow {
-    pub(super) value: Value,
+    pub(super) values: Vec<Value>,
     pub(super) members: u32,
     pub(super) total: Option<f64>,
     pub(super) cells: Vec<Option<f64>>,
@@ -908,7 +921,7 @@ impl Fold {
         &mut self,
         type_id: u32,
         identity: &[Value],
-        group: Option<Value>,
+        group: Option<Vec<Value>>,
         ts: i64,
         value: Option<f64>,
     ) {
@@ -927,12 +940,12 @@ impl Fold {
         } else {
             // The first sighting fixes the entity's group: a process that
             // execs into a new command stays under the name it started with.
-            let group = group.map(|value| {
+            let group = group.map(|values| {
                 let mut group_key = String::new();
-                entity_key_into(&mut group_key, 0, std::slice::from_ref(&value));
+                entity_key_into(&mut group_key, 0, &values);
                 *self.group_index.entry(group_key).or_insert_with(|| {
                     self.groups.push(GroupState {
-                        value,
+                        values,
                         members: 0,
                         cells: vec![CellSum::default(); self.columns],
                     });
@@ -1106,13 +1119,13 @@ impl Fold {
             let group = std::mem::replace(
                 &mut groups[index],
                 GroupState {
-                    value: Value::Null,
+                    values: Vec::new(),
                     members: 0,
                     cells: Vec::new(),
                 },
             );
             rows.push(GroupedRow {
-                value: group.value,
+                values: group.values,
                 members: group.members,
                 total: group_totals[index],
                 cells: group.cells.iter().map(CellSum::value).collect(),

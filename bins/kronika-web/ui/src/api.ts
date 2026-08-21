@@ -464,7 +464,7 @@ export async function loadHeatmap(
   columns: number,
   top: number,
   signal: AbortSignal,
-  group?: string,
+  group?: readonly string[],
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
@@ -478,7 +478,7 @@ export async function loadHeatmap(
     `columns=${columns}`,
     `top=${top}`,
     ...labels.map((name) => `label=${encodeURIComponent(name)}`),
-    ...(group === undefined ? [] : [`group=${encodeURIComponent(group)}`]),
+    ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
   ].join("&")
   const records = await request(`/api/heatmap?${query}`, signal)
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
@@ -533,7 +533,7 @@ function fixtureHeatmap(
   labels: readonly string[],
   columns: number,
   top: number,
-  group?: string,
+  group?: readonly string[],
 ): HeatmapView {
   const fixture = bundledFixtureHour(from)
   const rows = fixture === null ? [] : fixture.sections[section] ?? []
@@ -571,7 +571,7 @@ function fixtureHeatmap(
       })
     }
   }
-  if (group === undefined) {
+  if (group === undefined || group.length === 0) {
     const derived = heatmap(samples, cumulative, from, columns, top)
     return {
       cumulative,
@@ -590,9 +590,9 @@ function fixtureHeatmap(
       entityCount: derived.entityCount,
     }
   }
-  // Grouped: per-identity cells first, then summed under the group value,
+  // Grouped: per-identity cells first, then summed under the group values,
   // exactly as the server folds them.
-  const groupOf = new Map<string, string | null>()
+  const groupOf = new Map<string, readonly (string | null)[]>()
   for (const row of rows) {
     const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
     if (layout === undefined || layout.logicalName !== section) continue
@@ -602,15 +602,18 @@ function fixtureHeatmap(
     })
     const entity = heatmapEntityKey([row.typeId, ...identity])
     if (!groupOf.has(entity)) {
-      const stored = row.values[group]
-      groupOf.set(entity, stored === null || stored === undefined || typeof stored === "object" ? null : String(stored))
+      groupOf.set(entity, group.map((name) => {
+        const stored = row.values[name]
+        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+      }))
     }
   }
   const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
-  const grouped = new Map<string | null, { members: number; total: number | null; cells: (number | null)[] }>()
+  const grouped = new Map<string, { values: readonly (string | null)[]; members: number; total: number | null; cells: (number | null)[] }>()
   for (const row of derived.rows) {
-    const key = groupOf.get(row.entity) ?? null
-    const slot = grouped.get(key) ?? { members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
+    const values = groupOf.get(row.entity) ?? group.map(() => null)
+    const key = heatmapEntityKey(values)
+    const slot = grouped.get(key) ?? { values, members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
     slot.members += 1
     if (row.total !== null) slot.total = (slot.total ?? 0) + row.total
     for (const [index, cell] of row.cells.entries()) {
@@ -632,9 +635,9 @@ function fixtureHeatmap(
   return {
     cumulative,
     intervals: [...derived.intervals],
-    rows: kept.map(([value, slot]) => ({
+    rows: kept.map(([, slot]) => ({
       typeId: "0",
-      identity: [value],
+      identity: slot.values,
       labels: [],
       members: slot.members,
       total: slot.total,

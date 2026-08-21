@@ -558,7 +558,7 @@ fn a_grouped_heatmap_rejects_labels() {
         "/api/heatmap",
         Some("from=0&to=1&section=os_process&field=utime&group=comm"),
     ) {
-        Ok(Route::Heatmap(request)) => assert_eq!(request.group.as_deref(), Some("comm")),
+        Ok(Route::Heatmap(request)) => assert_eq!(request.group, vec!["comm".to_owned()]),
         other => panic!("expected a heatmap request, got {other:?}"),
     }
     assert_eq!(
@@ -622,7 +622,7 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
             columns: 60,
             top: 25,
             labels: vec!["datname".to_owned(), "usename".to_owned()],
-            group: None,
+            group: Vec::new(),
             type_id: None,
         }))
     );

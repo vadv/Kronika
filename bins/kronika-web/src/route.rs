@@ -15,6 +15,7 @@ const DEFAULT_HEATMAP_TOP: usize = 25;
 const MAX_HEATMAP_TOP: usize = 500;
 const MAX_HEATMAP_LABELS: usize = 8;
 const MAX_HEATMAP_FIELDS: usize = 4;
+const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
 
@@ -44,7 +45,7 @@ pub(crate) struct HeatmapRequest {
     pub(crate) columns: usize,
     pub(crate) top: usize,
     pub(crate) labels: Vec<String>,
-    pub(crate) group: Option<String>,
+    pub(crate) group: Vec<String>,
     pub(crate) type_id: Option<u32>,
 }
 
@@ -423,7 +424,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     let mut columns = None;
     let mut top = None;
     let mut labels: Vec<String> = Vec::new();
-    let mut group = None;
+    let mut group: Vec<String> = Vec::new();
     let mut type_id = None;
     for (raw_name, raw_value) in pairs(query)? {
         let name = decoded("parameter", raw_name, true)?;
@@ -455,11 +456,11 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 }
                 labels.push(value);
             }
-            "group" if group.is_none() => {
-                if value.is_empty() {
+            "group" => {
+                if value.is_empty() || group.contains(&value) || group.len() >= MAX_HEATMAP_GROUP {
                     return Err(RouteError::BadParameter("group".to_owned()));
                 }
-                group = Some(value);
+                group.push(value);
             }
             "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
@@ -475,7 +476,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     }
     // A grouped ranking aggregates identities away, so per-identity labels
     // have nothing to attach to.
-    if group.is_some() && !labels.is_empty() {
+    if !group.is_empty() && !labels.is_empty() {
         return Err(RouteError::BadParameter("label".to_owned()));
     }
     Ok(HeatmapRequest {

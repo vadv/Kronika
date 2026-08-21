@@ -202,7 +202,7 @@ fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
 #[test]
 fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    let group = || Some(json!("postgres"));
+    let group = || Some(vec![json!("postgres")]);
     // Two workers of one command, one of them dying mid-hour, plus a loner.
     fold.observe(1, &identity("101"), group(), HOUR, Some(0.0));
     fold.observe(
@@ -220,11 +220,17 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
         HOUR + 40 * MINUTE,
         Some(1_200.0),
     );
-    fold.observe(1, &identity("7"), Some(json!("cron")), HOUR, Some(0.0));
     fold.observe(
         1,
         &identity("7"),
-        Some(json!("cron")),
+        Some(vec![json!("cron")]),
+        HOUR,
+        Some(0.0),
+    );
+    fold.observe(
+        1,
+        &identity("7"),
+        Some(vec![json!("cron")]),
         HOUR + 40 * MINUTE,
         Some(240.0),
     );
@@ -232,7 +238,7 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     assert_eq!(grouped.group_count, 2);
     assert_eq!(grouped.rows.len(), 1);
     let top = &grouped.rows[0];
-    assert_eq!(top.value, json!("postgres"));
+    assert_eq!(top.values, vec![json!("postgres")]);
     assert_eq!(top.members, 2);
     assert_eq!(top.total, Some(2_100.0));
     let first = top.cells[0].unwrap_or_default();
