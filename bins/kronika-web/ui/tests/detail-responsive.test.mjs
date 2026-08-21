@@ -20,18 +20,23 @@ function blockAfter(marker, source = stylesheet) {
 
 test("all detail key/value rows share a readable label track and bounded value track", async () => {
   // the shared row pattern lives in @utility detail-row/detail-dt/detail-dd and
-  // every detail surface — process dock, PostgreSQL detail, event detail — uses it
+  // every dock detail surface uses it. The events console is a full-width
+  // surface, where the dock pattern strands the value at the far edge, so it
+  // carries facts as chips instead.
   assert.match(stylesheet, /@utility detail-row \{[^}]*minmax\(0, min\(10rem, 40%\)\) minmax\(0, 1fr\)/s)
   assert.match(stylesheet, /@utility detail-dd \{[^}]*overflow-wrap:\s*anywhere;[^}]*text-align:\s*right;/s)
   assert.match(stylesheet, /@utility detail-dd \{[^}]*@media \(max-width: 520px\) \{ text-align: left; \}/s)
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)
   assert.match(composition, /className={`detail-dd/)
-  for (const view of ["detail.tsx", "postgres-view.tsx", "events-console.tsx", "postgres-relations-view.tsx"]) {
+  for (const view of ["detail.tsx", "postgres-view.tsx", "postgres-relations-view.tsx"]) {
     const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
     assert.match(source, /DetailList/, view)
     assert.match(source, /DetailRow/, view)
   }
+  const console_ = await readFile(new URL("../src/events-console.tsx", import.meta.url), "utf8")
+  assert.doesNotMatch(console_, /DetailList|DetailRow/)
+  assert.match(console_, /data-testid="event-entry-facts"/)
   const relation = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
   assert.doesNotMatch(relation, /<dl>|<dt>|<dd>/)
 })

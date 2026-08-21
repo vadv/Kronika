@@ -7,7 +7,7 @@ export const EVENT_TIERS: readonly EventTier[] = ["critical", "notable", "routin
 
 export type EventStat =
   | { readonly kind: "pg.errors"; readonly severity: number; readonly category: number | null; readonly sqlstate: string | null; readonly database: string | null; readonly username: string | null }
-  | { readonly kind: "pg.slow"; readonly maxMs: number; readonly totalMs: number }
+  | { readonly kind: "pg.slow"; readonly maxMs: number; readonly totalMs: number; readonly thresholdMs: number | null }
   | { readonly kind: "pg.autovacuum"; readonly analyze: boolean; readonly runs: number; readonly totalMs: number | null; readonly tuplesRemoved: number | null; readonly tuplesDead: number | null }
   | { readonly kind: "pg.checkpoints"; readonly completes: number; readonly timed: number; readonly requested: number; readonly maxSyncMs: number | null; readonly buffers: number | null }
   | { readonly kind: "pg.checkpoint_warning"; readonly secondsApart: number | null }
@@ -31,6 +31,22 @@ export interface EventEntry {
   readonly rows: readonly DataRow[]
 }
 
+// The recorded log_min_duration_statement, in milliseconds. Its unit is
+// recorded beside it; a negative value means the server logs no statement for
+// its duration at all.
+export function slowThresholdMs(rows: readonly DataRow[]): number | null {
+  const last = rows
+    .filter((row) => text(row, "name") === "log_min_duration_statement")
+    .reduce<DataRow | null>((chosen, row) => chosen === null || row.timestamp > chosen.timestamp ? row : chosen, null)
+  if (last === null) return null
+  const setting = Number(text(last, "setting"))
+  if (!Number.isFinite(setting) || setting < 0) return null
+  const unit = text(last, "unit")
+  if (unit === "s") return setting * 1000
+  if (unit === "min") return setting * 60_000
+  return setting
+}
+
 export const MINUTE_COLUMNS = 60
 const MINUTE_US = 60_000_000
 
@@ -40,9 +56,10 @@ const LIFECYCLE_TIERS: readonly EventTier[] = ["critical", "notable", "notable"]
 const PGBOUNCER_TIERS: readonly EventTier[] = ["critical", "notable", "notable", "routine", "routine", "routine"]
 
 export function groupEvents(streams: Readonly<Record<string, readonly DataRow[]>>, hour: number): readonly EventEntry[] {
+  const thresholdMs = slowThresholdMs(streams.pg_settings ?? [])
   const entries = [
     ...groupErrors(streams.pg_log_errors ?? [], hour),
-    ...groupSlowQueries(streams.pg_log_slow_queries ?? [], hour),
+    ...groupSlowQueries(streams.pg_log_slow_queries ?? [], hour, thresholdMs),
     ...groupAutovacuum(streams.pg_log_autovacuum ?? [], hour),
     ...groupCheckpoints(streams.pg_log_checkpoints ?? [], hour),
     ...groupLockEpisodes(streams.pg_log_lock_waits ?? [], hour),
@@ -74,7 +91,7 @@ function groupErrors(rows: readonly DataRow[], hour: number): readonly EventEntr
     })
 }
 
-function groupSlowQueries(rows: readonly DataRow[], hour: number): readonly EventEntry[] {
+function groupSlowQueries(rows: readonly DataRow[], hour: number, thresholdMs: number | null): readonly EventEntry[] {
   return grouped(rows, (row) => text(row, "pattern") ?? "")
     .map(({ key, first, members }) => {
       const weights = members.map((row) => number(row, "count") ?? 1)
@@ -86,6 +103,7 @@ function groupSlowQueries(rows: readonly DataRow[], hour: number): readonly Even
           kind: "pg.slow",
           maxMs: number(slowest, "max_duration_ms") ?? 0,
           totalMs: sum(members, "total_duration_ms") ?? 0,
+          thresholdMs,
         },
       })
     })

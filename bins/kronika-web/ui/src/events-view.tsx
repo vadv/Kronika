@@ -17,7 +17,7 @@ import { Timeline } from "./timeline"
 
 const MARK_ROWS = 120
 
-const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[] }[] = [
+const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[]; readonly where?: Readonly<Record<string, string>> }[] = [
   { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
   { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
   { section: "pg_log_autovacuum", fields: ["kind", "relation", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms"] },
@@ -25,6 +25,9 @@ const EVENT_STREAMS: readonly { readonly section: string; readonly fields: reado
   { section: "pg_log_lock_waits", fields: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "holding_pids", "wait_queue", "statement"] },
   { section: "pg_log_lifecycle", fields: ["kind", "pid", "signal", "shutdown_mode", "message", "query_detail"] },
   { section: "pgbouncer_events", fields: ["level", "database", "username", "host", "text"] },
+  // What the server calls slow: the entries exist because a statement crossed
+  // this recorded setting, so the console says the setting out loud.
+  { section: "pg_settings", fields: ["name", "setting", "unit"], where: { name: "log_min_duration_statement" } },
 ]
 
 export function EventsView({
@@ -302,7 +305,7 @@ function useEventStreams(data: HourData, hour: number, revision: number): Stream
       : { key, rows: null, loading: true, failed: false })
     const controller = new AbortController()
     const streams = EVENT_STREAMS.filter((stream) => wanted.split(",").includes(stream.section))
-    const loads = Promise.all(streams.map((stream) => loadSeries(hour, stream.section, {}, stream.fields, controller.signal)))
+    const loads = Promise.all(streams.map((stream) => loadSeries(hour, stream.section, stream.where ?? {}, stream.fields, controller.signal)))
     acceptResponse(
       loads,
       controller.signal,

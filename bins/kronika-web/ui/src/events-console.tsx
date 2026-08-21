@@ -2,7 +2,6 @@ import { ChevronRight, CircleAlert, HardDrive, Lock, Network, Power, Recycle, Ti
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { acceptResponse, loadSnapshot, type DataRow } from "./api"
-import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { EVENT_TIERS, type EventEntry, type EventStat, type EventTier } from "./events-groups"
 import { categoryLabel, eventValue } from "./events-format"
@@ -115,7 +114,7 @@ function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string 
   return null
 }
 
-export function entryChips(entry: EventEntry, t: Translate): readonly EntryChip[] {
+export function entryChips(entry: EventEntry, t: Translate, locale: Locale = "en"): readonly EntryChip[] {
   const stat = entry.stat
   const neutral = (label: string): EntryChip => ({ label, tone: "neutral" })
   if (stat.kind === "pg.errors") {
@@ -126,6 +125,14 @@ export function entryChips(entry: EventEntry, t: Translate): readonly EntryChip[
       ...(stat.category === null ? [] : [neutral(categoryLabel(stat.category, t))]),
       ...(stat.database === null ? [] : [neutral(stat.database)]),
     ]
+  }
+  if (stat.kind === "pg.slow") {
+    // log_min_duration_statement of zero logs every statement, and "≥ 0 ms"
+    // reads like a defect rather than that setting.
+    if (stat.thresholdMs === null) return []
+    return [neutral(stat.thresholdMs === 0
+      ? t("events.slow.all")
+      : t("events.slow.threshold", { threshold: humanDuration(stat.thresholdMs, locale) }))]
   }
   if (stat.kind === "pg.autovacuum") return [neutral(t(stat.analyze ? "events.autovacuum.analyze" : "events.autovacuum.vacuum"))]
   if (stat.kind === "pgbouncer.events") {
@@ -187,7 +194,7 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
   const time = useDisplayTime()
   const title = entryTitle(entry, t, locale)
   const subtitle = entrySubtitle(entry, t, locale)
-  const chips = entryChips(entry, t)
+  const chips = entryChips(entry, t, locale)
   const critical = entry.tier === "critical"
   const Icon = SECTION_ICONS[entry.section] ?? CircleAlert
   const recorded = entry.text !== null && title === entry.text
@@ -238,7 +245,12 @@ function EventEntryDetail({ entry, locale, onCursor, t }: {
   return <div className="grid gap-2 border-t border-line2 bg-s2 px-[9px] py-[9px]" data-testid="event-entry-detail">
     {entry.stat.kind === "pg.errors" && <ErrorSample row={entry.rows[0]} t={t} />}
     {entry.stat.kind === "pg.locks" && <LockWaiters entry={entry} locale={locale} t={t} />}
-    {facts.length > 0 && <DetailList>{facts.map(([label, shownValue]) => <DetailRow key={label} term={label}>{shownValue}</DetailRow>)}</DetailList>}
+    {facts.length > 0 && <div className="flex flex-wrap gap-1.5" data-testid="event-entry-facts">
+      {facts.map(([label, shownValue]) => <span className="flex items-baseline gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1" key={label}>
+        <span className="text-xs text-fg3">{label}</span>
+        <strong className="font-mono text-xs font-medium tabular-nums text-fg">{shownValue}</strong>
+      </span>)}
+    </div>}
     <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
       {entry.rows.slice(0, shown).map((row) => <RawRow key={`${row.segmentId}:${row.typeId}:${row.ordinal}`} locale={locale} onCursor={onCursor} row={row} stat={entry.stat} t={t} />)}
     </div>

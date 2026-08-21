@@ -2021,16 +2021,18 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.match(entryText, /6,29 с/)
     assert.match(entryText, /12,6 с/)
     await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-detail"] dl') !== null`, "the slow-query expansion")
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-facts"]') !== null`, "the slow-query expansion")
     await settleLayout(cdp)
 
     const landscape = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(landscape.innerWidth, 1280)
     assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
-    assert.deepEqual(landscape.numeric.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
-    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true, JSON.stringify(landscape.numeric))
-    assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
-    assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
+    assert.deepEqual(landscape.chips.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
+    // A fact is unreadable when its value drifts to the far edge of a
+    // full-width surface, which is what the dock's two-track row used to do.
+    assert.ok(landscape.chips.every(({ gap }) => gap >= 0 && gap <= 12), JSON.stringify(landscape.chips))
+    assert.equal(landscape.chips.every(({ sameRow }) => sameRow), true, JSON.stringify(landscape.chips))
+    assert.ok(landscape.chips.every(({ height }) => height <= 28), JSON.stringify(landscape.chips))
     assert.match(landscape.raw, /×3/)
     assert.match(landscape.raw, /6,29 с/)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
@@ -2041,7 +2043,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     const narrow = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
-    assert.equal(narrow.numeric.every(({ align }) => align === "left"), true, JSON.stringify(narrow.numeric))
+    assert.equal(narrow.chips.every(({ gap, sameRow }) => sameRow && gap >= 0 && gap <= 12), true, JSON.stringify(narrow.chips))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -3895,16 +3897,22 @@ function slowQuerySeriesRecords() {
 
 function expansionGeometryExpression() {
   return `(() => {
-    const rows = [...document.querySelectorAll('[data-testid="event-entry-detail"] dl > div')]
-    const numeric = rows.map((row) => {
-      const output = row.querySelector("dd")
-      const rect = output.getBoundingClientRect()
-      return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
+    const chips = [...document.querySelectorAll('[data-testid="event-entry-facts"] > span')].map((chip) => {
+      const [label, output] = chip.children
+      const labelBox = label.getBoundingClientRect()
+      const valueBox = output.getBoundingClientRect()
+      return {
+        gap: Math.round(valueBox.left - labelBox.right),
+        height: Math.round(chip.getBoundingClientRect().height),
+        label: label.textContent.trim(),
+        sameRow: Math.abs(valueBox.top - labelBox.top) <= 4,
+        text: output.textContent.trim(),
+      }
     })
     return {
+      chips,
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      numeric,
       raw: document.querySelector('[data-testid="event-raw-row"]')?.textContent ?? "",
       scrollWidth: document.documentElement.scrollWidth,
       text: document.querySelector('[data-testid="events-console"]')?.textContent ?? "",
