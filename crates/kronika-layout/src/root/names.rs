@@ -127,21 +127,34 @@ pub(super) fn parse_day(year: u16, month: u8, name: &str) -> Option<u8> {
 }
 
 pub(super) fn parse_leaf(name: &str, day: UtcDay) -> Result<ParsedLeaf, LayoutError> {
-    let fields: Vec<&str> = name.split('.').collect();
-    let parsed = match fields.as_slice() {
-        [id, "zms"] => ParsedLeaf::Zms(parse_address(id, day)?),
-        [id, "idx"] => ParsedLeaf::Idx(parse_address(id, day)?),
-        [id, "zms", pid, seq, "tmp"]
+    let mut fields = name.split('.');
+    let fields = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    );
+    let parsed = match fields {
+        (Some(id), Some("zms"), None, None, None, None, None) => {
+            ParsedLeaf::Zms(parse_address(id, day)?)
+        }
+        (Some(id), Some("idx"), None, None, None, None, None) => {
+            ParsedLeaf::Idx(parse_address(id, day)?)
+        }
+        (Some(id), Some("zms"), Some(pid), Some(seq), Some("tmp"), None, None)
             if parse_canonical_u64(pid).is_some() && parse_canonical_u64(seq).is_some() =>
         {
             ParsedLeaf::Temporary(parse_address(id, day)?, TemporaryKind::Zms)
         }
-        [id, "idx", pid, seq, "tmp"]
+        (Some(id), Some("idx"), Some(pid), Some(seq), Some("tmp"), None, None)
             if parse_canonical_u64(pid).is_some() && parse_canonical_u64(seq).is_some() =>
         {
             ParsedLeaf::Temporary(parse_address(id, day)?, TemporaryKind::Idx)
         }
-        [id, "idx", "probe", pid, seq, "tmp"]
+        (Some(id), Some("idx"), Some("probe"), Some(pid), Some(seq), Some("tmp"), None)
             if parse_canonical_u64(pid).is_some() && parse_canonical_u64(seq).is_some() =>
         {
             ParsedLeaf::Temporary(parse_address(id, day)?, TemporaryKind::IndexProbe)
@@ -163,22 +176,24 @@ pub(super) fn parse_address(id: &str, day: UtcDay) -> Result<SegmentAddress, Lay
 }
 
 pub(super) fn parse_canonical_i64(value: &str) -> Option<i64> {
-    if value.is_empty()
-        || value.starts_with('+')
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
         || value == "-0"
         || (value.starts_with('0') && value.len() > 1)
         || (value.starts_with("-0") && value.len() > 2)
     {
         return None;
     }
-    let parsed: i64 = value.parse().ok()?;
-    (parsed.to_string() == value).then_some(parsed)
+    value.parse().ok()
 }
 
 pub(super) fn parse_canonical_u64(value: &str) -> Option<u64> {
-    if value.is_empty() || (value.starts_with('0') && value.len() > 1) {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.starts_with('0') && value.len() > 1)
+    {
         return None;
     }
-    let parsed: u64 = value.parse().ok()?;
-    (parsed.to_string() == value).then_some(parsed)
+    value.parse().ok()
 }

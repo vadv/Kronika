@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kronika_format::{JOURNAL_HEADER_LEN, MAX_PART_LEN, ReadAt};
-use kronika_layout::{DataRoot, FileIdentity, LayoutError, LayoutLimits};
+use kronika_layout::{DataRoot, DayDirectory, FileIdentity, LayoutError, LayoutLimits};
 
 use crate::source::{
     ActivePart, ActiveSnapshot, FinalUnit, JournalScan, LocalScan, StoreError, StoreIoFailure,
@@ -449,7 +449,23 @@ impl LocalDir {
         address: kronika_layout::SegmentAddress,
         expected: FileIdentity,
     ) -> io::Result<ZmsOpen> {
-        let file = match self.root.open_zms(address) {
+        Self::classify_pinned_zms(self.root.open_zms(address), address, expected)
+    }
+
+    fn open_pinned_zms_in(
+        day: &DayDirectory,
+        address: kronika_layout::SegmentAddress,
+        expected: FileIdentity,
+    ) -> io::Result<ZmsOpen> {
+        Self::classify_pinned_zms(day.open_zms(address), address, expected)
+    }
+
+    fn classify_pinned_zms(
+        opened: Result<File, LayoutError>,
+        address: kronika_layout::SegmentAddress,
+        expected: FileIdentity,
+    ) -> io::Result<ZmsOpen> {
+        let file = match opened {
             Ok(file) => file,
             Err(LayoutError::Io(source))
                 if matches!(

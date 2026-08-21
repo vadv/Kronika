@@ -90,6 +90,24 @@ fn noncanonical_segment_names_are_excluded() {
 }
 
 #[test]
+fn canonical_integer_components_accept_only_their_decimal_spelling() {
+    for value in ["0", "1", "18446744073709551615"] {
+        assert!(names::parse_canonical_u64(value).is_some(), "{value}");
+    }
+    for value in ["-9223372036854775808", "-1", "0", "9223372036854775807"] {
+        assert!(names::parse_canonical_i64(value).is_some(), "{value}");
+    }
+    for value in ["", "+1", "-0", "00", "01", "-01", "1a", " 1", "1 "] {
+        assert!(names::parse_canonical_i64(value).is_none(), "{value}");
+    }
+    for value in ["", "+1", "-1", "00", "01", "1a", " 1", "1 "] {
+        assert!(names::parse_canonical_u64(value).is_none(), "{value}");
+    }
+    assert!(names::parse_canonical_i64("9223372036854775808").is_none());
+    assert!(names::parse_canonical_u64("18446744073709551616").is_none());
+}
+
+#[test]
 fn misbucketed_segment_is_excluded() {
     let directory = tempfile::tempdir().unwrap();
     let day = directory.path().join("2024/02/28");
@@ -161,5 +179,28 @@ fn direct_open_rejects_a_fifo_without_blocking() {
     assert!(matches!(
         root.open_zms(address),
         Err(LayoutError::UnexpectedLeafEntryType { .. })
+    ));
+}
+
+#[test]
+fn one_day_directory_opens_only_segments_from_that_day() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = address(1_709_164_801_000_000);
+    let second = address(1_709_251_201_000_000);
+    for address in [first, second] {
+        let day = directory
+            .path()
+            .join(address.day.year_component())
+            .join(address.day.month_component())
+            .join(address.day.day_component());
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join(address.zms_name()), b"ZMS").unwrap();
+    }
+    let root = DataRoot::open(directory.path()).unwrap();
+    let day = root.day_directory(first.day).unwrap();
+    assert_eq!(day.open_zms(first).unwrap().metadata().unwrap().len(), 3);
+    assert!(matches!(
+        day.open_zms(second),
+        Err(LayoutError::MisbucketedSegment { .. })
     ));
 }

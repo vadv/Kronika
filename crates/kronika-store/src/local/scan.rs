@@ -284,6 +284,7 @@ impl LocalDir {
             )?;
         }
         let mut previous_at = 0_usize;
+        let mut open_day = None;
         for artifact in layout.segments {
             advance_previous(previous_finished, &mut previous_at, artifact.address);
             if let Some(previous) = previous_finished.get(previous_at).filter(|previous| {
@@ -293,7 +294,23 @@ impl LocalDir {
                 continue;
             }
 
-            let file = match self.open_pinned_zms(artifact.address, artifact.zms_identity)? {
+            if open_day
+                .as_ref()
+                .is_none_or(|(day, _directory)| *day != artifact.address.day)
+            {
+                open_day = Some((
+                    artifact.address.day,
+                    self.root
+                        .day_directory(artifact.address.day)
+                        .map_err(layout_io)?,
+                ));
+            }
+            let day = open_day
+                .as_ref()
+                .map(|(_day, directory)| directory)
+                .ok_or_else(|| io::Error::other("selected segment day is not open"))?;
+            let file = match Self::open_pinned_zms_in(day, artifact.address, artifact.zms_identity)?
+            {
                 ZmsOpen::Open(file) => file,
                 ZmsOpen::Invalid(failure) => {
                     push_warning_bounded(
