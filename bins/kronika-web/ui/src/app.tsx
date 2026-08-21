@@ -37,7 +37,7 @@ import { contextualRows, entityContext, findingRoute, type EntityContext } from 
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
-import { HelpPanel, type Translate } from "./help"
+import { HelpPanel, type Translate, LabelHelp } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
 import { HourPicker } from "./hour-picker"
@@ -984,7 +984,19 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   const age = humanAge((now - at) / 1_000_000, locale)
   // Its own lane, so the freshness never reads as part of the cursor time. The
   // word steps aside on narrow bars; the title keeps it.
-  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-sans font-medium text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
+  // The cursor time is the reading that matters; how stale the page is answers
+  // a rarer question, so it moves under the mark beside it instead of taking a
+  // lane of its own on the bar.
+  return <span className="flex items-baseline text-xs text-fg4" data-testid="updated-time">
+    <LabelHelp
+      helpKey="refresh.updated"
+      helpText={`${t("refresh.updated")} ${t("refresh.ago", { age })} · ${clock}`}
+      iconOnly
+      labelKey="refresh.updated"
+      t={t}
+      testId="updated-help"
+    />
+  </span>
 }
 
 // The previous completed initial load is a fact from this browser, shown as

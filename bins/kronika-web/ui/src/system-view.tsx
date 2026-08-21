@@ -243,7 +243,8 @@ const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
 // reports: the lane the table already shows, if any, else the first in the group.
 function resourceSelection(available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
   const lane = RESOURCE_LANE[resource]
-  const target = available.find(({ spec }) => spec.id === lane) ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource])
+  const target = available.find(({ spec }) => spec.id === lane)
+    ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource] && !INVENTORY_METRIC_IDS.has(spec.id))
   return target?.spec.id ?? null
 }
 
@@ -323,7 +324,7 @@ export const SYSTEM_ENTITIES: readonly {
   },
   {
     section: "os_netdev", label: "system.entities.network",
-    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), number("speed_mbit"), id("duplex")],
+    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), nonChartNumber("speed_mbit", []), id("duplex")],
   },
   {
     section: "os_topology", label: "system.entities.topology",
@@ -1101,10 +1102,22 @@ const BREAKDOWN_MEMBER_IDS: ReadonlySet<string> = new Set([...CPU_BREAKDOWN_IDS,
 // The composition chart already legends every breakdown member; the dock offers
 // one chip for it — the group's lane metric — instead of a strip of chips that
 // all draw the same picture.
+// Metrics that describe the machine, not its hour: charting them draws a flat
+// line. They keep their reading in the group's tables and stay out of the chip
+// strip and out of the default selection.
+export const INVENTORY_METRIC_IDS: ReadonlySet<string> = new Set([
+  "cpu_capacity",
+  "device_count",
+  "filesystem_count",
+  "interface_count",
+])
+
 export function dockGroupMetrics(
   groupMetrics: readonly MetricSpec[],
   laneId: string | undefined,
 ): { readonly chips: readonly MetricSpec[]; readonly chartChip: (id: string) => string } {
+  const offered = groupMetrics.filter((spec) => !INVENTORY_METRIC_IDS.has(spec.id))
+  groupMetrics = offered.length === 0 ? groupMetrics : offered
   const members = groupMetrics.filter((spec) => BREAKDOWN_MEMBER_IDS.has(spec.id))
   if (members.length === 0) return { chips: groupMetrics, chartChip: (id) => id }
   const anchor = members.find((spec) => spec.id === laneId) ?? members[0]!

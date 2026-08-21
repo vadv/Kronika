@@ -45,8 +45,8 @@ use kronika_source_os::proc::{
     diskstats, interrupts, kernel_limits, net_dev, net_netstat, net_snmp, net_snmp6, nfs,
 };
 use kronika_source_os::{
-    MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set, mount_row,
-    net_scope, parse_dev_pair, parse_mountinfo,
+    MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set,
+    is_pseudo_filesystem, mount_row, net_scope, parse_dev_pair, parse_mountinfo,
 };
 use kronika_source_os::{node_id_from_dir, parse_node_meminfo};
 use kronika_writer::{Interner, SectionBuffers};

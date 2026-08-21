@@ -16,6 +16,8 @@ import { TableFilter } from "./table-filter"
 import { Timeline } from "./timeline"
 
 const MARK_ROWS = 120
+// The digest tile that selects the threshold band instead of a log stream.
+const MARKS_TILE = "marks"
 
 const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[]; readonly where?: Readonly<Record<string, string>> }[] = [
   { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
@@ -132,15 +134,39 @@ export function EventsView({
   const busy = loading || streams.loading
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
+    {markGroups.length > 0 && (digest === null || digest === MARKS_TILE)
+      ? <section className="mt-2" data-testid="event-marks">
+        <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1">
+          <span className="flex items-center gap-2">
+            <Diamond aria-hidden="true" className="text-bad" size={13} />
+            <span className="text-xs font-medium text-fg2">{t("events.marks")}</span>
+          </span>
+          <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: markGroups.length, count: marks.length })}</span>
+        </header>
+        {markGroups.map((group) => <MarkGroupRow
+          expanded={expandedKey === group.key}
+          group={group}
+          hour={hour}
+          key={group.key}
+          locale={locale}
+          onCursor={onCursor}
+          onFinding={onFinding}
+          onToggle={() => setExpandedKey((current) => current === group.key ? null : group.key)}
+          t={t}
+        />)}
+      </section>
+      : null}
     <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
         <span className="text-xs font-medium text-fg2">{t("events.console")}</span>
         <span className="text-xs tabular-nums text-fg3">{busy && visible !== null ? t("table.loading") : t("events.console.count", { groups: visible?.length ?? 0, count: totalCount })}</span>
         {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
-      {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
+      {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} marks={markGroups} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
-      <div className={`min-h-[390px] ${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
+      <div className={`${digest === MARKS_TILE ? "" : "min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
+        {digest === MARKS_TILE && <p className="table-empty" role="status">{t("events.marks.only")}</p>}
+        {digest !== MARKS_TILE && <>
         {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
         {visible === null && !streams.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
         {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
@@ -156,24 +182,7 @@ export function EventsView({
           t={t}
           tier={tier}
         />)}
-        {markGroups.length > 0 && <section data-testid="event-marks">
-          <header className="flex items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[6px]">
-            <Diamond aria-hidden="true" className="text-bad" size={13} />
-            <span className="text-xs font-medium text-fg2">{t("events.marks")}</span>
-            <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: markGroups.length, count: marks.length })}</span>
-          </header>
-          {markGroups.map((group) => <MarkGroupRow
-            expanded={expandedKey === group.key}
-            group={group}
-            hour={hour}
-            key={group.key}
-            locale={locale}
-            onCursor={onCursor}
-            onFinding={onFinding}
-            onToggle={() => setExpandedKey((current) => current === group.key ? null : group.key)}
-            t={t}
-          />)}
-        </section>}
+        </>}
       </div>
     </section>
   </>
@@ -188,10 +197,11 @@ interface DigestTile {
   readonly section: string | null
 }
 
-function EventsDigest({ active, entries, locale, onChoose, t }: {
+function EventsDigest({ active, entries, locale, marks, onChoose, t }: {
   readonly active: string | null
   readonly entries: readonly EventEntry[]
   readonly locale: Locale
+  readonly marks: readonly MarkGroup[]
   readonly onChoose: (key: string) => void
   readonly t: Translate
 }) {
@@ -218,10 +228,21 @@ function EventsDigest({ active, entries, locale, onChoose, t }: {
       }),
     ]
   }, [entries, t])
-  if (tiles.length < 2) return null
+  const markTile = useMemo(() => {
+    if (marks.length === 0) return null
+    const minutes = Array.from({ length: MINUTE_COLUMNS }, () => 0)
+    let count = 0
+    for (const group of marks) {
+      count += group.findings.length
+      group.minutes.forEach((crossings, minute) => { minutes[minute] = (minutes[minute] ?? 0) + crossings })
+    }
+    return { key: MARKS_TILE, label: t("events.marks"), count, minutes, bad: true, section: null } satisfies DigestTile
+  }, [marks, t])
+  const shown = markTile === null ? tiles : [markTile, ...tiles]
+  if (shown.length < 2) return null
   return <div aria-label={t("events.digest")} className="flex flex-wrap gap-1.5 border-b border-line2 px-1.5 py-2" data-testid="events-digest" role="group">
-    {tiles.map((tile) => {
-      const Icon = tile.section === null ? TriangleAlert : SECTION_ICONS[tile.section] ?? TriangleAlert
+    {shown.map((tile) => {
+      const Icon = tile.key === MARKS_TILE ? Diamond : tile.section === null ? TriangleAlert : SECTION_ICONS[tile.section] ?? TriangleAlert
       const pressed = active === tile.key
       return <button
         aria-pressed={pressed}

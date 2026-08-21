@@ -31,7 +31,7 @@ pub use instance::{OsInstanceFacts, collect_os_instance_facts};
 pub mod mount;
 pub use mount::{
     MountEntry, MountStringIds, container_device_set, device_map, display_path, is_k8s_infra_mount,
-    mount_row, parse_mountinfo,
+    is_pseudo_filesystem, mount_row, parse_mountinfo,
 };
 
 pub mod numa;

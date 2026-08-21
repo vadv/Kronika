@@ -20,12 +20,16 @@ interface Rectangle {
 export function LabelHelp({
   labelKey,
   helpKey,
+  helpText,
   iconOnly = false,
   t,
   testId,
 }: {
   readonly labelKey: string
   readonly helpKey: string
+  // A reading that changes while the page is open — how stale the hour is —
+  // carries its sentence instead of a dictionary key.
+  readonly helpText?: string | undefined
   readonly iconOnly?: boolean
   readonly t: Translate
   readonly testId?: string
@@ -37,20 +41,36 @@ export function LabelHelp({
   const root = useRef<HTMLSpanElement>(null)
   const tooltip = useRef<HTMLSpanElement>(null)
   const closeTimer = useRef<number | null>(null)
+  const openTimer = useRef<number | null>(null)
   const pinned = useRef(false)
   const cancelClose = () => {
-    if (closeTimer.current === null) return
-    window.clearTimeout(closeTimer.current)
-    closeTimer.current = null
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+    if (openTimer.current === null) return
+    window.clearTimeout(openTimer.current)
+    openTimer.current = null
   }
   const close = () => {
     cancelClose()
     pinned.current = false
     setOpen(false)
   }
+  // A pointer crossing a dense row passes several marks; opening after a
+  // short wait keeps the row quiet while a deliberate hover still answers.
+  // Focus and a click open at once: both are deliberate already.
   const enter = () => {
     cancelClose()
     setOpen(true)
+  }
+  const hover = () => {
+    cancelClose()
+    if (open) return
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null
+      setOpen(true)
+    }, 150)
   }
   const leave = () => {
     cancelClose()
@@ -79,6 +99,7 @@ export function LabelHelp({
     }
   }, [open])
   useEffect(() => () => cancelClose(), [])
+  const [arrowLeft, setArrowLeft] = useState<number | null>(null)
   useLayoutEffect(() => {
     if (!open) return
     const update = () => {
@@ -87,6 +108,10 @@ export function LabelHelp({
       if (anchorRect === undefined || tooltipRect === undefined) return
       const next = placeTooltip(anchorRect, tooltipRect, { height: window.innerHeight, width: window.innerWidth })
       setPosition((current) => current?.left === next.left && current.top === next.top && current.placement === next.placement ? current : next)
+      // The box is clamped to the viewport; the arrow keeps pointing at the
+      // mark rather than at the middle of wherever the box landed.
+      const centre = anchorRect.left + anchorRect.width / 2 - next.left
+      setArrowLeft(Math.max(10, Math.min(tooltipRect.width - 10, centre)))
     }
     update()
     window.addEventListener("resize", update)
@@ -95,13 +120,13 @@ export function LabelHelp({
       window.removeEventListener("resize", update)
       window.removeEventListener("scroll", update, true)
     }
-  }, [open, t(helpKey)])
+  }, [helpText, open, t(helpKey)])
   return (
     <>
       {/* Touch needs a large target, not a large mark: in a table head the mark
           steps in by its own reach and grows an invisible 36x36 target, which
           fits inside the cell and takes nothing from the next column. */}
-      <span className="label-help relative inline-flex items-center [&>*+*]:ml-[5px] [.detail-dt_&]:block [.detail-dt_&]:max-w-full [.detail-dt_&>span]:block [.detail-dt_&>span]:w-fit [.detail-dt_&>span]:max-w-full [.detail-dt_&>span]:overflow-hidden [.detail-dt_&>span]:text-ellipsis [.detail-dt_&>span]:whitespace-nowrap [.detail-dt_&>span]:border-b [.detail-dt_&>span]:border-dotted [.detail-dt_&>span]:border-line4 [.lane-label>&]:flex-none [.chart-series-labels>&]:flex-none [.chart-series-labels>&+&]:before:mr-1.5 [.chart-series-labels>&+&]:before:text-fg4 [.chart-series-labels>&+&]:before:content-['·'] [.chart-series-labels_&>span]:overflow-hidden [.chart-series-labels_&>span]:text-ellipsis [.chart-series-labels_&>span]:whitespace-nowrap [.series-reading>&]:min-w-0 [.series-reading>&>span]:overflow-hidden [.series-reading>&>span]:text-ellipsis [.series-reading>&>span]:whitespace-nowrap [.use-cell>&]:absolute [.use-cell>&]:right-[7px] [.use-cell>&]:top-1.5 [.entity-header-cell>&]:ml-1 [.entity-header-cell>&]:flex-none [.entity-header-cell>&]:opacity-0 [.entity-header-cell>&]:pointer-events-none [.entity-header-cell>&]:transition-opacity [.entity-header-cell>&]:duration-[120ms] [.entity-header-cell:hover>&]:opacity-100 [.entity-header-cell:hover>&]:pointer-events-auto [.entity-header-cell:focus-within>&]:opacity-100 [.entity-header-cell:focus-within>&]:pointer-events-auto coarse:[.entity-header-cell>&]:ml-0 coarse:[.entity-header-cell>&]:mr-[11px] coarse:[.entity-header-cell>&]:h-9 coarse:[.entity-header-cell>&]:self-stretch coarse:[.entity-header-cell>&]:opacity-100 coarse:[.entity-header-cell>&]:pointer-events-auto" onMouseEnter={enter} onMouseLeave={leave} ref={root}>
+      <span className="label-help relative inline-flex items-center [&>*+*]:ml-[5px] [.detail-dt_&]:block [.detail-dt_&]:max-w-full [.detail-dt_&>span]:block [.detail-dt_&>span]:w-fit [.detail-dt_&>span]:max-w-full [.detail-dt_&>span]:overflow-hidden [.detail-dt_&>span]:text-ellipsis [.detail-dt_&>span]:whitespace-nowrap [.detail-dt_&>span]:border-b [.detail-dt_&>span]:border-dotted [.detail-dt_&>span]:border-line4 [.lane-label>&]:flex-none [.chart-series-labels>&]:flex-none [.chart-series-labels>&+&]:before:mr-1.5 [.chart-series-labels>&+&]:before:text-fg4 [.chart-series-labels>&+&]:before:content-['·'] [.chart-series-labels_&>span]:overflow-hidden [.chart-series-labels_&>span]:text-ellipsis [.chart-series-labels_&>span]:whitespace-nowrap [.series-reading>&]:min-w-0 [.series-reading>&>span]:overflow-hidden [.series-reading>&>span]:text-ellipsis [.series-reading>&>span]:whitespace-nowrap [.use-cell>&]:absolute [.use-cell>&]:right-[7px] [.use-cell>&]:top-1.5 [.entity-header-cell>&]:ml-1 [.entity-header-cell>&]:flex-none [.entity-header-cell>&]:opacity-0 [.entity-header-cell>&]:pointer-events-none [.entity-header-cell>&]:transition-opacity [.entity-header-cell>&]:duration-[120ms] [.entity-header-cell:hover>&]:opacity-100 [.entity-header-cell:hover>&]:pointer-events-auto [.entity-header-cell:focus-within>&]:opacity-100 [.entity-header-cell:focus-within>&]:pointer-events-auto coarse:[.entity-header-cell>&]:ml-0 coarse:[.entity-header-cell>&]:mr-[11px] coarse:[.entity-header-cell>&]:h-9 coarse:[.entity-header-cell>&]:self-stretch coarse:[.entity-header-cell>&]:opacity-100 coarse:[.entity-header-cell>&]:pointer-events-auto" onMouseEnter={hover} onMouseLeave={leave} ref={root}>
         {!iconOnly && <span>{t(labelKey)}</span>}
         <button
           aria-describedby={open ? id : undefined}
@@ -125,12 +150,19 @@ export function LabelHelp({
           data-placement={position?.placement}
           data-testid="help-tooltip"
           id={id}
-          onMouseEnter={enter}
+          onMouseEnter={hover}
           onMouseLeave={leave}
           ref={tooltip}
           role="tooltip"
           style={{ left: position?.left ?? 0, top: position?.top ?? 0, visibility: position === null ? "hidden" : "visible" }}
-        >{t(helpKey)}</span>,
+        >
+          <span
+            aria-hidden="true"
+            className={`absolute left-1/2 h-[7px] w-[7px] -translate-x-1/2 rotate-45 border-line3 bg-s2 ${position?.placement === "above" ? "-bottom-[4px] border-b border-r" : "-top-[4px] border-l border-t"}`}
+            style={{ left: arrowLeft ?? "50%" }}
+          />
+          {helpText ?? t(helpKey)}
+        </span>,
         document.body,
       )}
     </>
