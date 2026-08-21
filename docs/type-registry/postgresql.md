@@ -18,7 +18,7 @@ followed once.
 | `2_002_001` | `pg_log_checkpoints` | `event_stream` | `(ts, phase)` |
 | `2_003_001` | `pg_log_autovacuum` | `event_stream` | `(ts, kind, relation)` |
 | `2_004_001` | `pg_log_slow_queries` | `event_stream` | `(pattern, ts)` |
-| `2_005_001` | `pg_log_lock_waits` | `event_stream` | `(ts, kind, pid)` |
+| `2_005_002` | `pg_log_lock_waits` | `event_stream` | `(ts, kind, pid)` |
 | `2_006_001` | `pg_log_lifecycle` | `event_stream` | `(ts, kind)` |
 | `2_007_001` | `pg_log_temp_files` | `event_stream` | `(ts, size_bytes)` |
 
@@ -84,7 +84,7 @@ authorized, which is traffic, not an event.
 | `pg_log_checkpoints` | `checkpoint starting:`, `checkpoint complete:`, `checkpoints are occurring too frequently` | `log_checkpoints`, on by default from PG 15 |
 | `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table` | `log_autovacuum_min_duration` |
 | `pg_log_slow_queries` | `duration: <ms> ms  statement: <sql>` | `log_min_duration_statement` |
-| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired` | `log_lock_waits` |
+| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; the `DETAIL` pid lists after `holding the lock:` and `Wait queue:` land in `holding_pids` and `wait_queue` | `log_lock_waits` |
 | `pg_log_lifecycle` | `server process (PID …) was terminated`, `received … shutdown request`, `database system is ready to accept connections` | always |
 | `pg_log_temp_files` | `temporary file: path …, size …` | `log_temp_files` |
 

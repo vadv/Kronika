@@ -321,7 +321,7 @@ Kronika записывает отдельные снимки, а не непре
 - `2_002_001` `pg_log_checkpoints`;
 - `2_003_001` `pg_log_autovacuum`;
 - `2_004_001` `pg_log_slow_queries`;
-- `2_005_001` `pg_log_lock_waits`;
+- `2_005_002` `pg_log_lock_waits`;
 - `2_006_001` `pg_log_lifecycle`.
 
 Этот список исчерпывающий; метаданные реестра его не расширяют. Отдельно
