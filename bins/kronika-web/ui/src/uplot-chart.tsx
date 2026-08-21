@@ -348,8 +348,14 @@ export function alignRecordedSeries(series: readonly RecordedSeries[]): ChartFra
     for (const point of line.points.slice().sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))) {
       const index = positions.get(point.timestamp)
       if (index !== undefined) {
-        if (column[index] !== undefined && !Object.is(column[index], point.value)) throw new Error(`conflicting chart sample ${line.id}@${point.timestamp}`)
-        column[index] = point.value
+        const current = column[index]
+        if (current !== undefined && !Object.is(current, point.value)) {
+          // Adjacent segments overlap at their boundary. A new segment records
+          // an explicit null there when a rate has no cross-restart baseline;
+          // that discontinuity must win over the previous segment's endpoint.
+          if (current === null || point.value === null) column[index] = null
+          else throw new Error(`conflicting chart sample ${line.id}@${point.timestamp}`)
+        } else column[index] = point.value
       }
     }
     isolated.set(seriesIndex + 1, isolatedSampleIndices(column))
@@ -661,5 +667,4 @@ export function navigationSampleText(
 function compactTimePart(output: string): string {
   return output.trim().split(/\s+/)[0] ?? output
 }
-
 
