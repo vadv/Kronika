@@ -3,7 +3,7 @@
 //! Disabled unless `KRONIKA_DEMO_WORKLOAD_DSN` is set, which leaves
 //! `kronika-demo` exactly as it behaves without this feature. Every other
 //! `KRONIKA_DEMO_WORKLOAD_*` variable has a default sized for a demo
-//! container: thousands of tables across several schemas, a steady mix of
+//! container: hundreds of tables across several schemas, a steady mix of
 //! reads and writes, and real lock-wait chains, so the dashboards a fresh
 //! `docker run` produces are already populated.
 
@@ -44,9 +44,8 @@ pub(crate) struct WorkloadConfig {
 }
 
 impl fmt::Debug for WorkloadConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WorkloadConfig")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkloadConfig")
             .field("dsn", &"[redacted]")
             .field("schemas", &self.schemas)
             .field("tables_per_schema", &self.tables_per_schema)

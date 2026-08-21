@@ -1,24 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-# Two layers on purpose, same reasoning as Dockerfile.bdd: the dependency
-# layer is keyed on the manifests and the lockfile alone, so a source-only
-# change reuses it and the image does not rebuild the crates.io graph on
-# every run.
-ARG DEMO_BASE=docker.io/library/rust:1.96.0-slim-bookworm
+ARG RUST_BASE=docker.io/library/rust:1.96.0-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950
+ARG RUNTIME_BASE=docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
-FROM ${DEMO_BASE} AS deps
-# PostgreSQL and PgBouncer run inside the demo container itself, so they are
-# installed here, in the layer keyed on the manifests, and not reinstalled on
-# a source change. The PostgreSQL package also creates the `postgres` user
-# the server tools require.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql pgbouncer \
-    && rm -rf /var/lib/apt/lists/*
-# .cargo/config.toml pins musl for release binaries; the image has no musl
-# std, so everything here builds for the host gnu target instead.
-ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
+FROM ${RUST_BASE} AS deps
+ARG TARGETARCH
 WORKDIR /work
-COPY Cargo.toml Cargo.lock clippy.toml rustfmt.toml ./
+RUN case "$TARGETARCH" in \
+        amd64) target=x86_64-unknown-linux-gnu ;; \
+        arm64) target=aarch64-unknown-linux-gnu ;; \
+        *) echo "Dockerfile.demo: unsupported architecture $TARGETARCH (expected amd64 or arm64)" >&2; exit 1 ;; \
+    esac \
+    && printf '%s' "$target" >/demo-target
+COPY Cargo.toml Cargo.lock rust-toolchain.toml clippy.toml rustfmt.toml ./
 COPY crates/kronika-layout/Cargo.toml crates/kronika-layout/
 COPY crates/kronika-format/Cargo.toml crates/kronika-format/
 COPY crates/kronika-derive/Cargo.toml crates/kronika-derive/
@@ -35,35 +29,68 @@ COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
 COPY bins/kronika-dump/Cargo.toml bins/kronika-dump/
 COPY bins/kronika-demo/Cargo.toml bins/kronika-demo/
 COPY bins/kronika-web/Cargo.toml bins/kronika-web/
-# Placeholder sources let cargo resolve and compile the dependency graph. A
-# proc-macro crate gets no bin target: cargo rejects one.
 RUN set -eu; \
     for crate in crates/* bins/*; do \
         mkdir -p "$crate/src"; \
-        : > "$crate/src/lib.rs"; \
+        : >"$crate/src/lib.rs"; \
         grep -q 'proc-macro = true' "$crate/Cargo.toml" \
-            || echo 'fn main() {}' > "$crate/src/main.rs"; \
+            || echo 'fn main() {}' >"$crate/src/main.rs"; \
     done; \
-    cargo build --workspace --locked --release; \
+    cargo build --workspace --locked --release --target "$(cat /demo-target)"; \
     rm -rf crates/*/src bins/*/src; \
     find target -name 'kronika*' -o -name 'libkronika*' | xargs -r rm -rf
 
-FROM deps AS demo
-WORKDIR /work
-COPY . .
-RUN cargo build --locked --release -p kronika-collector -p kronika-web -p kronika-demo
-RUN install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-collector /usr/local/bin/ \
-    && install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-web /usr/local/bin/ \
-    && install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-demo /usr/local/bin/ \
-    && install -m 0755 scripts/demo-entrypoint.sh /usr/local/bin/demo-entrypoint.sh \
-    && rm -rf /work/target
-# No VOLUME here on purpose: it would make Docker create an anonymous
-# volume at this path on every run that does not bind-mount one, which
-# then has to be found and pruned by hand. kronika-demo keeps its own
-# segment tree at KRONIKA_DEMO_DIR/segments (see demo-entrypoint.sh), so a
-# real host directory with prior YYYY/MM/DD/*.zms files bind-mounted at
-# /var/lib/kronika/data is picked up immediately from its "segments"
-# subdirectory, with no import step. Without a bind mount the directory is
-# just ordinary container-local storage, gone when the container is removed.
+FROM deps AS build
+COPY crates/ crates/
+COPY bins/kronika-collector/src/ bins/kronika-collector/src/
+COPY bins/kronika-dump/src/ bins/kronika-dump/src/
+COPY bins/kronika-demo/src/ bins/kronika-demo/src/
+COPY bins/kronika-web/build.rs bins/kronika-web/build.rs
+COPY bins/kronika-web/src/ bins/kronika-web/src/
+COPY bins/kronika-web/ui/kronika-ui.html.gz bins/kronika-web/ui/kronika-ui.html.gz
+RUN target=$(cat /demo-target) \
+    && cargo build --locked --release --target "$target" \
+        -p kronika-collector -p kronika-web -p kronika-demo \
+    && install -d /opt/kronika/bin \
+    && install -m 0755 "target/$target/release/kronika-collector" /opt/kronika/bin/ \
+    && install -m 0755 "target/$target/release/kronika-web" /opt/kronika/bin/ \
+    && install -m 0755 "target/$target/release/kronika-demo" /opt/kronika/bin/
+
+FROM ${RUNTIME_BASE} AS pg-store-plans
+ARG PG_STORE_PLANS_COMMIT=e802804d4d2763ad3b32fc8fcf9f218c61cc475f
+ARG PG_STORE_PLANS_SHA256=1ac2e75f037b927fa4cdbaf0fd95937ba92059b50b332844d1d382fcdbf3dc98
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl gcc libc6-dev make postgresql-server-dev-15 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl --fail --location --retry 3 \
+        --output pg-store-plans.tar.gz \
+        "https://github.com/ossc-db/pg_store_plans/archive/${PG_STORE_PLANS_COMMIT}.tar.gz" \
+    && printf '%s  %s\n' "$PG_STORE_PLANS_SHA256" pg-store-plans.tar.gz | sha256sum --check --strict \
+    && mkdir source \
+    && tar --extract --gzip --file pg-store-plans.tar.gz --strip-components=1 --directory source \
+    && make --directory source --jobs="$(nproc)" USE_PGXS=1 \
+    && make --directory source install USE_PGXS=1 DESTDIR=/opt/pg-store-plans \
+    && install -D -m 0644 source/LICENSE /opt/pg-store-plans/usr/share/doc/pg-store-plans/LICENSE
+
+FROM ${RUNTIME_BASE} AS demo
+LABEL org.opencontainers.image.title="Kronika interactive demo" \
+      org.opencontainers.image.description="Local PostgreSQL, PgBouncer, Kronika collector, workload, and web UI" \
+      org.opencontainers.image.source="https://github.com/vadv/Kronika" \
+      org.opencontainers.image.licenses="MIT AND BSD-3-Clause"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl pgbouncer postgresql-15 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 kronika \
+    && useradd --system --uid 10001 --gid kronika --groups postgres \
+        --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin kronika \
+    && install -d -o kronika -g kronika -m 0750 /var/lib/kronika/data
+COPY --from=pg-store-plans /opt/pg-store-plans/ /
+COPY --from=build /opt/kronika/bin/ /usr/local/bin/
+COPY --chmod=0755 scripts/demo-entrypoint.sh scripts/demo-healthcheck.sh /usr/local/bin/
 EXPOSE 8080
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=10s --start-period=10s --retries=36 \
+    CMD ["/usr/local/bin/demo-healthcheck.sh"]
 ENTRYPOINT ["/usr/local/bin/demo-entrypoint.sh"]

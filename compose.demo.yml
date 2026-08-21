@@ -1,0 +1,32 @@
+name: kronika-demo
+
+services:
+  kronika:
+    image: ${DEMO_IMAGE:-kronika-demo:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    ports:
+      - "${DEMO_BIND_ADDRESS:-127.0.0.1}:${DEMO_PORT:-8080}:8080"
+    volumes:
+      - data:/var/lib/kronika/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+      - /var/lib/kronika/pgdata:rw,nosuid,nodev,noexec,size=512m
+      - /var/lib/kronika/pgbouncer:rw,nosuid,nodev,noexec,size=16m
+    read_only: true
+    shm_size: 128m
+    cpus: 2.0
+    mem_limit: 1g
+    pids_limit: 512
+    stop_grace_period: 50s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  data:

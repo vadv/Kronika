@@ -47,7 +47,8 @@ pub fn locks_query(version: LocksVersion) -> String {
                WHERE own.pid = l.pid AND own.application_name IS NOT DISTINCT FROM \
                  current_setting('application_name')) \
            ORDER BY l.pid, l.locktype, l.database, l.relation, l.page, l.tuple, \
-                    l.virtualxid, l.transactionid, l.classid, l.objid, l.objsubid\
+                    l.virtualxid::text, l.transactionid::text, \
+                    l.classid, l.objid, l.objsubid\
          ), waiters AS (\
            SELECT l.*, ARRAY(\
              SELECT DISTINCT b.pid \

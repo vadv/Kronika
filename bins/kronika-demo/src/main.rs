@@ -50,6 +50,14 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
+fn collector_log_to_stderr(raw: Option<&str>) -> Result<bool> {
+    match raw {
+        None | Some("file") => Ok(false),
+        Some("stderr") => Ok(true),
+        Some(value) => anyhow::bail!("KRONIKA_DEMO_COLLECTOR_LOG={value:?} is not file or stderr"),
+    }
+}
+
 /// The collector binary: the operator's choice, else the one next to us.
 fn collector_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("KRONIKA_COLLECTOR_BIN") {
@@ -60,6 +68,39 @@ fn collector_binary() -> Result<PathBuf> {
         .parent()
         .context("the demo binary has no parent directory")?;
     Ok(dir.join("kronika-collector"))
+}
+
+fn spawn_collector(
+    binary: &Path,
+    segments: &Path,
+    root: &Path,
+) -> Result<(std::process::Child, String)> {
+    let log_path = root.join("collector.log");
+    let log_to_stderr =
+        collector_log_to_stderr(std::env::var("KRONIKA_DEMO_COLLECTOR_LOG").ok().as_deref())?;
+    let log_description = if log_to_stderr {
+        "container stderr".to_owned()
+    } else {
+        log_path.display().to_string()
+    };
+    let mut command = Command::new(binary);
+    command
+        .env("KRONIKA_OUT_DIR", segments)
+        .stdin(Stdio::null());
+    if log_to_stderr {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        let log = std::fs::File::create(&log_path).context("create collector.log")?;
+        command
+            .stdout(Stdio::from(
+                log.try_clone().context("share collector.log for stdout")?,
+            ))
+            .stderr(Stdio::from(log));
+    }
+    let child = command
+        .spawn()
+        .with_context(|| format!("spawn {}", binary.display()))?;
+    Ok((child, log_description))
 }
 
 /// Total bytes and count of the `.zms` files under `root`.
@@ -102,22 +143,9 @@ fn main() -> Result<()> {
         .context("start the demo workload")?;
 
     let binary = collector_binary()?;
-    let log_path = root.join("collector.log");
-    let log = std::fs::File::create(&log_path).context("create collector.log")?;
-    let mut child = Command::new(&binary)
-        .env("KRONIKA_OUT_DIR", &segments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(
-            log.try_clone().context("share collector.log for stdout")?,
-        ))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .with_context(|| format!("spawn {}", binary.display()))?;
+    let (mut child, log_description) = spawn_collector(&binary, &segments, &root)?;
     let pid = child.id();
-    println!(
-        "demo: collector pid {pid} for {duration_s}s, log {}",
-        log_path.display()
-    );
+    println!("demo: collector pid {pid} for {duration_s}s, log {log_description}");
 
     let clock_ticks = rustix::param::clock_ticks_per_second();
     let started = Instant::now();
@@ -134,10 +162,7 @@ fn main() -> Result<()> {
         }
         std::thread::sleep(SAMPLE_INTERVAL);
         if let Some(status) = child.try_wait().context("poll the collector")? {
-            anyhow::bail!(
-                "the collector exited early with {status}; see {}",
-                log_path.display()
-            );
+            anyhow::bail!("the collector exited early with {status}; see {log_description}");
         }
         if let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/status"))
             && let Some(rss) = sample::peak_rss_bytes(&text)
@@ -192,4 +217,17 @@ fn main() -> Result<()> {
     std::fs::write(&report_path, report.to_json()).context("write report.json")?;
     println!("demo: report {}", report_path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collector_log_to_stderr;
+
+    #[test]
+    fn collector_log_destination_is_explicit() {
+        assert!(!collector_log_to_stderr(None).expect("default file"));
+        assert!(!collector_log_to_stderr(Some("file")).expect("file"));
+        assert!(collector_log_to_stderr(Some("stderr")).expect("stderr"));
+        assert!(collector_log_to_stderr(Some("stdout")).is_err());
+    }
 }
