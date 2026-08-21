@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::{Fold, Obs, column_of, entity_key_into, interval_end, interval_start};
+use super::{Fold, GroupedFill, Obs, column_of, entity_key_into, interval_end, interval_start};
 
 fn entity_key(type_id: u32, identity: &[Value]) -> String {
     let mut key = String::new();
@@ -202,38 +202,24 @@ fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
 #[test]
 fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    let group = || Some(vec![json!("postgres")]);
     // Two workers of one command, one of them dying mid-hour, plus a loner.
-    fold.observe(1, &identity("101"), group(), HOUR, Some(0.0));
-    fold.observe(
-        1,
-        &identity("101"),
-        group(),
-        HOUR + 15 * MINUTE,
-        Some(900.0),
-    );
-    fold.observe(1, &identity("102"), group(), HOUR, Some(0.0));
-    fold.observe(
-        1,
-        &identity("102"),
-        group(),
-        HOUR + 40 * MINUTE,
-        Some(1_200.0),
-    );
-    fold.observe(
-        1,
-        &identity("7"),
-        Some(vec![json!("cron")]),
-        HOUR,
-        Some(0.0),
-    );
-    fold.observe(
-        1,
-        &identity("7"),
-        Some(vec![json!("cron")]),
-        HOUR + 40 * MINUTE,
-        Some(240.0),
-    );
+    let samples = [
+        ("101", "postgres", HOUR, 0.0),
+        ("101", "postgres", HOUR + 15 * MINUTE, 900.0),
+        ("102", "postgres", HOUR, 0.0),
+        ("102", "postgres", HOUR + 40 * MINUTE, 1_200.0),
+        ("7", "cron", HOUR, 0.0),
+        ("7", "cron", HOUR + 40 * MINUTE, 240.0),
+    ];
+    for &(entity, group, ts, value) in &samples {
+        fold.observe(
+            1,
+            &identity(entity),
+            Some(vec![json!(group)]),
+            ts,
+            Some(value),
+        );
+    }
     let grouped = fold.finish_grouped(1);
     assert_eq!(grouped.group_count, 2);
     assert_eq!(grouped.rows.len(), 1);
@@ -241,13 +227,18 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     assert_eq!(top.values, vec![json!("postgres")]);
     assert_eq!(top.members, 2);
     assert_eq!(top.total, Some(2_100.0));
-    let first = top.cells[0].unwrap_or_default();
+    let mut fill = GroupedFill::new(HOUR, end(), 2, true, &grouped.rows);
+    for &(entity, group, ts, value) in &samples {
+        fill.observe(1, &identity(entity), &[json!(group)], ts, Some(value));
+    }
+    let filled = fill.finish();
+    let first = filled.rows[0][0].value().unwrap_or_default();
     assert!(first > 0.0);
     assert_eq!(grouped.others_total, Some(240.0));
     // cron's first column has one sample and no baseline; its delta lands in
     // the second column through the carry.
-    assert_eq!(grouped.others[0].value(), None);
-    let others_second = grouped.others[1].value().unwrap_or_default();
+    assert_eq!(filled.others[0].value(), None);
+    let others_second = filled.others[1].value().unwrap_or_default();
     assert!(others_second > 0.0);
 }
 
@@ -330,4 +321,9 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     assert_eq!(records[0]["entity_count"], 129);
     assert_eq!(records[1]["identity"], json!(["/mount-128"]));
     assert_eq!(records[1]["cells"], json!([128.0]));
+    assert_eq!(records[2]["band"], "totals");
+    assert_eq!(records[2]["cells"], json!([8_256.0]));
+    assert_eq!(records[3]["band"], "others");
+    assert_eq!(records[3]["total"], json!(8_128.0));
+    assert_eq!(records[3]["cells"], json!([8_128.0]));
 }

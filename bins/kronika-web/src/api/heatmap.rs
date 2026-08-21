@@ -127,9 +127,19 @@ impl PreparedHeatmap {
             };
             self.emit_all(&ranked, &cells, &labels, emit, cancelled)?;
         } else {
-            let grouped = fold.finish_grouped(self.request.top);
+            let mut grouped = fold.finish_grouped(self.request.top);
             entities = grouped.group_count;
             out_of_order = grouped.out_of_order;
+            let Some(filled) = self.fill_grouped(&grouped, &seen_rows, cancelled)? else {
+                return Ok(());
+            };
+            for (row, cells) in grouped.rows.iter_mut().zip(filled.rows) {
+                row.cells = cells.into_iter().map(|sum| sum.value()).collect();
+            }
+            grouped.others = filled.others;
+            if !self.cumulative {
+                grouped.others_total = band_peak(&grouped.others);
+            }
             self.emit_grouped(&grouped, emit, cancelled)?;
         }
         eprintln!(
@@ -351,6 +361,96 @@ impl PreparedHeatmap {
             }
         }
         Ok(Some((cells, labels)))
+    }
+
+    /// Second grouped pass: fill only the ranked groups and one Others strip.
+    /// The first pass has already fixed every entity's group and the physical
+    /// row prefix; this pass repeats the same first-sighting rule without
+    /// retaining a groups-by-columns matrix.
+    fn fill_grouped(
+        &self,
+        grouped: &Grouped,
+        seen_rows: &HashMap<(i64, u32), u64>,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<GroupedCells>, ApiError> {
+        if grouped.rows.is_empty() {
+            return Ok(Some(GroupedCells {
+                rows: Vec::new(),
+                others: grouped.totals.clone(),
+            }));
+        }
+        let request = &self.request;
+        let mut fold = GroupedFill::new(
+            request.from,
+            request.to,
+            request.columns,
+            self.cumulative,
+            &grouped.rows,
+        );
+        for segment_ref in &self.segments {
+            if cancelled() {
+                return Ok(None);
+            }
+            let segment = self.reader.open_segment(segment_ref)?;
+            let grouped_plans = match plans(&segment, &self.data_request(segment_ref, false), true)
+            {
+                Ok(plans) => plans,
+                Err(ApiError::NoSuchSection | ApiError::NoSuchColumn(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            for plan in &grouped_plans {
+                let Some(rows) = seen_rows.get(&(segment_ref.id(), plan.type_id)).copied() else {
+                    continue;
+                };
+                let cut = cut_columns(plan, request.fields.len());
+                if cut.is_empty() {
+                    continue;
+                }
+                let group_columns: Vec<Option<&'static str>> = request
+                    .group
+                    .iter()
+                    .map(|group| {
+                        plan.fields
+                            .iter()
+                            .find(|output| &output.name == group)
+                            .and_then(|output| output.column)
+                    })
+                    .collect();
+                let Some(cache) = RenderCache::for_plan(&segment, plan, rows, cancelled)? else {
+                    return Ok(None);
+                };
+                let mut identity = Vec::with_capacity(plan.contract.identity.len());
+                let mut group = Vec::with_capacity(group_columns.len());
+                let connected = pump_rows(&segment, plan, rows, cancelled, |chunk| {
+                    for (_ordinal, row) in chunk.drain(..) {
+                        let Some(Cell::Ts(ts)) = plan.timestamp.and_then(|column| row.get(column))
+                        else {
+                            continue;
+                        };
+                        identity.clear();
+                        for name in plan.contract.identity {
+                            identity.push(match row.get(name) {
+                                Some(stored) => cache.value(stored)?,
+                                None => Value::Null,
+                            });
+                        }
+                        group.clear();
+                        for column in &group_columns {
+                            group.push(match column.and_then(|name| row.get(name)) {
+                                Some(stored) => cache.value(stored)?,
+                                None => Value::Null,
+                            });
+                        }
+                        fold.observe(plan.type_id, &identity, &group, *ts, summed(&row, &cut));
+                    }
+                    Ok(true)
+                })?;
+                if !connected {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(fold.finish()))
     }
 
     fn emit_all(
@@ -859,15 +959,178 @@ struct EntityState {
     group: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
+enum GroupDestination {
+    Winner(usize),
+    Others,
+}
+
+struct GroupFillState {
+    destination: GroupDestination,
+    column: usize,
+    current: Obs,
+    carry: Option<(i64, f64)>,
+}
+
+impl GroupFillState {
+    fn observe(
+        &mut self,
+        column: usize,
+        ts: i64,
+        value: f64,
+        cumulative: bool,
+    ) -> Option<(GroupDestination, usize, f64)> {
+        if column < self.column {
+            return None;
+        }
+        let finished = if column > self.column {
+            let finished = self
+                .current
+                .cell(cumulative)
+                .map(|value| (self.destination, self.column, value));
+            if self.current.count > 0 {
+                self.carry = Some((self.current.last_ts, self.current.last_value));
+            }
+            self.column = column;
+            self.current = Obs::default();
+            if cumulative && let Some((carry_ts, carry_value)) = self.carry {
+                self.current.observe(carry_ts, carry_value);
+            }
+            finished
+        } else {
+            None
+        };
+        self.current.observe(ts, value);
+        finished
+    }
+}
+
+struct GroupedFill {
+    from: i64,
+    to: i64,
+    columns: usize,
+    cumulative: bool,
+    winners: HashMap<String, usize>,
+    entities: HashMap<String, GroupFillState>,
+    cells: Vec<Vec<CellSum>>,
+    others: Vec<CellSum>,
+    entity_key: String,
+    group_key: String,
+}
+
+struct GroupedCells {
+    rows: Vec<Vec<CellSum>>,
+    others: Vec<CellSum>,
+}
+
+impl GroupedFill {
+    fn new(from: i64, to: i64, columns: usize, cumulative: bool, rows: &[GroupedRow]) -> Self {
+        Self {
+            from,
+            to,
+            columns,
+            cumulative,
+            winners: rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (row.key.clone(), index))
+                .collect(),
+            entities: HashMap::new(),
+            cells: vec![vec![CellSum::default(); columns]; rows.len()],
+            others: vec![CellSum::default(); columns],
+            entity_key: String::new(),
+            group_key: String::new(),
+        }
+    }
+
+    fn observe(
+        &mut self,
+        type_id: u32,
+        identity: &[Value],
+        group: &[Value],
+        ts: i64,
+        value: Option<f64>,
+    ) {
+        if ts < self.from || ts > self.to {
+            return;
+        }
+        let Some(value) = value else {
+            return;
+        };
+        entity_key_into(&mut self.entity_key, type_id, identity);
+        let column = column_of(ts, self.from, self.to, self.columns);
+        let state = if let Some(state) = self.entities.get_mut(self.entity_key.as_str()) {
+            state
+        } else {
+            entity_key_into(&mut self.group_key, 0, group);
+            let destination = self
+                .winners
+                .get(self.group_key.as_str())
+                .copied()
+                .map_or(GroupDestination::Others, GroupDestination::Winner);
+            self.entities
+                .entry(self.entity_key.clone())
+                .or_insert_with(|| GroupFillState {
+                    destination,
+                    column,
+                    current: Obs::default(),
+                    carry: None,
+                })
+        };
+        if let Some((destination, finished_column, finished)) =
+            state.observe(column, ts, value, self.cumulative)
+        {
+            Self::add(
+                &mut self.cells,
+                &mut self.others,
+                destination,
+                finished_column,
+                finished,
+            );
+        }
+    }
+
+    fn finish(mut self) -> GroupedCells {
+        for (_key, state) in self.entities {
+            if let Some(finished) = state.current.cell(self.cumulative) {
+                Self::add(
+                    &mut self.cells,
+                    &mut self.others,
+                    state.destination,
+                    state.column,
+                    finished,
+                );
+            }
+        }
+        GroupedCells {
+            rows: self.cells,
+            others: self.others,
+        }
+    }
+
+    fn add(
+        cells: &mut [Vec<CellSum>],
+        others: &mut [CellSum],
+        destination: GroupDestination,
+        column: usize,
+        value: f64,
+    ) {
+        match destination {
+            GroupDestination::Winner(index) => cells[index][column].add(value),
+            GroupDestination::Others => others[column].add(value),
+        }
+    }
+}
+
 /// One ranked group: per-identity cells summed under one shared value, the
 /// way the totals band sums the whole section.
 struct GroupState {
     values: Vec<Value>,
     members: u32,
-    cells: Vec<CellSum>,
 }
 
 pub(super) struct GroupedRow {
+    key: String,
     pub(super) values: Vec<Value>,
     pub(super) members: u32,
     pub(super) total: Option<f64>,
@@ -960,11 +1223,7 @@ impl Fold {
                 let mut group_key = String::new();
                 entity_key_into(&mut group_key, 0, &values);
                 *self.group_index.entry(group_key).or_insert_with(|| {
-                    self.groups.push(GroupState {
-                        values,
-                        members: 0,
-                        cells: vec![CellSum::default(); self.columns],
-                    });
+                    self.groups.push(GroupState { values, members: 0 });
                     self.groups.len() - 1
                 })
             });
@@ -991,9 +1250,6 @@ impl Fold {
         if column > state.column {
             if let Some(finished) = state.current.cell(self.cumulative) {
                 self.totals[state.column].add(finished);
-                if let Some(index) = state.group {
-                    self.groups[index].cells[state.column].add(finished);
-                }
             }
             if state.current.count > 0 {
                 state.carry = Some((state.current.last_ts, state.current.last_value));
@@ -1081,9 +1337,6 @@ impl Fold {
         for (_key, state) in self.entities {
             if let Some(finished) = state.current.cell(cumulative) {
                 totals[state.column].add(finished);
-                if let Some(index) = state.group {
-                    groups[index].cells[state.column].add(finished);
-                }
             }
             if let (Some(index), Some(total)) = (state.group, state.window.total(cumulative)) {
                 group_totals[index] =
@@ -1103,14 +1356,8 @@ impl Fold {
             },
         );
         let group_count = groups.len();
-        let mut others = vec![CellSum::default(); totals.len()];
         let mut others_total: Option<f64> = None;
         for index in order.iter().skip(top) {
-            for (slot, cell) in others.iter_mut().zip(&groups[*index].cells) {
-                if let Some(value) = cell.value() {
-                    slot.add(value);
-                }
-            }
             if let Some(total) = group_totals[*index] {
                 others_total = Some(others_total.unwrap_or(0.0) + total);
             }
@@ -1125,11 +1372,7 @@ impl Fold {
         } else {
             band_peak(&totals)
         };
-        let others_total = if cumulative {
-            others_total
-        } else {
-            band_peak(&others)
-        };
+        let others_total = if cumulative { others_total } else { None };
         let mut rows = Vec::with_capacity(top.min(order.len()));
         for index in order.into_iter().take(top) {
             let group = std::mem::replace(
@@ -1137,20 +1380,22 @@ impl Fold {
                 GroupState {
                     values: Vec::new(),
                     members: 0,
-                    cells: Vec::new(),
                 },
             );
+            let mut key = String::new();
+            entity_key_into(&mut key, 0, &group.values);
             rows.push(GroupedRow {
+                key,
                 values: group.values,
                 members: group.members,
                 total: group_totals[index],
-                cells: group.cells.iter().map(CellSum::value).collect(),
+                cells: Vec::new(),
             });
         }
         Grouped {
             rows,
             totals,
-            others,
+            others: vec![CellSum::default(); self.columns],
             totals_total,
             others_total,
             group_count,
