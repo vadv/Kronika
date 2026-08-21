@@ -212,6 +212,7 @@
   background: var(--color-s1);
   border: 1px solid var(--color-line2);
   border-radius: var(--radius-md);
+  flex: none;
   overflow: hidden;
 }
 @utility activity-row {

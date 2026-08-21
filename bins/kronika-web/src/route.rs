@@ -44,6 +44,7 @@ pub(crate) struct HeatmapRequest {
     pub(crate) columns: usize,
     pub(crate) top: usize,
     pub(crate) labels: Vec<String>,
+    pub(crate) group: Option<String>,
     pub(crate) type_id: Option<u32>,
 }
 
@@ -422,6 +423,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     let mut columns = None;
     let mut top = None;
     let mut labels: Vec<String> = Vec::new();
+    let mut group = None;
     let mut type_id = None;
     for (raw_name, raw_value) in pairs(query)? {
         let name = decoded("parameter", raw_name, true)?;
@@ -453,6 +455,12 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 }
                 labels.push(value);
             }
+            "group" if group.is_none() => {
+                if value.is_empty() {
+                    return Err(RouteError::BadParameter("group".to_owned()));
+                }
+                group = Some(value);
+            }
             "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
@@ -465,6 +473,11 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     if fields.is_empty() {
         return Err(RouteError::BadParameter("field".to_owned()));
     }
+    // A grouped ranking aggregates identities away, so per-identity labels
+    // have nothing to attach to.
+    if group.is_some() && !labels.is_empty() {
+        return Err(RouteError::BadParameter("label".to_owned()));
+    }
     Ok(HeatmapRequest {
         from,
         to,
@@ -473,6 +486,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
         top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
         labels,
+        group,
         type_id,
     })
 }

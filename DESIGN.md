@@ -538,7 +538,7 @@ pinned totals band shows the whole instance's rhythm and a pinned others band
 carries everything beyond the ranked rows. Cells share one global color scale
 by default with an explicit per-row alternative; a missing interval draws
 nothing and a real zero draws the faintest step. The strips follow the shared
-cursor, a cell click moves it, a row click filters the table to that statement,
+cursor, a cell click moves it, a row click filters the table to that entity,
 and an explicit control expands the ledger to full screen, where the rank
 depth is selectable. Query text never travels with the ranking response: the
 loaded table page labels most ranked rows and the rest fetch one bounded text
@@ -978,8 +978,8 @@ limit.
 
 Every heatmap column carries its exact interval boundaries. For a counter, a
 cell is the last value in the interval minus the identity's latest value at or
-before the interval's start, divided by the elapsed time between those two
-observations; one in-interval sample plus a preceding baseline is enough, so a
+before the interval's start within the requested window, divided by the elapsed
+time between those two observations; one in-interval sample plus a preceding baseline is enough, so a
 cadence as coarse as the column width still fills every later column. Missing
 input, no baseline, a non-positive observed duration or a negative delta
 produces `null`. A zero delta produces `0`. For a gauge, the cell is the last

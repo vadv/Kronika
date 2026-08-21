@@ -76,8 +76,14 @@ fn a_gauge_cell_is_the_last_sample_and_ranks_by_the_maximum() {
 fn the_fold_ranks_by_the_whole_window_and_aggregates_the_rest() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
     for (name, per_minute) in [("a", 3_600.0), ("b", 1_800.0), ("c", 900.0)] {
-        fold.observe(1, &identity(name), HOUR, Some(0.0));
-        fold.observe(1, &identity(name), HOUR + 30 * MINUTE, Some(per_minute));
+        fold.observe(1, &identity(name), None, HOUR, Some(0.0));
+        fold.observe(
+            1,
+            &identity(name),
+            None,
+            HOUR + 30 * MINUTE,
+            Some(per_minute),
+        );
     }
     let ranked = fold.finish(2);
     assert_eq!(ranked.entity_count, 3);
@@ -94,10 +100,10 @@ fn the_fold_ranks_by_the_whole_window_and_aggregates_the_rest() {
 #[test]
 fn the_totals_band_folds_each_finished_column_in_recording_order() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    fold.observe(1, &identity("a"), HOUR, Some(0.0));
-    fold.observe(1, &identity("a"), HOUR + 15 * MINUTE, Some(900.0));
-    fold.observe(1, &identity("a"), HOUR + 40 * MINUTE, Some(900.0));
-    fold.observe(1, &identity("a"), HOUR + 55 * MINUTE, Some(1_800.0));
+    fold.observe(1, &identity("a"), None, HOUR, Some(0.0));
+    fold.observe(1, &identity("a"), None, HOUR + 15 * MINUTE, Some(900.0));
+    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(900.0));
+    fold.observe(1, &identity("a"), None, HOUR + 55 * MINUTE, Some(1_800.0));
     let ranked = fold.finish(1);
     let first = ranked.totals[0].value().unwrap_or_default();
     // The second column measures from the boundary carry at minute 15, so
@@ -111,8 +117,8 @@ fn the_totals_band_folds_each_finished_column_in_recording_order() {
 #[test]
 fn a_sample_for_a_finished_column_is_counted_not_folded() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    fold.observe(1, &identity("a"), HOUR + 40 * MINUTE, Some(100.0));
-    fold.observe(1, &identity("a"), HOUR + 5 * MINUTE, Some(1.0));
+    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(100.0));
+    fold.observe(1, &identity("a"), None, HOUR + 5 * MINUTE, Some(1.0));
     let ranked = fold.finish(1);
     assert_eq!(ranked.out_of_order, 1);
 }
@@ -120,11 +126,11 @@ fn a_sample_for_a_finished_column_is_counted_not_folded() {
 #[test]
 fn samples_outside_the_window_and_null_values_are_ignored() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
-    fold.observe(1, &identity("a"), HOUR - 1, Some(0.0));
-    fold.observe(1, &identity("a"), HOUR, Some(100.0));
-    fold.observe(1, &identity("a"), HOUR + MINUTE, None);
-    fold.observe(1, &identity("a"), HOUR + 2 * MINUTE, Some(200.0));
-    fold.observe(1, &identity("a"), end() + 1, Some(900.0));
+    fold.observe(1, &identity("a"), None, HOUR - 1, Some(0.0));
+    fold.observe(1, &identity("a"), None, HOUR, Some(100.0));
+    fold.observe(1, &identity("a"), None, HOUR + MINUTE, None);
+    fold.observe(1, &identity("a"), None, HOUR + 2 * MINUTE, Some(200.0));
+    fold.observe(1, &identity("a"), None, end() + 1, Some(900.0));
     let ranked = fold.finish(1);
     assert_eq!(ranked.rows[0].total, Some(100.0));
 }
@@ -132,10 +138,10 @@ fn samples_outside_the_window_and_null_values_are_ignored() {
 #[test]
 fn entities_with_a_null_ranking_value_sort_after_real_totals() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
-    fold.observe(1, &identity("reset"), HOUR, Some(900.0));
-    fold.observe(1, &identity("reset"), HOUR + MINUTE, Some(100.0));
-    fold.observe(1, &identity("steady"), HOUR, Some(0.0));
-    fold.observe(1, &identity("steady"), HOUR + MINUTE, Some(60.0));
+    fold.observe(1, &identity("reset"), None, HOUR, Some(900.0));
+    fold.observe(1, &identity("reset"), None, HOUR + MINUTE, Some(100.0));
+    fold.observe(1, &identity("steady"), None, HOUR, Some(0.0));
+    fold.observe(1, &identity("steady"), None, HOUR + MINUTE, Some(60.0));
     let ranked = fold.finish(5);
     assert_eq!(ranked.rows[0].identity, identity("steady"));
     assert_eq!(ranked.rows[1].total, None);
@@ -151,6 +157,7 @@ fn a_sparse_cadence_fills_every_later_column_through_the_boundary_carry() {
         fold.observe(
             1,
             &identity("a"),
+            None,
             HOUR + column * 5 * MINUTE,
             Some(600.0 * column as f64),
         );
@@ -190,4 +197,50 @@ fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
         Some(12.0)
     );
     assert_eq!(super::summed(&row, &["n_tup_del"]), None);
+}
+
+#[test]
+fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
+    let mut fold = Fold::new(HOUR, end(), 2, true);
+    let group = || Some(json!("postgres"));
+    // Two workers of one command, one of them dying mid-hour, plus a loner.
+    fold.observe(1, &identity("101"), group(), HOUR, Some(0.0));
+    fold.observe(
+        1,
+        &identity("101"),
+        group(),
+        HOUR + 15 * MINUTE,
+        Some(900.0),
+    );
+    fold.observe(1, &identity("102"), group(), HOUR, Some(0.0));
+    fold.observe(
+        1,
+        &identity("102"),
+        group(),
+        HOUR + 40 * MINUTE,
+        Some(1_200.0),
+    );
+    fold.observe(1, &identity("7"), Some(json!("cron")), HOUR, Some(0.0));
+    fold.observe(
+        1,
+        &identity("7"),
+        Some(json!("cron")),
+        HOUR + 40 * MINUTE,
+        Some(240.0),
+    );
+    let grouped = fold.finish_grouped(1);
+    assert_eq!(grouped.group_count, 2);
+    assert_eq!(grouped.rows.len(), 1);
+    let top = &grouped.rows[0];
+    assert_eq!(top.value, json!("postgres"));
+    assert_eq!(top.members, 2);
+    assert_eq!(top.total, Some(2_100.0));
+    let first = top.cells[0].unwrap_or_default();
+    assert!(first > 0.0);
+    assert_eq!(grouped.others_total, Some(240.0));
+    // cron's first column has one sample and no baseline; its delta lands in
+    // the second column through the carry.
+    assert_eq!(grouped.others[0].value(), None);
+    let others_second = grouped.others[1].value().unwrap_or_default();
+    assert!(others_second > 0.0);
 }

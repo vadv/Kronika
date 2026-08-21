@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
+import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { loadHeatmap, loadRelatedStatementTextRow, type DataRow, type HourData, type SegmentBound } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
@@ -31,6 +31,9 @@ interface HeatmapState {
   readonly loading: boolean
   readonly error: boolean
   readonly view: HeatmapView | null
+  // The cut the loaded view was built for: values keep formatting with it
+  // until the newly selected cut's data arrives.
+  readonly viewCut: ActivityCut | null
 }
 
 // One small request per (hour, cut, top): the server ranks next to the
@@ -40,23 +43,28 @@ function useHeatmapView(
   section: string,
   columns: number,
   labels: readonly string[],
+  group: string | undefined,
   hour: number,
   cut: ActivityCut,
   top: number,
   revision: number,
   enabled: boolean,
 ): HeatmapState {
-  const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null })
+  const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null, viewCut: null })
   const fields = cut.fields.join(",")
   useEffect(() => {
     if (!enabled) return
     const controller = new AbortController()
-    setState({ loading: true, error: false, view: null })
-    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal)
-      .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view }) })
-      .catch(() => { if (!controller.signal.aborted) setState({ loading: false, error: true, view: null }) })
+    setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
+    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal, group)
+      .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setState((current) => ({ loading: false, error: true, view: current.view, viewCut: current.viewCut }))
+        }
+      })
     return () => controller.abort()
-  }, [columns, enabled, fields, hour, labels, revision, section, top])
+  }, [columns, enabled, fields, group, hour, labels, revision, section, top])
   return state
 }
 
@@ -82,12 +90,13 @@ interface RowLabel {
 // The shared hour activity ledger: ranked heatmap strips over one section,
 // collapsed until the operator opens it. Wrappers supply the curated cuts,
 // the row labels and the drill action of their section.
-function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
+function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
   readonly columns: number
   readonly cursor: number
   readonly cuts: readonly ActivityCut[]
   readonly defaultCut: string
-  readonly drill: (row: HeatmapViewRow) => void
+  readonly drill?: ((row: HeatmapViewRow) => void) | undefined
+  readonly group?: string | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
@@ -107,7 +116,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, 
   const [maximized, setMaximized] = useState(false)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, labels, hour, cut, top, revision, open)
+  const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -145,7 +154,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, 
       </header>
     </section>
   }
-  if (state.error) {
+  if (state.error && state.view === null) {
     return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
       <div className="flex items-center gap-3 px-3 py-2 font-sans text-sm text-fg3">
         <span>{t("activity.error")}</span>
@@ -153,7 +162,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, 
       </div>
     </section>
   }
-  if (state.loading || view === null) {
+  if (view === null) {
     return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
       <header className="flex items-center gap-2 border-b border-line px-3 py-[6px]">
         <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t(keys.title)}</h2>
@@ -170,6 +179,8 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, 
     cursor={cursor}
     cut={cut}
     cuts={cuts}
+    loadedCut={state.viewCut ?? cut}
+    loading={state.loading}
     drill={drill}
     hour={hour}
     keys={keys}
@@ -351,17 +362,85 @@ export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t
   readonly t: Translate
   readonly ticksPerSecond: number | null
 }) {
+  // Grouped by command: short-lived workers fold into one stable row instead
+  // of thousands of dead PIDs.
   const drill = (row: HeatmapViewRow) => {
-    const comm = row.labels[0]
+    const comm = row.identity[0]
     if (comm != null && comm !== "") onPattern(comm)
   }
-  const label = (row: HeatmapViewRow): RowLabel => {
-    const [comm, cmdline] = row.labels
-    const text = cmdline != null && cmdline !== "" ? activityPreview(cmdline) : comm ?? "—"
-    return { text, prefix: row.identity[0] == null ? null : `PID ${row.identity[0]}` }
-  }
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} hour={hour} keys={PROCESS_KEYS} label={label} labels={PROCESS_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
+  const label = (row: HeatmapViewRow): RowLabel => ({
+    text: row.identity[0] ?? "—",
+    // A single-process command needs no member count.
+    prefix: row.members === null || row.members < 2 ? null : t("activity.members", { count: row.members }),
+  })
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group="comm" hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
 }
+
+export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, t }: {
+  readonly blockSize: number | null
+  readonly cursor: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onPattern: (pattern: string) => void
+  readonly t: Translate
+}) {
+  const drill = (row: HeatmapViewRow) => {
+    const datname = row.labels[0]
+    if (datname != null && datname !== "") onPattern(datname)
+  }
+  const label = (row: HeatmapViewRow): RowLabel => ({
+    text: row.labels[0] ?? row.identity[0] ?? "—",
+    prefix: null,
+  })
+  return <ActivityLedger columns={60} cursor={cursor} cuts={DATABASE_CUTS} defaultCut="commits" drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} labels={DATABASE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_database" storageKey="kronika.activity-open.databases" t={t} />
+}
+
+// The two container ledgers: which cgroup burned CPU and which one drove the
+// block layer, each over its own recorded section.
+export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
+  readonly cursor: number
+  readonly hour: number
+  readonly io: boolean
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly t: Translate
+}) {
+  const label = (row: HeatmapViewRow): RowLabel => ({
+    text: row.identity[0] ?? "—",
+    prefix: io && row.identity[1] != null ? `${row.identity[1]}:${row.identity[2] ?? ""}` : null,
+  })
+  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
+}
+
+const DATABASE_KEYS: LedgerKeys = {
+  title: "activity.databases.title",
+  titleHelp: "activity.databases.title.help",
+  others: "activity.databases.others",
+  othersLabel: "activity.databases.others_label",
+  othersHelp: "activity.databases.others.help",
+  totalsHelp: "activity.databases.totals.help",
+}
+
+const CGROUP_CPU_KEYS: LedgerKeys = {
+  title: "activity.cgroup_cpu.title",
+  titleHelp: "activity.cgroup_cpu.title.help",
+  others: "activity.cgroups.others",
+  othersLabel: "activity.cgroups.others_label",
+  othersHelp: "activity.cgroups.others.help",
+  totalsHelp: "activity.cgroups.totals.help",
+}
+
+const CGROUP_IO_KEYS: LedgerKeys = {
+  title: "activity.cgroup_io.title",
+  titleHelp: "activity.cgroup_io.title.help",
+  others: "activity.cgroups.others",
+  othersLabel: "activity.cgroups.others_label",
+  othersHelp: "activity.cgroups.others.help",
+  totalsHelp: "activity.cgroups.totals.help",
+}
+
+const DATABASE_LABELS = ["datname"] as const
 
 const PROCESS_KEYS: LedgerKeys = {
   title: "activity.processes.title",
@@ -372,7 +451,7 @@ const PROCESS_KEYS: LedgerKeys = {
   totalsHelp: "activity.processes.totals.help",
 }
 
-const PROCESS_LABELS = ["comm", "cmdline"] as const
+const NO_LABELS = [] as const
 const STATEMENT_LABELS = ["datname", "usename"] as const
 const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
 const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const
@@ -456,12 +535,14 @@ function useStatementTexts(
   return texts
 }
 
-function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
+function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
   readonly columns: number
   readonly cursor: number
   readonly cut: ActivityCut
   readonly cuts: readonly ActivityCut[]
-  readonly drill: (row: HeatmapViewRow) => void
+  readonly loadedCut: ActivityCut
+  readonly loading: boolean
+  readonly drill?: ((row: HeatmapViewRow) => void) | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
@@ -480,7 +561,7 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
   readonly top: number
   readonly view: HeatmapView
 }) {
-  const { kind, scale: valueScale } = cutScale(cut, scales)
+  const { kind, scale: valueScale } = cutScale(loadedCut, scales)
   // A gauge cell is a plain reading, not a rate.
   const suffix = view.cumulative ? t("unit.per_second") : ""
   const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
@@ -508,7 +589,7 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
         {cuts.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
       </div>
       <LabelHelp helpKey={`activity.cut.${cut.id}.help`} iconOnly labelKey={`activity.cut.${cut.id}`} t={t} />
-      <span className="font-sans text-xs text-fg4" data-testid="activity-top-count">{t("activity.top", { top: String(view.rows.length), total: String(view.entityCount) })}</span>
+      <span className="font-sans text-xs text-fg4" data-testid="activity-top-count">{loading ? t("activity.loading") : t("activity.top", { top: String(view.rows.length), total: String(view.entityCount) })}</span>
       <div className="ml-auto flex items-center gap-2">
         {maximized && <div aria-label={t("activity.top_label")} className="lens-tabs" role="group">
           {TOP_CHOICES.map((choice) => <button aria-pressed={top === choice} data-testid={`activity-top-${choice}`} key={choice} onClick={() => onTop(choice)} type="button">{choice}</button>)}
@@ -522,11 +603,11 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
       </div>
     </header>
     {view.entityCount === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
-    {view.entityCount > 0 && <div className={maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}>
+    {view.entityCount > 0 && <div className={`${maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}${loading ? " animate-pulse opacity-55 transition-opacity" : ""}`} data-loading={loading || undefined}>
       <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={keys.totalsHelp} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
-        return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={() => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
+        return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
       {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={keys.othersHelp} iconOnly labelKey={keys.othersLabel} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(keys.others, { count: String(view.othersCount) })} total={total(view.others.total)} />}
     </div>}
@@ -591,6 +672,7 @@ function formatValue(stored: number, kind: ActivityCut["kind"], locale: Locale, 
   if (kind === "bytes") return humanBytes(stored, locale, suffix)
   if (kind === "milliseconds") return humanDuration(stored, locale, "milliseconds", suffix)
   if (kind === "seconds") return humanDuration(stored, locale, "seconds", suffix)
+  if (kind === "microseconds") return humanDuration(stored, locale, "microseconds", suffix)
   if (kind === "nanoseconds") return humanDuration(stored, locale, "nanoseconds", suffix)
   return measure(stored, locale, suffix)
 }

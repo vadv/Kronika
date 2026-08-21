@@ -154,10 +154,10 @@ test("cut scales fall back to honest raw counts without the recorded fact", asyn
 test("a sparse cadence fills every later column through the boundary carry", () => {
   const samples = Array.from({ length: 12 }, (_, column) => ({
     entity: "a",
-    timestamp: HOUR + column * 5 * MINUTE * 5,
+    timestamp: HOUR + column * 300_000_000,
     value: 600 * column,
   }))
-  const result = heatmap(samples.map((sample) => ({ ...sample, timestamp: HOUR + samples.indexOf(sample) * 300_000_000 })), true, HOUR, 12, 1)
+  const result = heatmap(samples, true, HOUR, 12, 1)
   assert.equal(result.rows[0]?.cells[0], null)
   for (let column = 1; column < 12; column += 1) {
     assert.equal(result.rows[0]?.cells[column], 2)

@@ -464,11 +464,12 @@ export async function loadHeatmap(
   columns: number,
   top: number,
   signal: AbortSignal,
+  group?: string,
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
   const to = from + 3_600_000_000 - 1
-  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top)
+  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top, group)
   const query = [
     `from=${from}`,
     `to=${to}`,
@@ -477,6 +478,7 @@ export async function loadHeatmap(
     `columns=${columns}`,
     `top=${top}`,
     ...labels.map((name) => `label=${encodeURIComponent(name)}`),
+    ...(group === undefined ? [] : [`group=${encodeURIComponent(group)}`]),
   ].join("&")
   const records = await request(`/api/heatmap?${query}`, signal)
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
@@ -509,6 +511,7 @@ export async function loadHeatmap(
         typeId: requiredText(record.type_id, "heatmap row type_id"),
         identity: texts(record["identity"]),
         labels: texts(record["labels"]),
+        members: typeof record["members"] === "number" ? record["members"] : null,
         total: total(record["total"]),
         cells: cells(record["cells"]),
       })
@@ -530,6 +533,7 @@ function fixtureHeatmap(
   labels: readonly string[],
   columns: number,
   top: number,
+  group?: string,
 ): HeatmapView {
   const fixture = bundledFixtureHour(from)
   const rows = fixture === null ? [] : fixture.sections[section] ?? []
@@ -567,21 +571,79 @@ function fixtureHeatmap(
       })
     }
   }
-  const derived = heatmap(samples, cumulative, from, columns, top)
+  if (group === undefined) {
+    const derived = heatmap(samples, cumulative, from, columns, top)
+    return {
+      cumulative,
+      intervals: [...derived.intervals],
+      rows: derived.rows.map((row) => ({
+        typeId: firstRow.get(row.entity)?.typeId ?? "",
+        identity: firstRow.get(row.entity)?.identity ?? [],
+        labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
+        members: null,
+        total: row.total,
+        cells: row.cells,
+      })),
+      totals: { total: derived.totalsTotal, cells: [...derived.totals] },
+      others: { total: derived.othersTotal, cells: [...derived.others] },
+      othersCount: derived.othersCount,
+      entityCount: derived.entityCount,
+    }
+  }
+  // Grouped: per-identity cells first, then summed under the group value,
+  // exactly as the server folds them.
+  const groupOf = new Map<string, string | null>()
+  for (const row of rows) {
+    const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
+    if (layout === undefined || layout.logicalName !== section) continue
+    const identity = layout.identity.map((name) => {
+      const stored = row.values[name]
+      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+    })
+    const entity = heatmapEntityKey([row.typeId, ...identity])
+    if (!groupOf.has(entity)) {
+      const stored = row.values[group]
+      groupOf.set(entity, stored === null || stored === undefined || typeof stored === "object" ? null : String(stored))
+    }
+  }
+  const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
+  const grouped = new Map<string | null, { members: number; total: number | null; cells: (number | null)[] }>()
+  for (const row of derived.rows) {
+    const key = groupOf.get(row.entity) ?? null
+    const slot = grouped.get(key) ?? { members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
+    slot.members += 1
+    if (row.total !== null) slot.total = (slot.total ?? 0) + row.total
+    for (const [index, cell] of row.cells.entries()) {
+      if (cell !== null) slot.cells[index] = (slot.cells[index] ?? 0) + cell
+    }
+    grouped.set(key, slot)
+  }
+  const ranked = [...grouped.entries()].sort((left, right) => (right[1].total ?? -1) - (left[1].total ?? -1))
+  const kept = ranked.slice(0, top)
+  const rest = ranked.slice(top)
+  const othersCells = new Array<number | null>(columns).fill(null)
+  let othersTotal: number | null = null
+  for (const [, slot] of rest) {
+    if (slot.total !== null) othersTotal = (othersTotal ?? 0) + slot.total
+    for (const [index, cell] of slot.cells.entries()) {
+      if (cell !== null) othersCells[index] = (othersCells[index] ?? 0) + cell
+    }
+  }
   return {
     cumulative,
     intervals: [...derived.intervals],
-    rows: derived.rows.map((row) => ({
-      typeId: firstRow.get(row.entity)?.typeId ?? "",
-      identity: firstRow.get(row.entity)?.identity ?? [],
-      labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
-      total: row.total,
-      cells: row.cells,
+    rows: kept.map(([value, slot]) => ({
+      typeId: "0",
+      identity: [value],
+      labels: [],
+      members: slot.members,
+      total: slot.total,
+      cells: slot.cells,
     })),
     totals: { total: derived.totalsTotal, cells: [...derived.totals] },
-    others: { total: derived.othersTotal, cells: [...derived.others] },
-    othersCount: derived.othersCount,
-    entityCount: derived.entityCount,
+    others: { total: othersTotal, cells: othersCells },
+    othersCount: rest.length,
+    entityCount: grouped.size,
   }
 }
 

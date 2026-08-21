@@ -64,6 +64,7 @@ fn fields_class(
 ) -> Result<ColumnClass, ApiError> {
     let mut section_seen = false;
     let mut found: Option<ColumnClass> = None;
+    let mut matched = vec![false; fields.len()];
     for contract in registry() {
         let type_id = contract.type_id.get();
         if logical_section_name(type_id) != Some(section)
@@ -72,10 +73,11 @@ fn fields_class(
             continue;
         }
         section_seen = true;
-        for field in fields {
+        for (index, field) in fields.iter().enumerate() {
             let Some(column) = contract.column(field) else {
                 continue;
             };
+            matched[index] = true;
             if column.class != ColumnClass::Cumulative && column.class != ColumnClass::Gauge {
                 return Err(ApiError::NoSuchColumn(field.clone()));
             }
@@ -86,6 +88,9 @@ fn fields_class(
     }
     if !section_seen {
         return Err(ApiError::NoSuchSection);
+    }
+    if let Some(index) = matched.iter().position(|seen| !seen) {
+        return Err(ApiError::NoSuchColumn(fields[index].clone()));
     }
     found.ok_or_else(|| ApiError::NoSuchColumn(fields.join("+")))
 }
@@ -109,20 +114,31 @@ impl PreparedHeatmap {
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let started = std::time::Instant::now();
-        let Some((ranked, seen_rows)) = self.rank(cancelled)? else {
+        let Some((fold, seen_rows)) = self.rank(cancelled)? else {
             return Ok(());
         };
-        let Some((cells, labels)) = self.fill(&ranked, &seen_rows, cancelled)? else {
-            return Ok(());
-        };
-        self.emit_all(&ranked, &cells, &labels, emit, cancelled)?;
+        let (entities, out_of_order);
+        if self.request.group.is_none() {
+            let ranked = fold.finish(self.request.top);
+            entities = ranked.entity_count;
+            out_of_order = ranked.out_of_order;
+            let Some((cells, labels)) = self.fill(&ranked, &seen_rows, cancelled)? else {
+                return Ok(());
+            };
+            self.emit_all(&ranked, &cells, &labels, emit, cancelled)?;
+        } else {
+            let grouped = fold.finish_grouped(self.request.top);
+            entities = grouped.group_count;
+            out_of_order = grouped.out_of_order;
+            self.emit_grouped(&grouped, emit, cancelled)?;
+        }
         eprintln!(
             "kronika-web: heatmap section={} field={} segments={} entities={} out_of_order={} elapsed_us={}",
             self.request.section,
             self.request.fields.join("+"),
             self.segments.len(),
-            ranked.entity_count,
-            ranked.out_of_order,
+            entities,
+            out_of_order,
             started.elapsed().as_micros(),
         );
         Ok(())
@@ -135,7 +151,7 @@ impl PreparedHeatmap {
     fn rank(
         &self,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<Option<(Ranked, HashMap<(i64, u32), u64>)>, ApiError> {
+    ) -> Result<Option<(Fold, HashMap<(i64, u32), u64>)>, ApiError> {
         let request = &self.request;
         let mut fold = Fold::new(request.from, request.to, request.columns, self.cumulative);
         let mut seen_rows: HashMap<(i64, u32), u64> = HashMap::new();
@@ -154,6 +170,12 @@ impl PreparedHeatmap {
                 if cut.is_empty() {
                     continue;
                 }
+                let group_column = self.request.group.as_ref().and_then(|group| {
+                    plan.fields
+                        .iter()
+                        .find(|output| &output.name == group)
+                        .and_then(|output| output.column)
+                });
                 seen_rows.insert((segment_ref.id(), plan.type_id), plan.rows);
                 let mut cache = RenderCache::new(&segment)?;
                 let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
@@ -175,8 +197,12 @@ impl PreparedHeatmap {
                                 None => Value::Null,
                             });
                         }
+                        let group = match group_column.and_then(|column| row.get(column)) {
+                            Some(stored) => Some(cache.value(stored)?),
+                            None => None,
+                        };
                         let value = summed(&row, &cut);
-                        fold.observe(plan.type_id, &identity, ts, value);
+                        fold.observe(plan.type_id, &identity, group, ts, value);
                     }
                     Ok(true)
                 })?;
@@ -185,7 +211,7 @@ impl PreparedHeatmap {
                 }
             }
         }
-        Ok(Some((fold.finish(request.top), seen_rows)))
+        Ok(Some((fold, seen_rows)))
     }
 
     /// Second pass: the top-K-by-columns cells and last-seen labels.
@@ -234,11 +260,19 @@ impl PreparedHeatmap {
                     continue;
                 }
                 let cut = cut_columns(plan, self.request.fields.len());
-                let label_columns: Vec<Option<&'static str>> = plan
-                    .fields
+                // Positional against the request: data_request dedups a label
+                // already present among the cut fields, so plan.fields cannot
+                // be sliced by offset.
+                let label_columns: Vec<Option<&'static str>> = self
+                    .request
+                    .labels
                     .iter()
-                    .skip(self.request.fields.len())
-                    .map(|output| output.column)
+                    .map(|label| {
+                        plan.fields
+                            .iter()
+                            .find(|output| &output.name == label)
+                            .and_then(|output| output.column)
+                    })
                     .collect();
                 let (from, to, columns) = (request.from, request.to, request.columns);
                 let mut cache = RenderCache::new(&segment)?;
@@ -371,16 +405,33 @@ impl PreparedHeatmap {
             .iter()
             .map(|sum| number(sum.value()))
             .collect();
-        let others: Vec<Value> = ranked
+        let other_values: Vec<Option<f64>> = ranked
             .totals
             .iter()
             .zip(&winner_sums)
-            .map(|(total, winner)| number(total.minus(winner)))
+            .map(|(total, winner)| total.minus(winner))
             .collect();
+        // A gauge band's hour value is the peak of the summed strip drawn
+        // beside it; one member's window maximum would understate the band.
+        let totals_total = if cumulative {
+            ranked.totals_total
+        } else {
+            band_peak(&ranked.totals)
+        };
+        let others_total = if cumulative {
+            ranked.others_total
+        } else {
+            other_values
+                .iter()
+                .flatten()
+                .fold(None, |current: Option<f64>, value| {
+                    Some(current.map_or(*value, |stored| stored.max(*value)))
+                })
+        };
         if !emit(record(json!({
             "record": "heatmap_band",
             "band": "totals",
-            "total": number(ranked.totals_total),
+            "total": number(totals_total),
             "cells": totals,
         }))?) {
             return Ok(());
@@ -388,8 +439,73 @@ impl PreparedHeatmap {
         if !emit(record(json!({
             "record": "heatmap_band",
             "band": "others",
-            "total": number(ranked.others_total),
-            "cells": others,
+            "total": number(others_total),
+            "cells": other_values.into_iter().map(number).collect::<Vec<_>>(),
+        }))?) {
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// The grouped emission: rows are groups with their summed cells; there
+    /// is no second pass and no labels.
+    fn emit_grouped(
+        &self,
+        grouped: &Grouped,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let request = &self.request;
+        let cumulative = self.cumulative;
+        let header = json!({
+            "record": "heatmap",
+            "from": request.from.to_string(),
+            "to": request.to.to_string(),
+            "section": request.section,
+            "fields": request.fields,
+            "class": if cumulative { "cumulative" } else { "gauge" },
+            "labels": request.labels,
+            "group": request.group,
+            "top": grouped.rows.len(),
+            "entity_count": grouped.group_count,
+            "others_count": grouped.group_count.saturating_sub(grouped.rows.len()),
+            "out_of_order": grouped.out_of_order.to_string(),
+            "intervals": (0..request.columns).map(|index| json!({
+                "start": interval_start(request.from, request.to, request.columns, index).to_string(),
+                "end": interval_end(request.from, request.to, request.columns, index).to_string(),
+            })).collect::<Vec<_>>(),
+        });
+        if cancelled() || !emit(record(header)?) {
+            return Ok(());
+        }
+        for row in &grouped.rows {
+            if cancelled()
+                || !emit(record(json!({
+                    "record": "heatmap_row",
+                    "type_id": "0",
+                    "identity": [row.value],
+                    "labels": [],
+                    "members": row.members,
+                    "total": number(row.total),
+                    "cells": row.cells.iter().map(|cell| number(*cell)).collect::<Vec<_>>(),
+                }))?)
+            {
+                return Ok(());
+            }
+        }
+        if !emit(record(json!({
+            "record": "heatmap_band",
+            "band": "totals",
+            "total": number(grouped.totals_total),
+            "cells": grouped.totals.iter().map(|sum| number(sum.value())).collect::<Vec<_>>(),
+        }))?) {
+            return Ok(());
+        }
+        if !emit(record(json!({
+            "record": "heatmap_band",
+            "band": "others",
+            "total": number(grouped.others_total),
+            "cells": grouped.others.iter().map(|sum| number(sum.value())).collect::<Vec<_>>(),
         }))?) {
             return Ok(());
         }
@@ -398,6 +514,11 @@ impl PreparedHeatmap {
 
     fn data_request(&self, segment: &SegmentRef, with_labels: bool) -> DataRequest {
         let mut fields = self.request.fields.clone();
+        if let Some(group) = &self.request.group
+            && !fields.contains(group)
+        {
+            fields.push(group.clone());
+        }
         if with_labels {
             for label in &self.request.labels {
                 if !fields.contains(label) {
@@ -706,6 +827,32 @@ struct EntityState {
     column: usize,
     current: Obs,
     carry: Option<(i64, f64)>,
+    group: Option<usize>,
+}
+
+/// One ranked group: per-identity cells summed under one shared value, the
+/// way the totals band sums the whole section.
+struct GroupState {
+    value: Value,
+    members: u32,
+    cells: Vec<CellSum>,
+}
+
+pub(super) struct GroupedRow {
+    pub(super) value: Value,
+    pub(super) members: u32,
+    pub(super) total: Option<f64>,
+    pub(super) cells: Vec<Option<f64>>,
+}
+
+pub(super) struct Grouped {
+    pub(super) rows: Vec<GroupedRow>,
+    pub(super) totals: Vec<CellSum>,
+    pub(super) others: Vec<CellSum>,
+    pub(super) totals_total: Option<f64>,
+    pub(super) others_total: Option<f64>,
+    pub(super) group_count: usize,
+    pub(super) out_of_order: u64,
 }
 
 pub(super) struct RankedRow {
@@ -735,6 +882,8 @@ pub(super) struct Fold {
     cumulative: bool,
     entities: HashMap<String, EntityState>,
     totals: Vec<CellSum>,
+    groups: Vec<GroupState>,
+    group_index: HashMap<String, usize>,
     key: String,
     out_of_order: u64,
 }
@@ -748,6 +897,8 @@ impl Fold {
             cumulative,
             entities: HashMap::new(),
             totals: vec![CellSum::default(); columns],
+            groups: Vec::new(),
+            group_index: HashMap::new(),
             key: String::new(),
             out_of_order: 0,
         }
@@ -757,6 +908,7 @@ impl Fold {
         &mut self,
         type_id: u32,
         identity: &[Value],
+        group: Option<Value>,
         ts: i64,
         value: Option<f64>,
     ) {
@@ -773,6 +925,23 @@ impl Fold {
             self.key = key;
             state
         } else {
+            // The first sighting fixes the entity's group: a process that
+            // execs into a new command stays under the name it started with.
+            let group = group.map(|value| {
+                let mut group_key = String::new();
+                entity_key_into(&mut group_key, 0, std::slice::from_ref(&value));
+                *self.group_index.entry(group_key).or_insert_with(|| {
+                    self.groups.push(GroupState {
+                        value,
+                        members: 0,
+                        cells: vec![CellSum::default(); self.columns],
+                    });
+                    self.groups.len() - 1
+                })
+            });
+            if let Some(index) = group {
+                self.groups[index].members = self.groups[index].members.saturating_add(1);
+            }
             let owned = key.clone();
             self.key = key;
             self.entities.entry(owned).or_insert_with(|| EntityState {
@@ -782,6 +951,7 @@ impl Fold {
                 column,
                 current: Obs::default(),
                 carry: None,
+                group,
             })
         };
         state.window.observe(ts, value);
@@ -792,6 +962,9 @@ impl Fold {
         if column > state.column {
             if let Some(finished) = state.current.cell(self.cumulative) {
                 self.totals[state.column].add(finished);
+                if let Some(index) = state.group {
+                    self.groups[index].cells[state.column].add(finished);
+                }
             }
             if state.current.count > 0 {
                 state.carry = Some((state.current.last_ts, state.current.last_value));
@@ -863,4 +1036,106 @@ impl Fold {
             out_of_order: self.out_of_order,
         }
     }
+
+    /// A grouped ranking: identities aggregate under a shared column value,
+    /// so a thousand short-lived worker processes read as one command. Cells
+    /// are per-identity cells summed — the group is its own totals band — and
+    /// a counter group ranks by the sum of its members' whole-window deltas,
+    /// a gauge group by the sum of their maxima; both stay independent of the
+    /// column count.
+    pub(super) fn finish_grouped(self, top: usize) -> Grouped {
+        let cumulative = self.cumulative;
+        let out_of_order = self.out_of_order;
+        let mut totals = self.totals;
+        let mut groups = self.groups;
+        let mut group_totals: Vec<Option<f64>> = vec![None; groups.len()];
+        for (_key, state) in self.entities {
+            if let Some(finished) = state.current.cell(cumulative) {
+                totals[state.column].add(finished);
+                if let Some(index) = state.group {
+                    groups[index].cells[state.column].add(finished);
+                }
+            }
+            if let (Some(index), Some(total)) = (state.group, state.window.total(cumulative)) {
+                group_totals[index] =
+                    Some(group_totals[index].map_or(total, |current| current + total));
+            }
+        }
+        let mut order: Vec<usize> = (0..groups.len()).collect();
+        order.sort_by(
+            |left, right| match (group_totals[*left], group_totals[*right]) {
+                (Some(left_total), Some(right_total)) => right_total
+                    .partial_cmp(&left_total)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.cmp(right)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left.cmp(right),
+            },
+        );
+        let group_count = groups.len();
+        let mut others = vec![CellSum::default(); totals.len()];
+        let mut others_total: Option<f64> = None;
+        for index in order.iter().skip(top) {
+            for (slot, cell) in others.iter_mut().zip(&groups[*index].cells) {
+                if let Some(value) = cell.value() {
+                    slot.add(value);
+                }
+            }
+            if let Some(total) = group_totals[*index] {
+                others_total = Some(others_total.unwrap_or(0.0) + total);
+            }
+        }
+        let totals_total = if cumulative {
+            group_totals
+                .iter()
+                .flatten()
+                .fold(None, |current: Option<f64>, total| {
+                    Some(current.unwrap_or(0.0) + total)
+                })
+        } else {
+            band_peak(&totals)
+        };
+        let others_total = if cumulative {
+            others_total
+        } else {
+            band_peak(&others)
+        };
+        let mut rows = Vec::with_capacity(top.min(order.len()));
+        for index in order.into_iter().take(top) {
+            let group = std::mem::replace(
+                &mut groups[index],
+                GroupState {
+                    value: Value::Null,
+                    members: 0,
+                    cells: Vec::new(),
+                },
+            );
+            rows.push(GroupedRow {
+                value: group.value,
+                members: group.members,
+                total: group_totals[index],
+                cells: group.cells.iter().map(CellSum::value).collect(),
+            });
+        }
+        Grouped {
+            rows,
+            totals,
+            others,
+            totals_total,
+            others_total,
+            group_count,
+            out_of_order,
+        }
+    }
+}
+
+/// The peak of a summed band: the honest single number beside a gauge strip.
+fn band_peak(cells: &[CellSum]) -> Option<f64> {
+    cells
+        .iter()
+        .filter_map(CellSum::value)
+        .fold(None, |current: Option<f64>, value| {
+            Some(current.map_or(value, |stored| stored.max(value)))
+        })
 }

@@ -2,7 +2,8 @@
 // the renderer consumes. The server derives the ranked top view next to the
 // segments; the bundled-fixture build derives the same shape here, in the
 // client. A counter cell is the last value in the interval minus the
-// identity's latest value at or before the interval's start, divided by the
+// identity's latest value at or before the interval's start within the
+// requested window, divided by the
 // elapsed time between those two observations — one in-interval sample plus a
 // preceding baseline is enough. Missing input, no baseline, a non-positive
 // observed duration or a negative delta produce null, a zero delta produces
@@ -208,6 +209,8 @@ export interface HeatmapViewRow {
   readonly typeId: string
   readonly identity: readonly (string | null)[]
   readonly labels: readonly (string | null)[]
+  // Distinct identities aggregated into the row when the request grouped.
+  readonly members: number | null
   readonly total: number | null
   readonly cells: readonly (number | null)[]
 }

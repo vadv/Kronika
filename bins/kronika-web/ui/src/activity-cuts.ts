@@ -8,7 +8,7 @@
 export interface ActivityCut {
   readonly id: string
   readonly fields: readonly string[]
-  readonly kind: "milliseconds" | "seconds" | "nanoseconds" | "count" | "bytes"
+  readonly kind: "milliseconds" | "seconds" | "microseconds" | "nanoseconds" | "count" | "bytes"
   readonly scaleBy?: "block_size" | "clock_ticks" | "kib"
 }
 
@@ -80,6 +80,26 @@ export const PROCESS_CUTS: readonly ActivityCut[] = [
   { id: "io_write", fields: ["write_bytes"], kind: "bytes" },
   { id: "majflt", fields: ["majflt"], kind: "count" },
   { id: "run_delay", fields: ["rundelay_ns"], kind: "nanoseconds" },
+]
+
+export const DATABASE_CUTS: readonly ActivityCut[] = [
+  { id: "commits", fields: ["xact_commit"], kind: "count" },
+  { id: "rollbacks", fields: ["xact_rollback"], kind: "count" },
+  { id: "db_read", fields: ["blks_read"], kind: "bytes", scaleBy: "block_size" },
+  { id: "temp_bytes", fields: ["temp_bytes"], kind: "bytes" },
+  { id: "deadlocks", fields: ["deadlocks"], kind: "count" },
+]
+
+export const CGROUP_CPU_CUTS: readonly ActivityCut[] = [
+  { id: "cg_cpu", fields: ["usage_usec"], kind: "microseconds" },
+  { id: "cg_throttled", fields: ["throttled_usec"], kind: "microseconds" },
+]
+
+export const CGROUP_IO_CUTS: readonly ActivityCut[] = [
+  { id: "cg_read", fields: ["rbytes"], kind: "bytes" },
+  { id: "cg_write", fields: ["wbytes"], kind: "bytes" },
+  { id: "cg_rios", fields: ["rios"], kind: "count" },
+  { id: "cg_wios", fields: ["wios"], kind: "count" },
 ]
 
 export function activityPreview(text: string): string {
