@@ -52,6 +52,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
@@ -93,6 +94,38 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
     await settleLayout(cdp)
+
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
+    assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
+    assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
+    const ledger = await cdp.evaluate(`(() => ({
+      top: document.querySelector('[data-testid="activity-top-count"]')?.textContent ?? "",
+      totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
+      others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
+      cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
+      help: document.querySelectorAll('[data-testid="activity-pg_stat_statements"] .help-dot').length,
+    }))()`)
+    assert.equal(ledger.totals, true)
+    assert.match(ledger.top, /2/)
+    assert.match(ledger.others, /1/)
+    assert.equal(ledger.cells, 6)
+    assert.ok(ledger.help >= 3)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-top-50"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-top-50"]')?.getAttribute("aria-pressed") === "true"`, "the 50-row limit")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-overlay"] [data-testid="activity-row"]').length === 2`, "the reloaded full-screen ledger", 15_000)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') === null`, "the inline ledger")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-exec_time"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the restored default cut")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the ledger collapsed again")
     const browserMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
@@ -216,6 +249,7 @@ test.skip("legacy fullscreen uPlot is replaced by the shared Inspector", { timeo
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, [
       ...timelineRecords().filter(({ record }) => record !== "finding"),
@@ -432,6 +466,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
@@ -1062,7 +1097,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the statement finding")
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "the statement finding")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
     await settleLayout(cdp)
@@ -1106,7 +1141,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await assertSearchControlContained(cdp, "Events search")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
@@ -1781,6 +1816,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
       ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : [])
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
@@ -1934,16 +1970,21 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
     }
     if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("section") === "pg_log_slow_queries") {
+        ndjson(response, slowQuerySeriesRecords())
+        return
+      }
+      if (url.searchParams.has("section")) {
+        ndjson(response, [{ record: "series_segment", segment: { id: SEGMENT } }])
+        return
+      }
       ndjson(response, slowQueryTimelineRecords())
-      return
-    }
-    if (url.pathname === `/api/segments/${SEGMENT}/snapshot` && url.searchParams.get("row_ordinal") === "3") {
-      ndjson(response, slowQueryRecords())
       return
     }
     response.writeHead(404)
@@ -1970,75 +2011,36 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the slow-query event")
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="event-item"] button').click()`)
-    await cdp.waitFor(
-      `[...document.querySelectorAll('[data-testid="event-detail"] dt')].some((label) => label.textContent.trim().toLocaleUpperCase("ru-RU") === "SAMPLE")`,
-      "the resolved slow-query detail",
-    )
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the slow-query entry")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await settleLayout(cdp)
+    const title = await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]').textContent`)
+    assert.equal(title, SLOW_QUERY)
+    const entryText = await cdp.evaluate(`document.querySelector('[data-testid="event-entry"]').textContent`)
+    assert.match(entryText, /3 раз/)
+    assert.match(entryText, /6,29 с/)
+    assert.match(entryText, /12,6 с/)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-detail"] dl') !== null`, "the slow-query expansion")
     await settleLayout(cdp)
 
-    const landscape = await cdp.evaluate(detailGeometryExpression())
+    const landscape = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(landscape.innerWidth, 1280)
     assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
-    assert.ok(landscape.sample.label.width >= 120, JSON.stringify(landscape.sample))
-    assert.equal(landscape.sample.label.lines, 1)
-    assert.ok(landscape.sample.label.right + 7 <= landscape.sample.value.left, JSON.stringify(landscape.sample))
-    assert.ok(Math.abs(landscape.sample.row.width - landscape.list.width) <= 1, JSON.stringify(landscape.sample))
-    assert.ok(Math.abs(landscape.sample.value.right - landscape.sample.row.right) <= 1, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.clientWidth > landscape.sample.label.width, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.scrollWidth <= landscape.sample.value.clientWidth + 1, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.height > landscape.sample.value.lineHeight * 1.5, JSON.stringify(landscape.sample))
-    assert.equal(landscape.sample.value.minWidth, "0px")
-    assert.equal(landscape.pattern.label.lines, 1)
-    assert.ok(landscape.pattern.value.scrollWidth <= landscape.pattern.value.clientWidth + 1, JSON.stringify(landscape.pattern))
-    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true)
+    assert.deepEqual(landscape.numeric.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
+    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true, JSON.stringify(landscape.numeric))
     assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
     assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
-    assert.equal(landscape.numeric[0]?.text, "3")
-    assert.equal(landscape.numeric[1]?.text, "6,29 с")
-    assert.equal(landscape.numeric[2]?.text, "12,6 с")
-    assert.equal(landscape.chart.current, "")
-    assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
+    assert.match(landscape.raw, /×3/)
+    assert.match(landscape.raw, /6,29 с/)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
-    assert.equal(landscape.chart.label, "")
-
-    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
-    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .u-over') !== null`, "the selected event Chart")
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
-    const eventPreviewHeight = await cdp.evaluate(`document.querySelector('.timeline-preview')?.getBoundingClientRect().height ?? null`)
-    if (eventPreviewHeight !== null) assert.ok(Math.abs(eventPreviewHeight - 124) <= .5)
-    const eventChart = await cdp.evaluate(`(() => ({
-      current: document.querySelector('.inspector-chart-slot .chart-current')?.textContent.trim() ?? '',
-      label: document.querySelector('.inspector-chart-slot .uplot-host')?.getAttribute('aria-label') ?? '',
-    }))()`)
-    assert.equal(eventChart.current, "6,29 с")
-    assert.doesNotMatch(eventChart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
-
-    const hoverPoint = await cdp.evaluate(`(() => {
-      const bounds = document.querySelector('.inspector-chart-slot .u-over').getBoundingClientRect()
-      return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
-    })()`)
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
-    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
-    const hover = await cdp.evaluate(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]').textContent`)
-    assert.match(hover, /6,29\sс/u)
-    assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
-
-    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the selected event Detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
-    const narrow = await cdp.evaluate(detailGeometryExpression())
+    const narrow = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
-    assert.equal(narrow.sample.label.lines, 1)
-    assert.ok(narrow.sample.label.bottom <= narrow.sample.value.top + 0.5, JSON.stringify(narrow.sample))
-    assert.ok(Math.abs(narrow.sample.label.left - narrow.sample.value.left) <= 1, JSON.stringify(narrow.sample))
-    assert.ok(Math.abs(narrow.sample.label.width - narrow.sample.row.width) <= 1, JSON.stringify(narrow.sample))
-    assert.ok(narrow.sample.value.scrollWidth <= narrow.sample.value.clientWidth + 1, JSON.stringify(narrow.sample))
-    assert.ok(narrow.pattern.value.scrollWidth <= narrow.pattern.value.clientWidth + 1, JSON.stringify(narrow.pattern))
     assert.equal(narrow.numeric.every(({ align }) => align === "left"), true, JSON.stringify(narrow.numeric))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -2064,6 +2066,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("group") ? aggregateRelationHistoryRecords(url) : timelineRecords(HOUR))
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, relationRecords(url, "single"))
@@ -2166,7 +2169,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.equal(narrowComparison.overflow, false)
     await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "the RU grouped-search help")
-    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /OR не смешивает text с metrics/)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /оператор OR не может объединять текстовые условия с условиями по метрикам/)
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "the RU grouped-search help closed")
@@ -2277,6 +2280,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
@@ -2734,6 +2738,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, sourceTimelineRecords(historical))
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -2837,6 +2842,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.get("section") === "pg_stat_activity"
@@ -2980,6 +2986,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.has("section") ? [] : snapshotTargetTimelineRecords())
@@ -3297,6 +3304,7 @@ test("production health keeps staggered components on one stored evaluation", { 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       if (url.searchParams.has("section")) return ndjson(response, [])
@@ -3401,6 +3409,7 @@ test("production System projections show exact CPU memory and device readings", 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
@@ -3875,62 +3884,30 @@ function slowQueryTimelineRecords() {
   ]
 }
 
-function slowQueryRecords() {
+function slowQuerySeriesRecords() {
   const columns = ["ts", "pattern", "sample", "count", "max_duration_ms", "total_duration_ms"]
   return [
+    { record: "series_segment", segment: { id: SEGMENT } },
     layout("2004001", "pg_log_slow_queries", columns),
     row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 6_290, 12_580]),
   ]
 }
 
-function detailGeometryExpression() {
+function expansionGeometryExpression() {
   return `(() => {
-    const rows = [...document.querySelectorAll('[data-testid="event-detail"] dl > div')]
-    const byLabel = (text) => rows.find((row) => row.querySelector("dt")?.textContent.trim().toLocaleUpperCase("ru-RU") === text)
-    const bounds = (node) => {
-      const rect = node.getBoundingClientRect()
-      return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
-    }
-    const measured = (text) => {
-      const row = byLabel(text)
-      const label = row.querySelector("dt")
-      const output = row.querySelector("dd")
-      const range = document.createRange()
-      range.selectNodeContents(label)
-      const lines = new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top * 10) / 10)).size
-      const style = getComputedStyle(output)
-      return {
-        label: { ...bounds(label), lines },
-        row: bounds(row),
-        value: {
-          ...bounds(output),
-          clientWidth: output.clientWidth,
-          lineHeight: Number.parseFloat(style.lineHeight),
-          minWidth: style.minWidth,
-          scrollWidth: output.scrollWidth,
-        },
-      }
-    }
-    const numeric = ["REPEATS", "MAX DURATION", "TOTAL DURATION"].map((text) => {
-      const row = byLabel(text)
+    const rows = [...document.querySelectorAll('[data-testid="event-entry-detail"] dl > div')]
+    const numeric = rows.map((row) => {
       const output = row.querySelector("dd")
       const rect = output.getBoundingClientRect()
       return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
     })
     return {
-      chart: {
-        current: document.querySelector('[data-testid="event-detail"] .chart-current')?.textContent.trim() ?? "",
-        label: document.querySelector('[data-testid="event-detail"] .uplot-host')?.getAttribute("aria-label") ?? "",
-      },
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      labels: rows.map((row) => row.querySelector("dt")?.textContent.trim() ?? ""),
-      list: bounds(document.querySelector('[data-testid="event-detail"] dl')),
       numeric,
-      pattern: measured("PATTERN"),
-      sample: measured("SAMPLE"),
+      raw: document.querySelector('[data-testid="event-raw-row"]')?.textContent ?? "",
       scrollWidth: document.documentElement.scrollWidth,
-      text: document.querySelector('[data-testid="event-detail"]')?.textContent ?? "",
+      text: document.querySelector('[data-testid="events-console"]')?.textContent ?? "",
     }
   })()`
 }
@@ -4143,6 +4120,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
@@ -4453,10 +4431,10 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.ok(Math.abs(sparseOpened.activity.height - sparseBefore.activity.height) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     assert.ok(Math.abs(sparseOpened.progress.top - sparseBefore.progress.top) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "Events list")
-    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="event-detail"]') !== null`, "Event detail in shared Inspector")
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="event-detail"]') === null`), true)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark leaves the Events console")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -4951,6 +4929,31 @@ function targetedRelationRecords(url, label, eligible) {
   })
 }
 
+
+function answerHeatmap(url, response) {
+  const from = Number(url.searchParams.get("from") ?? "0")
+  const to = Number(url.searchParams.get("to") ?? "0")
+  const columns = Number(url.searchParams.get("columns") ?? "60")
+  const labels = url.searchParams.getAll("label")
+  const span = to - from + 1
+  const intervals = Array.from({ length: columns }, (_at, index) => ({
+    start: String(from + Math.floor((index * span) / columns)),
+    end: String(from + Math.floor(((index + 1) * span) / columns) - 1),
+  }))
+  const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
+  return ndjson(response, [
+    {
+      record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
+      fields: url.searchParams.getAll("field"), class: "cumulative", labels,
+      top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
+    },
+    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },
+    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labels.map(() => "demo"), total: 60, cells },
+    { record: "heatmap_band", band: "totals", total: 200, cells },
+    { record: "heatmap_band", band: "others", total: 20, cells },
+  ])
+}
+
 function ndjson(response, records) {
   response.writeHead(200, {
     "Cache-Control": "no-store",
@@ -5284,6 +5287,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("section") ? [] : timeline)
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, activityRecords)
@@ -5397,6 +5401,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       if (url.searchParams.has("section") && historyFailure) return ndjson(response, [{ record: "error", error: "history unavailable" }])

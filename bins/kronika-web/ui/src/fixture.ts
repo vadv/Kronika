@@ -127,7 +127,6 @@ export function bundledFixtureHour(start: number): HourData | null {
     memory,
     pressure,
     health,
-    pgOverview: [],
     points,
     lanePoints,
     findings,

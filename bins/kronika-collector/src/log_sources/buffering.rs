@@ -177,6 +177,8 @@ fn push_lock_waits(
                 lock_mode: option(interner, wait.lock_mode.as_deref())?,
                 lock_target: option(interner, wait.lock_target.as_deref())?,
                 duration_ms: wait.duration_ms,
+                holding_pids: option(interner, wait.holding_pids())?,
+                wait_queue: option(interner, wait.wait_queue())?,
                 detail: option(interner, wait.detail.as_deref())?,
                 context: option(interner, wait.context.as_deref())?,
                 statement: option(interner, wait.statement.as_deref())?,

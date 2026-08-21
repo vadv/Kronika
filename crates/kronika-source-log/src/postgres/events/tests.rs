@@ -1,6 +1,7 @@
 use super::{
-    AutovacuumKind, CheckpointPhase, Events, LifecycleKind, LockWaitKind, parse_autovacuum,
-    parse_checkpoint, parse_lifecycle, parse_lock_wait, parse_slow_query, parse_temp_file,
+    AutovacuumKind, CheckpointPhase, Events, LifecycleKind, LockWaitKind, detail_list,
+    parse_autovacuum, parse_checkpoint, parse_lifecycle, parse_lock_wait, parse_slow_query,
+    parse_temp_file,
 };
 use crate::postgres::{ErrorCategory, PgRecord, Severity};
 
@@ -162,6 +163,35 @@ fn a_lock_wait_carries_the_waiter_the_mode_and_the_target() {
 }
 
 #[test]
+fn a_lock_wait_detail_yields_the_holders_and_the_queue() {
+    assert_eq!(
+        detail_list(
+            "Process holding the lock: 583. Wait queue: 2078, 456.",
+            "holding the lock: "
+        ),
+        Some("583")
+    );
+    assert_eq!(
+        detail_list(
+            "Processes holding the lock: 101, 102. Wait queue: 2078.",
+            "holding the lock: "
+        ),
+        Some("101, 102")
+    );
+    assert_eq!(
+        detail_list(
+            "Process holding the lock: 583. Wait queue: 2078, 456.",
+            "Wait queue: "
+        ),
+        Some("2078, 456")
+    );
+    assert_eq!(
+        detail_list("Key (id)=(1) already exists.", "Wait queue: "),
+        None
+    );
+}
+
+#[test]
 fn an_acquired_lock_is_its_own_kind() {
     let event = parse_lock_wait(
         "process 12345 acquired ShareLock on transaction 987 after 2000.000 ms",
@@ -253,4 +283,44 @@ fn a_log_record_that_matches_no_shape_produces_nothing() {
     let events = collect(&[record(Severity::Log, "connection authorized: user=alice")]);
 
     assert!(events.is_empty());
+}
+
+#[test]
+fn an_aggressive_autovacuum_report_is_still_a_vacuum() {
+    let event = parse_autovacuum(
+        "automatic aggressive vacuum of table \"shop.public.orders\": index scans: 1",
+        TS,
+    )
+    .expect("an aggressive vacuum report");
+    assert_eq!(event.kind, AutovacuumKind::Vacuum);
+    assert_eq!(event.relation, Some("shop.public.orders".to_owned()));
+
+    let wraparound = parse_autovacuum(
+        "automatic vacuum to prevent wraparound of table \"shop.public.orders\": index scans: 0",
+        TS,
+    )
+    .expect("a wraparound vacuum report");
+    assert_eq!(wraparound.kind, AutovacuumKind::Vacuum);
+}
+
+#[test]
+fn an_extended_protocol_execute_is_a_slow_statement() {
+    let (duration_ms, sql) =
+        parse_slow_query("duration: 250.500 ms  execute stmt_7: select * from orders")
+            .expect("an execute line");
+    close(duration_ms, 250.5);
+    assert_eq!(sql, "select * from orders");
+
+    let (_, unnamed) = parse_slow_query("duration: 9.100 ms  execute <unnamed>: select 1")
+        .expect("an unnamed execute line");
+    assert_eq!(unnamed, "select 1");
+
+    assert_eq!(
+        parse_slow_query("duration: 1.000 ms  bind stmt_7: select 1"),
+        None
+    );
+    assert_eq!(
+        parse_slow_query("duration: 1.000 ms  parse stmt_7: select 1"),
+        None
+    );
 }

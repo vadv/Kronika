@@ -1,6 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
+import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -25,7 +26,7 @@ const POSTGRESQL_OVERVIEW = [
 
 export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
-  postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage"] as const,
+  postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage", "pg_stat_wal", "pg_stat_archiver"] as const,
   postgresqlSettings: ["pg_settings"] as const,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
@@ -53,14 +54,6 @@ export interface SectionRequest {
   readonly group?: RelationGroup
   readonly filters?: Readonly<Record<string, string>>
 }
-
-export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
-  ...POSTGRESQL_OVERVIEW.map((section) => ({ section })),
-  { section: "pg_wal_storage", fields: ["wal_files_bytes"] },
-  { section: "pg_stat_activity", fields: ["state", "wait_event", "backend_type"] },
-  { section: "pg_stat_database" },
-  { section: "pg_locks", fields: ["pid"] },
-]
 
 export const POSTGRESQL_CONTEXT_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_settings", fields: ["name", "setting"] },
@@ -134,7 +127,6 @@ export interface HourData {
   readonly memory: readonly DataRow[]
   readonly pressure: readonly DataRow[]
   readonly health: readonly DataRow[]
-  readonly pgOverview: readonly DataRow[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
@@ -452,6 +444,186 @@ export async function loadSeries(
   return rows
 }
 
+export async function loadHeatmap(
+  selectedHour: number,
+  section: string,
+  fields: readonly string[],
+  labels: readonly string[],
+  columns: number,
+  top: number,
+  signal: AbortSignal,
+  group?: readonly string[],
+): Promise<HeatmapView> {
+  signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const to = from + 3_600_000_000 - 1
+  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top, group)
+  const query = [
+    `from=${from}`,
+    `to=${to}`,
+    `section=${encodeURIComponent(section)}`,
+    ...fields.map((name) => `field=${encodeURIComponent(name)}`),
+    `columns=${columns}`,
+    `top=${top}`,
+    ...labels.map((name) => `label=${encodeURIComponent(name)}`),
+    ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
+  ].join("&")
+  const records = await request(`/api/heatmap?${query}`, signal)
+  const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
+    ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
+    : []
+  const total = (stored: unknown): number | null => typeof stored === "number" && Number.isFinite(stored) ? stored : null
+  const texts = (stored: unknown): (string | null)[] => Array.isArray(stored)
+    ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
+    : []
+  let cumulative = true
+  let intervals: { start: number; end: number }[] = []
+  let entityCount = 0
+  let othersCount = 0
+  const rows: HeatmapViewRow[] = []
+  let totalsBand: HeatmapBand = { total: null, cells: [] }
+  let othersBand: HeatmapBand = { total: null, cells: [] }
+  for (const record of records) {
+    if (record.record === "heatmap") {
+      cumulative = record["class"] === "cumulative"
+      entityCount = Number(record["entity_count"] ?? 0)
+      othersCount = Number(record["others_count"] ?? 0)
+      intervals = Array.isArray(record["intervals"])
+        ? record["intervals"].map((interval) => ({
+          start: integer((interval as { readonly start: unknown }).start, "heatmap interval start"),
+          end: integer((interval as { readonly end: unknown }).end, "heatmap interval end"),
+        }))
+        : []
+    } else if (record.record === "heatmap_row") {
+      rows.push({
+        typeId: requiredText(record.type_id, "heatmap row type_id"),
+        identity: texts(record["identity"]),
+        labels: texts(record["labels"]),
+        members: typeof record["members"] === "number" ? record["members"] : null,
+        total: total(record["total"]),
+        cells: cells(record["cells"]),
+      })
+    } else if (record.record === "heatmap_band") {
+      const band = { total: total(record["total"]), cells: cells(record["cells"]) }
+      if (record["band"] === "totals") totalsBand = band
+      else othersBand = band
+    }
+  }
+  return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
+}
+
+function fixtureHeatmap(
+  from: number,
+  section: string,
+  fields: readonly string[],
+  labels: readonly string[],
+  columns: number,
+  top: number,
+  group?: readonly string[],
+): HeatmapView {
+  const fixture = bundledFixtureHour(from)
+  const rows = fixture === null ? [] : fixture.sections[section] ?? []
+  const cumulative = registry.some((layout) => layout.logicalName === section
+    && (layout.columnMetadata ?? []).some((column) => fields.includes(column.name) && column.class === "cumulative"))
+  const samples: HeatmapSample[] = []
+  const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
+  const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
+  const groupOf = new Map<string, readonly (string | null)[]>()
+  for (const row of rows) {
+    const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
+    if (layout === undefined || layout.logicalName !== section) continue
+    const identity = layout.identity.map((name) => {
+      const stored = row.values[name]
+      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+    })
+    const entity = heatmapEntityKey([row.typeId, ...identity])
+    if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
+    if (group !== undefined && group.length > 0 && !groupOf.has(entity)) {
+      groupOf.set(entity, group.map((name) => {
+        const stored = row.values[name]
+        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+      }))
+    }
+    let numeric: number | null = null
+    for (const field of fields) {
+      const raw = row.values[field]
+      const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
+      if (parsed !== null && Number.isFinite(parsed)) numeric = (numeric ?? 0) + parsed
+    }
+    samples.push({ entity, timestamp: row.timestamp, value: numeric })
+    const seen = lastLabels.get(entity)
+    if (seen === undefined || row.timestamp >= seen.ts) {
+      lastLabels.set(entity, {
+        ts: row.timestamp,
+        values: labels.map((name, index) => {
+          const stored = row.values[name]
+          if (stored !== null && stored !== undefined && typeof stored !== "object") return String(stored)
+          return seen?.values[index] ?? null
+        }),
+      })
+    }
+  }
+  if (group === undefined || group.length === 0) {
+    const derived = heatmap(samples, cumulative, from, columns, top)
+    return {
+      cumulative,
+      intervals: [...derived.intervals],
+      rows: derived.rows.map((row) => ({
+        typeId: firstRow.get(row.entity)?.typeId ?? "",
+        identity: firstRow.get(row.entity)?.identity ?? [],
+        labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
+        members: null,
+        total: row.total,
+        cells: row.cells,
+      })),
+      totals: { total: derived.totalsTotal, cells: [...derived.totals] },
+      others: { total: derived.othersTotal, cells: [...derived.others] },
+      othersCount: derived.othersCount,
+      entityCount: derived.entityCount,
+    }
+  }
+  const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
+  const grouped = new Map<string, { values: readonly (string | null)[]; members: number; total: number | null; cells: (number | null)[] }>()
+  for (const row of derived.rows) {
+    const values = groupOf.get(row.entity) ?? group.map(() => null)
+    const key = heatmapEntityKey(values)
+    const slot = grouped.get(key) ?? { values, members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
+    slot.members += 1
+    if (row.total !== null) slot.total = (slot.total ?? 0) + row.total
+    for (const [index, cell] of row.cells.entries()) {
+      if (cell !== null) slot.cells[index] = (slot.cells[index] ?? 0) + cell
+    }
+    grouped.set(key, slot)
+  }
+  const ranked = [...grouped.entries()].sort((left, right) => (right[1].total ?? -1) - (left[1].total ?? -1))
+  const kept = ranked.slice(0, top)
+  const rest = ranked.slice(top)
+  const othersCells = new Array<number | null>(columns).fill(null)
+  let othersTotal: number | null = null
+  for (const [, slot] of rest) {
+    if (slot.total !== null) othersTotal = (othersTotal ?? 0) + slot.total
+    for (const [index, cell] of slot.cells.entries()) {
+      if (cell !== null) othersCells[index] = (othersCells[index] ?? 0) + cell
+    }
+  }
+  return {
+    cumulative,
+    intervals: [...derived.intervals],
+    rows: kept.map(([, slot]) => ({
+      typeId: "0",
+      identity: slot.values,
+      labels: [],
+      members: slot.members,
+      total: slot.total,
+      cells: slot.cells,
+    })),
+    totals: { total: derived.totalsTotal, cells: [...derived.totals] },
+    others: { total: othersTotal, cells: othersCells },
+    othersCount: rest.length,
+    entityCount: grouped.size,
+  }
+}
+
 export function acceptResponse<T>(promise: Promise<T>, signal: AbortSignal, apply: (value: T) => void, reject?: () => void): void {
   void promise.then((value) => { if (!signal.aborted) apply(value) }).catch(() => { if (!signal.aborted) reject?.() })
 }
@@ -745,7 +917,6 @@ function hourData(input: {
   readonly findingGroups?: readonly FindingGroup[]
 }): HourData {
   const rows = (name: string) => input.sections[name] ?? []
-  const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
     syntheticDemo: input.syntheticDemo ?? false,
@@ -760,7 +931,6 @@ function hourData(input: {
     memory: rows("os_meminfo"),
     pressure: rows("os_psi"),
     health: rows("health"),
-    pgOverview: flatten(PRODUCT_SECTION_GROUPS.postgresqlOverview),
   }
 }
 

@@ -5,7 +5,7 @@ import type { ChartPoint } from "./series-chart"
 // the same honesty rules the large charts follow.
 export const SPARK_WIDTH = 240
 export const SPARK_HEIGHT = 28
-const PAD = 2
+export const SPARK_PAD = 2
 
 export interface SparkGeometry {
   readonly dots: readonly string[]
@@ -28,7 +28,7 @@ export function sparkScaleMax(kind: "share" | "rate" | "count" | "bytes", series
 export function sparkGeometry(points: readonly ChartPoint[], hour: number, end: number, max: number): SparkGeometry {
   const ordered = [...points].sort((left, right) => left.timestamp - right.timestamp)
   const x = (timestamp: number) => ((timestamp - hour) / (end - hour)) * SPARK_WIDTH
-  const y = (value: number) => SPARK_HEIGHT - PAD - Math.max(0, Math.min(1, value / Math.max(1e-9, max))) * (SPARK_HEIGHT - 2 * PAD)
+  const y = (value: number) => SPARK_HEIGHT - SPARK_PAD - Math.max(0, Math.min(1, value / Math.max(1e-9, max))) * (SPARK_HEIGHT - 2 * SPARK_PAD)
   const segments: string[][] = []
   const dots: string[] = []
   let active: string[] = []

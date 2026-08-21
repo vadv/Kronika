@@ -250,6 +250,24 @@ pub struct LockWait {
     pub statement: Option<String>,
 }
 
+impl LockWait {
+    /// The holder PID list from `DETAIL`.
+    #[must_use]
+    pub fn holding_pids(&self) -> Option<&str> {
+        self.detail
+            .as_deref()
+            .and_then(|detail| detail_list(detail, "holding the lock: "))
+    }
+
+    /// The wait-queue PID list from `DETAIL`.
+    #[must_use]
+    pub fn wait_queue(&self) -> Option<&str> {
+        self.detail
+            .as_deref()
+            .and_then(|detail| detail_list(detail, "Wait queue: "))
+    }
+}
+
 /// One server lifecycle record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleEvent {
@@ -424,6 +442,7 @@ const CHECKPOINT_COMPLETE: &str = "checkpoint complete:";
 const CHECKPOINT_TOO_FREQUENT: &str = "checkpoints are occurring too frequently";
 const DURATION_PREFIX: &str = "duration: ";
 const STATEMENT_MARKER: &str = " ms  statement: ";
+const EXECUTE_MARKER: &str = " ms  execute ";
 const TEMP_FILE_PREFIX: &str = "temporary file:";
 const CRASH_PREFIX: &str = "server process (PID ";
 const READY_MESSAGE: &str = "database system is ready to accept connections";
@@ -434,7 +453,23 @@ const SHUTDOWN_REQUESTS: &[(&str, &str)] = &[
 ];
 const AUTOVACUUM_PREFIXES: &[(&str, AutovacuumKind)] = &[
     ("automatic vacuum of table", AutovacuumKind::Vacuum),
+    (
+        "automatic aggressive vacuum of table",
+        AutovacuumKind::Vacuum,
+    ),
+    (
+        "automatic vacuum to prevent wraparound of table",
+        AutovacuumKind::Vacuum,
+    ),
+    (
+        "automatic aggressive vacuum to prevent wraparound of table",
+        AutovacuumKind::Vacuum,
+    ),
     ("automatic analyze of table", AutovacuumKind::Analyze),
+    (
+        "automatic aggressive analyze of table",
+        AutovacuumKind::Analyze,
+    ),
 ];
 
 fn parse_checkpoint(message: &str, ts: i64) -> Option<CheckpointEvent> {
@@ -526,15 +561,23 @@ fn parse_autovacuum(message: &str, ts: i64) -> Option<AutovacuumEvent> {
     })
 }
 
-/// `duration: 12.345 ms  statement: SELECT 1`.
+/// Parses statement and execute duration records. Parse and bind durations are
+/// excluded.
 fn parse_slow_query(message: &str) -> Option<(f64, String)> {
     let rest = message.strip_prefix(DURATION_PREFIX)?;
-    let at = rest.find(STATEMENT_MARKER)?;
+    let (at, sql_at) = if let Some(at) = rest.find(STATEMENT_MARKER) {
+        (at, at + STATEMENT_MARKER.len())
+    } else {
+        let at = rest.find(EXECUTE_MARKER)?;
+        let named = rest.get(at + EXECUTE_MARKER.len()..)?;
+        let colon = named.find(": ")?;
+        (at, at + EXECUTE_MARKER.len() + colon + ": ".len())
+    };
     let duration_ms = rest.get(..at)?.parse::<f64>().ok()?;
     if !duration_ms.is_finite() || duration_ms < 0.0 {
         return None;
     }
-    let sql = rest.get(at + STATEMENT_MARKER.len()..)?.trim();
+    let sql = rest.get(sql_at..)?.trim();
     Some((duration_ms, truncate(sql, MAX_TEXT_BYTES).to_owned()))
 }
 
@@ -563,6 +606,16 @@ fn parse_lock_wait(message: &str, ts: i64) -> Option<LockWait> {
         context: None,
         statement: None,
     })
+}
+
+/// Reads the PID list after a singular or plural holder marker, up to the next
+/// period.
+fn detail_list<'a>(detail: &'a str, marker: &str) -> Option<&'a str> {
+    let at = detail.find(marker)?;
+    let rest = detail.get(at + marker.len()..)?;
+    let end = rest.find('.').unwrap_or(rest.len());
+    let value = rest.get(..end)?.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 /// `temporary file: path "base/pgsql_tmp/pgsql_tmp1.0", size 1048576`.

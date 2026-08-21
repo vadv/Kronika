@@ -18,7 +18,7 @@ followed once.
 | `2_002_001` | `pg_log_checkpoints` | `event_stream` | `(ts, phase)` |
 | `2_003_001` | `pg_log_autovacuum` | `event_stream` | `(ts, kind, relation)` |
 | `2_004_001` | `pg_log_slow_queries` | `event_stream` | `(pattern, ts)` |
-| `2_005_001` | `pg_log_lock_waits` | `event_stream` | `(ts, kind, pid)` |
+| `2_005_002` | `pg_log_lock_waits` | `event_stream` | `(ts, kind, pid)` |
 | `2_006_001` | `pg_log_lifecycle` | `event_stream` | `(ts, kind)` |
 | `2_007_001` | `pg_log_temp_files` | `event_stream` | `(ts, size_bytes)` |
 
@@ -82,9 +82,9 @@ authorized, which is traffic, not an event.
 | Section | The record it reads | Setting that produces it |
 |---|---|---|
 | `pg_log_checkpoints` | `checkpoint starting:`, `checkpoint complete:`, `checkpoints are occurring too frequently` | `log_checkpoints`, on by default from PG 15 |
-| `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table` | `log_autovacuum_min_duration` |
-| `pg_log_slow_queries` | `duration: <ms> ms  statement: <sql>` | `log_min_duration_statement` |
-| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired` | `log_lock_waits` |
+| `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table`, including the aggressive and anti-wraparound wordings | `log_autovacuum_min_duration` |
+| `pg_log_slow_queries` | `duration: <ms> ms  statement: <sql>`, `duration: <ms> ms  execute <name>: <sql>` | `log_min_duration_statement` |
+| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; the `DETAIL` pid lists after `holding the lock:` and `Wait queue:` are stored in `holding_pids` and `wait_queue` | `log_lock_waits` |
 | `pg_log_lifecycle` | `server process (PID …) was terminated`, `received … shutdown request`, `database system is ready to accept connections` | always |
 | `pg_log_temp_files` | `temporary file: path …, size …` | `log_temp_files` |
 
@@ -113,8 +113,8 @@ reported alongside a permission problem counts as a lock.
   `lc_messages` set to another locale still yields error groups, but its
   patterns are that locale's text and no `LOG` record is recognized as a typed
   shape.
-- **The extended protocol's slow statements.** `duration: … ms  execute …` and
-  `bind …` are not read; only `statement:` is.
+- **The extended protocol's parse and bind steps.** `duration: … ms  parse …`
+  and `bind …` are not read; `statement:` and `execute …:` are.
 - **A record older than the collector's first read.** A log file that already
   exists when the collector starts is read from its beginning; one that has
   been read before resumes at its offset.

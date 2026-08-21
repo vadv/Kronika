@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { findingHistoryRequest } from "../src/finding-presentation.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -40,14 +40,6 @@ test("physical locators match the exact loaded row and mapped cell", () => {
   assert.equal(helpers.locatorMatchesColumn({ field: "write_bytes", label: "Write" }, row.typeId, "read_bytes"), false)
 })
 
-test("process finding history is requested and filtered by PID only", async () => {
-  assert.deepEqual(helpers.findingHistoryRequest(finding, row), {
-    fields: ["pid", "read_bytes"],
-    where: { pid: "9" },
-  })
-  const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
-  assert.match(source, /historyTypeId = selectedFinding\.logicalName === "os_process" \? undefined : selectedFinding\.typeId/)
-})
 
 test("statement execution findings select the interval mean cell", () => {
   const mean = helpers.STATEMENT_COLUMNS.find((column) => column.field === "mean_exec_ms_per_call")

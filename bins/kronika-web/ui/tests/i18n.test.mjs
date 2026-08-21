@@ -65,6 +65,79 @@ test("quantitative search labels and unit tokens stay canonical English in RU", 
   }
 })
 
+test("RU keeps technical labels in English and localizes help", async () => {
+  const [englishSource, russianSource, activitySource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../src/activity.tsx", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+
+  const canonical = [
+    "nav.sources", "inspector.timeline", "system.history", "pg.sections", "pg.section.activity", "pg.section.statements",
+    "pg.lens.label", "pg.lens.load", "pg.lens.per_call", "pg.lens.io", "pg.lens.resources", "pg.lens.stability",
+    "pg.value.legend", "pg.value.good", "pg.value.warning", "pg.value.critical",
+    "activity.title", "activity.retry", "activity.cut_label", "activity.cut.exec_time", "activity.cut.calls", "activity.cut.rows",
+    "activity.cut.shared_read", "activity.cut.shared_dirtied", "activity.cut.temp_written", "activity.cut.wal_bytes", "activity.top",
+    "activity.totals", "activity.others", "activity.scale_label", "activity.scale.global", "activity.scale.row", "activity.maximize",
+    "activity.restore", "activity.nested", "activity.others_label", "activity.top_label",
+    ...[
+      "query", "datname", "usename", "queryid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call",
+      "rows_per_second", "rows_per_call", "blocks_per_call", "hit_pct", "shared_blks_read", "shared_blks_hit",
+      "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written", "wal_bytes",
+      "wal_per_call", "planning_ms_per_second", "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms",
+      "mean_exec_time_ms", "stddev_exec_time_ms",
+    ].map((field) => `pg.field.${field}.label`),
+  ]
+  for (const key of canonical) assert.equal(russian[key], english[key], key)
+  for (const key of ["events.field.holding_pids", "events.field.wait_queue"]) {
+    assert.equal(russian[key], english[key], key)
+  }
+  for (const key of Object.keys(english).filter((candidate) =>
+    candidate.startsWith("pg.vitals.band.") || (candidate.startsWith("pg.vitals.row.") && !candidate.endsWith(".help")))) {
+    assert.equal(russian[key], english[key], key)
+  }
+
+  const localizedActivity = new Set(["activity.loading", "activity.error", "activity.empty"])
+  for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && !candidate.endsWith(".help") && !localizedActivity.has(candidate))) {
+    assert.equal(russian[key], english[key], key)
+  }
+  for (const [key, label] of Object.entries({
+    "activity.cut.writes": "Rows changed",
+    "activity.cut.seq_read": "Rows read by seq scans",
+    "activity.cut.heap_read": "Heap buffer read bytes",
+    "activity.cut.idx_tup_read": "Index tuples read",
+    "activity.cut.idx_blks_read": "Index buffer read bytes",
+    "activity.cut.rss": "RSS",
+    "activity.tables.members": "{count} tables",
+    "activity.indexes.members": "{count} indexes",
+  })) assert.equal(english[key], label, key)
+
+  for (const [key, label] of [["col.user.label", "User"], ["col.effective_user.label", "Effective user"]]) {
+    assert.equal(english[key], label, key)
+    assert.equal(russian[key], label, key)
+  }
+  for (const key of [
+    "filter.field.user.help", "filter.field.effective_user.help", "filter.field.user_id.help", "filter.field.effective_user_id.help",
+    "col.user.help", "col.effective_user.help",
+  ]) assert.match(russian[key], /[А-Яа-яЁё]/u, key)
+
+  for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && candidate.endsWith(".help"))) {
+    assert.match(russian[key], /[А-Яа-яЁё]/u, key)
+  }
+  for (const key of ["activity.loading", "activity.error", "activity.empty"]) assert.match(russian[key], /[А-Яа-яЁё]/u, key)
+  for (const text of Object.entries(english).filter(([key]) => key.startsWith("activity.")).map(([, value]) => value)) {
+    assert.doesNotMatch(text, /chatty|heavy query|hint|drives|pressures|too small|loads replication|argues/i)
+  }
+  for (const text of Object.entries(russian).filter(([key]) => key.startsWith("activity.")).map(([, value]) => value)) {
+    assert.doesNotMatch(text, /болтлив|тяж[её]л|намека|давит|нагружает|ему мал|довод/i)
+  }
+  assert.match(activitySource, /`Query ID \$\{queryId \?\? "—"\}`/)
+  assert.doesNotMatch(activitySource, /`queryid /)
+})
+
 test("hour empty states are provisional only while the selected hour is open", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
@@ -155,12 +228,9 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.activity.idle"], "Idle")
   assert.equal(russian["pg.field.query_duration_ms.label"], "Query time")
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Xact time")
-  assert.equal(english["pg.wal_storage.label"], "Size of files in pg_wal")
-  assert.equal(english["pg.wal_storage.history"], "Size of files in pg_wal over the hour")
-  assert.equal(english["pg.wal_storage.help"], "Total size of regular files visible in pg_wal at the cursor.")
-  assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
-  assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
-  assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal у курсора.")
+  assert.equal(english["pg.vitals.row.wal_size"], "pg_wal size")
+  assert.equal(russian["pg.vitals.row.wal_size"], "pg_wal size")
+  assert.match(russian["pg.vitals.row.wal_size.help"], /[А-Яа-яЁё]/u)
   assert.match(english["pg.field.queryid_stat_statements.help"], /vadv fork of pg_store_plans/)
   assert.match(russian["pg.field.queryid_stat_statements.help"], /форком pg_store_plans от vadv/)
   for (const text of [...Object.values(english), ...Object.values(russian)]) {
@@ -212,13 +282,13 @@ test("dense-table help is factual, concise, and complete in both locales", async
   }
 
   assert.match(english["pg.field.calls.help"], /exact cumulative counter.*separate from Calls\/s/i)
-  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement or plan ran.*call frequency or the weight/i)
-  assert.match(english["pg.field.execution_ms_per_second.help"], /1000 ms\/s.*one execution-second.*serial CPU-bound.*concurrent calls add.*not summed worker CPU/i)
-  assert.match(english["pg.field.mean_exec_ms_per_call.help"], /one execution took on average.*unavailable without calls/i)
-  assert.match(english["pg.field.rows_per_second.help"], /rows per second the statement returns or affects/i)
+  assert.equal(english["pg.field.calls_per_second.help"], "Statement or plan executions per second in the calculation interval.")
+  assert.equal(english["pg.field.execution_ms_per_second.help"], "Accumulated execution time per wall-clock second in the calculation interval. Concurrent executions add together, so the value can exceed 1000 ms/s.")
+  assert.equal(english["pg.field.mean_exec_ms_per_call.help"], "Mean execution time per call in the calculation interval; unavailable without calls.")
+  assert.equal(english["pg.field.rows_per_second.help"], "Rows returned or affected per second in the calculation interval.")
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
   assert.match(russian["pg.field.calls.help"], /точный накопительный счётчик отделён от Calls\/s/i)
-  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся этот запрос или план.*частота вызовов или тяжесть/i)
+  assert.equal(russian["pg.field.calls_per_second.help"], "Число выполнений запроса или плана в секунду за расчётный интервал.")
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {
@@ -255,8 +325,7 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   assert.doesNotMatch(englishSource, /Local · offline|Hover over|No source row|collection scope/)
   assert.doesNotMatch(russianSource, /Наведите указатель|исходное значение|исходной строки|Область сбора/)
   assert.doesNotMatch(appSource, /\[\.\.\.HELP_SYSTEM, \.\.\.HELP_PROCESS\]/)
-  assert.match(eventsSource, /\["all", "event", "known_bad"\]/)
-  assert.doesNotMatch(eventsSource, /\["all", "event", "known_bad", "spike"\]/)
+  assert.doesNotMatch(eventsSource, /lens-tabs|locator\.spike/)
   assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
   assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)
   assert.doesNotMatch(detailSource, /col\.scope|processField\("scope"/)

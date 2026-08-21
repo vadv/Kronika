@@ -36,7 +36,7 @@ fn statistical_process_and_statement_series_are_not_findings() {
 #[test]
 fn temporary_file_rows_are_not_log_event_findings() {
     for type_id in [
-        2_001_001, 2_002_001, 2_003_001, 2_004_001, 2_005_001, 2_006_001,
+        2_001_001, 2_002_001, 2_003_001, 2_004_001, 2_005_002, 2_006_001,
     ] {
         assert!(finding_layout(type_id));
     }

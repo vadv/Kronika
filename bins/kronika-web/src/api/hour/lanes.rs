@@ -67,10 +67,20 @@ fn retain_latest<T>(samples: &mut BTreeMap<i64, T>) {
     }
 }
 
-/// Counter state is carried across segment boundaries.
-#[derive(Default)]
+/// Carries counter state across segments. A shared boundary row is suppressed
+/// because a retained-tail read can turn it into a conflicting null.
 pub(super) struct State {
     counters: Counters,
+    emitted_before: i64,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            counters: Counters::default(),
+            emitted_before: i64::MIN,
+        }
+    }
 }
 
 pub(super) fn collect(
@@ -99,11 +109,12 @@ pub(super) fn collect(
         &state.counters,
         facts.ticks_per_second,
         i64::try_from(facts.cores.len()).unwrap_or(0),
-        segment.min_ts(),
+        segment.min_ts().max(state.emitted_before.saturating_add(1)),
         segment.max_ts(),
         window,
     );
     state.counters.retain_latest();
+    state.emitted_before = state.emitted_before.max(segment.max_ts());
     Ok(current)
 }
 

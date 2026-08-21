@@ -199,3 +199,35 @@ fn row(type_id: u32, values: &[(&str, Cell)]) -> Row {
         .collect();
     Row::new(contract, cells)
 }
+
+#[test]
+fn a_shared_boundary_row_is_not_emitted_again_by_the_next_segment() {
+    // Adjacent segments share the snapshot row at ts 200. The first segment
+    // emits it with a computed rate; after retain_latest the next segment
+    // holds only that row, whose rate is null — re-emitting it would conflict
+    // with the value already sent.
+    let mut counters = Counters {
+        busy_ticks: BTreeMap::from([(100, 10), (200, 20)]),
+        ..Counters::default()
+    };
+    let window = Window {
+        from: Some(0),
+        to: Some(1_000),
+    };
+    let first = current_points(&counters, 100, 1, 100, 200, window);
+    assert!(
+        first
+            .iter()
+            .any(|point| point.key == "cpu_busy" && point.ts == 200 && point.value.is_some())
+    );
+    counters.retain_latest();
+    counters.busy_ticks.insert(200, 20);
+    counters.busy_ticks.insert(300, 30);
+    let second = current_points(&counters, 100, 1, 200_i64.saturating_add(1), 300, window);
+    assert!(second.iter().all(|point| point.ts != 200));
+    assert!(
+        second
+            .iter()
+            .any(|point| point.key == "cpu_busy" && point.ts == 300 && point.value.is_some())
+    );
+}

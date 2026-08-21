@@ -309,7 +309,7 @@ locator before applying the existing per-section cap:
 - `2_002_001` `pg_log_checkpoints`;
 - `2_003_001` `pg_log_autovacuum`;
 - `2_004_001` `pg_log_slow_queries`;
-- `2_005_001` `pg_log_lock_waits`;
+- `2_005_002` `pg_log_lock_waits`;
 - `2_006_001` `pg_log_lifecycle`.
 
 This list is exhaustive; registry metadata does not expand it. Separately,
@@ -370,7 +370,9 @@ the numeric category only on an error event locator.
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 an operator event: it has no finding locator and does not appear in Events or
 on the shared timeline. Raw temporary-file rows remain available through
-ordinary history and row reads.
+ordinary history and row reads. `pgbouncer_events` likewise has no finding
+locator and no timeline mark, but its rows do reach the Events console through
+ordinary row reads.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,
@@ -398,6 +400,9 @@ mark, anomaly, alert, incident, severity, cause, diagnosis, or correlation.
 Kronika does not group marks into incidents or infer a main symptom, severity,
 cause, relationship, confidence, or diagnosis. Several unrelated problems may
 coexist, and the person examining the recorded data is the sole judge.
+
+The Events console groups rows by recorded patterns, relations, or holder
+lists. It does not group across streams or derive incidents.
 
 ## Reading
 
@@ -433,8 +438,8 @@ Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
 and similar display values would duplicate the largest fields in the segment.
-After a heatmap selects its identities, a projected raw response supplies only
-the display labels for those identities.
+After a heatmap selects identities, projected raw reads supply query text,
+plans, command lines, and other large labels only for those identities.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
 browser revalidates against, so the file has to hold it rather than have web
@@ -518,10 +523,27 @@ topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
 virtualized lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
-Events expands the same findings drawn on the shared healthline. The timeline
+Events is the grouped log console described below; the same findings stay
+drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
+
+Statements, Plans, Tables, Indexes, and Processes show a collapsed hourly
+activity ledger above the table. Opening it requests a ranked heatmap for one
+section-specific metric. Metrics may sum counters or scale them with recorded
+block-size or clock-rate metadata; missing metadata leaves raw counts.
+The ledger makes no request until opened, and its open state persists locally.
+
+Each entity row shows interval cells, its hour total, and its value at the
+cursor. The pinned Total row includes all entities; Other includes entities
+outside the displayed ranking. Global color scaling is the default; per-row
+scaling is optional. Null cells are blank and zero uses the lightest fill. A
+cell moves the cursor, a row filters the table, and the full-screen view allows
+a larger rank limit. Query text is loaded separately for ranked statements
+when the current table page does not contain it. Tables and indexes use twelve
+cells for their five-minute cadence. Gauge metrics rank by the window maximum
+and display values rather than rates.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -543,6 +565,34 @@ day shows time only; a value outside that day, or either endpoint of a
 cross-day comparison, shows the full date. One contextual formatter owns this
 presentation, while stored instants, addresses, joins and copied exact values
 remain unchanged.
+
+Events reads the hour's log sections through ordinary row reads. Each group
+shows its recorded key, count, per-minute occurrences, first and last times,
+and one sample. Expanding a group shows its stream-specific columns and source
+rows.
+
+Errors group by `(severity, category, pattern)`. Slow queries group by their
+normalized pattern and retain the slowest sample. Autovacuum and autoanalyze
+group by relation. Checkpoints form one group with timed and requested counts.
+PgBouncer events group by level and message. Lifecycle records remain separate.
+
+Lock waits group by recorded `holding_pids`. Acquired rows have no holder list;
+they join waiting rows with the same pid and target, and unmatched rows form a
+separate group. The log does not contain the holder's statement. Snapshot lock
+graphs remain on the Locks page and use `pg_locks`.
+
+Each event type has a fixed routine, notable, or critical tier. The tier orders
+the console and determines the default collapsed state; it is not calculated
+from the hour's values.
+
+PostgreSQL Overview shows instance-wide values for the hour. Its header lists
+recorded settings, restarts, and setting changes; selecting a change moves the
+cursor to it. Rows group counters summed across databases, gauges reduced per
+snapshot, and row counts. Each row shows an hour value, sparkline, cursor value,
+and expandable chart. Recorded limits such as `max_connections` appear as
+dashed rules. Missing facts are hidden; recorded zeros remain visible.
+Per-query, per-backend, per-lock, and per-relation details remain on their
+respective pages.
 
 System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
@@ -934,9 +984,10 @@ The small static data client composes segment resources into `listMetrics`,
 configured source families, co-shipped registry metadata and layouts found in
 the catalog. `listSeries` discovers identities and applies exact label filters.
 The other calls request every intersecting segment and combine finished and
-active representations by `SegmentId`. `heatmap` derives the ranked top view in
-the client; HTTP has no top entity. Health is an ordinary indexed time series
-available through `history` and section indexes.
+active representations by `SegmentId`. `heatmap` asks the server for ranked
+identities, interval cells, and last-seen labels. The bundled-fixture build
+derives the same response shape from embedded rows. Health is an ordinary
+indexed time series available through `history` and section indexes.
 
 History can select several fields and series. The client requests every segment
 that intersects the window. Neither client nor server applies an implicit limit
@@ -951,16 +1002,23 @@ limit.
 ### Heatmap values
 
 Every heatmap column carries its exact interval boundaries. For a counter, a
-cell is the last value minus the first value for that identity in the interval,
-divided by the elapsed time between those two observations. Missing input,
-fewer than two usable observations, a non-positive observed duration or a
-negative delta produces `null`. A zero delta produces `0`. For a gauge, the
-cell is the last sample in the interval, or `null` when no usable sample exists.
+cell is the last value in the interval minus the identity's latest value at or
+before the interval start within the requested window, divided by the elapsed
+time between those observations. One in-interval sample plus a preceding
+baseline is enough, so a cadence equal to the column width fills later columns.
+Missing input, no baseline, a non-positive observed duration or a negative
+delta produces `null`. A zero delta produces `0`. For a gauge, the cell is the
+last sample in the interval, or `null` when no usable sample exists.
 
 Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.
-Only the second pass allocates the K-by-column result and fills its cells. The
-requested K limits the returned identities, not the work needed to rank them.
+Later passes allocate cells only for bounded batches of ranked identities or
+groups until K results are emitted. The requested K limits the returned
+identities, not the work needed to rank them. A counter ranks by its
+whole-window delta and a gauge by its whole-window maximum. A band total uses
+the sum for counters and the maximum for gauges. The response also carries a
+totals band containing the per-column sum of every entity and an others band
+equal to totals minus the ranked rows.
 Long ranges use segment-grain `.idx` for fields in the summary allowlist.
 Other fields, sub-segment resolution and partial boundary segments use
 projected raw samples.

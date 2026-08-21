@@ -1,4 +1,5 @@
 import { registry } from "kronika:registry"
+import { CgroupActivity } from "./activity"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
@@ -562,6 +563,8 @@ export function SystemView({
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={selectedSpec === undefined ? "health" : metricLane(selectedSpec)} selectedLane={selectedLane} shownAt={shownAt} t={t} />
     <div className="system-main mt-0 min-w-0">
+      {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
+      {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
       <UseTable cgroups={cgroupsPresent} cursor={cursor} expanded={expanded} hour={hour} lanePoints={data.lanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} withContent={withContent} />
       {available.length === 0 && <p className="table-empty">{t("system.no_metrics")}</p>}
     </div>

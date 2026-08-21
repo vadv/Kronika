@@ -187,6 +187,6 @@ function searchExamples(surface: SearchSurface): readonly string[] {
   if (surface === "pg_stat_user_tables") return ["size>100MB", "(schema:public OR schema:audit) AND size>100MiB", "schema:public AND (buffer_hit<90% OR seq_scan_rate>0.5/s)"]
   if (surface === "pg_stat_user_indexes") return ["size>100MB", "(schema:public OR schema:audit) AND buffer_hit<99.5%", "table_name:orders AND (scan_rate>10/s OR size>100MiB)"]
   if (surface === "os_process") return ["cpu_cores>0.1 AND rss>2MiB"]
-  if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
+  if (surface === "events") return ["kind:notable AND source:postgres*", 'text:"lock timeout"']
   return ["database:app", "state:active"]
 }

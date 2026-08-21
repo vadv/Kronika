@@ -27,7 +27,7 @@ const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     2_002_001,
     2_003_001,
     PG_LOG_SLOW_QUERIES,
-    2_005_001,
+    2_005_002,
     2_006_001,
 ];
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;

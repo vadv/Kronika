@@ -1,5 +1,6 @@
 import { Activity, ChartLine, CircleHelp, LogOut, Moon, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
+import { ProcessesActivity } from "./activity"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 
@@ -18,7 +19,6 @@ import {
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   POSTGRESQL_CONTEXT_REQUESTS,
-  POSTGRESQL_OVERVIEW_REQUESTS,
   type DataRow,
   type SectionRequest,
   type SegmentBound,
@@ -35,8 +35,8 @@ import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "
 import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
 import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
-import { EventsView, type FindingResolution } from "./events-view"
-import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
+import { EventsView } from "./events-view"
+import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
@@ -87,7 +87,7 @@ type Theme = "dark" | "light"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
+  points: [], lanePoints: [], findings: [], findingGroups: [],
 }
 
 interface CurrentSnapshot {
@@ -101,7 +101,7 @@ const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
-  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
@@ -231,16 +231,12 @@ function App({ locale, onLocale, t }: {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
   const [findingRow, setFindingRow] = useState<DataRow | null>(null)
-  const [findingResolution, setFindingResolution] = useState<FindingResolution>("idle")
-  const [findingPoints, setFindingPoints] = useState<readonly ChartPoint[]>([])
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const context = useMemo(() => selectedFinding === null ? null : entityContext(selectedFinding, findingRow, t), [findingRow, selectedFinding, t])
   const clearEntityContext = useCallback(() => {
     setSelectedFinding(null)
     setEventScope(null)
     setFindingRow(null)
-    setFindingResolution("idle")
-    setFindingPoints([])
     setSystemFocus(null)
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
@@ -625,27 +621,20 @@ function App({ locale, onLocale, t }: {
   useEffect(() => {
     if (selectedFinding === null) {
       setFindingRow(null)
-      setFindingResolution("idle")
       return
     }
-    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) {
-      setFindingResolution("ready")
-      return
-    }
+    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) return
     const loaded = resolveLocator(data, selectedFinding)?.row ?? null
     if (loaded !== null) {
       setFindingRow(loaded)
-      setFindingResolution("ready")
       return
     }
     const fields = findingProjection(selectedFinding)
     if (selectedFinding.typeId === "0" || fields.length === 0) {
       setFindingRow(null)
-      setFindingResolution("unavailable")
       return
     }
     setFindingRow(null)
-    setFindingResolution("loading")
     const controller = new AbortController()
     acceptResponse(loadSnapshot(
       selectedFinding.segmentId,
@@ -655,26 +644,10 @@ function App({ locale, onLocale, t }: {
       undefined,
       { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal, fullText: true },
     ), controller.signal, (incoming) => {
-      const row = incoming.sections[selectedFinding.logicalName]?.[0] ?? null
-      setFindingRow(row)
-      setFindingResolution(row === null ? "unavailable" : "ready")
-    }, () => setFindingResolution("unavailable"))
+      setFindingRow(incoming.sections[selectedFinding.logicalName]?.[0] ?? null)
+    })
     return () => controller.abort()
   }, [data, findingRow, selectedFinding])
-  useEffect(() => {
-    setFindingPoints([])
-    if (selectedFinding === null || findingRow === null || hour === null) return
-    const request = findingHistoryRequest(selectedFinding, findingRow)
-    if (request === null) {
-      setFindingPoints(findingHistory(selectedFinding, [findingRow], data))
-      return
-    }
-    const controller = new AbortController()
-    const historyTypeId = selectedFinding.logicalName === "os_process" ? undefined : selectedFinding.typeId
-    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, historyTypeId), controller.signal,
-      (rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)), () => setFindingPoints([]))
-    return () => controller.abort()
-  }, [data, findingRow, hour, selectedFinding])
   const pgFocus = selectedFinding !== null && selectedFinding.logicalName.startsWith("pg_") ? contextRow : null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
@@ -822,11 +795,8 @@ function App({ locale, onLocale, t }: {
     followsLatest.current = false
     setCursor(finding.timestamp)
     setFindingRow(null)
-    setFindingResolution("loading")
-    setFindingPoints([])
     if (grouped.length > 1) {
       setSelectedFinding(null)
-      setFindingResolution("idle")
       setEventScope(grouped)
       setInspectorPanel(null)
       navigateSearchSurface("events")
@@ -837,10 +807,7 @@ function App({ locale, onLocale, t }: {
     setEventScope(null)
     setOrder(null)
     const resolved = resolveLocator(data, finding)
-    if (resolved !== null) {
-      setFindingRow(resolved.row)
-      setFindingResolution("ready")
-    }
+    if (resolved !== null) setFindingRow(resolved.row)
     const route = findingRoute(finding)
     if (route === "processes") {
       navigateSearchSurface("os_process")
@@ -968,12 +935,13 @@ function App({ locale, onLocale, t }: {
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
         </div>
+        <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} densePageState={densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
       {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
     {inspectorOpen && hour !== null && <Inspector

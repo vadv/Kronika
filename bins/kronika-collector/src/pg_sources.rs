@@ -121,8 +121,8 @@ impl QueryMeasurement<'_> {
         self.emit(QueryOutcome::Success, None);
     }
 
-    fn error(mut self, error: &(dyn std::fmt::Display + '_)) {
-        self.emit(QueryOutcome::Error, Some(error.to_string()));
+    fn error(mut self, message: String) {
+        self.emit(QueryOutcome::Error, Some(message));
     }
 
     fn timeout(mut self) {
@@ -135,8 +135,8 @@ impl QueryMeasurement<'_> {
         );
     }
 
-    fn server_timeout(mut self, error: &(dyn std::fmt::Display + '_)) {
-        self.emit(QueryOutcome::Timeout, Some(error.to_string()));
+    fn server_timeout(mut self, message: String) {
+        self.emit(QueryOutcome::Timeout, Some(message));
     }
 
     fn sink_error(mut self) {
@@ -400,9 +400,9 @@ impl PgSources {
             Ok(Err(error)) => {
                 let cancelled = postgres_query_cancelled(&error);
                 if cancelled {
-                    measured.server_timeout(&error);
+                    measured.server_timeout(format!("{error:#}"));
                 } else {
-                    measured.error(&error);
+                    measured.error(format!("{error:#}"));
                 }
                 if !cancelled && postgres_connection_error(&error) {
                     self.clear_primary_connection();
@@ -2059,13 +2059,13 @@ fn finish_query<T>(
         }
         Ok(Err(error)) => {
             if postgres_query_cancelled(&error) {
-                measured.server_timeout(&error);
+                measured.server_timeout(format!("{error:#}"));
                 Err(QueryFailure::ServerTimeout)
             } else if postgres_connection_error(&error) {
-                measured.error(&error);
+                measured.error(format!("{error:#}"));
                 Err(QueryFailure::Connection)
             } else {
-                measured.error(&error);
+                measured.error(format!("{error:#}"));
                 Err(QueryFailure::Source)
             }
         }
@@ -2087,16 +2087,16 @@ fn finish_failed<T>(
         }
         Ok(Err(error)) => {
             if postgres_query_cancelled(&error) {
-                measured.server_timeout(&error);
+                measured.server_timeout(format!("{error:#}"));
                 QueryCompletion::ServerTimedOut
             } else if postgres_connection_error(&error) {
-                measured.error(&error);
+                measured.error(format!("{error:#}"));
                 QueryCompletion::ConnectionFailed
             } else if postgres_capability_changed(&error) {
-                measured.error(&error);
+                measured.error(format!("{error:#}"));
                 QueryCompletion::CapabilityChanged
             } else {
-                measured.error(&error);
+                measured.error(format!("{error:#}"));
                 QueryCompletion::SourceFailed
             }
         }
@@ -2121,6 +2121,22 @@ fn finish_batched<E>(
     ))
 }
 
+/// Formats the error chain because `tokio_postgres::Error` displays only its
+/// top-level message.
+fn error_text(error: &(dyn std::error::Error + '_)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(current) = source {
+        let text = current.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = current.source();
+    }
+    message
+}
+
 fn finish_batched_kind<E>(
     pool: &mut Pool,
     measured: QueryMeasurement<'_>,
@@ -2133,22 +2149,22 @@ fn finish_batched_kind<E>(
         }
         Err(BatchError::PostgreSql(error)) => {
             if query::is_query_cancelled(&error) {
-                measured.server_timeout(&error);
+                measured.server_timeout(error_text(&error));
                 Ok(QueryCompletion::ServerTimedOut)
             } else if postgres_stream_connection_error(&error) {
-                measured.error(&error);
+                measured.error(error_text(&error));
                 pool.close();
                 Ok(QueryCompletion::ConnectionFailed)
             } else if postgres_stream_capability_changed(&error) {
-                measured.error(&error);
+                measured.error(error_text(&error));
                 Ok(QueryCompletion::CapabilityChanged)
             } else {
-                measured.error(&error);
+                measured.error(error_text(&error));
                 Ok(QueryCompletion::SourceFailed)
             }
         }
         Err(BatchError::Decode(error)) => {
-            measured.error(&error);
+            measured.error(format!("{error:#}"));
             pool.close();
             Ok(QueryCompletion::SourceFailed)
         }

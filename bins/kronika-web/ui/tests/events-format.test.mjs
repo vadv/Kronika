@@ -4,7 +4,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const events = await importModule(
-  'export { eventValue, formatMetric } from "../src/events-view.tsx"; export { findingHistoryRequest, findingMetric } from "../src/finding-presentation.ts"',
+  'export { eventValue, formatMetric } from "../src/events-format.ts"; export { findingMetric } from "../src/finding-presentation.ts"',
   { plugins: [registryPlugin([{
     typeId: "1100001", logicalName: "os_process", identity: ["pid"],
     columns: ["ts", "pid", "starttime", "read_bytes"],
@@ -43,13 +43,3 @@ test("event identity fields remain exact while ordinary readings stay bounded", 
   assert.equal(events.eventValue(finding, "tiny", 4e-7, "en", t), "4E-7")
 })
 
-test("process finding history uses PID without the recorded start timestamp", () => {
-  const request = events.findingHistoryRequest({
-    category: null, fieldOrdinal: 3, kind: "spike", logicalName: "os_process",
-    rowOrdinal: "7", segmentId: "segment-a", timestamp: 100, typeId: "1100001",
-  }, {
-    logicalName: "os_process", ordinal: "7", segmentId: "segment-a", timestamp: 100,
-    typeId: "1100001", values: { pid: 41, starttime: "9007199254740997", read_bytes: 12 },
-  })
-  assert.deepEqual(request, { fields: ["pid", "read_bytes"], where: { pid: "41" } })
-})
