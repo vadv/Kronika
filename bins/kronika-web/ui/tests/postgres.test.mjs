@@ -28,12 +28,12 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
 const overviewHelpers = await importModule(
-  'export { overviewChartColumns, pgMetricHistoryPlan } from "../src/postgres-view.tsx"',
+  'export { pgMetricHistoryPlan } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin([{
     typeId: "overview-1", logicalName: "pg_stat_checkpointer", identity: ["kind_id"],
     columns: ["ts", "kind_id", "mode", "writes", "latency_ms", "enabled"],
@@ -75,10 +75,6 @@ function activityRow(ordinal, values, timestamp = 10_000_000) {
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("write_time"), false)
   assert.equal(helpers.isTimestampField("stats_reset"), true)
-  assert.equal(helpers.overviewValue(123.4, "write_time", "en"), "123 ms")
-  assert.equal(helpers.overviewValue(123.4, "max_age_us", "en"), "123 µs")
-  assert.equal(helpers.overviewValue(123.4, "wal_bytes", "en"), "123 B")
-  assert.equal(helpers.overviewValue(true, "datallowconn", "ru"), "да")
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
 })
@@ -162,18 +158,6 @@ test("dense statement histories cover per-call and percentage lens metrics", () 
   assert.deepEqual(helpers.denseMetricHistory(laterZero, "1002002", { field: "plan_time_pct", kind: "percent" }).map(({ value }) => value), [null, 100 * 2 / 12, null])
 })
 
-test("overview cards expose only numeric measurements and mark cumulative units as rates", async () => {
-  const stored = { logicalName: "pg_stat_checkpointer", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "overview-1", values: { kind_id: 4, mode: 2, writes: 0, latency_ms: 1.5, enabled: true } }
-  assert.deepEqual(overviewHelpers.overviewChartColumns(stored).map(({ field, rate }) => [field, rate === true]), [["writes", true], ["latency_ms", false]])
-  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(preferredField\)/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, plan\.fields, signal, row\.typeId\)/)
-  assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
-  assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
-  assert.match(source, /aria-label=\{t\("system.history"\)\} className="[^"]*overflow-x-auto/)
-  assert.doesNotMatch(source, /ChartLine/)
-  assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} historyRevision=\{historyRevision\} hour=\{hour\}/)
-})
 
 test("one overview history request covers every chart field without proof-only dependencies", async () => {
   const rate = (field) => ({ field, kind: "number", label: field, rate: true, sortable: true, width: 125 })
@@ -203,37 +187,7 @@ test("Overview multirow histories keep complete fixed identities", () => {
   assert.equal(helpers.sameEntity(prepared, { ...prepared, values: { datname: "other", prepared_count: 1 } }, "pg_prepared_xacts"), false)
 })
 
-test("WAL storage keeps exact singleton values and selected-snapshot history wiring", async () => {
-  const zero = row("1020001", { wal_files_bytes: 0 }, "pg_wal_storage")
-  const stored = { ...row("1020001", { wal_files_bytes: "33554432" }, "pg_wal_storage"), timestamp: 2 }
-  const unavailable = row("1020001", {}, "pg_wal_storage")
-  assert.deepEqual(helpers.walStoragePoints([zero, stored, unavailable]), [
-    { segmentId: "a", timestamp: 1, value: 0 },
-    { segmentId: "a", timestamp: 2, value: 33_554_432 },
-  ])
 
-  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /snapshot\(data\.sections\.pg_wal_storage \?\? \[\], cursor\)\[0\]/)
-  assert.match(source, /walStorage !== undefined && <WalStorage/)
-  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], signal, row\.typeId\)/)
-  assert.match(source, /<SeriesChart cursor=\{cursor\} format=\{humanBytes\}/)
-  assert.match(source, /scale="nonnegative" status=\{loaded\.status\} t=\{t\} unit="B"/)
-  assert.match(source, /logicalName !== "pg_wal_storage"/)
-})
-
-test("generic registry cards never present raw collection or identity fields as metrics", () => {
-  const stored = row("1002003", {
-    ts: "1720000000000000",
-    queryid: "42",
-    userid: "10",
-    dbid: "20",
-    toplevel: true,
-    stats_since: "1719990000000000",
-    calls: 7,
-  })
-  assert.deepEqual(helpers.registryCardFields(stored).map(([field]) => field), ["calls"])
-  assert.equal(helpers.columnsFor([stored]).some(({ field }) => field === "ts"), false)
-})
 
 test("activity keeps a compact operator table and uses relative detail durations", async () => {
   assert.deepEqual(
@@ -312,9 +266,6 @@ test("activity hides only ordinary idle and derives elapsed time from the select
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false }, system).map(({ ordinal }) => ordinal),
     ["1", "5", "3", "6", "4"],
   )
-  assert.deepEqual(helpers.overviewBackendCounts(rows), { active: 2, idle: 3, total: 5 })
-  const parallel = activityRow("8", { backend_type: "parallel worker", state: "active" })
-  assert.deepEqual(helpers.overviewBackendCounts([...rows, parallel]), { active: 2, idle: 3, total: 5 })
 })
 
 test("Activity observation timestamps enable duration histories without synthetic stored fields", () => {

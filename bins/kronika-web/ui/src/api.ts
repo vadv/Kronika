@@ -26,7 +26,7 @@ const POSTGRESQL_OVERVIEW = [
 
 export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
-  postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage"] as const,
+  postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage", "pg_stat_wal", "pg_stat_archiver"] as const,
   postgresqlSettings: ["pg_settings"] as const,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
@@ -55,13 +55,9 @@ export interface SectionRequest {
   readonly filters?: Readonly<Record<string, string>>
 }
 
-export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
-  ...POSTGRESQL_OVERVIEW.map((section) => ({ section })),
-  { section: "pg_wal_storage", fields: ["wal_files_bytes"] },
-  { section: "pg_stat_activity", fields: ["state", "wait_event", "backend_type"] },
-  { section: "pg_stat_database" },
-  { section: "pg_locks", fields: ["pid"] },
-]
+// The Overview reads its vitals as whole-hour series on its own; the cursor
+// snapshot pipeline carries nothing extra for it.
+export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = []
 
 export const POSTGRESQL_CONTEXT_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_settings", fields: ["name", "setting"] },

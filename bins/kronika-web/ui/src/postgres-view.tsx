@@ -18,6 +18,7 @@ import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { activityDurationHistory, activityDurationSource, activityDurationMs, decorateActivityRow, transactionDurationMs } from "./postgres-activity"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
+import { PostgresOverview } from "./postgres-overview"
 import { PostgresRelationsView } from "./postgres-relations-view"
 import { PlanSummary, PlanView, QueryView } from "./plan-view"
 import { usePlanQueryText } from "./plan-query"
@@ -314,7 +315,7 @@ export function PostgresView({
         return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
-    {section === "overview" && <Overview blockSize={blockSize} cursor={cursor} data={data} historyRevision={historyRevision} tablesLoading={tablesLoading} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
+    {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} section="pg_stat_progress_vacuum" t={t} />}
     {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} segments={segments} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" selectedKey={selectedKey} t={t} /></>}
@@ -341,12 +342,6 @@ export function isSystemActivity(row: DataRow): boolean {
 
 export function isIdleActivity(row: DataRow): boolean {
   return rawText(value(row, "state")) === "idle"
-}
-
-export function overviewBackendCounts(rows: readonly DataRow[]): { readonly active: number; readonly idle: number; readonly total: number } {
-  const clients = rows.filter((row) => !isSystemActivity(row))
-  const active = clients.filter((row) => rawText(value(row, "state")) === "active").length
-  return { active, idle: clients.length - active, total: clients.length }
 }
 
 export function visibleActivityRows(
@@ -421,15 +416,14 @@ function PgPreview({ blockSize, columns: prescribedColumns, cursor, data, tables
   const rates = data.rateColumns[section] ?? NO_RATES
   const columns = useMemo(() => postgresByteColumns((prescribedColumns ?? (section === "pg_stat_progress_vacuum" ? progressVacuumColumns(rows, rates) : columnsFor(rows))).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
     ...column,
-    ...(overview && prescribedColumns === undefined ? { help: `${overviewFieldKey(column.field)}.help`, label: overviewFieldKey(column.field) } : {}),
     ...(rates.includes(column.field) ? { rate: true } : {}),
-  })), blockSize), [blockSize, overview, prescribedColumns, rates, rows, section])
+  })), blockSize), [blockSize, prescribedColumns, rates, rows, section])
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const initialHistory = columns.find(chartableColumn)?.field ?? null
   return <section className="pg-preview panel mt-2" data-content-sized="true" data-pg-section={section}>
-    <h2 className="panel-head">{overview ? t(overviewSectionKey(section)) : section}</h2>
+    <h2 className="panel-head">{section}</h2>
     <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]">
       <EntityTable columns={columns} contentSized empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
       {selected !== null && <InspectorPortal identity={`postgres:${section}:${rowKey(selected)}`} onClose={() => setSelected(null)} title={detailTitle(selected, section, t)}><PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} /></InspectorPortal>}
@@ -454,105 +448,6 @@ function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: 
     </dl>
     <SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} />
   </section>
-}
-
-function Overview({ blockSize, cursor, data, historyRevision, hour, locale, onCursor, tablesLoading, t }: { readonly blockSize: number | null; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
-  const activity = snapshot(data.sections.pg_stat_activity ?? [], cursor)
-  const databases = snapshot(data.sections.pg_stat_database ?? [], cursor)
-  const locks = snapshot(data.sections.pg_locks ?? [], cursor)
-  const backends = overviewBackendCounts(activity)
-  const databaseCount = postgresDatabaseCount(databases)
-  const totals: [string, number][] = []
-  if (activity.length !== 0) totals.push(["pg.overview.backends", backends.total], ["pg.overview.active", backends.active], ["pg.overview.idle", backends.idle])
-  if (databases.length !== 0) totals.push(["pg.overview.databases", databaseCount])
-  if (locks.length !== 0) totals.push(["pg.overview.lock_rows", locks.length])
-  const walStorage = snapshot(data.sections.pg_wal_storage ?? [], cursor)[0]
-  const overviewSections = groupSections(data.pgOverview.filter(({ logicalName }) => logicalName !== "pg_wal_storage"))
-  return <section className="mt-2 p-2">
-    <div className="overview-metrics grid grid-cols-[repeat(auto-fit,minmax(150px,220px))] border-b border-line2 bg-s1 max-[1000px]:grid-cols-3 max-[760px]:grid-cols-2 [&>article]:min-h-[58px] [&>article]:border-l-2 [&>article]:border-transparent [&>article]:p-2 [&>article:hover]:border-accent-line [&>article:hover]:bg-s3 [&_span]:block [&_span]:font-sans [&_span]:text-xs [&_span]:font-medium [&_span]:text-fg3 [&_strong]:mt-[7px] [&_strong]:block [&_strong]:font-mono [&_strong]:text-lg [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
-    <OverviewActivityHistory cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} t={t} />
-    {walStorage !== undefined && <WalStorage cursor={cursor} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} row={walStorage} t={t} />}
-    {overviewSections.map(([logicalName, allRows]) => {
-      const rows = snapshot(allRows, cursor)
-      if (rows.length === 0) return null
-      if (OVERVIEW_SINGLETONS.has(logicalName)) return <OverviewMetrics cursor={cursor} historyRevision={historyRevision} hour={hour} key={logicalName} locale={locale} logicalName={logicalName} onCursor={onCursor} row={rows[0]!} t={t} />
-      return <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} key={logicalName} locale={locale} onCursor={onCursor} overview section={logicalName} t={t} />
-    })}
-    {databases.length !== 0 && <PgPreview blockSize={blockSize} columns={DATABASE_COLUMNS.slice(0, 9)} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} overview section="pg_stat_database" t={t} />}
-  </section>
-}
-
-const OVERVIEW_SINGLETONS = new Set(["pg_stat_bgwriter", "pg_stat_checkpointer", "pg_stat_statements_info"])
-
-function OverviewActivityHistory({ cursor, data, hour, locale, onCursor, t }: { readonly cursor: number; readonly data: HourData; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
-  const running = data.lanePoints.filter(({ lane }) => lane === "pg_running")
-  const waiting = data.lanePoints.filter(({ lane }) => lane === "pg_waiting")
-  if (running.length === 0 && waiting.length === 0) return null
-  return <section className="pg-overview-section" data-testid="pg-overview-activity-history">
-    <h2>{t("pg.overview.activity_history")}</h2>
-    <SeriesChart cursor={cursor} helpKey="lane.pg_running.help" hour={hour} labelKey="pg.overview.running" locale={locale} onCursor={onCursor} points={running} scale="nonnegative" second={waiting} secondHelpKey="lane.pg_waiting.help" secondLabelKey="pg.overview.waiting" t={t} unit="count" />
-  </section>
-}
-
-export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[] {
-  return buildMetricSamples(rows, (row) => Object.hasOwn(row.values, "wal_files_bytes")
-    ? asNumber(value(row, "wal_files_bytes"))
-    : undefined)
-}
-
-function WalStorage({ cursor, historyRevision, hour, locale, onCursor, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
-  const [expanded, setExpanded] = useState(false)
-  const target = expanded ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
-  const loaded = useHistoryRequest(target, historyRevision, target === null ? null : async (signal) => walStoragePoints(
-    await loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], signal, row.typeId),
-  ))
-  const history = loaded.value?.length ? loaded.value : walStoragePoints([row])
-  return <section className="mt-2 border-y border-line2 bg-s1 px-2 py-1.5" data-testid="pg-wal-storage">
-    <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs text-fg3 marker:hidden [&::-webkit-details-marker]:hidden">
-        <LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} />
-        <strong className="font-medium tabular-nums text-fg2">{humanBytes(value(row, "wal_files_bytes"), locale)}</strong>
-        <span aria-hidden="true" className="flex text-fg4">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
-      </summary>
-      <div className="mt-1 border-t border-line pt-1"><SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" /></div>
-    </details>
-  </section>
-}
-
-function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, onCursor, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly logicalName: string; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
-  const time = useDisplayTime()
-  const chartColumns = useMemo(() => overviewChartColumns(row), [row])
-  const preferredField = chartColumns[0]?.field ?? null
-  const chartFields = chartColumns.map(({ field }) => field).join("\u0000")
-  const [metricField, setMetricField] = useState<string | null>(preferredField)
-  useEffect(() => {
-    setMetricField((current) => current !== null && chartFields.split("\u0000").includes(current) ? current : preferredField)
-  }, [chartFields, preferredField])
-  const selectedColumn = chartColumns.find(({ field }) => field === metricField)
-  const history = usePgMetricHistory(hour, row, chartColumns, historyRevision)
-  return <section className="pg-overview-section">
-    <h2>{t(overviewSectionKey(logicalName))}</h2>
-    {selectedColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
-      <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} className="min-h-[28px] flex-none cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-2 py-1 text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
-      <SeriesChart cursor={cursor} durationAxis={durationKind(selectedColumn.kind)} format={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} tickFormat={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
-    </section>}
-    {(() => {
-      const facts = registryCardFields(row).filter(([field]) => !chartColumns.some((column) => column.field === field))
-      return facts.length === 0 ? null : <dl>{facts.map(([field, cell]) => <div key={field}><dt><LabelHelp helpKey={`${overviewFieldKey(field)}.help`} labelKey={overviewFieldKey(field)} t={t} /></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
-    })()}
-  </section>
-}
-
-export function overviewChartColumns(row: DataRow): readonly EntityColumn[] {
-  const visible = new Set(registryCardFields(row).map(([field]) => field))
-  const metadata = registry.find((layout) => layout.typeId === row.typeId)?.columnMetadata ?? []
-  return columnsFor([row]).flatMap((column) => {
-    const semantic = metadata.find(({ name }) => name === column.field)
-    return visible.has(column.field) && chartableColumn(column)
-      && semantic?.class !== "label" && semantic?.class !== "timestamp"
-      ? [{ ...column, help: `${overviewFieldKey(column.field)}.help`, ...(semantic?.class === "cumulative" ? { rate: true } : {}) }]
-      : []
-  })
 }
 
 export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean): readonly ChartPoint[] {
@@ -799,7 +694,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     return column.render === undefined ? display(value(row, column.field), column, locale, t) : column.render(row)
   }
   return <aside className="pg-detail" data-testid="pg-detail">
-    <header className="pg-detail-head"><div className="min-w-0 flex-1"><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex min-w-0 flex-none items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 max-w-[200px] cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap rounded-[var(--radius-sm)] border border-accent-line bg-accent-soft px-2 text-left text-xs font-semibold text-accent3 transition-colors disabled:cursor-not-allowed disabled:border-line3 disabled:bg-s2 disabled:text-fg4" data-testid="pg-activity-related-statements" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onRelated?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : t("pg.activity.open_statements", { query: activityTarget.queryId ?? "—" })} type="button">{t("pg.activity.open_statements", { query: activityTarget?.queryId ?? "—" })}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onRelated?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}{section === "pg_stat_statements" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" data-testid="pg-statement-related-plans" disabled={statementTarget === null} onClick={() => { if (statementTarget !== null) onRelated?.(statementTarget) }} type="button">{t("pg.statement.open_plans")}</button>}</div></header>
+    <header className="pg-detail-head"><div className="min-w-0 flex-1"><span>{section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex min-w-0 flex-none items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 max-w-[200px] cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap rounded-[var(--radius-sm)] border border-accent-line bg-accent-soft px-2 text-left text-xs font-semibold text-accent3 transition-colors disabled:cursor-not-allowed disabled:border-line3 disabled:bg-s2 disabled:text-fg4" data-testid="pg-activity-related-statements" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onRelated?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : t("pg.activity.open_statements", { query: activityTarget.queryId ?? "—" })} type="button">{t("pg.activity.open_statements", { query: activityTarget?.queryId ?? "—" })}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onRelated?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}{section === "pg_stat_statements" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" data-testid="pg-statement-related-plans" disabled={statementTarget === null} onClick={() => { if (statementTarget !== null) onRelated?.(statementTarget) }} type="button">{t("pg.statement.open_plans")}</button>}</div></header>
     {section === "pg_stat_activity" && activityTarget === null && <p className="m-0 border-b border-line2 px-2 py-1.5 text-xs text-fg3" data-testid="pg-activity-statements-unavailable">{t("pg.activity.statements_unavailable")}</p>}
     {activeMetricField !== null && historyColumn !== undefined && <InspectorChartPortal identity={`pg:${section}:history`}><section className="process-history pg-metric-history grid min-w-0 gap-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-2 py-1 text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
@@ -1067,9 +962,6 @@ function identityFields(section: string, typeId?: string): readonly string[] {
   return registry.find((layout) => layout.typeId === typeId)?.identity ?? (section === "pg_stat_database" ? ["datid"] : [])
 }
 
-function overviewSectionKey(section: string): string { return section === "pg_stat_database" ? "pg.section.databases" : `pg.overview.section.${section}` }
-function overviewFieldKey(field: string): string { return `pg.overview.field.${field}` }
-
 function detailTitle(row: DataRow, section: string, t: Translate): string {
   if (section === "pg_stat_activity" || section === "pg_stat_progress_vacuum" || section === "pg_locks") return t("pg.detail.pid", { pid: identifier(value(row, "pid")) })
   if (section === "pg_stat_statements") return t("pg.detail.query", { id: identifier(value(row, "queryid")) })
@@ -1165,30 +1057,8 @@ export function progressVacuumColumns(rows: readonly DataRow[], rates: readonly 
 const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
 const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
 
-export function registryCardFields(row: DataRow): readonly (readonly [string, ReturnType<typeof value>])[] {
-  const identity = REGISTRY_IDENTITIES.get(row.typeId)
-  return Object.entries(row.values).filter(([field]) => !isInternalField(field)
-    && identity?.has(field) !== true
-    && !isTimestampField(field))
-}
-
 function isInternalField(field: string): boolean {
   return INTERNAL_FIELDS.has(field)
-}
-
-export function overviewValue(cell: ReturnType<typeof value>, field: string, locale: Locale, time: Pick<DisplayTimeFormatter, "timestamp"> = createDisplayTimeFormatter(locale, "browser")): string {
-  if (cell === null) return "—"
-  if (isTimestampField(field)) {
-    const timestamp = asNumber(cell)
-    return timestamp === null ? "—" : time.timestamp(timestamp)
-  }
-  if (field === "pid" || field.endsWith("id") || field.endsWith("_id")) return rawText(cell) ?? "—"
-  if (field.endsWith("_time")) return humanDuration(cell, locale)
-  if (field.endsWith("_us")) return humanDuration(cell, locale, "microseconds")
-  if (field.endsWith("_bytes")) return humanBytes(cell, locale)
-  if (typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
-  if (typeof cell === "number") return measure(cell, locale)
-  return rawText(cell) ?? "—"
 }
 
 function rowKey(row: DataRow): string { return `${row.segmentId}:${row.typeId}:${row.ordinal}` }

@@ -611,6 +611,20 @@ behind their count by default and open on demand. The tier orders the console
 and sets that default; it adds no score and no claim about this particular
 hour.
 
+The PostgreSQL Overview is the instance's vitals for the hour. A passport
+strip carries the recorded settings that frame everything else, with the
+hour's recorded restarts and setting changes as badges — a change lists the
+name, both recorded values and its moment, and clicking one moves the cursor
+there. Below it, one row per instance-wide fact in fixed thematic bands:
+recorded counters summed across databases, gauges reduced per snapshot moment
+to their sum or worst value, and plain row counts, each with the hour's
+headline number, the shape over the hour at sparkline size, and the reading
+at the cursor; a row opens in place into its chart. A recorded capacity such
+as `max_connections` draws as a dashed rule on the row's sparkline. A fact
+whose section or column was not recorded stays hidden, while a recorded zero
+stays a row. Per-query, per-backend, per-lock and per-relation stories belong
+to their own surfaces and do not repeat here.
+
 System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
