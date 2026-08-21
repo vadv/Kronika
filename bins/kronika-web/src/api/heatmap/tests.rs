@@ -250,3 +250,84 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     let others_second = grouped.others[1].value().unwrap_or_default();
     assert!(others_second > 0.0);
 }
+
+#[test]
+fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
+    use kronika_format::DictLimits;
+    use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
+    use kronika_registry::os_mountinfo::OsMountinfo;
+    use kronika_registry::{StrId, Ts};
+    use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
+
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let mut buffers = SectionBuffers::new();
+    let ts = 1_709_164_800_000_000;
+    for index in 0..129 {
+        let name = format!("/mount-{index:03}");
+        let mount_point = StrId(interner.intern(name.as_bytes()).expect("intern").get());
+        buffers
+            .push(OsMountinfo {
+                ts: Ts(ts),
+                major: index,
+                minor: 0,
+                mount_point,
+                root: mount_point,
+                fstype: mount_point,
+                source: mount_point,
+                is_k8s_infra: false,
+                total_bytes: Some(i64::from(index)),
+                free_bytes: None,
+                total_inodes: None,
+                available_inodes: None,
+                scope: 0,
+            })
+            .expect("mount row");
+    }
+    let dictionary = dict::encode(interner.window()).expect("dictionary");
+    let part = buffers.flush(&dictionary).expect("encode").expect("part");
+    journal
+        .append(SegmentId::new(ts).expect("segment id"), &part)
+        .expect("append");
+    drop(journal);
+    drop(owner);
+
+    let heatmap = super::prepare(
+        directory.path(),
+        crate::route::HeatmapRequest {
+            from: ts,
+            to: ts,
+            section: "os_mountinfo".to_owned(),
+            fields: vec!["total_bytes".to_owned()],
+            columns: 1,
+            top: 1,
+            labels: Vec::new(),
+            group: vec!["mount_point".to_owned()],
+            type_id: None,
+        },
+    )
+    .expect("prepare heatmap");
+    let mut response = Vec::new();
+    heatmap
+        .stream(
+            &mut |record| {
+                response.extend_from_slice(&record);
+                true
+            },
+            &|| false,
+        )
+        .expect("stream heatmap");
+    let records: Vec<Value> = response
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("NDJSON record"))
+        .collect();
+    assert_eq!(records[0]["entity_count"], 129);
+    assert_eq!(records[1]["identity"], json!(["/mount-128"]));
+    assert_eq!(records[1]["cells"], json!([128.0]));
+}

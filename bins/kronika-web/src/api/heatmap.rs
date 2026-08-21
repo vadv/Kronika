@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, logical_section_name, registry};
+use kronika_registry::{ColumnClass, ColumnType, logical_section_name, registry};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -182,10 +182,12 @@ impl PreparedHeatmap {
                     })
                     .collect();
                 seen_rows.insert((segment_ref.id(), plan.type_id), plan.rows);
-                let mut cache = RenderCache::new(&segment)?;
+                let Some(cache) = RenderCache::for_plan(&segment, plan, plan.rows, cancelled)?
+                else {
+                    return Ok(None);
+                };
                 let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
                 let connected = pump_rows(&segment, plan, plan.rows, cancelled, |chunk| {
-                    cache.ensure(&segment, chunk)?;
                     for (_ordinal, row) in chunk.drain(..) {
                         let Some(Cell::Ts(ts)) = plan.timestamp.and_then(|column| row.get(column))
                         else {
@@ -288,11 +290,12 @@ impl PreparedHeatmap {
                     })
                     .collect();
                 let (from, to, columns) = (request.from, request.to, request.columns);
-                let mut cache = RenderCache::new(&segment)?;
+                let Some(cache) = RenderCache::for_plan(&segment, plan, rows, cancelled)? else {
+                    return Ok(None);
+                };
                 let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
                 let mut key = String::new();
                 let connected = pump_rows(&segment, plan, rows, cancelled, |chunk| {
-                    cache.ensure(&segment, chunk)?;
                     for (_ordinal, row) in chunk.drain(..) {
                         let Some(Cell::Ts(ts)) = plan.timestamp.and_then(|column| row.get(column))
                         else {
@@ -591,41 +594,54 @@ fn pump_rows(
     Ok(connected)
 }
 
-/// Renders cells to JSON values while fetching every distinct dictionary id
-/// once per plan. Refetching the dictionary per chunk would re-read and
-/// re-checksum the whole dictionary section — the one that stores every query
-/// text — thousands of times per request.
+/// Renders cells to JSON values after resolving every distinct dictionary id
+/// in one read. The bounded preliminary scan reads only the plan projection;
+/// retaining the ids costs no more than the rendered values the request needs.
 struct RenderCache {
     rendered: HashMap<u64, Value>,
     empty: Dictionary,
 }
 
 impl RenderCache {
-    fn new(segment: &Segment) -> Result<Self, ApiError> {
-        Ok(Self {
-            rendered: HashMap::new(),
-            empty: segment.dictionary_for(&HashSet::new())?,
-        })
-    }
-
-    fn ensure(&mut self, segment: &Segment, chunk: &[(u64, Row)]) -> Result<(), ApiError> {
-        let missing: HashSet<u64> = chunk
-            .iter()
-            .flat_map(|(_ordinal, row)| row.iter())
-            .filter_map(|(_name, stored)| match stored {
-                Cell::StrId(id) if !self.rendered.contains_key(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
+    fn for_plan(
+        segment: &Segment,
+        plan: &Plan,
+        rows: u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Self>, ApiError> {
+        let mut ids = HashSet::new();
+        if plan.projection.iter().any(|name| {
+            plan.contract
+                .column(name)
+                .is_some_and(|column| column.ty == ColumnType::StrId)
+        }) {
+            let take = usize::try_from(rows).unwrap_or(usize::MAX);
+            let mut connected = true;
+            segment.visit_rows(plan.type_id, &plan.projection, 0, take, |_ordinal, row| {
+                if cancelled() {
+                    connected = false;
+                    return false;
+                }
+                ids.extend(row.iter().filter_map(|(_name, stored)| match stored {
+                    Cell::StrId(id) => Some(*id),
+                    _ => None,
+                }));
+                true
+            })?;
+            if !connected {
+                return Ok(None);
+            }
         }
-        let dictionary = resolved_dictionary(segment, &missing)?;
-        for id in missing {
-            let rendered = cell(&Cell::StrId(id), &dictionary)?;
-            self.rendered.insert(id, rendered);
+        let dictionary = resolved_dictionary(segment, &ids)?;
+        let mut rendered = HashMap::with_capacity(ids.len());
+        for id in ids {
+            let value = cell(&Cell::StrId(id), &dictionary)?;
+            rendered.insert(id, value);
         }
-        Ok(())
+        Ok(Some(Self {
+            rendered,
+            empty: Dictionary::default(),
+        }))
     }
 
     fn value(&self, stored: &Cell) -> Result<Value, ApiError> {
