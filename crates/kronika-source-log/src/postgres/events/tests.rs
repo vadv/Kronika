@@ -1,6 +1,7 @@
 use super::{
-    AutovacuumKind, CheckpointPhase, Events, LifecycleKind, LockWaitKind, parse_autovacuum,
-    parse_checkpoint, parse_lifecycle, parse_lock_wait, parse_slow_query, parse_temp_file,
+    AutovacuumKind, CheckpointPhase, Events, LifecycleKind, LockWaitKind, detail_list,
+    parse_autovacuum, parse_checkpoint, parse_lifecycle, parse_lock_wait, parse_slow_query,
+    parse_temp_file,
 };
 use crate::postgres::{ErrorCategory, PgRecord, Severity};
 
@@ -159,6 +160,35 @@ fn a_lock_wait_carries_the_waiter_the_mode_and_the_target() {
     assert_eq!(event.lock_mode, Some("ShareLock".to_owned()));
     assert_eq!(event.lock_target, Some("transaction 987".to_owned()));
     assert_eq!(event.duration_ms, Some(1000.123));
+}
+
+#[test]
+fn a_lock_wait_detail_yields_the_holders_and_the_queue() {
+    assert_eq!(
+        detail_list(
+            "Process holding the lock: 583. Wait queue: 2078, 456.",
+            "holding the lock: "
+        ),
+        Some("583".to_owned())
+    );
+    assert_eq!(
+        detail_list(
+            "Processes holding the lock: 101, 102. Wait queue: 2078.",
+            "holding the lock: "
+        ),
+        Some("101, 102".to_owned())
+    );
+    assert_eq!(
+        detail_list(
+            "Process holding the lock: 583. Wait queue: 2078, 456.",
+            "Wait queue: "
+        ),
+        Some("2078, 456".to_owned())
+    );
+    assert_eq!(
+        detail_list("Key (id)=(1) already exists.", "Wait queue: "),
+        None
+    );
 }
 
 #[test]

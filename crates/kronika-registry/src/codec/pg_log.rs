@@ -255,13 +255,13 @@ pub struct PgLogSlowQueries {
     pub total_duration_ms: f64,
 }
 
-/// Type `2_005_001`: `log_lock_waits` records.
+/// Type `2_005_002`: `log_lock_waits` records.
 ///
 /// `PostgreSQL` writes the wait and the acquisition as separate records with
 /// different continuations, so they are separate rows here too.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
 #[section(
-    id = 2_005_001,
+    id = 2_005_002,
     name = "pg_log_lock_waits",
     semantics = event_stream,
     sort_key("ts", "kind", "pid")
@@ -292,6 +292,12 @@ pub struct PgLogLockWaits {
     /// How long the wait lasted.
     #[column(g, unit = milliseconds)]
     pub duration_ms: Option<f64>,
+    /// The pids `DETAIL` names as holding the lock, as listed there.
+    #[column(l)]
+    pub holding_pids: Option<StrId>,
+    /// The pids `DETAIL` names as the wait queue, as listed there.
+    #[column(l)]
+    pub wait_queue: Option<StrId>,
     /// `DETAIL`, which names the holder and the queue.
     #[column(l)]
     pub detail: Option<StrId>,
