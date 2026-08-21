@@ -1062,7 +1062,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the statement finding")
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "the statement finding")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
     await settleLayout(cdp)
@@ -1106,7 +1106,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await assertSearchControlContained(cdp, "Events search")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
@@ -1939,11 +1939,15 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
       return
     }
     if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("section") === "pg_log_slow_queries") {
+        ndjson(response, slowQuerySeriesRecords())
+        return
+      }
+      if (url.searchParams.has("section")) {
+        ndjson(response, [{ record: "series_segment", segment: { id: SEGMENT } }])
+        return
+      }
       ndjson(response, slowQueryTimelineRecords())
-      return
-    }
-    if (url.pathname === `/api/segments/${SEGMENT}/snapshot` && url.searchParams.get("row_ordinal") === "3") {
-      ndjson(response, slowQueryRecords())
       return
     }
     response.writeHead(404)
@@ -1970,75 +1974,36 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the slow-query event")
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="event-item"] button').click()`)
-    await cdp.waitFor(
-      `[...document.querySelectorAll('[data-testid="event-detail"] dt')].some((label) => label.textContent.trim().toLocaleUpperCase("ru-RU") === "SAMPLE")`,
-      "the resolved slow-query detail",
-    )
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the slow-query entry")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await settleLayout(cdp)
+    const title = await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]').textContent`)
+    assert.equal(title, SLOW_QUERY)
+    const entryText = await cdp.evaluate(`document.querySelector('[data-testid="event-entry"]').textContent`)
+    assert.match(entryText, /3 раз/)
+    assert.match(entryText, /6,29 с/)
+    assert.match(entryText, /12,6 с/)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-detail"] dl') !== null`, "the slow-query expansion")
     await settleLayout(cdp)
 
-    const landscape = await cdp.evaluate(detailGeometryExpression())
+    const landscape = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(landscape.innerWidth, 1280)
     assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
-    assert.ok(landscape.sample.label.width >= 120, JSON.stringify(landscape.sample))
-    assert.equal(landscape.sample.label.lines, 1)
-    assert.ok(landscape.sample.label.right + 7 <= landscape.sample.value.left, JSON.stringify(landscape.sample))
-    assert.ok(Math.abs(landscape.sample.row.width - landscape.list.width) <= 1, JSON.stringify(landscape.sample))
-    assert.ok(Math.abs(landscape.sample.value.right - landscape.sample.row.right) <= 1, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.clientWidth > landscape.sample.label.width, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.scrollWidth <= landscape.sample.value.clientWidth + 1, JSON.stringify(landscape.sample))
-    assert.ok(landscape.sample.value.height > landscape.sample.value.lineHeight * 1.5, JSON.stringify(landscape.sample))
-    assert.equal(landscape.sample.value.minWidth, "0px")
-    assert.equal(landscape.pattern.label.lines, 1)
-    assert.ok(landscape.pattern.value.scrollWidth <= landscape.pattern.value.clientWidth + 1, JSON.stringify(landscape.pattern))
-    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true)
+    assert.deepEqual(landscape.numeric.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
+    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true, JSON.stringify(landscape.numeric))
     assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
     assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
-    assert.equal(landscape.numeric[0]?.text, "3")
-    assert.equal(landscape.numeric[1]?.text, "6,29 с")
-    assert.equal(landscape.numeric[2]?.text, "12,6 с")
-    assert.equal(landscape.chart.current, "")
-    assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
+    assert.match(landscape.raw, /×3/)
+    assert.match(landscape.raw, /6,29 с/)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
-    assert.equal(landscape.chart.label, "")
-
-    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
-    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .u-over') !== null`, "the selected event Chart")
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
-    const eventPreviewHeight = await cdp.evaluate(`document.querySelector('.timeline-preview')?.getBoundingClientRect().height ?? null`)
-    if (eventPreviewHeight !== null) assert.ok(Math.abs(eventPreviewHeight - 124) <= .5)
-    const eventChart = await cdp.evaluate(`(() => ({
-      current: document.querySelector('.inspector-chart-slot .chart-current')?.textContent.trim() ?? '',
-      label: document.querySelector('.inspector-chart-slot .uplot-host')?.getAttribute('aria-label') ?? '',
-    }))()`)
-    assert.equal(eventChart.current, "6,29 с")
-    assert.doesNotMatch(eventChart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
-
-    const hoverPoint = await cdp.evaluate(`(() => {
-      const bounds = document.querySelector('.inspector-chart-slot .u-over').getBoundingClientRect()
-      return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
-    })()`)
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
-    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
-    const hover = await cdp.evaluate(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]').textContent`)
-    assert.match(hover, /6,29\sс/u)
-    assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
-
-    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the selected event Detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
-    const narrow = await cdp.evaluate(detailGeometryExpression())
+    const narrow = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
-    assert.equal(narrow.sample.label.lines, 1)
-    assert.ok(narrow.sample.label.bottom <= narrow.sample.value.top + 0.5, JSON.stringify(narrow.sample))
-    assert.ok(Math.abs(narrow.sample.label.left - narrow.sample.value.left) <= 1, JSON.stringify(narrow.sample))
-    assert.ok(Math.abs(narrow.sample.label.width - narrow.sample.row.width) <= 1, JSON.stringify(narrow.sample))
-    assert.ok(narrow.sample.value.scrollWidth <= narrow.sample.value.clientWidth + 1, JSON.stringify(narrow.sample))
-    assert.ok(narrow.pattern.value.scrollWidth <= narrow.pattern.value.clientWidth + 1, JSON.stringify(narrow.pattern))
     assert.equal(narrow.numeric.every(({ align }) => align === "left"), true, JSON.stringify(narrow.numeric))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -3875,62 +3840,30 @@ function slowQueryTimelineRecords() {
   ]
 }
 
-function slowQueryRecords() {
+function slowQuerySeriesRecords() {
   const columns = ["ts", "pattern", "sample", "count", "max_duration_ms", "total_duration_ms"]
   return [
+    { record: "series_segment", segment: { id: SEGMENT } },
     layout("2004001", "pg_log_slow_queries", columns),
     row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 6_290, 12_580]),
   ]
 }
 
-function detailGeometryExpression() {
+function expansionGeometryExpression() {
   return `(() => {
-    const rows = [...document.querySelectorAll('[data-testid="event-detail"] dl > div')]
-    const byLabel = (text) => rows.find((row) => row.querySelector("dt")?.textContent.trim().toLocaleUpperCase("ru-RU") === text)
-    const bounds = (node) => {
-      const rect = node.getBoundingClientRect()
-      return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
-    }
-    const measured = (text) => {
-      const row = byLabel(text)
-      const label = row.querySelector("dt")
-      const output = row.querySelector("dd")
-      const range = document.createRange()
-      range.selectNodeContents(label)
-      const lines = new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top * 10) / 10)).size
-      const style = getComputedStyle(output)
-      return {
-        label: { ...bounds(label), lines },
-        row: bounds(row),
-        value: {
-          ...bounds(output),
-          clientWidth: output.clientWidth,
-          lineHeight: Number.parseFloat(style.lineHeight),
-          minWidth: style.minWidth,
-          scrollWidth: output.scrollWidth,
-        },
-      }
-    }
-    const numeric = ["REPEATS", "MAX DURATION", "TOTAL DURATION"].map((text) => {
-      const row = byLabel(text)
+    const rows = [...document.querySelectorAll('[data-testid="event-entry-detail"] dl > div')]
+    const numeric = rows.map((row) => {
       const output = row.querySelector("dd")
       const rect = output.getBoundingClientRect()
       return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
     })
     return {
-      chart: {
-        current: document.querySelector('[data-testid="event-detail"] .chart-current')?.textContent.trim() ?? "",
-        label: document.querySelector('[data-testid="event-detail"] .uplot-host')?.getAttribute("aria-label") ?? "",
-      },
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      labels: rows.map((row) => row.querySelector("dt")?.textContent.trim() ?? ""),
-      list: bounds(document.querySelector('[data-testid="event-detail"] dl')),
       numeric,
-      pattern: measured("PATTERN"),
-      sample: measured("SAMPLE"),
+      raw: document.querySelector('[data-testid="event-raw-row"]')?.textContent ?? "",
       scrollWidth: document.documentElement.scrollWidth,
-      text: document.querySelector('[data-testid="event-detail"]')?.textContent ?? "",
+      text: document.querySelector('[data-testid="events-console"]')?.textContent ?? "",
     }
   })()`
 }
@@ -4453,10 +4386,10 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.ok(Math.abs(sparseOpened.activity.height - sparseBefore.activity.height) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     assert.ok(Math.abs(sparseOpened.progress.top - sparseBefore.progress.top) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "Events list")
-    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="event-detail"]') !== null`, "Event detail in shared Inspector")
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="event-detail"]') === null`), true)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark navigates to its surface")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {

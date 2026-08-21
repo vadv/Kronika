@@ -208,12 +208,11 @@ test("the built-in legend stays hidden and chart titles use portal help metadata
 })
 
 test("full charts live only in the bounded shared Inspector", async () => {
-  const [source, markerSource, stylesheet, inspector, events, relations, system] = await Promise.all([
+  const [source, markerSource, stylesheet, inspector, relations, system] = await Promise.all([
     readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/events-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
   ])
@@ -229,7 +228,6 @@ test("full charts live only in the bounded shared Inspector", async () => {
   assert.doesNotMatch(markerSource, /--chart-marker-end-reserve/)
   assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
   assert.match(source, /w-\[max\(1px,calc\(var\(--chart-plot-width,calc\(100%_-_70px\)\)_-_var\(--chart-marker-end-reserve,0px\)\)\)\]/)
-  assert.match(events, /<InspectorChartPortal identity=\{`event:/)
   assert.match(relations, /<InspectorChartPortal identity=\{`pg:\$\{row\.logicalName\}/)
   assert.match(system, /<InspectorChartPortal identity=\{`system:\$\{section\}:\$\{entityRowKey\(selectedRow\)\}:history`\}/)
 })

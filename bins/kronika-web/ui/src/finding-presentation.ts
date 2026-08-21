@@ -43,7 +43,7 @@ const DETAIL_FIELDS: Readonly<Record<string, readonly string[]>> = {
   pg_log_checkpoints: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "estimate_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files", "longest_sync_ms", "average_sync_ms"],
   pg_log_autovacuum: ["kind", "relation", "index_scans", "pages_removed", "pages_remaining", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms", "buffer_hits", "buffer_misses", "buffer_dirtied", "avg_read_rate_mbs", "avg_write_rate_mbs", "cpu_user_ms", "cpu_system_ms", "wal_records", "wal_fpi", "wal_bytes"],
   pg_log_slow_queries: ["pattern", "sample", "count", "max_duration_ms", "total_duration_ms"],
-  pg_log_lock_waits: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "detail", "context", "statement"],
+  pg_log_lock_waits: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "holding_pids", "wait_queue", "detail", "context", "statement"],
   pg_log_lifecycle: ["kind", "pid", "signal", "shutdown_mode", "message", "query_detail"],
   pg_log_temp_files: ["path", "size_bytes", "statement"],
   pgbouncer_events: ["level", "database", "username", "host", "text"],
