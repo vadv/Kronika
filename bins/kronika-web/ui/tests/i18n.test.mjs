@@ -93,6 +93,30 @@ test("Statements and Activity technical copy stays canonical English in RU", asy
   ]
   for (const key of canonical) assert.equal(russian[key], english[key], key)
 
+  const localizedActivity = new Set(["activity.loading", "activity.error", "activity.empty"])
+  for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && !candidate.endsWith(".help") && !localizedActivity.has(candidate))) {
+    assert.equal(russian[key], english[key], key)
+  }
+  for (const [key, label] of Object.entries({
+    "activity.cut.writes": "Rows changed",
+    "activity.cut.seq_read": "Rows read by seq scans",
+    "activity.cut.heap_read": "Heap buffer read bytes",
+    "activity.cut.idx_tup_read": "Index tuples read",
+    "activity.cut.idx_blks_read": "Index buffer read bytes",
+    "activity.cut.rss": "RSS",
+    "activity.tables.members": "{count} tables",
+    "activity.indexes.members": "{count} indexes",
+  })) assert.equal(english[key], label, key)
+
+  for (const [key, label] of [["col.user.label", "User"], ["col.effective_user.label", "Effective user"]]) {
+    assert.equal(english[key], label, key)
+    assert.equal(russian[key], label, key)
+  }
+  for (const key of [
+    "filter.field.user.help", "filter.field.effective_user.help", "filter.field.user_id.help", "filter.field.effective_user_id.help",
+    "col.user.help", "col.effective_user.help",
+  ]) assert.match(russian[key], /[А-Яа-яЁё]/u, key)
+
   for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && candidate.endsWith(".help"))) {
     assert.match(russian[key], /[А-Яа-яЁё]/u, key)
   }
