@@ -170,7 +170,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
       ...(row.identity[3] === "false" ? [t("activity.nested")] : []),
     ]
     return {
-      text: text === undefined ? `queryid ${queryId ?? "—"}` : statementPreview(text),
+      text: text === undefined ? `Query ID ${queryId ?? "—"}` : statementPreview(text),
       prefix: parts.length === 0 ? null : parts.join(" · "),
     }
   }

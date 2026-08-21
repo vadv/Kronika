@@ -2204,7 +2204,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.equal(narrowComparison.overflow, false)
     await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "the RU grouped-search help")
-    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /OR не смешивает text с metrics/)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /оператор OR не может объединять текстовые условия с условиями по метрикам/)
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "the RU grouped-search help closed")
