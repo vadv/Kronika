@@ -14,6 +14,7 @@ const MAX_HEATMAP_COLUMNS: usize = 1_440;
 const DEFAULT_HEATMAP_TOP: usize = 25;
 const MAX_HEATMAP_TOP: usize = 500;
 const MAX_HEATMAP_LABELS: usize = 8;
+const MAX_HEATMAP_FIELDS: usize = 4;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
 
@@ -39,7 +40,7 @@ pub(crate) struct HeatmapRequest {
     pub(crate) from: i64,
     pub(crate) to: i64,
     pub(crate) section: String,
-    pub(crate) field: String,
+    pub(crate) fields: Vec<String>,
     pub(crate) columns: usize,
     pub(crate) top: usize,
     pub(crate) labels: Vec<String>,
@@ -417,7 +418,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     let mut from = None;
     let mut to = None;
     let mut section = None;
-    let mut field = None;
+    let mut fields: Vec<String> = Vec::new();
     let mut columns = None;
     let mut top = None;
     let mut labels: Vec<String> = Vec::new();
@@ -434,11 +435,12 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 }
                 section = Some(value);
             }
-            "field" if field.is_none() => {
-                if value.is_empty() {
+            "field" => {
+                if value.is_empty() || fields.contains(&value) || fields.len() >= MAX_HEATMAP_FIELDS
+                {
                     return Err(RouteError::BadParameter("field".to_owned()));
                 }
-                field = Some(value);
+                fields.push(value);
             }
             "columns" if columns.is_none() => {
                 columns = Some(bounded("columns", &value, MAX_HEATMAP_COLUMNS)?);
@@ -460,11 +462,14 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     if from > to {
         return Err(RouteError::BadParameter("from".to_owned()));
     }
+    if fields.is_empty() {
+        return Err(RouteError::BadParameter("field".to_owned()));
+    }
     Ok(HeatmapRequest {
         from,
         to,
         section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
-        field: field.ok_or_else(|| RouteError::BadParameter("field".to_owned()))?,
+        fields,
         columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
         top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
         labels,

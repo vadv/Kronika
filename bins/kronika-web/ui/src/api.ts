@@ -459,7 +459,7 @@ export async function loadSeries(
 export async function loadHeatmap(
   selectedHour: number,
   section: string,
-  field: string,
+  fields: readonly string[],
   labels: readonly string[],
   columns: number,
   top: number,
@@ -468,12 +468,12 @@ export async function loadHeatmap(
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
   const to = from + 3_600_000_000 - 1
-  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, field, labels, columns, top)
+  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top)
   const query = [
     `from=${from}`,
     `to=${to}`,
     `section=${encodeURIComponent(section)}`,
-    `field=${encodeURIComponent(field)}`,
+    ...fields.map((name) => `field=${encodeURIComponent(name)}`),
     `columns=${columns}`,
     `top=${top}`,
     ...labels.map((name) => `label=${encodeURIComponent(name)}`),
@@ -526,7 +526,7 @@ export async function loadHeatmap(
 function fixtureHeatmap(
   from: number,
   section: string,
-  field: string,
+  fields: readonly string[],
   labels: readonly string[],
   columns: number,
   top: number,
@@ -534,7 +534,7 @@ function fixtureHeatmap(
   const fixture = bundledFixtureHour(from)
   const rows = fixture === null ? [] : fixture.sections[section] ?? []
   const cumulative = registry.some((layout) => layout.logicalName === section
-    && (layout.columnMetadata ?? []).some((column) => column.name === field && column.class === "cumulative"))
+    && (layout.columnMetadata ?? []).some((column) => fields.includes(column.name) && column.class === "cumulative"))
   const samples: HeatmapSample[] = []
   const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
   const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
@@ -547,13 +547,14 @@ function fixtureHeatmap(
     })
     const entity = heatmapEntityKey([row.typeId, ...identity])
     if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
-    const raw = row.values[field]
-    const numeric = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
-    samples.push({
-      entity,
-      timestamp: row.timestamp,
-      value: numeric !== null && Number.isFinite(numeric) ? numeric : null,
-    })
+    // A summed cut adds the present fields; null only when none is usable.
+    let numeric: number | null = null
+    for (const field of fields) {
+      const raw = row.values[field]
+      const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
+      if (parsed !== null && Number.isFinite(parsed)) numeric = (numeric ?? 0) + parsed
+    }
+    samples.push({ entity, timestamp: row.timestamp, value: numeric })
     const seen = lastLabels.get(entity)
     if (seen === undefined || row.timestamp >= seen.ts) {
       lastLabels.set(entity, {

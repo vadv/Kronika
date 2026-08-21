@@ -33,8 +33,8 @@ pub(crate) struct PreparedHeatmap {
 }
 
 pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
-    let cumulative =
-        field_class(&request.section, &request.field, request.type_id)? == ColumnClass::Cumulative;
+    let cumulative = fields_class(&request.section, &request.fields, request.type_id)?
+        == ColumnClass::Cumulative;
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
     let stored = reader.catalog_segments(..)?;
@@ -53,10 +53,15 @@ pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
     })
 }
 
-/// The registry decides upfront whether the field is a counter or a gauge; a
-/// label or timestamp column cannot rank a heatmap. The registry, not the
-/// stored hour, also answers whether the section and field exist at all.
-fn field_class(section: &str, field: &str, wanted: Option<u32>) -> Result<ColumnClass, ApiError> {
+/// The registry decides upfront whether the cut is a counter or a gauge; a
+/// label or timestamp column cannot rank a heatmap, and a summed cut must not
+/// mix counters with gauges. The registry, not the stored hour, also answers
+/// whether the section and fields exist at all.
+fn fields_class(
+    section: &str,
+    fields: &[String],
+    wanted: Option<u32>,
+) -> Result<ColumnClass, ApiError> {
     let mut section_seen = false;
     let mut found: Option<ColumnClass> = None;
     for contract in registry() {
@@ -67,20 +72,22 @@ fn field_class(section: &str, field: &str, wanted: Option<u32>) -> Result<Column
             continue;
         }
         section_seen = true;
-        let Some(column) = contract.column(field) else {
-            continue;
-        };
-        if column.class != ColumnClass::Cumulative && column.class != ColumnClass::Gauge {
-            return Err(ApiError::NoSuchColumn(field.to_owned()));
-        }
-        if *found.get_or_insert(column.class) != column.class {
-            return Err(ApiError::NoSuchColumn(field.to_owned()));
+        for field in fields {
+            let Some(column) = contract.column(field) else {
+                continue;
+            };
+            if column.class != ColumnClass::Cumulative && column.class != ColumnClass::Gauge {
+                return Err(ApiError::NoSuchColumn(field.clone()));
+            }
+            if *found.get_or_insert(column.class) != column.class {
+                return Err(ApiError::NoSuchColumn(field.clone()));
+            }
         }
     }
     if !section_seen {
         return Err(ApiError::NoSuchSection);
     }
-    found.ok_or_else(|| ApiError::NoSuchColumn(field.to_owned()))
+    found.ok_or_else(|| ApiError::NoSuchColumn(fields.join("+")))
 }
 
 impl PreparedHeatmap {
@@ -112,7 +119,7 @@ impl PreparedHeatmap {
         eprintln!(
             "kronika-web: heatmap section={} field={} segments={} entities={} out_of_order={} elapsed_us={}",
             self.request.section,
-            self.request.field,
+            self.request.fields.join("+"),
             self.segments.len(),
             ranked.entity_count,
             ranked.out_of_order,
@@ -143,9 +150,10 @@ impl PreparedHeatmap {
                 Err(error) => return Err(error),
             };
             for plan in &ranked_plans {
-                let Some(field) = plan.fields.first().and_then(|output| output.column) else {
+                let cut = cut_columns(plan, self.request.fields.len());
+                if cut.is_empty() {
                     continue;
-                };
+                }
                 seen_rows.insert((segment_ref.id(), plan.type_id), plan.rows);
                 let mut cache = RenderCache::new(&segment)?;
                 let mut identity: Vec<Value> = Vec::with_capacity(plan.contract.identity.len());
@@ -167,7 +175,7 @@ impl PreparedHeatmap {
                                 None => Value::Null,
                             });
                         }
-                        let value = row.get(field).and_then(numeric);
+                        let value = summed(&row, &cut);
                         fold.observe(plan.type_id, &identity, ts, value);
                     }
                     Ok(true)
@@ -219,11 +227,11 @@ impl PreparedHeatmap {
                 if !winner_types.contains(&plan.type_id) {
                     continue;
                 }
-                let field = plan.fields.first().and_then(|output| output.column);
+                let cut = cut_columns(plan, self.request.fields.len());
                 let label_columns: Vec<Option<&'static str>> = plan
                     .fields
                     .iter()
-                    .skip(1)
+                    .skip(self.request.fields.len())
                     .map(|output| output.column)
                     .collect();
                 let (from, to, columns) = (request.from, request.to, request.columns);
@@ -252,9 +260,7 @@ impl PreparedHeatmap {
                         let Some(index) = winners.get(key.as_str()).copied() else {
                             continue;
                         };
-                        if let Some(value) =
-                            field.and_then(|column| row.get(column)).and_then(numeric)
-                        {
+                        if let Some(value) = summed(&row, &cut) {
                             cells[index][column_of(ts, from, to, columns)].observe(ts, value);
                         }
                         for (slot, column) in labels[index].iter_mut().zip(&label_columns) {
@@ -323,7 +329,7 @@ impl PreparedHeatmap {
             "from": request.from.to_string(),
             "to": request.to.to_string(),
             "section": request.section,
-            "field": request.field,
+            "fields": request.fields,
             "class": if cumulative { "cumulative" } else { "gauge" },
             "labels": request.labels,
             "top": ranked.rows.len(),
@@ -374,7 +380,7 @@ impl PreparedHeatmap {
     }
 
     fn data_request(&self, segment: &SegmentRef, with_labels: bool) -> DataRequest {
-        let mut fields = vec![self.request.field.clone()];
+        let mut fields = self.request.fields.clone();
         if with_labels {
             for label in &self.request.labels {
                 if !fields.contains(label) {
@@ -482,6 +488,29 @@ impl RenderCache {
         }
         cell(stored, &self.empty)
     }
+}
+
+/// The physical columns of the requested cut that this layout carries: the
+/// first `count` requested fields, in request order.
+fn cut_columns(plan: &Plan, count: usize) -> Vec<&'static str> {
+    plan.fields
+        .iter()
+        .take(count)
+        .filter_map(|output| output.column)
+        .collect()
+}
+
+/// A summed cut: the sum of the present numeric fields, null when none is
+/// usable. Summing counters keeps counter semantics — the delta of a sum is
+/// the sum of the deltas.
+fn summed(row: &Row, columns: &[&'static str]) -> Option<f64> {
+    let mut sum: Option<f64> = None;
+    for column in columns {
+        if let Some(value) = row.get(column).and_then(numeric) {
+            sum = Some(sum.unwrap_or(0.0) + value);
+        }
+    }
+    sum
 }
 
 fn numeric(stored: &Cell) -> Option<f64> {

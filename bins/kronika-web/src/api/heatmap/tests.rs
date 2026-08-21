@@ -147,3 +147,23 @@ fn identity_streams_stay_separate_per_layout() {
         entity_key(1, &[json!("a"), json!("null")])
     );
 }
+
+#[test]
+fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
+    let contract = kronika_registry::contract(1_013_008).expect("tables contract");
+    let cells = contract
+        .columns
+        .iter()
+        .map(|column| match column.name {
+            "n_tup_ins" => kronika_reader::Cell::I64(5),
+            "n_tup_upd" => kronika_reader::Cell::I64(7),
+            _ => kronika_reader::Cell::Null,
+        })
+        .collect();
+    let row = kronika_reader::Row::new(contract, cells);
+    assert_eq!(
+        super::summed(&row, &["n_tup_ins", "n_tup_upd", "n_tup_del"]),
+        Some(12.0)
+    );
+    assert_eq!(super::summed(&row, &["n_tup_del"]), None);
+}

@@ -308,10 +308,18 @@ export function UPlotChart({
     </div>}
     {status !== undefined && <div className="uplot-status pointer-events-none absolute bottom-7 right-0 z-[8] flex items-center justify-center left-[var(--chart-plot-left,0)] top-[var(--chart-plot-top,26px)] [&_[data-testid=series-status]]:min-h-0 [&_[data-testid=series-status]]:border [&_[data-testid=series-status]]:border-line2 [&_[data-testid=series-status]]:bg-s2 [&_[data-testid=series-status]]:px-[9px] [&_[data-testid=series-status]]:py-[3px]">{status}</div>}
     {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] left-[var(--chart-plot-left,62px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track" style={{ height: MARKER_LANE_PX - 2, top: `max(0px, calc(var(--chart-plot-top, 44px) - ${MARKER_LANE_PX}px))` }}>{markerLayer}</div>}
-    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
-      <time><strong>{exact.time}</strong></time>
-      {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
-    </div>}
+    {/* The 94px preview cannot host a stacked readout: there it collapses to
+        one wrapping line pinned inside the figure instead of spilling over
+        the controls below. */}
+    {exact !== null && (variant === "preview"
+      ? <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] flex max-w-[calc(100%_-_16px)] flex-wrap items-baseline justify-end gap-x-3 gap-y-px rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+2px)] [&_span]:flex [&_span]:items-baseline [&_span]:gap-1 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time_strong]:!font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
+        <time><strong>{exact.time}</strong></time>
+        {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
+      </div>
+      : <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
+        <time><strong>{exact.time}</strong></time>
+        {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
+      </div>)}
     <input
       aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
       aria-valuetext={keyboardTimestamp === null ? undefined : navigationSampleText(series, frame, navigationTimes, keyboardTimestamp, locale, time)}

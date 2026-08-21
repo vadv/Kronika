@@ -553,6 +553,41 @@ fn a_section_is_one_strict_percent_decoded_path_component() {
 }
 
 #[test]
+fn a_heatmap_cut_may_sum_several_fields() {
+    let parsed = parse(
+        "/api/heatmap",
+        Some(
+            "from=0&to=1&section=pg_stat_user_tables&field=n_tup_ins&field=n_tup_upd&field=n_tup_del",
+        ),
+    );
+    match parsed {
+        Ok(Route::Heatmap(request)) => assert_eq!(
+            request.fields,
+            vec![
+                "n_tup_ins".to_owned(),
+                "n_tup_upd".to_owned(),
+                "n_tup_del".to_owned()
+            ]
+        ),
+        other => panic!("expected a heatmap request, got {other:?}"),
+    }
+    assert_eq!(
+        parse(
+            "/api/heatmap",
+            Some("from=0&to=1&section=s&field=a&field=a"),
+        ),
+        Err(RouteError::BadParameter("field".to_owned()))
+    );
+    assert_eq!(
+        parse(
+            "/api/heatmap",
+            Some("from=0&to=1&section=s&field=a&field=b&field=c&field=d&field=e"),
+        ),
+        Err(RouteError::BadParameter("field".to_owned()))
+    );
+}
+
+#[test]
 fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
     assert_eq!(
         parse(
@@ -565,7 +600,7 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
             from: 0,
             to: 3_599_999_999,
             section: "pg_stat_statements".to_owned(),
-            field: "wal_bytes".to_owned(),
+            fields: vec!["wal_bytes".to_owned()],
             columns: 60,
             top: 25,
             labels: vec!["datname".to_owned(), "usename".to_owned()],

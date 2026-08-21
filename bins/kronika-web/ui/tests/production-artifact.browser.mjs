@@ -98,14 +98,14 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
     const ledger = await cdp.evaluate(`(() => ({
       top: document.querySelector('[data-testid="activity-top-count"]')?.textContent ?? "",
       totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
       others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
       cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
-      help: document.querySelectorAll('[data-testid="statements-activity"] .help-dot').length,
+      help: document.querySelectorAll('[data-testid="activity-pg_stat_statements"] .help-dot').length,
     }))()`)
     assert.equal(ledger.totals, true)
     assert.match(ledger.top, /2/)
@@ -114,7 +114,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.ok(ledger.help >= 3)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-top-50"]').click()`)
@@ -5013,7 +5013,7 @@ function answerHeatmap(url, response) {
   return ndjson(response, [
     {
       record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
-      field: url.searchParams.get("field") ?? "", class: "cumulative", labels,
+      fields: url.searchParams.getAll("field"), class: "cumulative", labels,
       top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
     },
     { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },

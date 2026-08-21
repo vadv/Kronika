@@ -2,28 +2,30 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import {
-  STATEMENT_CUTS,
-  STATEMENT_DEFAULT_CUT,
-  statementPreview,
-  statementTextsByQueryId,
-  type StatementCut,
-} from "./activity-statements"
-import { loadHeatmap, loadRelatedStatementTextRow, type HourData, type SegmentBound } from "./api"
+import { INDEX_CUTS, PLAN_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, type ActivityCut } from "./activity-cuts"
+import { loadHeatmap, loadRelatedStatementTextRow, type DataRow, type HourData, type SegmentBound } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
 import { canonicalSearch } from "./search"
 import type { RelatedNavigation } from "./statement-navigation"
 
-const COLUMNS = 60
 const TOP_BLOCK = 8
 const TOP_CHOICES = [10, 25, 50, 100] as const
 const DEFAULT_TOP = 25
-const OPEN_KEY = "kronika.activity-open"
-const ACTIVITY_LABELS = ["datname", "usename"] as const
 
 type ScaleMode = "global" | "row"
+
+// The section-specific words of one ledger: its title and the names of the
+// bands that speak about the section's entities.
+interface LedgerKeys {
+  readonly title: string
+  readonly titleHelp: string
+  readonly others: string
+  readonly othersLabel: string
+  readonly othersHelp: string
+  readonly totalsHelp: string
+}
 
 interface HeatmapState {
   readonly loading: boolean
@@ -34,68 +36,86 @@ interface HeatmapState {
 // One small request per (hour, cut, top): the server ranks next to the
 // segments and answers with kilobytes, so switching cuts stays instant even
 // over a slow link. Nothing is requested while the ledger stays collapsed.
-function useHeatmapView(hour: number, cut: StatementCut, top: number, revision: number, enabled: boolean): HeatmapState {
+function useHeatmapView(
+  section: string,
+  columns: number,
+  labels: readonly string[],
+  hour: number,
+  cut: ActivityCut,
+  top: number,
+  revision: number,
+  enabled: boolean,
+): HeatmapState {
   const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null })
+  const fields = cut.fields.join(",")
   useEffect(() => {
     if (!enabled) return
     const controller = new AbortController()
     setState({ loading: true, error: false, view: null })
-    loadHeatmap(hour, "pg_stat_statements", cut.field, ACTIVITY_LABELS, COLUMNS, top, controller.signal)
+    loadHeatmap(hour, section, fields.split(","), labels, columns, top, controller.signal)
       .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view }) })
       .catch(() => { if (!controller.signal.aborted) setState({ loading: false, error: true, view: null }) })
     return () => controller.abort()
-  }, [cut.field, enabled, hour, revision, top])
+  }, [columns, enabled, fields, hour, labels, revision, section, top])
   return state
 }
 
-function loadActivityOpen(): boolean {
+function loadActivityOpen(storageKey: string): boolean {
   try {
-    return localStorage.getItem(OPEN_KEY) === "1"
+    return localStorage.getItem(storageKey) === "1"
   } catch {
     return false
   }
 }
 
-function storeActivityOpen(open: boolean): void {
+function storeActivityOpen(storageKey: string, open: boolean): void {
   try {
-    localStorage.setItem(OPEN_KEY, open ? "1" : "0")
+    localStorage.setItem(storageKey, open ? "1" : "0")
   } catch {}
 }
 
-export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
+interface RowLabel {
+  readonly text: string
+  readonly prefix: string | null
+}
+
+// The shared hour activity ledger: ranked heatmap strips over one section,
+// collapsed until the operator opens it. Wrappers supply the curated cuts,
+// the row labels and the drill action of their section.
+function ActivityLedger({ blockSize, columns, cursor, cuts, defaultCut, drill, hour, keys, label, labels, locale, onCursor, onView, section, storageKey, t }: {
   readonly blockSize: number | null
+  readonly columns: number
   readonly cursor: number
-  readonly data: HourData
+  readonly cuts: readonly ActivityCut[]
+  readonly defaultCut: string
+  readonly drill: (row: HeatmapViewRow) => void
   readonly hour: number
+  readonly keys: LedgerKeys
+  readonly label: (row: HeatmapViewRow) => RowLabel
+  readonly labels: readonly string[]
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
-  readonly onRelated: (target: RelatedNavigation) => void
-  readonly segments: readonly SegmentBound[]
+  readonly onView?: ((view: HeatmapView) => void) | undefined
+  readonly section: string
+  readonly storageKey: string
   readonly t: Translate
 }) {
-  const [open, setOpen] = useState(loadActivityOpen)
-  const [cutId, setCutId] = useState(STATEMENT_DEFAULT_CUT)
+  const [open, setOpen] = useState(() => loadActivityOpen(storageKey))
+  const [cutId, setCutId] = useState(defaultCut)
   const [scale, setScale] = useState<ScaleMode>("global")
   const [top, setTop] = useState<number>(DEFAULT_TOP)
   const [maximized, setMaximized] = useState(false)
   const [revision, setRevision] = useState(0)
-  const cut = STATEMENT_CUTS.find((candidate) => candidate.id === cutId) ?? STATEMENT_CUTS[0] as StatementCut
-  const state = useHeatmapView(hour, cut, top, revision, open)
+  const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
+  const state = useHeatmapView(section, columns, labels, hour, cut, top, revision, open)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
   }, [maximized, state.view])
-  const tableTexts = useMemo(() => statementTextsByQueryId(data.sections.pg_stat_statements ?? []), [data.sections.pg_stat_statements])
-  // Text lookups land on the newest interval that actually carries data: the
-  // cursor may sit on an empty stretch of the hour.
-  const textAt = useMemo(() => {
-    const totals = state.view?.totals.cells ?? []
-    for (let index = totals.length - 1; index >= 0; index -= 1) {
-      if (totals[index] !== null) return state.view?.intervals[index]?.end ?? cursor
-    }
-    return cursor
-  }, [cursor, state.view])
-  const fetchedTexts = useStatementTexts(state.view, tableTexts, segments, textAt, hour)
+  const seen = onView
+  useEffect(() => {
+    if (state.view !== null) seen?.(state.view)
+  }, [seen, state.view])
 
   useEffect(() => {
     if (!maximized) return
@@ -110,23 +130,23 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
 
   const toggle = (next: boolean) => {
     setOpen(next)
-    storeActivityOpen(next)
+    storeActivityOpen(storageKey, next)
     if (!next) setMaximized(false)
   }
 
   if (!open) {
-    return <section aria-label={t("activity.title")} className="activity-block" data-testid="statements-activity">
+    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
       <header className="flex items-center gap-1 px-2 py-[6px]">
         <button aria-expanded={false} className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-sm font-medium text-fg2" data-testid="activity-toggle" onClick={() => toggle(true)} type="button">
           <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />
-          {t("activity.title")}
+          {t(keys.title)}
         </button>
-        <LabelHelp helpKey="activity.title.help" iconOnly labelKey="activity.title" t={t} />
+        <LabelHelp helpKey={keys.titleHelp} iconOnly labelKey={keys.title} t={t} />
       </header>
     </section>
   }
   if (state.error) {
-    return <section aria-label={t("activity.title")} className="activity-block" data-testid="statements-activity">
+    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
       <div className="flex items-center gap-3 px-3 py-2 font-sans text-sm text-fg3">
         <span>{t("activity.error")}</span>
         <button className="cursor-pointer border-0 bg-transparent p-0 font-sans text-sm text-accent3 underline decoration-dotted underline-offset-2" onClick={() => setRevision((current) => current + 1)} type="button">{t("activity.retry")}</button>
@@ -134,9 +154,9 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
     </section>
   }
   if (state.loading || view === null) {
-    return <section aria-label={t("activity.title")} className="activity-block" data-testid="statements-activity">
+    return <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}`}>
       <header className="flex items-center gap-2 border-b border-line px-3 py-[6px]">
-        <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t("activity.title")}</h2>
+        <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t(keys.title)}</h2>
         <span className="font-sans text-xs text-fg4">{t("activity.loading")}</span>
       </header>
       <div aria-hidden="true" className="px-3 py-2">
@@ -144,6 +164,97 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
       </div>
     </section>
   }
+
+  const panel = <ActivityPanel
+    blockScale={cut.blockScaled === true ? blockSize : 1}
+    columns={columns}
+    cursor={cursor}
+    cut={cut}
+    cuts={cuts}
+    drill={drill}
+    hour={hour}
+    keys={keys}
+    label={label}
+    locale={locale}
+    maximized={maximized}
+    onCollapse={() => toggle(false)}
+    onCursor={onCursor}
+    onCut={setCutId}
+    onMaximized={setMaximized}
+    onScale={setScale}
+    onTop={setTop}
+    scale={scale}
+    section={section}
+    t={t}
+    top={top}
+    view={view}
+  />
+  if (!maximized) return panel
+  return <>
+    <section aria-label={t(keys.title)} className="activity-block" data-testid={`activity-${section}-placeholder`} />
+    {createPortal(<div aria-label={t(keys.title)} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
+  </>
+}
+
+const STATEMENT_KEYS: LedgerKeys = {
+  title: "activity.title",
+  titleHelp: "activity.title.help",
+  others: "activity.others",
+  othersLabel: "activity.others_label",
+  othersHelp: "activity.others.help",
+  totalsHelp: "activity.totals.help",
+}
+
+const PLAN_KEYS: LedgerKeys = {
+  title: "activity.plans.title",
+  titleHelp: "activity.plans.title.help",
+  others: "activity.plans.others",
+  othersLabel: "activity.plans.others_label",
+  othersHelp: "activity.plans.others.help",
+  totalsHelp: "activity.plans.totals.help",
+}
+
+const TABLE_KEYS: LedgerKeys = {
+  title: "activity.tables.title",
+  titleHelp: "activity.tables.title.help",
+  others: "activity.tables.others",
+  othersLabel: "activity.tables.others_label",
+  othersHelp: "activity.tables.others.help",
+  totalsHelp: "activity.tables.totals.help",
+}
+
+const INDEX_KEYS: LedgerKeys = {
+  title: "activity.indexes.title",
+  titleHelp: "activity.indexes.title.help",
+  others: "activity.indexes.others",
+  othersLabel: "activity.indexes.others_label",
+  othersHelp: "activity.indexes.others.help",
+  totalsHelp: "activity.indexes.totals.help",
+}
+
+export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
+  readonly blockSize: number | null
+  readonly cursor: number
+  readonly data: HourData
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onRelated: (target: RelatedNavigation) => void
+  readonly segments: readonly SegmentBound[]
+  readonly t: Translate
+}) {
+  const [view, setView] = useState<HeatmapView | null>(null)
+  const tableTexts = useMemo(() => statementTextsByQueryId(data.sections.pg_stat_statements ?? []), [data.sections.pg_stat_statements])
+  // Text lookups land on the newest interval that actually carries data: the
+  // cursor may sit on an empty stretch of the hour.
+  const textAt = useMemo(() => {
+    const totals = view?.totals.cells ?? []
+    for (let index = totals.length - 1; index >= 0; index -= 1) {
+      if (totals[index] !== null) return view?.intervals[index]?.end ?? cursor
+    }
+    return cursor
+  }, [cursor, view])
+  const fetchedTexts = useStatementTexts(view, tableTexts, segments, textAt, hour)
 
   const drill = (row: HeatmapViewRow) => {
     const queryId = rowQueryId(row)
@@ -158,48 +269,90 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
     if (expression !== null) onRelated({ expression, queryId, section: "statements" })
   }
 
-  const label = (row: HeatmapViewRow) => {
+  const label = (row: HeatmapViewRow): RowLabel => {
     const queryId = rowQueryId(row)
     const text = queryId === null ? undefined : tableTexts.get(queryId) ?? fetchedTexts.get(queryId)
-    // The identity is (queryid, userid, dbid, toplevel): the same query under
-    // two roles or nested under track=all ranks as separate rows, so the
-    // prefix must carry enough of the identity to tell them apart.
-    const parts = [
-      ...(row.labels[0] == null ? [] : [row.labels[0]]),
-      ...(row.labels[1] == null || row.labels[1] === row.labels[0] ? [] : [row.labels[1]]),
-      ...(row.identity[3] === "false" ? [t("activity.nested")] : []),
-    ]
     return {
-      text: text === undefined ? `Query ID ${queryId ?? "—"}` : statementPreview(text),
-      prefix: parts.length === 0 ? null : parts.join(" · "),
+      text: text === undefined ? `Query ID ${queryId ?? "—"}` : activityPreview(text),
+      // The identity is (queryid, userid, dbid, toplevel): the same query
+      // under two roles or nested under track=all ranks as separate rows, so
+      // the prefix must carry enough of the identity to tell them apart.
+      prefix: identityPrefix(row.labels, row.identity[3] === "false" ? t("activity.nested") : null),
     }
   }
 
-  const panel = <ActivityPanel
-    blockScale={cut.blockScaled === true ? blockSize : 1}
-    cursor={cursor}
-    cut={cut}
-    drill={drill}
-    hour={hour}
-    label={label}
-    locale={locale}
-    maximized={maximized}
-    onCollapse={() => toggle(false)}
-    onCursor={onCursor}
-    onCut={setCutId}
-    onMaximized={setMaximized}
-    onScale={setScale}
-    onTop={setTop}
-    scale={scale}
-    t={t}
-    top={top}
-    view={view}
-  />
-  if (!maximized) return panel
-  return <>
-    <section aria-label={t("activity.title")} className="activity-block" data-testid="statements-activity-placeholder" />
-    {createPortal(<div aria-label={t("activity.title")} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
-  </>
+  return <ActivityLedger blockSize={blockSize} columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} onView={setView} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
+}
+
+export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, t }: {
+  readonly blockSize: number | null
+  readonly cursor: number
+  readonly data: HourData
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onRelated: (target: RelatedNavigation) => void
+  readonly t: Translate
+}) {
+  const planTexts = useMemo(() => planTextsByPlanId(data.sections.pg_store_plans ?? []), [data.sections.pg_store_plans])
+  const drill = (row: HeatmapViewRow) => {
+    const planId = row.identity[3]
+    if (planId == null || planId === "0") return
+    const expression = canonicalSearch([{ key: "plan_id", value: planId }], "pg_store_plans")
+    if (expression !== null) onRelated({ expression, planId, section: "plans" })
+  }
+  const label = (row: HeatmapViewRow): RowLabel => {
+    const planId = row.identity[3]
+    const text = planId == null ? undefined : planTexts.get(planId)
+    return {
+      text: text === undefined ? `Plan ID ${planId ?? "—"}` : activityPreview(text),
+      prefix: identityPrefix(row.labels, null),
+    }
+  }
+  return <ActivityLedger blockSize={blockSize} columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
+}
+
+// Tables and indexes snapshot every five minutes, so their hour is twelve
+// honest wide cells rather than sixty.
+export function RelationsActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, section, t }: {
+  readonly blockSize: number | null
+  readonly cursor: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onPattern: (pattern: string) => void
+  readonly section: "pg_stat_user_tables" | "pg_stat_user_indexes"
+  readonly t: Translate
+}) {
+  const indexes = section === "pg_stat_user_indexes"
+  const drill = (row: HeatmapViewRow) => {
+    const name = row.labels[indexes ? 3 : 2]
+    if (name != null) onPattern(name)
+  }
+  const label = (row: HeatmapViewRow): RowLabel => {
+    const [datname, schemaname, relname, indexrelname] = row.labels
+    const object = [schemaname, indexes ? indexrelname ?? relname : relname]
+      .filter((part): part is string => part != null)
+      .join(".")
+    return {
+      text: object === "" ? "—" : object,
+      prefix: datname ?? null,
+    }
+  }
+  return <ActivityLedger blockSize={blockSize} columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={indexes ? INDEX_LABELS : TABLE_LABELS} locale={locale} onCursor={onCursor} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
+}
+
+const STATEMENT_LABELS = ["datname", "usename"] as const
+const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
+const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const
+
+function identityPrefix(labels: readonly (string | null)[], marker: string | null): string | null {
+  const parts = [
+    ...(labels[0] == null ? [] : [labels[0]]),
+    ...(labels[1] == null || labels[1] === labels[0] ? [] : [labels[1]]),
+    ...(marker === null ? [] : [marker]),
+  ]
+  return parts.length === 0 ? null : parts.join(" · ")
 }
 
 function rowQueryId(row: HeatmapViewRow): string | null {
@@ -207,9 +360,33 @@ function rowQueryId(row: HeatmapViewRow): string | null {
   return stored == null || stored === "0" ? null : stored
 }
 
-// Query text for the ranked entities: the loaded table page answers most of
-// them; the remainder is fetched one bounded text row per queryid, only after
-// ranking decided the row is worth a label.
+// Query text is the one heavy label: it never travels with the ranking
+// response. The loaded table page answers most of the ranked entities; the
+// remainder is fetched one bounded text row per queryid, after ranking.
+function statementTextsByQueryId(tableRows: readonly DataRow[]): ReadonlyMap<string, string> {
+  const texts = new Map<string, string>()
+  for (const row of tableRows) {
+    const queryId = rawText(value(row, "queryid"))
+    const text = rawText(value(row, "query"))
+    if (queryId === null || text === null || text === "" || texts.has(queryId)) continue
+    texts.set(queryId, text)
+  }
+  return texts
+}
+
+// Plan text reaches the ledger only through the loaded table page; there is
+// no bounded single-plan text fetch, so an unlabeled row keeps its plan id.
+function planTextsByPlanId(tableRows: readonly DataRow[]): ReadonlyMap<string, string> {
+  const texts = new Map<string, string>()
+  for (const row of tableRows) {
+    const planId = rawText(value(row, "planid"))
+    const text = rawText(value(row, "plan"))
+    if (planId === null || text === null || text === "" || texts.has(planId)) continue
+    texts.set(planId, text)
+  }
+  return texts
+}
+
 function useStatementTexts(
   view: HeatmapView | null,
   tableTexts: ReadonlyMap<string, string>,
@@ -248,13 +425,16 @@ function useStatementTexts(
   return texts
 }
 
-function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, t, top, view }: {
+function ActivityPanel({ blockScale, columns, cursor, cut, cuts, drill, hour, keys, label, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, section, t, top, view }: {
   readonly blockScale: number | null
+  readonly columns: number
   readonly cursor: number
-  readonly cut: StatementCut
+  readonly cut: ActivityCut
+  readonly cuts: readonly ActivityCut[]
   readonly drill: (row: HeatmapViewRow) => void
   readonly hour: number
-  readonly label: (row: HeatmapViewRow) => { readonly text: string; readonly prefix: string | null }
+  readonly keys: LedgerKeys
+  readonly label: (row: HeatmapViewRow) => RowLabel
   readonly locale: Locale
   readonly maximized: boolean
   readonly onCollapse: () => void
@@ -264,6 +444,7 @@ function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, ma
   readonly onScale: (scale: ScaleMode) => void
   readonly onTop: (top: number) => void
   readonly scale: ScaleMode
+  readonly section: string
   readonly t: Translate
   readonly top: number
   readonly view: HeatmapView
@@ -271,8 +452,10 @@ function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, ma
   // Without a recorded block size the block counters stay honest block counts.
   const kind = cut.blockScaled === true && blockScale === null ? "count" : cut.kind
   const valueScale = blockScale ?? 1
+  // A gauge cell is a plain reading, not a rate.
+  const suffix = view.cumulative ? t("unit.per_second") : ""
   const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
-    ? Math.min(COLUMNS - 1, Math.floor(((cursor - hour) * COLUMNS) / HOUR_MICROS))
+    ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
     : null
   const globalMax = heatmapViewMax(view)
   const totalsMax = view.totals.cells.reduce<number>((current, cell) => cell !== null && cell > current ? cell : current, 0)
@@ -281,19 +464,19 @@ function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, ma
     : globalMax
   const atCursor = (cells: readonly (number | null)[]) => {
     const cell = cursorColumn === null ? null : cells[cursorColumn] ?? null
-    return cell === null ? "—" : formatValue(cell * valueScale, kind, locale, t("unit.per_second"))
+    return cell === null ? "—" : formatValue(cell * valueScale, kind, locale, suffix)
   }
   const total = (stored: number | null) => stored === null ? "—" : formatValue(stored * valueScale, kind, locale)
 
-  return <section aria-label={t("activity.title")} className={`activity-block${maximized ? " activity-max" : ""}`} data-testid="statements-activity">
+  return <section aria-label={t(keys.title)} className={`activity-block${maximized ? " activity-max" : ""}`} data-testid={`activity-${section}`}>
     <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3 py-[6px]">
       <button aria-expanded className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-sm font-medium text-fg2" data-testid="activity-toggle" onClick={onCollapse} type="button">
         <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} />
-        {t("activity.title")}
+        {t(keys.title)}
       </button>
-      <LabelHelp helpKey="activity.title.help" iconOnly labelKey="activity.title" t={t} />
+      <LabelHelp helpKey={keys.titleHelp} iconOnly labelKey={keys.title} t={t} />
       <div aria-label={t("activity.cut_label")} className="lens-tabs" role="group">
-        {STATEMENT_CUTS.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
+        {cuts.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
       </div>
       <LabelHelp helpKey={`activity.cut.${cut.id}.help`} iconOnly labelKey={`activity.cut.${cut.id}`} t={t} />
       <span className="font-sans text-xs text-fg4" data-testid="activity-top-count">{t("activity.top", { top: String(view.rows.length), total: String(view.entityCount) })}</span>
@@ -311,12 +494,12 @@ function ActivityPanel({ blockScale, cursor, cut, drill, hour, label, locale, ma
     </header>
     {view.entityCount === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
     {view.entityCount > 0 && <div className={maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}>
-      <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey="activity.totals.help" iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
+      <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={keys.totalsHelp} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
         return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={() => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
-      {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey="activity.others.help" iconOnly labelKey="activity.others_label" t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t("activity.others", { count: String(view.othersCount) })} total={total(view.others.total)} />}
+      {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={keys.othersHelp} iconOnly labelKey={keys.othersLabel} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(keys.others, { count: String(view.othersCount) })} total={total(view.others.total)} />}
     </div>}
   </section>
 }
@@ -375,7 +558,7 @@ function ActivityStrip({ cells, cursor, hour, max, onCursor }: {
   </svg>
 }
 
-function formatValue(stored: number, kind: StatementCut["kind"], locale: Locale, suffix = ""): string {
+function formatValue(stored: number, kind: ActivityCut["kind"], locale: Locale, suffix = ""): string {
   if (kind === "bytes") return humanBytes(stored, locale, suffix)
   if (kind === "milliseconds") return humanDuration(stored, locale, "milliseconds", suffix)
   return measure(stored, locale, suffix)
