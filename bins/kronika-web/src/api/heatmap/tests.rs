@@ -33,7 +33,7 @@ fn intervals_carry_exact_boundaries_and_cover_the_window() {
 }
 
 #[test]
-fn ungrouped_work_is_batched_without_lowering_the_requested_shape() {
+fn ungrouped_batch_size_is_bounded_at_the_public_column_limit() {
     assert!(ungrouped_batch_rows(60, 2) >= 100);
     let public_max_batch = ungrouped_batch_rows(1_440, 2);
     assert!(public_max_batch > 0);
@@ -256,7 +256,7 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one production-format fixture verifies grouped and batched ungrouped output"
+    reason = "shared fixture setup covers grouped and batched ungrouped output"
 )]
 fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     use kronika_format::DictLimits;

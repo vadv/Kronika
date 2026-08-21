@@ -28,7 +28,7 @@ test("counters sum across databases into one instance rate and hour total", () =
   assert.equal(vital.total, 100 + 30 + 60)
 })
 
-test("a multi-field counter vital sums the fields", () => {
+test("a multi-field counter sums its fields", () => {
   const rows = [
     row(0, T0, { datid: 1, xact_commit: 10, xact_rollback: 1 }),
     row(1, T0 + 10 * SECOND, { datid: 1, xact_commit: 30, xact_rollback: 5 }),
@@ -49,7 +49,7 @@ test("a counter that goes backwards yields no delta for that pair", () => {
   assert.equal(vital.total, 2)
 })
 
-test("gauges reduce per snapshot moment as sum or max", () => {
+test("gauge series reduce each snapshot by sum or maximum", () => {
   const rows = [
     row(0, T0, { datid: 1, frozen_xid_age: 100 }),
     row(1, T0, { datid: 2, frozen_xid_age: 900 }),
@@ -87,7 +87,7 @@ test("share of totals divides the hour totals", () => {
   assert.equal(vitals.shareOfTotals({ points: [], total: 5 }, { points: [], total: 0 }), null)
 })
 
-test("setting changes are every later recorded value of a name", () => {
+test("the first setting value is the baseline and later values are changes", () => {
   const setting = (ordinal, timestamp, name, stored) => row(ordinal, timestamp, { name, setting: stored }, "1019001")
   const rows = [
     setting(0, T0, "work_mem", "4MB"),
@@ -113,7 +113,7 @@ test("a gauge moment whose rows are all null keeps a null point", () => {
   assert.deepEqual(vitals.gaugeSeries(rows, "frozen_xid_age", "max").map(({ value }) => value), [100, null])
 })
 
-test("anchored series read zero at pass moments with no rows and bin rows to the earlier pass", () => {
+test("anchored series reads zero for empty passes and assigns rows to the preceding anchor", () => {
   const anchor = (ordinal, timestamp) => row(ordinal, timestamp, { datid: 1 })
   const vacuum = (ordinal, timestamp) => row(ordinal, timestamp, { pid: 7 }, "1012001")
   const anchors = [anchor(0, T0), anchor(1, T0 + 10 * SECOND), anchor(2, T0 + 20 * SECOND)]

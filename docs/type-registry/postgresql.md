@@ -84,7 +84,7 @@ authorized, which is traffic, not an event.
 | `pg_log_checkpoints` | `checkpoint starting:`, `checkpoint complete:`, `checkpoints are occurring too frequently` | `log_checkpoints`, on by default from PG 15 |
 | `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table`, including the aggressive and anti-wraparound wordings | `log_autovacuum_min_duration` |
 | `pg_log_slow_queries` | `duration: <ms> ms  statement: <sql>`, `duration: <ms> ms  execute <name>: <sql>` | `log_min_duration_statement` |
-| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; the `DETAIL` pid lists after `holding the lock:` and `Wait queue:` land in `holding_pids` and `wait_queue` | `log_lock_waits` |
+| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; the `DETAIL` pid lists after `holding the lock:` and `Wait queue:` are stored in `holding_pids` and `wait_queue` | `log_lock_waits` |
 | `pg_log_lifecycle` | `server process (PID …) was terminated`, `received … shutdown request`, `database system is ready to accept connections` | always |
 | `pg_log_temp_files` | `temporary file: path …, size …` | `log_temp_files` |
 

@@ -299,8 +299,7 @@ function entryFacts(entry: EventEntry, locale: Locale, t: Translate): readonly (
   return stat.database === null ? [] : [[field("database"), stat.database]]
 }
 
-// The per-row hour fetch carries only the sample; the first occurrence's
-// larger texts are read once, when the entry is opened.
+// Load large text fields only for an expanded entry.
 const ERROR_TEXT_FIELDS = ["detail", "hint", "context", "statement"]
 
 function ErrorSample({ row, t }: { readonly row: DataRow | undefined; readonly t: Translate }) {
@@ -460,8 +459,7 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
 }) {
   const [open, setOpen] = useState(tier !== "routine")
   const [shown, setShown] = useState(TIER_ROWS)
-  // The last expandedKey this section reacted to; a collapse by hand must not
-  // be undone by a refetch, but every new selection must still reveal itself.
+  // Do not reopen a manually collapsed section after a refetch.
   const opened = useRef<string | null>(null)
   useEffect(() => setShown(TIER_ROWS), [hour])
   useEffect(() => {

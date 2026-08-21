@@ -67,11 +67,8 @@ fn retain_latest<T>(samples: &mut BTreeMap<i64, T>) {
     }
 }
 
-/// Counter state is carried across segment boundaries. Adjacent segments can
-/// share their boundary snapshot row; `emitted_before` remembers how far the
-/// earlier segments already reached so the later segment does not emit that
-/// instant again — with the counters bounded to their retained tail, the
-/// re-emission would be a conflicting null where a value was already sent.
+/// Carries counter state across segments. A shared boundary row is suppressed
+/// because a retained-tail read can turn it into a conflicting null.
 pub(super) struct State {
     counters: Counters,
     emitted_before: i64,

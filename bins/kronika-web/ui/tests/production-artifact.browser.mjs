@@ -118,12 +118,12 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-top-50"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="activity-top-50"]')?.getAttribute("aria-pressed") === "true"`, "the deeper rank")
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-top-50"]')?.getAttribute("aria-pressed") === "true"`, "the 50-row limit")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-overlay"] [data-testid="activity-row"]').length === 2`, "the reloaded full-screen ledger", 15_000)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`)
-    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') === null`, "the restored ledger")
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') === null`, "the inline ledger")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-exec_time"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the default cut back")
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the restored default cut")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the ledger collapsed again")
     const browserMode = await cdp.evaluate(`(() => ({
@@ -4434,7 +4434,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
     await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark navigates to its surface")
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark leaves the Events console")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -4930,8 +4930,6 @@ function targetedRelationRecords(url, label, eligible) {
 }
 
 
-// Every focused server answers the activity ledger's ranking request with one
-// small deterministic heatmap so the Statements page renders without noise.
 function answerHeatmap(url, response) {
   const from = Number(url.searchParams.get("from") ?? "0")
   const to = Number(url.searchParams.get("to") ?? "0")

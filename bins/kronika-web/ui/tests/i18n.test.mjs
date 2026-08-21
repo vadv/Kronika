@@ -65,7 +65,7 @@ test("quantitative search labels and unit tokens stay canonical English in RU", 
   }
 })
 
-test("Statements and Activity technical copy stays canonical English in RU", async () => {
+test("RU keeps technical labels in English and localizes help", async () => {
   const [englishSource, russianSource, activitySource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
     readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
@@ -92,6 +92,13 @@ test("Statements and Activity technical copy stays canonical English in RU", asy
     ].map((field) => `pg.field.${field}.label`),
   ]
   for (const key of canonical) assert.equal(russian[key], english[key], key)
+  for (const key of ["events.field.holding_pids", "events.field.wait_queue"]) {
+    assert.equal(russian[key], english[key], key)
+  }
+  for (const key of Object.keys(english).filter((candidate) =>
+    candidate.startsWith("pg.vitals.band.") || (candidate.startsWith("pg.vitals.row.") && !candidate.endsWith(".help")))) {
+    assert.equal(russian[key], english[key], key)
+  }
 
   const localizedActivity = new Set(["activity.loading", "activity.error", "activity.empty"])
   for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && !candidate.endsWith(".help") && !localizedActivity.has(candidate))) {

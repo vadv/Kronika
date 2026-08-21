@@ -9,7 +9,7 @@ export function SparkCell({ cursor, end, hour, limit, max, points, second }: {
   readonly cursor: number
   readonly end: number
   readonly hour: number
-  // A recorded capacity drawn as a dashed rule, such as max_connections.
+  // Optional dashed line for a recorded capacity such as `max_connections`.
   readonly limit?: number | undefined
   readonly max: number
   readonly points: readonly ChartPoint[]

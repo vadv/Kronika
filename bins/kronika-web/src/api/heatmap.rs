@@ -1,12 +1,8 @@
-//! The ranked top view over one window: entities of one section ranked by one
-//! column, with per-interval cells.
+//! Ranked per-interval heatmaps.
 //!
-//! Two passes over the same rows, as the design prescribes. The first pass
-//! keeps one small accumulator per entity — the whole-window ranking value and
-//! the running column cell that feeds the totals band — so memory stays
-//! proportional to the number of entities, not entities times columns. Only
-//! later passes fill only a bounded batch of ranked rows or groups at a time.
-//! The others band is the totals band minus the ranked rows.
+//! The ranking pass uses one accumulator per entity. Later passes allocate
+//! cells only for bounded batches of ranked rows or groups. The others band is
+//! the totals band minus the ranked rows.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -54,10 +50,7 @@ pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
     })
 }
 
-/// The registry decides upfront whether the cut is a counter or a gauge; a
-/// label or timestamp column cannot rank a heatmap, and a summed cut must not
-/// mix counters with gauges. The registry, not the stored hour, also answers
-/// whether the section and fields exist at all.
+/// Validates that every cut field exists and has one shared numeric class.
 fn fields_class(
     section: &str,
     fields: &[String],
@@ -152,9 +145,7 @@ impl PreparedHeatmap {
         Ok(())
     }
 
-    /// First pass: rank every entity over the whole window and fold the
-    /// totals band. Returns the rows each plan contributed so the second pass
-    /// reads exactly the same data even while an active segment grows.
+    /// Ranks entities and folds totals over a fixed row prefix per plan.
     #[expect(clippy::type_complexity, reason = "one internal tuple, used once")]
     fn rank(
         &self,
@@ -237,11 +228,11 @@ impl PreparedHeatmap {
         Ok(Some((fold, seen_rows)))
     }
 
-    /// Second pass: the top-K-by-columns cells and last-seen labels.
+    /// Loads cells and last-seen labels for ranked entities.
     #[expect(clippy::type_complexity, reason = "one internal tuple, used once")]
     #[expect(
         clippy::too_many_lines,
-        reason = "one pass, one loop, no branches to split"
+        reason = "the scan keeps row decoding, identity, cell, and label state together"
     )]
     fn fill(
         &self,
@@ -359,10 +350,8 @@ impl PreparedHeatmap {
         Ok(Some((cells, labels)))
     }
 
-    /// Second grouped pass: fill only the ranked groups and one Others strip.
-    /// The first pass has already fixed every entity's group and the physical
-    /// row prefix; this pass repeats the same first-sighting rule without
-    /// retaining a groups-by-columns matrix.
+    /// Loads ranked group cells and the Others band without retaining all
+    /// groups by all columns. Each identity keeps its first observed group.
     fn fill_grouped(
         &self,
         grouped: &Grouped,
@@ -556,8 +545,6 @@ impl PreparedHeatmap {
         Ok(())
     }
 
-    /// The grouped emission: rows are groups with their summed cells; there
-    /// is no second pass and no labels.
     fn emit_grouped(
         &self,
         grouped: &Grouped,
@@ -648,7 +635,7 @@ impl PreparedHeatmap {
     }
 }
 
-/// Feed one plan's first `rows` physical rows to `flush` in bounded chunks.
+/// Feeds one plan's first `rows` physical rows to `flush` in bounded chunks.
 fn pump_rows(
     segment: &Segment,
     plan: &Plan,
@@ -687,9 +674,8 @@ fn pump_rows(
     Ok(connected)
 }
 
-/// Number of winners whose observation and label storage fits the bounded
-/// ungrouped working set. Every requested winner is still emitted; larger
-/// products make additional sequential passes over the fixed row prefix.
+/// Caps each ungrouped batch by observation and label storage. Larger results
+/// use additional passes over the fixed row prefix.
 fn ungrouped_batch_rows(columns: usize, labels: usize) -> usize {
     let cell_bytes = columns.saturating_mul(size_of::<Obs>());
     let label_bytes = labels.saturating_mul(size_of::<(i64, Value)>());
@@ -702,9 +688,7 @@ fn ungrouped_batch_rows(columns: usize, labels: usize) -> usize {
     (UNGROUPED_CELL_BUDGET_BYTES / row_bytes).max(1)
 }
 
-/// Renders cells to JSON values after resolving every distinct dictionary id
-/// in one read. The bounded preliminary scan reads only the plan projection;
-/// retaining the ids costs no more than the rendered values the request needs.
+/// Resolves every distinct dictionary id in a plan projection once.
 struct RenderCache {
     rendered: HashMap<u64, Value>,
     empty: Dictionary,
@@ -765,8 +749,6 @@ impl RenderCache {
     }
 }
 
-/// The physical columns of the requested cut that this layout carries: the
-/// first `count` requested fields, in request order.
 fn cut_columns(plan: &Plan, count: usize) -> Vec<&'static str> {
     plan.fields
         .iter()
@@ -775,9 +757,6 @@ fn cut_columns(plan: &Plan, count: usize) -> Vec<&'static str> {
         .collect()
 }
 
-/// A summed cut: the sum of the present numeric fields, null when none is
-/// usable. Summing counters keeps counter semantics — the delta of a sum is
-/// the sum of the deltas.
 fn summed(row: &Row, columns: &[&'static str]) -> Option<f64> {
     let mut sum: Option<f64> = None;
     for column in columns {
@@ -791,7 +770,7 @@ fn summed(row: &Row, columns: &[&'static str]) -> Option<f64> {
 fn numeric(stored: &Cell) -> Option<f64> {
     #[expect(
         clippy::cast_precision_loss,
-        reason = "counters below 2^53 are exact and rates are approximate by nature"
+        reason = "counters below 2^53 are exact; floating-point division makes rates approximate"
     )]
     match stored {
         Cell::I16(value) => Some(f64::from(*value)),
@@ -810,8 +789,7 @@ fn number(stored: Option<f64>) -> Value {
         .map_or(Value::Null, Value::Number)
 }
 
-/// A unit separator joins the parts; a null part is a control marker so it can
-/// never collide with the string "null".
+/// Uses distinct separators for identity parts and nulls.
 pub(super) fn entity_key_into(key: &mut String, type_id: u32, identity: &[Value]) {
     use std::fmt::Write as _;
     key.clear();
@@ -855,7 +833,6 @@ fn clamped(offset: i128) -> i64 {
     i64::try_from(offset).unwrap_or(i64::MAX)
 }
 
-/// First/last observation of one entity inside one span of time.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Obs {
     pub(super) count: u32,
@@ -893,9 +870,8 @@ impl Obs {
         }
     }
 
-    /// The design's cell rule: a counter cell is last minus first over the
-    /// observed elapsed time, null on a reset or fewer than two observations;
-    /// a gauge cell is the last sample.
+    /// Counter cells require two samples and no reset; gauge cells use the
+    /// last sample.
     pub(super) fn cell(&self, cumulative: bool) -> Option<f64> {
         if self.count == 0 {
             return None;
@@ -934,7 +910,6 @@ impl Obs {
     }
 }
 
-/// A null-aware sum of finished cells.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct CellSum {
     sum: f64,
@@ -1130,8 +1105,6 @@ impl GroupedFill {
     }
 }
 
-/// One ranked group: per-identity cells summed under one shared value, the
-/// way the totals band sums the whole section.
 struct GroupState {
     values: Vec<Value>,
     members: u32,
@@ -1171,10 +1144,8 @@ pub(super) struct Ranked {
     pub(super) out_of_order: u64,
 }
 
-/// The first pass: one accumulator per entity. Rows arrive in recording
-/// order, so an entity's finished column folds into the totals band the
-/// moment a later column starts; a sample for an already-finished column is
-/// counted and skipped rather than folded wrongly.
+/// One ranking accumulator per entity. Finished columns fold into totals when
+/// the next column starts; late samples are counted but not folded again.
 pub(super) struct Fold {
     from: i64,
     to: i64,
@@ -1330,12 +1301,7 @@ impl Fold {
         }
     }
 
-    /// A grouped ranking: identities aggregate under a shared column value,
-    /// so a thousand short-lived worker processes read as one command. Cells
-    /// are per-identity cells summed — the group is its own totals band — and
-    /// a counter group ranks by the sum of its members' whole-window deltas,
-    /// a gauge group by the sum of their maxima; both stay independent of the
-    /// column count.
+    /// Sums completed per-identity cells and ranking totals by group value.
     pub(super) fn finish_grouped(self, top: usize) -> Grouped {
         let cumulative = self.cumulative;
         let out_of_order = self.out_of_order;
@@ -1412,7 +1378,6 @@ impl Fold {
     }
 }
 
-/// The peak of a summed band: the honest single number beside a gauge strip.
 fn band_peak(cells: &[CellSum]) -> Option<f64> {
     cells
         .iter()

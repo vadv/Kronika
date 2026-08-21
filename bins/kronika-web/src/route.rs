@@ -474,8 +474,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     if fields.is_empty() {
         return Err(RouteError::BadParameter("field".to_owned()));
     }
-    // A grouped ranking aggregates identities away, so per-identity labels
-    // have nothing to attach to.
+    // Group rows cannot carry per-identity labels.
     if !group.is_empty() && !labels.is_empty() {
         return Err(RouteError::BadParameter("label".to_owned()));
     }

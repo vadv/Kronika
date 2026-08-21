@@ -2121,8 +2121,8 @@ fn finish_batched<E>(
     ))
 }
 
-/// One line carrying the whole cause chain. A bare tokio-postgres Display is
-/// just "db error"; the server's message lives in its sources.
+/// Formats the error chain because `tokio_postgres::Error` displays only its
+/// top-level message.
 fn error_text(error: &(dyn std::error::Error + '_)) -> String {
     let mut message = error.to_string();
     let mut source = error.source();

@@ -292,10 +292,10 @@ pub struct PgLogLockWaits {
     /// How long the wait lasted.
     #[column(g, unit = milliseconds)]
     pub duration_ms: Option<f64>,
-    /// The pids `DETAIL` names as holding the lock, as listed there.
+    /// The holder PID list from `DETAIL`.
     #[column(l)]
     pub holding_pids: Option<StrId>,
-    /// The pids `DETAIL` names as the wait queue, as listed there.
+    /// The wait-queue PID list from `DETAIL`.
     #[column(l)]
     pub wait_queue: Option<StrId>,
     /// `DETAIL`, which names the holder and the queue.

@@ -22,7 +22,7 @@ const error = (ordinal, minute, values) => row("pg_log_errors", "2001001", ordin
 const lockWait = (ordinal, minute, values) => row("pg_log_lock_waits", "2005002", ordinal, minute, values)
 const checkpoint = (ordinal, minute, values) => row("pg_log_checkpoints", "2002001", ordinal, minute, values)
 
-test("error windows with one pattern merge into one entry summing counts", () => {
+test("error windows with the same pattern form one entry with summed counts", () => {
   const entries = events.groupEvents({
     pg_log_errors: [
       error(0, 2, { severity: 0, category: 1, sqlstate: "23505", pattern: "duplicate key", count: 3, sample: "duplicate key value", database: "shop" }),
@@ -92,7 +92,7 @@ test("an acquired record without a matching wait forms its own entry", () => {
   assert.equal(entries[0].stat.maxMs, 1200)
 })
 
-test("checkpoints collapse into one entry with the trigger mix and a separate too-frequent warning", () => {
+test("checkpoint records form one entry with timed and requested counts", () => {
   const entries = events.groupEvents({
     pg_log_checkpoints: [
       checkpoint(0, 0, { phase: 0, reason: "time" }),
@@ -116,7 +116,7 @@ test("checkpoints collapse into one entry with the trigger mix and a separate to
   assert.equal(summary.stat.maxSyncMs, 2100)
 })
 
-test("a lifecycle record never groups and a crash is critical", () => {
+test("lifecycle records remain separate and crashes are critical", () => {
   const entries = events.groupEvents({
     pg_log_lifecycle: [
       row("pg_log_lifecycle", "2006001", 0, 5, { kind: 0, pid: 4242, signal: 9, message: "server process (PID 4242) was terminated by signal 9" }),
@@ -130,7 +130,7 @@ test("a lifecycle record never groups and a crash is critical", () => {
   assert.equal(entries[0].stat.signal, 9)
 })
 
-test("pgbouncer events group by level and message and slow queries keep the slowest sample", () => {
+test("PgBouncer events group by level and message; slow queries retain the slowest sample", () => {
   const entries = events.groupEvents({
     pgbouncer_events: [
       row("pgbouncer_events", "2100001", 0, 1, { level: 2, text: "server login failed", database: "app" }),

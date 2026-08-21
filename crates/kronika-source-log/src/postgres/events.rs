@@ -251,7 +251,7 @@ pub struct LockWait {
 }
 
 impl LockWait {
-    /// The pids `DETAIL` names as holding the lock, as listed.
+    /// The holder PID list from `DETAIL`.
     #[must_use]
     pub fn holding_pids(&self) -> Option<&str> {
         self.detail
@@ -259,7 +259,7 @@ impl LockWait {
             .and_then(|detail| detail_list(detail, "holding the lock: "))
     }
 
-    /// The pids `DETAIL` names as the wait queue, as listed.
+    /// The wait-queue PID list from `DETAIL`.
     #[must_use]
     pub fn wait_queue(&self) -> Option<&str> {
         self.detail
@@ -561,9 +561,8 @@ fn parse_autovacuum(message: &str, ts: i64) -> Option<AutovacuumEvent> {
     })
 }
 
-/// `duration: 12.345 ms  statement: SELECT 1`, or the extended protocol's
-/// `duration: 12.345 ms  execute <name>: SELECT 1`. Parse and bind steps stay
-/// dropped: their duration is not the statement's.
+/// Parses statement and execute duration records. Parse and bind durations are
+/// excluded.
 fn parse_slow_query(message: &str) -> Option<(f64, String)> {
     let rest = message.strip_prefix(DURATION_PREFIX)?;
     let (at, sql_at) = if let Some(at) = rest.find(STATEMENT_MARKER) {
@@ -609,9 +608,8 @@ fn parse_lock_wait(message: &str, ts: i64) -> Option<LockWait> {
     })
 }
 
-/// The pid list a lock-wait `DETAIL` names after `marker`, up to the period.
-/// Covers both `Process holding the lock: 1.` and `Processes holding the
-/// lock: 1, 2.`.
+/// Reads the PID list after a singular or plural holder marker, up to the next
+/// period.
 fn detail_list<'a>(detail: &'a str, marker: &str) -> Option<&'a str> {
     let at = detail.find(marker)?;
     let rest = detail.get(at + marker.len()..)?;
