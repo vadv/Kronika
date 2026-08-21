@@ -1,6 +1,6 @@
 //! Computes normalized timeline lanes from stored samples.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
 use kronika_registry::{contract, logical_section_name};
@@ -36,6 +36,37 @@ struct Counters {
     oldest_xact: BTreeMap<i64, f64>,
 }
 
+impl Counters {
+    fn retain_latest(&mut self) {
+        retain_latest(&mut self.busy_ticks);
+        retain_latest(&mut self.stall_cpu);
+        retain_latest(&mut self.stall_io);
+        retain_latest(&mut self.memory);
+        retain_latest(&mut self.disk_busy);
+        retain_latest(&mut self.disk_queue);
+        retain_latest(&mut self.net_rx);
+        retain_latest(&mut self.net_tx);
+        retain_latest(&mut self.net_drop);
+        retain_latest(&mut self.net_errors);
+        retain_latest(&mut self.swap);
+        retain_latest(&mut self.oom);
+        retain_latest(&mut self.running);
+        retain_latest(&mut self.waiting);
+        retain_latest(&mut self.oldest_xact);
+    }
+}
+
+fn retain_latest<T>(samples: &mut BTreeMap<i64, T>) {
+    if samples.len() <= 1 {
+        return;
+    }
+    let latest = samples.pop_last();
+    samples.clear();
+    if let Some((ts, value)) = latest {
+        samples.insert(ts, value);
+    }
+}
+
 /// Counter state is carried across segment boundaries.
 #[derive(Default)]
 pub(super) struct State {
@@ -44,17 +75,17 @@ pub(super) struct State {
 
 pub(super) fn collect(
     segment: &Segment,
-    ticks_per_second: i64,
-    cpu_count: i64,
     window: Window,
     state: &mut State,
 ) -> Result<Vec<LanePoint>, ApiError> {
+    let mut facts = Facts::default();
     for (type_id, _rows) in segment.sections() {
         let Some(name) = logical_section_name(type_id) else {
             continue;
         };
         match name {
-            "os_cpu" => read_cpu(segment, type_id, &mut state.counters)?,
+            "instance_metadata" => read_metadata(segment, type_id, &mut facts)?,
+            "os_cpu" => read_cpu(segment, type_id, &mut state.counters, &mut facts)?,
             "os_psi" => read_psi(segment, type_id, &mut state.counters)?,
             "os_meminfo" => read_memory(segment, type_id, &mut state.counters)?,
             "os_diskstats" => read_disk(segment, type_id, &mut state.counters)?,
@@ -64,22 +95,55 @@ pub(super) fn collect(
             _other => {}
         }
     }
-    Ok(current_points(
+    let current = current_points(
         &state.counters,
-        ticks_per_second,
-        cpu_count,
+        facts.ticks_per_second,
+        i64::try_from(facts.cores.len()).unwrap_or(0),
         segment.min_ts(),
         segment.max_ts(),
         window,
-    ))
+    );
+    state.counters.retain_latest();
+    Ok(current)
 }
 
-fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+#[derive(Default)]
+struct Facts {
+    ticks_per_second: i64,
+    cores: BTreeSet<i64>,
+}
+
+fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(), ApiError> {
+    let names = with_columns(type_id, &["clock_ticks_per_sec"], &[]);
+    segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if let Some(ticks) = number(&row, "clock_ticks_per_sec") {
+            #[expect(clippy::cast_possible_truncation, reason = "a hundred, in practice")]
+            {
+                facts.ticks_per_second = ticks as i64;
+            }
+        }
+        true
+    })?;
+    Ok(())
+}
+
+fn read_cpu(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    facts: &mut Facts,
+) -> Result<(), ApiError> {
     const FIELDS: [&str; 8] = [
         "ts", "cpu_id", "user", "nice", "system", "irq", "softirq", "steal",
     ];
     let names = with_columns(type_id, &FIELDS, &["scope"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if let Some(id) = number(&row, "cpu_id")
+            && id >= 0.0
+        {
+            #[expect(clippy::cast_possible_truncation, reason = "core indexes are small")]
+            facts.cores.insert(id as i64);
+        }
         let Some(ts) = timestamp(&row, "ts") else {
             return true;
         };
@@ -234,6 +298,27 @@ fn add(store: &mut BTreeMap<i64, i64>, ts: i64, value: f64) {
         .or_insert(value);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ActivitySample {
+    ts: Option<i64>,
+    backend_type: Option<u64>,
+    state: Option<u64>,
+    waiting: bool,
+    leader: bool,
+    xact_start: Option<i64>,
+}
+
+fn activity_sample(row: &Row) -> ActivitySample {
+    ActivitySample {
+        ts: timestamp(row, "ts"),
+        backend_type: string_id(row, "backend_type"),
+        state: string_id(row, "state"),
+        waiting: row.get("wait_event_type").is_some_and(present),
+        leader: row.get("leader_pid").is_some_and(present),
+        xact_start: timestamp(row, "xact_start"),
+    }
+}
+
 fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     let names = with_columns(
         type_id,
@@ -246,33 +331,27 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         ],
         &["leader_pid"],
     );
-    let mut rows = Vec::new();
+    let mut samples = Vec::new();
     let mut ids = HashSet::new();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
-        ids.extend(["backend_type", "state"].iter().filter_map(|column| {
-            if let Some(Cell::StrId(id)) = row.get(column) {
-                Some(*id)
-            } else {
-                None
-            }
-        }));
-        rows.push(row);
+        let sample = activity_sample(&row);
+        ids.extend([sample.backend_type, sample.state].into_iter().flatten());
+        samples.push(sample);
         true
     })?;
     let dictionary = segment.dictionary_for(&ids)?;
-    for row in rows {
-        let Some(ts) = timestamp(&row, "ts") else {
+    for sample in samples {
+        let Some(ts) = sample.ts else {
             continue;
         };
         counters.running.entry(ts).or_insert(0.0);
         counters.waiting.entry(ts).or_insert(0.0);
-        let kind = text(&row, "backend_type", &dictionary);
+        let kind = text(sample.backend_type, &dictionary);
         // Count client backends, not their parallel workers.
-        if kind != Some(b"client backend".as_slice()) || row.get("leader_pid").is_some_and(present)
-        {
+        if kind != Some(b"client backend".as_slice()) || sample.leader {
             continue;
         }
-        if let Some(started) = timestamp(&row, "xact_start") {
+        if let Some(started) = sample.xact_start {
             #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
             let age = (ts - started) as f64 / 1_000_000.0;
             counters
@@ -285,12 +364,11 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
                 })
                 .or_insert_with(|| age.max(0.0));
         }
-        let state = text(&row, "state", &dictionary);
+        let state = text(sample.state, &dictionary);
         if state != Some(b"active".as_slice()) {
             continue;
         }
-        let stuck = row.get("wait_event_type").is_some_and(present);
-        let lane = if stuck {
+        let lane = if sample.waiting {
             &mut counters.waiting
         } else {
             &mut counters.running
@@ -478,61 +556,16 @@ const fn present(cell: &Cell) -> bool {
     !matches!(cell, Cell::Null)
 }
 
-fn text<'a>(row: &Row, column: &str, dictionary: &'a Dictionary) -> Option<&'a [u8]> {
+fn string_id(row: &Row, column: &str) -> Option<u64> {
     match row.get(column) {
-        Some(Cell::StrId(id)) => match dictionary.resolve(*id) {
-            Some(Resolved::Str(bytes)) => Some(bytes),
-            _other => None,
-        },
+        Some(Cell::StrId(id)) => Some(*id),
         _other => None,
     }
 }
 
-pub(super) struct Facts {
-    pub(super) ticks_per_second: i64,
-    pub(super) cpu_count: i64,
-}
-
-pub(super) fn facts(segment: &Segment) -> Result<Facts, ApiError> {
-    let mut ticks_per_second = 0_i64;
-    let mut cores = std::collections::BTreeSet::new();
-    for (type_id, _rows) in segment.sections() {
-        match logical_section_name(type_id) {
-            Some("instance_metadata") => {
-                let names = with_columns(type_id, &["clock_ticks_per_sec"], &[]);
-                segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
-                    if let Some(ticks) = number(&row, "clock_ticks_per_sec") {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "a hundred, in practice"
-                        )]
-                        {
-                            ticks_per_second = ticks as i64;
-                        }
-                    }
-                    true
-                })?;
-            }
-            Some("os_cpu") => {
-                let names = with_columns(type_id, &["cpu_id"], &[]);
-                segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
-                    if let Some(id) = number(&row, "cpu_id")
-                        && id >= 0.0
-                    {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "core indexes are small"
-                        )]
-                        cores.insert(id as i64);
-                    }
-                    true
-                })?;
-            }
-            _other => {}
-        }
+fn text(id: Option<u64>, dictionary: &Dictionary) -> Option<&[u8]> {
+    match dictionary.resolve(id?) {
+        Some(Resolved::Str(bytes)) => Some(bytes),
+        _other => None,
     }
-    Ok(Facts {
-        ticks_per_second,
-        cpu_count: i64::try_from(cores.len()).unwrap_or(0),
-    })
 }
