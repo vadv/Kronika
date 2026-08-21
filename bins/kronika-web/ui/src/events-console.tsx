@@ -1,3 +1,4 @@
+import { ChevronRight, CircleAlert, HardDrive, Lock, Network, Power, Recycle, Timer, type LucideIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { acceptResponse, loadSnapshot, type DataRow } from "./api"
@@ -26,6 +27,27 @@ const SECTION_LABELS: Readonly<Record<string, string>> = {
   pg_log_lock_waits: "events.type.lock_waits",
   pg_log_lifecycle: "events.type.lifecycle",
   pgbouncer_events: "events.type.pgbouncer",
+}
+
+export const SECTION_ICONS: Readonly<Record<string, LucideIcon>> = {
+  pg_log_errors: CircleAlert,
+  pg_log_checkpoints: HardDrive,
+  pg_log_autovacuum: Recycle,
+  pg_log_slow_queries: Timer,
+  pg_log_lock_waits: Lock,
+  pg_log_lifecycle: Power,
+  pgbouncer_events: Network,
+}
+
+export interface EntryChip {
+  readonly label: string
+  readonly tone: "bad" | "warn" | "neutral"
+}
+
+const CHIP_TONES: Readonly<Record<EntryChip["tone"], string>> = {
+  bad: "bg-bad/10 text-bad",
+  warn: "bg-warn/10 text-warn",
+  neutral: "bg-s3 text-fg3",
 }
 
 const GROUPED_NOTES: Readonly<Record<string, string>> = {
@@ -93,21 +115,24 @@ function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string 
   return null
 }
 
-export function entryChips(entry: EventEntry, t: Translate): readonly string[] {
+export function entryChips(entry: EventEntry, t: Translate): readonly EntryChip[] {
   const stat = entry.stat
+  const neutral = (label: string): EntryChip => ({ label, tone: "neutral" })
   if (stat.kind === "pg.errors") {
+    const severity = ["error", "fatal", "panic", "warning", "log"][stat.severity] ?? "log"
     return [
-      t(`events.severity.${["error", "fatal", "panic", "warning", "log"][stat.severity] ?? "log"}`),
-      ...(stat.sqlstate === null ? [] : [stat.sqlstate]),
-      ...(stat.category === null ? [] : [categoryLabel(stat.category, t)]),
-      ...(stat.database === null ? [] : [stat.database]),
+      { label: t(`events.severity.${severity}`), tone: severity === "warning" ? "warn" : severity === "log" ? "neutral" : "bad" },
+      ...(stat.sqlstate === null ? [] : [neutral(stat.sqlstate)]),
+      ...(stat.category === null ? [] : [neutral(categoryLabel(stat.category, t))]),
+      ...(stat.database === null ? [] : [neutral(stat.database)]),
     ]
   }
-  if (stat.kind === "pg.autovacuum") return [t(stat.analyze ? "events.autovacuum.analyze" : "events.autovacuum.vacuum")]
+  if (stat.kind === "pg.autovacuum") return [neutral(t(stat.analyze ? "events.autovacuum.analyze" : "events.autovacuum.vacuum"))]
   if (stat.kind === "pgbouncer.events") {
+    const level = ["fatal", "error", "warning", "log", "debug", "noise"][stat.level] ?? "log"
     return [
-      t(`events.pgbouncer.${["fatal", "error", "warning", "log", "debug", "noise"][stat.level] ?? "log"}`),
-      ...(stat.database === null ? [] : [stat.database]),
+      { label: t(`events.pgbouncer.${level}`), tone: level === "fatal" || level === "error" ? "bad" : level === "warning" ? "warn" : "neutral" },
+      ...(stat.database === null ? [] : [neutral(stat.database)]),
     ]
   }
   return []
@@ -121,9 +146,10 @@ export function EventStrip({ entry, hour, onCursor, t }: {
 }) {
   const peak = Math.max(...entry.minutes, 1)
   const columns = entry.minutes.length
+  const fill = entry.tier === "critical" ? "fill-bad" : "fill-accent3"
   return <button
     aria-label={t("events.strip")}
-    className="block h-[20px] w-[120px] flex-none cursor-pointer border-0 bg-transparent p-0"
+    className="block h-[24px] w-[120px] flex-none cursor-pointer rounded-[var(--radius-xs)] border-0 bg-transparent p-0 transition-colors hover:bg-s2"
     data-testid="event-strip"
     onClick={(event) => {
       event.stopPropagation()
@@ -134,15 +160,16 @@ export function EventStrip({ entry, hour, onCursor, t }: {
     tabIndex={-1}
     type="button"
   >
-    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 20`}>
-      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="19.5" y2="19.5" />
+    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 24`}>
+      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="23.5" y2="23.5" />
       {entry.minutes.map((count, minute) => count === 0 ? null : <rect
-        className="fill-accent3"
-        height={Math.max(2, Math.round((count / peak) * 20))}
+        className={fill}
+        height={Math.max(2, Math.round((count / peak) * 21))}
         key={minute}
-        width="2"
-        x={minute * 2}
-        y={20 - Math.max(2, Math.round((count / peak) * 20))}
+        rx="0.5"
+        width="1.6"
+        x={minute * 2 + 0.2}
+        y={23 - Math.max(2, Math.round((count / peak) * 21))}
       />)}
     </svg>
   </button>
@@ -161,28 +188,38 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
   const title = entryTitle(entry, t, locale)
   const subtitle = entrySubtitle(entry, t, locale)
   const chips = entryChips(entry, t)
+  const critical = entry.tier === "critical"
+  const Icon = SECTION_ICONS[entry.section] ?? CircleAlert
+  const recorded = entry.text !== null && title === entry.text
   const moments = entry.firstTs === entry.lastTs
     ? time.timestamp(entry.firstTs)
     : `${time.timestamp(entry.firstTs)}–${time.timestamp(entry.lastTs)}`
-  return <div className="border-b border-line" data-entry-key={entry.key} data-testid="event-entry" data-tier={entry.tier}>
+  return <div
+    className={`border-b border-line ${critical ? "border-l-2 border-l-bad bg-bad/[0.04]" : ""} ${expanded ? "border-l-2 border-l-accent3" : ""}`}
+    data-entry-key={entry.key}
+    data-testid="event-entry"
+    data-tier={entry.tier}
+  >
     <button
       aria-expanded={expanded}
-      className="grid w-full cursor-pointer grid-cols-[10px_minmax(0,1fr)_auto_120px_auto] items-center gap-2.5 border-0 bg-s1 px-[9px] py-[7px] text-left text-fg2 hover:bg-s3 aria-expanded:bg-s2 max-[760px]:grid-cols-[10px_minmax(0,1fr)_auto]"
+      className="grid w-full cursor-pointer grid-cols-[26px_minmax(0,1fr)_auto_120px_auto] items-center gap-2.5 border-0 bg-transparent px-[9px] py-[7px] text-left text-fg2 transition-colors hover:bg-s3 aria-expanded:bg-s2 max-[760px]:grid-cols-[26px_minmax(0,1fr)_auto]"
       onClick={onToggle}
       type="button"
     >
-      <span aria-hidden="true" className={`h-[8px] w-[8px] rounded-full ${TIER_DOT[entry.tier]}`} />
-      <span className="min-w-0">
-        <span className="flex items-baseline gap-1.5">
-          <small className="flex-none text-xs text-fg3">{sectionLabel(entry.section, t)}</small>
-          {chips.map((chip) => <small className="flex-none bg-s3 px-1 text-xs text-fg3" key={chip}>{chip}</small>)}
-        </span>
-        <strong className="mt-[2px] block truncate font-mono text-xs font-medium text-fg" data-testid="event-entry-title">{title}</strong>
-        {subtitle !== null && <small className="mt-[2px] block truncate text-xs text-fg3">{subtitle}</small>}
+      <span aria-hidden="true" className={`flex h-[24px] w-[24px] items-center justify-center rounded-[var(--radius-sm)] ${critical ? "bg-bad/15 text-bad" : "bg-s3 text-fg3"}`}>
+        <Icon size={13} />
       </span>
-      <span className="whitespace-nowrap font-mono text-xs tabular-nums text-fg2">×{compact(entry.count, locale)}</span>
+      <span className="min-w-0">
+        <strong className={`block truncate text-xs font-medium text-fg ${recorded ? "font-mono" : ""}`} data-testid="event-entry-title">{title}</strong>
+        <span className="mt-[3px] flex items-baseline gap-1.5">
+          <small className="flex-none text-xs text-fg3">{sectionLabel(entry.section, t)}</small>
+          {chips.map((chip) => <small className={`flex-none rounded-[var(--radius-xs)] px-1 text-xs ${CHIP_TONES[chip.tone]}`} key={chip.label}>{chip.label}</small>)}
+          {subtitle !== null && <small className="truncate text-xs text-fg3">{subtitle}</small>}
+        </span>
+      </span>
+      <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(entry.count, locale)}</span>
       <span className="max-[760px]:hidden"><EventStrip entry={entry} hour={hour} onCursor={onCursor} t={t} /></span>
-      <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
+      <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <EventEntryDetail entry={entry} locale={locale} onCursor={onCursor} t={t} />}
   </div>
@@ -198,15 +235,19 @@ function EventEntryDetail({ entry, locale, onCursor, t }: {
   useEffect(() => setShown(RAW_PAGE), [entry.key])
   const note = GROUPED_NOTES[entry.stat.kind]
   const facts = entryFacts(entry, locale, t)
-  return <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]" data-testid="event-entry-detail">
+  return <div className="grid gap-2 border-t border-line2 bg-s2 px-[9px] py-[9px]" data-testid="event-entry-detail">
     {entry.stat.kind === "pg.errors" && <ErrorSample row={entry.rows[0]} t={t} />}
     {entry.stat.kind === "pg.locks" && <LockWaiters entry={entry} locale={locale} t={t} />}
     {facts.length > 0 && <DetailList>{facts.map(([label, shownValue]) => <DetailRow key={label} term={label}>{shownValue}</DetailRow>)}</DetailList>}
-    <div className="mt-1.5 grid gap-px">
+    <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
       {entry.rows.slice(0, shown).map((row) => <RawRow key={`${row.segmentId}:${row.typeId}:${row.ordinal}`} locale={locale} onCursor={onCursor} row={row} stat={entry.stat} t={t} />)}
     </div>
-    {entry.rows.length > shown && <button className="mt-1.5 cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" onClick={() => setShown((current) => current + RAW_PAGE)} type="button">{t("events.raw.more", { count: entry.rows.length - shown })}</button>}
-    {note !== undefined && <p className="mt-1.5 text-xs text-fg3">{t(note)}</p>}
+    <div className="flex items-center justify-between gap-2">
+      {entry.rows.length > shown
+        ? <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" onClick={() => setShown((current) => current + RAW_PAGE)} type="button">{t("events.raw.more", { count: entry.rows.length - shown })}</button>
+        : <span />}
+      {note !== undefined && <p className="text-right text-xs text-fg3">{t(note)}</p>}
+    </div>
   </div>
 }
 
@@ -290,11 +331,11 @@ function ErrorSample({ row, t }: { readonly row: DataRow | undefined; readonly t
       return content === null || content === "" ? [] : [[field, content] as const]
     })
   if (parts.length === 0) return null
-  return <div className="grid gap-1">
-    {parts.map(([field, content]) => <p className="text-xs leading-[1.45] text-fg2 [overflow-wrap:anywhere]" key={field}>
-      <span className="text-fg3">{t(`events.field.${field}`)}: </span>
-      <span className="font-mono">{content}</span>
-    </p>)}
+  return <div className="grid gap-1.5">
+    {parts.map(([field, content]) => <div key={field}>
+      <small className="block text-xs text-fg3">{t(`events.field.${field}`)}</small>
+      <div className="mt-[2px] max-h-[160px] overflow-auto rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1.5 font-mono text-xs leading-[1.5] text-fg2 [overflow-wrap:anywhere] whitespace-pre-wrap">{content}</div>
+    </div>)}
   </div>
 }
 
@@ -327,13 +368,17 @@ function LockWaiters({ entry, locale, t }: {
   }, [entry.rows])
   return <div className="grid gap-1" data-testid="lock-waiters">
     <p className="text-xs text-fg3">{t("events.holder.missing")}</p>
-    {waiters.map((waiter) => <p className="text-xs leading-[1.45] text-fg2 [overflow-wrap:anywhere]" key={waiter.pid}>
-      <span className="font-mono tabular-nums">pid {waiter.pid}</span>
-      {waiter.mode !== null && <span> · {waiter.mode}</span>}
-      {waiter.target !== null && <span> · {waiter.target}</span>}
-      {waiter.maxMs !== null && <span> · {humanDuration(waiter.maxMs, locale)}</span>}
-      {waiter.statement !== null && <span className="font-mono"> · {waiter.statement}</span>}
-    </p>)}
+    <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
+      {waiters.map((waiter) => <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-baseline gap-2 px-2 py-1" key={waiter.pid}>
+        <span className="rounded-[var(--radius-xs)] bg-s3 px-1 font-mono text-xs tabular-nums text-fg2">pid {waiter.pid}</span>
+        <span className="whitespace-nowrap font-mono text-xs tabular-nums text-fg">{waiter.maxMs === null ? "—" : humanDuration(waiter.maxMs, locale)}</span>
+        <span className="truncate text-xs text-fg2">
+          {waiter.mode !== null && <span className="text-fg3">{waiter.mode} · </span>}
+          {waiter.target !== null && <span className="text-fg3">{waiter.target}</span>}
+          {waiter.statement !== null && <span className="font-mono"> · {waiter.statement}</span>}
+        </span>
+      </div>)}
+    </div>
   </div>
 }
 
@@ -347,7 +392,7 @@ function RawRow({ locale, onCursor, row, stat, t }: {
   const time = useDisplayTime()
   const parts = rawParts(row, stat, locale, t)
   return <button
-    className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2 border-0 bg-transparent px-1 py-[3px] text-left hover:bg-s3"
+    className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2.5 border-0 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-s3"
     data-testid="event-raw-row"
     onClick={() => onCursor(row.timestamp)}
     type="button"
@@ -432,10 +477,11 @@ export function EventTierSection({ entries, expandedKey, hour, locale, onCursor,
   return <section data-testid={`event-tier-${tier}`}>
     <button
       aria-expanded={open}
-      className="flex w-full cursor-pointer items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[5px] text-left"
+      className="flex w-full cursor-pointer items-center gap-2 border-b border-line2 bg-s2 px-[9px] py-[6px] text-left transition-colors hover:bg-s3"
       onClick={() => setOpen((current) => !current)}
       type="button"
     >
+      <ChevronRight aria-hidden="true" className={`flex-none text-fg3 transition-transform duration-100 motion-reduce:transition-none ${open ? "rotate-90" : ""}`} size={13} />
       <span aria-hidden="true" className={`h-[8px] w-[8px] rounded-full ${TIER_DOT[tier]}`} />
       <span className="text-xs font-medium text-fg2">{t(`events.tier.${tier}`)}</span>
       <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: entries.length, count: total })}</span>

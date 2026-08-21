@@ -4,13 +4,13 @@ import { Diamond, TriangleAlert } from "lucide-react"
 
 import { acceptResponse, loadSeries, type DataRow, type Finding, type HourData } from "./api"
 import { useDisplayTime } from "./display-time-context"
-import { EventTierSection, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
+import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
-import { errorCategory, groupEvents, type EventEntry } from "./events-groups"
+import { MINUTE_COLUMNS, errorCategory, groupEvents, type EventEntry } from "./events-groups"
 import { findingCategory, findingKey, findingOrder, findingSource } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
-import { shownMoment, type Locale } from "./model"
+import { compact, shownMoment, type Locale } from "./model"
 import { evaluateExpr, parseSearch } from "./search"
 import { TableFilter } from "./table-filter"
 import { Timeline } from "./timeline"
@@ -93,16 +93,22 @@ export function EventsView({
     }
   }, [expandedKey, selectedEntry])
   const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
+  const [digest, setDigest] = useState<string | null>(null)
+  useEffect(() => setDigest(null), [hour])
   const scoped = useMemo(() => {
     if (entries === null) return null
     if (scope === null) return entries
     return entries.filter((entry) => scope.some((finding) => entryContains(entry, finding)))
   }, [entries, scope])
-  const visible = useMemo(() => scoped === null ? null : scoped.filter((entry) => {
+  const chosen = useMemo(() => {
+    if (scoped === null || digest === null) return scoped
+    return scoped.filter((entry) => digest === "critical" ? entry.tier === "critical" : entry.section === digest)
+  }, [digest, scoped])
+  const visible = useMemo(() => chosen === null ? null : chosen.filter((entry) => {
     if (!parsedSearch.ok || parsedSearch.query.canonical === "") return true
     const title = entryTitle(entry, t, locale)
     const fields: Readonly<Record<string, readonly string[]>> = {
-      text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t)],
+      text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
       kind: [entry.tier],
       source: [sectionLabel(entry.section, t), entry.section],
       category: errorCategory(entry.stat) === null ? [] : [categoryLabel(errorCategory(entry.stat) ?? 0, t)],
@@ -113,7 +119,7 @@ export function EventsView({
       return matches({ key: "text", value: parsedSearch.query.freeText ?? "" })
     }
     return evaluateExpr(parsedSearch.query.expr, (clause) => matches({ key: clause.key, value: clause.value }))
-  }), [locale, parsedSearch, scoped, t])
+  }), [chosen, locale, parsedSearch, t])
   const marks = useMemo(() => (scope ?? data.findings)
     .filter((finding) => finding.kind !== "event" && !finding.logicalName.startsWith("pg_log_"))
     .slice()
@@ -129,7 +135,8 @@ export function EventsView({
         <span className="text-xs tabular-nums text-fg3">{busy && visible !== null ? t("table.loading") : t("events.console.count", { groups: visible?.length ?? 0, count: totalCount })}</span>
         {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
-      <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={scoped?.length ?? 0} />
+      {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
+      <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
       <div className={`min-h-[390px] ${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
         {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
         {visible === null && !streams.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
@@ -157,6 +164,80 @@ export function EventsView({
       </div>
     </section>
   </>
+}
+
+interface DigestTile {
+  readonly key: string
+  readonly label: string
+  readonly count: number
+  readonly minutes: readonly number[]
+  readonly bad: boolean
+  readonly section: string | null
+}
+
+function EventsDigest({ active, entries, locale, onChoose, t }: {
+  readonly active: string | null
+  readonly entries: readonly EventEntry[]
+  readonly locale: Locale
+  readonly onChoose: (key: string) => void
+  readonly t: Translate
+}) {
+  const tiles = useMemo(() => {
+    const bySection = new Map<string, { count: number; minutes: number[] }>()
+    let criticalCount = 0
+    const criticalMinutes = Array.from({ length: MINUTE_COLUMNS }, () => 0)
+    for (const entry of entries) {
+      const tile = bySection.get(entry.section) ?? { count: 0, minutes: Array.from({ length: MINUTE_COLUMNS }, () => 0) }
+      tile.count += entry.count
+      entry.minutes.forEach((count, minute) => { tile.minutes[minute] = (tile.minutes[minute] ?? 0) + count })
+      bySection.set(entry.section, tile)
+      if (entry.tier === "critical") {
+        criticalCount += entry.count
+        entry.minutes.forEach((count, minute) => { criticalMinutes[minute] = (criticalMinutes[minute] ?? 0) + count })
+      }
+    }
+    const ordered = ["pg_log_errors", "pg_log_slow_queries", "pg_log_lock_waits", "pg_log_checkpoints", "pg_log_autovacuum", "pg_log_lifecycle", "pgbouncer_events"]
+    return [
+      ...(criticalCount === 0 ? [] : [{ key: "critical", label: t("events.tier.critical"), count: criticalCount, minutes: criticalMinutes, bad: true, section: null } satisfies DigestTile]),
+      ...ordered.flatMap((section) => {
+        const tile = bySection.get(section)
+        return tile === undefined ? [] : [{ key: section, label: sectionLabel(section, t), count: tile.count, minutes: tile.minutes, bad: false, section } satisfies DigestTile]
+      }),
+    ]
+  }, [entries, t])
+  if (tiles.length < 2) return null
+  return <div aria-label={t("events.digest")} className="flex flex-wrap gap-1.5 border-b border-line2 px-1.5 py-2" data-testid="events-digest" role="group">
+    {tiles.map((tile) => {
+      const Icon = tile.section === null ? TriangleAlert : SECTION_ICONS[tile.section] ?? TriangleAlert
+      const pressed = active === tile.key
+      return <button
+        aria-pressed={pressed}
+        className={`flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 text-left transition-colors ${pressed ? "border-accent3 bg-s3" : "border-line2 bg-s1 hover:bg-s2"}`}
+        key={tile.key}
+        onClick={() => onChoose(tile.key)}
+        type="button"
+      >
+        <Icon aria-hidden="true" className={tile.bad ? "text-bad" : "text-fg3"} size={13} />
+        <span className="text-xs text-fg3">{tile.label}</span>
+        <strong className="font-mono text-[13px] font-semibold tabular-nums text-fg">{compact(tile.count, locale)}</strong>
+        <DigestStrip bad={tile.bad} minutes={tile.minutes} />
+      </button>
+    })}
+  </div>
+}
+
+function DigestStrip({ bad, minutes }: { readonly bad: boolean; readonly minutes: readonly number[] }) {
+  const peak = Math.max(...minutes, 1)
+  return <svg aria-hidden="true" className="block h-[14px] w-[44px] flex-none" preserveAspectRatio="none" viewBox={`0 0 ${minutes.length} 14`}>
+    {minutes.map((count, minute) => count === 0 ? null : <rect
+      className={bad ? "fill-bad" : "fill-accent3"}
+      height={Math.max(1.5, (count / peak) * 13)}
+      key={minute}
+      width="0.8"
+      x={minute + 0.1}
+      y={14 - Math.max(1.5, (count / peak) * 13)}
+    />)}
+  </svg>
 }
 
 function MarkRow({ finding, onFinding, t }: {

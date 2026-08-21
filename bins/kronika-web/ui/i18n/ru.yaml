@@ -1529,3 +1529,4 @@ events.strip: "Появления по минутам; клик двигает �
 events.more_groups: "Показать ещё {count} групп"
 events.entry.locks_acquired: "Завершившиеся ожидания блокировок — ожидавших: {waiters}, дольше всего {duration}"
 events.console.error: "Не удалось прочитать лог-секции этого часа."
+events.digest: "Сводка часа"
