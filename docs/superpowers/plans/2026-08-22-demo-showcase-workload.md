@@ -70,7 +70,7 @@
 
 **Interfaces:**
 - Produces: `vacuum::setup_sql(rows: u32) -> String` for `tenant_0.vacuum_showcase`.
-- Produces: `vacuum::run_sql(timeout_s: u64) -> String` with finite statement timeout, `vacuum_cost_delay=25ms`, `vacuum_cost_limit=10`, update, and `VACUUM (ANALYZE)`.
+- Produces: `vacuum::run_sql(timeout_s: u64) -> Vec<String>` with finite statement timeout, `vacuum_cost_delay=8ms`, `vacuum_cost_limit=200`, update, `VACUUM (ANALYZE)`, and a cleanup statement.
 - Consumes: `vacuum_rows=100000`, `vacuum_round_interval_s=180`, `vacuum_statement_timeout_s=30`.
 
 - [ ] Add SQL-boundary tests: setup uses the configured literal row bound and a 256-character payload; run SQL contains `statement_timeout = '30s'`, never contains timeout zero, updates the showcase table, and runs `VACUUM (ANALYZE)`.

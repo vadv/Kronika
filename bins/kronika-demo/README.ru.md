@@ -100,7 +100,7 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 | Переменная | По умолчанию | Назначение |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | не задана | Подключение нагрузки, обычно через PgBouncer. |
-| `KRONIKA_DEMO_WORKLOAD_VACUUM_DSN` | DSN нагрузки | Прямое подключение к PostgreSQL для настроек Vacuum в рамках сессии. Образ подключается к встроенному PostgreSQL. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_DSN` | обязательно с нагрузкой | Прямое подключение к PostgreSQL для настроек Vacuum в рамках сессии. Нельзя направлять его в PgBouncer с transaction pooling. Образ подключается к встроенному PostgreSQL. |
 | `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 4 | Число схем. |
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Таблиц в каждой схеме. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Параллельных соединений при настройке. |
@@ -138,6 +138,8 @@ Vacuum отдельной таблицы.
 
 ```sh
 KRONIKA_COLLECTOR_BIN=target/x86_64-unknown-linux-gnu/debug/kronika-collector \
+KRONIKA_DEMO_WORKLOAD_DSN='host=127.0.0.1 port=6432 user=kronika_demo dbname=kronika_demo' \
+KRONIKA_DEMO_WORKLOAD_VACUUM_DSN='host=127.0.0.1 port=5432 user=kronika_demo dbname=kronika_demo' \
     kronika-demo
 ```
 

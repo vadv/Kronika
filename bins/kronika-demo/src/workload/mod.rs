@@ -1,11 +1,11 @@
 //! Optional `PostgreSQL` workload the demo drives alongside the collector.
 //!
 //! Disabled unless `KRONIKA_DEMO_WORKLOAD_DSN` is set, which leaves
-//! `kronika-demo` exactly as it behaves without this feature. Every other
-//! `KRONIKA_DEMO_WORKLOAD_*` variable has a default sized for a demo
-//! container: hundreds of tables across several schemas, a steady mix of
-//! reads and writes, and real lock-wait chains, so the dashboards a fresh
-//! `docker run` produces are already populated.
+//! `kronika-demo` exactly as it behaves without this feature. The Vacuum
+//! scenario also requires an explicit direct `PostgreSQL` DSN; numeric tuning
+//! variables have defaults sized for a demo container: hundreds of tables
+//! across several schemas, a steady mix of reads and writes, and real
+//! lock-wait chains, so a fresh `docker run` already populates the dashboards.
 
 mod dml;
 mod events;
@@ -99,6 +99,17 @@ fn env_u64(key: &str, default: u64) -> Result<u64> {
     }
 }
 
+fn required_vacuum_dsn(raw: Option<String>) -> Result<String> {
+    let dsn = raw.context(
+        "KRONIKA_DEMO_WORKLOAD_VACUUM_DSN must be set to a direct PostgreSQL connection when KRONIKA_DEMO_WORKLOAD_DSN enables the workload",
+    )?;
+    anyhow::ensure!(
+        !dsn.trim().is_empty(),
+        "KRONIKA_DEMO_WORKLOAD_VACUUM_DSN must not be blank"
+    );
+    Ok(dsn)
+}
+
 impl WorkloadConfig {
     /// Read the workload configuration from the environment.
     ///
@@ -106,13 +117,14 @@ impl WorkloadConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when a set variable does not parse.
+    /// Returns an error when the direct Vacuum DSN is absent or a tuning
+    /// variable does not parse.
     pub(crate) fn from_env() -> Result<Option<Self>> {
         let Ok(dsn) = std::env::var("KRONIKA_DEMO_WORKLOAD_DSN") else {
             return Ok(None);
         };
         let vacuum_dsn =
-            std::env::var("KRONIKA_DEMO_WORKLOAD_VACUUM_DSN").unwrap_or_else(|_| dsn.clone());
+            required_vacuum_dsn(std::env::var("KRONIKA_DEMO_WORKLOAD_VACUUM_DSN").ok())?;
         let config = Self {
             dsn,
             vacuum_dsn,

@@ -1,4 +1,4 @@
-use super::WorkloadConfig;
+use super::{WorkloadConfig, required_vacuum_dsn};
 
 fn config() -> WorkloadConfig {
     WorkloadConfig {
@@ -26,6 +26,16 @@ fn debug_output_redacts_the_workload_dsn() {
     assert!(!output.contains("private"));
     assert!(!output.contains("also-private"));
     assert!(!output.contains("127.0.0.1"));
+}
+
+#[test]
+fn vacuum_workload_requires_an_explicit_direct_connection() {
+    assert!(required_vacuum_dsn(None).is_err());
+    assert!(required_vacuum_dsn(Some("   ".to_owned())).is_err());
+    assert_eq!(
+        required_vacuum_dsn(Some("host=postgres port=5432".to_owned())).unwrap(),
+        "host=postgres port=5432"
+    );
 }
 
 #[test]
