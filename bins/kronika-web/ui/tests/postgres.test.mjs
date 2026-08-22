@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, visibleLockRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -71,6 +71,14 @@ function row(typeId, values, logicalName = "pg_stat_statements") {
 function activityRow(ordinal, values, timestamp = 10_000_000) {
   return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001004", values }
 }
+
+test("Locks disappear after the regular waiting lane returns to zero", () => {
+  const locks = [row("1011002", { pid: 73 }, "pg_locks")]
+  const lane = (timestamp, value) => ({ lane: "pg_waiting", segmentId: "a", timestamp, value })
+  assert.deepEqual(helpers.visibleLockRows(locks, [lane(10, 2), lane(20, 0)], 20), [])
+  assert.equal(helpers.visibleLockRows(locks, [lane(10, 2), lane(20, 0)], 15), locks)
+  assert.equal(helpers.visibleLockRows(locks, [], 20), locks)
+})
 
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("write_time"), false)
