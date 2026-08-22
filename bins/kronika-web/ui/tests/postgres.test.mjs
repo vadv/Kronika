@@ -550,7 +550,15 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
     if (column.help.startsWith("pg.vacuum.")) usedVacuumHelp.add(column.help)
   }
-  const dictionaryVacuumHelp = Object.keys(english).filter((key) => /^pg\.vacuum\.[^.]+\.help$/.test(key)).sort()
+  // The OS process-load block reads its help keys straight in JSX (LabelHelp),
+  // not through an EntityColumn, so it needs its own scan of the source text.
+  const postgresViewSource = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  for (const match of postgresViewSource.matchAll(/pg\.vacuum\.load(\.[a-z_]+)?\.help/g)) {
+    assert.equal(Object.hasOwn(english, match[0]), true, match[0])
+    assert.equal(Object.hasOwn(russian, match[0]), true, match[0])
+    usedVacuumHelp.add(match[0])
+  }
+  const dictionaryVacuumHelp = Object.keys(english).filter((key) => /^pg\.vacuum\.[^.]+(\.[a-z_]+)?\.help$/.test(key)).sort()
   assert.deepEqual([...usedVacuumHelp].sort(), dictionaryVacuumHelp)
 })
 

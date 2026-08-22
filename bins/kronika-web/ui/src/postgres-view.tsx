@@ -12,7 +12,7 @@ import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
-import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, type VacuumEpisode } from "./postgres-vacuum"
+import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, vacuumLoadShares, vacuumProcessLoad, type VacuumEpisode, type VacuumProcessLoad } from "./postgres-vacuum"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
@@ -460,22 +460,32 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   }, [hour, historyRevision])
   const allRows = hourRows ?? data.sections.pg_stat_progress_vacuum ?? NO_ROWS
 
-  // The recorded sampling cadence; a segment without the field shows nothing
-  // and episode adjacency falls back to identity and counters alone.
+  // The recorded sampling cadence and clock rate; a segment without the
+  // fields shows nothing and episode adjacency falls back to identity and
+  // counters alone, and the process-load block skips the tick-scaled facts.
   const [intervalSeconds, setIntervalSeconds] = useState<number | null>(null)
+  const [ticksPerSecond, setTicksPerSecond] = useState<number | null>(null)
   const anchorId = segmentBoundAt(segments, cursor)?.id ?? null
   useEffect(() => {
     const bound = segments.find((candidate) => candidate.id === anchorId)
     if (bound === undefined) {
       setIntervalSeconds(null)
+      setTicksPerSecond(null)
       return undefined
     }
     const controller = new AbortController()
     acceptResponse(
-      loadSnapshot(bound.id, bound.maxTs, [{ fields: ["postgresql_interval_seconds"], section: "instance_metadata" }], controller.signal),
+      loadSnapshot(bound.id, bound.maxTs, [{ fields: ["postgresql_interval_seconds", "clock_ticks_per_sec"], section: "instance_metadata" }], controller.signal),
       controller.signal,
-      (loaded) => setIntervalSeconds(asNumber(value(loaded.sections.instance_metadata?.[0] ?? null, "postgresql_interval_seconds"))),
-      () => setIntervalSeconds(null),
+      (loaded) => {
+        const metadata = loaded.sections.instance_metadata?.[0] ?? null
+        setIntervalSeconds(asNumber(value(metadata, "postgresql_interval_seconds")))
+        setTicksPerSecond(asNumber(value(metadata, "clock_ticks_per_sec")))
+      },
+      () => {
+        setIntervalSeconds(null)
+        setTicksPerSecond(null)
+      },
     )
     return () => controller.abort()
   }, [anchorId, segments])
@@ -564,6 +574,9 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
         {joinedActivity.row !== null && <InspectorRelatedPortal id="pg_stat_activity" identity={`vacuum:${rowKey(selected)}`} label={t("pg.section.activity")}>
           <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={onRelated} t={t} />
         </InspectorRelatedPortal>}
+        {selectedEpisode !== undefined && <InspectorRelatedPortal id="os_process" identity={`vacuum:${rowKey(selected)}`} label={t("pg.related.process_tab")}>
+          <VacuumProcessTab blockSize={blockSize} cursor={cursor} episode={selectedEpisode} hour={hour} locale={locale} t={t} ticksPerSecond={ticksPerSecond} />
+        </InspectorRelatedPortal>}
       </InspectorPortal>}
     </div>
   </>
@@ -588,6 +601,11 @@ function vacuumHeapCell(row: DataRow, field: string, blockSize: number | null, l
   const blocks = asNumber(value(row, field))
   if (blocks === null) return "—"
   return blockSize === null ? measure(blocks, locale) : humanBytes(blocks * blockSize, locale)
+}
+
+function vacuumHeapBytes(row: DataRow, field: string, blockSize: number | null): number | null {
+  const blocks = asNumber(value(row, field))
+  return blocks === null || blockSize === null ? null : blocks * blockSize
 }
 
 function vacuumScanPercent(row: DataRow): number | null {
@@ -794,6 +812,82 @@ function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
       {t("pg.vacuum.in_phase.value", { count: episode.phaseRows.length, span: humanDuration(span / 1000, locale) })}
       {episode.noMovement === null ? "" : ` · ${t("pg.vacuum.no_movement.value", { count: episode.noMovement.samples, span: humanDuration(episode.noMovement.spanUs / 1000, locale) })}`}
     </p>
+  </section>
+}
+
+// The vacuuming backend as an OS process: its recorded work across the
+// episode's own window, then its current identity via the same panel the
+// PostgreSQL backend's own Process tab uses. One bounded hour-wide request
+// for the PID, no field list — the server answers with the whole layout.
+function VacuumProcessTab({ blockSize, cursor, episode, hour, locale, t, ticksPerSecond }: {
+  readonly blockSize: number | null
+  readonly cursor: number
+  readonly episode: VacuumEpisode
+  readonly hour: number
+  readonly locale: Locale
+  readonly t: Translate
+  readonly ticksPerSecond: number | null
+}) {
+  const pid = asNumber(value(episode.last, "pid"))
+  const [rows, setRows] = useState<readonly DataRow[] | null | undefined>(undefined)
+  useEffect(() => {
+    setRows(undefined)
+    if (pid === null) {
+      setRows(null)
+      return undefined
+    }
+    const controller = new AbortController()
+    acceptResponse(
+      loadSeries(hour, "os_process", { pid: String(pid) }, [], controller.signal),
+      controller.signal,
+      (loaded) => setRows(loaded),
+      () => setRows(null),
+    )
+    return () => controller.abort()
+  }, [hour, pid])
+  if (rows === undefined) return <section className="p-3" data-testid="vacuum-process-panel"><p className="m-0 text-sm text-fg4">{t("history.loading")}</p></section>
+  if (rows === null || rows.length === 0) return <section className="p-3" data-testid="vacuum-process-panel"><p className="m-0 text-sm text-fg4">{t("pg.related.process_missing")}</p></section>
+  const current = snapshot(rows, cursor)[0] ?? null
+  const load = vacuumProcessLoad(rows, episode)
+  return <section data-testid="vacuum-process-panel">
+    {load !== null && <VacuumLoadFacts blockSize={blockSize} episode={episode} load={load} locale={locale} t={t} ticksPerSecond={ticksPerSecond} />}
+    <ProcessFacts locale={locale} process={current} processTime={current?.timestamp ?? null} t={t} />
+  </section>
+}
+
+// What this recorded process actually did between the episode's first and
+// last sample: CPU spent, bytes really read from and written to storage, and
+// where recorded, how that read compares to what PG itself reports scanning
+// — a hint at how much of the scan came from disk rather than shared
+// buffers, not a claim about cause. A backend running a manual VACUUM may
+// have done other work in the same span; the number is the honest span
+// total either way, never narrowed to "just the vacuum" by inference.
+function VacuumLoadFacts({ blockSize, episode, load, locale, t, ticksPerSecond }: {
+  readonly blockSize: number | null
+  readonly episode: VacuumEpisode
+  readonly load: VacuumProcessLoad
+  readonly locale: Locale
+  readonly t: Translate
+  readonly ticksPerSecond: number | null
+}) {
+  const scannedBytes = vacuumHeapBytes(episode.last, "heap_blks_scanned", blockSize)
+  const { blockWaitMs, cpuMs, cpuShare, majorFaults, readBytes, readShare, writeBytes } = vacuumLoadShares(load, ticksPerSecond, scannedBytes)
+  const nothingRecorded = cpuMs === null && readBytes === null && writeBytes === null && blockWaitMs === null && majorFaults === null
+  return <section className="border-b border-line2 px-2 py-1.5" data-testid="vacuum-process-load">
+    <span className="mb-1 flex items-center gap-1 font-sans text-xs font-medium text-fg2"><LabelHelp helpKey="pg.vacuum.load.help" labelKey="pg.vacuum.load.label" t={t} /></span>
+    {nothingRecorded
+      ? <p className="m-0 text-sm text-fg4">{t("pg.vacuum.load.unavailable")}</p>
+      : <DetailList>
+        {cpuMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.cpu.help" labelKey="pg.vacuum.load.cpu.label" t={t} />} valueClassName="text-sm">
+          {humanDuration(cpuMs, locale)}{cpuShare === null ? "" : ` · ${humanPercent(cpuShare, locale)}`}
+        </DetailRow>}
+        {readBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.read.help" labelKey="pg.vacuum.load.read.label" t={t} />} valueClassName="text-sm">
+          {humanBytes(readBytes, locale)}{readShare === null ? "" : ` ${t("pg.vacuum.load.read_share", { share: humanPercent(readShare, locale) })}`}
+        </DetailRow>}
+        {writeBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.write.help" labelKey="pg.vacuum.load.write.label" t={t} />} valueClassName="text-sm">{humanBytes(writeBytes, locale)}</DetailRow>}
+        {blockWaitMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.block_wait.help" labelKey="pg.vacuum.load.block_wait.label" t={t} />} valueClassName="text-sm">{humanDuration(blockWaitMs, locale)}</DetailRow>}
+        {majorFaults !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.major_faults.help" labelKey="pg.vacuum.load.major_faults.label" t={t} />} valueClassName="text-sm">{compact(majorFaults, locale)}</DetailRow>}
+      </DetailList>}
   </section>
 }
 

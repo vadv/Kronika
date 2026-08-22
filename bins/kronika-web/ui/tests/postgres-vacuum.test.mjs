@@ -2,9 +2,12 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { readFile } from "node:fs/promises"
-import { importModule } from "./import-module.mjs"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const vacuum = await importModule('export * from "../src/postgres-vacuum.ts"')
+const vacuum = await importModule(
+  'export * from "../src/postgres-vacuum.ts"',
+  { plugins: [registryPlugin([])] },
+)
 
 const HOUR = 1_000_000_000_000
 const S = 1_000_000
@@ -139,4 +142,86 @@ test("the hour fetch names no fields: an empty list, not a fixed union across PG
   // for exactly what each segment's own layout defines.
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /loadSeries\(hour, "pg_stat_progress_vacuum", \{\}, \[\], controller\.signal\)/)
+})
+
+function processRow(atSeconds, pid, values) {
+  return {
+    logicalName: "os_process", ordinal: String(atSeconds), segmentId: "a",
+    timestamp: HOUR + atSeconds * S, typeId: "1100001",
+    values: { pid, ...values },
+  }
+}
+
+test("process load is the delta between the process samples nearest the episode's own first and last recorded moment", () => {
+  const [episode] = vacuum.buildVacuumEpisodes([
+    row(0, { heap_blks_scanned: 10, phase: "scanning heap" }, "1012004"),
+    row(300, { heap_blks_scanned: 40, phase: "scanning heap" }, "1012004"),
+  ], 300)
+  const processRows = [
+    processRow(-30, 9, { utime: 100, stime: 50, read_bytes: 1_000, write_bytes: 0, majflt: 4, blkdelay_ticks: 2 }),
+    processRow(0, 9, { utime: 110, stime: 55, read_bytes: 2_000, write_bytes: 100, majflt: 5, blkdelay_ticks: 3 }),
+    processRow(150, 9, { utime: 400, stime: 200, read_bytes: 9_000, write_bytes: 500, majflt: 40, blkdelay_ticks: 20 }),
+    // After the episode's own window: not counted.
+    processRow(600, 9, { utime: 900, stime: 500, read_bytes: 50_000, write_bytes: 900, majflt: 90, blkdelay_ticks: 50 }),
+  ]
+  const load = vacuum.vacuumProcessLoad(processRows, episode)
+  // The sample exactly at the episode's own first moment is a closer,
+  // still-valid baseline than the one before it.
+  assert.equal(load.before.ordinal, "0")
+  assert.equal(load.after.ordinal, "150")
+  assert.equal(load.cpuTicks, 435n) // (400-110) + (200-55)
+  assert.equal(load.readBytes, 7_000n)
+  assert.equal(load.writeBytes, 400n)
+  assert.equal(load.majorFaults, 35n)
+  assert.equal(load.blockWaitTicks, 17n)
+})
+
+test("process load is null without a baseline before the episode, and a counter reset drops only its own field", () => {
+  const [episode] = vacuum.buildVacuumEpisodes([
+    row(0, { heap_blks_scanned: 10, phase: "scanning heap" }, "1012004"),
+    row(300, { heap_blks_scanned: 40, phase: "scanning heap" }, "1012004"),
+  ], 300)
+  // No sample at or before the episode's first moment: no honest baseline.
+  assert.equal(vacuum.vacuumProcessLoad([processRow(150, 9, { utime: 100, stime: 0 })], episode), null)
+
+  const reset = vacuum.vacuumProcessLoad([
+    processRow(-10, 9, { utime: 100, stime: 50, read_bytes: 9_000 }),
+    processRow(200, 9, { utime: 150, stime: 5, read_bytes: 12_000 }), // stime went backwards
+  ], episode)
+  assert.equal(reset.cpuTicks, null)
+  assert.equal(reset.readBytes, 3_000n)
+})
+
+test("load shares convert ticks to time, and the read share compares against PG's own scanned bytes, never a guess", () => {
+  const load = {
+    before: { timestamp: HOUR },
+    after: { timestamp: HOUR + 10 * S },
+    cpuTicks: 500n, blockWaitTicks: 200n, runDelayNs: 0n,
+    readBytes: 40_000n, writeBytes: 5_000n, majorFaults: 12n,
+  }
+  // 500 ticks at 100 Hz is 5 s of CPU over a 10 s span: 50%.
+  const withClock = vacuum.vacuumLoadShares(load, 100, 50_000)
+  assert.equal(withClock.cpuMs, 5_000)
+  assert.equal(withClock.cpuShare, 50)
+  assert.equal(withClock.blockWaitMs, 2_000)
+  assert.equal(withClock.readBytes, 40_000)
+  assert.equal(withClock.readShare, 80) // 40,000 of 50,000 PG scanned bytes
+  assert.equal(withClock.majorFaults, 12)
+
+  // No recorded clock rate: tick-scaled facts withhold, byte facts do not.
+  const noClock = vacuum.vacuumLoadShares(load, null, 50_000)
+  assert.equal(noClock.cpuMs, null)
+  assert.equal(noClock.blockWaitMs, null)
+  assert.equal(noClock.readBytes, 40_000)
+
+  // No recorded block size: the comparison is withheld, not guessed at 8192.
+  const noBlockSize = vacuum.vacuumLoadShares(load, 100, null)
+  assert.equal(noBlockSize.readBytes, 40_000)
+  assert.equal(noBlockSize.readShare, null)
+
+  // A share is clamped at 100%, never claiming more than the whole span or
+  // more than PG itself reports scanning.
+  const saturated = vacuum.vacuumLoadShares({ ...load, cpuTicks: 5_000n, readBytes: 90_000n }, 100, 50_000)
+  assert.equal(saturated.cpuShare, 100)
+  assert.equal(saturated.readShare, 100)
 })

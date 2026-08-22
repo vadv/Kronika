@@ -1,5 +1,6 @@
 import type { DataRow } from "./api"
 import { asNumber, rawText, value } from "./model"
+import { exactCounterDelta } from "./postgres-metrics"
 
 // The vacuum ledger: one recorded hour of pg_stat_progress_vacuum, grouped
 // into episodes for display. Grouping is presentation over recorded values,
@@ -201,4 +202,102 @@ export function delayDelta(episode: VacuumEpisode): number | null {
   const before = asNumber(value(previous, "delay_time"))
   const after = asNumber(value(episode.last, "delay_time"))
   return before === null || after === null || after < before ? null : after - before
+}
+
+export interface VacuumProcessLoad {
+  readonly before: DataRow
+  readonly after: DataRow
+  /// User plus system CPU time, in jiffies (scale by the recorded clock rate).
+  readonly cpuTicks: bigint | null
+  /// Time blocked on I/O, in jiffies.
+  readonly blockWaitTicks: bigint | null
+  /// Time waiting for a CPU slot, nanoseconds.
+  readonly runDelayNs: bigint | null
+  /// Bytes actually read from storage, not page-cache hits.
+  readonly readBytes: bigint | null
+  readonly writeBytes: bigint | null
+  readonly majorFaults: bigint | null
+}
+
+// The vacuuming process's own recorded work across the episode's own window:
+// the latest usable `os_process` sample at or before the episode's first
+// recorded moment stands as the baseline, the latest at or before its last
+// recorded moment as the reading. A backend that also did other work outside
+// this window is not filtered out — every recorded process, autovacuum
+// worker or plain backend running a manual VACUUM, keeps whatever else it
+// did in the same span. The delta is exactly what the process accumulated
+// between two real recorded moments: a hint at the vacuum's cost, not proof
+// the vacuum alone produced it.
+export function vacuumProcessLoad(processRows: readonly DataRow[], episode: VacuumEpisode): VacuumProcessLoad | null {
+  const start = episode.rows[0]?.timestamp
+  if (start === undefined) return null
+  const before = latestAtOrBefore(processRows, start)
+  const after = latestAtOrBefore(processRows, episode.last.timestamp)
+  if (before === null || after === null || after.timestamp <= before.timestamp) return null
+  const delta = (field: string) => exactCounterDelta(value(before, field), value(after, field))
+  return {
+    before,
+    after,
+    cpuTicks: sumDeltas(before, after, ["utime", "stime"]),
+    blockWaitTicks: delta("blkdelay_ticks"),
+    runDelayNs: delta("rundelay_ns"),
+    readBytes: delta("read_bytes"),
+    writeBytes: delta("write_bytes"),
+    majorFaults: delta("majflt"),
+  }
+}
+
+export interface VacuumLoadShares {
+  readonly cpuMs: number | null
+  readonly cpuShare: number | null
+  readonly blockWaitMs: number | null
+  readonly readBytes: number | null
+  readonly writeBytes: number | null
+  readonly readShare: number | null
+  readonly majorFaults: number | null
+}
+
+// The display numbers derived from a raw load delta: CPU and block-wait
+// converted from ticks, and each byte delta's share of what its natural
+// comparison covers — CPU against the span's own wall-clock time, bytes read
+// against what PG itself reports scanning. `scannedBytes` is null when the
+// recorded block size is unknown, and the read share is then withheld rather
+// than compared against a guessed size.
+export function vacuumLoadShares(load: VacuumProcessLoad, ticksPerSecond: number | null, scannedBytes: number | null): VacuumLoadShares {
+  const spanSeconds = (load.after.timestamp - load.before.timestamp) / 1_000_000
+  const cpuMs = ticksToMs(load.cpuTicks, ticksPerSecond)
+  const readBytes = load.readBytes === null ? null : Number(load.readBytes)
+  return {
+    cpuMs,
+    cpuShare: cpuMs !== null && spanSeconds > 0 ? Math.min(100, cpuMs / 1000 / spanSeconds * 100) : null,
+    blockWaitMs: ticksToMs(load.blockWaitTicks, ticksPerSecond),
+    readBytes,
+    writeBytes: load.writeBytes === null ? null : Number(load.writeBytes),
+    readShare: readBytes !== null && scannedBytes !== null && scannedBytes > 0
+      ? Math.min(100, readBytes / scannedBytes * 100)
+      : null,
+    majorFaults: load.majorFaults === null ? null : Number(load.majorFaults),
+  }
+}
+
+function ticksToMs(ticks: bigint | null, ticksPerSecond: number | null): number | null {
+  return ticks === null || ticksPerSecond === null || ticksPerSecond <= 0 ? null : (Number(ticks) / ticksPerSecond) * 1000
+}
+
+function sumDeltas(before: DataRow, after: DataRow, fields: readonly string[]): bigint | null {
+  let total = 0n
+  for (const field of fields) {
+    const delta = exactCounterDelta(value(before, field), value(after, field))
+    if (delta === null) return null
+    total += delta
+  }
+  return total
+}
+
+function latestAtOrBefore(rows: readonly DataRow[], target: number): DataRow | null {
+  let best: DataRow | null = null
+  for (const row of rows) {
+    if (row.timestamp <= target && (best === null || row.timestamp > best.timestamp)) best = row
+  }
+  return best
 }

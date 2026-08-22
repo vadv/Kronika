@@ -545,6 +545,18 @@ same collector query; the fallback identity is `relid`, a `pg_class` OID
 that is never reused in any timeframe the product cares about, and it is
 shown only inside the one relation string it identifies, never as a bare
 number in the detail block.
+
+A selected row's Process panel joins straight on `pid` to the recorded
+`os_process` history for that process, no episode-style identity caution: an
+autovacuum worker gets a fresh PID every run, and a manual `VACUUM`'s backend
+PID is exactly the PID `pg_stat_activity` already records for that session.
+The panel takes the two `os_process` samples nearest the episode's own first
+and last recorded moment and reports their delta — CPU time, bytes read and
+written, block-I/O wait, major page faults — as what the process did in that
+span, next to a comparison against what PG itself reports scanning. This is a
+hint about cost, not proof the vacuum alone produced it: a manual `VACUUM`'s
+backend may have done other work in the same window, and the panel says so
+rather than pretending otherwise.
 Events is the grouped log console described below; the same findings stay
 drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
