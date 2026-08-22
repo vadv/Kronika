@@ -612,3 +612,29 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })
+
+test("CPU usage is the hour's own reading: no section rows, no request, and the CPU row opens on it", () => {
+  const busy = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_busy")
+  assert.equal(busy.group, "cpu")
+  assert.equal(busy.unit, "%")
+  // The reading the resource ledger leads with. It arrives with the hour, so
+  // it reads even when the browser holds no os_cpu rows for the window — the
+  // case that used to leave the CPU chart offering load averages only.
+  assert.equal(helpers.metricHistoryRequest(busy), null)
+  const lanes = { lanePoints: [
+    { lane: "cpu_busy", segmentId: "a", timestamp: 100, value: 12.5 },
+    { lane: "cpu_stall", segmentId: "a", timestamp: 100, value: 3 },
+    { lane: "cpu_busy", segmentId: "a", timestamp: 200, value: null },
+  ], points: [], sections: {} }
+  assert.deepEqual(helpers.metricPoints(lanes, busy), [
+    { segmentId: "a", timestamp: 100, value: 12.5 },
+    { segmentId: "a", timestamp: 200, value: null },
+  ])
+  // It leads the CPU group, and the breakdown still collapses into one chip.
+  const ids = helpers.SYSTEM_METRICS.filter(({ group }) => group === "cpu").map(({ id }) => id)
+  assert.equal(ids[0], "cpu_busy")
+  const chips = helpers.dockGroupMetrics(helpers.SYSTEM_METRICS.filter(({ group }) => group === "cpu"), "cpu_busy").chips.map(({ id }) => id)
+  assert.equal(chips[0], "cpu_busy")
+  assert.ok(chips.includes("cpu_used_cores"))
+  for (const member of ["cpu_user", "cpu_system", "cpu_idle", "cpu_iowait"]) assert.equal(chips.includes(member), false)
+})

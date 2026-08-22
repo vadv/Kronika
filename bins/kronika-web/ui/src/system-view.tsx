@@ -98,6 +98,7 @@ export interface CgroupSnapshotPlan {
 }
 
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
+  laneMetric("cpu_busy", "cpu", "system.metric.cpu_busy", "%"),
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
   derivedMetric("cpu_actual_frequency", "cpu", "system.metric.cpu_actual_frequency", "cpu_actual_frequency", "cpu_actual_frequency", " MHz"),
@@ -233,7 +234,7 @@ const LEDGER_DEFAULT_MODE: Partial<Readonly<Record<LedgerKey, HostMode>>> = {
 }
 
 const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
-  cpu: "cpu_used_cores",
+  cpu: "cpu_busy",
   memory: "mem_available",
   disk: "device_busy",
   network: "network_rx",
@@ -1042,6 +1043,7 @@ function timelineLane(metric: string | undefined): string {
 // lane value needs to match the metric's unit.
 function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
   const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
+    cpu_busy: [["cpu_busy", (number) => number]],
     cpu_pressure: [["cpu_stall", (number) => number]],
     io_pressure: [["io_stall", (number) => number]],
     network_rx: [["net_rx", (number) => number], ["net_tx", (number) => number]],
@@ -1691,6 +1693,13 @@ function seriesSectionMetric(id: string, group: MetricSpec["group"], label: stri
 
 function derivedMetric(id: string, group: MetricSpec["group"], label: string, series: string, derive: NonNullable<MetricSpec["derive"]>, unit: string): MetricSpec {
   return { id, group, label: `${label}.label`, help: `${label}.help`, series, derive, unit }
+}
+
+// A metric the hour's own timeline already carries. Its points arrive with the
+// hour rather than being computed from the section's rows, so it reads exactly
+// what the resource ledger's row reads.
+function laneMetric(id: string, group: MetricSpec["group"], label: string, unit: string): MetricSpec {
+  return { id, group, label: `${label}.label`, help: `${label}.help`, unit }
 }
 
 function pressureMetric(id: string, group: SystemGroup, label: string, resource: number): MetricSpec {
