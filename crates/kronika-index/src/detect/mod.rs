@@ -21,6 +21,9 @@ const OS_MEMINFO: u32 = 1_104_001;
 const OS_LOADAVG: u32 = 1_105_001;
 const OS_VMSTAT: u32 = 1_106_001;
 const OS_MOUNTINFO: u32 = 1_112_002;
+const PG_STORE_PLANS_INFO: u32 = 1_016_001;
+const PG_LOCKS_V1: u32 = 1_011_001;
+const PG_LOCKS_V2: u32 = 1_011_002;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
 const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     PG_LOG_ERRORS_TYPE_ID,
@@ -37,8 +40,10 @@ const CPU_IDLE_FIELD: u16 = 5;
 const MEM_AVAILABLE_FIELD: u16 = 3;
 const LOAD1_FIELD: u16 = 1;
 const OOM_KILL_FIELD: u16 = 11;
+const PLAN_DEALLOC_FIELD: u16 = 1;
 const MOUNT_FREE_BYTES_FIELD: u16 = 9;
 const SLOW_QUERY_DURATION_FIELD: u16 = 6;
+const LOCKS_BLOCKED_BY_FIELD: u16 = 2;
 const DATABASE_DEADLOCKS_FIELD: u16 = 16;
 const EVENT_TIMESTAMP_FIELD: u16 = 0;
 
@@ -49,6 +54,7 @@ pub(crate) struct FindingBuilder {
     cutoff: i64,
     cpu_before: Option<CpuRaw>,
     oom_before: Option<(i64, Option<i64>)>,
+    plan_dealloc_before: Option<(i64, Option<i64>)>,
     deadlocks_before: BTreeMap<(u32, u32), (i64, i64)>,
 }
 
@@ -66,6 +72,7 @@ impl FindingBuilder {
             cutoff: segment.min_ts().saturating_sub(FIFTEEN_MINUTES_US),
             cpu_before: None,
             oom_before: None,
+            plan_dealloc_before: None,
             deadlocks_before: BTreeMap::new(),
         }
     }
@@ -91,6 +98,9 @@ impl FindingBuilder {
         }
         if self.requested.contains(&OS_VMSTAT) {
             self.observe_prior_oom(segment)?;
+        }
+        if self.requested.contains(&PG_STORE_PLANS_INFO) {
+            self.observe_prior_plan_dealloc(segment)?;
         }
         for type_id in database_layouts() {
             if self.requested.contains(&type_id) {
@@ -169,9 +179,15 @@ impl FindingBuilder {
         self.find_mounts(segment, &mut hits)?;
         self.find_slow_queries(segment, &mut hits)?;
         self.find_oom(segment, &mut hits)?;
+        self.find_plan_dealloc(segment, &mut hits)?;
         for type_id in database_layouts() {
             if self.requested.contains(&type_id) {
                 self.find_deadlocks(segment, type_id, &mut hits)?;
+            }
+        }
+        for type_id in pg_locks_layouts() {
+            if self.requested.contains(&type_id) {
+                self.find_lock_contention(segment, type_id, &mut hits)?;
             }
         }
         self.find_active_backends(active_samples, postgres_cpus, &mut hits);
@@ -193,6 +209,9 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
                 | OS_LOADAVG
                 | OS_VMSTAT
                 | OS_MOUNTINFO
+                | PG_STORE_PLANS_INFO
+                | PG_LOCKS_V1
+                | PG_LOCKS_V2
                 | 1_001_001
                 | 1_001_002
                 | 1_001_004
@@ -201,7 +220,10 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
 }
 
 const fn needs_prior_rows(type_id: u32) -> bool {
-    matches!(type_id, OS_CPU | OS_VMSTAT | 1_005_001..=1_005_004)
+    matches!(
+        type_id,
+        OS_CPU | OS_VMSTAT | PG_STORE_PLANS_INFO | 1_005_001..=1_005_004
+    )
 }
 
 fn block(type_id: u32, mut findings: Vec<Finding>) -> FindingBlock {
@@ -233,6 +255,10 @@ const fn optional_i64(cell: Option<&Cell>) -> Option<i64> {
 
 const fn database_layouts() -> [u32; 4] {
     [1_005_001, 1_005_002, 1_005_003, 1_005_004]
+}
+
+const fn pg_locks_layouts() -> [u32; 2] {
+    [PG_LOCKS_V1, PG_LOCKS_V2]
 }
 
 const fn activity_layouts() -> [u32; 3] {

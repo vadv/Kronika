@@ -10,10 +10,10 @@ use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
 use super::{
-    CPU_IDLE_FIELD, DATABASE_DEADLOCKS_FIELD, FindingBuilder, LOAD1_FIELD, MEM_AVAILABLE_FIELD,
-    MOUNT_FREE_BYTES_FIELD, OOM_KILL_FIELD, OS_CPU, OS_LOADAVG, OS_MEMINFO, OS_MOUNTINFO,
-    OS_VMSTAT, OVERALL_HEALTH_FIELD, PG_LOG_SLOW_QUERIES, SLOW_QUERY_DURATION_FIELD,
-    activity_layouts, optional_i64,
+    CPU_IDLE_FIELD, DATABASE_DEADLOCKS_FIELD, FindingBuilder, LOAD1_FIELD, LOCKS_BLOCKED_BY_FIELD,
+    MEM_AVAILABLE_FIELD, MOUNT_FREE_BYTES_FIELD, OOM_KILL_FIELD, OS_CPU, OS_LOADAVG, OS_MEMINFO,
+    OS_MOUNTINFO, OS_VMSTAT, OVERALL_HEALTH_FIELD, PG_LOG_SLOW_QUERIES, PG_STORE_PLANS_INFO,
+    PLAN_DEALLOC_FIELD, SLOW_QUERY_DURATION_FIELD, activity_layouts, optional_i64,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +66,28 @@ impl FindingBuilder {
                     && let Some(Cell::Ts(timestamp)) = row.get("ts")
                 {
                     self.oom_before = Some((*timestamp, optional_i64(row.get("oom_kill"))));
+                }
+                true
+            },
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn observe_prior_plan_dealloc(
+        &mut self,
+        segment: &Segment,
+    ) -> Result<(), BuildError> {
+        if segment.rows_of(PG_STORE_PLANS_INFO).is_none() {
+            return Ok(());
+        }
+        segment.visit_rows(
+            PG_STORE_PLANS_INFO,
+            &["ts", "dealloc"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if let Some(Cell::Ts(timestamp)) = row.get("ts") {
+                    self.plan_dealloc_before = Some((*timestamp, optional_i64(row.get("dealloc"))));
                 }
                 true
             },
@@ -388,6 +410,49 @@ impl FindingBuilder {
         Ok(())
     }
 
+    pub(super) fn find_plan_dealloc(
+        &mut self,
+        segment: &Segment,
+        hits: &mut BTreeMap<u32, Vec<Finding>>,
+    ) -> Result<(), BuildError> {
+        if !self.requested.contains(&PG_STORE_PLANS_INFO)
+            || segment.rows_of(PG_STORE_PLANS_INFO).is_none()
+        {
+            return Ok(());
+        }
+        let dealloc_hits = hits.entry(PG_STORE_PLANS_INFO).or_default();
+        segment.visit_rows(
+            PG_STORE_PLANS_INFO,
+            &["ts", "dealloc"],
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                let Some(Cell::Ts(timestamp)) = row.get("ts") else {
+                    return true;
+                };
+                let current = optional_i64(row.get("dealloc"));
+                if let (Some((before_ts, Some(before))), Some(after), Some(row_ordinal)) = (
+                    self.plan_dealloc_before,
+                    current,
+                    u32::try_from(ordinal).ok(),
+                ) && *timestamp > before_ts
+                    && after > before
+                {
+                    dealloc_hits.push(Finding {
+                        kind: FindingKind::KnownBad,
+                        category: None,
+                        field_ordinal: PLAN_DEALLOC_FIELD,
+                        row_ordinal,
+                        timestamp: *timestamp,
+                    });
+                }
+                self.plan_dealloc_before = Some((*timestamp, current));
+                true
+            },
+        )?;
+        Ok(())
+    }
+
     pub(super) fn find_deadlocks(
         &mut self,
         segment: &Segment,
@@ -429,6 +494,46 @@ impl FindingBuilder {
                 }
                 self.deadlocks_before
                     .insert(key, (*timestamp, *deadlocks));
+                true
+            },
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn find_lock_contention(
+        &self,
+        segment: &Segment,
+        type_id: u32,
+        hits: &mut BTreeMap<u32, Vec<Finding>>,
+    ) -> Result<(), BuildError> {
+        if !self.requested.contains(&type_id) || segment.rows_of(type_id).is_none() {
+            return Ok(());
+        }
+        let lock_hits = hits.entry(type_id).or_default();
+        segment.visit_rows(
+            type_id,
+            &["ts", "blocked_by"],
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                if let (
+                    Some(Cell::Ts(timestamp)),
+                    Some(Cell::ListI32(blocked_by)),
+                    Some(row_ordinal),
+                ) = (
+                    row.get("ts"),
+                    row.get("blocked_by"),
+                    u32::try_from(ordinal).ok(),
+                ) && !blocked_by.is_empty()
+                {
+                    lock_hits.push(Finding {
+                        kind: FindingKind::KnownBad,
+                        category: None,
+                        field_ordinal: LOCKS_BLOCKED_BY_FIELD,
+                        row_ordinal,
+                        timestamp: *timestamp,
+                    });
+                }
                 true
             },
         )?;

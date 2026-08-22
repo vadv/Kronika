@@ -10,12 +10,14 @@ use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_topology::OsTopology;
+use kronika_registry::pg_locks::PgLocksV2;
 use kronika_registry::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
@@ -328,6 +330,44 @@ fn cpu_row(ts: i64, cpu_id: i32, user: i64, idle: i64, scope: u8) -> OsCpu {
     }
 }
 
+fn lock_row(ts: i64, pid: i32, blocked_by: Vec<i32>, label: StrId) -> PgLocksV2 {
+    PgLocksV2 {
+        ts: Ts(ts),
+        pid,
+        blocked_by,
+        datid: 5,
+        datname: label,
+        usename: Some(label),
+        application_name: label,
+        client_addr: label,
+        backend_type: label,
+        state: Some(label),
+        wait_event_type: None,
+        wait_event: None,
+        query: label,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: None,
+        xact_start: None,
+        query_start: None,
+        state_change: None,
+        lock_locktype: None,
+        lock_mode: None,
+        lock_database: None,
+        lock_relation: None,
+        lock_relname: None,
+        lock_page: None,
+        lock_tuple: None,
+        lock_virtualxid: None,
+        lock_transactionid: None,
+        lock_classid: None,
+        lock_objid: None,
+        lock_objsubid: None,
+        lock_target: None,
+        waitstart: None,
+    }
+}
+
 fn append_log_event_rows(
     buffers: &mut SectionBuffers,
     timestamp: i64,
@@ -520,6 +560,12 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category:
             scope: 0,
         })
         .expect("mount row");
+    buffers
+        .push(lock_row(later, 70, vec![], label))
+        .expect("lock root row");
+    buffers
+        .push(lock_row(later, 71, vec![70], label))
+        .expect("lock waiter row");
     append_log_event_rows(&mut buffers, later, label, error_category);
     let part = buffers
         .flush(&dictionary)
@@ -801,6 +847,86 @@ fn activity_series_and_finding_share_the_same_active_snapshot() {
 }
 
 #[test]
+fn a_growing_plan_eviction_counter_across_a_segment_boundary_is_a_known_bad_finding() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+
+    let interner = Interner::new(DictLimits::default());
+    let dictionary = dict::encode(interner.window()).expect("dictionary");
+
+    let mut prior_buffers = SectionBuffers::new();
+    prior_buffers
+        .push(PgStorePlansInfo {
+            ts: Ts(SEGMENT_ID),
+            dealloc: 3,
+            stats_reset: Ts(0),
+        })
+        .expect("prior dealloc row");
+    let prior_part = prior_buffers
+        .flush(&dictionary)
+        .expect("encode prior fixture")
+        .expect("nonempty prior fixture");
+    journal
+        .append(
+            SegmentId::new(SEGMENT_ID).expect("prior segment id"),
+            &prior_part,
+        )
+        .expect("append prior fixture");
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 2_000_000;
+    let mut current_buffers = SectionBuffers::new();
+    current_buffers
+        .push(PgStorePlansInfo {
+            ts: Ts(current_id),
+            dealloc: 7,
+            stats_reset: Ts(0),
+        })
+        .expect("current dealloc row");
+    let current_part = current_buffers
+        .flush(&dictionary)
+        .expect("encode current fixture")
+        .expect("nonempty current fixture");
+    journal
+        .append(
+            SegmentId::new(current_id).expect("current segment id"),
+            &current_part,
+        )
+        .expect("append current fixture");
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = reader
+        .catalog_segments(..)
+        .expect("catalog")
+        .segments
+        .into_iter()
+        .find(|segment| segment.id() == current_id)
+        .expect("current segment");
+    let selected = resource(directory.path(), &reader, &segment, "pg_store_plans_info")
+        .expect("plans info index");
+    let finding = selected
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            SeriesBlock::Findings(block) if block.type_id == 1_016_001 => block.findings.first(),
+            _ => None,
+        })
+        .expect("dealloc finding");
+    assert_eq!(finding.kind, FindingKind::KnownBad);
+    assert_eq!(finding.field_ordinal, 1);
+    assert_eq!(finding.row_ordinal, 0);
+    assert_eq!(finding.timestamp, current_id);
+}
+
+#[test]
 fn unusable_nearest_inputs_block_older_health_values() {
     let directory = tempfile::tempdir().expect("tempdir");
     let data_root = DataRoot::open(directory.path()).expect("data root");
@@ -1023,6 +1149,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("os_cpu", 1_102_001, 5, 1),
         ("os_loadavg", 1_105_001, 1, 0),
         ("os_mountinfo", 1_112_002, 9, 0),
+        ("pg_locks", 1_011_002, 2, 1),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)
             .expect("direct finding resource");
