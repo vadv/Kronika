@@ -178,6 +178,11 @@ test("Inspector chart and row-only Detail links are URL-native", () => {
   assert.equal(readAddress("panel=chart").panel, "chart")
   assert.equal(readAddress("row=42:1700000000000000").panel, "detail")
   assert.equal(readAddress("panel=detail").panel, null)
+  // Relation panels ride the address so Back lands on the tab it left.
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, panel: "os_process" }), "/?panel=os_process")
+  assert.equal(readAddress("panel=os_process").panel, "os_process")
+  assert.equal(readAddress("panel=pg_stat_activity").panel, "pg_stat_activity")
+  assert.equal(readAddress("panel=nonsense").panel, null)
   // A metric-only Detail link predates the ledger: the metric survives, the
   // panel does not open without a row.
   const hostDetail = writeAddress({ ...DEFAULT_ADDRESS, view: "host", metric: "cpu_used_cores", panel: "detail" })

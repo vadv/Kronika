@@ -42,7 +42,7 @@ import { HelpPanel, type Translate, LabelHelp } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
 import { HourPicker } from "./hour-picker"
-import { Inspector, InspectorPortalProvider } from "./inspector"
+import { Inspector, InspectorPortalProvider, InspectorRelatedPortal } from "./inspector"
 import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
 import { Login } from "./login"
@@ -956,18 +956,16 @@ function App({ locale, onLocale, t }: {
       chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />}
       detail={selectedProcess === null
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
-        : <DetailDock activity={joinedActivity.row} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
+        : <>
+          <DetailDock activity={joinedActivity.row} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />
+          {joinedActivity.row !== null && <InspectorRelatedPortal id="pg_stat_activity" identity={`process:${selectedPid ?? ""}`} label={t("pg.section.activity")}>
+            <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={openRelated} t={t} />
+          </InspectorRelatedPortal>}
+        </>}
       detailAvailable={detailAvailable}
       entityChart={<div className="inspector-chart-slot" ref={setInspectorChartRoot} />}
       entityChartAvailable={entityChartAvailable}
       onClose={closeInspector}
-      related={selectedProcess !== null && joinedActivity.row !== null
-        ? [{
-          id: "pg_stat_activity",
-          label: t("pg.section.activity"),
-          panel: <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={openRelated} t={t} />,
-        }]
-        : undefined}
       onPanel={setInspectorPanel}
       panel={inspectorPanel ?? "chart"}
       t={t}

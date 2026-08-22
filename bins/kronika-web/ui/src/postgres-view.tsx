@@ -14,7 +14,9 @@ import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
-import { InspectorChartPortal, InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
+import { PlanStatementPanel, StatementPlansPanel } from "./detail-plans"
+import { ProcessFacts } from "./detail-process"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { activityDurationHistory, activityDurationSource, activityDurationMs, decorateActivityRow, transactionDurationMs } from "./postgres-activity"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
@@ -318,7 +320,7 @@ export function PostgresView({
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} segments={segments} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" selectedKey={selectedKey} t={t} /></>}
+    {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} segments={segments} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
@@ -689,6 +691,23 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   const planTarget = section === "pg_store_plans" ? statementsForPlan(row) : null
   const activityTarget = section === "pg_stat_activity" ? statementsForActivity(row) : null
   const statementTarget = section === "pg_stat_statements" ? plansForStatement(row) : null
+  // The OS process recorded under the backend's PID. The PostgreSQL view never
+  // loads os_process, so the panel fetches its one row at the cursor; a PID
+  // with nothing recorded reads as missing, not as an absent tab.
+  const backendPid = section === "pg_stat_activity" ? asNumber(value(row, "pid")) : null
+  const [backendProcess, setBackendProcess] = useState<DataRow | null | undefined>(undefined)
+  useEffect(() => {
+    setBackendProcess(undefined)
+    if (backendPid === null) return undefined
+    const controller = new AbortController()
+    acceptResponse(
+      loadSnapshot(row.segmentId, cursor, [{ section: "os_process" }], controller.signal, undefined, { filters: { pid: String(backendPid) } }),
+      controller.signal,
+      (loaded) => setBackendProcess(loaded.sections.os_process?.[0] ?? null),
+      () => setBackendProcess(null),
+    )
+    return () => controller.abort()
+  }, [backendPid, cursor, row.segmentId])
   const fields = columns.filter((column) => column.field !== textField)
   const detailValue = (column: EntityColumn) => {
     if (section === "pg_stat_activity" && column.field === "query_id" && activityTarget !== null) {
@@ -707,6 +726,15 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
       ? <PlanTextBlocks cursor={cursor} plan={wholeText} revision={historyRevision} row={row} segments={segments} t={t} />
       : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
     <DetailList>{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{detailValue(column)}</DetailRow>)}</DetailList>
+    {backendPid !== null && <InspectorRelatedPortal id="os_process" identity={`backend:${rowKey(row)}`} label={t("pg.related.process_tab")}>
+      <ProcessFacts locale={locale} process={backendProcess} processTime={backendProcess?.timestamp ?? null} t={t} />
+    </InspectorRelatedPortal>}
+    {statementTarget !== null && onRelated !== undefined && <InspectorRelatedPortal id="pg_store_plans" identity={`statement:${rowKey(row)}`} label={t("pg.section.plans")}>
+      <StatementPlansPanel cursor={cursor} expression={statementTarget.expression} locale={locale} onRelated={onRelated} segments={segments} t={t} />
+    </InspectorRelatedPortal>}
+    {planTarget !== null && onRelated !== undefined && <InspectorRelatedPortal id="pg_stat_statements" identity={`plan:${rowKey(row)}`} label={t("pg.section.statements")}>
+      <PlanStatementPanel cursor={cursor} locale={locale} onRelated={onRelated} segments={segments} t={t} target={planTarget} />
+    </InspectorRelatedPortal>}
   </aside>
 }
 
