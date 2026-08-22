@@ -540,7 +540,11 @@ cursor. The pinned Total row includes all entities; Other includes entities
 outside the displayed ranking. Global color scaling is the default; per-row
 scaling is optional. Null cells are blank and zero uses the lightest fill. A
 cell moves the cursor, a row filters the table, and the full-screen view allows
-a larger rank limit. Query text is loaded separately for ranked statements
+a larger rank limit. A drilled row with no reading in the cursor's cell also
+moves the cursor to the row's own busiest interval — the same instant clicking
+that cell sets — because a correct filter at a silent moment reads as a wrong
+filter; a row with a reading at the cursor leaves the cursor where the reader
+put it. Query text is loaded separately for ranked statements
 when the current table page does not contain it. Tables and indexes use twelve
 cells for their five-minute cadence. Gauge metrics rank by the window maximum
 and display values rather than rates.

@@ -116,9 +116,18 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
 
   // A drill filters the table below the ledger, which a full-screen ledger
   // covers; it steps back so the filtered rows are the next thing seen.
+  // A row that recorded nothing at the cursor would filter to an empty
+  // table, which reads as a wrong filter rather than a wrong moment; the
+  // cursor then moves to the row's own peak — the same instant clicking
+  // that cell sets. A row alive at the cursor leaves the cursor alone.
   const choose = drill === undefined ? undefined : (row: HeatmapViewRow) => {
     setChosen(rowKey(row))
     setMaximized(false)
+    const cursorColumn = cursorColumnOf(cursor, hour, columns)
+    if (cursorColumn === null || (row.cells[cursorColumn] ?? null) === null) {
+      const peak = rowPeakColumn(row.cells)
+      if (peak !== null) onCursor(intervalInstant(hour, peak, columns))
+    }
     drill(row)
   }
 
@@ -207,6 +216,30 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
 // One ledger row across renders: its layout and recorded identity.
 function rowKey(row: HeatmapViewRow): string {
   return `${row.typeId}:${row.identity.join(":")}`
+}
+
+// The last moment of a column: what clicking that cell on the strip sets.
+export function intervalInstant(hour: number, column: number, columns: number): number {
+  return hour + Math.floor(((column + 1) * HOUR_MICROS) / columns) - 1
+}
+
+// The column the cursor stands in, or null when it is outside the hour.
+export function cursorColumnOf(cursor: number, hour: number, columns: number): number | null {
+  return cursor >= hour && cursor < hour + HOUR_MICROS
+    ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
+    : null
+}
+
+// The row's busiest recorded interval: the first strictly positive maximum.
+// An all-null or all-zero row has no peak and offers nowhere to go.
+export function rowPeakColumn(cells: readonly (number | null)[]): number | null {
+  let peak: number | null = null
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index]
+    if (cell === null || cell === undefined || cell <= 0) continue
+    if (peak === null || cell > (cells[peak] ?? 0)) peak = index
+  }
+  return peak
 }
 
 const STATEMENT_KEYS: LedgerKeys = { title: "activity", bands: "activity" }
@@ -514,9 +547,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
 }) {
   const { kind, scale: valueScale } = cutScale(loadedCut, scales)
   const suffix = view.cumulative ? t("unit.per_second") : ""
-  const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
-    ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
-    : null
+  const cursorColumn = cursorColumnOf(cursor, hour, columns)
   const globalMax = heatmapViewMax(view)
   const totalsMax = view.totals.cells.reduce<number>((current, cell) => cell !== null && cell > current ? cell : current, 0)
   const rowMax = (cells: readonly (number | null)[]) => scale === "row"
@@ -606,7 +637,7 @@ function ActivityStrip({ cells, cursor, hour, max, onCursor }: {
     const bounds = event.currentTarget.getBoundingClientRect()
     if (bounds.width <= 0) return
     const column = Math.max(0, Math.min(columns - 1, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
-    onCursor(hour + Math.floor(((column + 1) * HOUR_MICROS) / columns) - 1)
+    onCursor(intervalInstant(hour, column, columns))
   }
   return <svg className="activity-strip" onClick={pick} preserveAspectRatio="none" viewBox={`0 0 ${columns} 8`}>
     {cells.map((cell, index) => cell === null
