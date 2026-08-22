@@ -147,6 +147,9 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
 const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"] as const
 const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
 const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
+// The share components the usage chart draws under its own line: the recorded
+// counters as percent of capacity, on the axis the usage line already owns.
+const CPU_SHARE_BREAKDOWN_IDS = ["cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
 // Token order series-1..7 plus the neutral total: the palette was validated
 // for colour-vision separation in exactly this adjacency.
@@ -615,7 +618,10 @@ function SystemGroupChart({
   const fallbackPoints = selectedMetric.points
   const request = useMemo(() => metricHistoryRequest(selectedMetric.spec), [selectedMetric.spec])
   const requestKey = request === null ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  const needsHistory = request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
+  // The usage line arrives with the hour, but its breakdown does not: the
+  // share components need the per-CPU history even when the line is full.
+  const needsHistory = request !== null && requestKey !== null
+    && (distinctTimes(fallbackPoints) <= 1 || selectedMetric.spec.id === "cpu_busy")
   const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
     !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
@@ -629,13 +635,32 @@ function SystemGroupChart({
   const historyUsesRates = loadedHistory.value === null
     && request !== null
     && (data.rateColumns?.[request.section] ?? []).length !== 0
-  const breakdown = useMemo(() => resourceBreakdownSeries(
+  const componentSeries = useMemo(() => resourceBreakdownSeries(
     selectedMetric.spec.id,
     historyRows,
     historyUsesRates,
     locale,
     t,
   ), [historyRows, historyUsesRates, locale, selectedMetric.spec.id, t])
+  // The usage chart leads with its own hour-borne line; the recorded share
+  // components draw under it once their history arrives.
+  const breakdown = useMemo(() => {
+    if (selectedMetric.spec.id !== "cpu_busy" || componentSeries.length === 0) return componentSeries
+    const spec = selectedMetric.spec
+    const format = (reading: number, place: Locale) => metricChartValue(reading, place, spec.unit)
+    return [{
+      color: BREAKDOWN_COLORS[0]!,
+      helpKey: spec.help,
+      id: spec.id,
+      label: t(spec.label),
+      labelKey: spec.label,
+      points: selectedPoints,
+      scale: "percent" as const,
+      tick: format,
+      unit: metricChartUnit(spec, locale),
+      value: format,
+    }, ...componentSeries]
+  }, [componentSeries, locale, selectedMetric.spec, selectedPoints, t])
   const secondLane = secondMetricLane(selectedMetric.spec)
   const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
   if (SYSTEM_METRICS.every((spec) => spec.id !== metricId)) return null
@@ -1140,12 +1165,16 @@ export function resourceBreakdownSeries(
   if (selectedId === "cpu_scaling_frequency") return frequencyBreakdownSeries(rows, "scaling_cur_freq_hz", t)
   if (selectedId === "device_busy") return deviceBreakdownSeries(rows, "io_time_ms", 0.1, rates, locale)
   if (selectedId === "device_average_queue") return deviceBreakdownSeries(rows, "io_weighted_time_ms", 0.001, rates, locale)
-  const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
-    ? CPU_BREAKDOWN_IDS
-    : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
+  const ids: readonly string[] = selectedId === "cpu_busy"
+    ? CPU_SHARE_BREAKDOWN_IDS
+    : CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
+      ? CPU_BREAKDOWN_IDS
+      : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
   return ids.flatMap((id, index) => {
     const spec = SYSTEM_METRICS.find((candidate) => candidate.id === id)
-    const color = BREAKDOWN_COLORS[index]
+    // Under the usage anchor the first colour belongs to the usage line the
+    // chart prepends, so the components start one step in.
+    const color = BREAKDOWN_COLORS[selectedId === "cpu_busy" ? index + 1 : index]
     if (spec === undefined || color === undefined) return []
     const points = spec.derive === undefined
       ? buildMetricSamples(rows, (row) => spec.field === undefined ? undefined : storedNumber(row, spec.field))
@@ -1167,6 +1196,11 @@ export function resourceBreakdownSeries(
 }
 
 export function metricHistoryRequest(spec: MetricSpec): MetricHistoryRequest | null {
+  // The usage chart carries the recorded share breakdown, so its history is
+  // the per-CPU counters — the same request the share metrics make.
+  if (spec.id === "cpu_busy") {
+    spec = SYSTEM_METRICS.find((candidate) => candidate.id === "cpu_user") ?? spec
+  }
   const section = spec.derive === undefined ? spec.section : DERIVE_INPUTS[spec.derive][0]
   if (section === undefined) return null
   const derivedFields = spec.derive === undefined ? [] : DERIVE_INPUTS[spec.derive][1]
