@@ -178,10 +178,35 @@ fn activity_rows_are_reduced_to_the_lane_fields() {
             ts: Some(5_000_000),
             backend_type: Some(11),
             state: Some(12),
-            waiting: true,
+            wait_event_type: Some(13),
             leader: true,
             xact_start: Some(3_000_000),
         }
+    );
+}
+
+#[test]
+fn lock_waits_have_a_lane_distinct_from_other_backend_waits() {
+    let counters = Counters {
+        waiting: BTreeMap::from([(5_000_000, 1.0)]),
+        lock_waiting: BTreeMap::from([(5_000_000, 0.0)]),
+        ..Counters::default()
+    };
+
+    let lanes = points(&counters, 0, 0);
+    assert_eq!(
+        lanes
+            .iter()
+            .find(|point| point.key == "pg_waiting")
+            .and_then(|point| point.value),
+        Some(1.0)
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .find(|point| point.key == "pg_lock_waiting")
+            .and_then(|point| point.value),
+        Some(0.0)
     );
 }
 

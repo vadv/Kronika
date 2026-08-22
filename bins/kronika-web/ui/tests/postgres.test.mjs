@@ -72,11 +72,12 @@ function activityRow(ordinal, values, timestamp = 10_000_000) {
   return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001004", values }
 }
 
-test("Locks disappear after the regular waiting lane returns to zero", () => {
+test("Locks disappear after the lock-only waiting lane returns to zero", () => {
   const locks = [row("1011002", { pid: 73 }, "pg_locks")]
-  const lane = (timestamp, value) => ({ lane: "pg_waiting", segmentId: "a", timestamp, value })
-  assert.deepEqual(helpers.visibleLockRows(locks, [lane(10, 2), lane(20, 0)], 20), [])
-  assert.equal(helpers.visibleLockRows(locks, [lane(10, 2), lane(20, 0)], 15), locks)
+  const lane = (name, timestamp, value) => ({ lane: name, segmentId: "a", timestamp, value })
+  const points = [lane("pg_waiting", 20, 1), lane("pg_lock_waiting", 10, 2), lane("pg_lock_waiting", 20, 0)]
+  assert.deepEqual(helpers.visibleLockRows(locks, points, 20), [])
+  assert.equal(helpers.visibleLockRows(locks, points, 15), locks)
   assert.equal(helpers.visibleLockRows(locks, [], 20), locks)
 })
 
