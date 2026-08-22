@@ -900,13 +900,18 @@ function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: 
   if (row === null) return null
   const dealloc = value(row, "dealloc")
   const reset = value(row, "stats_reset")
+  const deallocHistory = history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []
+  // The stat line above already says the rate; a chart earns its space only
+  // once eviction actually happened this hour — otherwise it is a flat line
+  // sitting between the tab bar and the plans the operator came here for.
+  const everEvicted = deallocHistory.some((point) => point.value !== null && point.value > 0)
   return <section className="pg-overview-section" data-testid="pg-plans-info">
     <h2>pg_store_plans_info</h2>
     <dl>
       <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
       <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
     </dl>
-    <SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} />
+    {everEvicted && <SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={deallocHistory} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} />}
   </section>
 }
 
