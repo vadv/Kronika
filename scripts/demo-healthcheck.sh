@@ -7,7 +7,7 @@ MONITOR_USER=kronika_monitor
 WEB_USER=${KRONIKA_WEB_USER:-demo}
 WEB_PASSWORD=${KRONIKA_WEB_PASSWORD:-forensics}
 
-"$PG_BIN/pg_isready" --quiet --host=127.0.0.1 --port=5432 --username="$MONITOR_USER"
+"$PG_BIN/pg_isready" --quiet --host=127.0.0.1 --port=5432 --username="$MONITOR_USER" --dbname=postgres
 "$PG_BIN/psql" --no-psqlrc --set=ON_ERROR_STOP=1 \
     --host=127.0.0.1 --port=6432 --username="$MONITOR_USER" --dbname=pgbouncer \
     --command='SHOW VERSION' >/dev/null
