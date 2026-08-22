@@ -13,6 +13,7 @@ import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, t
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
 import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, vacuumLoadShares, vacuumProcessLoad, type VacuumEpisode, type VacuumProcessLoad } from "./postgres-vacuum"
+import { buildLockForest } from "./postgres-locks"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
@@ -191,11 +192,39 @@ function columnsInOrder(columns: readonly EntityColumn[], fields: readonly strin
   })
 }
 
-export const LOCK_COLUMNS: readonly EntityColumn[] = [
-  id("pid", 78, true, false), pgText("datname", "pg.datname", 145, true, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
-  text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180), text("blocked_by", 150),
+// The pid column carries the tree drawn by buildLockForest: an indent and
+// connector prefix for depth, a marker for root (holds the lock) vs waiter,
+// and a small footnote for the rare row a single tree edge can't capture —
+// a second blocker, or a wait on a prepared transaction (pid 0, no row of
+// its own).
+function lockPidCell(row: DataRow): ReactNode {
+  const pid = identifier(value(row, "pid"))
+  const depth = asNumber(value(row, "lock_tree_depth")) ?? 1
+  const prefix = rawText(value(row, "lock_tree_prefix")) ?? ""
+  const extraCell = value(row, "lock_tree_extra_blockers")
+  const extraBlockers = Array.isArray(extraCell) ? extraCell : []
+  const waitsOnPrepared = value(row, "lock_tree_waits_on_prepared") === true
+  const notes = [
+    ...(extraBlockers.length > 0 ? [`+${extraBlockers.length}`] : []),
+    ...(waitsOnPrepared ? ["+prepared"] : []),
+  ]
+  return (
+    <span className="lock-tree-cell" data-role={depth === 1 ? "root" : "waiter"}>
+      {prefix !== "" && <span aria-hidden="true" className="lock-tree-prefix">{prefix}</span>}
+      <span aria-hidden="true" className="lock-tree-marker">{depth === 1 ? "●" : "▸"}</span>
+      <span className="lock-tree-pid">{pid}</span>
+      {notes.length > 0 && <span className="lock-tree-note">{notes.join(" ")}</span>}
+    </span>
+  )
+}
+
+const LOCK_COLUMN_DEFS: readonly EntityColumn[] = [
+  { ...id("pid", 150, true, false), render: lockPidCell }, pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
+  text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
   pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
+// Row order IS the tree (buildLockForest), so no column here may re-sort it.
+export const LOCK_COLUMNS: readonly EntityColumn[] = LOCK_COLUMN_DEFS.map((column) => ({ ...column, sortable: false }))
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [
   text("datname", 170, true, false), number("numbackends", 135), number("xact_commit", 145), number("xact_rollback", 145), number("sessions", 125),
@@ -329,7 +358,7 @@ export function PostgresView({
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
-    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} />}
+    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} transformRows={buildLockForest} />}
     {section === "databases" && <><DatabasesActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onPattern={onPattern} t={t} /><PgEntityView columns={postgresByteColumns(DATABASE_COLUMNS, blockSize)} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} /></>}
     {section === "tables" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_tables" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} /></>}
     {section === "indexes" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_indexes" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} /></>}

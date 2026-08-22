@@ -457,7 +457,8 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.deepEqual(fields(helpers.planColumns("timing")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
   assert.deepEqual(fields(helpers.planColumns("io")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
   assert.deepEqual(fields(helpers.planColumns("identity")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"])
-  assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "blocked_by", "state", "wait_event_type", "wait_event", "waitstart"])
+  // blocked_by is drawn as the tree itself (buildLockForest), not a raw text column.
+  assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event", "waitstart"])
   assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
   for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
   assert.equal(fields(helpers.DATABASE_COLUMNS).includes("datid"), false)

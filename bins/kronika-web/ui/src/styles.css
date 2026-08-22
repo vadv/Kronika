@@ -694,6 +694,12 @@
 .vacuum-progress-spark path { stroke: currentColor; }
 .vacuum-progress-cell strong { color: var(--color-fg2); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 400; }
 
+.lock-tree-cell { align-items: center; display: inline-flex; font-family: var(--font-mono); font-variant-numeric: tabular-nums; gap: 4px; white-space: pre; }
+.lock-tree-prefix { color: var(--color-fg4); }
+.lock-tree-marker { color: var(--color-accent3); flex: none; }
+.lock-tree-cell[data-role="waiter"] .lock-tree-marker { color: var(--color-fg3); }
+.lock-tree-note { color: var(--color-fg3); font-size: var(--text-xs); white-space: nowrap; }
+[data-testid="pg-locks-table"] .entity-row:has(.lock-tree-cell[data-role="root"]) { border-top: 1px solid var(--color-line2); }
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }
