@@ -72,6 +72,7 @@ test("a Linux process state carries its own top-style tones, distinct from Postg
   assert.equal(semanticValueTone("state", "R"), "good")
   assert.equal(semanticValueTone("state", "D"), "warning")
   assert.equal(semanticValueTone("state", "Z"), "critical")
+  assert.equal(semanticValueTone("state", "I"), "inactive")
   assert.equal(semanticValueTone("state", "S"), null)
 })
 

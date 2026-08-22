@@ -8,10 +8,12 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
     if (text === "idle in transaction (aborted)") return "critical"
     if (text === "idle in transaction") return "warning"
     // Linux process state, ps/top style: running is worth noticing, stuck in
-    // uninterruptible sleep points at I/O, a zombie means nobody reaped it.
+    // uninterruptible sleep points at I/O, a zombie means nobody reaped it,
+    // and an idle kernel thread is the one state safe to visually skip.
     if (text === "R") return "good"
     if (text === "D") return "warning"
     if (text === "Z") return "critical"
+    if (text === "I") return "inactive"
   }
   if (field === "wait_event_type" && text !== null && text !== "") return "warning"
 
