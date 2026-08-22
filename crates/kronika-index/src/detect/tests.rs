@@ -34,6 +34,15 @@ fn statistical_process_and_statement_series_are_not_findings() {
 }
 
 #[test]
+fn plan_cache_eviction_is_not_a_finding_deliberately() {
+    // pg_store_plans_info.dealloc grows routinely once the plan cache is full
+    // on any sufficiently varied workload — unlike oom_kill or deadlocks, an
+    // increase here is not rare or unconditionally bad, so it stays a plain
+    // recorded counter rather than a known-bad boundary.
+    assert!(!finding_layout(1_016_001));
+}
+
+#[test]
 fn temporary_file_rows_are_not_log_event_findings() {
     for type_id in [
         2_001_001, 2_002_001, 2_003_001, 2_004_001, 2_005_002, 2_006_001,

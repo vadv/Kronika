@@ -17,7 +17,6 @@ use kronika_registry::pg_log::{
 };
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
-use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
@@ -844,86 +843,6 @@ fn activity_series_and_finding_share_the_same_active_snapshot() {
     assert_eq!(finding.field_ordinal, 8);
     assert_eq!(finding.row_ordinal, 0);
     assert_eq!(finding.timestamp, SEGMENT_ID + 1_000_000);
-}
-
-#[test]
-fn a_growing_plan_eviction_counter_across_a_segment_boundary_is_a_known_bad_finding() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let data_root = DataRoot::open(directory.path()).expect("data root");
-    let writer = data_root
-        .acquire_writer(LayoutLimits::default())
-        .expect("writer");
-    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
-
-    let interner = Interner::new(DictLimits::default());
-    let dictionary = dict::encode(interner.window()).expect("dictionary");
-
-    let mut prior_buffers = SectionBuffers::new();
-    prior_buffers
-        .push(PgStorePlansInfo {
-            ts: Ts(SEGMENT_ID),
-            dealloc: 3,
-            stats_reset: Ts(0),
-        })
-        .expect("prior dealloc row");
-    let prior_part = prior_buffers
-        .flush(&dictionary)
-        .expect("encode prior fixture")
-        .expect("nonempty prior fixture");
-    journal
-        .append(
-            SegmentId::new(SEGMENT_ID).expect("prior segment id"),
-            &prior_part,
-        )
-        .expect("append prior fixture");
-    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
-    journal.reset().expect("reset after predecessor");
-
-    let current_id = SEGMENT_ID + 2_000_000;
-    let mut current_buffers = SectionBuffers::new();
-    current_buffers
-        .push(PgStorePlansInfo {
-            ts: Ts(current_id),
-            dealloc: 7,
-            stats_reset: Ts(0),
-        })
-        .expect("current dealloc row");
-    let current_part = current_buffers
-        .flush(&dictionary)
-        .expect("encode current fixture")
-        .expect("nonempty current fixture");
-    journal
-        .append(
-            SegmentId::new(current_id).expect("current segment id"),
-            &current_part,
-        )
-        .expect("append current fixture");
-    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
-    journal.reset().expect("leave no active segment");
-
-    let reader = Reader::open(directory.path()).expect("reader");
-    let segment = reader
-        .catalog_segments(..)
-        .expect("catalog")
-        .segments
-        .into_iter()
-        .find(|segment| segment.id() == current_id)
-        .expect("current segment");
-    let selected = resource(directory.path(), &reader, &segment, "pg_store_plans_info")
-        .expect("plans info index");
-    let finding = selected
-        .index
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            SeriesBlock::Findings(block) if block.type_id == 1_016_001 => block.findings.first(),
-            _ => None,
-        })
-        .expect("dealloc finding");
-    assert_eq!(finding.kind, FindingKind::KnownBad);
-    assert_eq!(finding.field_ordinal, 1);
-    assert_eq!(finding.row_ordinal, 0);
-    assert_eq!(finding.timestamp, current_id);
 }
 
 #[test]

@@ -336,8 +336,7 @@ The initial exact comparisons are:
 - available host memory is at most 10% of the stored host memory total;
 - a local filesystem with exact stored capacity is at least 90% used;
 - overall health is below 50;
-- the host OOM-kill counter, a database deadlock counter, or the
-  `pg_store_plans` plan-cache eviction counter increases;
+- the host OOM-kill counter or a database deadlock counter increases;
 - active PostgreSQL backends exceed twice the configured positive effective
   PostgreSQL CPU count;
 - a recorded `pg_locks` row's `blocked_by` is non-empty.
