@@ -1,6 +1,6 @@
-//! Steady-state DML sessions: a mix of ordinary reads and writes plus
-//! deliberately slow and deliberately bad statements, so `pg_stat_statements`
-//! and the log-derived findings have more than a happy path to show.
+//! Steady-state DML sessions: a bounded mix of ordinary reads and writes.
+//! Slow and failing showcase statements run separately in `events`, so the
+//! baseline stays useful between anomaly episodes.
 
 use super::{WorkloadConfig, connect, naming};
 use rand::rngs::StdRng;
@@ -31,18 +31,13 @@ pub(crate) enum Action {
     BadDatabase,
 }
 
-/// Maps a `0..100` roll to the next action. Ordinary DML dominates; the
-/// deliberately slow and deliberately bad actions are rare enough that most
-/// of the timeline still looks unremarkable.
+/// Maps a `0..100` roll to the next ordinary DML action.
 pub(crate) const fn next_action(roll: u32) -> Action {
     match roll % 100 {
         0..=29 => Action::Insert,
         30..=54 => Action::Update,
         55..=89 => Action::Select,
-        90..=95 => Action::Delete,
-        96 => Action::SlowQuery,
-        97..=98 => Action::BadStatement,
-        _ => Action::BadDatabase,
+        _ => Action::Delete,
     }
 }
 
@@ -82,7 +77,7 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
 // not survive a pooled connection switching backend between calls. Inlining
 // is safe: every value here is a number this module generated, never
 // external input.
-async fn perform(
+pub(super) async fn perform(
     client: &Client,
     config: &WorkloadConfig,
     table: &str,

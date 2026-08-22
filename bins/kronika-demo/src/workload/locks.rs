@@ -11,7 +11,7 @@
 //! third waits for the second, and so on — no manual coordination between
 //! the links is needed.
 
-use super::{WorkloadConfig, connect, naming};
+use super::{WorkloadConfig, connect, naming, wait_for_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -29,7 +29,7 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
 
     while !stop.load(Ordering::Relaxed) {
         run_one_round(config, &table).await;
-        tokio::time::sleep(Duration::from_secs(config.lock_round_interval_s)).await;
+        wait_for_stop(stop, Duration::from_secs(config.lock_round_interval_s)).await;
     }
 }
 

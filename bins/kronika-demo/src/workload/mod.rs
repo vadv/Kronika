@@ -8,6 +8,7 @@
 //! `docker run` produces are already populated.
 
 mod dml;
+mod events;
 mod locks;
 mod naming;
 mod schema;
@@ -16,7 +17,7 @@ use anyhow::{Context, Result};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
 use tokio_postgres::{Client, NoTls};
 
@@ -41,6 +42,8 @@ pub(crate) struct WorkloadConfig {
     pub(crate) lock_hold_ms: u64,
     /// Pause between lock-chain rounds, seconds.
     pub(crate) lock_round_interval_s: u64,
+    /// Pause between bounded slow/error episodes, seconds.
+    pub(crate) event_round_interval_s: u64,
 }
 
 impl fmt::Debug for WorkloadConfig {
@@ -55,6 +58,7 @@ impl fmt::Debug for WorkloadConfig {
             .field("lock_chain_depth", &self.lock_chain_depth)
             .field("lock_hold_ms", &self.lock_hold_ms)
             .field("lock_round_interval_s", &self.lock_round_interval_s)
+            .field("event_round_interval_s", &self.event_round_interval_s)
             .finish()
     }
 }
@@ -101,6 +105,7 @@ impl WorkloadConfig {
             lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 3)?,
             lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
             lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
+            event_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S", 60)?,
         };
         config.validate()?;
         Ok(Some(config))
@@ -133,6 +138,10 @@ impl WorkloadConfig {
         anyhow::ensure!(
             self.lock_round_interval_s > 0,
             "KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.event_round_interval_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S must be greater than zero"
         );
         Ok(())
     }
@@ -212,10 +221,26 @@ async fn run(config: WorkloadConfig, stop: Arc<AtomicBool>) -> Result<()> {
         let stop = Arc::clone(&stop);
         async move { locks::run_rounds(&config, &stop).await }
     }));
+    tasks.push(tokio::spawn({
+        let config = config.clone();
+        let stop = Arc::clone(&stop);
+        async move { events::run_rounds(&config, &stop).await }
+    }));
     for task in tasks {
         let _joined = task.await;
     }
     Ok(())
+}
+
+async fn wait_for_stop(stop: &AtomicBool, duration: Duration) {
+    let started = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        let remaining = duration.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return;
+        }
+        tokio::time::sleep(remaining.min(Duration::from_millis(100))).await;
+    }
 }
 
 #[cfg(test)]

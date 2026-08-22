@@ -11,6 +11,7 @@ fn config() -> WorkloadConfig {
         lock_chain_depth: 3,
         lock_hold_ms: 4_000,
         lock_round_interval_s: 45,
+        event_round_interval_s: 60,
     }
 }
 
@@ -49,7 +50,11 @@ fn workload_dimensions_and_timers_must_be_positive() {
     invalid.lock_hold_ms = 0;
     assert!(invalid.validate().is_err());
 
-    let mut invalid = valid;
+    let mut invalid = valid.clone();
     invalid.lock_round_interval_s = 0;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = valid;
+    invalid.event_round_interval_s = 0;
     assert!(invalid.validate().is_err());
 }

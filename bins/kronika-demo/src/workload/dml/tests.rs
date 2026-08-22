@@ -12,13 +12,16 @@ fn common_dml_dominates_the_low_rolls() {
 }
 
 #[test]
-fn rare_actions_sit_at_the_top_of_the_range() {
-    assert_eq!(next_action(90), Action::Delete);
-    assert_eq!(next_action(95), Action::Delete);
-    assert_eq!(next_action(96), Action::SlowQuery);
-    assert_eq!(next_action(97), Action::BadStatement);
-    assert_eq!(next_action(98), Action::BadStatement);
-    assert_eq!(next_action(99), Action::BadDatabase);
+fn steady_sessions_never_emit_showcase_events() {
+    for roll in 0..100 {
+        assert!(
+            matches!(
+                next_action(roll),
+                Action::Insert | Action::Update | Action::Select | Action::Delete
+            ),
+            "roll {roll} escaped the steady DML set"
+        );
+    }
 }
 
 #[test]
