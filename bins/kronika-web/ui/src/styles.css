@@ -673,6 +673,17 @@
 
 .lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
+/* Vacuum ledger: the risk of a phase is fixed by its name. A dangerous phase
+   carries a red left rail on its row so it reads without horizontal scroll. */
+.vacuum-chip { border: 1px solid var(--color-line3); border-radius: var(--radius-xs); color: var(--color-fg2); display: inline-block; font-family: var(--font-sans); font-size: var(--text-xs); line-height: 1.5; max-width: 100%; overflow: hidden; padding: 0 6px; text-overflow: ellipsis; white-space: nowrap; }
+.vacuum-chip[data-risk="heavy"] { background: color-mix(in srgb, var(--color-warn) 10%, transparent); border-color: var(--color-warn); color: var(--color-warn); }
+.vacuum-chip[data-risk="dangerous"] { background: color-mix(in srgb, var(--color-bad) 12%, transparent); border-color: var(--color-bad); color: var(--color-bad); }
+.vacuum-chip[data-risk="at-sample"] { border-color: var(--color-accent); color: var(--color-accent3); }
+[data-testid="pg-vacuum-table"] .entity-row:has(.vacuum-chip[data-risk="dangerous"]) { box-shadow: inset 2px 0 var(--color-bad); }
+.vacuum-tick { fill: var(--color-fg4); }
+.vacuum-tick[data-risk="heavy"] { fill: var(--color-warn); }
+.vacuum-tick[data-risk="dangerous"] { fill: var(--color-bad); }
+
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }

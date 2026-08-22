@@ -522,7 +522,26 @@ composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
 virtualized lenses; PostgreSQL contains Overview,
-Activity, Statements, Locks and Databases whenever their sections are present.
+Activity, Vacuum, Statements, Locks and Databases whenever their sections are
+present.
+
+Vacuum shows the recorded hour of `pg_stat_progress_vacuum` as episode rows.
+Rows group by the recorded identity — layout, pid, datid, relid — and within
+one identity a row continues the current episode when it is the next recorded
+sample, no further from the previous one than the recorded sampling interval
+from instance metadata allows, and none of `index_vacuum_count`,
+`heap_blks_scanned`, `heap_blks_vacuumed` is lower than before. Any other row
+starts a new episode; the break is only visible as two rows. Risk is fixed by
+the phase name — `truncating heap` is dangerous, the index phases and
+`vacuuming heap` are heavy — never computed from observed load. A row whose
+episode was recorded at the pass the cursor stands on reads `At sample`;
+every other row names the moment it was last recorded. `No movement` states
+that a fixed number of consecutive samples kept the phase's designated
+counter unchanged; layouts without index progress never claim it for the
+index phases. PG17 and PG18 columns appear only when the hour recorded such
+a layout, and a layout-absent field reads as N/A, never as 0. Relation names
+resolve from the recorded tables snapshot as enrichment; the row stays
+complete on its own datname and relation OID without them.
 Events is the grouped log console described below; the same findings stay
 drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives

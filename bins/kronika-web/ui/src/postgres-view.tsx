@@ -11,13 +11,16 @@ import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
-import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
+import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
+import { VACUUM_HOUR_FIELDS, buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, type VacuumEpisode } from "./postgres-vacuum"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
+import { ActivityFacts } from "./detail-activity"
 import { PlanStatementPanel, StatementPlansPanel } from "./detail-plans"
+import { settingAt } from "./postgres-vitals"
 import { ProcessFacts } from "./detail-process"
-import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
+import { activityFor, asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { activityDurationHistory, activityDurationSource, activityDurationMs, decorateActivityRow, transactionDurationMs } from "./postgres-activity"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresOverview } from "./postgres-overview"
@@ -31,7 +34,7 @@ import type { SearchSurface } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { Timeline } from "./timeline"
 
-export type PostgresSection = "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
+export type PostgresSection = "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
 
@@ -205,7 +208,8 @@ export const DATABASE_COLUMNS: readonly EntityColumn[] = [
 // objects, each group ordered by scope. `divide` opens the second group.
 const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[]; readonly divide?: true }[] = [
   { id: "overview" },
-  { id: "activity", sections: ["pg_stat_activity", "pg_stat_progress_vacuum"] },
+  { id: "activity", sections: ["pg_stat_activity"] },
+  { id: "vacuum", sections: ["pg_stat_progress_vacuum"] },
   { id: "locks", sections: ["pg_locks"] },
   { id: "statements", sections: ["pg_stat_statements"] },
   { id: "plans", sections: ["pg_store_plans", "pg_store_plans_info"] },
@@ -305,7 +309,7 @@ export function PostgresView({
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
-    if (tab === undefined || tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
+    if (tab === undefined || tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
     onSection("overview")
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
@@ -313,13 +317,13 @@ export function PostgresView({
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
-        const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
+        const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
         return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
-    {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} section="pg_stat_progress_vacuum" t={t} />}
+    {section === "vacuum" && <VacuumView cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} segments={segments} selectedKey={selectedKey} tablesLoading={tablesLoading} t={t} />}
     {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} segments={segments} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
@@ -412,24 +416,370 @@ function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, 
   return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="ml-auto flex items-center gap-[5px] text-xs text-fg4 [&_i]:ml-2 [&_i]:inline-block [&_i]:h-1.5 [&_i]:w-1.5 [&_i]:rounded-full" aria-label={t("pg.value.legend")}><i className="bg-ok" />{t("pg.value.good")}<i className="bg-warn" />{t("pg.value.warning")}<i className="bg-bad" />{t("pg.value.critical")}</div></div>
 }
 
-function PgPreview({ blockSize, columns: prescribedColumns, cursor, data, tablesLoading, focus, historyRevision, hour, locale, onCursor, section, t }: { readonly blockSize: number | null; readonly columns?: readonly EntityColumn[] | undefined; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly focus: DataRow | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly section: string; readonly t: Translate }) {
-  const allRows = data.sections[section] ?? NO_ROWS
-  const rows = snapshot(allRows, cursor)
-  const rates = data.rateColumns[section] ?? NO_RATES
-  const columns = useMemo(() => postgresByteColumns((prescribedColumns ?? (section === "pg_stat_progress_vacuum" ? progressVacuumColumns(rows, rates) : columnsFor(rows))).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
-    ...column,
-    ...(rates.includes(column.field) ? { rate: true } : {}),
-  })), blockSize), [blockSize, prescribedColumns, rates, rows, section])
+// The Vacuum tab: one recorded hour of pg_stat_progress_vacuum as episode
+// rows. The hour loads once; episode grouping, risk and stillness live in
+// postgres-vacuum.ts. Relation names resolve as enrichment and the row stays
+// complete on its own datname/relid when they do not.
+function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onOrder, onPattern, onRelated, onSelectedKey, order, pattern, searchRequest, segments, selectedKey, tablesLoading, t }: {
+  readonly cursor: number
+  readonly data: HourData
+  readonly historyRevision: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onOrder: (order: TableOrder | null) => void
+  readonly onPattern: (pattern: string) => void
+  readonly onRelated: (target: RelatedNavigation) => void
+  readonly onSelectedKey: (key: string | null) => void
+  readonly order: TableOrder | undefined
+  readonly pattern: string
+  readonly searchRequest: SearchRequestState
+  readonly segments: readonly SegmentBound[]
+  readonly selectedKey: string | null
+  readonly tablesLoading: boolean
+  readonly t: Translate
+}) {
+  const time = useDisplayTime()
+  const [hourRows, setHourRows] = useState<readonly DataRow[] | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    acceptResponse(
+      loadSeries(hour, "pg_stat_progress_vacuum", {}, [...VACUUM_HOUR_FIELDS], controller.signal),
+      controller.signal,
+      (rows) => setHourRows(rows),
+      // A failed hour read leaves the cursor snapshot as the honest fallback.
+      () => setHourRows(null),
+    )
+    return () => controller.abort()
+  }, [hour, historyRevision])
+  const allRows = hourRows ?? data.sections.pg_stat_progress_vacuum ?? NO_ROWS
+
+  // The recorded sampling cadence; a segment without the field shows nothing
+  // and episode adjacency falls back to identity and counters alone.
+  const [intervalSeconds, setIntervalSeconds] = useState<number | null>(null)
+  const anchorId = segmentBoundAt(segments, cursor)?.id ?? null
+  useEffect(() => {
+    const bound = segments.find((candidate) => candidate.id === anchorId)
+    if (bound === undefined) {
+      setIntervalSeconds(null)
+      return undefined
+    }
+    const controller = new AbortController()
+    acceptResponse(
+      loadSnapshot(bound.id, bound.maxTs, [{ fields: ["postgresql_interval_seconds"], section: "instance_metadata" }], controller.signal),
+      controller.signal,
+      (loaded) => setIntervalSeconds(asNumber(value(loaded.sections.instance_metadata?.[0] ?? null, "postgresql_interval_seconds"))),
+      () => setIntervalSeconds(null),
+    )
+    return () => controller.abort()
+  }, [anchorId, segments])
+
+  const episodes = useMemo(() => buildVacuumEpisodes(allRows, intervalSeconds), [allRows, intervalSeconds])
+  const atTs = useMemo(() => vacuumAtTimestamp(allRows, cursor), [allRows, cursor])
+  const sorted = useMemo(() => sortVacuumEpisodes(episodes, atTs), [atTs, episodes])
+  const displayRows = useMemo(() => sorted.map((episode) => episode.last), [sorted])
+  const episodeByKey = useMemo(() => new Map(sorted.map((episode) => [rowKey(episode.last), episode])), [sorted])
+
+  // Relation names, one filtered request per distinct vacuumed relation. An
+  // empty string marks a pair the lookup could not resolve; the OID fallback
+  // stays on screen either way.
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map())
+  useEffect(() => setNames(new Map()), [hour])
+  const pairKeys = useMemo(() => [...new Set(displayRows.flatMap((row) => {
+    const key = relationPair(row)
+    return key === null ? [] : [key]
+  }))], [displayRows])
+  useEffect(() => {
+    const bound = segmentBoundAt(segments, cursor)
+    const missing = pairKeys.filter((key) => !names.has(key))
+    if (bound === null || missing.length === 0) return undefined
+    const controller = new AbortController()
+    for (const key of missing) {
+      const [datid, relid] = key.split(":")
+      if (datid === undefined || relid === undefined) continue
+      acceptResponse(
+        loadSnapshot(bound.id, cursor, [{ fields: ["datid", "relid", "schemaname", "relname"], section: "pg_stat_user_tables" }], controller.signal, undefined, { filters: { datid, relid } }),
+        controller.signal,
+        (loaded) => {
+          const match = loaded.sections.pg_stat_user_tables?.[0] ?? null
+          const schema = rawText(value(match, "schemaname"))
+          const name = rawText(value(match, "relname"))
+          setNames((current) => new Map(current).set(key, schema !== null && name !== null ? `${schema}.${name}` : ""))
+        },
+        () => setNames((current) => new Map(current).set(key, "")),
+      )
+    }
+    return () => controller.abort()
+  }, [cursor, names, pairKeys, segments])
+
+  const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
+  const columns = useMemo(
+    () => vacuumColumns(allRows, episodeByKey, names, atTs, blockSize, time, locale, t),
+    [allRows, atTs, blockSize, episodeByKey, locale, names, t, time],
+  )
+
   const [selected, setSelected] = useState<DataRow | null>(null)
-  useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
-  const selectedKey = selected === null ? null : rowKey(selected)
-  const initialHistory = columns.find(chartableColumn)?.field ?? null
-  return <section className="pg-preview panel mt-2" data-content-sized="true" data-pg-section={section}>
-    <h2 className="panel-head">{section}</h2>
-    <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]">
-      <EntityTable columns={columns} contentSized empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
-      {selected !== null && <InspectorPortal identity={`postgres:${section}:${rowKey(selected)}`} onClose={() => setSelected(null)} title={detailTitle(selected, section, t)}><PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} row={selected} section={section} t={t} /></InspectorPortal>}
+  useEffect(() => {
+    setSelected((current) => {
+      if (selectedKey === null) return null
+      const exact = displayRows.find((row) => rowKey(row) === selectedKey)
+      if (exact !== undefined) return exact
+      return current !== null && rowKey(current) === selectedKey
+        ? selectedEntity(displayRows, current, "pg_stat_progress_vacuum")
+        : null
+    })
+  }, [displayRows, selectedKey])
+  const selectedEpisode = selected === null ? undefined : episodeByKey.get(rowKey(selected))
+  const joinedActivity = activityFor(selected, data.sections.pg_stat_activity ?? [], cursor)
+
+  const workerCount = useMemo(
+    () => snapshot(data.sections.pg_stat_activity ?? [], cursor)
+      .filter((row) => rawText(value(row, "backend_type")) === "autovacuum worker").length,
+    [cursor, data.sections.pg_stat_activity],
+  )
+  const workerMax = settingAt(data.sections.pg_settings ?? [], "autovacuum_max_workers", cursor)
+
+  return <>
+    <div className="lensbar !mt-0 border-t-0">
+      <span className="flex items-center gap-1.5 font-sans text-xs text-fg3">
+        <LabelHelp
+          helpKey="pg.vacuum.workers.help"
+          helpText={intervalSeconds === null ? undefined : `${t("pg.vacuum.workers.help")} ${t("pg.vacuum.cadence", { seconds: compact(intervalSeconds, locale) })}`}
+          labelKey="pg.vacuum.workers.label"
+          t={t}
+        />
+        <strong className="font-mono text-xs font-normal tabular-nums text-fg2">{workerMax === null ? String(workerCount) : `${workerCount} / ${workerMax}`}</strong>
+      </span>
+      <span className="snapshot-time">{atTs === null ? t("status.no_data") : time.timestamp(atTs, hour)}</span>
     </div>
+    <div className="pg-entity-layout grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden">
+      <EntityTable
+        columns={columns}
+        empty={t("pg.vacuum.empty")}
+        label={t("pg.section.vacuum")}
+        loading={tablesLoading && hourRows === null}
+        locale={locale}
+        onOrder={onOrder}
+        onPattern={onPattern}
+        onSelect={(row) => { setSelected(row); onSelectedKey(rowKey(row)) }}
+        order={order}
+        pattern={pattern}
+        rows={displayRows}
+        searchRequest={searchRequest}
+        searchSurface="pg_stat_progress_vacuum"
+        selectedKey={selected === null ? null : rowKey(selected)}
+        t={t}
+        testId="pg-vacuum-table"
+      />
+      {selected !== null && <InspectorPortal identity={`postgres:pg_stat_progress_vacuum:${rowKey(selected)}`} onClose={() => { setSelected(null); onSelectedKey(null) }} title={detailTitle(selected, "pg_stat_progress_vacuum", t)}>
+        <PgDetail
+          allRows={allRows}
+          columns={vacuumDetailColumns(selected, blockSize)}
+          cursor={cursor}
+          historyField="heap_blks_scanned"
+          historyRevision={historyRevision}
+          hour={hour}
+          locale={locale}
+          onCursor={onCursor}
+          prelude={selectedEpisode === undefined ? undefined : <VacuumEpisodeFacts episode={selectedEpisode} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
+          row={selected}
+          section="pg_stat_progress_vacuum"
+          segments={segments}
+          t={t}
+        />
+        {joinedActivity.row !== null && <InspectorRelatedPortal id="pg_stat_activity" identity={`vacuum:${rowKey(selected)}`} label={t("pg.section.activity")}>
+          <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={onRelated} t={t} />
+        </InspectorRelatedPortal>}
+      </InspectorPortal>}
+    </div>
+  </>
+}
+
+function relationPair(row: DataRow): string | null {
+  const datid = rawText(value(row, "datid"))
+  const relid = rawText(value(row, "relid"))
+  return datid === null || relid === null ? null : `${datid}:${relid}`
+}
+
+function vacuumRelationLabel(row: DataRow, names: ReadonlyMap<string, string>): string {
+  const datname = rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
+  const key = relationPair(row)
+  const resolved = key === null ? "" : names.get(key) ?? ""
+  return resolved !== "" ? `${datname}.${resolved}` : `${datname} · relid=${identifier(value(row, "relid"))}`
+}
+
+function vacuumHeapCell(row: DataRow, field: string, blockSize: number | null, locale: Locale): string {
+  const blocks = asNumber(value(row, field))
+  if (blocks === null) return "—"
+  return blockSize === null ? measure(blocks, locale) : humanBytes(blocks * blockSize, locale)
+}
+
+const VACUUM_INDEX_PHASES = new Set(["vacuuming indexes", "cleaning up indexes"])
+
+export function vacuumColumns(
+  allRows: readonly DataRow[],
+  episodes: ReadonlyMap<string, VacuumEpisode>,
+  names: ReadonlyMap<string, string>,
+  atTs: number | null,
+  blockSize: number | null,
+  time: DisplayTimeFormatter,
+  locale: Locale,
+  t: Translate,
+): readonly EntityColumn[] {
+  const episode = (row: DataRow) => episodes.get(rowKey(row))
+  const phaseOf = (row: DataRow) => rawText(value(row, "phase"))
+  return [
+    {
+      field: "vacuum_seen", label: "pg.vacuum.seen.label", help: "pg.vacuum.seen.help", kind: "text", width: 150,
+      render: (row) => atTs !== null && row.timestamp === atTs
+        ? <span className="vacuum-chip" data-risk="at-sample">{t("pg.vacuum.at_sample")}</span>
+        : <span className="text-fg3">{t("pg.vacuum.last_seen", { time: time.timestamp(row.timestamp) })}</span>,
+      sortValue: (row) => row.timestamp,
+    },
+    {
+      field: "datname", label: "pg.vacuum.relation.label", help: "pg.vacuum.relation.help", kind: "text", width: 230, sticky: true,
+      render: (row) => vacuumRelationLabel(row, names),
+      sortValue: (row) => vacuumRelationLabel(row, names),
+    },
+    {
+      field: "is_autovacuum", label: "pg.vacuum.kind.label", help: "pg.vacuum.kind.help", kind: "text", width: 120,
+      render: (row) => value(row, "is_autovacuum") === true ? t("pg.vacuum.kind.autovacuum") : t("pg.vacuum.kind.manual"),
+      sortValue: (row) => value(row, "is_autovacuum") === true,
+    },
+    {
+      field: "phase", label: "pg.vacuum.phase.label", help: "pg.vacuum.phase.help", kind: "text", width: 175,
+      render: (row) => {
+        const phase = phaseOf(row)
+        return phase === null ? "—" : <span className="vacuum-chip" data-risk={phaseRisk(phase)}>{phase}</span>
+      },
+      sortValue: (row) => phaseOf(row),
+    },
+    {
+      field: "vacuum_in_phase", label: "pg.vacuum.in_phase.label", help: "pg.vacuum.in_phase.help", kind: "text", width: 145,
+      render: (row) => {
+        const own = episode(row)
+        if (own === undefined) return "—"
+        const span = phaseSpanUs(own)
+        return `${humanDuration(span / 1000, locale)} · ${own.phaseRows.length}`
+      },
+      sortValue: (row) => {
+        const own = episode(row)
+        return own === undefined ? 0 : phaseSpanUs(own)
+      },
+    },
+    pgColumn("pid", "id", 80, false, false),
+    {
+      field: "heap_blks_scanned", label: "pg.vacuum.heap_scan.label", help: "pg.vacuum.heap_scan.help", kind: "text", width: 190,
+      render: (row) => {
+        const scanned = asNumber(value(row, "heap_blks_scanned"))
+        const total = asNumber(value(row, "heap_blks_total"))
+        if (scanned === null) return "—"
+        const share = total !== null && total > 0 ? ` · ${humanPercent(scanned / total * 100, locale)}` : ""
+        return `${vacuumHeapCell(row, "heap_blks_scanned", blockSize, locale)} / ${vacuumHeapCell(row, "heap_blks_total", blockSize, locale)}${share}`
+      },
+      sortValue: (row) => asNumber(value(row, "heap_blks_scanned")),
+    },
+    {
+      field: "heap_blks_vacuumed", label: "pg.vacuum.heap_vacuumed.label", help: "pg.vacuum.heap_vacuumed.help", kind: "text", width: 140,
+      render: (row) => vacuumHeapCell(row, "heap_blks_vacuumed", blockSize, locale),
+      sortValue: (row) => asNumber(value(row, "heap_blks_vacuumed")),
+    },
+    {
+      field: "index_vacuum_count", label: "pg.vacuum.cycles.label", help: "pg.vacuum.cycles.help", kind: "text", width: 110,
+      render: (row) => {
+        const cycles = asNumber(value(row, "index_vacuum_count"))
+        if (cycles === null) return "—"
+        return cycles > 1
+          ? <span className="vacuum-chip" data-risk="heavy">{t("pg.vacuum.cycles.repeat", { count: compact(cycles, locale) })}</span>
+          : compact(cycles, locale)
+      },
+      sortValue: (row) => asNumber(value(row, "index_vacuum_count")),
+    },
+    ...vacuumLayoutHas(allRows, "indexes_total") ? [{
+      field: "indexes_processed", label: "pg.vacuum.index_progress.label", help: "pg.vacuum.index_progress.help", kind: "text", width: 130,
+      render: (row: DataRow) => {
+        const phase = phaseOf(row)
+        const processed = asNumber(value(row, "indexes_processed"))
+        const total = asNumber(value(row, "indexes_total"))
+        if (processed === null || total === null) return t("common.unavailable")
+        return phase !== null && VACUUM_INDEX_PHASES.has(phase) ? `${compact(processed, locale)} / ${compact(total, locale)}` : "—"
+      },
+      sortValue: (row: DataRow) => asNumber(value(row, "indexes_processed")),
+    } satisfies EntityColumn] : [],
+    ...vacuumLayoutHas(allRows, "delay_time") ? [{
+      field: "delay_time", label: "pg.vacuum.delay.label", help: "pg.vacuum.delay.help", kind: "text", width: 150,
+      render: (row: DataRow) => {
+        const total = asNumber(value(row, "delay_time"))
+        if (total === null) return t("common.unavailable")
+        const delta = episode(row) === undefined ? null : delayDelta(episode(row) as VacuumEpisode)
+        return delta === null || delta === 0
+          ? humanDuration(total, locale)
+          : `${humanDuration(total, locale)} · +${humanDuration(delta, locale)}`
+      },
+      sortValue: (row: DataRow) => asNumber(value(row, "delay_time")),
+    } satisfies EntityColumn] : [],
+    {
+      field: "vacuum_no_movement", label: "pg.vacuum.no_movement.label", help: "pg.vacuum.no_movement.help", kind: "text", width: 165,
+      render: (row) => {
+        const still = episode(row)?.noMovement ?? null
+        return still === null ? "—" : t("pg.vacuum.no_movement.value", { count: still.samples, span: humanDuration(still.spanUs / 1000, locale) })
+      },
+      sortValue: (row) => episode(row)?.noMovement?.samples ?? 0,
+    },
+  ]
+}
+
+// The Inspector raw block: the table's fields plus every layout column the
+// table folds or omits. Layout-absent values render as N/A through told().
+export function vacuumDetailColumns(row: DataRow, blockSize: number | null): readonly EntityColumn[] {
+  const extra = (field: string, kind: NonNullable<EntityColumn["kind"]>): EntityColumn =>
+    ({ field, label: `pg.vacuum.${field}.label`, help: `pg.vacuum.${field}.help`, kind, width: 140 })
+  return postgresByteColumns([
+    pgColumn("pid", "id", 80, false, false),
+    extra("datname", "text"), extra("datid", "id"), extra("relid", "id"),
+    extra("is_autovacuum", "boolean"), extra("phase", "text"),
+    extra("heap_blks_total", "number"), extra("heap_blks_scanned", "number"), extra("heap_blks_vacuumed", "number"),
+    extra("index_vacuum_count", "number"),
+    ...row.typeId === "1012001" ? [extra("num_dead_tuples", "number"), extra("max_dead_tuples", "number")] : [
+      extra("dead_tuple_bytes", "bytes"), extra("max_dead_tuple_bytes", "bytes"), extra("num_dead_item_ids", "number"),
+      extra("indexes_processed", "number"), extra("indexes_total", "number"),
+    ],
+    ...row.typeId === "1012003" ? [extra("delay_time", "milliseconds")] : [],
+  ], blockSize)
+}
+
+// The episode as recorded: its phase strip across the hour and its facts.
+function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
+  readonly episode: VacuumEpisode
+  readonly hour: number
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly t: Translate
+}) {
+  const span = phaseSpanUs(episode)
+  const first = episode.rows[0] as DataRow
+  return <section className="border-b border-line2 px-2 py-1.5" data-testid="vacuum-episode">
+    <svg className="block h-[14px] w-full" preserveAspectRatio="none" viewBox="0 0 1000 10">
+      {episode.rows.map((sample) => {
+        const x = (sample.timestamp - hour) / 3_600_000_000 * 1000
+        return <rect
+          className="vacuum-tick cursor-pointer"
+          data-risk={phaseRisk(rawText(value(sample, "phase")))}
+          height={10}
+          key={`${sample.segmentId}:${sample.ordinal}`}
+          onClick={() => onCursor(sample.timestamp)}
+          width={3}
+          x={Math.max(0, Math.min(997, x))}
+          y={0}
+        />
+      })}
+    </svg>
+    <p className="m-0 mt-1 font-sans text-xs text-fg3">
+      {t("pg.vacuum.episode", { count: episode.rows.length, span: humanDuration((episode.last.timestamp - first.timestamp) / 1000, locale) })}
+      {" · "}
+      {t("pg.vacuum.in_phase.value", { count: episode.phaseRows.length, span: humanDuration(span / 1000, locale) })}
+      {episode.noMovement === null ? "" : ` · ${t("pg.vacuum.no_movement.value", { count: episode.noMovement.samples, span: humanDuration(episode.noMovement.spanUs / 1000, locale) })}`}
+    </p>
   </section>
 }
 
@@ -663,7 +1013,7 @@ function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly D
     .map((column) => column.rate === true || rates.includes(column.field) ? { ...column, rate: true } : column)
 }
 
-function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hour, locale, onCursor, onRelated, row, section, segments = NO_SEGMENTS, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly onRelated?: ((target: RelatedNavigation) => void) | undefined; readonly row: DataRow; readonly section: string; readonly segments?: readonly SegmentBound[] | undefined; readonly t: Translate }) {
+function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hour, locale, onCursor, onRelated, prelude, row, section, segments = NO_SEGMENTS, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly onRelated?: ((target: RelatedNavigation) => void) | undefined; readonly prelude?: ReactNode | undefined; readonly row: DataRow; readonly section: string; readonly segments?: readonly SegmentBound[] | undefined; readonly t: Translate }) {
   const entityRows = useMemo(() => allRows.filter((candidate) => sameEntity(candidate, row, section)), [allRows, row, section])
   const localHistoryRows = useMemo(() => [...entityRows.filter((candidate) => rowKey(candidate) !== rowKey(row)), row], [entityRows, row])
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
@@ -718,6 +1068,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   return <aside className="pg-detail" data-testid="pg-detail">
     <header className="pg-detail-head"><div className="min-w-0 flex-1"><span>{section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex min-w-0 flex-none items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 max-w-[200px] cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap rounded-[var(--radius-sm)] border border-accent-line bg-accent-soft px-2 text-left text-xs font-semibold text-accent3 transition-colors disabled:cursor-not-allowed disabled:border-line3 disabled:bg-s2 disabled:text-fg4" data-testid="pg-activity-related-statements" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onRelated?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : t("pg.activity.open_statements", { query: activityTarget.queryId ?? "—" })} type="button">{t("pg.activity.open_statements", { query: activityTarget?.queryId ?? "—" })}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onRelated?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}{section === "pg_stat_statements" && <button className="min-h-7 cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 text-xs font-medium text-accent3 transition-colors hover:bg-s3 disabled:cursor-not-allowed disabled:text-fg4" data-testid="pg-statement-related-plans" disabled={statementTarget === null} onClick={() => { if (statementTarget !== null) onRelated?.(statementTarget) }} type="button">{t("pg.statement.open_plans")}</button>}</div></header>
     {section === "pg_stat_activity" && activityTarget === null && <p className="m-0 border-b border-line2 px-2 py-1.5 text-xs text-fg3" data-testid="pg-activity-statements-unavailable">{t("pg.activity.statements_unavailable")}</p>}
+    {prelude}
     {activeMetricField !== null && historyColumn !== undefined && <InspectorChartPortal identity={`pg:${section}:history`}><section className="process-history pg-metric-history grid min-w-0 gap-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-2 py-1 text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={durationKind(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} unit={chartUnit(historyColumn, t("unit.per_second"))} />
@@ -986,7 +1337,8 @@ export function postgresByteColumns(columns: readonly EntityColumn[], blockSize:
 }
 
 function identityFields(section: string, typeId?: string): readonly string[] {
-  if (section === "pg_stat_activity" || section === "pg_stat_progress_vacuum" || section === "pg_locks") return ["pid"]
+  if (section === "pg_stat_progress_vacuum") return ["pid", "datid", "relid"]
+  if (section === "pg_stat_activity" || section === "pg_locks") return ["pid"]
   if (section === "pg_stat_io") return ["backend_type", "object", "context"]
   if (section === "pg_prepared_xacts") return ["datname"]
   if ((section === "pg_stat_statements" || section === "pg_store_plans") && typeId !== undefined) return postgresIdentity(typeId)
@@ -1064,27 +1416,6 @@ export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   })
 }
 
-export const PROGRESS_VACUUM_FIELDS = [
-  "pid", "datname", "is_autovacuum", "heap_blks_scanned", "heap_blks_total", "heap_blks_vacuumed",
-  "index_vacuum_count", "indexes_processed", "indexes_total", "num_dead_tuples", "max_dead_tuples",
-  "num_dead_item_ids", "dead_tuple_bytes", "max_dead_tuple_bytes", "delay_time", "phase",
-] as const
-
-export function progressVacuumColumns(rows: readonly DataRow[], rates: readonly string[]): readonly EntityColumn[] {
-  const available = new Map(columnsFor(rows).map((column) => [column.field, column]))
-  return PROGRESS_VACUUM_FIELDS.flatMap((field) => {
-    const column = available.get(field)
-    if (column === undefined) return []
-    return [{
-      ...column,
-      ...(field === "pid" ? {} : { help: `pg.vacuum.${field}.help` }),
-      label: `pg.vacuum.${field}.label`,
-      rate: rates.includes(field),
-      sticky: field === "pid",
-    }]
-  })
-}
-
 const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
 const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
 
@@ -1142,6 +1473,7 @@ function columnDenominator(column: Pick<EntityColumn, "field" | "rate">, t: Tran
 }
 function sectionName(section: string): PostgresSection {
   if (section === "pg_stat_activity") return "activity"
+  if (section === "pg_stat_progress_vacuum") return "vacuum"
   if (section === "pg_stat_statements") return "statements"
   if (section === "pg_store_plans") return "plans"
   if (section === "pg_locks") return "locks"

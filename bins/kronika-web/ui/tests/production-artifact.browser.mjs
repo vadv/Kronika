@@ -3779,8 +3779,6 @@ function sparsePostgresGeometry() {
   return `(() => {
     const activity = document.querySelector('[data-testid="pg-entity-layout"]')
     const activityScroll = activity.querySelector('.entity-scroll')
-    const progress = document.querySelector('[data-pg-section="pg_stat_progress_vacuum"]')
-    const progressScroll = progress.querySelector('.entity-scroll')
     const workspace = document.querySelector('.workspace')
     const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
     const measured = (root, scroll) => {
@@ -3805,11 +3803,8 @@ function sparsePostgresGeometry() {
       }
     }
     const activityRect = measured(activity, activityScroll)
-    const progressRect = measured(progress, progressScroll)
     return {
       activity: activityRect,
-      gap: progressRect.top - activityRect.bottom,
-      progress: progressRect,
       workspace: rect(workspace),
     }
   })()`
@@ -4136,6 +4131,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const section = url.searchParams.get("section")
       if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
       if (section === "os_process") return ndjson(response, forensicSnapshots)
+      if (section === "pg_stat_progress_vacuum") return ndjson(response, vacuumHourRecords(url))
       return ndjson(response, section === null ? [...forensicTimeline, {
         record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "1009001",
         field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
@@ -4391,7 +4387,19 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('.pg-tabs button').length > 1`, "PostgreSQL tabs")
     await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
-    await cdp.waitFor(`document.querySelector('[data-pg-section="pg_stat_progress_vacuum"] .entity-row') !== null`, "PostgreSQL VACUUM progress table")
+    // The recorded vacuum lives on its own tab: one episode row whose phase
+    // chip carries the fixed risk of its phase name.
+    await cdp.evaluate(`[...document.querySelectorAll('.pg-tabs button')].find((tab) => tab.textContent === 'Vacuum').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-row') !== null`, "PostgreSQL Vacuum table")
+    const vacuumRow = await cdp.evaluate(`(() => {
+      const chip = [...document.querySelectorAll('[data-testid="pg-vacuum-table"] .vacuum-chip')].find((node) => ["ordinary", "heavy", "dangerous"].includes(node.getAttribute('data-risk')))
+      return { phase: chip?.textContent ?? null, risk: chip?.getAttribute('data-risk') ?? null, view: new URL(location.href).searchParams.get('view') }
+    })()`)
+    assert.equal(vacuumRow.view, "pg.vacuum", JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.phase, "vacuuming heap", JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.risk, "heavy", JSON.stringify(vacuumRow))
+    await cdp.evaluate(`[...document.querySelectorAll('.pg-tabs button')].find((tab) => tab.textContent === 'Activity').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table again")
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'pid:3000')
@@ -4401,20 +4409,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1 && document.querySelector('[data-testid="pg-entity-layout"]').dataset.contentSized === 'true'`, "filtered sparse PostgreSQL Activity")
     const sparseBefore = await cdp.evaluate(sparsePostgresGeometry())
     assert.equal(sparseBefore.activity.contentSized, true, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.contentSized, true, JSON.stringify(sparseBefore))
     assert.ok(sparseBefore.activity.scrollHeight <= 72, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.progress.scrollHeight <= 72, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.gap >= 7 && sparseBefore.gap <= 10, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.progress.bottom < sparseBefore.workspace.bottom - 120, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.activity.horizontal && sparseBefore.progress.horizontal, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.activity.horizontal, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.overflowX, "auto", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.overflowY, "hidden", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.vertical, false, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.vertical, false, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.allRowsFit, true, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.allRowsFit, true, JSON.stringify(sparseBefore))
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, "sparse PostgreSQL Chart Inspector")
     await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); scroll.scrollLeft = scroll.scrollWidth })()`)
@@ -4439,7 +4440,6 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)
     const sparseOpened = await cdp.evaluate(sparsePostgresGeometry())
     assert.ok(Math.abs(sparseOpened.activity.height - sparseBefore.activity.height) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
-    assert.ok(Math.abs(sparseOpened.progress.top - sparseBefore.progress.top) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
@@ -4828,6 +4828,20 @@ function progressVacuumRecords() {
   return [layout("1012003", "pg_stat_progress_vacuum", columns), row("1012003", "1", [
     String(AT), 4343, 20, "operators", 73, true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
   ], AT)]
+}
+
+function vacuumHourRecords(url) {
+  const fields = url.searchParams.getAll("field")
+  const sample = {
+    datid: 20, datname: "operators", dead_tuple_bytes: 4_194_304, delay_time: 17.5, heap_blks_scanned: 3200,
+    heap_blks_total: 8000, heap_blks_vacuumed: 1200, index_vacuum_count: 1, indexes_processed: 2, indexes_total: 5,
+    is_autovacuum: true, max_dead_tuple_bytes: 67_108_864, num_dead_item_ids: 2400, phase: "vacuuming heap", pid: 4343, relid: 73,
+  }
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("1012003", "pg_stat_progress_vacuum", fields),
+    row("1012003", "1", fields.map((field) => sample[field] ?? null), AT),
+  ]
 }
 
 function activityHistoryRecords(url) {

@@ -33,6 +33,7 @@ export type View =
   | "processes"
   | "pg.overview"
   | "pg.activity"
+  | "pg.vacuum"
   | "pg.statements"
   | "pg.plans"
   | "pg.locks"
@@ -51,7 +52,7 @@ export type PgLevel = "database" | "schema" | "tablespace" | "object"
 const VIEWS: readonly View[] = [
   "host",
   "processes",
-  "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
+  "pg.overview", "pg.activity", "pg.vacuum", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
   "events",
 ]
 
@@ -149,7 +150,7 @@ function oid(stored: string | null): string | null {
 }
 
 function isPostgresEntityView(view: View): boolean {
-  return view === "pg.activity" || view === "pg.statements" || view === "pg.plans"
+  return view === "pg.activity" || view === "pg.vacuum" || view === "pg.statements" || view === "pg.plans"
     || view === "pg.locks" || view === "pg.databases"
 }
 
@@ -169,9 +170,9 @@ export function sourceOf(view: View): Source {
   return view.startsWith("pg.") ? "postgresql" : "host"
 }
 
-export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {
+export function pgSectionOf(view: View): "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {
   const section = view.startsWith("pg.") ? view.slice(3) : "overview"
-  return section as "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
+  return section as "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 }
 
 export function stepOf(address: string): string {

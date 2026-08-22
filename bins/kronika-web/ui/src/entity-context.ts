@@ -11,7 +11,7 @@ export interface EntityContext {
   readonly typeId: string
 }
 
-export type FindingRoute = "activity" | "databases" | "events" | "locks" | "overview" | "plans" | "processes" | "statements" | "system"
+export type FindingRoute = "activity" | "databases" | "events" | "locks" | "overview" | "plans" | "processes" | "statements" | "system" | "vacuum"
 
 export function entityContext(finding: Finding, row: DataRow | null, t?: Translate): EntityContext | null {
   const layout = registry.find((candidate) => candidate.typeId === finding.typeId)
@@ -53,7 +53,8 @@ export function findingRoute(finding: Finding): FindingRoute {
   const name = finding.logicalName
   if (name === "os_process") return "processes"
   if (name === "health" || name === "instance_metadata" || name.startsWith("os_")) return "system"
-  if (name === "pg_stat_activity" || name === "pg_stat_progress_vacuum") return "activity"
+  if (name === "pg_stat_activity") return "activity"
+  if (name === "pg_stat_progress_vacuum") return "vacuum"
   if (name === "pg_stat_statements") return "statements"
   if (name === "pg_store_plans" || name === "pg_store_plans_info") return "plans"
   if (name === "pg_locks") return "locks"
