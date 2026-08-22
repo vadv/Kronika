@@ -7,10 +7,10 @@ fn config() -> WorkloadConfig {
         tables_per_schema: 40,
         ddl_concurrency: 4,
         sessions: 4,
-        lock_chains: 2,
+        lock_chains: 1,
         lock_chain_depth: 3,
-        lock_hold_ms: 1_500,
-        lock_round_interval_s: 30,
+        lock_hold_ms: 4_000,
+        lock_round_interval_s: 45,
     }
 }
 

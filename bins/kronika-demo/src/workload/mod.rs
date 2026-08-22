@@ -33,7 +33,7 @@ pub(crate) struct WorkloadConfig {
     pub(crate) ddl_concurrency: u32,
     /// How many long-lived sessions run steady-state DML.
     pub(crate) sessions: u32,
-    /// Total independent lock chains: one continuous and the rest periodic.
+    /// Total independent lock chains in each periodic round.
     pub(crate) lock_chains: u32,
     /// How many transactions make up one lock chain.
     pub(crate) lock_chain_depth: u32,
@@ -97,10 +97,10 @@ impl WorkloadConfig {
             tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 40)?,
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
             sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 4)?,
-            lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 2)?,
+            lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 1)?,
             lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 3)?,
-            lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 1_500)?,
-            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 30)?,
+            lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
+            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
         };
         config.validate()?;
         Ok(Some(config))
