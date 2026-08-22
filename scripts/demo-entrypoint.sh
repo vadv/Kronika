@@ -34,6 +34,28 @@ start_as() {
     STARTED_PID=$!
 }
 
+# kronika-demo spawns kronika-collector as a plain child process, which
+# inherits whatever ambient capabilities kronika-demo itself keeps across
+# this uid drop. The collector's own read of a foreign-uid process's
+# /proc/PID/io already retries under a briefly switched fsuid/fsgid on
+# EACCES (see kronika-source-os); that switch is a no-op without
+# cap_setuid/cap_setgid in the caller's permitted set, and an unprivileged
+# setuid() drop clears the permitted set unless something asks to keep
+# these two. Keeping exactly these two, and nothing else, is what lets the
+# collector read PostgreSQL's own I/O counters while still running as an
+# unprivileged, non-root user. setpriv takes capability names without the
+# "cap_" prefix, and a capability only reaches the ambient set if it is
+# also passed to --inh-caps: the kernel refuses to raise a capability that
+# is not already inheritable, silently, with no error.
+start_as_with_caps() {
+    local user=$1
+    local caps=$2
+    shift 2
+    setpriv --reuid="$user" --regid="$user" --init-groups \
+        --inh-caps "$caps" --ambient-caps "$caps" -- "$@" &
+    STARTED_PID=$!
+}
+
 empty_directory() {
     local path=$1
     install -d -m 0750 -o "$PG_SUPERUSER" -g "$PG_SUPERUSER" "$path"
@@ -219,7 +241,7 @@ start_kronika() {
     start_as kronika /usr/local/bin/kronika-web
     WEB_PID=$STARTED_PID
     echo "demo-entrypoint: kronika-web started (pid $WEB_PID)"
-    start_as kronika /usr/local/bin/kronika-demo
+    start_as_with_caps kronika +setuid,+setgid /usr/local/bin/kronika-demo
     DEMO_PID=$STARTED_PID
     echo "demo-entrypoint: kronika-demo started (pid $DEMO_PID)"
 }
