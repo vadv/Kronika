@@ -5,7 +5,7 @@ use kronika_registry::contract;
 
 use super::{
     ActivitySample, Counters, activity_sample, counter_sum, cpu_busy_ticks, current_points, points,
-    rate,
+    rate, record_activity_sample,
 };
 use crate::route::Window;
 
@@ -208,6 +208,30 @@ fn lock_waits_have_a_lane_distinct_from_other_backend_waits() {
             .and_then(|point| point.value),
         Some(0.0)
     );
+}
+
+#[test]
+fn background_lock_waits_keep_the_lock_graph_visible() {
+    let mut counters = Counters::default();
+    let sample = ActivitySample {
+        ts: Some(5_000_000),
+        backend_type: Some(11),
+        state: Some(12),
+        wait_event_type: Some(13),
+        leader: false,
+        xact_start: None,
+    };
+
+    record_activity_sample(
+        &mut counters,
+        &sample,
+        Some(b"autovacuum worker"),
+        Some(b"active"),
+        Some(b"Lock"),
+    );
+
+    assert_eq!(counters.lock_waiting, BTreeMap::from([(5_000_000, 1.0)]));
+    assert_eq!(counters.waiting, BTreeMap::from([(5_000_000, 0.0)]));
 }
 
 fn row(type_id: u32, values: &[(&str, Cell)]) -> Row {
