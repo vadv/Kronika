@@ -202,12 +202,12 @@ export function visibleLockRows(
   lanePoints: readonly LanePoint[],
   cursor: number,
 ): readonly DataRow[] {
-  let waiting: LanePoint | null = null
+  let lockWaiting: LanePoint | null = null
   for (const point of lanePoints) {
-    if (point.lane === "pg_waiting" && point.timestamp <= cursor
-      && (waiting === null || point.timestamp > waiting.timestamp)) waiting = point
+    if (point.lane === "pg_lock_waiting" && point.timestamp <= cursor
+      && (lockWaiting === null || point.timestamp > lockWaiting.timestamp)) lockWaiting = point
   }
-  return waiting?.value === 0 ? [] : rows
+  return lockWaiting?.value === 0 ? [] : rows
 }
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [

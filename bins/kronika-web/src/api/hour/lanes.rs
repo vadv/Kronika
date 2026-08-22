@@ -33,6 +33,7 @@ struct Counters {
     oom: BTreeMap<i64, Option<i64>>,
     running: BTreeMap<i64, f64>,
     waiting: BTreeMap<i64, f64>,
+    lock_waiting: BTreeMap<i64, f64>,
     oldest_xact: BTreeMap<i64, f64>,
 }
 
@@ -52,6 +53,7 @@ impl Counters {
         retain_latest(&mut self.oom);
         retain_latest(&mut self.running);
         retain_latest(&mut self.waiting);
+        retain_latest(&mut self.lock_waiting);
         retain_latest(&mut self.oldest_xact);
     }
 }
@@ -314,7 +316,7 @@ struct ActivitySample {
     ts: Option<i64>,
     backend_type: Option<u64>,
     state: Option<u64>,
-    waiting: bool,
+    wait_event_type: Option<u64>,
     leader: bool,
     xact_start: Option<i64>,
 }
@@ -324,7 +326,7 @@ fn activity_sample(row: &Row) -> ActivitySample {
         ts: timestamp(row, "ts"),
         backend_type: string_id(row, "backend_type"),
         state: string_id(row, "state"),
-        waiting: row.get("wait_event_type").is_some_and(present),
+        wait_event_type: string_id(row, "wait_event_type"),
         leader: row.get("leader_pid").is_some_and(present),
         xact_start: timestamp(row, "xact_start"),
     }
@@ -346,7 +348,11 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
     let mut ids = HashSet::new();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let sample = activity_sample(&row);
-        ids.extend([sample.backend_type, sample.state].into_iter().flatten());
+        ids.extend(
+            [sample.backend_type, sample.state, sample.wait_event_type]
+                .into_iter()
+                .flatten(),
+        );
         samples.push(sample);
         true
     })?;
@@ -357,6 +363,7 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         };
         counters.running.entry(ts).or_insert(0.0);
         counters.waiting.entry(ts).or_insert(0.0);
+        counters.lock_waiting.entry(ts).or_insert(0.0);
         let kind = text(sample.backend_type, &dictionary);
         // Count client backends, not their parallel workers.
         if kind != Some(b"client backend".as_slice()) || sample.leader {
@@ -379,7 +386,13 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         if state != Some(b"active".as_slice()) {
             continue;
         }
-        let lane = if sample.waiting {
+        let wait_event_type = text(sample.wait_event_type, &dictionary);
+        let lane = if wait_event_type.is_some() {
+            // Keep the general waiting lane for the timeline, but also expose
+            // the exact signal needed to expire conditional pg_locks rows.
+            if wait_event_type == Some(b"Lock".as_slice()) {
+                *counters.lock_waiting.entry(ts).or_insert(0.0) += 1.0;
+            }
             &mut counters.waiting
         } else {
             &mut counters.running
@@ -460,6 +473,7 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
         ("memory", &counters.memory),
         ("pg_running", &counters.running),
         ("pg_waiting", &counters.waiting),
+        ("pg_lock_waiting", &counters.lock_waiting),
         ("pg_oldest_xact", &counters.oldest_xact),
     ] {
         for (ts, value) in stored {
