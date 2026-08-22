@@ -284,14 +284,17 @@ interface TabHighlight {
   readonly attention: boolean
 }
 
-export function tabHighlight(data: HourData, tab: PostgresSection): TabHighlight {
+// A finding minutes away from the cursor is not "here" — the badge would
+// stay lit for the rest of the hour and stop meaning anything.
+const TAB_HIGHLIGHT_WINDOW_US = 60_000_000
+
+export function tabHighlight(data: HourData, tab: PostgresSection, cursor: number): TabHighlight {
   const sections = TAB_FINDING_SECTIONS[tab]
   if (sections.length === 0) return { count: 0, attention: false }
-  const count = data.findingGroups
-    .filter((group) => sections.includes(group.logicalName))
-    .reduce((total, group) => total + group.totalHits, 0)
-  const attention = data.findings.some((finding) => finding.kind === "known_bad" && sections.includes(finding.logicalName))
-  return { count, attention }
+  const nearby = data.findings.filter(
+    (finding) => sections.includes(finding.logicalName) && Math.abs(finding.timestamp - cursor) <= TAB_HIGHLIGHT_WINDOW_US,
+  )
+  return { count: nearby.length, attention: nearby.some((finding) => finding.kind === "known_bad") }
 }
 
 export function PostgresView({
@@ -398,7 +401,7 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
-        const highlight = tabHighlight(data, tab.id)
+        const highlight = tabHighlight(data, tab.id, cursor)
         return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
           <span>{t(`pg.section.${tab.id}`)}</span>
           {highlight.count > 0 && <span className="pg-tab-badge" data-attention={highlight.attention} title={t(highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count", { count: highlight.count })}>{compact(highlight.count, locale)}</span>}

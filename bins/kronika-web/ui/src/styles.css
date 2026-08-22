@@ -674,6 +674,7 @@
 .process-summary-inline .label-help:focus-within { opacity: 1; }
 
 .lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.lensbar > .process-summary-inline { border-left: 1px solid var(--color-line2); padding-left: 8px; }
 
 /* Vacuum ledger: the risk of a phase is fixed by its name. A dangerous phase
    carries a red left rail on its row so it reads without horizontal scroll. */
@@ -745,7 +746,7 @@
 @media (max-width: 760px) {
   .lensbar { flex-wrap: wrap; gap: 0; padding: 0; }
   .lensbar > .lens-tabs { flex: 1 0 100%; padding: 2px 4px; }
-  .process-summary-inline { border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); }
+  .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
   .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
 }

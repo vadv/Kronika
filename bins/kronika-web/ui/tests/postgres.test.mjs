@@ -675,24 +675,28 @@ test("database totals omit PostgreSQL's shared-object statistics row", () => {
   assert.equal(helpers.postgresDatabaseCount([shared, database]), 1)
 })
 
-test("a tab's badge counts only its own mapped findings, and flags known_bad separately from a plain event", () => {
-  const group = (logicalName, totalHits) => ({ logicalName, segmentId: "a", shown: totalHits, totalHits, truncated: false, typeId: "0" })
-  const finding = (logicalName, kind) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal: "0", segmentId: "a", timestamp: 0, typeId: "0" })
+test("a tab's badge counts only its own mapped findings within a minute of the cursor, and flags known_bad separately from a plain event", () => {
+  const CURSOR = 10_000_000
+  const finding = (logicalName, kind, timestamp) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal: "0", segmentId: "a", timestamp, typeId: "0" })
 
-  const quiet = { findingGroups: [group("pg_log_lock_waits", 3)], findings: [finding("pg_log_lock_waits", "event")] }
-  assert.deepEqual(helpers.tabHighlight(quiet, "locks"), { attention: false, count: 3 })
+  const nearby = { findingGroups: [], findings: [finding("pg_log_lock_waits", "event", CURSOR - 30_000_000)] }
+  assert.deepEqual(helpers.tabHighlight(nearby, "locks", CURSOR), { attention: false, count: 1 })
 
   const contended = {
-    findingGroups: [group("pg_locks", 2), group("pg_log_lock_waits", 3)],
-    findings: [finding("pg_locks", "known_bad"), finding("pg_log_lock_waits", "event")],
+    findingGroups: [],
+    findings: [finding("pg_locks", "known_bad", CURSOR), finding("pg_log_lock_waits", "event", CURSOR + 60_000_000)],
   }
-  assert.deepEqual(helpers.tabHighlight(contended, "locks"), { attention: true, count: 5 })
+  assert.deepEqual(helpers.tabHighlight(contended, "locks", CURSOR), { attention: true, count: 2 })
 
   // A finding recorded under a different tab's section never leaks into this one's count.
-  const elsewhere = { findingGroups: [group("pg_log_autovacuum", 11)], findings: [] }
-  assert.deepEqual(helpers.tabHighlight(elsewhere, "locks"), { attention: false, count: 0 })
-  assert.deepEqual(helpers.tabHighlight(elsewhere, "vacuum"), { attention: false, count: 11 })
+  const elsewhere = { findingGroups: [], findings: [finding("pg_log_autovacuum", "event", CURSOR)] }
+  assert.deepEqual(helpers.tabHighlight(elsewhere, "locks", CURSOR), { attention: false, count: 0 })
+  assert.deepEqual(helpers.tabHighlight(elsewhere, "vacuum", CURSOR), { attention: false, count: 1 })
+
+  // A finding outside the window reads as nothing here, however many happened earlier in the hour.
+  const stale = { findingGroups: [], findings: [finding("pg_log_autovacuum", "event", CURSOR + 60_000_001)] }
+  assert.deepEqual(helpers.tabHighlight(stale, "vacuum", CURSOR), { attention: false, count: 0 })
 
   // Tabs with no mapped findings section never claim a count.
-  assert.deepEqual(helpers.tabHighlight({ findingGroups: [], findings: [] }, "tables"), { attention: false, count: 0 })
+  assert.deepEqual(helpers.tabHighlight({ findingGroups: [], findings: [] }, "tables", CURSOR), { attention: false, count: 0 })
 })
