@@ -14,7 +14,7 @@ WEB_PASSWORD=${KRONIKA_WEB_PASSWORD:-forensics}
 catalog=$(curl --compressed --fail --silent --show-error --max-time 8 \
     --user "$WEB_USER:$WEB_PASSWORD" http://127.0.0.1:8080/api/catalog)
 missing=()
-for section in os_process pg_stat_activity pg_stat_statements pg_store_plans pg_locks pgbouncer_events; do
+for section in os_process pg_stat_activity pg_stat_statements pg_store_plans pg_locks pg_stat_progress_vacuum pgbouncer_events; do
     if ! grep -Fq "\"logical_name\":\"$section\"" <<<"$catalog"; then
         missing+=("$section")
     fi

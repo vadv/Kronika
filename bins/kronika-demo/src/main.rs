@@ -16,8 +16,8 @@
 //! variable the collector reads passes through unchanged.
 //!
 //! Setting `KRONIKA_DEMO_WORKLOAD_DSN` also drives a `PostgreSQL` workload
-//! (schemas, tables, steady DML, lock-wait chains) alongside the collector;
-//! see `workload` for its configuration.
+//! (schemas, tables, steady DML, and bounded lock, event, and `VACUUM`
+//! episodes) alongside the collector; see `workload` for its configuration.
 #![allow(
     clippy::multiple_crate_versions,
     reason = "the registry's arrow/parquet stack and the workload's rand/tokio-postgres \

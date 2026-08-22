@@ -25,8 +25,8 @@ Password: forensics
 
 Processes is the default view. Host, Processes, PostgreSQL, and Events expose
 the collected hour through the normal Kronika UI. PostgreSQL includes
-Overview, Activity, Statements, Plans, Locks, Databases, Tables, Indexes, and
-Settings when the corresponding samples are present. PgBouncer is represented
+Overview, Activity, Vacuum, Locks, Statements, Plans, Databases, Tables, and
+Indexes when the corresponding samples are present. PgBouncer is represented
 by its real log events under Events; Kronika does not currently have a separate
 PgBouncer dashboard.
 
@@ -99,20 +99,32 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | unset | Workload connection, normally through PgBouncer. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_DSN` | workload DSN | Direct PostgreSQL connection for session-scoped Vacuum settings. The image sets this to its embedded PostgreSQL. |
 | `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 4 | Schemas to create. |
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Tables per schema. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Concurrent setup connections. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Long-lived DML sessions. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Total lock chains: one remains contended and the others run in rounds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 1 | Independent lock chains in each bounded round. |
 | `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Transactions in each lock chain; must be at least two. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Lock hold time per link in the cycling chains, milliseconds. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Pause between cycling lock rounds, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 4000 | Lock hold time per link in a lock round, milliseconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 45 | Quiet pause after each lock round, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S` | 60 | Quiet pause after one slow query, one bad statement, and one bad-database attempt. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS` | 100000 | Rows in the dedicated Vacuum showcase table. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S` | 180 | Quiet pause after each Vacuum episode, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_STATEMENT_TIMEOUT_S` | 30 | Finite timeout for each update and Vacuum statement, seconds. |
 
 Each session uses a fixed pseudo-random sequence. Four table shapes produce
 varied statements across 160 tables without pathological setup load. Steady
-sessions run bounded insert, update, select, and delete traffic, plus a small
-fixed share of slow and failing statements for real log-derived events. Lock
-chains use PostgreSQL row locks; they are not fabricated findings.
+sessions run bounded insert, update, select, and delete traffic. Separate
+deterministic episodes create real slow-query and error findings, a depth-three
+PostgreSQL row-lock chain, and a throttled Vacuum over a dedicated table.
+
+The first episode of every kind starts immediately. A lock round lasts about
+12 seconds and is followed by 45 quiet seconds, so Locks and Activity show both
+the incident and its recovery instead of a permanent wait. Slow/error and
+Vacuum rounds follow the same incident-then-recovery pattern at their own
+cadences. No scenario disables `statement_timeout` or
+`idle_in_transaction_session_timeout`.
 
 For a direct binary run:
 

@@ -25,7 +25,7 @@ Password: forensics
 
 По умолчанию открыт Processes. Host, Processes, PostgreSQL и Events показывают
 собранный час через штатный UI Kronika. В PostgreSQL доступны Overview,
-Activity, Statements, Plans, Locks, Databases, Tables, Indexes и Settings,
+Activity, Vacuum, Locks, Statements, Plans, Databases, Tables и Indexes,
 если соответствующие снимки присутствуют. PgBouncer представлен реальными
 событиями его лога в Events; отдельного PgBouncer dashboard в Kronika сейчас
 нет.
@@ -100,21 +100,33 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 | Переменная | По умолчанию | Назначение |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | не задана | Подключение нагрузки, обычно через PgBouncer. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_DSN` | DSN нагрузки | Прямое подключение к PostgreSQL для настроек Vacuum в рамках сессии. Образ подключается к встроенному PostgreSQL. |
 | `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 4 | Число схем. |
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Таблиц в каждой схеме. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Параллельных соединений при настройке. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Долгоживущих DML-сессий. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Общее число цепочек: одна постоянно ожидает блокировку, остальные запускаются раундами. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 1 | Независимых цепочек блокировок в каждом ограниченном раунде. |
 | `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Число транзакций в каждой цепочке, не меньше двух. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Время удержания блокировки звеном циклической цепочки, мс. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Пауза между раундами циклических цепочек, с. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 4000 | Время удержания блокировки звеном одного раунда, мс. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 45 | Период без демонстрационных блокировок после каждого раунда, с. |
+| `KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S` | 60 | Пауза после одного медленного запроса, одного ошибочного оператора и одной попытки подключиться к несуществующей БД, с. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS` | 100000 | Строк в отдельной таблице для демонстрации Vacuum. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S` | 180 | Пауза после каждого эпизода Vacuum, с. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_STATEMENT_TIMEOUT_S` | 30 | Конечный тайм-аут каждого оператора обновления и Vacuum, с. |
 
 Каждая сессия использует фиксированную псевдослучайную последовательность.
 Четыре формы создают разные операторы для 160 таблиц без патологической
-нагрузки при настройке. Стационарные сессии выполняют ограниченный поток
-insert, update, select и delete, а также небольшую фиксированную долю
-медленных и ошибочных операторов для настоящих событий из логов. Цепочки
-используют блокировки строк PostgreSQL; это не вымышленные находки.
+нагрузки при настройке. Постоянные сессии выполняют ограниченный поток
+`INSERT`, `UPDATE`, `SELECT` и `DELETE`. Отдельные детерминированные эпизоды
+создают реальные события медленных и ошибочных запросов, цепочку блокировок
+строк PostgreSQL глубиной три и замедленный Vacuum отдельной таблицы.
+
+Первый эпизод каждого типа начинается сразу. Раунд блокировок длится около
+12 с, после него 45 с нет демонстрационных ожиданий. Поэтому Locks и Activity
+показывают и инцидент, и восстановление, а не постоянное ожидание. Раунды
+ошибок, медленных запросов и Vacuum повторяют тот же сценарий «инцидент —
+восстановление» со своими интервалами. Ни один сценарий не отключает
+`statement_timeout` или `idle_in_transaction_session_timeout`.
 
 Прямой запуск бинаря:
 
