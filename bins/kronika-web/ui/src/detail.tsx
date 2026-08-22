@@ -40,6 +40,7 @@ export interface ProcessHistorySeries extends HistoryField {
 
 const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   generic: [{ field: "num_threads", key: "col.threads", kind: "number" }],
+  tree: [{ field: "num_threads", key: "col.threads", kind: "number" }],
   cpu: [
     { counter: true, field: "utime", key: "col.utime", kind: "cores" },
     { counter: true, field: "stime", key: "col.stime", kind: "cores" },

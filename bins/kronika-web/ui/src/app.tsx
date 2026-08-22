@@ -13,6 +13,7 @@ import {
   loadSnapshot,
   loadSnapshotGroups,
   mergeSnapshotData,
+  segmentBoundAt,
   snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
@@ -68,6 +69,7 @@ import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
+import { annotateProcessMetrics, buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -608,12 +610,37 @@ function App({ locale, onLocale, t }: {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
+  // The Tree lens needs every process at this instant, unranked — the
+  // opposite of the dense, server-ranked page the other lenses share — so it
+  // fetches its own full os_process snapshot instead of reading data.processes.
+  const [processTreeSnapshot, setProcessTreeSnapshot] = useState<{ readonly processes: readonly DataRow[]; readonly memTotalKb: number | null }>({ processes: [], memTotalKb: null })
+  useEffect(() => {
+    if (lens !== "tree") return undefined
+    const segment = segmentBoundAt(segments, cursor)
+    if (segment === null) { setProcessTreeSnapshot({ processes: [], memTotalKb: null }); return undefined }
+    const controller = new AbortController()
+    acceptResponse(
+      loadSnapshot(segment.id, cursor, [{ section: "os_process" }, { section: "os_meminfo", fields: ["mem_total"] }], controller.signal),
+      controller.signal,
+      (loaded) => setProcessTreeSnapshot({
+        processes: loaded.sections.os_process ?? [],
+        memTotalKb: asNumber(value((loaded.sections.os_meminfo ?? [])[0] ?? null, "mem_total")),
+      }),
+      () => setProcessTreeSnapshot({ processes: [], memTotalKb: null }),
+    )
+    return () => controller.abort()
+  }, [lens, segments, cursor])
+  const processForest = useMemo(
+    () => buildProcessForest(annotateProcessMetrics(processTreeSnapshot.processes, cursor, ticksPerSecond, processTreeSnapshot.memTotalKb)),
+    [cursor, processTreeSnapshot, ticksPerSecond],
+  )
+  const processTableRows = lens === "tree" ? processForest : processRows
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))
     return pid === null ? [] : [pid]
   })), [pgRows])
-  const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
+  const selectedProcess = processTableRows.find((row) => processKey(row) === selectedKey) ?? null
   useEffect(() => {
     if (selectedFinding?.logicalName === "os_process" && findingRow !== null) {
       setSelectedKey(processKey(findingRow))
@@ -942,14 +969,14 @@ function App({ locale, onLocale, t }: {
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
         <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
-            {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
+            {(["cpu", "memory", "disk", "generic", "tree"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
-          <span className="snapshot-time">{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
+          <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
-          <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} densePageState={densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
+          <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
       {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}

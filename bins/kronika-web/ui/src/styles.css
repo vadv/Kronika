@@ -703,6 +703,8 @@
 .lock-tree-note { color: var(--color-fg3); font-size: var(--text-xs); white-space: nowrap; }
 [data-testid="pg-locks-table"] .entity-row:has(.lock-tree-cell[data-role="root"]) { border-top: 1px solid var(--color-line2); }
 
+.process-tree-prefix { color: var(--color-fg4); font-family: var(--font-mono); white-space: pre; }
+
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }
 .value-tone-warning,

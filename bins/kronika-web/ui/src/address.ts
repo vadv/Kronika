@@ -42,7 +42,7 @@ export type View =
   | "pg.indexes"
   | "events"
 
-type Lens = "generic" | "cpu" | "memory" | "disk"
+type Lens = "generic" | "cpu" | "memory" | "disk" | "tree"
 export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
@@ -56,7 +56,7 @@ const VIEWS: readonly View[] = [
   "events",
 ]
 
-const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk"]
+const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk", "tree"]
 const PG_LENSES: readonly PgLens[] = ["load", "per_call", "io", "resources", "stability", "timing", "identity", "access", "changes", "maintenance", "size_buffers", "freeze", "usage", "low_activity", "state"]
 const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "tablespace", "object"]
 

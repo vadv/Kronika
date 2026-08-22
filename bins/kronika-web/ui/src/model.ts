@@ -2,7 +2,7 @@ import type { Cell, DataRow } from "./api"
 import type { Translate } from "./help"
 
 export type Locale = "en" | "ru"
-export type Lens = "generic" | "cpu" | "memory" | "disk"
+export type Lens = "generic" | "cpu" | "memory" | "disk" | "tree"
 
 export function shownMoment(
   sections: Readonly<Record<string, readonly DataRow[]>>,

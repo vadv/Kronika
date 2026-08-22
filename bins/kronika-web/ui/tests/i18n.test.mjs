@@ -304,7 +304,7 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   const removed = [
-    "app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help", "col.starttime.label", "col.starttime.help",
+    "app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help",
     "pg.field.relid.label", "pg.field.indexrelid.label", "pg.relation.scope.database", "pg.relation.scope.schema", "pg.relation.scope.table", "pg.relation.scope.index", "locator.spike.help",
   ]
   for (const key of removed) {
@@ -329,6 +329,5 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
   assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)
   assert.doesNotMatch(detailSource, /col\.scope|processField\("scope"/)
-  assert.doesNotMatch(processSource, /col\.starttime/)
   assert.doesNotMatch(detailSource, /col\.starttime/)
 })

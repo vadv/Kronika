@@ -67,6 +67,7 @@ test("all sixteen process aggregate readings use the exact complete-set history 
     cpu: ["user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second"],
     memory: ["resident_kib", "virtual_kib", "swap_kib", "major_faults_per_second"],
     disk: ["read_bytes_per_second", "write_bytes_per_second", "read_calls_per_second", "write_calls_per_second"],
+    tree: ["processes", "threads", "runnable", "postgresql"],
   })
   const source = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
   assert.match(source, /loadSeries\(hour, "os_process_summary", \{\}, PROCESS_SUMMARY_FIELDS, controller\.signal\)/)
