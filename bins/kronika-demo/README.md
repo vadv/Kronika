@@ -121,7 +121,7 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 The default workload is one commerce application: `shop.orders`, `customers`,
 `order_items`, `products`, `inventory`, `payments`, `event_log`, and `sessions`.
 Named clients such as `checkout-api`, `catalog-api`, `payments-worker`, and
-`vacuum-worker` make the evidence attributable. Steady sessions run bounded
+`vacuum-worker` make the recorded activity attributable. Steady sessions run bounded
 insert, single-row update, select, and delete traffic.
 
 The opening investigation reel runs the same checkout query against

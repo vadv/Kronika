@@ -28,7 +28,7 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
         return;
     }
 
-    // Let the first plan-regression story finish before the lock evidence
+    // Let the first plan-regression story finish before the lock rows
     // appears. A new visitor gets distinct shapes instead of stacked noise.
     wait_for_stop(stop, Duration::from_secs(65)).await;
 

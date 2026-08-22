@@ -4,7 +4,7 @@
 
 The demo must answer an operator's question: "What was happening to the
 database when the application stopped working?" It demonstrates recorded
-evidence, not automatic diagnosis. A visitor should be able to decide whether
+recorded data, not automatic diagnosis. A visitor should be able to decide whether
 PostgreSQL was involved, identify the mechanism, and name the process, query,
 plan, lock holder, or maintenance task visible at that moment.
 

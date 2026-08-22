@@ -4,7 +4,7 @@
 
 **Goal:** Replace the noisy synthetic workload with a bounded commerce investigation reel that visibly records lock contention, a plan regression, recovery, and Vacuum.
 
-**Architecture:** Keep `kronika-demo` as the workload supervisor. Give schema setup, baseline traffic, locks, plans, events, and Vacuum focused modules; all connect through a shared helper that sets a truthful PostgreSQL `application_name`. The existing collector and web UI remain the evidence path.
+**Architecture:** Keep `kronika-demo` as the workload supervisor. Give schema setup, baseline traffic, locks, plans, events, and Vacuum focused modules; all connect through a shared helper that sets a truthful PostgreSQL `application_name`. The existing collector and web UI remain the recorded-data path.
 
 **Tech Stack:** Rust 2024, Tokio, tokio-postgres, PostgreSQL 15, PgBouncer, Docker Compose, Kronika web UI.
 
@@ -93,10 +93,10 @@
 
 **Interfaces:**
 - Consumes: the built demo image and existing Kronika APIs/UI.
-- Produces: browser-visible evidence for every acceptance criterion.
+- Produces: browser-visible data for every acceptance criterion.
 
 - [ ] Run the full affected Rust test target and clippy.
 - [ ] Build and start a clean Compose demo on the chosen loopback port.
 - [ ] Query PostgreSQL to confirm bounded sessions and at least two plan IDs for the checkout query.
 - [ ] Use the in-app browser to inspect Host, Processes, Activity, Locks, Statements, Plans, Tables, Vacuum, and Events.
-- [ ] Record any missing evidence as a defect, fix it test-first, rebuild, and repeat.
+- [ ] Record any missing acceptance result as a defect, fix it test-first, rebuild, and repeat.
