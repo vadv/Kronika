@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, tabHighlight, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -699,4 +699,26 @@ test("database totals omit PostgreSQL's shared-object statistics row", () => {
   const shared = { ...row("1003001", { datid: 0 }), logicalName: "pg_stat_database" }
   const database = { ...row("1003001", { datid: 16_384 }), logicalName: "pg_stat_database" }
   assert.equal(helpers.postgresDatabaseCount([shared, database]), 1)
+})
+
+test("a tab's badge counts only its own mapped findings, and flags known_bad separately from a plain event", () => {
+  const group = (logicalName, totalHits) => ({ logicalName, segmentId: "a", shown: totalHits, totalHits, truncated: false, typeId: "0" })
+  const finding = (logicalName, kind) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal: "0", segmentId: "a", timestamp: 0, typeId: "0" })
+
+  const quiet = { findingGroups: [group("pg_log_lock_waits", 3)], findings: [finding("pg_log_lock_waits", "event")] }
+  assert.deepEqual(helpers.tabHighlight(quiet, "locks"), { attention: false, count: 3 })
+
+  const contended = {
+    findingGroups: [group("pg_locks", 2), group("pg_log_lock_waits", 3)],
+    findings: [finding("pg_locks", "known_bad"), finding("pg_log_lock_waits", "event")],
+  }
+  assert.deepEqual(helpers.tabHighlight(contended, "locks"), { attention: true, count: 5 })
+
+  // A finding recorded under a different tab's section never leaks into this one's count.
+  const elsewhere = { findingGroups: [group("pg_log_autovacuum", 11)], findings: [] }
+  assert.deepEqual(helpers.tabHighlight(elsewhere, "locks"), { attention: false, count: 0 })
+  assert.deepEqual(helpers.tabHighlight(elsewhere, "vacuum"), { attention: false, count: 11 })
+
+  // Tabs with no mapped findings section never claim a count.
+  assert.deepEqual(helpers.tabHighlight({ findingGroups: [], findings: [] }, "tables"), { attention: false, count: 0 })
 })

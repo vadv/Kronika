@@ -247,6 +247,38 @@ const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonl
   { id: "indexes", sections: ["pg_stat_user_indexes"] },
 ]
 
+// Which recorded findings (IDX event locators / known-bad marks, see
+// DESIGN.md "Highlighting") a tab's badge counts. Separate from TABS[].sections
+// above: that list is what data enables the tab, this is what's worth a look —
+// a log-derived layout (e.g. pg_log_autovacuum) highlights a different tab than
+// the live snapshot it has no other relation to.
+const TAB_FINDING_SECTIONS: Readonly<Record<PostgresSection, readonly string[]>> = {
+  overview: ["pg_log_errors", "pg_log_checkpoints"],
+  activity: ["pg_log_lifecycle"],
+  vacuum: ["pg_log_autovacuum"],
+  locks: ["pg_locks", "pg_log_lock_waits"],
+  statements: ["pg_log_slow_queries"],
+  plans: ["pg_store_plans_info"],
+  databases: ["pg_stat_database"],
+  tables: [],
+  indexes: [],
+}
+
+interface TabHighlight {
+  readonly count: number
+  readonly attention: boolean
+}
+
+export function tabHighlight(data: HourData, tab: PostgresSection): TabHighlight {
+  const sections = TAB_FINDING_SECTIONS[tab]
+  if (sections.length === 0) return { count: 0, attention: false }
+  const count = data.findingGroups
+    .filter((group) => sections.includes(group.logicalName))
+    .reduce((total, group) => total + group.totalHits, 0)
+  const attention = data.findings.some((finding) => finding.kind === "known_bad" && sections.includes(finding.logicalName))
+  return { count, attention }
+}
+
 export function PostgresView({
   context,
   densePageState,
@@ -347,7 +379,11 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
-        return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
+        const highlight = tabHighlight(data, tab.id)
+        return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
+          <span>{t(`pg.section.${tab.id}`)}</span>
+          {highlight.count > 0 && <span className="pg-tab-badge" data-attention={highlight.attention} title={t(highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count", { count: highlight.count })}>{compact(highlight.count, locale)}</span>}
+        </button>
       })}
     </nav>
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
