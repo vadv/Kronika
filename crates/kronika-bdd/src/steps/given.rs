@@ -32,6 +32,17 @@ fn collector_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
     Ok(())
 }
 
+#[given("a demo workload with these settings")]
+fn demo_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
+    for row in table_rows(step, &["variable", "value"])? {
+        let [key, value] = row.as_slice() else {
+            anyhow::bail!("a settings row needs a variable and a value, got {row:?}");
+        };
+        world.demo_env.push((key.clone(), value.clone()));
+    }
+    Ok(())
+}
+
 #[given(regex = r"^a procfs fixture named (\S+)$")]
 fn procfs_fixture(world: &mut BddWorld, name: String) -> Result<()> {
     let source = fixtures_dir().join(&name);
@@ -88,6 +99,23 @@ fn postgres_by_path(world: &mut BddWorld) {
         "KRONIKA_PG_LOGS".to_owned(),
         path.to_string_lossy().into_owned(),
     ));
+}
+
+#[given("the demo workload uses that PostgreSQL")]
+fn demo_uses_postgres(world: &mut BddWorld) -> Result<()> {
+    let dsn = world
+        .postgres
+        .as_ref()
+        .context("a PostgreSQL was started")?
+        .dsn
+        .clone();
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DSN".to_owned(), dsn.clone()));
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN".to_owned(), dsn));
+    Ok(())
 }
 
 #[given("the collector reaches PgBouncer by DSN")]

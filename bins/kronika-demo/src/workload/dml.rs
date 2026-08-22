@@ -1,8 +1,8 @@
-//! Steady-state DML sessions: a mix of ordinary reads and writes plus
-//! deliberately slow and deliberately bad statements, so `pg_stat_statements`
-//! and the log-derived findings have more than a happy path to show.
+//! Steady-state DML sessions: a bounded mix of ordinary reads and writes.
+//! Slow and failing showcase statements run separately in `events`, so the
+//! baseline stays useful between anomaly episodes.
 
-use super::{WorkloadConfig, connect, naming};
+use super::{WorkloadConfig, connect_as, naming};
 use rand::rngs::StdRng;
 use rand::{Rng as _, SeedableRng as _};
 use std::sync::Arc;
@@ -31,31 +31,41 @@ pub(crate) enum Action {
     BadDatabase,
 }
 
-/// Maps a `0..100` roll to the next action. Ordinary DML dominates; the
-/// deliberately slow and deliberately bad actions are rare enough that most
-/// of the timeline still looks unremarkable.
+/// Maps a `0..100` roll to the next ordinary DML action.
 pub(crate) const fn next_action(roll: u32) -> Action {
     match roll % 100 {
         0..=29 => Action::Insert,
         30..=54 => Action::Update,
         55..=89 => Action::Select,
-        90..=95 => Action::Delete,
-        96 => Action::SlowQuery,
-        97..=98 => Action::BadStatement,
-        _ => Action::BadDatabase,
+        _ => Action::Delete,
     }
 }
 
 const JITTER_MS: [u64; 3] = [200, 500, 900];
 const WORKLOAD_SEED: u64 = 0x4b52_4f4e_494b_4100;
+const ROW_KEY_SPACE: u64 = 10_000;
+const SESSION_APPLICATIONS: [&str; 4] = [
+    "checkout-api",
+    "catalog-api",
+    "payments-worker",
+    "fulfillment-worker",
+];
+
+pub(crate) const fn session_application_name(session: u32) -> &'static str {
+    SESSION_APPLICATIONS[session as usize % SESSION_APPLICATIONS.len()]
+}
 
 fn session_rng(session: u32) -> StdRng {
     StdRng::seed_from_u64(WORKLOAD_SEED ^ u64::from(session))
 }
 
+pub(crate) fn bounded_row_id(random: u64) -> i64 {
+    i64::try_from(random % ROW_KEY_SPACE + 1).expect("bounded row ID must fit in i64")
+}
+
 /// Run one session until `stop` is set.
 pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let Ok(client) = connect(&config.dsn).await else {
+    let Ok(client) = connect_as(&config.dsn, session_application_name(session)).await else {
         eprintln!("kronika-demo: workload session {session} could not connect");
         return;
     };
@@ -67,7 +77,7 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
         );
         let action = next_action(rng.gen_range(0..100));
         let pause_ms = JITTER_MS[rng.gen_range(0..JITTER_MS.len())];
-        let id = rng.gen_range(0..i64::MAX);
+        let id = bounded_row_id(rng.r#gen());
         if let Err(error) = perform(&client, config, &table, action, id).await {
             eprintln!("kronika-demo: session {session} {action:?} on {table} failed: {error:#}");
         }
@@ -82,36 +92,19 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
 // not survive a pooled connection switching backend between calls. Inlining
 // is safe: every value here is a number this module generated, never
 // external input.
-async fn perform(
+pub(super) async fn perform(
     client: &Client,
     config: &WorkloadConfig,
     table: &str,
     action: Action,
     id: i64,
 ) -> anyhow::Result<()> {
+    if let Some(sql) = ordinary_sql(table, action, id) {
+        client.batch_execute(&sql).await?;
+        return Ok(());
+    }
     match action {
-        Action::Insert => {
-            client
-                .batch_execute(&format!(
-                    "insert into {table} (id) values ({id}) on conflict do nothing"
-                ))
-                .await?;
-        }
-        Action::Update => {
-            client
-                .batch_execute(&format!("update {table} set id = id where id is not null"))
-                .await?;
-        }
-        Action::Select => {
-            client
-                .batch_execute(&format!("select * from {table} limit 50"))
-                .await?;
-        }
-        Action::Delete => {
-            client
-                .batch_execute(&format!("delete from {table} where false"))
-                .await?;
-        }
+        Action::Insert | Action::Update | Action::Select | Action::Delete => unreachable!(),
         Action::SlowQuery => {
             client.batch_execute("select pg_sleep(6)").await?;
         }
@@ -120,10 +113,22 @@ async fn perform(
             drop(client.batch_execute("slect 1").await);
         }
         Action::BadDatabase => {
-            drop(connect(&format!("{} dbname=nope", config.dsn)).await);
+            drop(connect_as(&format!("{} dbname=nope", config.dsn), "misconfigured-api").await);
         }
     }
     Ok(())
+}
+
+pub(crate) fn ordinary_sql(table: &str, action: Action, id: i64) -> Option<String> {
+    match action {
+        Action::Insert => Some(format!(
+            "insert into {table} (id) values ({id}) on conflict do nothing"
+        )),
+        Action::Update => Some(format!("update {table} set id = id where id = {id}")),
+        Action::Select => Some(format!("select * from {table} limit 50")),
+        Action::Delete => Some(format!("delete from {table} where false")),
+        Action::SlowQuery | Action::BadStatement | Action::BadDatabase => None,
+    }
 }
 
 #[cfg(test)]

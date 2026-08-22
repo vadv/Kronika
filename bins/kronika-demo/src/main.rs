@@ -16,8 +16,9 @@
 //! variable the collector reads passes through unchanged.
 //!
 //! Setting `KRONIKA_DEMO_WORKLOAD_DSN` also drives a `PostgreSQL` workload
-//! (schemas, tables, steady DML, lock-wait chains) alongside the collector;
-//! see `workload` for its configuration.
+//! (a commerce schema, steady DML, a before/during/after plan regression, and
+//! bounded lock, event, and `VACUUM` episodes) alongside the collector; see
+//! `workload` for its configuration.
 #![allow(
     clippy::multiple_crate_versions,
     reason = "the registry's arrow/parquet stack and the workload's rand/tokio-postgres \
@@ -229,5 +230,15 @@ mod tests {
         assert!(!collector_log_to_stderr(Some("file")).expect("file"));
         assert!(collector_log_to_stderr(Some("stderr")).expect("stderr"));
         assert!(collector_log_to_stderr(Some("stdout")).is_err());
+    }
+
+    #[test]
+    fn healthcheck_does_not_probe_a_database_named_after_the_monitor_role() {
+        let healthcheck = include_str!("../../../scripts/demo-healthcheck.sh");
+        let readiness = healthcheck
+            .lines()
+            .find(|line| line.contains("pg_isready"))
+            .expect("PostgreSQL readiness command");
+        assert!(readiness.contains("--dbname=postgres"));
     }
 }

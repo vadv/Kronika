@@ -27,6 +27,7 @@
 )]
 
 mod collector;
+mod demo;
 mod services;
 mod steps;
 
@@ -38,9 +39,11 @@ use cucumber::World as _;
 #[derive(Debug, Default, cucumber::World)]
 struct BddWorld {
     env: Vec<(String, String)>,
+    demo_env: Vec<(String, String)>,
     fixture: Option<tempfile::TempDir>,
     prepared_root: Option<tempfile::TempDir>,
     run: Option<Run>,
+    demo: Option<demo::DemoRun>,
     postgres: Option<services::Postgres>,
     pgbouncer: Option<services::PgBouncer>,
 }

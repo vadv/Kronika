@@ -224,6 +224,7 @@ start_kronika() {
     export KRONIKA_PG_DSNS="host=127.0.0.1 port=$PG_PORT user=$MONITOR_USER dbname=postgres application_name=kronika-demo-monitor"
     export KRONIKA_PGBOUNCER_DSNS="host=127.0.0.1 port=$PGB_PORT user=$MONITOR_USER dbname=pgbouncer"
     export KRONIKA_POSTGRES_EFFECTIVE_CPUS="${KRONIKA_POSTGRES_EFFECTIVE_CPUS:-2}"
+    export KRONIKA_PG_INTERVAL_S="${KRONIKA_PG_INTERVAL_S:-5}"
     export KRONIKA_RETENTION="${KRONIKA_RETENTION:-536870912}"
     export KRONIKA_SEGMENT_MAX_BYTES="${KRONIKA_SEGMENT_MAX_BYTES:-16777216}"
     export KRONIKA_JOURNAL_MAX_BYTES="${KRONIKA_JOURNAL_MAX_BYTES:-67108864}"
@@ -237,6 +238,7 @@ start_kronika() {
     export KRONIKA_DEMO_DURATION_S="${KRONIKA_DEMO_DURATION_S:-0}"
     export KRONIKA_DEMO_COLLECTOR_LOG=stderr
     export KRONIKA_DEMO_WORKLOAD_DSN="${KRONIKA_DEMO_WORKLOAD_DSN:-host=127.0.0.1 port=$PGB_PORT user=$WORKLOAD_USER dbname=$WORKLOAD_DATABASE application_name=kronika-demo-workload}"
+    export KRONIKA_DEMO_WORKLOAD_DIRECT_DSN="${KRONIKA_DEMO_WORKLOAD_DIRECT_DSN:-host=127.0.0.1 port=$PG_PORT user=$WORKLOAD_USER dbname=$WORKLOAD_DATABASE application_name=kronika-demo-direct}"
 
     start_as kronika /usr/local/bin/kronika-web
     WEB_PID=$STARTED_PID

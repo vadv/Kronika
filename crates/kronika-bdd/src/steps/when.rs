@@ -3,6 +3,7 @@
 use super::table_rows;
 use crate::BddWorld;
 use crate::collector::{Run, files_under};
+use crate::demo::DemoRun;
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::when;
@@ -13,6 +14,14 @@ use std::time::Duration;
 fn run_for(world: &mut BddWorld, seconds: u64) -> Result<()> {
     let run = world.run.as_mut().context("a collector was started")?;
     run.run_for_and_stop(Duration::from_secs(seconds))
+}
+
+#[when(regex = r"^the demo finishes within (\d+) seconds$")]
+fn demo_finishes(world: &mut BddWorld, seconds: u64) -> Result<()> {
+    let mut demo = DemoRun::spawn(&world.demo_env)?;
+    demo.wait(Duration::from_secs(seconds))?;
+    world.demo = Some(demo);
+    Ok(())
 }
 
 #[when(regex = r"^the last (\d+) bytes of the journal are cut off$")]

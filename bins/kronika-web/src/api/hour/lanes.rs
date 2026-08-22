@@ -33,6 +33,7 @@ struct Counters {
     oom: BTreeMap<i64, Option<i64>>,
     running: BTreeMap<i64, f64>,
     waiting: BTreeMap<i64, f64>,
+    lock_waiting: BTreeMap<i64, f64>,
     oldest_xact: BTreeMap<i64, f64>,
 }
 
@@ -52,6 +53,7 @@ impl Counters {
         retain_latest(&mut self.oom);
         retain_latest(&mut self.running);
         retain_latest(&mut self.waiting);
+        retain_latest(&mut self.lock_waiting);
         retain_latest(&mut self.oldest_xact);
     }
 }
@@ -314,7 +316,7 @@ struct ActivitySample {
     ts: Option<i64>,
     backend_type: Option<u64>,
     state: Option<u64>,
-    waiting: bool,
+    wait_event_type: Option<u64>,
     leader: bool,
     xact_start: Option<i64>,
 }
@@ -324,7 +326,7 @@ fn activity_sample(row: &Row) -> ActivitySample {
         ts: timestamp(row, "ts"),
         backend_type: string_id(row, "backend_type"),
         state: string_id(row, "state"),
-        waiting: row.get("wait_event_type").is_some_and(present),
+        wait_event_type: string_id(row, "wait_event_type"),
         leader: row.get("leader_pid").is_some_and(present),
         xact_start: timestamp(row, "xact_start"),
     }
@@ -346,47 +348,71 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
     let mut ids = HashSet::new();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let sample = activity_sample(&row);
-        ids.extend([sample.backend_type, sample.state].into_iter().flatten());
+        ids.extend(
+            [sample.backend_type, sample.state, sample.wait_event_type]
+                .into_iter()
+                .flatten(),
+        );
         samples.push(sample);
         true
     })?;
     let dictionary = segment.dictionary_for(&ids)?;
     for sample in samples {
-        let Some(ts) = sample.ts else {
-            continue;
-        };
-        counters.running.entry(ts).or_insert(0.0);
-        counters.waiting.entry(ts).or_insert(0.0);
-        let kind = text(sample.backend_type, &dictionary);
-        // Count client backends, not their parallel workers.
-        if kind != Some(b"client backend".as_slice()) || sample.leader {
-            continue;
-        }
-        if let Some(started) = sample.xact_start {
-            #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
-            let age = (ts - started) as f64 / 1_000_000.0;
-            counters
-                .oldest_xact
-                .entry(ts)
-                .and_modify(|current| {
-                    if age > *current {
-                        *current = age;
-                    }
-                })
-                .or_insert_with(|| age.max(0.0));
-        }
-        let state = text(sample.state, &dictionary);
-        if state != Some(b"active".as_slice()) {
-            continue;
-        }
-        let lane = if sample.waiting {
-            &mut counters.waiting
-        } else {
-            &mut counters.running
-        };
-        *lane.entry(ts).or_insert(0.0) += 1.0;
+        record_activity_sample(
+            counters,
+            &sample,
+            text(sample.backend_type, &dictionary),
+            text(sample.state, &dictionary),
+            text(sample.wait_event_type, &dictionary),
+        );
     }
     Ok(())
+}
+
+fn record_activity_sample(
+    counters: &mut Counters,
+    sample: &ActivitySample,
+    kind: Option<&[u8]>,
+    state: Option<&[u8]>,
+    wait_event_type: Option<&[u8]>,
+) {
+    let Some(ts) = sample.ts else {
+        return;
+    };
+    counters.running.entry(ts).or_insert(0.0);
+    counters.waiting.entry(ts).or_insert(0.0);
+    counters.lock_waiting.entry(ts).or_insert(0.0);
+    // pg_locks includes every PostgreSQL backend, so its expiry signal must
+    // not inherit the client-only filtering used by the public wait lane.
+    if wait_event_type == Some(b"Lock".as_slice()) {
+        *counters.lock_waiting.entry(ts).or_insert(0.0) += 1.0;
+    }
+    // Count client backends, not their parallel workers, in public activity.
+    if kind != Some(b"client backend".as_slice()) || sample.leader {
+        return;
+    }
+    if let Some(started) = sample.xact_start {
+        #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
+        let age = (ts - started) as f64 / 1_000_000.0;
+        counters
+            .oldest_xact
+            .entry(ts)
+            .and_modify(|current| {
+                if age > *current {
+                    *current = age;
+                }
+            })
+            .or_insert_with(|| age.max(0.0));
+    }
+    if state != Some(b"active".as_slice()) {
+        return;
+    }
+    let lane = if wait_event_type.is_some() {
+        &mut counters.waiting
+    } else {
+        &mut counters.running
+    };
+    *lane.entry(ts).or_insert(0.0) += 1.0;
 }
 
 fn current_points(
@@ -460,6 +486,7 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
         ("memory", &counters.memory),
         ("pg_running", &counters.running),
         ("pg_waiting", &counters.waiting),
+        ("pg_lock_waiting", &counters.lock_waiting),
         ("pg_oldest_xact", &counters.oldest_xact),
     ] {
         for (ts, value) in stored {

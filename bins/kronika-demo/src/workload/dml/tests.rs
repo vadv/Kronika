@@ -1,4 +1,6 @@
-use super::{Action, next_action, session_rng};
+use super::{
+    Action, bounded_row_id, next_action, ordinary_sql, session_application_name, session_rng,
+};
 use rand::Rng as _;
 
 #[test]
@@ -12,13 +14,16 @@ fn common_dml_dominates_the_low_rolls() {
 }
 
 #[test]
-fn rare_actions_sit_at_the_top_of_the_range() {
-    assert_eq!(next_action(90), Action::Delete);
-    assert_eq!(next_action(95), Action::Delete);
-    assert_eq!(next_action(96), Action::SlowQuery);
-    assert_eq!(next_action(97), Action::BadStatement);
-    assert_eq!(next_action(98), Action::BadStatement);
-    assert_eq!(next_action(99), Action::BadDatabase);
+fn steady_sessions_never_emit_showcase_events() {
+    for roll in 0..100 {
+        assert!(
+            matches!(
+                next_action(roll),
+                Action::Insert | Action::Update | Action::Select | Action::Delete
+            ),
+            "roll {roll} escaped the steady DML set"
+        );
+    }
 }
 
 #[test]
@@ -35,4 +40,34 @@ fn each_session_has_a_repeatable_independent_sequence() {
     };
     assert_eq!(draw(3), draw(3));
     assert_ne!(draw(3), draw(4));
+}
+
+#[test]
+fn sessions_have_roles_an_operator_can_recognize() {
+    assert_eq!(session_application_name(0), "checkout-api");
+    assert_eq!(session_application_name(1), "catalog-api");
+    assert_eq!(session_application_name(2), "payments-worker");
+    assert_eq!(session_application_name(3), "fulfillment-worker");
+    assert_eq!(session_application_name(4), "checkout-api");
+}
+
+#[test]
+fn steady_updates_touch_one_key_instead_of_rewriting_the_whole_table() {
+    assert_eq!(
+        ordinary_sql("shop.orders", Action::Update, 12_345),
+        Some("update shop.orders set id = id where id = 12345".to_owned())
+    );
+    assert!(
+        !ordinary_sql("shop.orders", Action::Update, 12_345)
+            .unwrap()
+            .contains("where id is not null")
+    );
+}
+
+#[test]
+fn generated_row_ids_stay_inside_a_fixed_reusable_keyspace() {
+    assert_eq!(bounded_row_id(0), 1);
+    assert_eq!(bounded_row_id(9_999), 10_000);
+    assert_eq!(bounded_row_id(10_000), 1);
+    assert!((1..=10_000).contains(&bounded_row_id(u64::MAX)));
 }
