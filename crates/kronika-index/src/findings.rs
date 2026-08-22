@@ -45,7 +45,8 @@ pub struct Finding {
     pub row_ordinal: u32,
     /// Current snapshot timestamp in unix microseconds.
     pub timestamp: i64,
-    /// Stored `pg_log_errors.category` for an event in that layout only.
+    /// Stored `pg_log_errors.category` for a locator in that layout only,
+    /// regardless of kind.
     pub category: Option<u8>,
 }
 
@@ -163,7 +164,7 @@ fn validate(block: &FindingBlock) -> Result<(), IndexError> {
     }
     let mut previous = None;
     for finding in &block.findings {
-        if block.type_id == PG_LOG_ERRORS_TYPE_ID && finding.kind == FindingKind::Event {
+        if block.type_id == PG_LOG_ERRORS_TYPE_ID {
             if !matches!(finding.category, Some(0..=MAX_LOG_ERROR_CATEGORY)) {
                 return Err(IndexError::BadLayout);
             }

@@ -343,7 +343,14 @@ The initial exact comparisons are:
 - the host OOM-kill counter or a database deadlock counter increases;
 - active PostgreSQL backends exceed twice the configured positive effective
   PostgreSQL CPU count;
-- a recorded `pg_locks` row's `blocked_by` is non-empty.
+- a recorded `pg_locks` row's `blocked_by` is non-empty;
+- a database's checksum-failure counter increases;
+- the WAL archiver's failed-archive counter increases;
+- a database's frozen-transaction age or multixact age is at least
+  1,600,000,000;
+- a database's fatal-session or operator-killed-session counter increases;
+- a recorded `pg_log_errors` row's category is `5` (data corruption);
+- a cgroup's OOM-kill counter increases.
 
 Optional or missing inputs produce no mark. Kronika does not substitute a
 cgroup quota for the host CPU denominator, approximate an absent capacity, or
@@ -362,15 +369,17 @@ containing IDX is bound to its exact finished source ZMS. A record contains the
 locator kind, physical `type_id`, field ordinal, current timestamp, and row
 ordinal; together these identify the source row. An `event` locator uses field
 ordinal 0, the row's `ts` field. A slow-query row at or above 5 seconds also
-keeps its independent `known_bad` locator for `max_duration_ms`.
+keeps its independent `known_bad` locator for `max_duration_ms`. A
+`pg_log_errors` row whose category is `5` also keeps its independent
+`known_bad` locator for `category`.
 
-Only a `pg_log_errors` event locator also carries the row's stored one-byte
+Only `pg_log_errors` locators also carry the row's stored one-byte
 category: `0` lock, `1` constraint/data-integrity, `2` serialization, `3`
 timeout, `4` resource, `5` data corruption, `6` system, `7` connection, `8`
 auth, `9` syntax, or `10` other. IDX reads this byte directly and does not
 classify SQLSTATE. The other five log layouts omit category because their
 physical `type_id` already identifies the event class. HTTP and dump expose
-the numeric category only on an error event locator.
+the numeric category only on a `pg_log_errors` locator.
 
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 an operator event: it has no finding locator and does not appear in Events or

@@ -23,6 +23,9 @@ const OS_VMSTAT: u32 = 1_106_001;
 const OS_MOUNTINFO: u32 = 1_112_002;
 const PG_LOCKS_V1: u32 = 1_011_001;
 const PG_LOCKS_V2: u32 = 1_011_002;
+const PG_STAT_ARCHIVER: u32 = 1_008_001;
+const OS_CGROUP_MEMORY_V1: u32 = 1_202_001;
+const OS_CGROUP_MEMORY_V2: u32 = 1_202_002;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
 const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     PG_LOG_ERRORS_TYPE_ID,
@@ -43,6 +46,16 @@ const MOUNT_FREE_BYTES_FIELD: u16 = 9;
 const SLOW_QUERY_DURATION_FIELD: u16 = 6;
 const LOCKS_BLOCKED_BY_FIELD: u16 = 2;
 const DATABASE_DEADLOCKS_FIELD: u16 = 16;
+const FROZEN_XID_AGE_FIELD: u16 = 20;
+const MIN_MXID_AGE_FIELD: u16 = 21;
+const CHECKSUM_FAILURES_FIELD: u16 = 25;
+const SESSIONS_FATAL_FIELD: u16 = 32;
+const SESSIONS_KILLED_FIELD: u16 = 33;
+const ARCHIVER_FAILED_COUNT_FIELD: u16 = 4;
+const LOG_ERROR_CATEGORY_FIELD: u16 = 4;
+const DATA_CORRUPTION_CATEGORY: u8 = 5;
+/// `PostgreSQL`'s own `vacuum_failsafe_age` / `vacuum_multixact_failsafe_age` default.
+const WRAPAROUND_AGE_THRESHOLD: i64 = 1_600_000_000;
 const EVENT_TIMESTAMP_FIELD: u16 = 0;
 
 /// Temporary state used only while one IDX is being built.
@@ -52,7 +65,11 @@ pub(crate) struct FindingBuilder {
     cutoff: i64,
     cpu_before: Option<CpuRaw>,
     oom_before: Option<(i64, Option<i64>)>,
+    archiver_before: Option<(i64, i64)>,
     deadlocks_before: BTreeMap<(u32, u32), (i64, i64)>,
+    checksum_failures_before: BTreeMap<(u32, u32), (i64, Option<i64>)>,
+    sessions_before: BTreeMap<(u32, u32), (i64, i64, i64)>,
+    cgroup_oom_before: BTreeMap<(u32, u64), (i64, i64)>,
 }
 
 impl FindingBuilder {
@@ -69,7 +86,11 @@ impl FindingBuilder {
             cutoff: segment.min_ts().saturating_sub(FIFTEEN_MINUTES_US),
             cpu_before: None,
             oom_before: None,
+            archiver_before: None,
             deadlocks_before: BTreeMap::new(),
+            checksum_failures_before: BTreeMap::new(),
+            sessions_before: BTreeMap::new(),
+            cgroup_oom_before: BTreeMap::new(),
         }
     }
 
@@ -95,9 +116,17 @@ impl FindingBuilder {
         if self.requested.contains(&OS_VMSTAT) {
             self.observe_prior_oom(segment)?;
         }
+        if self.requested.contains(&PG_STAT_ARCHIVER) {
+            self.observe_prior_archiver(segment)?;
+        }
         for type_id in database_layouts() {
             if self.requested.contains(&type_id) {
-                self.observe_prior_deadlocks(segment, type_id)?;
+                self.observe_prior_database_counters(segment, type_id)?;
+            }
+        }
+        for type_id in cgroup_memory_layouts() {
+            if self.requested.contains(&type_id) {
+                self.observe_prior_cgroup_oom(segment, type_id)?;
             }
         }
         Ok(())
@@ -143,6 +172,15 @@ impl FindingBuilder {
                         timestamp: *timestamp,
                         category,
                     });
+                    if category == Some(DATA_CORRUPTION_CATEGORY) {
+                        event_hits.push(Finding {
+                            kind: FindingKind::KnownBad,
+                            field_ordinal: LOG_ERROR_CATEGORY_FIELD,
+                            row_ordinal,
+                            timestamp: *timestamp,
+                            category,
+                        });
+                    }
                 }
                 true
             })?;
@@ -172,14 +210,20 @@ impl FindingBuilder {
         self.find_mounts(segment, &mut hits)?;
         self.find_slow_queries(segment, &mut hits)?;
         self.find_oom(segment, &mut hits)?;
+        self.find_archiver_failures(segment, &mut hits)?;
         for type_id in database_layouts() {
             if self.requested.contains(&type_id) {
-                self.find_deadlocks(segment, type_id, &mut hits)?;
+                self.find_database_counters(segment, type_id, &mut hits)?;
             }
         }
         for type_id in pg_locks_layouts() {
             if self.requested.contains(&type_id) {
                 self.find_lock_contention(segment, type_id, &mut hits)?;
+            }
+        }
+        for type_id in cgroup_memory_layouts() {
+            if self.requested.contains(&type_id) {
+                self.find_cgroup_oom(segment, type_id, &mut hits)?;
             }
         }
         self.find_active_backends(active_samples, postgres_cpus, &mut hits);
@@ -203,6 +247,9 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
                 | OS_MOUNTINFO
                 | PG_LOCKS_V1
                 | PG_LOCKS_V2
+                | PG_STAT_ARCHIVER
+                | OS_CGROUP_MEMORY_V1
+                | OS_CGROUP_MEMORY_V2
                 | 1_001_001
                 | 1_001_002
                 | 1_001_004
@@ -211,7 +258,15 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
 }
 
 const fn needs_prior_rows(type_id: u32) -> bool {
-    matches!(type_id, OS_CPU | OS_VMSTAT | 1_005_001..=1_005_004)
+    matches!(
+        type_id,
+        OS_CPU
+            | OS_VMSTAT
+            | PG_STAT_ARCHIVER
+            | OS_CGROUP_MEMORY_V1
+            | OS_CGROUP_MEMORY_V2
+            | 1_005_001..=1_005_004
+    )
 }
 
 fn block(type_id: u32, mut findings: Vec<Finding>) -> FindingBlock {
@@ -247,6 +302,20 @@ const fn database_layouts() -> [u32; 4] {
 
 const fn pg_locks_layouts() -> [u32; 2] {
     [PG_LOCKS_V1, PG_LOCKS_V2]
+}
+
+/// Layouts carrying `checksum_failures` (absent on the base `1_005_001`).
+const fn checksum_layouts() -> [u32; 3] {
+    [1_005_002, 1_005_003, 1_005_004]
+}
+
+/// Layouts carrying `sessions_fatal` / `sessions_killed`.
+const fn session_layouts() -> [u32; 2] {
+    [1_005_003, 1_005_004]
+}
+
+const fn cgroup_memory_layouts() -> [u32; 2] {
+    [OS_CGROUP_MEMORY_V1, OS_CGROUP_MEMORY_V2]
 }
 
 const fn activity_layouts() -> [u32; 3] {

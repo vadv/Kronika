@@ -1,4 +1,4 @@
-use super::direct::{CpuRaw, cpu_busy_at_least_80};
+use super::direct::{CpuRaw, cpu_busy_at_least_80, crosses_wraparound_age};
 use super::{block, finding_layout};
 use crate::{Finding, FindingKind, MAX_FINDINGS_PER_BLOCK};
 
@@ -25,6 +25,12 @@ fn aggregate_cpu_busy_uses_the_exact_adjacent_counter_share() {
 }
 
 #[test]
+fn frozen_xid_age_crosses_at_the_exact_postgresql_failsafe_default() {
+    assert!(crosses_wraparound_age(1_600_000_000));
+    assert!(!crosses_wraparound_age(1_599_999_999));
+}
+
+#[test]
 fn statistical_process_and_statement_series_are_not_findings() {
     assert!(!finding_layout(1_100_001));
     for type_id in 1_002_001..=1_002_006 {
@@ -32,6 +38,13 @@ fn statistical_process_and_statement_series_are_not_findings() {
     }
     assert!(!finding_layout(1_004_001));
     assert!(!finding_layout(1_016_001));
+}
+
+#[test]
+fn archiver_and_cgroup_memory_layouts_carry_findings() {
+    for type_id in [1_008_001, 1_202_001, 1_202_002] {
+        assert!(finding_layout(type_id));
+    }
 }
 
 #[test]
