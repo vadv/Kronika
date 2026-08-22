@@ -26,7 +26,7 @@ fn run_sql(timeout_s: u64) -> Vec<String> {
     vec![
         format!(
             "set statement_timeout = '{timeout_s}s'; \
-             set vacuum_cost_delay = '5ms'; \
+             set vacuum_cost_delay = '8ms'; \
              set vacuum_cost_limit = 200"
         ),
         format!(

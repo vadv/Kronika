@@ -123,7 +123,8 @@ The first episode of every kind starts immediately. A lock round lasts about
 12 seconds and is followed by 45 quiet seconds, so Locks and Activity show both
 the incident and its recovery instead of a permanent wait. Slow/error and
 Vacuum rounds follow the same incident-then-recovery pattern at their own
-cadences. No scenario disables `statement_timeout` or
+cadences. The image samples PostgreSQL every 5 seconds so every bounded episode
+crosses at least one collection tick. No scenario disables `statement_timeout` or
 `idle_in_transaction_session_timeout`.
 
 For a direct binary run:

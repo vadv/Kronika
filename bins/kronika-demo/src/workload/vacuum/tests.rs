@@ -15,6 +15,6 @@ fn each_round_has_a_bounded_update_and_throttled_vacuum() {
     assert!(!sql.contains("statement_timeout = 0"));
     assert!(sql.contains("update tenant_0.vacuum_showcase"));
     assert!(sql.contains("vacuum (analyze) tenant_0.vacuum_showcase"));
-    assert!(sql.contains("vacuum_cost_delay = '5ms'"));
+    assert!(sql.contains("vacuum_cost_delay = '8ms'"));
     assert!(sql.contains("vacuum_cost_limit = 200"));
 }
