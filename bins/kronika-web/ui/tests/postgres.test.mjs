@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, tabHighlight, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, visibleLockRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, autoFinding, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, tabHighlight, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, visibleLockRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -699,4 +699,37 @@ test("a tab's badge counts only its own mapped findings within a minute of the c
 
   // Tabs with no mapped findings section never claim a count.
   assert.deepEqual(helpers.tabHighlight({ findingGroups: [], findings: [] }, "tables", CURSOR), { attention: false, count: 0 })
+})
+
+test("without an explicit selection, the row nearest the cursor stands in, preferring a known_bad mark over a plain event", () => {
+  const CURSOR = 10_000_000
+  const finding = (logicalName, kind, timestamp, rowOrdinal) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal, segmentId: "a", timestamp, typeId: "0" })
+
+  assert.equal(helpers.autoFinding({ findings: [] }, "pg_locks", CURSOR), null)
+
+  // Outside the window: nothing stands in, even though it's the only finding recorded.
+  const stale = { findings: [finding("pg_locks", "event", CURSOR + 60_000_001, "0")] }
+  assert.equal(helpers.autoFinding(stale, "pg_locks", CURSOR), null)
+
+  // A different section's finding never leaks into this one's auto-pick.
+  const elsewhere = { findings: [finding("pg_log_lock_waits", "known_bad", CURSOR, "0")] }
+  assert.equal(helpers.autoFinding(elsewhere, "pg_locks", CURSOR), null)
+
+  // Two plain events nearby: the nearer one wins.
+  const twoEvents = {
+    findings: [
+      finding("pg_locks", "event", CURSOR - 40_000_000, "far"),
+      finding("pg_locks", "event", CURSOR + 5_000_000, "near"),
+    ],
+  }
+  assert.equal(helpers.autoFinding(twoEvents, "pg_locks", CURSOR).rowOrdinal, "near")
+
+  // A farther known_bad still outranks a nearer plain event.
+  const mixed = {
+    findings: [
+      finding("pg_locks", "event", CURSOR + 1_000_000, "near-event"),
+      finding("pg_locks", "known_bad", CURSOR - 40_000_000, "far-known-bad"),
+    ],
+  }
+  assert.equal(helpers.autoFinding(mixed, "pg_locks", CURSOR).rowOrdinal, "far-known-bad")
 })
