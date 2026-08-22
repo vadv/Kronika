@@ -86,6 +86,8 @@ pub struct ProcessReader<'a> {
     rel: String,
     path: PathBuf,
     content: String,
+    own_uid: u32,
+    own_gid: u32,
 }
 
 impl<'a> ProcessReader<'a> {
@@ -97,6 +99,8 @@ impl<'a> ProcessReader<'a> {
             rel: String::with_capacity(32),
             path: PathBuf::new(),
             content: String::with_capacity(2 * 1024),
+            own_uid: rustix::process::getuid().as_raw(),
+            own_gid: rustix::process::getgid().as_raw(),
         }
     }
 
@@ -208,13 +212,10 @@ impl<'a> ProcessReader<'a> {
     }
 
     fn read_io(&mut self, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
-        match self.read_raw(pid, "io") {
-            Ok(content) => Some(parse_io(content)),
-            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                self.read_io_with_fs_creds(pid, uid, gid)
-            }
-            Err(_) => None,
+        if needs_fs_creds((uid, gid), (self.own_uid, self.own_gid)) {
+            return self.read_io_with_fs_creds(pid, uid, gid);
         }
+        self.read_raw(pid, "io").ok().map(parse_io)
     }
 
     #[cfg(target_os = "linux")]
@@ -246,6 +247,15 @@ impl<'a> ProcessReader<'a> {
     }
 }
 
+/// Whether reading a pid's `io` file needs a filesystem-credential switch
+/// first. A plain read only ever succeeds when our own filesystem
+/// credentials already match the target process, so a same-identity pid can
+/// skip straight to the read instead of paying for a read that is bound to
+/// fail with `EACCES`.
+const fn needs_fs_creds(target: (u32, u32), own: (u32, u32)) -> bool {
+    target.0 != own.0 || target.1 != own.1
+}
+
 #[cfg(target_os = "linux")]
 struct FsCredGuard {
     uid: nix::unistd::Uid,
@@ -272,57 +282,4 @@ impl Drop for FsCredGuard {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stat_line(pid: i32, comm: &str) -> String {
-        format!(
-            "{pid} ({comm}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 -5 16 17 190 204800 12 21 22 23 24 25 26 27 28 29 30 31 32 33 15 2 7 8 9 10 11 12 13 14 15"
-        )
-    }
-
-    #[test]
-    fn process_reader_reuses_scratch_without_leaking_optional_content() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        for pid in [1, 2] {
-            let process = dir.path().join(pid.to_string());
-            std::fs::create_dir(&process).expect("create process");
-            std::fs::write(
-                process.join("stat"),
-                stat_line(pid, &format!("worker-{pid}")),
-            )
-            .expect("write stat");
-            std::fs::write(
-                process.join("status"),
-                "Uid:\t1000\t1001\t1002\t1003\nGid:\t2000\t2001\t2002\t2003\n",
-            )
-            .expect("write status");
-        }
-        std::fs::write(dir.path().join("1/cgroup"), "0::/workers/one\n").expect("write cgroup");
-        std::fs::write(dir.path().join("1/cmdline"), b"worker\0--first\0").expect("write cmdline");
-        std::fs::write(dir.path().join("1/comm"), "first-worker\n").expect("write comm");
-
-        let fs = ProcFs::new(dir.path().to_path_buf());
-        let facts = ProcessFacts {
-            btime_usec: 1_700_000_000_000_000,
-            clock_ticks_per_sec: 100,
-            page_size_bytes: 4096,
-        };
-        let mut reader = ProcessReader::new(&fs);
-        let cgroup_path = reader.cgroup_membership(1).and_then(parse_cgroup_path);
-        let first = reader
-            .read(1, facts, 7, cgroup_path)
-            .expect("first process");
-        let second = reader.read(2, facts, 7, None).expect("second process");
-
-        assert_eq!(first.hot.comm, "first-worker");
-        assert_eq!(first.hot.cmdline.as_deref(), Some("worker --first"));
-        assert_eq!(
-            first.cgroup.as_ref().map(|row| row.cgroup_path.as_str()),
-            Some("/workers/one")
-        );
-        assert_eq!(second.hot.comm, "worker-2");
-        assert_eq!(second.hot.cmdline, None);
-        assert_eq!(second.cgroup, None);
-    }
-}
+mod tests;

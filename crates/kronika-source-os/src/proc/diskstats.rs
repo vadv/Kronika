@@ -53,6 +53,18 @@ pub struct DiskstatsRow {
     pub flush_time_ms: Option<i64>,
 }
 
+/// Major numbers of block devices that store nothing of their own: `1` is a
+/// RAM disk and `7` is a loop device. A host with snap packages carries a loop
+/// device per package, each backed by a squashfs file that already lives on a
+/// real device, so their counters describe the same I/O a second time.
+const PSEUDO_DEVICE_MAJORS: &[i32] = &[1, 7];
+
+/// Whether `/proc/diskstats` rows of this major number describe real storage.
+#[must_use]
+pub fn is_pseudo_device(major: i32) -> bool {
+    PSEUDO_DEVICE_MAJORS.contains(&major)
+}
+
 fn parse_i32(s: &str, pos: usize) -> Result<i32, ParseError> {
     s.parse::<i32>()
         .map_err(|e| ParseError(format!("diskstats field {pos}: {e}")))
@@ -77,6 +89,9 @@ pub fn parse(content: &str) -> Result<Vec<DiskstatsRow>, ParseError> {
     for line in content.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 14 {
+            continue;
+        }
+        if is_pseudo_device(parse_i32(fields[0], 0)?) {
             continue;
         }
 
@@ -179,7 +194,19 @@ impl DiskstatsRow {
 mod tests {
     use kronika_registry::StrId;
 
-    use super::parse;
+    use super::{is_pseudo_device, parse};
+
+    #[test]
+    fn skips_loop_and_ram_devices() {
+        let content = "\
+   7       0 loop0 10 0 80 4 0 0 0 0 0 4 4\n\
+   1       0 ram0 1 0 8 0 0 0 0 0 0 0 0\n\
+   8       0 sda 100 2 3000 40 200 5 6000 70 1 800 900\n";
+        let rows = parse(content).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device, "sda");
+        assert!(is_pseudo_device(7) && is_pseudo_device(1) && !is_pseudo_device(8));
+    }
 
     #[test]
     fn parses_modern_and_legacy_lines() {

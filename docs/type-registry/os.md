@@ -224,6 +224,7 @@ recorded. `✓` means the data is in a section above.
 | Discards and flushes | ✓ | ✓ | — | ✓ `1_108` |
 | In-flight requests | ✓ | ✓ | ✓ | ✓ `1_108` |
 | LVM and MD devices | ✓ | ✓ | — | ✓ `1_108` (`/proc/diskstats` lists them) |
+| Loop and RAM devices | ✓ | ✓ | ✓ | — (majors `7` and `1` store nothing of their own; a snap's squashfs already counts on the device under it) |
 | Mount points, filesystem type, source | — | ✓ | ✓ | ✓ `1_112` |
 | Filesystem total and free bytes | — | ✓ | ✓ | ✓ `1_112` |
 | Filesystem root and total/available inodes | — | — | — | ✓ `1_112` |

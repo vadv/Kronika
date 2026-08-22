@@ -14,6 +14,7 @@ export type SearchSurface =
   | "pg_locks"
   | "pg_stat_activity"
   | "pg_stat_database"
+  | "pg_stat_progress_vacuum"
   | "pg_stat_statements"
   | "pg_stat_user_indexes"
   | "pg_stat_user_tables"
@@ -229,6 +230,10 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
     string("wait_type", ["wait_event_type"]), string("wait_event", ["wait_event"]), string("lock", ["lock_target", "lock_relname", "lock_mode"]),
   ],
   pg_stat_database: [text(["datname"]), string("database", ["datname"], ["db"])],
+  pg_stat_progress_vacuum: [
+    text(["datname", "phase", "relid", "pid"]),
+    id("pid", ["pid"]), string("database", ["datname"], ["db"]), string("phase", ["phase"]),
+  ],
 }
 
 export function searchFields(surface: SearchSurface): readonly SearchField[] {

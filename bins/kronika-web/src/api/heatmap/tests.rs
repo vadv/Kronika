@@ -116,12 +116,13 @@ fn the_totals_band_folds_each_finished_column_in_recording_order() {
     fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(900.0));
     fold.observe(1, &identity("a"), None, HOUR + 55 * MINUTE, Some(1_800.0));
     let ranked = fold.finish(1);
+    // Minute 40 measures the span back to minute 15, whose middle is minute
+    // 27, so its flat 900 lands in the first column and spreads over the 40
+    // observed minutes. Only minute 55 reaches the second column.
     let first = ranked.totals[0].value().unwrap_or_default();
-    // The second column measures from the boundary carry at minute 15, so
-    // its 900 delta spreads over the 40 observed minutes.
     let second = ranked.totals[1].value().unwrap_or_default();
-    assert!((first - 1.0).abs() < 1e-9);
-    assert!((second - 0.375).abs() < 1e-9);
+    assert!((first - 0.375).abs() < 1e-9);
+    assert!((second - 1.0).abs() < 1e-9);
     assert_eq!(ranked.out_of_order, 0);
 }
 
@@ -159,9 +160,10 @@ fn entities_with_a_null_ranking_value_sort_after_real_totals() {
 }
 
 #[test]
-fn a_sparse_cadence_fills_every_later_column_through_the_boundary_carry() {
-    // One sample per column, as tables and indexes record: the first column
-    // has no baseline, every later one measures from the carried boundary.
+fn a_sparse_cadence_draws_each_span_in_the_column_holding_its_middle() {
+    // One sample per column, as tables and indexes record. Twelve samples
+    // measure eleven spans, and each is drawn where its middle falls: the
+    // first column reads, the last has nothing recorded across it yet.
     let mut fold = Fold::new(HOUR, end(), 12, true);
     for column in 0..12_i64 {
         #[expect(clippy::cast_precision_loss, reason = "twelve small columns")]
@@ -174,10 +176,38 @@ fn a_sparse_cadence_fills_every_later_column_through_the_boundary_carry() {
         );
     }
     let ranked = fold.finish(1);
-    assert_eq!(ranked.totals[0].value(), None);
-    for column in 1..12 {
+    for column in 0..11 {
         let cell = ranked.totals[column].value().unwrap_or_default();
         assert!((cell - 2.0).abs() < 1e-9, "column {column}: {cell}");
+    }
+    assert_eq!(ranked.totals[11].value(), None);
+}
+
+#[test]
+fn a_cadence_as_coarse_as_a_column_survives_collection_drift() {
+    // Tables are recorded every five minutes and the ledger draws twelve
+    // five-minute columns. Collection drifts either side of every boundary,
+    // which pairs two samples in one column and leaves the next one empty as
+    // long as a sample is drawn where it was taken. Drawn where its span's
+    // middle falls, each reading lands in its own column.
+    let seconds = [
+        0, 301, 553, 959, 1_142, 1_558, 1_743, 2_144, 2_351, 2_751, 2_952, 3_330, 3_540,
+    ];
+    let mut fold = Fold::new(HOUR, end(), 12, true);
+    for at in seconds {
+        #[expect(clippy::cast_precision_loss, reason = "an hour of whole seconds")]
+        fold.observe(
+            1,
+            &identity("a"),
+            None,
+            HOUR + at * 1_000_000,
+            Some(at as f64),
+        );
+    }
+    let ranked = fold.finish(1);
+    for column in 0..12 {
+        let cell = ranked.totals[column].value().unwrap_or_default();
+        assert!((cell - 1.0).abs() < 1e-9, "column {column}: {cell}");
     }
 }
 
@@ -246,11 +276,12 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     let first = filled.rows[0][0].value().unwrap_or_default();
     assert!(first > 0.0);
     assert_eq!(grouped.others_total, Some(240.0));
-    // cron's first column has one sample and no baseline; its delta lands in
-    // the second column through the carry.
-    assert_eq!(filled.others[0].value(), None);
-    let others_second = filled.others[1].value().unwrap_or_default();
-    assert!(others_second > 0.0);
+    // cron was read twice, at the start of the hour and at minute 40; that one
+    // span has its middle at minute 20, so it is drawn in the first column and
+    // nothing reaches the second.
+    let others_first = filled.others[0].value().unwrap_or_default();
+    assert!(others_first > 0.0);
+    assert_eq!(filled.others[1].value(), None);
 }
 
 #[test]

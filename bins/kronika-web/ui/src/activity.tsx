@@ -100,6 +100,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   const [scale, setScale] = useState<ScaleMode>("global")
   const [top, setTop] = useState<number>(DEFAULT_TOP)
   const [maximized, setMaximized] = useState(false)
+  const [chosen, setChosen] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
   const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
@@ -111,6 +112,24 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   useEffect(() => {
     if (state.view !== null) seen?.(state.view)
   }, [seen, state.view])
+  useEffect(() => setChosen(null), [hour, section])
+
+  // A drill filters the table below the ledger, which a full-screen ledger
+  // covers; it steps back so the filtered rows are the next thing seen.
+  // A row that recorded nothing at the cursor would filter to an empty
+  // table, which reads as a wrong filter rather than a wrong moment; the
+  // cursor then moves to the row's own peak — the same instant clicking
+  // that cell sets. A row alive at the cursor leaves the cursor alone.
+  const choose = drill === undefined ? undefined : (row: HeatmapViewRow) => {
+    setChosen(rowKey(row))
+    setMaximized(false)
+    const cursorColumn = cursorColumnOf(cursor, hour, columns)
+    if (cursorColumn === null || (row.cells[cursorColumn] ?? null) === null) {
+      const peak = rowPeakColumn(row.cells)
+      if (peak !== null) onCursor(intervalInstant(hour, peak, columns))
+    }
+    drill(row)
+  }
 
   useEffect(() => {
     if (!maximized) return
@@ -167,7 +186,8 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     cuts={cuts}
     loadedCut={state.viewCut ?? cut}
     loading={state.loading}
-    drill={drill}
+    chosen={chosen}
+    drill={choose}
     hour={hour}
     keys={keys}
     label={label}
@@ -191,6 +211,35 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}-placeholder`} />
     {createPortal(<div aria-label={t(`${keys.title}.title`)} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
   </>
+}
+
+// One ledger row across renders: its layout and recorded identity.
+function rowKey(row: HeatmapViewRow): string {
+  return `${row.typeId}:${row.identity.join(":")}`
+}
+
+// The last moment of a column: what clicking that cell on the strip sets.
+export function intervalInstant(hour: number, column: number, columns: number): number {
+  return hour + Math.floor(((column + 1) * HOUR_MICROS) / columns) - 1
+}
+
+// The column the cursor stands in, or null when it is outside the hour.
+export function cursorColumnOf(cursor: number, hour: number, columns: number): number | null {
+  return cursor >= hour && cursor < hour + HOUR_MICROS
+    ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
+    : null
+}
+
+// The row's busiest recorded interval: the first strictly positive maximum.
+// An all-null or all-zero row has no peak and offers nowhere to go.
+export function rowPeakColumn(cells: readonly (number | null)[]): number | null {
+  let peak: number | null = null
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index]
+    if (cell === null || cell === undefined || cell <= 0) continue
+    if (peak === null || cell > (cells[peak] ?? 0)) peak = index
+  }
+  return peak
 }
 
 const STATEMENT_KEYS: LedgerKeys = { title: "activity", bands: "activity" }
@@ -469,13 +518,14 @@ function useStatementTexts(
   return texts
 }
 
-function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
+function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
   readonly columns: number
   readonly cursor: number
   readonly cut: ActivityCut
   readonly cuts: readonly ActivityCut[]
   readonly loadedCut: ActivityCut
   readonly loading: boolean
+  readonly chosen: string | null
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
   readonly hour: number
   readonly keys: LedgerKeys
@@ -497,9 +547,7 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
 }) {
   const { kind, scale: valueScale } = cutScale(loadedCut, scales)
   const suffix = view.cumulative ? t("unit.per_second") : ""
-  const cursorColumn = cursor >= hour && cursor < hour + HOUR_MICROS
-    ? Math.min(columns - 1, Math.floor(((cursor - hour) * columns) / HOUR_MICROS))
-    : null
+  const cursorColumn = cursorColumnOf(cursor, hour, columns)
   const globalMax = heatmapViewMax(view)
   const totalsMax = view.totals.cells.reduce<number>((current, cell) => cell !== null && cell > current ? cell : current, 0)
   const rowMax = (cells: readonly (number | null)[]) => scale === "row"
@@ -540,14 +588,15 @@ function ActivityPanel({ columns, cursor, cut, cuts, drill, hour, keys, label, l
       <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.totals.help`} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
-        return <ActivityRow cells={row.cells} cursor={cursor} hour={hour} key={`${row.typeId}:${row.identity.join(":")}`} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
+        return <ActivityRow active={chosen === rowKey(row)} cells={row.cells} cursor={cursor} hour={hour} key={rowKey(row)} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
       {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.othersCount) })} total={total(view.others.total)} />}
     </div>}
   </section>
 }
 
-function ActivityRow({ cells, cursor, help, hour, max, muted = false, onClick, onCursor, prefix = null, reading, testId, text, total }: {
+function ActivityRow({ active = false, cells, cursor, help, hour, max, muted = false, onClick, onCursor, prefix = null, reading, testId, text, total }: {
+  readonly active?: boolean | undefined
   readonly cells: readonly (number | null)[]
   readonly cursor: number
   readonly help?: React.ReactNode
@@ -562,7 +611,7 @@ function ActivityRow({ cells, cursor, help, hour, max, muted = false, onClick, o
   readonly text: string
   readonly total: string
 }) {
-  return <div className={`activity-row${onClick === undefined ? "" : " activity-row-link"}`} data-testid={testId} onClick={onClick}>
+  return <div aria-pressed={onClick === undefined ? undefined : active} className={`activity-row${onClick === undefined ? "" : " activity-row-link"}`} data-active={active || undefined} data-testid={testId} onClick={onClick} role={onClick === undefined ? undefined : "button"}>
     <span className={`flex min-w-0 items-baseline gap-[6px] overflow-hidden px-2 ${muted ? "font-sans text-xs text-fg4" : "font-mono text-xs text-fg2"}`} title={text}>
       {prefix !== null && <span className="flex-none font-sans text-fg4">{prefix}</span>}
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">{text}</span>
@@ -588,7 +637,7 @@ function ActivityStrip({ cells, cursor, hour, max, onCursor }: {
     const bounds = event.currentTarget.getBoundingClientRect()
     if (bounds.width <= 0) return
     const column = Math.max(0, Math.min(columns - 1, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
-    onCursor(hour + Math.floor(((column + 1) * HOUR_MICROS) / columns) - 1)
+    onCursor(intervalInstant(hour, column, columns))
   }
   return <svg className="activity-strip" onClick={pick} preserveAspectRatio="none" viewBox={`0 0 ${columns} 8`}>
     {cells.map((cell, index) => cell === null

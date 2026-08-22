@@ -30,6 +30,7 @@ import {
 } from "./api"
 import type { TableOrder } from "./entity-table"
 import { pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type InspectorPanel, type PgLens, type Source } from "./address"
+import { ActivityFacts } from "./detail-activity"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
@@ -37,11 +38,11 @@ import { contextualRows, entityContext, findingRoute, type EntityContext } from 
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
-import { HelpPanel, type Translate } from "./help"
+import { HelpPanel, type Translate, LabelHelp } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
 import { HourPicker } from "./hour-picker"
-import { Inspector, InspectorPortalProvider } from "./inspector"
+import { Inspector, InspectorPortalProvider, InspectorRelatedPortal } from "./inspector"
 import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
 import { Login } from "./login"
@@ -103,6 +104,7 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:vacuum": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlVacuum.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   events: TIMELINE_REQUESTS,
@@ -668,8 +670,11 @@ function App({ locale, onLocale, t }: {
     if (visibleSource === "postgresql" && pgSection === "activity") {
       return mergeObservationTimestamps(sharedNavigationTimestamps, data.activities)
     }
+    if (visibleSource === "postgresql" && pgSection === "vacuum") {
+      return mergeObservationTimestamps(sharedNavigationTimestamps, data.sections.pg_stat_progress_vacuum ?? [])
+    }
     return sharedNavigationTimestamps
-  }, [data.activities, data.processes, hour, pgSection, processHistory.value, processSummary.history, processSummary.hour, sharedNavigationTimestamps, visibleSource])
+  }, [data.activities, data.processes, data.sections.pg_stat_progress_vacuum, hour, pgSection, processHistory.value, processSummary.history, processSummary.hour, sharedNavigationTimestamps, visibleSource])
   const activeSearchSurface = searchSurfaceForLocation(source, pgSection)
   const visibleSearchRequest = searchRequestForSurface(searchRequest, activeSearchSurface)
   const applyFind = useCallback((next: string) => {
@@ -770,6 +775,10 @@ function App({ locale, onLocale, t }: {
     setRelationFilters((current) => relationFiltersForSection(current, next))
   }, [navigateSearchSurface, pgSection])
   const openRelated = useCallback((target: RelatedNavigation) => {
+    // A drill names a new subject. The context pinned by an earlier finding
+    // would otherwise be ANDed into the request beside the drilled filter,
+    // and the two together select nothing.
+    clearEntityContext()
     navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
     setSource("postgresql")
     setPgSection(target.section)
@@ -778,7 +787,7 @@ function App({ locale, onLocale, t }: {
     setSelectedKey(null)
     setInspectorPanel(null)
     setOrder(null)
-  }, [navigateSearchSurface])
+  }, [clearEntityContext, navigateSearchSurface])
   const chooseRelationLens = useCallback((next: RelationLens) => {
     if (next !== relationLens) setOrder(null)
     setRelationLens(next)
@@ -852,7 +861,10 @@ function App({ locale, onLocale, t }: {
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
-  const inspectorOpen = inspectorPanel === "chart" || inspectorPanel === "detail" && detailAvailable
+  // Chart stands alone; Detail and every relation panel need a selection to
+  // describe, and a panel outside this set would close the Inspector on its
+  // own tab click.
+  const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
     // Closing destroys the detail whichever tab is active; the registered
     // dismiss keeps the owning view's selection in step.
@@ -877,7 +889,7 @@ function App({ locale, onLocale, t }: {
   }, [])
   const timelinePrimary = visibleSource === "processes"
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
-    : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" ? "pg_waiting" : "health"
+    : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" || pgSection === "vacuum" ? "pg_waiting" : "health"
       : "health"
   return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}`}>
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
@@ -948,7 +960,12 @@ function App({ locale, onLocale, t }: {
       chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />}
       detail={selectedProcess === null
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
-        : <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} onRelated={openRelated} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
+        : <>
+          <DetailDock activity={joinedActivity.row} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />
+          {joinedActivity.row !== null && <InspectorRelatedPortal id="pg_stat_activity" identity={`process:${selectedPid ?? ""}`} label={t("pg.section.activity")}>
+            <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={openRelated} t={t} />
+          </InspectorRelatedPortal>}
+        </>}
       detailAvailable={detailAvailable}
       entityChart={<div className="inspector-chart-slot" ref={setInspectorChartRoot} />}
       entityChartAvailable={entityChartAvailable}
@@ -980,7 +997,19 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   const age = humanAge((now - at) / 1_000_000, locale)
   // Its own lane, so the freshness never reads as part of the cursor time. The
   // word steps aside on narrow bars; the title keeps it.
-  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-sans font-medium text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
+  // The cursor time is the reading that matters; how stale the page is answers
+  // a rarer question, so it moves under the mark beside it instead of taking a
+  // lane of its own on the bar.
+  return <span className="flex items-baseline text-xs text-fg4" data-testid="updated-time">
+    <LabelHelp
+      helpKey="refresh.updated"
+      helpText={`${t("refresh.updated")} ${t("refresh.ago", { age })} · ${clock}`}
+      iconOnly
+      labelKey="refresh.updated"
+      t={t}
+      testId="updated-help"
+    />
+  </span>
 }
 
 // The previous completed initial load is a fact from this browser, shown as

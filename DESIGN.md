@@ -522,7 +522,41 @@ composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
 virtualized lenses; PostgreSQL contains Overview,
-Activity, Statements, Locks and Databases whenever their sections are present.
+Activity, Vacuum, Statements, Locks and Databases whenever their sections are
+present.
+
+Vacuum shows the recorded hour of `pg_stat_progress_vacuum` as episode rows.
+Rows group by the recorded identity — layout, pid, datid, relid — and within
+one identity a row continues the current episode when it is the next recorded
+sample, no further from the previous one than the recorded sampling interval
+from instance metadata allows, and none of `index_vacuum_count`,
+`heap_blks_scanned`, `heap_blks_vacuumed` is lower than before. Any other row
+starts a new episode; the break is only visible as two rows. Risk is fixed by
+the phase name — `truncating heap` is dangerous, the index phases and
+`vacuuming heap` are heavy — never computed from observed load. A row whose
+episode was recorded at the pass the cursor stands on reads `At sample`;
+every other row names the moment it was last recorded. `No movement` states
+that a fixed number of consecutive samples kept the phase's designated
+counter unchanged; layouts without index progress never claim it for the
+index phases. PG17 and PG18 columns appear only when the hour recorded such
+a layout, and a layout-absent field reads as N/A, never as 0. The recorded
+row carries its own `schemaname`/`relname`, resolved from `pg_class` in the
+same collector query; the fallback identity is `relid`, a `pg_class` OID
+that is never reused in any timeframe the product cares about, and it is
+shown only inside the one relation string it identifies, never as a bare
+number in the detail block.
+
+A selected row's Process panel joins straight on `pid` to the recorded
+`os_process` history for that process, no episode-style identity caution: an
+autovacuum worker gets a fresh PID every run, and a manual `VACUUM`'s backend
+PID is exactly the PID `pg_stat_activity` already records for that session.
+The panel takes the two `os_process` samples nearest the episode's own first
+and last recorded moment and reports their delta — CPU time, bytes read and
+written, block-I/O wait, major page faults — as what the process did in that
+span, next to a comparison against what PG itself reports scanning. This is a
+hint about cost, not proof the vacuum alone produced it: a manual `VACUUM`'s
+backend may have done other work in the same window, and the panel says so
+rather than pretending otherwise.
 Events is the grouped log console described below; the same findings stay
 drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
@@ -540,7 +574,11 @@ cursor. The pinned Total row includes all entities; Other includes entities
 outside the displayed ranking. Global color scaling is the default; per-row
 scaling is optional. Null cells are blank and zero uses the lightest fill. A
 cell moves the cursor, a row filters the table, and the full-screen view allows
-a larger rank limit. Query text is loaded separately for ranked statements
+a larger rank limit. A drilled row with no reading in the cursor's cell also
+moves the cursor to the row's own busiest interval — the same instant clicking
+that cell sets — because a correct filter at a silent moment reads as a wrong
+filter; a row with a reading at the cursor leaves the cursor where the reader
+put it. Query text is loaded separately for ranked statements
 when the current table page does not contain it. Tables and indexes use twelve
 cells for their five-minute cadence. Gauge metrics rank by the window maximum
 and display values rather than rates.
@@ -1001,14 +1039,23 @@ limit.
 
 ### Heatmap values
 
-Every heatmap column carries its exact interval boundaries. For a counter, a
-cell is the last value in the interval minus the identity's latest value at or
-before the interval start within the requested window, divided by the elapsed
-time between those observations. One in-interval sample plus a preceding
-baseline is enough, so a cadence equal to the column width fills later columns.
-Missing input, no baseline, a non-positive observed duration or a negative
-delta produces `null`. A zero delta produces `0`. For a gauge, the cell is the
-last sample in the interval, or `null` when no usable sample exists.
+Every heatmap column carries its exact interval boundaries. A sample is drawn
+in the column holding the middle of the span it measures, which runs from the
+identity's previous sample within the requested window to this one, not in the
+column holding the moment it was taken. A section read once per five minutes
+describes five minutes around itself, and drawing it there is what keeps a
+cadence as coarse as a column readable: collection drifts across a boundary,
+and attributing a reading to the moment of the read would pair two readings in
+one column and leave the next one empty.
+
+For a counter, a cell is the last value attributed to the column minus the
+first, divided by the elapsed time between those two observations; a column
+whose span starts on the previous column's last sample keeps that sample as the
+baseline. Missing input, no baseline, a non-positive observed duration or a
+negative delta produces `null`. A zero delta produces `0`. For a gauge, the
+cell is the last sample attributed to the column, or `null` when no usable
+sample exists. An hour holds one fewer span than it holds samples, so an edge
+column reads only when a recorded span reaches into it.
 
 Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.

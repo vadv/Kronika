@@ -2,7 +2,7 @@ import { Maximize2, Minimize2 } from "lucide-react"
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
-import type { InspectorPanel } from "./address"
+import { INSPECTOR_PANELS, type InspectorPanel } from "./address"
 import type { Translate } from "./help"
 
 const MIN_WIDTH = 320
@@ -10,11 +10,23 @@ const MAX_WIDTH = 520
 const DEFAULT_WIDTH = 360
 const WIDTH_KEY = "kronika.inspector-width"
 
+/// A panel beyond Detail and Chart, named after the recorded section it shows.
+export type RelationPanel = Exclude<InspectorPanel, "chart" | "detail" | null>
+
+interface RelationTab {
+  readonly id: RelationPanel
+  readonly label: string
+}
+
 interface PortalController {
   readonly target: HTMLElement | null
   readonly chartTarget: HTMLElement | null
   readonly register: (identity: string, dismiss: () => void, title: string, autoOpen: boolean) => () => void
   readonly registerChart: (identity: string) => () => void
+  readonly registerRelated: (identity: string, id: RelationPanel, label: string) => () => void
+  readonly attachRelated: (id: RelationPanel, node: HTMLElement) => () => void
+  readonly relatedTabs: readonly RelationTab[]
+  readonly relatedTargets: ReadonlyMap<string, HTMLElement>
 }
 
 const InspectorPortalContext = createContext<PortalController | null>(null)
@@ -53,7 +65,34 @@ export function InspectorPortalProvider({ chartTarget, children, dismissRef, onC
       callbacks.current.onChartAvailable(false)
     }
   }, [])
-  return <InspectorPortalContext.Provider value={{ chartTarget, register, registerChart, target }}>{children}</InspectorPortalContext.Provider>
+  // Relation tabs are owned by the view that has the rows, not by the shell.
+  // A tab is kept in the closed panel order so the strip does not reorder as
+  // owners mount, and an owner that remounts replaces its own tab in place.
+  const [relatedTabs, setRelatedTabs] = useState<readonly RelationTab[]>([])
+  const [relatedTargets, setRelatedTargets] = useState<ReadonlyMap<string, HTMLElement>>(new Map())
+  const relatedOwners = useRef(new Map<string, string>())
+  const registerRelated = useMemo(() => (identity: string, id: RelationPanel, label: string) => {
+    relatedOwners.current.set(id, identity)
+    setRelatedTabs((current) => panelOrder([...current.filter((tab) => tab.id !== id), { id, label }]))
+    return () => {
+      if (relatedOwners.current.get(id) !== identity) return
+      relatedOwners.current.delete(id)
+      setRelatedTabs((current) => current.filter((tab) => tab.id !== id))
+    }
+  }, [])
+  const attachRelated = useMemo(() => (id: RelationPanel, node: HTMLElement) => {
+    setRelatedTargets((current) => new Map(current).set(id, node))
+    return () => setRelatedTargets((current) => {
+      const next = new Map(current)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  return <InspectorPortalContext.Provider value={{ attachRelated, chartTarget, register, registerChart, registerRelated, relatedTabs, relatedTargets, target }}>{children}</InspectorPortalContext.Provider>
+}
+
+function panelOrder(tabs: readonly RelationTab[]): readonly RelationTab[] {
+  return [...tabs].sort((left, right) => INSPECTOR_PANELS.indexOf(left.id) - INSPECTOR_PANELS.indexOf(right.id))
 }
 
 export function InspectorPortal({ autoOpen = true, children, identity, onClose, title }: {
@@ -81,6 +120,34 @@ export function InspectorChartPortal({ children, identity }: {
   const controller = useContext(InspectorPortalContext)
   useLayoutEffect(() => controller?.registerChart(identity), [controller?.registerChart, identity])
   return controller === null || controller.chartTarget === null ? null : createPortal(children, controller.chartTarget)
+}
+
+// A relation panel: rows of another recorded section carrying the selection's
+// identity. Registration is unconditional so the strip knows the tab exists
+// before it is opened; the children render once the open tab provides a slot.
+export function InspectorRelatedPortal({ children, id, identity, label }: {
+  readonly children: ReactNode
+  readonly id: RelationPanel
+  readonly identity: string
+  readonly label: string
+}) {
+  const controller = useContext(InspectorPortalContext)
+  useLayoutEffect(
+    () => controller?.registerRelated(identity, id, label),
+    [controller?.registerRelated, id, identity, label],
+  )
+  const target = controller?.relatedTargets.get(id) ?? null
+  return target === null ? null : createPortal(children, target)
+}
+
+function RelatedSlot({ id }: { readonly id: RelationPanel }) {
+  const controller = useContext(InspectorPortalContext)
+  const [node, setNode] = useState<HTMLElement | null>(null)
+  useLayoutEffect(
+    () => node === null ? undefined : controller?.attachRelated(id, node),
+    [controller?.attachRelated, id, node],
+  )
+  return <div className="inspector-related-slot" ref={setNode} />
 }
 
 export function loadInspectorWidth(storage: Pick<Storage, "getItem">): number {
@@ -119,6 +186,7 @@ export function Inspector({
   readonly title: string
   readonly t: Translate
 }) {
+  const related = useContext(InspectorPortalContext)?.relatedTabs ?? []
   const [width, setWidth] = useState(() => loadInspectorWidth(localStorage))
   const [maximized, setMaximized] = useState(false)
   const root = useRef<HTMLElement>(null)
@@ -200,6 +268,7 @@ export function Inspector({
         <div className="inspector-tabs" role="tablist">
           <button aria-selected={panel === "detail"} disabled={!detailAvailable} onClick={() => onPanel("detail")} role="tab" type="button">{t("inspector.detail")}</button>
           <button aria-selected={panel === "chart"} onClick={() => onPanel("chart")} role="tab" type="button">{t("inspector.chart")}</button>
+          {related.map((tab) => <button aria-selected={panel === tab.id} data-testid={`inspector-tab-${tab.id}`} key={tab.id} onClick={() => onPanel(tab.id)} role="tab" type="button">{tab.label}</button>)}
         </div>
         <strong title={title}>{title}</strong>
         <div className="flex flex-none items-center gap-1">
@@ -211,7 +280,8 @@ export function Inspector({
         {/* The detail stays mounted while the Chart tab is open: the selected
             entity's history section portals from it into the chart slot. */}
         {detailAvailable && <div className={panel === "detail" ? "contents" : "hidden"}>{detail}</div>}
-        {(panel === "chart" || !detailAvailable) && (entityChartAvailable && detailAvailable ? entityChart : chart)}
+        {(panel === "chart" || (!detailAvailable && related.every((tab) => tab.id !== panel))) && (entityChartAvailable && detailAvailable ? entityChart : chart)}
+        {related.map((tab) => panel === tab.id ? <RelatedSlot id={tab.id} key={tab.id} /> : null)}
       </div>
     </aside>
   </>

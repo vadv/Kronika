@@ -57,6 +57,41 @@ const K8S_INFRA_MOUNTS: &[&str] = &[
     "/var/run/secrets/",
 ];
 
+/// Kernel interfaces mounted as filesystems. They store nothing, report no
+/// capacity, and a host carries dozens of them, which buries the filesystems
+/// that hold data — and the device topology built from the same rows.
+const PSEUDO_FILESYSTEMS: &[&str] = &[
+    "autofs",
+    "binfmt_misc",
+    "bpf",
+    "cgroup",
+    "cgroup2",
+    "configfs",
+    "debugfs",
+    "devpts",
+    "devtmpfs",
+    "efivarfs",
+    "fusectl",
+    "hugetlbfs",
+    "mqueue",
+    "nsfs",
+    "proc",
+    "pstore",
+    "ramfs",
+    "rpc_pipefs",
+    "securityfs",
+    "selinuxfs",
+    "sysfs",
+    "tracefs",
+];
+
+/// Whether a filesystem of this type stores data. `tmpfs` and `overlay` do —
+/// a full `/dev/shm` or `/run` is a real failure — so they are not listed.
+#[must_use]
+pub fn is_pseudo_filesystem(fstype: &str) -> bool {
+    PSEUDO_FILESYSTEMS.contains(&fstype)
+}
+
 /// Returns `true` if `path` is a Kubernetes infrastructure bind-mount: an exact
 /// match or a prefix match against the known infrastructure paths.
 #[must_use]

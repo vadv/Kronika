@@ -612,3 +612,48 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })
+
+test("CPU usage is the hour's own reading: no section rows, no request, and the CPU row opens on it", () => {
+  const busy = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_busy")
+  assert.equal(busy.group, "cpu")
+  assert.equal(busy.unit, "%")
+  // The reading the resource ledger leads with. It arrives with the hour, so
+  // it reads even when the browser holds no os_cpu rows for the window — the
+  // case that used to leave the CPU chart offering load averages only.
+  // Its chart still asks for the per-CPU history: the usage line carries a
+  // share breakdown, fetched with the same inputs the share metrics use.
+  const busyRequest = helpers.metricHistoryRequest(busy)
+  assert.equal(busyRequest.section, "os_cpu")
+  for (const field of ["cpu_id", "scope", "user", "system", "idle", "iowait"]) assert.ok(busyRequest.fields.includes(field), field)
+  const lanes = { lanePoints: [
+    { lane: "cpu_busy", segmentId: "a", timestamp: 100, value: 12.5 },
+    { lane: "cpu_stall", segmentId: "a", timestamp: 100, value: 3 },
+    { lane: "cpu_busy", segmentId: "a", timestamp: 200, value: null },
+  ], points: [], sections: {} }
+  assert.deepEqual(helpers.metricPoints(lanes, busy), [
+    { segmentId: "a", timestamp: 100, value: 12.5 },
+    { segmentId: "a", timestamp: 200, value: null },
+  ])
+  // It leads the CPU group, and the breakdown still collapses into one chip.
+  const ids = helpers.SYSTEM_METRICS.filter(({ group }) => group === "cpu").map(({ id }) => id)
+  assert.equal(ids[0], "cpu_busy")
+  const chips = helpers.dockGroupMetrics(helpers.SYSTEM_METRICS.filter(({ group }) => group === "cpu"), "cpu_busy").chips.map(({ id }) => id)
+  assert.equal(chips[0], "cpu_busy")
+  assert.ok(chips.includes("cpu_used_cores"))
+  for (const member of ["cpu_user", "cpu_system", "cpu_idle", "cpu_iowait"]) assert.equal(chips.includes(member), false)
+})
+
+test("the usage chart draws the recorded share components under its own line", () => {
+  // Two aggregate readings 10 s apart: 25% user, 12.5% system of a 2-CPU host.
+  const tick = (ordinal, ts, user, system) => ({ segmentId: "a", typeId: "1102001", ordinal: String(ordinal), timestamp: ts, values: { cpu_id: -1, scope: 0, user, nice: 0, system, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0 } })
+  const core = (ordinal, ts, id) => ({ segmentId: "a", typeId: "1102001", ordinal: String(ordinal), timestamp: ts, values: { cpu_id: id, scope: 0, user: 1, nice: 0, system: 1, idle: 1, iowait: 0, irq: 0, softirq: 0, steal: 0 } })
+  const rows = [
+    tick(0, 0, 1000, 1000), core(1, 0, 0), core(2, 0, 1),
+    tick(3, 10_000_000, 1500, 1250), core(4, 10_000_000, 0), core(5, 10_000_000, 1),
+  ]
+  const series = helpers.resourceBreakdownSeries("cpu_busy", rows, false, "en", (key) => key)
+  assert.deepEqual(series.map(({ id }) => id), ["cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"])
+  for (const one of series) assert.equal(one.scale, "percent")
+  // Colours step past the usage line the chart prepends, so no pair collides.
+  assert.equal(new Set(series.map(({ color }) => color)).size, series.length)
+})

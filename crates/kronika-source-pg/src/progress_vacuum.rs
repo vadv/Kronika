@@ -1,9 +1,16 @@
-//! `pg_stat_progress_vacuum` collection for types `1_012_001` through
-//! `1_012_003`.
+//! `pg_stat_progress_vacuum` collection for types `1_012_004` through
+//! `1_012_006`.
 //!
 //! One row per backend running `VACUUM`. An empty view produces no section.
 //! Query shape follows the server major; the caller interns `datname` and
-//! `phase`.
+//! `phase`. `relid` is a `pg_class` OID, effectively never reused, so it
+//! stays the row's identity across an hour whether or not the name resolves.
+//! `schemaname`/`relname` are joined from `pg_class`/`pg_namespace` in the
+//! same query: the join finds a row only when the vacuumed relation belongs
+//! to the database this connection is on, since a session sees only its own
+//! database's catalog. `pg_class` OIDs are assigned from one cluster-wide
+//! counter, so a match is never a different relation's name; an unresolved
+//! name is left `NULL`, not guessed.
 
 use kronika_registry::pg_stat_progress_vacuum::{
     PgStatProgressVacuumV1, PgStatProgressVacuumV2, PgStatProgressVacuumV3,
@@ -11,17 +18,17 @@ use kronika_registry::pg_stat_progress_vacuum::{
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
+use crate::{Session, intern_opt as opt};
 
 /// The exact `pg_stat_progress_vacuum` column set for one server major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressVacuumVersion {
-    /// PG10-16: tuple-count dead-tuple columns, type `1_012_001`.
+    /// PG10-16: tuple-count dead-tuple columns, type `1_012_004`.
     V1,
-    /// PG17: byte-based TID store and index-progress counters, type `1_012_002`.
+    /// PG17: byte-based TID store and index-progress counters, type `1_012_005`.
     V2,
-    /// PG18+: PG17 columns plus `delay_time`, type `1_012_003`.
+    /// PG18+: PG17 columns plus `delay_time`, type `1_012_006`.
     V3,
 }
 
@@ -47,32 +54,41 @@ pub const fn progress_vacuum_query(version: ProgressVacuumVersion) -> &'static s
     match version {
         ProgressVacuumVersion::V1 => marked!(
             "SELECT v.pid, v.datid, v.datname, v.relid, \
+             n.nspname::text AS schemaname, c.relname::text AS relname, \
              COALESCE(a.backend_type = 'autovacuum worker', false) AS is_autovacuum, v.phase, \
              v.heap_blks_total, v.heap_blks_scanned, v.heap_blks_vacuumed, \
              v.index_vacuum_count, v.max_dead_tuples, v.num_dead_tuples, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_stat_progress_vacuum v \
-             LEFT JOIN pg_stat_activity a ON a.pid = v.pid"
+             LEFT JOIN pg_stat_activity a ON a.pid = v.pid \
+             LEFT JOIN pg_class c ON c.oid = v.relid \
+             LEFT JOIN pg_namespace n ON n.oid = c.relnamespace"
         ),
         ProgressVacuumVersion::V2 => marked!(
             "SELECT v.pid, v.datid, v.datname, v.relid, \
+             n.nspname::text AS schemaname, c.relname::text AS relname, \
              COALESCE(a.backend_type = 'autovacuum worker', false) AS is_autovacuum, v.phase, \
              v.heap_blks_total, v.heap_blks_scanned, v.heap_blks_vacuumed, \
              v.index_vacuum_count, v.max_dead_tuple_bytes, v.dead_tuple_bytes, \
              v.num_dead_item_ids, v.indexes_total, v.indexes_processed, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_stat_progress_vacuum v \
-             LEFT JOIN pg_stat_activity a ON a.pid = v.pid"
+             LEFT JOIN pg_stat_activity a ON a.pid = v.pid \
+             LEFT JOIN pg_class c ON c.oid = v.relid \
+             LEFT JOIN pg_namespace n ON n.oid = c.relnamespace"
         ),
         ProgressVacuumVersion::V3 => marked!(
             "SELECT v.pid, v.datid, v.datname, v.relid, \
+             n.nspname::text AS schemaname, c.relname::text AS relname, \
              COALESCE(a.backend_type = 'autovacuum worker', false) AS is_autovacuum, v.phase, \
              v.heap_blks_total, v.heap_blks_scanned, v.heap_blks_vacuumed, \
              v.index_vacuum_count, v.max_dead_tuple_bytes, v.dead_tuple_bytes, \
              v.num_dead_item_ids, v.indexes_total, v.indexes_processed, v.delay_time, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_stat_progress_vacuum v \
-             LEFT JOIN pg_stat_activity a ON a.pid = v.pid"
+             LEFT JOIN pg_stat_activity a ON a.pid = v.pid \
+             LEFT JOIN pg_class c ON c.oid = v.relid \
+             LEFT JOIN pg_namespace n ON n.oid = c.relnamespace"
         ),
     }
 }
@@ -101,6 +117,10 @@ pub struct ProgressVacuumV1Row {
     pub datname: String,
     /// Table OID.
     pub relid: u32,
+    /// Schema of the table, when `pg_class` resolves it from this connection.
+    pub schemaname: Option<String>,
+    /// Table name, when `pg_class` resolves it from this connection.
+    pub relname: Option<String>,
     /// Whether the backend is an autovacuum worker.
     pub is_autovacuum: bool,
     /// Vacuum phase.
@@ -132,6 +152,10 @@ pub struct ProgressVacuumV2Row {
     pub datname: String,
     /// Table OID.
     pub relid: u32,
+    /// Schema of the table, when `pg_class` resolves it from this connection.
+    pub schemaname: Option<String>,
+    /// Table name, when `pg_class` resolves it from this connection.
+    pub relname: Option<String>,
     /// Whether the backend is an autovacuum worker.
     pub is_autovacuum: bool,
     /// Vacuum phase.
@@ -169,6 +193,10 @@ pub struct ProgressVacuumV3Row {
     pub datname: String,
     /// Table OID.
     pub relid: u32,
+    /// Schema of the table, when `pg_class` resolves it from this connection.
+    pub schemaname: Option<String>,
+    /// Table name, when `pg_class` resolves it from this connection.
+    pub relname: Option<String>,
     /// Whether the backend is an autovacuum worker.
     pub is_autovacuum: bool,
     /// Vacuum phase.
@@ -195,7 +223,8 @@ pub struct ProgressVacuumV3Row {
     pub delay_time: f64,
 }
 
-/// Build a type `1_012_001` row, interning `datname` and `phase`.
+/// Build a type `1_012_004` row, interning `datname`, `phase` and the
+/// resolved relation name.
 ///
 /// # Errors
 /// Returns the interner's error if a label cannot be interned.
@@ -209,6 +238,8 @@ pub fn to_v1<E>(
         datid: row.datid,
         datname: intern(row.datname.as_bytes())?,
         relid: row.relid,
+        schemaname: opt(&mut intern, row.schemaname.as_deref())?,
+        relname: opt(&mut intern, row.relname.as_deref())?,
         is_autovacuum: row.is_autovacuum,
         phase: intern(row.phase.as_bytes())?,
         heap_blks_total: row.heap_blks_total,
@@ -220,7 +251,8 @@ pub fn to_v1<E>(
     })
 }
 
-/// Build a type `1_012_002` row, interning `datname` and `phase`.
+/// Build a type `1_012_005` row, interning `datname`, `phase` and the
+/// resolved relation name.
 ///
 /// # Errors
 /// Returns the interner's error if a label cannot be interned.
@@ -234,6 +266,8 @@ pub fn to_v2<E>(
         datid: row.datid,
         datname: intern(row.datname.as_bytes())?,
         relid: row.relid,
+        schemaname: opt(&mut intern, row.schemaname.as_deref())?,
+        relname: opt(&mut intern, row.relname.as_deref())?,
         is_autovacuum: row.is_autovacuum,
         phase: intern(row.phase.as_bytes())?,
         heap_blks_total: row.heap_blks_total,
@@ -248,7 +282,8 @@ pub fn to_v2<E>(
     })
 }
 
-/// Build a type `1_012_003` row, interning `datname` and `phase`.
+/// Build a type `1_012_006` row, interning `datname`, `phase` and the
+/// resolved relation name.
 ///
 /// # Errors
 /// Returns the interner's error if a label cannot be interned.
@@ -262,6 +297,8 @@ pub fn to_v3<E>(
         datid: row.datid,
         datname: intern(row.datname.as_bytes())?,
         relid: row.relid,
+        schemaname: opt(&mut intern, row.schemaname.as_deref())?,
+        relname: opt(&mut intern, row.relname.as_deref())?,
         is_autovacuum: row.is_autovacuum,
         phase: intern(row.phase.as_bytes())?,
         heap_blks_total: row.heap_blks_total,
@@ -288,6 +325,8 @@ fn row_from_pg(
             datid: row.try_get("datid")?,
             datname: row.try_get("datname")?,
             relid: row.try_get("relid")?,
+            schemaname: row.try_get("schemaname")?,
+            relname: row.try_get("relname")?,
             is_autovacuum: row.try_get("is_autovacuum")?,
             phase: row.try_get("phase")?,
             heap_blks_total: row.try_get("heap_blks_total")?,
@@ -303,6 +342,8 @@ fn row_from_pg(
             datid: row.try_get("datid")?,
             datname: row.try_get("datname")?,
             relid: row.try_get("relid")?,
+            schemaname: row.try_get("schemaname")?,
+            relname: row.try_get("relname")?,
             is_autovacuum: row.try_get("is_autovacuum")?,
             phase: row.try_get("phase")?,
             heap_blks_total: row.try_get("heap_blks_total")?,
@@ -321,6 +362,8 @@ fn row_from_pg(
             datid: row.try_get("datid")?,
             datname: row.try_get("datname")?,
             relid: row.try_get("relid")?,
+            schemaname: row.try_get("schemaname")?,
+            relname: row.try_get("relname")?,
             is_autovacuum: row.try_get("is_autovacuum")?,
             phase: row.try_get("phase")?,
             heap_blks_total: row.try_get("heap_blks_total")?,
@@ -376,6 +419,8 @@ mod tests {
             datid: 16_385,
             datname: "appdb".to_owned(),
             relid: 16_384,
+            schemaname: Some("public".to_owned()),
+            relname: Some("orders".to_owned()),
             is_autovacuum: true,
             phase: "scanning heap".to_owned(),
             heap_blks_total: 10_000,
@@ -394,6 +439,8 @@ mod tests {
             datid: 16_385,
             datname: "appdb".to_owned(),
             relid: 16_384,
+            schemaname: None,
+            relname: None,
             is_autovacuum: true,
             phase: "vacuuming indexes".to_owned(),
             heap_blks_total: 10_000,
@@ -415,6 +462,8 @@ mod tests {
             datid: 16_385,
             datname: "appdb".to_owned(),
             relid: 16_384,
+            schemaname: Some("public".to_owned()),
+            relname: Some("orders".to_owned()),
             is_autovacuum: true,
             phase: "vacuuming indexes".to_owned(),
             heap_blks_total: 10_000,
@@ -455,6 +504,8 @@ mod tests {
             assert!(sql.contains("v.datid"));
             assert!(sql.contains("pg_stat_activity"));
             assert!(sql.contains("is_autovacuum"));
+            assert!(sql.contains("LEFT JOIN pg_class c ON c.oid = v.relid"));
+            assert!(sql.contains("LEFT JOIN pg_namespace n ON n.oid = c.relnamespace"));
             assert!(sql.contains("kronika:"));
         }
     }
@@ -465,15 +516,19 @@ mod tests {
         assert_eq!(v1.pid, 4242);
         assert_eq!(v1.datname, fake_intern(b"appdb").unwrap());
         assert_eq!(v1.phase, fake_intern(b"scanning heap").unwrap());
+        assert_eq!(v1.relname, Some(fake_intern(b"orders").unwrap()));
         assert_eq!(v1.num_dead_tuples, 120_000);
 
         let v2 = to_v2(&v2_raw(), fake_intern).expect("intern V2");
         assert_eq!(v2.dead_tuple_bytes, 2_500_000);
         assert_eq!(v2.indexes_processed, 1);
+        assert_eq!(v2.relname, None);
+        assert_eq!(v2.schemaname, None);
 
         let v3 = to_v3(&v3_raw(), fake_intern).expect("intern V3");
         assert_eq!(v3.dead_tuple_bytes, 2_500_000);
         assert!((v3.delay_time - 1234.5).abs() < f64::EPSILON);
+        assert_eq!(v3.schemaname, Some(fake_intern(b"public").unwrap()));
     }
 
     #[test]

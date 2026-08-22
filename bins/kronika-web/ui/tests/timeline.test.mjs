@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, timelineDecorations, timelineNavigationTimes, timelineRecordedTimes } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, timelineDecorations, timelineNavigationTimes, timelineRecordedTimes, timelineSeriesHelpKey } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -273,6 +273,14 @@ test("a health lane reading keeps the shared evaluation timestamp", () => {
   const t = (key) => key
   assert.equal(helpers.laneReading(lane, 99, "en", t), "lane.health.overall_health — · lane.health.os_health —")
   assert.equal(helpers.laneReading(lane, 115, "en", t), "lane.health.overall_health 62% · lane.health.os_health 90%")
+})
+
+test("health series resolve distinct help while other series keep lane help", () => {
+  assert.deepEqual(
+    ["overall_health", "os_health", "postgres_health"].map((field) => helpers.timelineSeriesHelpKey("health", field)),
+    ["lane.health.overall_health.help", "lane.health.os_health.help", "lane.health.postgres_health.help"],
+  )
+  assert.equal(helpers.timelineSeriesHelpKey("cpu_busy", "cpu_busy"), "lane.cpu_busy.help")
 })
 
 test("only overall health owns the below-50 band and exact findings map to tracks", () => {

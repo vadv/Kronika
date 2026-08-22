@@ -3,7 +3,7 @@ import { registry } from "kronika:registry"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
@@ -28,7 +28,8 @@ export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
   postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage", "pg_stat_wal", "pg_stat_archiver"] as const,
   postgresqlSettings: ["pg_settings"] as const,
-  postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
+  postgresqlActivity: ["pg_stat_activity"] as const,
+  postgresqlVacuum: ["pg_stat_progress_vacuum", "pg_stat_activity"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
   postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
   postgresqlLocks: ["pg_locks"] as const,
@@ -941,6 +942,23 @@ const RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE = Object.fromEntries(
   PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [typeId, RELATED_STATEMENT_TEXT_FIELDS]),
 )
 
+// The Plans panel on a selected statement: identity plus the whole-snapshot
+// counters the Plans table's totals lens shows for the same rows.
+const RELATED_PLAN_FIELDS = ["planid", "calls", "total_time"] as const
+const RELATED_PLAN_FIELDS_BY_TYPE = Object.fromEntries(
+  PG_STORE_PLANS_TYPE_IDS.map((typeId) => [typeId, RELATED_PLAN_FIELDS]),
+)
+const RELATED_PLAN_PAGE_SIZE = 20
+
+// The Statement panel on a selected plan: the text plus the counters every
+// pg_stat_statements layout carries under one name or the other.
+const RELATED_STATEMENT_FIELDS_BY_TYPE = Object.fromEntries(PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [
+  typeId,
+  typeId === "1002001"
+    ? ["query", "calls", "rows", "total_time", "mean_time"]
+    : ["query", "calls", "rows", "total_exec_time", "mean_exec_time"],
+]))
+
 export interface SnapshotOptions {
   readonly filters?: Readonly<Record<string, string>>
   readonly typeId?: string
@@ -1118,6 +1136,51 @@ export async function loadSnapshotGroups(
     order,
   )))
   return snapshots.reduce((current, incoming) => mergeSnapshotData(current, incoming), emptyHour())
+}
+
+// The recorded plans matching a statement's identity expression, from the
+// newest snapshot at or before the moment. One page is the whole answer: a
+// statement with more distinct plans than the page holds is itself the story,
+// and the Plans view shows the rest.
+export async function loadRelatedPlanRows(
+  segments: readonly SegmentBound[],
+  at: number,
+  search: string,
+  signal: AbortSignal,
+): Promise<readonly DataRow[]> {
+  const [group] = snapshotRequestGroups(segments, at, [{
+    section: "pg_store_plans",
+    typeIds: PG_STORE_PLANS_TYPE_IDS,
+    fieldsByType: RELATED_PLAN_FIELDS_BY_TYPE,
+    pageSize: RELATED_PLAN_PAGE_SIZE,
+  }])
+  const [request] = group?.requests ?? []
+  if (group === undefined || request === undefined) return []
+  signal.throwIfAborted()
+  const page = await loadSnapshot(group.anchor.id, at, [request], signal, undefined, { search })
+  return page.sections.pg_store_plans ?? []
+}
+
+// The one statement matching a plan's identity expression. An ordinary paged
+// search, not `first_match`: the server pins that shortcut to a text-only
+// projection, and this panel wants the counters too.
+export async function loadRelatedStatementRow(
+  segments: readonly SegmentBound[],
+  at: number,
+  search: string,
+  signal: AbortSignal,
+): Promise<DataRow | null> {
+  const [group] = snapshotRequestGroups(segments, at, [{
+    section: "pg_stat_statements",
+    typeIds: PG_STAT_STATEMENTS_TYPE_IDS,
+    fieldsByType: RELATED_STATEMENT_FIELDS_BY_TYPE,
+    pageSize: RELATED_STATEMENT_TEXT_PAGE_SIZE,
+  }])
+  const [request] = group?.requests ?? []
+  if (group === undefined || request === undefined) return null
+  signal.throwIfAborted()
+  const page = await loadSnapshot(group.anchor.id, at, [request], signal, undefined, { fullText: true, search })
+  return page.sections.pg_stat_statements?.[0] ?? null
 }
 
 export async function loadRelatedStatementTextRow(

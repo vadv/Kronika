@@ -42,3 +42,26 @@ test("field help uses a fixed top-level portal above every workspace layer", asy
   assert.match(source, /\[\.entity-header-cell>&\]:opacity-0/)
   assert.match(source, /\[\.entity-header-cell:focus-within>&\]:opacity-100/)
 })
+
+test("a ledger row carries no help mark of its own: the lane name is the anchor", async () => {
+  const [source, styles, en, ru] = await Promise.all([
+    readFile(new URL("../src/use-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  // The row expands on click. A second visible target inside it competes with
+  // that, so the lane's name carries the help and the sign is invisible until
+  // the keyboard reaches it.
+  assert.doesNotMatch(source, /iconOnly/)
+  assert.match(source, /<LabelHelp helpKey=\{useLaneHelp\(cell\.lane\)\} labelKey=/)
+  assert.match(styles, /\.use-lane > \.label-help > \.help-dot \{[^}]*opacity: 0;/)
+  assert.match(styles, /\.use-lane > \.label-help > \.help-dot:focus-visible \{ opacity: 1; \}/)
+  // What the three columns mean is said once, in their names.
+  for (const column of ["utilisation", "saturation", "errors"]) {
+    assert.match(source, new RegExp(`use\\.\\$\\{column\\}\\.help`))
+    for (const dictionary of [en, ru]) {
+      assert.match(dictionary, new RegExp(`^use\\.${column}\\.help: ".+"$`, "m"))
+    }
+  }
+})

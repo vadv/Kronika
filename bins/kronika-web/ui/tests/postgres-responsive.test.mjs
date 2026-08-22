@@ -41,7 +41,6 @@ test("only long PostgreSQL table views own the viewport flex chain", () => {
   assert.match(postgres, /const contentSized = displayedRows\.length < 10 && !canLoadMore/)
   assert.match(postgres, /contentSized \? "" : " pg-entity-fill"/)
   assert.match(postgres, /data-content-sized=\{contentSized \|\| undefined\}/)
-  assert.match(postgres, /className="pg-preview panel mt-2" data-content-sized="true"/)
   assert.doesNotMatch(postgres, /className="pg-entity-layout[^\n]*pg-table-shell_&/)
   assert.match(entityTable, /contentSized \? "" : " pg-stretch"/)
   assert.match(entityTable, /contentSized \? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"/)

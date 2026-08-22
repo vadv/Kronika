@@ -89,9 +89,9 @@ PostgreSQL CancelRequest, затем закрывает соединение.
 | `1_010_001` | `pg_prepared_xacts` | 10–18 | инстанс | `snapshot_full` |
 | `1_011_001` | `pg_locks` | 10–13 | инстанс | `conditional_full` |
 | `1_011_002` | `pg_locks` | 14–18 | инстанс | `conditional_full` |
-| `1_012_001` | `pg_stat_progress_vacuum` | 10–16 | инстанс | `conditional_full` |
-| `1_012_002` | `pg_stat_progress_vacuum` | 17 | инстанс | `conditional_full` |
-| `1_012_003` | `pg_stat_progress_vacuum` | 18 | инстанс | `conditional_full` |
+| `1_012_004` | `pg_stat_progress_vacuum` | 10–16 | инстанс | `conditional_full` |
+| `1_012_005` | `pg_stat_progress_vacuum` | 17 | инстанс | `conditional_full` |
+| `1_012_006` | `pg_stat_progress_vacuum` | 18 | инстанс | `conditional_full` |
 | `1_013_005` | `pg_stat_user_tables` | 10–12 | каждая база | `snapshot_full` |
 | `1_013_006` | `pg_stat_user_tables` | 13–15 | каждая база | `snapshot_full` |
 | `1_013_007` | `pg_stat_user_tables` | 16–17 | каждая база | `snapshot_full` |
@@ -106,7 +106,14 @@ PostgreSQL CancelRequest, затем закрывает соединение.
 До первой указанной версии PostgreSQL секции для `pg_stat_wal`, `pg_stat_io` и
 `pg_stat_checkpointer` отсутствуют. В PostgreSQL 17 и 18 формат
 `pg_stat_progress_vacuum` менялся, поэтому для этих версий используются
-отдельные значения `type_id`. `pg_settings` хранит действующую конфигурацию
+отдельные значения `type_id`. Каждая строка `pg_stat_progress_vacuum` также
+несёт `schemaname`/`relname`, разрешённые из `pg_class`/`pg_namespace` тем же
+запросом, которым коллектор читает представление; `relid` — это OID
+`pg_class`, не переиспользуемый в горизонте, который важен продукту, поэтому
+он остаётся идентичностью строки независимо от того, разрешилось ли имя. Имя
+разрешается только для отношения в базе, к которой подключена сессия, — сессия
+видит каталог только своей базы, — и в остальных случаях остаётся отсутствующим,
+а не угадывается по строке другой базы. `pg_settings` хранит действующую конфигурацию
 сессии, из которой коллектор читает метрики. Каждая строка называет базу и роль
 подключения полями `datid`, `datname`, `usesysid` и `usename`; её идентификатор —
 `(datid, usesysid, name)`. Проверочный запрос к серверу читает эти данные из

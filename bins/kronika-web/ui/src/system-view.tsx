@@ -98,6 +98,7 @@ export interface CgroupSnapshotPlan {
 }
 
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
+  laneMetric("cpu_busy", "cpu", "system.metric.cpu_busy", "%"),
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
   derivedMetric("cpu_actual_frequency", "cpu", "system.metric.cpu_actual_frequency", "cpu_actual_frequency", "cpu_actual_frequency", " MHz"),
@@ -146,6 +147,9 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
 const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"] as const
 const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
 const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
+// The share components the usage chart draws under its own line: the recorded
+// counters as percent of capacity, on the axis the usage line already owns.
+const CPU_SHARE_BREAKDOWN_IDS = ["cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
 // Token order series-1..7 plus the neutral total: the palette was validated
 // for colour-vision separation in exactly this adjacency.
@@ -233,7 +237,7 @@ const LEDGER_DEFAULT_MODE: Partial<Readonly<Record<LedgerKey, HostMode>>> = {
 }
 
 const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
-  cpu: "cpu_used_cores",
+  cpu: "cpu_busy",
   memory: "mem_available",
   disk: "device_busy",
   network: "network_rx",
@@ -243,7 +247,8 @@ const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
 // reports: the lane the table already shows, if any, else the first in the group.
 function resourceSelection(available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
   const lane = RESOURCE_LANE[resource]
-  const target = available.find(({ spec }) => spec.id === lane) ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource])
+  const target = available.find(({ spec }) => spec.id === lane)
+    ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource] && !INVENTORY_METRIC_IDS.has(spec.id))
   return target?.spec.id ?? null
 }
 
@@ -323,7 +328,7 @@ export const SYSTEM_ENTITIES: readonly {
   },
   {
     section: "os_netdev", label: "system.entities.network",
-    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), number("speed_mbit"), id("duplex")],
+    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), nonChartNumber("speed_mbit", []), id("duplex")],
   },
   {
     section: "os_topology", label: "system.entities.topology",
@@ -613,7 +618,10 @@ function SystemGroupChart({
   const fallbackPoints = selectedMetric.points
   const request = useMemo(() => metricHistoryRequest(selectedMetric.spec), [selectedMetric.spec])
   const requestKey = request === null ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  const needsHistory = request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
+  // The usage line arrives with the hour, but its breakdown does not: the
+  // share components need the per-CPU history even when the line is full.
+  const needsHistory = request !== null && requestKey !== null
+    && (distinctTimes(fallbackPoints) <= 1 || selectedMetric.spec.id === "cpu_busy")
   const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
     !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
@@ -627,13 +635,32 @@ function SystemGroupChart({
   const historyUsesRates = loadedHistory.value === null
     && request !== null
     && (data.rateColumns?.[request.section] ?? []).length !== 0
-  const breakdown = useMemo(() => resourceBreakdownSeries(
+  const componentSeries = useMemo(() => resourceBreakdownSeries(
     selectedMetric.spec.id,
     historyRows,
     historyUsesRates,
     locale,
     t,
   ), [historyRows, historyUsesRates, locale, selectedMetric.spec.id, t])
+  // The usage chart leads with its own hour-borne line; the recorded share
+  // components draw under it once their history arrives.
+  const breakdown = useMemo(() => {
+    if (selectedMetric.spec.id !== "cpu_busy" || componentSeries.length === 0) return componentSeries
+    const spec = selectedMetric.spec
+    const format = (reading: number, place: Locale) => metricChartValue(reading, place, spec.unit)
+    return [{
+      color: BREAKDOWN_COLORS[0]!,
+      helpKey: spec.help,
+      id: spec.id,
+      label: t(spec.label),
+      labelKey: spec.label,
+      points: selectedPoints,
+      scale: "percent" as const,
+      tick: format,
+      unit: metricChartUnit(spec, locale),
+      value: format,
+    }, ...componentSeries]
+  }, [componentSeries, locale, selectedMetric.spec, selectedPoints, t])
   const secondLane = secondMetricLane(selectedMetric.spec)
   const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
   if (SYSTEM_METRICS.every((spec) => spec.id !== metricId)) return null
@@ -1041,6 +1068,7 @@ function timelineLane(metric: string | undefined): string {
 // lane value needs to match the metric's unit.
 function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
   const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
+    cpu_busy: [["cpu_busy", (number) => number]],
     cpu_pressure: [["cpu_stall", (number) => number]],
     io_pressure: [["io_stall", (number) => number]],
     network_rx: [["net_rx", (number) => number], ["net_tx", (number) => number]],
@@ -1101,10 +1129,22 @@ const BREAKDOWN_MEMBER_IDS: ReadonlySet<string> = new Set([...CPU_BREAKDOWN_IDS,
 // The composition chart already legends every breakdown member; the dock offers
 // one chip for it — the group's lane metric — instead of a strip of chips that
 // all draw the same picture.
+// Metrics that describe the machine, not its hour: charting them draws a flat
+// line. They keep their reading in the group's tables and stay out of the chip
+// strip and out of the default selection.
+export const INVENTORY_METRIC_IDS: ReadonlySet<string> = new Set([
+  "cpu_capacity",
+  "device_count",
+  "filesystem_count",
+  "interface_count",
+])
+
 export function dockGroupMetrics(
   groupMetrics: readonly MetricSpec[],
   laneId: string | undefined,
 ): { readonly chips: readonly MetricSpec[]; readonly chartChip: (id: string) => string } {
+  const offered = groupMetrics.filter((spec) => !INVENTORY_METRIC_IDS.has(spec.id))
+  groupMetrics = offered.length === 0 ? groupMetrics : offered
   const members = groupMetrics.filter((spec) => BREAKDOWN_MEMBER_IDS.has(spec.id))
   if (members.length === 0) return { chips: groupMetrics, chartChip: (id) => id }
   const anchor = members.find((spec) => spec.id === laneId) ?? members[0]!
@@ -1125,12 +1165,16 @@ export function resourceBreakdownSeries(
   if (selectedId === "cpu_scaling_frequency") return frequencyBreakdownSeries(rows, "scaling_cur_freq_hz", t)
   if (selectedId === "device_busy") return deviceBreakdownSeries(rows, "io_time_ms", 0.1, rates, locale)
   if (selectedId === "device_average_queue") return deviceBreakdownSeries(rows, "io_weighted_time_ms", 0.001, rates, locale)
-  const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
-    ? CPU_BREAKDOWN_IDS
-    : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
+  const ids: readonly string[] = selectedId === "cpu_busy"
+    ? CPU_SHARE_BREAKDOWN_IDS
+    : CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
+      ? CPU_BREAKDOWN_IDS
+      : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
   return ids.flatMap((id, index) => {
     const spec = SYSTEM_METRICS.find((candidate) => candidate.id === id)
-    const color = BREAKDOWN_COLORS[index]
+    // Under the usage anchor the first colour belongs to the usage line the
+    // chart prepends, so the components start one step in.
+    const color = BREAKDOWN_COLORS[selectedId === "cpu_busy" ? index + 1 : index]
     if (spec === undefined || color === undefined) return []
     const points = spec.derive === undefined
       ? buildMetricSamples(rows, (row) => spec.field === undefined ? undefined : storedNumber(row, spec.field))
@@ -1152,6 +1196,11 @@ export function resourceBreakdownSeries(
 }
 
 export function metricHistoryRequest(spec: MetricSpec): MetricHistoryRequest | null {
+  // The usage chart carries the recorded share breakdown, so its history is
+  // the per-CPU counters — the same request the share metrics make.
+  if (spec.id === "cpu_busy") {
+    spec = SYSTEM_METRICS.find((candidate) => candidate.id === "cpu_user") ?? spec
+  }
   const section = spec.derive === undefined ? spec.section : DERIVE_INPUTS[spec.derive][0]
   if (section === undefined) return null
   const derivedFields = spec.derive === undefined ? [] : DERIVE_INPUTS[spec.derive][1]
@@ -1678,6 +1727,13 @@ function seriesSectionMetric(id: string, group: MetricSpec["group"], label: stri
 
 function derivedMetric(id: string, group: MetricSpec["group"], label: string, series: string, derive: NonNullable<MetricSpec["derive"]>, unit: string): MetricSpec {
   return { id, group, label: `${label}.label`, help: `${label}.help`, series, derive, unit }
+}
+
+// A metric the hour's own timeline already carries. Its points arrive with the
+// hour rather than being computed from the section's rows, so it reads exactly
+// what the resource ledger's row reads.
+function laneMetric(id: string, group: MetricSpec["group"], label: string, unit: string): MetricSpec {
+  return { id, group, label: `${label}.label`, help: `${label}.help`, unit }
 }
 
 function pressureMetric(id: string, group: SystemGroup, label: string, resource: number): MetricSpec {

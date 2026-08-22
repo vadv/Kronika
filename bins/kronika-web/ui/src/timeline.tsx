@@ -244,12 +244,16 @@ export function timelineDecorations(
   return output
 }
 
+export function timelineSeriesHelpKey(lane: string, field: string): string {
+  return lane === "health" ? `lane.health.${field}.help` : `lane.${lane}.help`
+}
+
 function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): readonly RecordedSeries[] {
   const percent = ["health", "cpu_busy", "cpu_stall", "memory", "io_stall"].includes(lane.key)
   const unit = percent ? "%" : lane.key === "oldest_xact" ? "" : (locale === "ru" ? "количество" : "count")
   return lane.series.map((line) => ({
     color: line.color,
-    helpKey: `lane.${lane.key}.help`,
+    helpKey: timelineSeriesHelpKey(lane.key, line.field),
     id: line.field,
     label: lane.key === "health" ? t(`lane.health.${line.field}`) : t(`lane.${lane.key}.label`),
     labelKey: lane.key === "health" ? `lane.health.${line.field}` : `lane.${lane.key}.label`,

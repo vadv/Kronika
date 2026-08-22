@@ -110,7 +110,7 @@ test("process history requests project PID without process start time", async ()
 })
 
 test("linked Activity detail shows elapsed values instead of repeatable absolute starts", async () => {
-  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail-activity.tsx", import.meta.url), "utf8"))
   const fields = /const ACTIVITY_FIELDS = \[([\s\S]*?)\] as const/.exec(source)?.[1] ?? ""
   for (const field of ["backend_start", "xact_start", "query_start", "state_change"]) assert.doesNotMatch(fields, new RegExp(field))
   for (const field of ["backend_age_ms", "transaction_duration_ms", "query_duration_ms", "state_duration_ms"]) assert.match(source, new RegExp(`\\["${field}"`))
@@ -126,4 +126,77 @@ test("Process detail delegates Escape and focus return to the shared Inspector",
   assert.doesNotMatch(source, /useDetailDismiss|addEventListener\("keydown"/)
   assert.match(inspector, /event\.key === "Escape"/)
   assert.match(inspector, /opener\.current\.focus\(\{ preventScroll: true \}\)/)
+})
+
+test("a recorded PostgreSQL backend is its own Inspector panel, not a tail under the process facts", async () => {
+  const fs = await import("node:fs/promises")
+  const [dock, panel, app, inspector, address] = await Promise.all([
+    fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/detail-activity.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/address.ts", import.meta.url), "utf8"),
+  ])
+  // The facts moved whole: the dock keeps none of them.
+  assert.doesNotMatch(dock, /pg-exact-query|ACTIVITY_FIELDS|ACTIVITY_DURATIONS|detail\.pg_pid/)
+  assert.match(panel, /data-testid="process-activity-panel"/)
+  assert.match(panel, /pg-exact-query/)
+  // The tab exists only when a backend was recorded under the selected PID,
+  // and it arrives through the relation portal, not through a shell prop.
+  assert.match(app, /joinedActivity\.row !== null && <InspectorRelatedPortal id="pg_stat_activity"/)
+  assert.doesNotMatch(app, /related=\{/)
+  assert.match(inspector, /registerRelated/)
+  assert.match(inspector, /data-testid=\{`inspector-tab-\$\{tab\.id\}`\}/)
+  // Back must return to the panel it left, so the panel is addressed.
+  const panels = /INSPECTOR_PANELS = \[([^\]]*)\]/.exec(address)?.[1] ?? ""
+  for (const token of ["chart", "detail", "pg_stat_activity", "os_process", "pg_stat_statements", "pg_store_plans"]) {
+    assert.match(panels, new RegExp(`"${token}"`))
+  }
+  assert.match(address, /address\.panel !== null && address\.panel !== "detail"/)
+})
+
+test("a relation panel keeps the Inspector open rather than closing it on its own tab", async () => {
+  const app = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/app.tsx", import.meta.url), "utf8"))
+  const open = /const inspectorOpen = ([^\n]*)/.exec(app)?.[1] ?? ""
+  assert.doesNotMatch(open, /inspectorPanel === "detail"/)
+  assert.match(open, /inspectorPanel !== null && detailAvailable/)
+})
+
+test("a backend's OS process is its own Inspector panel, fetched by PID at the cursor", async () => {
+  const fs = await import("node:fs/promises")
+  const [view, panel, inspector] = await Promise.all([
+    fs.readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/detail-process.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
+  ])
+  // The tab is offered whenever the backend carries a PID; the body answers
+  // with the recorded row, a loading line, or an honest missing line.
+  assert.match(view, /backendPid !== null && <InspectorRelatedPortal id="os_process"/)
+  assert.match(view, /filters: \{ pid: String\(backendPid\) \}/)
+  assert.match(panel, /data-testid="backend-process-panel"/)
+  assert.match(panel, /pg\.related\.process_missing/)
+  // A tab's owner going away takes only its own tab with it.
+  assert.match(inspector, /relatedOwners\.current\.get\(id\) !== identity/)
+})
+
+test("statements and plans read each other as peer panels under one identity expression", async () => {
+  const fs = await import("node:fs/promises")
+  const [view, panels, api] = await Promise.all([
+    fs.readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/detail-plans.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/api.ts", import.meta.url), "utf8"),
+  ])
+  // Each side is offered exactly when the existing header jump is: the same
+  // navigation target names the identity, so the tab and the jump agree.
+  assert.match(view, /statementTarget !== null && onRelated !== undefined && <InspectorRelatedPortal id="pg_store_plans"/)
+  assert.match(view, /planTarget !== null && onRelated !== undefined && <InspectorRelatedPortal id="pg_stat_statements"/)
+  // The rows come from the newest snapshot at or before the cursor, through
+  // the same search expressions the drills use.
+  assert.match(panels, /loadRelatedPlanRows\(segments, cursor, expression/)
+  assert.match(panels, /loadRelatedStatementRow\(segments, cursor, target\.expression/)
+  assert.match(panels, /pg\.related\.plans_missing/)
+  assert.match(panels, /pg\.related\.statement_missing/)
+  // first_match is pinned server-side to a text-only projection; the panel
+  // wants counters, so it searches an ordinary one-row page instead.
+  assert.match(api, /loadSnapshot\(group\.anchor\.id, at, \[request\], signal, undefined, \{ fullText: true, search \}\)/)
 })

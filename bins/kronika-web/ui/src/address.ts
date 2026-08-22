@@ -16,13 +16,24 @@ export interface Address {
   readonly metric: string | null
 }
 
-export type InspectorPanel = "chart" | "detail" | null
+// A closed set: Detail, Chart, and the relation panels a selection can open.
+// Back must land on the panel the reader left, so the panel is addressed.
+export const INSPECTOR_PANELS = ["chart", "detail", "pg_stat_activity", "os_process", "pg_stat_statements", "pg_store_plans"] as const
+
+export type InspectorPanel = (typeof INSPECTOR_PANELS)[number] | null
+
+// Detail is implied by a row and never written; the others ride the address.
+function addressablePanel(panel: string | null): InspectorPanel {
+  const known = INSPECTOR_PANELS.find((candidate) => candidate === panel) ?? null
+  return known === "detail" ? null : known
+}
 
 export type View =
   | "host"
   | "processes"
   | "pg.overview"
   | "pg.activity"
+  | "pg.vacuum"
   | "pg.statements"
   | "pg.plans"
   | "pg.locks"
@@ -41,7 +52,7 @@ export type PgLevel = "database" | "schema" | "tablespace" | "object"
 const VIEWS: readonly View[] = [
   "host",
   "processes",
-  "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
+  "pg.overview", "pg.activity", "pg.vacuum", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
   "events",
 ]
 
@@ -104,7 +115,7 @@ export function readAddress(search: string): Address {
     row,
     // Row-only links predate Inspector and continue to open Detail. Chart is
     // source-neutral and can therefore be linked without an entity row.
-    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" ? "detail" : null,
+    panel: addressablePanel(requestedPanel) ?? (row !== null && row !== "" ? "detail" : null),
     find: parameters.get("find") ?? "",
     metric,
   }
@@ -127,7 +138,7 @@ export function writeAddress(address: Address): string {
   if ((address.view === "processes" || relation || address.view === "host" || address.view === "events"
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
-  if (address.panel === "chart") parameters.set("panel", "chart")
+  if (address.panel !== null && address.panel !== "detail") parameters.set("panel", address.panel)
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view === "host" && address.metric !== null) parameters.set("metric", address.metric)
   const query = parameters.toString()
@@ -139,7 +150,7 @@ function oid(stored: string | null): string | null {
 }
 
 function isPostgresEntityView(view: View): boolean {
-  return view === "pg.activity" || view === "pg.statements" || view === "pg.plans"
+  return view === "pg.activity" || view === "pg.vacuum" || view === "pg.statements" || view === "pg.plans"
     || view === "pg.locks" || view === "pg.databases"
 }
 
@@ -159,9 +170,9 @@ export function sourceOf(view: View): Source {
   return view.startsWith("pg.") ? "postgresql" : "host"
 }
 
-export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {
+export function pgSectionOf(view: View): "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {
   const section = view.startsWith("pg.") ? view.slice(3) : "overview"
-  return section as "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
+  return section as "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 }
 
 export function stepOf(address: string): string {

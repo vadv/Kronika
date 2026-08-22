@@ -132,7 +132,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.querySelector(".topbar").scrollWidth > document.querySelector(".topbar").clientWidth,
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
-      updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
+      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
       zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
       zoneSelectors: document.querySelectorAll('[data-testid="timezone-select"]').length,
@@ -145,7 +145,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(browserMode.hour, /08:00–09:00/)
     assert.match(browserMode.status, /08:30:00/)
     assert.doesNotMatch(browserMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
-    assert.match(browserMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
+    assert.match(browserMode.updated, /Updated/)
     for (const output of [browserMode.cursor, browserMode.hour, browserMode.status, browserMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
@@ -178,7 +178,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
       tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
-      updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
+      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
       zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
     }))()`)
@@ -190,7 +190,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.status, /05:30:00/)
     assert.doesNotMatch(utcMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
     assert.match(utcMode.tooltip, /05:30:07/)
-    assert.match(utcMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
+    assert.match(utcMode.updated, /Updated/)
     for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip, utcMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
@@ -625,7 +625,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       hour: document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent,
       hourContext: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent,
       sample: document.querySelector('.cursor-time')?.textContent.includes('Sample'),
-      updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
+      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       updatedSecondary: document.querySelector('[data-testid="updated-time"] small')?.textContent ?? null,
     }))()`)
     assert.match(localClocks.cursor, /01:30:00/)
@@ -635,7 +635,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(localClocks.hourContext, /08\/13\/2026/)
     assert.doesNotMatch(localClocks.hourContext, /GMT|UTC/)
     // The status line reports staleness as an age, not a wall clock (app.tsx UpdatedAge).
-    assert.match(localClocks.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
+    assert.match(localClocks.updated, /Updated/)
     assert.doesNotMatch(localClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
@@ -776,7 +776,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       cursorSecondary: document.querySelector('[data-testid="cursor-time"] small') !== null,
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent,
       hourZoneSuffix: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent.includes('UTC') ?? false,
-      updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
+      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       updatedSecondary: document.querySelector('[data-testid="updated-time"] small') !== null,
       zoneLabel: ${ZONE_LABEL} ?? "",
     }))()`)
@@ -785,7 +785,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(utcClocks.hour, /05:00–06:00/)
     assert.doesNotMatch(utcClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.doesNotMatch(utcClocks.hour, /GMT|UTC|\.\d{3}(?!\d)/)
-    assert.match(utcClocks.updated, /^(?:Обновлено)?\d+ \S+ назад$/)
+    assert.match(utcClocks.updated, /Обновлено/)
     assert.doesNotMatch(utcClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourZoneSuffix, false)
@@ -1141,7 +1141,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await assertSearchControlContained(cdp, "Events search")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark-crossing"]') !== null`, "the grouped crossings of one mark")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark-crossing"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
@@ -2021,16 +2023,18 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.match(entryText, /6,29 с/)
     assert.match(entryText, /12,6 с/)
     await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-detail"] dl') !== null`, "the slow-query expansion")
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-facts"]') !== null`, "the slow-query expansion")
     await settleLayout(cdp)
 
     const landscape = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(landscape.innerWidth, 1280)
     assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
-    assert.deepEqual(landscape.numeric.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
-    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true, JSON.stringify(landscape.numeric))
-    assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
-    assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
+    assert.deepEqual(landscape.chips.map(({ text }) => text), ["3", "6,29 с", "12,6 с"])
+    // A fact is unreadable when its value drifts to the far edge of a
+    // full-width surface, which is what the dock's two-track row used to do.
+    assert.ok(landscape.chips.every(({ gap }) => gap >= 0 && gap <= 12), JSON.stringify(landscape.chips))
+    assert.equal(landscape.chips.every(({ sameRow }) => sameRow), true, JSON.stringify(landscape.chips))
+    assert.ok(landscape.chips.every(({ height }) => height <= 28), JSON.stringify(landscape.chips))
     assert.match(landscape.raw, /×3/)
     assert.match(landscape.raw, /6,29 с/)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
@@ -2041,7 +2045,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     const narrow = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
-    assert.equal(narrow.numeric.every(({ align }) => align === "left"), true, JSON.stringify(narrow.numeric))
+    assert.equal(narrow.chips.every(({ gap, sameRow }) => sameRow && gap >= 0 && gap <= 12), true, JSON.stringify(narrow.chips))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -3775,8 +3779,6 @@ function sparsePostgresGeometry() {
   return `(() => {
     const activity = document.querySelector('[data-testid="pg-entity-layout"]')
     const activityScroll = activity.querySelector('.entity-scroll')
-    const progress = document.querySelector('[data-pg-section="pg_stat_progress_vacuum"]')
-    const progressScroll = progress.querySelector('.entity-scroll')
     const workspace = document.querySelector('.workspace')
     const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
     const measured = (root, scroll) => {
@@ -3801,11 +3803,8 @@ function sparsePostgresGeometry() {
       }
     }
     const activityRect = measured(activity, activityScroll)
-    const progressRect = measured(progress, progressScroll)
     return {
       activity: activityRect,
-      gap: progressRect.top - activityRect.bottom,
-      progress: progressRect,
       workspace: rect(workspace),
     }
   })()`
@@ -3895,16 +3894,22 @@ function slowQuerySeriesRecords() {
 
 function expansionGeometryExpression() {
   return `(() => {
-    const rows = [...document.querySelectorAll('[data-testid="event-entry-detail"] dl > div')]
-    const numeric = rows.map((row) => {
-      const output = row.querySelector("dd")
-      const rect = output.getBoundingClientRect()
-      return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
+    const chips = [...document.querySelectorAll('[data-testid="event-entry-facts"] > span')].map((chip) => {
+      const [label, output] = chip.children
+      const labelBox = label.getBoundingClientRect()
+      const valueBox = output.getBoundingClientRect()
+      return {
+        gap: Math.round(valueBox.left - labelBox.right),
+        height: Math.round(chip.getBoundingClientRect().height),
+        label: label.textContent.trim(),
+        sameRow: Math.abs(valueBox.top - labelBox.top) <= 4,
+        text: output.textContent.trim(),
+      }
     })
     return {
+      chips,
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      numeric,
       raw: document.querySelector('[data-testid="event-raw-row"]')?.textContent ?? "",
       scrollWidth: document.documentElement.scrollWidth,
       text: document.querySelector('[data-testid="events-console"]')?.textContent ?? "",
@@ -4103,7 +4108,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     ...timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment" ? record : {
       ...record,
       sections: [...record.sections, {
-        logical_name: "pg_stat_progress_vacuum", physical_name: "pg_stat_progress_vacuum", type_id: "1012003",
+        logical_name: "pg_stat_progress_vacuum", physical_name: "pg_stat_progress_vacuum", type_id: "1012006",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     }),
@@ -4126,6 +4131,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const section = url.searchParams.get("section")
       if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
       if (section === "os_process") return ndjson(response, forensicSnapshots)
+      if (section === "pg_stat_progress_vacuum") return ndjson(response, vacuumHourRecords(url))
       return ndjson(response, section === null ? [...forensicTimeline, {
         record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "1009001",
         field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
@@ -4381,7 +4387,31 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('.pg-tabs button').length > 1`, "PostgreSQL tabs")
     await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
-    await cdp.waitFor(`document.querySelector('[data-pg-section="pg_stat_progress_vacuum"] .entity-row') !== null`, "PostgreSQL VACUUM progress table")
+    // The recorded vacuum lives on its own tab: one episode row whose phase
+    // chip carries the fixed risk of its phase name.
+    await cdp.evaluate(`[...document.querySelectorAll('.pg-tabs button')].find((tab) => tab.textContent === 'Vacuum').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-row') !== null`, "PostgreSQL Vacuum table")
+    const vacuumRow = await cdp.evaluate(`(() => {
+      const chip = [...document.querySelectorAll('[data-testid="pg-vacuum-table"] .vacuum-chip')].find((node) => ["ordinary", "heavy", "dangerous"].includes(node.getAttribute('data-risk')))
+      const cells = [...document.querySelectorAll('[data-testid="pg-vacuum-table"] .entity-row [role="cell"]')].map((cell) => cell.textContent)
+      return { cells, phase: chip?.textContent ?? null, risk: chip?.getAttribute('data-risk') ?? null, view: new URL(location.href).searchParams.get('view') }
+    })()`)
+    assert.equal(vacuumRow.view, "pg.vacuum", JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.phase, "vacuuming heap", JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.risk, "heavy", JSON.stringify(vacuumRow))
+    // The relation name arrives already resolved on the row: no lookup, no
+    // bare OID anywhere in the rendered row.
+    assert.ok(vacuumRow.cells.some((cell) => cell.includes("operators.public.bulk_events")), JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.cells.some((cell) => cell.includes("relid=")), false, JSON.stringify(vacuumRow))
+    // Progress is a sparkline beside its percent, not a number crammed with
+    // the sizes; the raw Inspector block never repeats the OID either.
+    assert.ok(await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .vacuum-progress-spark') !== null`))
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null`, "PostgreSQL Vacuum detail")
+    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"]').textContent`)
+    assert.doesNotMatch(detailText, /OID/)
+    await cdp.evaluate(`[...document.querySelectorAll('.pg-tabs button')].find((tab) => tab.textContent === 'Activity').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table again")
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'pid:3000')
@@ -4391,20 +4421,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1 && document.querySelector('[data-testid="pg-entity-layout"]').dataset.contentSized === 'true'`, "filtered sparse PostgreSQL Activity")
     const sparseBefore = await cdp.evaluate(sparsePostgresGeometry())
     assert.equal(sparseBefore.activity.contentSized, true, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.contentSized, true, JSON.stringify(sparseBefore))
     assert.ok(sparseBefore.activity.scrollHeight <= 72, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.progress.scrollHeight <= 72, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.gap >= 7 && sparseBefore.gap <= 10, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.progress.bottom < sparseBefore.workspace.bottom - 120, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.activity.horizontal && sparseBefore.progress.horizontal, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.activity.horizontal, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.overflowX, "auto", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.overflowY, "hidden", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.vertical, false, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.vertical, false, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.allRowsFit, true, JSON.stringify(sparseBefore))
-    assert.equal(sparseBefore.progress.allRowsFit, true, JSON.stringify(sparseBefore))
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, "sparse PostgreSQL Chart Inspector")
     await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); scroll.scrollLeft = scroll.scrollWidth })()`)
@@ -4429,11 +4452,12 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)
     const sparseOpened = await cdp.evaluate(sparsePostgresGeometry())
     assert.ok(Math.abs(sparseOpened.activity.height - sparseBefore.activity.height) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
-    assert.ok(Math.abs(sparseOpened.progress.top - sparseBefore.progress.top) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "Events threshold marks")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
-    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] button').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-mark-crossing"]') !== null`, "the grouped crossings of one mark")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-mark-crossing"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') === null`, "a threshold mark leaves the Events console")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -4809,13 +4833,44 @@ function snapshotRecords() {
 
 function progressVacuumRecords() {
   const columns = [
-    "ts", "pid", "datid", "datname", "relid", "is_autovacuum", "phase", "heap_blks_total", "heap_blks_scanned",
-    "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes", "num_dead_item_ids",
-    "indexes_total", "indexes_processed", "delay_time",
+    "ts", "pid", "datid", "datname", "relid", "schemaname", "relname", "is_autovacuum", "phase", "heap_blks_total",
+    "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes",
+    "num_dead_item_ids", "indexes_total", "indexes_processed", "delay_time",
   ]
-  return [layout("1012003", "pg_stat_progress_vacuum", columns), row("1012003", "1", [
-    String(AT), 4343, 20, "operators", 73, true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
+  return [layout("1012006", "pg_stat_progress_vacuum", columns), row("1012006", "1", [
+    String(AT), 4343, 20, "operators", 73, "public", "bulk_events", true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
   ], AT)]
+}
+
+// Mirrors the server's real rule (query.rs output_names): an empty `field`
+// list answers with every column the segment's own layout defines, not a
+// fixed union across every PG-version shape. VacuumView relies on exactly
+// this — asking by name for a column an older layout never defines is a
+// hard error server-side, not a null fill, so the hour fetch must omit the
+// field list entirely.
+const VACUUM_V3_COLUMNS = [
+  "ts", "pid", "datid", "datname", "relid", "schemaname", "relname", "is_autovacuum", "phase", "heap_blks_total",
+  "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes",
+  "num_dead_item_ids", "indexes_total", "indexes_processed", "delay_time",
+]
+
+function vacuumHourRecords(url) {
+  const requested = url.searchParams.getAll("field")
+  if (requested.some((field) => !VACUUM_V3_COLUMNS.includes(field))) {
+    return [{ record: "error", error: "bad_parameter" }]
+  }
+  const columns = requested.length > 0 ? requested : VACUUM_V3_COLUMNS.filter((field) => field !== "ts")
+  const sample = {
+    datid: 20, datname: "operators", dead_tuple_bytes: 4_194_304, delay_time: 17.5, heap_blks_scanned: 3200,
+    heap_blks_total: 8000, heap_blks_vacuumed: 1200, index_vacuum_count: 1, indexes_processed: 2, indexes_total: 5,
+    is_autovacuum: true, max_dead_tuple_bytes: 67_108_864, num_dead_item_ids: 2400, phase: "vacuuming heap", pid: 4343,
+    relid: 73, relname: "bulk_events", schemaname: "public",
+  }
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("1012006", "pg_stat_progress_vacuum", columns),
+    row("1012006", "1", columns.map((field) => sample[field] ?? null), AT),
+  ]
 }
 
 function activityHistoryRecords(url) {

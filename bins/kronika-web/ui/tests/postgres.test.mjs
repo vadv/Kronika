@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -436,7 +436,9 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
-  assert.match(source, /tableState\([^)]*ranked\.length/)
+  // The count belongs to the rows under it: an entity context or a filter
+  // that empties the body must empty the count with it.
+  assert.match(source, /tableState\([^)]*displayedRows\.length/)
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
@@ -472,17 +474,43 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
 })
 
-test("VACUUM progress hides database and relation OIDs and keeps phase last across layouts", () => {
-  const values = Object.fromEntries(helpers.PROGRESS_VACUUM_FIELDS.map((field, index) => [field, field === "phase" || field === "datname" ? field : index]))
-  values.datid = 42
-  values.relid = 73
-  const row = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012003", values }
-  const columns = helpers.progressVacuumColumns([row], [])
-  assert.deepEqual(columns.map(({ field }) => field), helpers.PROGRESS_VACUUM_FIELDS)
-  assert.equal(columns.some(({ field }) => field === "datid" || field === "relid"), false)
-  assert.equal(columns.find(({ field }) => field === "pid")?.help, undefined)
-  assert.equal(columns.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
-  assert.equal(columns.at(-1)?.field, "phase")
+test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
+  const stubTime = { timestamp: (ts) => String(ts) }
+  const stubT = (key, slots) => slots === undefined ? key : `${key}:${JSON.stringify(slots)}`
+  const row = (typeId, values) => ({ logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 5, typeId, values })
+  const pg18 = row("1012006", { datid: 42, datname: "app", relid: 73, schemaname: "public", relname: "orders", phase: "truncating heap", pid: 9, is_autovacuum: true, heap_blks_scanned: 10, heap_blks_total: 20, heap_blks_vacuumed: 4, index_vacuum_count: 2, indexes_processed: 1, indexes_total: 3, delay_time: 100 })
+  const pg16 = row("1012004", { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9, is_autovacuum: false, heap_blks_scanned: 1, heap_blks_total: 2, heap_blks_vacuumed: 0, index_vacuum_count: 0, num_dead_tuples: 5, max_dead_tuples: 9 })
+  const episodes = new Map()
+  const all = helpers.vacuumColumns([pg18], episodes, 5, null, stubTime, "en", stubT)
+  // The table carries no bare OID column; the identity reads as a relation,
+  // resolved from the row itself, no lookup involved.
+  assert.equal(all.some(({ field }) => field === "datid" || field === "relid"), false)
+  const relationColumn = all.find(({ field }) => field === "datname")
+  assert.equal(relationColumn?.render?.(pg18), "app.public.orders")
+  // A row without a resolved name falls back to the OID inside one string,
+  // never as its own column.
+  const relationColumn16 = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT).find(({ field }) => field === "datname")
+  assert.equal(relationColumn16?.render?.(pg16), "app · relid=73")
+  // Progress is its own column, separate from the plain heap size.
+  assert.ok(all.some(({ field }) => field === "vacuum_progress"))
+  assert.ok(all.some(({ field }) => field === "heap_blks_scanned"))
+  const sizeColumn = all.find(({ field }) => field === "heap_blks_scanned")
+  assert.doesNotMatch(String(sizeColumn?.render?.(pg18)), /%/)
+  // PG17/18 columns exist only when the hour recorded such a layout.
+  assert.ok(all.some(({ field }) => field === "indexes_processed"))
+  assert.ok(all.some(({ field }) => field === "delay_time"))
+  const old = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT)
+  assert.equal(old.some(({ field }) => field === "indexes_processed" || field === "delay_time"), false)
+  // Every column except PID explains itself.
+  assert.equal(all.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
+  // The raw detail block drops the OIDs and keeps every layout field, per layout.
+  const detail18 = helpers.vacuumDetailColumns(pg18, null).map(({ field }) => field)
+  assert.equal(detail18.some((field) => field === "datid" || field === "relid"), false)
+  for (const field of ["is_autovacuum", "dead_tuple_bytes", "max_dead_tuple_bytes", "num_dead_item_ids", "indexes_total", "delay_time"]) assert.ok(detail18.includes(field), field)
+  const detail16 = helpers.vacuumDetailColumns(pg16, null).map(({ field }) => field)
+  assert.equal(detail16.some((field) => field === "datid" || field === "relid"), false)
+  for (const field of ["num_dead_tuples", "max_dead_tuples"]) assert.ok(detail16.includes(field), field)
+  assert.equal(detail16.includes("delay_time") || detail16.includes("dead_tuple_bytes"), false)
 })
 
 test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () => {
@@ -493,8 +521,16 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
-  const progressValues = Object.fromEntries(helpers.PROGRESS_VACUUM_FIELDS.map((field, index) => [field, field === "phase" || field === "datname" ? field : index]))
-  const progress = helpers.progressVacuumColumns([{ logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012003", values: progressValues }], [])
+  const stubTime = { timestamp: (ts) => String(ts) }
+  const stubT = (key) => key
+  const progressRow = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012006", values: { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9 } }
+  const progress = [
+    ...helpers.vacuumColumns([progressRow], new Map(), 1, null, stubTime, "en", stubT),
+    ...helpers.vacuumDetailColumns(progressRow, null),
+    ...helpers.vacuumDetailColumns({ ...progressRow, typeId: "1012004" }, null),
+    // The worker strip above the table explains itself the same way.
+    { field: "vacuum_workers", help: "pg.vacuum.workers.help", label: "pg.vacuum.workers.label" },
+  ]
   const groups = [
     helpers.ACTIVITY_COLUMNS,
     ...["load", "per_call", "io", "resources", "stability"].map((lens) => helpers.statementColumns(lens)),
@@ -514,7 +550,15 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
     if (column.help.startsWith("pg.vacuum.")) usedVacuumHelp.add(column.help)
   }
-  const dictionaryVacuumHelp = Object.keys(english).filter((key) => /^pg\.vacuum\.[^.]+\.help$/.test(key)).sort()
+  // The OS process-load block reads its help keys straight in JSX (LabelHelp),
+  // not through an EntityColumn, so it needs its own scan of the source text.
+  const postgresViewSource = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  for (const match of postgresViewSource.matchAll(/pg\.vacuum\.load(\.[a-z_]+)?\.help/g)) {
+    assert.equal(Object.hasOwn(english, match[0]), true, match[0])
+    assert.equal(Object.hasOwn(russian, match[0]), true, match[0])
+    usedVacuumHelp.add(match[0])
+  }
+  const dictionaryVacuumHelp = Object.keys(english).filter((key) => /^pg\.vacuum\.[^.]+(\.[a-z_]+)?\.help$/.test(key)).sort()
   assert.deepEqual([...usedVacuumHelp].sort(), dictionaryVacuumHelp)
 })
 

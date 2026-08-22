@@ -93,7 +93,9 @@ export function UseTable({
   return <section aria-label={t("use.title")} className="use-table" data-testid="use-table">
     <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs font-medium text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))] max-[760px]:[&>span]:px-[5px]">
       <span>{t("use.resource")}</span>
-      {USE_COLUMNS.map((column) => <span key={column}>{t(`use.${column}`)}</span>)}
+      {USE_COLUMNS.map((column) => <span className="use-header-cell flex items-center" key={column}>
+        <LabelHelp helpKey={`use.${column}.help`} labelKey={`use.${column}`} t={t} />
+      </span>)}
     </header>
     {shown.map((resource) => {
       const open = expanded.has(resource.key)
@@ -112,13 +114,12 @@ export function UseTable({
             const second = cell.second === undefined ? undefined : byLane.get(cell.second) ?? []
             const primary = seriesReading(points, cursor, locale, cell.kind, t("unit.per_second"))
             const secondary = second === undefined ? null : seriesReading(second, cursor, locale, cell.kind, t("unit.per_second"))
-            return <span className="use-cell relative min-w-0 py-1.5 pl-2 pr-[24px] max-[760px]:px-[5px]" key={column}>
-              <span className="flex items-baseline justify-between gap-[7px] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2">
-                <span>{t(`use.lane.${cell.lane}`)}</span>
+            return <span className="use-cell relative min-w-0 px-2 py-1.5 max-[760px]:px-[5px]" key={column}>
+              <span className="use-lane flex items-baseline justify-between gap-[7px] [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2">
+                <LabelHelp helpKey={useLaneHelp(cell.lane)} labelKey={`use.lane.${cell.lane}`} t={t} />
                 <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
               </span>
               <SparkCell cursor={cursor} end={end} hour={hour} max={sparkScaleMax(cell.kind, [points, ...(second === undefined ? [] : [second])])} points={points} second={second} />
-              <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
             </span>
           })}
         </div>
