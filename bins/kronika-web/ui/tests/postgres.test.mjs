@@ -32,26 +32,6 @@ const helpers = await importModule(
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
-const overviewHelpers = await importModule(
-  'export { pgMetricHistoryPlan } from "../src/postgres-view.tsx"',
-  { plugins: [registryPlugin([{
-    typeId: "overview-1", logicalName: "pg_stat_checkpointer", identity: ["kind_id"],
-    columns: ["ts", "kind_id", "mode", "writes", "latency_ms", "enabled"],
-    columnMetadata: [
-      { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
-      { name: "kind_id", type: "u32", class: "label", unit: null },
-      { name: "mode", type: "u32", class: "label", unit: null },
-      { name: "writes", type: "u64", class: "cumulative", unit: "count" },
-      { name: "latency_ms", type: "f64", class: "gauge", unit: "milliseconds" },
-      { name: "enabled", type: "bool", class: "label", unit: null },
-    ],
-  }, {
-    typeId: "info-1", logicalName: "pg_store_plans_info", identity: [],
-    columns: ["ts", "dealloc", "stats_reset"],
-  }])],
-  },
-)
-
 function layout(typeId, logicalName, identity, fields) {
   return { typeId, logicalName, identity, columns: [...new Set(fields)] }
 }
@@ -158,26 +138,6 @@ test("dense statement histories cover per-call and percentage lens metrics", () 
   assert.deepEqual(helpers.denseMetricHistory(laterZero, "1002002", { field: "plan_time_pct", kind: "percent" }).map(({ value }) => value), [null, 100 * 2 / 12, null])
 })
 
-
-test("one overview history request covers every chart field without proof-only dependencies", async () => {
-  const rate = (field) => ({ field, kind: "number", label: field, rate: true, sortable: true, width: 125 })
-  const gauge = { field: "latency_ms", kind: "milliseconds", label: "latency_ms", width: 145 }
-
-  const info = overviewHelpers.pgMetricHistoryPlan("info-1", [rate("dealloc")])
-  assert.deepEqual(info.fields, ["dealloc"])
-  assert.deepEqual(info.columns.map(({ cumulative }) => cumulative), [true])
-
-  const mixed = overviewHelpers.pgMetricHistoryPlan("overview-1", [rate("writes"), gauge])
-  assert.deepEqual(mixed.fields, ["writes", "latency_ms"])
-  assert.deepEqual(mixed.columns.map(({ column, cumulative }) => [column.field, cumulative]), [
-    ["writes", true],
-    ["latency_ms", false],
-  ])
-
-  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId\]\)/)
-  assert.doesNotMatch(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId, /)
-})
 
 test("Overview multirow histories keep complete fixed identities", () => {
   const io = row("1009002", { backend_type: "client backend", object: "relation", context: "normal", reads: 4 }, "pg_stat_io")
@@ -434,7 +394,6 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /pg-plans-empty/)
   assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
-  assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
   // The count belongs to the rows under it: an entity context or a filter
   // that empties the body must empty the count with it.

@@ -258,7 +258,10 @@ const TAB_FINDING_SECTIONS: Readonly<Record<PostgresSection, readonly string[]>>
   vacuum: ["pg_log_autovacuum"],
   locks: ["pg_locks", "pg_log_lock_waits"],
   statements: ["pg_log_slow_queries"],
-  plans: ["pg_store_plans_info"],
+  // pg_store_plans_info.dealloc is deliberately not a known-bad boundary
+  // (DESIGN.md): it grows routinely once the plan cache fills, so it has
+  // nothing to highlight here.
+  plans: [],
   databases: ["pg_stat_database"],
   tables: [],
   indexes: [],
@@ -390,7 +393,6 @@ export function PostgresView({
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
     {section === "vacuum" && <VacuumView cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} segments={segments} selectedKey={selectedKey} tablesLoading={tablesLoading} t={t} />}
     {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} segments={segments} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
-    {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
@@ -956,30 +958,6 @@ function VacuumLoadFacts({ blockSize, episode, load, locale, t, ticksPerSecond }
   </section>
 }
 
-const PLAN_DEALLOC_COLUMN = rateNumber("dealloc")
-const PLAN_DEALLOC_COLUMNS: readonly EntityColumn[] = [PLAN_DEALLOC_COLUMN]
-
-function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: { readonly cursor: number; readonly data: HourData; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
-  const row = snapshot(data.sections.pg_store_plans_info ?? [], cursor)[0] ?? null
-  const history = usePgMetricHistory(hour, row, PLAN_DEALLOC_COLUMNS, historyRevision)
-  if (row === null) return null
-  const dealloc = value(row, "dealloc")
-  const reset = value(row, "stats_reset")
-  const deallocHistory = history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []
-  // The stat line above already says the rate; a chart earns its space only
-  // once eviction actually happened this hour — otherwise it is a flat line
-  // sitting between the tab bar and the plans the operator came here for.
-  const everEvicted = deallocHistory.some((point) => point.value !== null && point.value > 0)
-  return <section className="pg-overview-section" data-testid="pg-plans-info">
-    <h2>pg_store_plans_info</h2>
-    <dl>
-      <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
-      <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
-    </dl>
-    {everEvicted && <SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={deallocHistory} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} />}
-  </section>
-}
-
 export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean): readonly ChartPoint[] {
   const owned = rows.filter((row) => Object.hasOwn(row.values, column.field))
     .slice().sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
@@ -988,33 +966,6 @@ export function postgresMetricHistory(rows: readonly DataRow[], column: EntityCo
     const earlier = owned[index - 1]
     const stored = earlier === undefined || earlier.typeId !== row.typeId ? null : intervalMetric(earlier, row, column.field)
     return { segmentId: row.segmentId, timestamp: row.timestamp, value: chartPointValue(stored, column) }
-  })
-}
-
-export interface PgMetricHistoryColumnPlan {
-  readonly column: EntityColumn
-  readonly cumulative: boolean
-}
-
-export function pgMetricHistoryPlan(typeId: string, columns: readonly EntityColumn[]): { readonly columns: readonly PgMetricHistoryColumnPlan[]; readonly fields: readonly string[] } {
-  const layout = registry.find((candidate) => candidate.typeId === typeId)
-  const planned = columns.map((column) => {
-    const metadata = layout?.columnMetadata?.find(({ name }) => name === column.field)
-    const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
-    return { column, cumulative }
-  })
-  const fields = uniqueText(columns.map(({ field }) => field))
-  return { columns: planned, fields }
-}
-
-function usePgMetricHistory(hour: number, row: DataRow | null, columns: readonly EntityColumn[], historyRevision: number): HistoryState<ReadonlyMap<string, readonly ChartPoint[]>> {
-  const target = row === null || columns.length === 0
-    ? null
-    : JSON.stringify([hour, row.logicalName, row.typeId])
-  return useHistoryRequest(target, historyRevision, row === null || columns.length === 0 ? null : async (signal) => {
-    const plan = pgMetricHistoryPlan(row.typeId, columns)
-    const rows = await loadSeries(hour, row.logicalName, {}, plan.fields, signal, row.typeId)
-    return new Map(plan.columns.map(({ column, cumulative }) => [column.field, postgresMetricHistory(rows, column, cumulative)]))
   })
 }
 
