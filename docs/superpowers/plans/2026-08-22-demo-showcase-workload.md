@@ -30,12 +30,12 @@
 
 **Interfaces:**
 - Produces: `periodic_chain_keys(chains: u32) -> Range<u32>` used by every lock round.
-- Produces: defaults `chains=1`, `depth=3`, `hold_ms=4000`, `round_interval_s=45`.
+- Produces: defaults `chains=1`, `depth=4`, `hold_ms=4000`, `round_interval_s=45`; the final waiter reaches a finite 10-second statement timeout.
 
 - [ ] Add `all_chains_run_in_periodic_rounds`, asserting keys `[0]` and `[0, 1]`.
 - [ ] Run `cargo test -p kronika-demo workload::locks::tests::all_chains_run_in_periodic_rounds` and confirm RED because `periodic_chain_keys` is absent.
 - [ ] Implement `periodic_chain_keys`, use it in `run_one_round`, and remove `hold_continuous_chain` plus all timeout-zero SQL.
-- [ ] Change lock defaults and the test fixture to `1`, `3`, `4000`, `45`.
+- [ ] Change lock defaults and the test fixture to `1`, `4`, `4000`, `45`, with a 10-second timeout on each lock update.
 - [ ] Run `cargo test -p kronika-demo workload::locks::tests::all_chains_run_in_periodic_rounds` and the full `cargo test -p kronika-demo`.
 
 ### Task 2: Separate rare events from steady DML

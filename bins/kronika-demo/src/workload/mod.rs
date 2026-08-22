@@ -121,7 +121,7 @@ impl WorkloadConfig {
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
             sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 4)?,
             lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 1)?,
-            lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 3)?,
+            lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 4)?,
             lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
             lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
             event_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S", 60)?,
@@ -160,6 +160,10 @@ impl WorkloadConfig {
         anyhow::ensure!(
             self.lock_hold_ms > 0,
             "KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS must be greater than zero"
+        );
+        anyhow::ensure!(
+            locks::round_has_timed_out_tail(self.lock_chain_depth, self.lock_hold_ms),
+            "lock timing must let an earlier waiter acquire the row and a later waiter reach statement_timeout"
         );
         anyhow::ensure!(
             self.lock_round_interval_s > 0,

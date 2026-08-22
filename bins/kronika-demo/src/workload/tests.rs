@@ -9,7 +9,7 @@ fn config() -> WorkloadConfig {
         ddl_concurrency: 4,
         sessions: 4,
         lock_chains: 1,
-        lock_chain_depth: 3,
+        lock_chain_depth: 4,
         lock_hold_ms: 4_000,
         lock_round_interval_s: 45,
         event_round_interval_s: 60,
@@ -51,6 +51,10 @@ fn workload_dimensions_and_timers_must_be_positive() {
         invalid.lock_chain_depth = depth;
         assert!(invalid.validate().is_err());
     }
+
+    let mut no_timed_out_tail = valid.clone();
+    no_timed_out_tail.lock_chain_depth = 3;
+    assert!(no_timed_out_tail.validate().is_err());
 
     let mut invalid = valid.clone();
     invalid.lock_hold_ms = 0;

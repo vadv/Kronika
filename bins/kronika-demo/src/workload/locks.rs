@@ -5,11 +5,10 @@
 //! interval with no demo-owned lock wait.
 //!
 //! Each chain targets its own row. Every link in a chain issues the exact
-//! same `UPDATE ... WHERE id = <chain key>` inside its own transaction and
-//! holds it for a fixed duration before committing. `PostgreSQL`'s row-lock
-//! queue is FIFO, so the second link genuinely waits for the first, the
-//! third waits for the second, and so on — no manual coordination between
-//! the links is needed.
+//! same `UPDATE ... WHERE id = <chain key>` inside its own transaction.
+//! Successful links hold the row for a fixed duration before committing.
+//! `PostgreSQL`'s row-lock queue is FIFO, so later links wait behind earlier
+//! ones until the final waiter reaches its finite statement timeout.
 
 use super::{WorkloadConfig, connect, naming, wait_for_stop};
 use std::sync::Arc;
@@ -18,6 +17,8 @@ use std::time::Duration;
 
 #[cfg(test)]
 mod tests;
+
+const LOCK_STATEMENT_TIMEOUT_S: u64 = 10;
 
 /// Run lock-chain rounds until `stop` is set.
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
@@ -70,6 +71,20 @@ const fn periodic_chain_keys(chains: u32) -> std::ops::Range<u32> {
     0..chains
 }
 
+pub(super) fn round_has_timed_out_tail(depth: u32, hold_ms: u64) -> bool {
+    let timeout_ms = u128::from(LOCK_STATEMENT_TIMEOUT_S) * 1_000;
+    let hold_ms = u128::from(hold_ms);
+    let longest_wait_ms = hold_ms * u128::from(depth.saturating_sub(1));
+    hold_ms < timeout_ms && longest_wait_ms > timeout_ms
+}
+
+fn lock_update_sql(table: &str, key: i64) -> String {
+    format!(
+        "set local statement_timeout = '{LOCK_STATEMENT_TIMEOUT_S}s'; \
+         update {table} set id = id where id = {key}"
+    )
+}
+
 /// Lock row `key` in `table` for `hold`, inside its own transaction on its
 /// own connection.
 ///
@@ -89,9 +104,7 @@ async fn hold_one_link(dsn: &str, table: &str, key: i64, hold: Duration) {
         eprintln!("kronika-demo: lock-chain link could not begin: {error:?}");
         return;
     }
-    let locked = client
-        .batch_execute(&format!("update {table} set id = id where id = {key}"))
-        .await;
+    let locked = client.batch_execute(&lock_update_sql(table, key)).await;
     if let Err(error) = locked {
         eprintln!("kronika-demo: lock-chain link could not lock row {key}: {error:?}");
         drop(client.batch_execute("rollback").await);

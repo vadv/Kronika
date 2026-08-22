@@ -105,7 +105,7 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Concurrent setup connections. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Long-lived DML sessions. |
 | `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 1 | Independent lock chains in each bounded round. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Transactions in each lock chain; must be at least two. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 4 | Transactions in each lock chain. Together with the hold time, this must let an earlier waiter acquire the row and a later waiter reach the fixed 10-second statement timeout. |
 | `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 4000 | Lock hold time per link in a lock round, milliseconds. |
 | `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 45 | Quiet pause after each lock round, seconds. |
 | `KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S` | 60 | Quiet pause after one slow query, one bad statement, and one bad-database attempt. |
@@ -116,15 +116,19 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 Each session uses a fixed pseudo-random sequence. Four table shapes produce
 varied statements across 160 tables without pathological setup load. Steady
 sessions run bounded insert, update, select, and delete traffic. Separate
-deterministic episodes create real slow-query and error findings, a depth-three
-PostgreSQL row-lock chain, and a throttled Vacuum over a dedicated table.
+deterministic episodes create real slow-query and error findings, a depth-four
+PostgreSQL row-lock chain with a timed-out final waiter, and a throttled Vacuum
+over a dedicated table.
 
 The first episode of every kind starts immediately. A lock round lasts about
-12 seconds and is followed by 45 quiet seconds, so Locks and Activity show both
-the incident and its recovery instead of a permanent wait. Slow/error and
-Vacuum rounds follow the same incident-then-recovery pattern at their own
-cadences. The image samples PostgreSQL every 5 seconds so every bounded episode
-crosses at least one collection tick. No scenario disables `statement_timeout` or
+12 seconds: earlier links commit, while the final waiter reaches its explicit
+10-second `statement_timeout`. This produces real lock-wait and PostgreSQL error
+events. A 45-second quiet period follows, so Locks and Activity show both the
+incident and its recovery instead of a permanent wait. The generator repeats
+the sequence for its entire lifetime. Slow/error and Vacuum rounds follow the
+same incident-then-recovery pattern at their own cadences. The image samples
+PostgreSQL every 5 seconds so every bounded episode crosses at least one
+collection tick. No scenario disables `statement_timeout` or
 `idle_in_transaction_session_timeout`.
 
 For a direct binary run:
