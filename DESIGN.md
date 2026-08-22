@@ -327,6 +327,10 @@ not interpolate it or carry a previous value across it.
 
 ### Known-bad boundaries
 
+A boundary counts only when it is rare in a healthy system and
+unconditionally bad; a value that moves routinely with ordinary load does
+not qualify, however abnormal-sounding its name.
+
 The initial exact comparisons are:
 
 - a recorded slow-query occurrence lasts at least 5 seconds;

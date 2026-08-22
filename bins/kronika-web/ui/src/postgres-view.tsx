@@ -258,9 +258,6 @@ const TAB_FINDING_SECTIONS: Readonly<Record<PostgresSection, readonly string[]>>
   vacuum: ["pg_log_autovacuum"],
   locks: ["pg_locks", "pg_log_lock_waits"],
   statements: ["pg_log_slow_queries"],
-  // pg_store_plans_info.dealloc is deliberately not a known-bad boundary
-  // (DESIGN.md): it grows routinely once the plan cache fills, so it has
-  // nothing to highlight here.
   plans: [],
   databases: ["pg_stat_database"],
   tables: [],
