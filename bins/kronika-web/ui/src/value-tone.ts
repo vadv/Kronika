@@ -7,6 +7,11 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
   if (field === "state") {
     if (text === "idle in transaction (aborted)") return "critical"
     if (text === "idle in transaction") return "warning"
+    // Linux process state, ps/top style: running is worth noticing, stuck in
+    // uninterruptible sleep points at I/O, a zombie means nobody reaped it.
+    if (text === "R") return "good"
+    if (text === "D") return "warning"
+    if (text === "Z") return "critical"
   }
   if (field === "wait_event_type" && text !== null && text !== "") return "warning"
 
@@ -37,6 +42,9 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
     case "plan_time_pct":
       if (number < 50) return "good"
       return number < 80 ? "warning" : "critical"
+    case "cpu_percent":
+      if (number >= 90) return "critical"
+      return number >= 50 ? "warning" : null
     default:
       return null
   }

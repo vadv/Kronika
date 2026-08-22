@@ -68,6 +68,20 @@ test("statement stability and planning use exact inclusive boundaries", () => {
   assert.equal(semanticValueTone("plan_time_pct", 80), "critical")
 })
 
+test("a Linux process state carries its own top-style tones, distinct from PostgreSQL's idle-in-transaction states", () => {
+  assert.equal(semanticValueTone("state", "R"), "good")
+  assert.equal(semanticValueTone("state", "D"), "warning")
+  assert.equal(semanticValueTone("state", "Z"), "critical")
+  assert.equal(semanticValueTone("state", "S"), null)
+})
+
+test("%CPU crosses into a top-style warning, then critical, at busy but plain round numbers", () => {
+  assert.equal(semanticValueTone("cpu_percent", 49.999), null)
+  assert.equal(semanticValueTone("cpu_percent", 50), "warning")
+  assert.equal(semanticValueTone("cpu_percent", 89.999), "warning")
+  assert.equal(semanticValueTone("cpu_percent", 90), "critical")
+})
+
 test("workload volume and identifiers stay neutral", () => {
   assert.equal(semanticValueTone("execution_ms_per_second", 10_000), null)
   assert.equal(semanticValueTone("rows_per_second", 86_400_000), null)

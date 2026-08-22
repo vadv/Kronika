@@ -25,6 +25,14 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import { semanticValueTone } from "./value-tone"
+
+const TONE_TEXT_CLASS: Readonly<Record<string, string>> = {
+  good: "text-ok",
+  warning: "text-warn",
+  critical: "text-bad",
+  inactive: "text-fg4",
+}
 
 export interface Field {
   readonly id: string
@@ -78,7 +86,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     PID, TREE_COMMAND, USER,
     percentField("cpu_percent", "col.cpu_percent", 72), percentField("mem_percent", "col.mem_percent", 72),
     kibField("vmem_kb", "col.vmem", 96), kibField("rmem_kb", "col.rmem", 96), idField("tty", "col.tty", 70),
-    STATE, timestampField("starttime", "col.starttime", 150), secondsField("cpu_time_seconds", "col.cpu_time", 84),
+    STATE, timestampField("starttime", "col.starttime", 210), secondsField("cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 
@@ -354,7 +362,9 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
     : field.kind === "timestamp" ? (timestamp === null ? "—" : time.timestamp(timestamp))
     : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${isCommand || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{treePrefix !== "" && <span aria-hidden="true" className="process-tree-prefix">{treePrefix}</span>}{isCommand && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+  const tone = field.field === undefined ? null : semanticValueTone(field.field, cell)
+  const toneClass = tone === null ? "" : ` value-tone-${tone} ${TONE_TEXT_CLASS[tone]}`
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap${toneClass} ${isCommand || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{treePrefix !== "" && <span aria-hidden="true" className="process-tree-prefix">{treePrefix}</span>}{isCommand && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
     ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
     : output}</span>
 }
