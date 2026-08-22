@@ -1,4 +1,4 @@
-use super::{WorkloadConfig, required_vacuum_dsn};
+use super::{WorkloadConfig, connection_config, required_vacuum_dsn};
 
 fn config() -> WorkloadConfig {
     WorkloadConfig {
@@ -13,6 +13,11 @@ fn config() -> WorkloadConfig {
         lock_hold_ms: 4_000,
         lock_round_interval_s: 45,
         event_round_interval_s: 60,
+        plan_rows: 300_000,
+        plan_workers: 4,
+        plan_baseline_s: 12,
+        plan_regression_s: 30,
+        plan_round_interval_s: 120,
         vacuum_rows: 100_000,
         vacuum_round_interval_s: 180,
         vacuum_statement_timeout_s: 30,
@@ -39,6 +44,16 @@ fn vacuum_workload_requires_an_explicit_direct_connection() {
 }
 
 #[test]
+fn scenario_connections_override_the_generic_dsn_identity() {
+    let config = connection_config(
+        "host=127.0.0.1 application_name=generic-workload",
+        "checkout-api",
+    )
+    .unwrap();
+    assert_eq!(config.get_application_name(), Some("checkout-api"));
+}
+
+#[test]
 fn workload_dimensions_and_timers_must_be_positive() {
     let valid = config();
     assert!(valid.validate().is_ok());
@@ -49,6 +64,8 @@ fn workload_dimensions_and_timers_must_be_positive() {
         |value: &mut WorkloadConfig| value.ddl_concurrency = 0,
         |value: &mut WorkloadConfig| value.sessions = 0,
         |value: &mut WorkloadConfig| value.lock_chains = 0,
+        |value: &mut WorkloadConfig| value.plan_rows = 0,
+        |value: &mut WorkloadConfig| value.plan_workers = 0,
         |value: &mut WorkloadConfig| value.vacuum_rows = 0,
     ] {
         let mut invalid = valid.clone();
@@ -77,6 +94,16 @@ fn workload_dimensions_and_timers_must_be_positive() {
     let mut invalid = valid;
     invalid.event_round_interval_s = 0;
     assert!(invalid.validate().is_err());
+
+    for invalidate in [
+        |value: &mut WorkloadConfig| value.plan_baseline_s = 0,
+        |value: &mut WorkloadConfig| value.plan_regression_s = 0,
+        |value: &mut WorkloadConfig| value.plan_round_interval_s = 0,
+    ] {
+        let mut invalid = config();
+        invalidate(&mut invalid);
+        assert!(invalid.validate().is_err());
+    }
 
     let mut invalid = config();
     invalid.vacuum_round_interval_s = 0;

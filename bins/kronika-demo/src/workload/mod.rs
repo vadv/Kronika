@@ -3,14 +3,15 @@
 //! Disabled unless `KRONIKA_DEMO_WORKLOAD_DSN` is set, which leaves
 //! `kronika-demo` exactly as it behaves without this feature. The Vacuum
 //! scenario also requires an explicit direct `PostgreSQL` DSN; numeric tuning
-//! variables have defaults sized for a demo container: hundreds of tables
-//! across several schemas, a steady mix of reads and writes, and real
-//! lock-wait chains, so a fresh `docker run` already populates the dashboards.
+//! variables have defaults sized for a demo container: one recognizable
+//! commerce schema, a steady mix of reads and writes, and short real
+//! investigation episodes, so a fresh `docker run` tells a coherent story.
 
 mod dml;
 mod events;
 mod locks;
 mod naming;
+mod plans;
 mod schema;
 mod vacuum;
 
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, Config, NoTls};
 
 /// Validated workload configuration.
 #[derive(Clone)]
@@ -47,6 +48,16 @@ pub(crate) struct WorkloadConfig {
     pub(crate) lock_round_interval_s: u64,
     /// Pause between bounded slow/error episodes, seconds.
     pub(crate) event_round_interval_s: u64,
+    /// Rows kept in the orders table used by the plan-regression story.
+    pub(crate) plan_rows: u32,
+    /// Checkout sessions that exercise each plan.
+    pub(crate) plan_workers: u32,
+    /// Seconds the indexed plan runs before and after a regression.
+    pub(crate) plan_baseline_s: u64,
+    /// Seconds the checkout query runs without its supporting index.
+    pub(crate) plan_regression_s: u64,
+    /// Quiet pause after a complete before/during/after plan story.
+    pub(crate) plan_round_interval_s: u64,
     /// Rows maintained in the dedicated vacuum showcase table.
     pub(crate) vacuum_rows: u32,
     /// Pause between bounded vacuum episodes, seconds.
@@ -69,6 +80,11 @@ impl fmt::Debug for WorkloadConfig {
             .field("lock_hold_ms", &self.lock_hold_ms)
             .field("lock_round_interval_s", &self.lock_round_interval_s)
             .field("event_round_interval_s", &self.event_round_interval_s)
+            .field("plan_rows", &self.plan_rows)
+            .field("plan_workers", &self.plan_workers)
+            .field("plan_baseline_s", &self.plan_baseline_s)
+            .field("plan_regression_s", &self.plan_regression_s)
+            .field("plan_round_interval_s", &self.plan_round_interval_s)
             .field("vacuum_rows", &self.vacuum_rows)
             .field("vacuum_round_interval_s", &self.vacuum_round_interval_s)
             .field(
@@ -128,15 +144,20 @@ impl WorkloadConfig {
         let config = Self {
             dsn,
             vacuum_dsn,
-            schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 4)?,
-            tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 40)?,
+            schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 1)?,
+            tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 8)?,
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
             sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 4)?,
             lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 1)?,
             lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 4)?,
             lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
-            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
-            event_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S", 60)?,
+            lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 120)?,
+            event_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S", 180)?,
+            plan_rows: env_u32("KRONIKA_DEMO_WORKLOAD_PLAN_ROWS", 300_000)?,
+            plan_workers: env_u32("KRONIKA_DEMO_WORKLOAD_PLAN_WORKERS", 4)?,
+            plan_baseline_s: env_u64("KRONIKA_DEMO_WORKLOAD_PLAN_BASELINE_S", 12)?,
+            plan_regression_s: env_u64("KRONIKA_DEMO_WORKLOAD_PLAN_REGRESSION_S", 30)?,
+            plan_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_PLAN_ROUND_INTERVAL_S", 120)?,
             vacuum_rows: env_u32("KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS", 100_000)?,
             vacuum_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S", 180)?,
             vacuum_statement_timeout_s: env_u64(
@@ -161,6 +182,8 @@ impl WorkloadConfig {
             ),
             ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions),
             ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains),
+            ("KRONIKA_DEMO_WORKLOAD_PLAN_ROWS", self.plan_rows),
+            ("KRONIKA_DEMO_WORKLOAD_PLAN_WORKERS", self.plan_workers),
             ("KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS", self.vacuum_rows),
         ] {
             anyhow::ensure!(value > 0, "{key} must be greater than zero");
@@ -186,6 +209,18 @@ impl WorkloadConfig {
             "KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S must be greater than zero"
         );
         anyhow::ensure!(
+            self.plan_baseline_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_PLAN_BASELINE_S must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.plan_regression_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_PLAN_REGRESSION_S must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.plan_round_interval_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_PLAN_ROUND_INTERVAL_S must be greater than zero"
+        );
+        anyhow::ensure!(
             self.vacuum_round_interval_s > 0,
             "KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S must be greater than zero"
         );
@@ -197,13 +232,23 @@ impl WorkloadConfig {
     }
 }
 
-/// Connect to `dsn` and drive its connection on a background task.
+/// Connect to `dsn` with a scenario-specific identity and drive its connection
+/// on a background task.
 ///
 /// # Errors
 ///
 /// Returns an error when the connection cannot be established.
-pub(crate) async fn connect(dsn: &str) -> Result<Client> {
-    let (client, connection) = tokio_postgres::connect(dsn, NoTls)
+fn connection_config(dsn: &str, application_name: &str) -> Result<Config> {
+    let mut config = dsn
+        .parse::<Config>()
+        .context("parse the demo PostgreSQL workload DSN")?;
+    config.application_name(application_name);
+    Ok(config)
+}
+
+pub(crate) async fn connect_as(dsn: &str, application_name: &str) -> Result<Client> {
+    let (client, connection) = connection_config(dsn, application_name)?
+        .connect(NoTls)
         .await
         .context("connect to the demo PostgreSQL workload")?;
     tokio::spawn(async move {
@@ -275,6 +320,11 @@ async fn run(config: WorkloadConfig, stop: Arc<AtomicBool>) -> Result<()> {
         let config = config.clone();
         let stop = Arc::clone(&stop);
         async move { events::run_rounds(&config, &stop).await }
+    }));
+    tasks.push(tokio::spawn({
+        let config = config.clone();
+        let stop = Arc::clone(&stop);
+        async move { plans::run_rounds(&config, &stop).await }
     }));
     tasks.push(tokio::spawn({
         let config = config.clone();

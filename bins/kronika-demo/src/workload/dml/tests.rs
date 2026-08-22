@@ -1,4 +1,4 @@
-use super::{Action, next_action, session_rng};
+use super::{Action, next_action, ordinary_sql, session_application_name, session_rng};
 use rand::Rng as _;
 
 #[test]
@@ -38,4 +38,26 @@ fn each_session_has_a_repeatable_independent_sequence() {
     };
     assert_eq!(draw(3), draw(3));
     assert_ne!(draw(3), draw(4));
+}
+
+#[test]
+fn sessions_have_roles_an_operator_can_recognize() {
+    assert_eq!(session_application_name(0), "checkout-api");
+    assert_eq!(session_application_name(1), "catalog-api");
+    assert_eq!(session_application_name(2), "payments-worker");
+    assert_eq!(session_application_name(3), "fulfillment-worker");
+    assert_eq!(session_application_name(4), "checkout-api");
+}
+
+#[test]
+fn steady_updates_touch_one_key_instead_of_rewriting_the_whole_table() {
+    assert_eq!(
+        ordinary_sql("shop.orders", Action::Update, 12_345),
+        Some("update shop.orders set id = id where id = 12345".to_owned())
+    );
+    assert!(
+        !ordinary_sql("shop.orders", Action::Update, 12_345)
+            .unwrap()
+            .contains("where id is not null")
+    );
 }

@@ -4,7 +4,7 @@
 //! rows are not one shape repeated throughout: `pg_stat_statements`
 //! and the system tables view get something genuinely varied to show.
 
-use super::{WorkloadConfig, connect, naming};
+use super::{WorkloadConfig, connect_as, naming};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,15 +23,25 @@ struct Table {
 /// Every column but `id` has a default: the workload's `Insert` action names
 /// only `id`, the one column every shape shares, so it stays shape-agnostic
 /// instead of needing to know which columns each shape requires.
-const SHAPES: [&str; 4] = [
-    "(id bigint primary key, customer text default 'demo', total_cents bigint default 0, \
+const SHAPES: [&str; 8] = [
+    "(id bigint primary key, customer_id bigint not null default 0, \
+     status text not null default 'paid', total_cents bigint not null default 0, \
      placed_at timestamptz not null default now())",
+    "(id bigint primary key, email text not null default 'demo@example.test', \
+     tier text not null default 'standard', created_at timestamptz not null default now())",
+    "(id bigint primary key, order_id bigint not null default 0, product_id bigint not null default 0, \
+     quantity integer not null default 1, unit_cents bigint not null default 0)",
+    "(id bigint primary key, sku text not null default 'DEMO', name text not null default 'Demo product', \
+     price_cents bigint not null default 0)",
+    "(id bigint primary key, product_id bigint not null default 0, available integer not null default 0, \
+     reserved integer not null default 0)",
+    "(id bigint primary key, order_id bigint not null default 0, state text not null default 'captured', \
+     amount_cents bigint not null default 0, paid_at timestamptz)",
     "(id bigint primary key, occurred_at timestamptz not null default now(), \
-     kind text default 'demo', payload text)",
-    "(id bigint primary key, profile jsonb not null default '{}'::jsonb, \
-     updated_at timestamptz not null default now())",
-    "(id bigint primary key, a numeric, b numeric, c numeric, d numeric, \
-     e numeric, f numeric)",
+     kind text not null default 'checkout', payload text)",
+    "(id bigint primary key, customer_id bigint not null default 0, \
+     expires_at timestamptz not null default now() + interval '1 hour', \
+     metadata jsonb not null default '{}'::jsonb)",
 ];
 
 /// Log a setup progress line at most this often, in tables created.
@@ -57,7 +67,7 @@ fn table_ddl(table: Table) -> (String, String) {
 ///
 /// Returns an error when the schema-setup connection cannot be opened.
 pub(crate) async fn create_all(config: &WorkloadConfig) -> Result<()> {
-    let setup = connect(&config.dsn)
+    let setup = connect_as(&config.dsn, "deploy-migration")
         .await
         .context("open the schema-setup connection")?;
     for schema in 0..config.schemas {
@@ -109,7 +119,9 @@ async fn create_chunk(
     progress: &AtomicUsize,
     total: usize,
 ) -> Result<()> {
-    let client = connect(dsn).await.context("open a DDL connection")?;
+    let client = connect_as(dsn, "schema-loader")
+        .await
+        .context("open a DDL connection")?;
     for table in chunk {
         let (name, ddl) = table_ddl(*table);
         // `batch_execute`, not `execute`: the workload connects through

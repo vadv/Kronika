@@ -2,7 +2,7 @@
 //! Slow and failing showcase statements run separately in `events`, so the
 //! baseline stays useful between anomaly episodes.
 
-use super::{WorkloadConfig, connect, naming};
+use super::{WorkloadConfig, connect_as, naming};
 use rand::rngs::StdRng;
 use rand::{Rng as _, SeedableRng as _};
 use std::sync::Arc;
@@ -43,6 +43,16 @@ pub(crate) const fn next_action(roll: u32) -> Action {
 
 const JITTER_MS: [u64; 3] = [200, 500, 900];
 const WORKLOAD_SEED: u64 = 0x4b52_4f4e_494b_4100;
+const SESSION_APPLICATIONS: [&str; 4] = [
+    "checkout-api",
+    "catalog-api",
+    "payments-worker",
+    "fulfillment-worker",
+];
+
+pub(crate) const fn session_application_name(session: u32) -> &'static str {
+    SESSION_APPLICATIONS[session as usize % SESSION_APPLICATIONS.len()]
+}
 
 fn session_rng(session: u32) -> StdRng {
     StdRng::seed_from_u64(WORKLOAD_SEED ^ u64::from(session))
@@ -50,7 +60,7 @@ fn session_rng(session: u32) -> StdRng {
 
 /// Run one session until `stop` is set.
 pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let Ok(client) = connect(&config.dsn).await else {
+    let Ok(client) = connect_as(&config.dsn, session_application_name(session)).await else {
         eprintln!("kronika-demo: workload session {session} could not connect");
         return;
     };
@@ -84,29 +94,12 @@ pub(super) async fn perform(
     action: Action,
     id: i64,
 ) -> anyhow::Result<()> {
+    if let Some(sql) = ordinary_sql(table, action, id) {
+        client.batch_execute(&sql).await?;
+        return Ok(());
+    }
     match action {
-        Action::Insert => {
-            client
-                .batch_execute(&format!(
-                    "insert into {table} (id) values ({id}) on conflict do nothing"
-                ))
-                .await?;
-        }
-        Action::Update => {
-            client
-                .batch_execute(&format!("update {table} set id = id where id is not null"))
-                .await?;
-        }
-        Action::Select => {
-            client
-                .batch_execute(&format!("select * from {table} limit 50"))
-                .await?;
-        }
-        Action::Delete => {
-            client
-                .batch_execute(&format!("delete from {table} where false"))
-                .await?;
-        }
+        Action::Insert | Action::Update | Action::Select | Action::Delete => unreachable!(),
         Action::SlowQuery => {
             client.batch_execute("select pg_sleep(6)").await?;
         }
@@ -115,10 +108,22 @@ pub(super) async fn perform(
             drop(client.batch_execute("slect 1").await);
         }
         Action::BadDatabase => {
-            drop(connect(&format!("{} dbname=nope", config.dsn)).await);
+            drop(connect_as(&format!("{} dbname=nope", config.dsn), "misconfigured-api").await);
         }
     }
     Ok(())
+}
+
+pub(crate) fn ordinary_sql(table: &str, action: Action, id: i64) -> Option<String> {
+    match action {
+        Action::Insert => Some(format!(
+            "insert into {table} (id) values ({id}) on conflict do nothing"
+        )),
+        Action::Update => Some(format!("update {table} set id = id where id = {id}")),
+        Action::Select => Some(format!("select * from {table} limit 50")),
+        Action::Delete => Some(format!("delete from {table} where false")),
+        Action::SlowQuery | Action::BadStatement | Action::BadDatabase => None,
+    }
 }
 
 #[cfg(test)]

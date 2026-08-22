@@ -1,4 +1,6 @@
-use super::{lock_update_sql, periodic_chain_keys, round_has_timed_out_tail};
+use super::{
+    link_application_name, lock_update_sql, periodic_chain_keys, round_has_timed_out_tail,
+};
 
 #[test]
 fn all_chains_run_in_periodic_rounds() {
@@ -16,7 +18,14 @@ fn the_default_round_times_out_only_after_an_earlier_waiter_can_run() {
 #[test]
 fn every_lock_update_sets_a_finite_statement_timeout() {
     assert_eq!(
-        lock_update_sql("tenant_0.workload_0", 7),
-        "set local statement_timeout = '10s'; update tenant_0.workload_0 set id = id where id = 7"
+        lock_update_sql("shop.orders", 7),
+        "set local statement_timeout = '10s'; update shop.orders set id = id where id = 7"
     );
+}
+
+#[test]
+fn the_holder_and_checkout_waiters_have_distinct_visible_roles() {
+    assert_eq!(link_application_name(0), "payment-reconciler");
+    assert_eq!(link_application_name(1), "checkout-api");
+    assert_eq!(link_application_name(99), "checkout-api");
 }

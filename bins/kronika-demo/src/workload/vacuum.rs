@@ -1,22 +1,22 @@
 //! Periodic table churn and throttled `VACUUM` episodes.
 
-use super::{WorkloadConfig, connect, wait_for_stop};
+use super::{WorkloadConfig, connect_as, wait_for_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_postgres::Client;
 
-const TABLE: &str = "tenant_0.vacuum_showcase";
+const TABLE: &str = "shop.event_log";
 
 fn setup_sql(rows: u32) -> String {
     format!(
         "create table if not exists {TABLE} (\
-             id bigint primary key, \
-             payload text not null, \
-             changed_at timestamptz not null default clock_timestamp()\
-         ) with (fillfactor = 80); \
-         insert into {TABLE} (id, payload) \
-         select series, repeat(md5(series::text), 8) \
+             id bigint primary key, occurred_at timestamptz not null default now(), \
+             kind text not null default 'checkout', payload text\
+         ); \
+         alter table {TABLE} set (fillfactor = 80); \
+         insert into {TABLE} (id, kind, payload, occurred_at) \
+         select series, 'fulfillment', repeat(md5(series::text), 8), clock_timestamp() \
          from generate_series(1, {rows}) as series \
          on conflict (id) do nothing"
     )
@@ -31,7 +31,7 @@ fn run_sql(timeout_s: u64) -> Vec<String> {
         ),
         format!(
             "update {TABLE} \
-             set payload = reverse(payload), changed_at = clock_timestamp()"
+             set payload = reverse(coalesce(payload, '')), occurred_at = clock_timestamp()"
         ),
         format!("vacuum (analyze) {TABLE}"),
         "reset vacuum_cost_delay; reset vacuum_cost_limit; reset statement_timeout".to_owned(),
@@ -43,7 +43,7 @@ fn run_sql(timeout_s: u64) -> Vec<String> {
 /// throttling settings are session-scoped and must not cross `PgBouncer`'s
 /// transaction-pooling boundary.
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let client = match connect(&config.vacuum_dsn).await {
+    let client = match connect_as(&config.vacuum_dsn, "vacuum-worker").await {
         Ok(client) => client,
         Err(error) => {
             eprintln!("kronika-demo: vacuum workload could not connect: {error:#}");
@@ -55,7 +55,10 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
         return;
     }
 
+    wait_for_stop(stop, Duration::from_secs(95)).await;
+
     while !stop.load(Ordering::Relaxed) {
+        println!("kronika-demo: vacuum story starting event-log maintenance");
         if let Err(error) = run_one_round(&client, config.vacuum_statement_timeout_s).await {
             eprintln!("kronika-demo: vacuum episode failed: {error:#}");
         }
