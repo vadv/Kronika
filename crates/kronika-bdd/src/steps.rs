@@ -6,6 +6,7 @@
 
 mod dump;
 mod given;
+mod then_demo;
 mod then_dump;
 mod then_log;
 mod then_segment;

@@ -151,6 +151,16 @@ impl Postgres {
             .context("run psql")?;
         Ok(())
     }
+
+    /// Return one scalar value from the running server.
+    pub(crate) fn scalar(&self, sql: &str) -> Result<String> {
+        let quoted = sql.replace('\'', r"'\''");
+        let output = as_postgres(&format!(
+            "{} --tuples-only --no-align --command '{quoted}'",
+            self.psql
+        ))?;
+        Ok(output.trim().to_owned())
+    }
 }
 
 impl PgBouncer {

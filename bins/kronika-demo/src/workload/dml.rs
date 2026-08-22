@@ -43,6 +43,7 @@ pub(crate) const fn next_action(roll: u32) -> Action {
 
 const JITTER_MS: [u64; 3] = [200, 500, 900];
 const WORKLOAD_SEED: u64 = 0x4b52_4f4e_494b_4100;
+const ROW_KEY_SPACE: u64 = 10_000;
 const SESSION_APPLICATIONS: [&str; 4] = [
     "checkout-api",
     "catalog-api",
@@ -56,6 +57,10 @@ pub(crate) const fn session_application_name(session: u32) -> &'static str {
 
 fn session_rng(session: u32) -> StdRng {
     StdRng::seed_from_u64(WORKLOAD_SEED ^ u64::from(session))
+}
+
+pub(crate) fn bounded_row_id(random: u64) -> i64 {
+    i64::try_from(random % ROW_KEY_SPACE + 1).expect("bounded row ID must fit in i64")
 }
 
 /// Run one session until `stop` is set.
@@ -72,7 +77,7 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
         );
         let action = next_action(rng.gen_range(0..100));
         let pause_ms = JITTER_MS[rng.gen_range(0..JITTER_MS.len())];
-        let id = rng.gen_range(0..i64::MAX);
+        let id = bounded_row_id(rng.r#gen());
         if let Err(error) = perform(&client, config, &table, action, id).await {
             eprintln!("kronika-demo: session {session} {action:?} on {table} failed: {error:#}");
         }

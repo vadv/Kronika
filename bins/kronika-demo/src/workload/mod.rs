@@ -2,7 +2,7 @@
 //!
 //! Disabled unless `KRONIKA_DEMO_WORKLOAD_DSN` is set, which leaves
 //! `kronika-demo` exactly as it behaves without this feature. The Vacuum
-//! scenario also requires an explicit direct `PostgreSQL` DSN; numeric tuning
+//! direct-only scenarios also require an explicit direct `PostgreSQL` DSN; numeric tuning
 //! variables have defaults sized for a demo container: one recognizable
 //! commerce schema, a steady mix of reads and writes, and short real
 //! investigation episodes, so a fresh `docker run` tells a coherent story.
@@ -28,8 +28,8 @@ use tokio_postgres::{Client, Config, NoTls};
 pub(crate) struct WorkloadConfig {
     /// Where the workload connects, normally through `PgBouncer`.
     pub(crate) dsn: String,
-    /// Direct `PostgreSQL` connection used for session-scoped `VACUUM` tuning.
-    pub(crate) vacuum_dsn: String,
+    /// Direct `PostgreSQL` connection used for the plan story and Vacuum tuning.
+    pub(crate) direct_dsn: String,
     /// How many schemas to create.
     pub(crate) schemas: u32,
     /// How many tables to create in each schema.
@@ -70,7 +70,7 @@ impl fmt::Debug for WorkloadConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkloadConfig")
             .field("dsn", &"[redacted]")
-            .field("vacuum_dsn", &"[redacted]")
+            .field("direct_dsn", &"[redacted]")
             .field("schemas", &self.schemas)
             .field("tables_per_schema", &self.tables_per_schema)
             .field("ddl_concurrency", &self.ddl_concurrency)
@@ -115,13 +115,13 @@ fn env_u64(key: &str, default: u64) -> Result<u64> {
     }
 }
 
-fn required_vacuum_dsn(raw: Option<String>) -> Result<String> {
+fn required_direct_dsn(raw: Option<String>) -> Result<String> {
     let dsn = raw.context(
-        "KRONIKA_DEMO_WORKLOAD_VACUUM_DSN must be set to a direct PostgreSQL connection when KRONIKA_DEMO_WORKLOAD_DSN enables the workload",
+        "KRONIKA_DEMO_WORKLOAD_DIRECT_DSN must be set to a direct PostgreSQL connection when KRONIKA_DEMO_WORKLOAD_DSN enables the workload",
     )?;
     anyhow::ensure!(
         !dsn.trim().is_empty(),
-        "KRONIKA_DEMO_WORKLOAD_VACUUM_DSN must not be blank"
+        "KRONIKA_DEMO_WORKLOAD_DIRECT_DSN must not be blank"
     );
     Ok(dsn)
 }
@@ -133,17 +133,17 @@ impl WorkloadConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when the direct Vacuum DSN is absent or a tuning
+    /// Returns an error when the direct `PostgreSQL` DSN is absent or a tuning
     /// variable does not parse.
     pub(crate) fn from_env() -> Result<Option<Self>> {
         let Ok(dsn) = std::env::var("KRONIKA_DEMO_WORKLOAD_DSN") else {
             return Ok(None);
         };
-        let vacuum_dsn =
-            required_vacuum_dsn(std::env::var("KRONIKA_DEMO_WORKLOAD_VACUUM_DSN").ok())?;
+        let direct_dsn =
+            required_direct_dsn(std::env::var("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN").ok())?;
         let config = Self {
             dsn,
-            vacuum_dsn,
+            direct_dsn,
             schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 1)?,
             tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 8)?,
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
@@ -268,7 +268,7 @@ pub(crate) struct Workload {
 
 /// How long `Workload::stop` waits for tasks to notice the stop flag and
 /// return before dropping whatever is still running.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(25);
 
 impl Workload {
     /// Start the workload on its own multi-thread runtime.

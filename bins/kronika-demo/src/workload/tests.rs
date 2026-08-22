@@ -1,9 +1,9 @@
-use super::{WorkloadConfig, connection_config, required_vacuum_dsn};
+use super::{WorkloadConfig, connection_config, required_direct_dsn};
 
 fn config() -> WorkloadConfig {
     WorkloadConfig {
         dsn: "host=127.0.0.1 password=private".to_owned(),
-        vacuum_dsn: "host=/var/run/postgresql password=also-private".to_owned(),
+        direct_dsn: "host=/var/run/postgresql password=also-private".to_owned(),
         schemas: 4,
         tables_per_schema: 40,
         ddl_concurrency: 4,
@@ -34,11 +34,11 @@ fn debug_output_redacts_the_workload_dsn() {
 }
 
 #[test]
-fn vacuum_workload_requires_an_explicit_direct_connection() {
-    assert!(required_vacuum_dsn(None).is_err());
-    assert!(required_vacuum_dsn(Some("   ".to_owned())).is_err());
+fn direct_only_scenarios_require_an_explicit_postgresql_connection() {
+    assert!(required_direct_dsn(None).is_err());
+    assert!(required_direct_dsn(Some("   ".to_owned())).is_err());
     assert_eq!(
-        required_vacuum_dsn(Some("host=postgres port=5432".to_owned())).unwrap(),
+        required_direct_dsn(Some("host=postgres port=5432".to_owned())).unwrap(),
         "host=postgres port=5432"
     );
 }

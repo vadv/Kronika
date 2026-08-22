@@ -8,9 +8,10 @@ use tokio_postgres::Client;
 
 const TABLE: &str = "shop.event_log";
 
-fn setup_sql(rows: u32) -> String {
+fn setup_sql(rows: u32, timeout_s: u64) -> String {
     format!(
-        "create table if not exists {TABLE} (\
+        "set statement_timeout = '{timeout_s}s'; \
+         create table if not exists {TABLE} (\
              id bigint primary key, occurred_at timestamptz not null default now(), \
              kind text not null default 'checkout', payload text\
          ); \
@@ -18,6 +19,7 @@ fn setup_sql(rows: u32) -> String {
          insert into {TABLE} (id, kind, payload, occurred_at) \
          select series, 'fulfillment', repeat(md5(series::text), 8), clock_timestamp() \
          from generate_series(1, {rows}) as series \
+         where not exists (select 1 from {TABLE} where id = {rows}) \
          on conflict (id) do nothing"
     )
 }
@@ -43,14 +45,20 @@ fn run_sql(timeout_s: u64) -> Vec<String> {
 /// throttling settings are session-scoped and must not cross `PgBouncer`'s
 /// transaction-pooling boundary.
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let client = match connect_as(&config.vacuum_dsn, "vacuum-worker").await {
+    let client = match connect_as(&config.direct_dsn, "vacuum-worker").await {
         Ok(client) => client,
         Err(error) => {
             eprintln!("kronika-demo: vacuum workload could not connect: {error:#}");
             return;
         }
     };
-    if let Err(error) = client.batch_execute(&setup_sql(config.vacuum_rows)).await {
+    if let Err(error) = client
+        .batch_execute(&setup_sql(
+            config.vacuum_rows,
+            config.vacuum_statement_timeout_s,
+        ))
+        .await
+    {
         eprintln!("kronika-demo: vacuum table setup failed: {error:#}");
         return;
     }

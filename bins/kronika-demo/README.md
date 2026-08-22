@@ -99,7 +99,7 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | unset | Workload connection, normally through PgBouncer. |
-| `KRONIKA_DEMO_WORKLOAD_VACUUM_DSN` | required with workload | Direct PostgreSQL connection for session-scoped Vacuum settings. It must not point at transaction-pooled PgBouncer. The image sets this to its embedded PostgreSQL. |
+| `KRONIKA_DEMO_WORKLOAD_DIRECT_DSN` | required with workload | Direct PostgreSQL connection for the plan story and session-scoped Vacuum settings. It must not point at transaction-pooled PgBouncer. The image sets this to its embedded PostgreSQL. |
 | `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 1 | Commerce schemas to create. |
 | `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 8 | Recognizable commerce tables to create. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Concurrent setup connections. |
@@ -141,7 +141,7 @@ For a direct binary run:
 ```sh
 KRONIKA_COLLECTOR_BIN=target/x86_64-unknown-linux-gnu/debug/kronika-collector \
 KRONIKA_DEMO_WORKLOAD_DSN='host=127.0.0.1 port=6432 user=kronika_demo dbname=kronika_demo' \
-KRONIKA_DEMO_WORKLOAD_VACUUM_DSN='host=127.0.0.1 port=5432 user=kronika_demo dbname=kronika_demo' \
+KRONIKA_DEMO_WORKLOAD_DIRECT_DSN='host=127.0.0.1 port=5432 user=kronika_demo dbname=kronika_demo' \
     kronika-demo
 ```
 

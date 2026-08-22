@@ -1,6 +1,6 @@
 //! A bounded before/during/after query-plan story over the same normalized
-//! checkout query. The supporting index is restored even when the workload is
-//! stopping, so the demo never remains degraded indefinitely.
+//! checkout query. While the workload runtime is alive, index recovery keeps
+//! opening fresh connections until it succeeds.
 
 use super::{WorkloadConfig, connect_as, wait_for_stop};
 use std::sync::Arc;
@@ -25,6 +25,7 @@ fn setup_sql(rows: u32) -> String {
                 1000 + series % 50000, \
                 clock_timestamp() - ({rows} - series) * interval '1 second' \
          from generate_series(1, {rows}) as series \
+         where not exists (select 1 from {TABLE} where id = {rows}) \
          on conflict (id) do nothing; \
          create index if not exists {INDEX} on {TABLE} (customer_id, placed_at desc); \
          analyze {TABLE}"
@@ -33,8 +34,7 @@ fn setup_sql(rows: u32) -> String {
 
 fn checkout_query_sql(customer_id: u32) -> String {
     format!(
-        "set statement_timeout = '3s'; \
-         select id, status, total_cents from {TABLE} \
+        "select id, status, total_cents from {TABLE} \
          where customer_id = {customer_id} order by placed_at desc limit 50"
     )
 }
@@ -46,15 +46,33 @@ fn transition_sql() -> TransitionSql {
              drop index if exists shop.{INDEX}"
         ),
         restore_index: format!(
-            "set lock_timeout = '3s'; set statement_timeout = '30s'; \
+            "set lock_timeout = '3s'; set statement_timeout = '10s'; \
              create index if not exists {INDEX} on {TABLE} (customer_id, placed_at desc); \
              analyze {TABLE}"
         ),
     }
 }
 
+async fn restore_index(dsn: &str, sql: &str) {
+    loop {
+        let recovery = async {
+            let client = connect_as(dsn, "deploy-recovery").await?;
+            client.batch_execute(sql).await?;
+            anyhow::Ok(())
+        }
+        .await;
+        match recovery {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("kronika-demo: plan index recovery failed, retrying: {error:#}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let ddl = match connect_as(&config.vacuum_dsn, "deploy-migration").await {
+    let ddl = match connect_as(&config.direct_dsn, "deploy-migration").await {
         Ok(client) => client,
         Err(error) => {
             eprintln!("kronika-demo: plan story could not connect: {error:#}");
@@ -83,10 +101,7 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
         println!("kronika-demo: plan story entering sequential-scan regression");
         run_checkout_window(config, stop, Duration::from_secs(config.plan_regression_s)).await;
 
-        if let Err(error) = ddl.batch_execute(&transition.restore_index).await {
-            eprintln!("kronika-demo: plan story could not restore its index: {error:#}");
-            return;
-        }
+        restore_index(&config.direct_dsn, &transition.restore_index).await;
         println!("kronika-demo: plan story restored the checkout index");
         if stop.load(Ordering::Relaxed) {
             return;
@@ -101,7 +116,7 @@ async fn run_checkout_window(config: &WorkloadConfig, stop: &Arc<AtomicBool>, du
     let deadline = tokio::time::Instant::now() + duration;
     let mut workers = JoinSet::new();
     for worker in 0..config.plan_workers {
-        let dsn = config.dsn.clone();
+        let dsn = config.direct_dsn.clone();
         let stop = Arc::clone(stop);
         workers.spawn(async move {
             let client = match connect_as(&dsn, "checkout-api").await {
@@ -113,6 +128,12 @@ async fn run_checkout_window(config: &WorkloadConfig, stop: &Arc<AtomicBool>, du
                     return;
                 }
             };
+            if let Err(error) = client.batch_execute("set statement_timeout = '3s'").await {
+                eprintln!(
+                    "kronika-demo: checkout worker {worker} could not set its timeout: {error:#}"
+                );
+                return;
+            }
             let query = checkout_query_sql(4_242 + worker);
             while !stop.load(Ordering::Relaxed) && tokio::time::Instant::now() < deadline {
                 if let Err(error) = client.batch_execute(&query).await {

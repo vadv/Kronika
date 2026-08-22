@@ -207,7 +207,9 @@ export function visibleLockRows(
     if (point.lane === "pg_lock_waiting" && point.timestamp <= cursor
       && (lockWaiting === null || point.timestamp > lockWaiting.timestamp)) lockWaiting = point
   }
-  return lockWaiting?.value === 0 ? [] : rows
+  let newestLockTimestamp = Number.NEGATIVE_INFINITY
+  for (const row of rows) newestLockTimestamp = Math.max(newestLockTimestamp, row.timestamp)
+  return lockWaiting?.value === 0 && lockWaiting.timestamp >= newestLockTimestamp ? [] : rows
 }
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [

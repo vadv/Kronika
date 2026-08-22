@@ -1,4 +1,6 @@
-use super::{Action, next_action, ordinary_sql, session_application_name, session_rng};
+use super::{
+    Action, bounded_row_id, next_action, ordinary_sql, session_application_name, session_rng,
+};
 use rand::Rng as _;
 
 #[test]
@@ -60,4 +62,12 @@ fn steady_updates_touch_one_key_instead_of_rewriting_the_whole_table() {
             .unwrap()
             .contains("where id is not null")
     );
+}
+
+#[test]
+fn generated_row_ids_stay_inside_a_fixed_reusable_keyspace() {
+    assert_eq!(bounded_row_id(0), 1);
+    assert_eq!(bounded_row_id(9_999), 10_000);
+    assert_eq!(bounded_row_id(10_000), 1);
+    assert!((1..=10_000).contains(&bounded_row_id(u64::MAX)));
 }

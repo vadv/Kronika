@@ -81,6 +81,12 @@ test("Locks disappear after the lock-only waiting lane returns to zero", () => {
   assert.equal(helpers.visibleLockRows(locks, [], 20), locks)
 })
 
+test("A lock row newer than the latest zero waiting sample stays visible", () => {
+  const locks = [{ ...row("1011002", { pid: 73 }, "pg_locks"), timestamp: 21 }]
+  const points = [{ lane: "pg_lock_waiting", segmentId: "a", timestamp: 20, value: 0 }]
+  assert.equal(helpers.visibleLockRows(locks, points, 21), locks)
+})
+
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("write_time"), false)
   assert.equal(helpers.isTimestampField("stats_reset"), true)
