@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { readFile } from "node:fs/promises"
 import { importModule } from "./import-module.mjs"
 
 const vacuum = await importModule('export * from "../src/postgres-vacuum.ts"')
@@ -9,7 +10,7 @@ const HOUR = 1_000_000_000_000
 const S = 1_000_000
 
 let ordinal = 0
-function row(atSeconds, values, typeId = "1012001") {
+function row(atSeconds, values, typeId = "1012004") {
   ordinal += 1
   return {
     logicalName: "pg_stat_progress_vacuum", ordinal: String(ordinal), segmentId: "a",
@@ -44,9 +45,9 @@ test("rows at 10:00:00 and 10:05:00 with no recorded sample between them are two
 
 test("the in-phase span restarts when the index cycle increments under an unchanged phase name", () => {
   const rows = [
-    row(0, { index_vacuum_count: 1, indexes_processed: 1, phase: "vacuuming indexes" }, "1012002"),
-    row(30, { index_vacuum_count: 1, indexes_processed: 2, phase: "vacuuming indexes" }, "1012002"),
-    row(60, { index_vacuum_count: 2, indexes_processed: 0, phase: "vacuuming indexes" }, "1012002"),
+    row(0, { index_vacuum_count: 1, indexes_processed: 1, phase: "vacuuming indexes" }, "1012005"),
+    row(30, { index_vacuum_count: 1, indexes_processed: 2, phase: "vacuuming indexes" }, "1012005"),
+    row(60, { index_vacuum_count: 2, indexes_processed: 0, phase: "vacuuming indexes" }, "1012005"),
   ]
   const [episode] = vacuum.buildVacuumEpisodes(rows, 30)
   assert.equal(episode.rows.length, 3)
@@ -60,9 +61,9 @@ test("no movement needs three still samples of the phase counter and never fires
     row(30, { index_vacuum_count: 1, indexes_processed: 2, phase: "vacuuming indexes" }, typeId),
     row(60, { index_vacuum_count: 1, indexes_processed: 2, phase: "vacuuming indexes" }, typeId),
   ], 30)[0].noMovement
-  assert.deepEqual(still("1012002"), { samples: 3, spanUs: 60 * S })
+  assert.deepEqual(still("1012005"), { samples: 3, spanUs: 60 * S })
   // PG10-16 records no index progress: the phase shows its span and nothing more.
-  assert.equal(still("1012001"), null)
+  assert.equal(still("1012004"), null)
   // Movement clears it.
   const moving = vacuum.buildVacuumEpisodes([
     row(0, { heap_blks_scanned: 1, phase: "scanning heap" }),
@@ -106,8 +107,8 @@ test("risk is fixed by phase name and the sort fronts the cursor's pass, riskies
 test("layout gates and the delay delta read the recorded layouts, not zeroes", () => {
   const old = [row(0, { phase: "scanning heap" })]
   const pg18 = [
-    row(0, { delay_time: 100, phase: "scanning heap" }, "1012003"),
-    row(30, { delay_time: 150, phase: "scanning heap" }, "1012003"),
+    row(0, { delay_time: 100, phase: "scanning heap" }, "1012006"),
+    row(30, { delay_time: 150, phase: "scanning heap" }, "1012006"),
   ]
   assert.equal(vacuum.vacuumLayoutHas(old, "indexes_total"), false)
   assert.equal(vacuum.vacuumLayoutHas(old, "delay_time"), false)
@@ -117,4 +118,25 @@ test("layout gates and the delay delta read the recorded layouts, not zeroes", (
   assert.equal(vacuum.delayDelta(episode), 50)
   const [single] = vacuum.buildVacuumEpisodes([pg18[0]], 30)
   assert.equal(vacuum.delayDelta(single), null)
+})
+
+test("the progress series is the episode's own scan percent, skipping samples with no usable total", () => {
+  const rows = [
+    row(0, { heap_blks_scanned: 10, heap_blks_total: 100, phase: "scanning heap" }),
+    row(30, { heap_blks_scanned: null, heap_blks_total: null, phase: "scanning heap" }),
+    row(60, { heap_blks_scanned: 40, heap_blks_total: 100, phase: "scanning heap" }),
+  ]
+  const [episode] = vacuum.buildVacuumEpisodes(rows, 30)
+  assert.deepEqual(vacuum.progressSeries(episode), [10, 40])
+})
+
+test("the hour fetch names no fields: an empty list, not a fixed union across PG-version shapes", async () => {
+  // The server rejects a field a segment's own layout does not define at
+  // all (query.rs output_names), which is the ordinary case for one
+  // instance running one PostgreSQL major all hour. Naming any fixed list
+  // here reintroduces that failure the moment the hour holds only one of
+  // the three layouts — which is most hours. An empty list asks the server
+  // for exactly what each segment's own layout defines.
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /loadSeries\(hour, "pg_stat_progress_vacuum", \{\}, \[\], controller\.signal\)/)
 })

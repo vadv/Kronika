@@ -539,9 +539,12 @@ every other row names the moment it was last recorded. `No movement` states
 that a fixed number of consecutive samples kept the phase's designated
 counter unchanged; layouts without index progress never claim it for the
 index phases. PG17 and PG18 columns appear only when the hour recorded such
-a layout, and a layout-absent field reads as N/A, never as 0. Relation names
-resolve from the recorded tables snapshot as enrichment; the row stays
-complete on its own datname and relation OID without them.
+a layout, and a layout-absent field reads as N/A, never as 0. The recorded
+row carries its own `schemaname`/`relname`, resolved from `pg_class` in the
+same collector query; the fallback identity is `relid`, a `pg_class` OID
+that is never reused in any timeframe the product cares about, and it is
+shown only inside the one relation string it identifies, never as a bare
+number in the detail block.
 Events is the grouped log console described below; the same findings stay
 drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives

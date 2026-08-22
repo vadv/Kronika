@@ -12,7 +12,7 @@ import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
-import { VACUUM_HOUR_FIELDS, buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, type VacuumEpisode } from "./postgres-vacuum"
+import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, type VacuumEpisode } from "./postgres-vacuum"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
@@ -444,7 +444,13 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   useEffect(() => {
     const controller = new AbortController()
     acceptResponse(
-      loadSeries(hour, "pg_stat_progress_vacuum", {}, [...VACUUM_HOUR_FIELDS], controller.signal),
+      // No field list: the server already emits every column defined by
+      // whatever layout each segment actually carries. Naming the union of
+      // all three PG-version shapes here would ask a segment that only ever
+      // saw one of them for a column its own layout does not define — the
+      // ordinary case for one instance running one PostgreSQL major — and
+      // that request fails outright rather than filling nulls.
+      loadSeries(hour, "pg_stat_progress_vacuum", {}, [], controller.signal),
       controller.signal,
       (rows) => setHourRows(rows),
       // A failed hour read leaves the cursor snapshot as the honest fallback.
@@ -480,42 +486,10 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   const displayRows = useMemo(() => sorted.map((episode) => episode.last), [sorted])
   const episodeByKey = useMemo(() => new Map(sorted.map((episode) => [rowKey(episode.last), episode])), [sorted])
 
-  // Relation names, one filtered request per distinct vacuumed relation. An
-  // empty string marks a pair the lookup could not resolve; the OID fallback
-  // stays on screen either way.
-  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map())
-  useEffect(() => setNames(new Map()), [hour])
-  const pairKeys = useMemo(() => [...new Set(displayRows.flatMap((row) => {
-    const key = relationPair(row)
-    return key === null ? [] : [key]
-  }))], [displayRows])
-  useEffect(() => {
-    const bound = segmentBoundAt(segments, cursor)
-    const missing = pairKeys.filter((key) => !names.has(key))
-    if (bound === null || missing.length === 0) return undefined
-    const controller = new AbortController()
-    for (const key of missing) {
-      const [datid, relid] = key.split(":")
-      if (datid === undefined || relid === undefined) continue
-      acceptResponse(
-        loadSnapshot(bound.id, cursor, [{ fields: ["datid", "relid", "schemaname", "relname"], section: "pg_stat_user_tables" }], controller.signal, undefined, { filters: { datid, relid } }),
-        controller.signal,
-        (loaded) => {
-          const match = loaded.sections.pg_stat_user_tables?.[0] ?? null
-          const schema = rawText(value(match, "schemaname"))
-          const name = rawText(value(match, "relname"))
-          setNames((current) => new Map(current).set(key, schema !== null && name !== null ? `${schema}.${name}` : ""))
-        },
-        () => setNames((current) => new Map(current).set(key, "")),
-      )
-    }
-    return () => controller.abort()
-  }, [cursor, names, pairKeys, segments])
-
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   const columns = useMemo(
-    () => vacuumColumns(allRows, episodeByKey, names, atTs, blockSize, time, locale, t),
-    [allRows, atTs, blockSize, episodeByKey, locale, names, t, time],
+    () => vacuumColumns(allRows, episodeByKey, atTs, blockSize, time, locale, t),
+    [allRows, atTs, blockSize, episodeByKey, locale, t, time],
   )
 
   const [selected, setSelected] = useState<DataRow | null>(null)
@@ -595,17 +569,19 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   </>
 }
 
-function relationPair(row: DataRow): string | null {
-  const datid = rawText(value(row, "datid"))
-  const relid = rawText(value(row, "relid"))
-  return datid === null || relid === null ? null : `${datid}:${relid}`
-}
-
-function vacuumRelationLabel(row: DataRow, names: ReadonlyMap<string, string>): string {
+// The relation name is resolved server-side, in the same query that reads
+// the view, from `pg_class`/`pg_namespace`; it is absent only when the
+// vacuumed relation belongs to a database this connection cannot see. `relid`
+// is a `pg_class` OID and does not get reused in any timeframe this product
+// cares about, so it stands in as the fallback identity — never shown as a
+// bare number, only inside the one relation string it identifies.
+function vacuumRelationLabel(row: DataRow): string {
   const datname = rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
-  const key = relationPair(row)
-  const resolved = key === null ? "" : names.get(key) ?? ""
-  return resolved !== "" ? `${datname}.${resolved}` : `${datname} · relid=${identifier(value(row, "relid"))}`
+  const schema = rawText(value(row, "schemaname"))
+  const relname = rawText(value(row, "relname"))
+  return schema !== null && relname !== null
+    ? `${datname}.${schema}.${relname}`
+    : `${datname} · relid=${identifier(value(row, "relid"))}`
 }
 
 function vacuumHeapCell(row: DataRow, field: string, blockSize: number | null, locale: Locale): string {
@@ -614,12 +590,17 @@ function vacuumHeapCell(row: DataRow, field: string, blockSize: number | null, l
   return blockSize === null ? measure(blocks, locale) : humanBytes(blocks * blockSize, locale)
 }
 
+function vacuumScanPercent(row: DataRow): number | null {
+  const scanned = asNumber(value(row, "heap_blks_scanned"))
+  const total = asNumber(value(row, "heap_blks_total"))
+  return scanned === null || total === null || total <= 0 ? null : Math.max(0, Math.min(100, (scanned / total) * 100))
+}
+
 const VACUUM_INDEX_PHASES = new Set(["vacuuming indexes", "cleaning up indexes"])
 
 export function vacuumColumns(
   allRows: readonly DataRow[],
   episodes: ReadonlyMap<string, VacuumEpisode>,
-  names: ReadonlyMap<string, string>,
   atTs: number | null,
   blockSize: number | null,
   time: DisplayTimeFormatter,
@@ -637,9 +618,9 @@ export function vacuumColumns(
       sortValue: (row) => row.timestamp,
     },
     {
-      field: "datname", label: "pg.vacuum.relation.label", help: "pg.vacuum.relation.help", kind: "text", width: 230, sticky: true,
-      render: (row) => vacuumRelationLabel(row, names),
-      sortValue: (row) => vacuumRelationLabel(row, names),
+      field: "datname", label: "pg.vacuum.relation.label", help: "pg.vacuum.relation.help", kind: "text", width: 250, sticky: true,
+      render: (row) => vacuumRelationLabel(row),
+      sortValue: (row) => vacuumRelationLabel(row),
     },
     {
       field: "is_autovacuum", label: "pg.vacuum.kind.label", help: "pg.vacuum.kind.help", kind: "text", width: 120,
@@ -669,18 +650,25 @@ export function vacuumColumns(
     },
     pgColumn("pid", "id", 80, false, false),
     {
-      field: "heap_blks_scanned", label: "pg.vacuum.heap_scan.label", help: "pg.vacuum.heap_scan.help", kind: "text", width: 190,
+      field: "vacuum_progress", label: "pg.vacuum.progress.label", help: "pg.vacuum.progress.help", kind: "text", width: 130,
       render: (row) => {
-        const scanned = asNumber(value(row, "heap_blks_scanned"))
-        const total = asNumber(value(row, "heap_blks_total"))
-        if (scanned === null) return "—"
-        const share = total !== null && total > 0 ? ` · ${humanPercent(scanned / total * 100, locale)}` : ""
-        return `${vacuumHeapCell(row, "heap_blks_scanned", blockSize, locale)} / ${vacuumHeapCell(row, "heap_blks_total", blockSize, locale)}${share}`
+        const own = episode(row)
+        const percent = vacuumScanPercent(row)
+        if (percent === null) return "—"
+        return <span className="vacuum-progress-cell" data-risk={phaseRisk(phaseOf(row))}>
+          <VacuumProgressSpark series={own === undefined ? [percent] : progressSeries(own)} />
+          <strong>{humanPercent(percent, locale)}</strong>
+        </span>
       },
-      sortValue: (row) => asNumber(value(row, "heap_blks_scanned")),
+      sortValue: (row) => vacuumScanPercent(row),
     },
     {
-      field: "heap_blks_vacuumed", label: "pg.vacuum.heap_vacuumed.label", help: "pg.vacuum.heap_vacuumed.help", kind: "text", width: 140,
+      field: "heap_blks_scanned", label: "pg.vacuum.heap_size.label", help: "pg.vacuum.heap_size.help", kind: "text", width: 170,
+      render: (row) => `${vacuumHeapCell(row, "heap_blks_scanned", blockSize, locale)} / ${vacuumHeapCell(row, "heap_blks_total", blockSize, locale)}`,
+      sortValue: (row) => asNumber(value(row, "heap_blks_total")),
+    },
+    {
+      field: "heap_blks_vacuumed", label: "pg.vacuum.heap_vacuumed.label", help: "pg.vacuum.heap_vacuumed.help", kind: "text", width: 130,
       render: (row) => vacuumHeapCell(row, "heap_blks_vacuumed", blockSize, locale),
       sortValue: (row) => asNumber(value(row, "heap_blks_vacuumed")),
     },
@@ -731,21 +719,47 @@ export function vacuumColumns(
 
 // The Inspector raw block: the table's fields plus every layout column the
 // table folds or omits. Layout-absent values render as N/A through told().
+// `datid`/`relid` stay out: the relation is already named, in full, in the
+// header above this list, and a bare OID beside it explains nothing a DBA
+// would act on.
 export function vacuumDetailColumns(row: DataRow, blockSize: number | null): readonly EntityColumn[] {
   const extra = (field: string, kind: NonNullable<EntityColumn["kind"]>): EntityColumn =>
     ({ field, label: `pg.vacuum.${field}.label`, help: `pg.vacuum.${field}.help`, kind, width: 140 })
   return postgresByteColumns([
     pgColumn("pid", "id", 80, false, false),
-    extra("datname", "text"), extra("datid", "id"), extra("relid", "id"),
+    extra("datname", "text"),
     extra("is_autovacuum", "boolean"), extra("phase", "text"),
     extra("heap_blks_total", "number"), extra("heap_blks_scanned", "number"), extra("heap_blks_vacuumed", "number"),
     extra("index_vacuum_count", "number"),
-    ...row.typeId === "1012001" ? [extra("num_dead_tuples", "number"), extra("max_dead_tuples", "number")] : [
+    ...row.typeId === "1012004" ? [extra("num_dead_tuples", "number"), extra("max_dead_tuples", "number")] : [
       extra("dead_tuple_bytes", "bytes"), extra("max_dead_tuple_bytes", "bytes"), extra("num_dead_item_ids", "number"),
       extra("indexes_processed", "number"), extra("indexes_total", "number"),
     ],
-    ...row.typeId === "1012003" ? [extra("delay_time", "milliseconds")] : [],
+    ...row.typeId === "1012006" ? [extra("delay_time", "milliseconds")] : [],
   ], blockSize)
+}
+
+// A compact percent-over-samples line for the episode's own recorded points,
+// scaled to its own span — not the hour's — since a row's samples cluster in
+// a few minutes. Too few points to show a trend render as a single dot.
+function VacuumProgressSpark({ series }: { readonly series: readonly number[] }) {
+  const width = 64
+  const height = 16
+  const pad = 2
+  const usableWidth = width - 2 * pad
+  const usableHeight = height - 2 * pad
+  const points = series.map((percent, index) => {
+    const x = series.length < 2 ? width / 2 : pad + (index / (series.length - 1)) * usableWidth
+    const y = pad + (1 - percent / 100) * usableHeight
+    return [x, y] as const
+  })
+  const path = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ")
+  const last = points[points.length - 1]
+  return <svg aria-hidden="true" className="vacuum-progress-spark" preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
+    {points.length > 1
+      ? <path d={path} fill="none" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+      : last !== undefined && <path d={`M${last[0].toFixed(1)} ${last[1].toFixed(1)} l0.01 0`} strokeLinecap="round" strokeWidth={3} vectorEffect="non-scaling-stroke" />}
+  </svg>
 }
 
 // The episode as recorded: its phase strip across the hour and its facts.

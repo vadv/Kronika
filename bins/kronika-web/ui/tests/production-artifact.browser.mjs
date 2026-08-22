@@ -4108,7 +4108,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     ...timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment" ? record : {
       ...record,
       sections: [...record.sections, {
-        logical_name: "pg_stat_progress_vacuum", physical_name: "pg_stat_progress_vacuum", type_id: "1012003",
+        logical_name: "pg_stat_progress_vacuum", physical_name: "pg_stat_progress_vacuum", type_id: "1012006",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     }),
@@ -4393,11 +4393,23 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-row') !== null`, "PostgreSQL Vacuum table")
     const vacuumRow = await cdp.evaluate(`(() => {
       const chip = [...document.querySelectorAll('[data-testid="pg-vacuum-table"] .vacuum-chip')].find((node) => ["ordinary", "heavy", "dangerous"].includes(node.getAttribute('data-risk')))
-      return { phase: chip?.textContent ?? null, risk: chip?.getAttribute('data-risk') ?? null, view: new URL(location.href).searchParams.get('view') }
+      const cells = [...document.querySelectorAll('[data-testid="pg-vacuum-table"] .entity-row [role="cell"]')].map((cell) => cell.textContent)
+      return { cells, phase: chip?.textContent ?? null, risk: chip?.getAttribute('data-risk') ?? null, view: new URL(location.href).searchParams.get('view') }
     })()`)
     assert.equal(vacuumRow.view, "pg.vacuum", JSON.stringify(vacuumRow))
     assert.equal(vacuumRow.phase, "vacuuming heap", JSON.stringify(vacuumRow))
     assert.equal(vacuumRow.risk, "heavy", JSON.stringify(vacuumRow))
+    // The relation name arrives already resolved on the row: no lookup, no
+    // bare OID anywhere in the rendered row.
+    assert.ok(vacuumRow.cells.some((cell) => cell.includes("operators.public.bulk_events")), JSON.stringify(vacuumRow))
+    assert.equal(vacuumRow.cells.some((cell) => cell.includes("relid=")), false, JSON.stringify(vacuumRow))
+    // Progress is a sparkline beside its percent, not a number crammed with
+    // the sizes; the raw Inspector block never repeats the OID either.
+    assert.ok(await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .vacuum-progress-spark') !== null`))
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null`, "PostgreSQL Vacuum detail")
+    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"]').textContent`)
+    assert.doesNotMatch(detailText, /OID/)
     await cdp.evaluate(`[...document.querySelectorAll('.pg-tabs button')].find((tab) => tab.textContent === 'Activity').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table again")
     await cdp.evaluate(`(() => {
@@ -4821,26 +4833,43 @@ function snapshotRecords() {
 
 function progressVacuumRecords() {
   const columns = [
-    "ts", "pid", "datid", "datname", "relid", "is_autovacuum", "phase", "heap_blks_total", "heap_blks_scanned",
-    "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes", "num_dead_item_ids",
-    "indexes_total", "indexes_processed", "delay_time",
+    "ts", "pid", "datid", "datname", "relid", "schemaname", "relname", "is_autovacuum", "phase", "heap_blks_total",
+    "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes",
+    "num_dead_item_ids", "indexes_total", "indexes_processed", "delay_time",
   ]
-  return [layout("1012003", "pg_stat_progress_vacuum", columns), row("1012003", "1", [
-    String(AT), 4343, 20, "operators", 73, true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
+  return [layout("1012006", "pg_stat_progress_vacuum", columns), row("1012006", "1", [
+    String(AT), 4343, 20, "operators", 73, "public", "bulk_events", true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
   ], AT)]
 }
 
+// Mirrors the server's real rule (query.rs output_names): an empty `field`
+// list answers with every column the segment's own layout defines, not a
+// fixed union across every PG-version shape. VacuumView relies on exactly
+// this — asking by name for a column an older layout never defines is a
+// hard error server-side, not a null fill, so the hour fetch must omit the
+// field list entirely.
+const VACUUM_V3_COLUMNS = [
+  "ts", "pid", "datid", "datname", "relid", "schemaname", "relname", "is_autovacuum", "phase", "heap_blks_total",
+  "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes",
+  "num_dead_item_ids", "indexes_total", "indexes_processed", "delay_time",
+]
+
 function vacuumHourRecords(url) {
-  const fields = url.searchParams.getAll("field")
+  const requested = url.searchParams.getAll("field")
+  if (requested.some((field) => !VACUUM_V3_COLUMNS.includes(field))) {
+    return [{ record: "error", error: "bad_parameter" }]
+  }
+  const columns = requested.length > 0 ? requested : VACUUM_V3_COLUMNS.filter((field) => field !== "ts")
   const sample = {
     datid: 20, datname: "operators", dead_tuple_bytes: 4_194_304, delay_time: 17.5, heap_blks_scanned: 3200,
     heap_blks_total: 8000, heap_blks_vacuumed: 1200, index_vacuum_count: 1, indexes_processed: 2, indexes_total: 5,
-    is_autovacuum: true, max_dead_tuple_bytes: 67_108_864, num_dead_item_ids: 2400, phase: "vacuuming heap", pid: 4343, relid: 73,
+    is_autovacuum: true, max_dead_tuple_bytes: 67_108_864, num_dead_item_ids: 2400, phase: "vacuuming heap", pid: 4343,
+    relid: 73, relname: "bulk_events", schemaname: "public",
   }
   return [
     { record: "series_segment", segment: { id: SEGMENT } },
-    layout("1012003", "pg_stat_progress_vacuum", fields),
-    row("1012003", "1", fields.map((field) => sample[field] ?? null), AT),
+    layout("1012006", "pg_stat_progress_vacuum", columns),
+    row("1012006", "1", columns.map((field) => sample[field] ?? null), AT),
   ]
 }
 

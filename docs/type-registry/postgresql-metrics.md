@@ -84,9 +84,9 @@ connection is closed.
 | `1_010_001` | `pg_prepared_xacts` | 10–18 | instance | `snapshot_full` |
 | `1_011_001` | `pg_locks` | 10–13 | instance | `conditional_full` |
 | `1_011_002` | `pg_locks` | 14–18 | instance | `conditional_full` |
-| `1_012_001` | `pg_stat_progress_vacuum` | 10–16 | instance | `conditional_full` |
-| `1_012_002` | `pg_stat_progress_vacuum` | 17 | instance | `conditional_full` |
-| `1_012_003` | `pg_stat_progress_vacuum` | 18 | instance | `conditional_full` |
+| `1_012_004` | `pg_stat_progress_vacuum` | 10–16 | instance | `conditional_full` |
+| `1_012_005` | `pg_stat_progress_vacuum` | 17 | instance | `conditional_full` |
+| `1_012_006` | `pg_stat_progress_vacuum` | 18 | instance | `conditional_full` |
 | `1_013_005` | `pg_stat_user_tables` | 10–12 | each database | `snapshot_full` |
 | `1_013_006` | `pg_stat_user_tables` | 13–15 | each database | `snapshot_full` |
 | `1_013_007` | `pg_stat_user_tables` | 16–17 | each database | `snapshot_full` |
@@ -101,6 +101,13 @@ connection is closed.
 `pg_stat_wal`, `pg_stat_io`, and `pg_stat_checkpointer` have no section before
 the first PostgreSQL release listed above. PostgreSQL 17 and 18 changed
 `pg_stat_progress_vacuum`, so those layouts have separate `type_id` values.
+Each `pg_stat_progress_vacuum` row also carries `schemaname`/`relname`,
+resolved from `pg_class`/`pg_namespace` in the same query the collector reads
+the view with; `relid` is a `pg_class` OID and is not reused in any timeframe
+this product cares about, so it stays the row's identity whether or not the
+name resolves. It resolves only for a relation in the database the connection
+is on — a session's catalog shows only its own database — and stays absent
+otherwise, never guessed from another database's row.
 `pg_settings` records the effective configuration of the collector's metric
 session. Each row identifies its database and login role as `datid`, `datname`,
 `usesysid`, and `usename`; `(datid, usesysid, name)` is the row identity. The

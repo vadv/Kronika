@@ -6,16 +6,6 @@ import { asNumber, rawText, value } from "./model"
 // the same shape as the events console: rows group by recorded identity
 // fields, and nothing is inferred about time nobody recorded.
 
-// The union of every layout's columns. A field a layout does not define
-// arrives as null under this projection, which reads as N/A, never as 0.
-export const VACUUM_HOUR_FIELDS = [
-  "pid", "datid", "datname", "relid", "is_autovacuum", "phase",
-  "heap_blks_total", "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count",
-  "max_dead_tuples", "num_dead_tuples",
-  "max_dead_tuple_bytes", "dead_tuple_bytes", "num_dead_item_ids",
-  "indexes_total", "indexes_processed", "delay_time",
-] as const
-
 // Two samples of one key continue an episode when they are no further apart
 // than this many recorded sampling intervals: collection drifts, so exactly
 // one interval would split ordinary runs. Without a recorded interval the
@@ -113,13 +103,14 @@ function finishEpisode(rows: readonly DataRow[]): VacuumEpisode {
   return { rows, last, phaseRows, noMovement: noMovement(phaseRows, last) }
 }
 
-// The counter whose movement says the phase is progressing. Layout 1_012_001
-// does not record index progress, so its index phases never claim stillness.
+// The counter whose movement says the phase is progressing. Layout 1_012_004
+// (PG10-16) does not record index progress, so its index phases never claim
+// stillness.
 function movementField(phase: string | null, typeId: string): string | null {
   if (phase === "scanning heap") return "heap_blks_scanned"
   if (phase === "vacuuming heap") return "heap_blks_vacuumed"
   if (phase === "vacuuming indexes" || phase === "cleaning up indexes") {
-    return typeId === "1012001" ? null : "indexes_processed"
+    return typeId === "1012004" ? null : "indexes_processed"
   }
   if (phase === "truncating heap") return "phase"
   return null
@@ -181,16 +172,30 @@ export function phaseSpanUs(episode: VacuumEpisode): number {
 }
 
 // Whether any loaded row's layout defines the column: PG17 index progress
-// exists from 1_012_002 on, the PG18 cost delay only on 1_012_003. In an
+// exists from 1_012_005 on, the PG18 cost delay only on 1_012_006. In an
 // hour without such layouts the columns are omitted rather than all-N/A.
 export function vacuumLayoutHas(rows: readonly DataRow[], field: "indexes_total" | "delay_time"): boolean {
-  return rows.some((row) => field === "delay_time" ? row.typeId === "1012003" : row.typeId !== "1012001")
+  return rows.some((row) => field === "delay_time" ? row.typeId === "1012006" : row.typeId !== "1012004")
+}
+
+// The scan-progress percent of every episode sample that carries a positive
+// heap total, in recorded order: what the row's progress sparkline draws.
+// Samples with no usable total are skipped, not zero-filled.
+export function progressSeries(episode: VacuumEpisode): readonly number[] {
+  const series: number[] = []
+  for (const row of episode.rows) {
+    const scanned = asNumber(value(row, "heap_blks_scanned"))
+    const total = asNumber(value(row, "heap_blks_total"))
+    if (scanned === null || total === null || total <= 0) continue
+    series.push(Math.max(0, Math.min(100, (scanned / total) * 100)))
+  }
+  return series
 }
 
 // The PG18 cost-delay delta between the episode's last two samples, when the
 // layout records it. Cumulative milliseconds; adjacent samples only.
 export function delayDelta(episode: VacuumEpisode): number | null {
-  if (episode.last.typeId !== "1012003") return null
+  if (episode.last.typeId !== "1012006") return null
   const previous = episode.rows[episode.rows.length - 2]
   if (previous === undefined) return null
   const before = asNumber(value(previous, "delay_time"))

@@ -684,6 +684,16 @@
 .vacuum-tick[data-risk="heavy"] { fill: var(--color-warn); }
 .vacuum-tick[data-risk="dangerous"] { fill: var(--color-bad); }
 
+/* Scan progress: a trend line over the episode's own samples, not a number
+   crammed beside two others. Colored by the current phase's risk, like the
+   phase chip it sits beside. */
+.vacuum-progress-cell { align-items: center; display: inline-flex; gap: 6px; }
+.vacuum-progress-spark { color: var(--color-accent3); flex: none; height: 16px; width: 64px; }
+.vacuum-progress-cell[data-risk="heavy"] .vacuum-progress-spark { color: var(--color-warn); }
+.vacuum-progress-cell[data-risk="dangerous"] .vacuum-progress-spark { color: var(--color-bad); }
+.vacuum-progress-spark path { stroke: currentColor; }
+.vacuum-progress-cell strong { color: var(--color-fg2); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 400; }
+
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }

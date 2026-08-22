@@ -1,15 +1,18 @@
-//! Types `1_012_001` through `1_012_003`: `pg_stat_progress_vacuum`.
+//! Types `1_012_004` through `1_012_006`: `pg_stat_progress_vacuum`.
 //!
 //! One row per backend running `VACUUM`; absence means no active rows. The
 //! view changed incompatibly in PG17 and PG18, so each exact server shape has
-//! its own codec.
+//! its own codec. `schemaname`/`relname` are resolved from `pg_class` at
+//! collection time and absent when the relation belongs to a database the
+//! collector's connection cannot see or was dropped since; `relid` stays the
+//! identity either way.
 
 use crate::{Section, StrId, Ts};
 
-/// Type `1_012_001`: `pg_stat_progress_vacuum`, PG10-16 layout.
+/// Type `1_012_004`: `pg_stat_progress_vacuum`, PG10-16 layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_012_001,
+    id = 1_012_004,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
     sort_key("ts", "pid")
@@ -30,6 +33,12 @@ pub struct PgStatProgressVacuumV1 {
     /// OID of the table being vacuumed.
     #[column(l)]
     pub relid: u32,
+    /// Schema of the table, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub schemaname: Option<StrId>,
+    /// Table name, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub relname: Option<StrId>,
     /// Whether the backend is an autovacuum worker.
     #[column(l)]
     pub is_autovacuum: bool,
@@ -56,10 +65,10 @@ pub struct PgStatProgressVacuumV1 {
     pub num_dead_tuples: i64,
 }
 
-/// Type `1_012_002`: `pg_stat_progress_vacuum`, PG17 layout.
+/// Type `1_012_005`: `pg_stat_progress_vacuum`, PG17 layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_012_002,
+    id = 1_012_005,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
     sort_key("ts", "pid")
@@ -80,6 +89,12 @@ pub struct PgStatProgressVacuumV2 {
     /// OID of the table being vacuumed.
     #[column(l)]
     pub relid: u32,
+    /// Schema of the table, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub schemaname: Option<StrId>,
+    /// Table name, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub relname: Option<StrId>,
     /// Whether the backend is an autovacuum worker.
     #[column(l)]
     pub is_autovacuum: bool,
@@ -115,10 +130,10 @@ pub struct PgStatProgressVacuumV2 {
     pub indexes_processed: i64,
 }
 
-/// Type `1_012_003`: `pg_stat_progress_vacuum`, PG18+ layout.
+/// Type `1_012_006`: `pg_stat_progress_vacuum`, PG18+ layout.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
 #[section(
-    id = 1_012_003,
+    id = 1_012_006,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
     sort_key("ts", "pid")
@@ -139,6 +154,12 @@ pub struct PgStatProgressVacuumV3 {
     /// OID of the table being vacuumed.
     #[column(l)]
     pub relid: u32,
+    /// Schema of the table, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub schemaname: Option<StrId>,
+    /// Table name, resolved from `pg_class`; absent when it cannot be.
+    #[column(l)]
+    pub relname: Option<StrId>,
     /// Whether the backend is an autovacuum worker.
     #[column(l)]
     pub is_autovacuum: bool,
@@ -182,32 +203,39 @@ mod tests {
     use super::{PgStatProgressVacuumV1, PgStatProgressVacuumV2, PgStatProgressVacuumV3};
     use crate::{ColumnType, Section, Semantics, StrId, Ts, TypeContract, Unit};
 
-    const COMMON: [(&str, ColumnType); 11] = [
-        ("ts", ColumnType::Ts),
-        ("pid", ColumnType::I32),
-        ("datid", ColumnType::U32),
-        ("datname", ColumnType::StrId),
-        ("relid", ColumnType::U32),
-        ("is_autovacuum", ColumnType::Bool),
-        ("phase", ColumnType::StrId),
-        ("heap_blks_total", ColumnType::I64),
-        ("heap_blks_scanned", ColumnType::I64),
-        ("heap_blks_vacuumed", ColumnType::I64),
-        ("index_vacuum_count", ColumnType::I64),
+    const COMMON: [(&str, ColumnType, bool); 8] = [
+        ("ts", ColumnType::Ts, false),
+        ("pid", ColumnType::I32, false),
+        ("datid", ColumnType::U32, false),
+        ("datname", ColumnType::StrId, false),
+        ("relid", ColumnType::U32, false),
+        ("schemaname", ColumnType::StrId, true),
+        ("relname", ColumnType::StrId, true),
+        ("is_autovacuum", ColumnType::Bool, false),
+    ];
+    const AFTER_PHASE: [(&str, ColumnType, bool); 4] = [
+        ("phase", ColumnType::StrId, false),
+        ("heap_blks_total", ColumnType::I64, false),
+        ("heap_blks_scanned", ColumnType::I64, false),
+        ("heap_blks_vacuumed", ColumnType::I64, false),
     ];
 
-    fn assert_contract(contract: TypeContract, type_id: u32, tail: &[(&str, ColumnType)]) {
+    fn assert_contract(contract: TypeContract, type_id: u32, tail: &[(&str, ColumnType, bool)]) {
         assert_eq!(contract.type_id.get(), type_id);
         assert_eq!(contract.semantics, Semantics::ConditionalFull);
         assert_eq!(contract.sort_key, ["ts", "pid"]);
-        let expected = COMMON.iter().chain(tail).copied().collect::<Vec<_>>();
+        let expected = COMMON
+            .iter()
+            .chain(AFTER_PHASE.iter())
+            .chain(tail)
+            .copied()
+            .collect::<Vec<_>>();
         let actual = contract
             .columns
             .iter()
-            .map(|column| (column.name, column.ty))
+            .map(|column| (column.name, column.ty, column.nullable))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
-        assert!(contract.columns.iter().all(|column| !column.nullable));
     }
 
     fn v1_row(ts: i64, pid: i32) -> PgStatProgressVacuumV1 {
@@ -217,6 +245,8 @@ mod tests {
             datid: 16_385,
             datname: StrId(7),
             relid: 16_384,
+            schemaname: Some(StrId(11)),
+            relname: Some(StrId(12)),
             is_autovacuum: false,
             phase: StrId(9),
             heap_blks_total: 10_000,
@@ -235,6 +265,8 @@ mod tests {
             datid: 16_385,
             datname: StrId(7),
             relid: 16_384,
+            schemaname: Some(StrId(11)),
+            relname: None,
             is_autovacuum: false,
             phase: StrId(9),
             heap_blks_total: 10_000,
@@ -256,6 +288,8 @@ mod tests {
             datid: 16_385,
             datname: StrId(7),
             relid: 16_384,
+            schemaname: None,
+            relname: None,
             is_autovacuum: false,
             phase: StrId(9),
             heap_blks_total: 10_000,
@@ -275,34 +309,43 @@ mod tests {
     fn contracts_match_the_three_official_view_shapes() {
         assert_contract(
             PgStatProgressVacuumV1::CONTRACT,
-            1_012_001,
+            1_012_004,
             &[
-                ("max_dead_tuples", ColumnType::I64),
-                ("num_dead_tuples", ColumnType::I64),
+                ("index_vacuum_count", ColumnType::I64, false),
+                ("max_dead_tuples", ColumnType::I64, false),
+                ("num_dead_tuples", ColumnType::I64, false),
             ],
         );
         assert_contract(
             PgStatProgressVacuumV2::CONTRACT,
-            1_012_002,
+            1_012_005,
             &[
-                ("max_dead_tuple_bytes", ColumnType::I64),
-                ("dead_tuple_bytes", ColumnType::I64),
-                ("num_dead_item_ids", ColumnType::I64),
-                ("indexes_total", ColumnType::I64),
-                ("indexes_processed", ColumnType::I64),
+                ("index_vacuum_count", ColumnType::I64, false),
+                ("max_dead_tuple_bytes", ColumnType::I64, false),
+                ("dead_tuple_bytes", ColumnType::I64, false),
+                ("num_dead_item_ids", ColumnType::I64, false),
+                ("indexes_total", ColumnType::I64, false),
+                ("indexes_processed", ColumnType::I64, false),
             ],
         );
         assert_contract(
             PgStatProgressVacuumV3::CONTRACT,
-            1_012_003,
+            1_012_006,
             &[
-                ("max_dead_tuple_bytes", ColumnType::I64),
-                ("dead_tuple_bytes", ColumnType::I64),
-                ("num_dead_item_ids", ColumnType::I64),
-                ("indexes_total", ColumnType::I64),
-                ("indexes_processed", ColumnType::I64),
-                ("delay_time", ColumnType::F64),
+                ("index_vacuum_count", ColumnType::I64, false),
+                ("max_dead_tuple_bytes", ColumnType::I64, false),
+                ("dead_tuple_bytes", ColumnType::I64, false),
+                ("num_dead_item_ids", ColumnType::I64, false),
+                ("indexes_total", ColumnType::I64, false),
+                ("indexes_processed", ColumnType::I64, false),
+                ("delay_time", ColumnType::F64, false),
             ],
+        );
+        assert_eq!(
+            PgStatProgressVacuumV1::CONTRACT
+                .column("relname")
+                .map(|column| column.nullable),
+            Some(true)
         );
         assert_eq!(
             PgStatProgressVacuumV2::CONTRACT
@@ -319,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn each_layout_roundtrips() {
+    fn each_layout_roundtrips_with_and_without_a_resolved_relation_name() {
         crate::assert_roundtrips(&[v1_row(1_000_000, 100)]);
         crate::assert_roundtrips(&[v2_row(1_000_000, 200)]);
         crate::assert_roundtrips(&[v3_row(1_000_000, 300)]);
