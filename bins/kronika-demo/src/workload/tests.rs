@@ -3,6 +3,7 @@ use super::WorkloadConfig;
 fn config() -> WorkloadConfig {
     WorkloadConfig {
         dsn: "host=127.0.0.1 password=private".to_owned(),
+        vacuum_dsn: "host=/var/run/postgresql password=also-private".to_owned(),
         schemas: 4,
         tables_per_schema: 40,
         ddl_concurrency: 4,
@@ -12,6 +13,9 @@ fn config() -> WorkloadConfig {
         lock_hold_ms: 4_000,
         lock_round_interval_s: 45,
         event_round_interval_s: 60,
+        vacuum_rows: 100_000,
+        vacuum_round_interval_s: 180,
+        vacuum_statement_timeout_s: 30,
     }
 }
 
@@ -20,6 +24,7 @@ fn debug_output_redacts_the_workload_dsn() {
     let output = format!("{:?}", config());
     assert!(output.contains("[redacted]"));
     assert!(!output.contains("private"));
+    assert!(!output.contains("also-private"));
     assert!(!output.contains("127.0.0.1"));
 }
 
@@ -34,6 +39,7 @@ fn workload_dimensions_and_timers_must_be_positive() {
         |value: &mut WorkloadConfig| value.ddl_concurrency = 0,
         |value: &mut WorkloadConfig| value.sessions = 0,
         |value: &mut WorkloadConfig| value.lock_chains = 0,
+        |value: &mut WorkloadConfig| value.vacuum_rows = 0,
     ] {
         let mut invalid = valid.clone();
         invalidate(&mut invalid);
@@ -56,5 +62,13 @@ fn workload_dimensions_and_timers_must_be_positive() {
 
     let mut invalid = valid;
     invalid.event_round_interval_s = 0;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = config();
+    invalid.vacuum_round_interval_s = 0;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = config();
+    invalid.vacuum_statement_timeout_s = 0;
     assert!(invalid.validate().is_err());
 }

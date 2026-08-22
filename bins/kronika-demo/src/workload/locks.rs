@@ -66,7 +66,7 @@ async fn run_one_round(config: &WorkloadConfig, table: &str) {
     }
 }
 
-fn periodic_chain_keys(chains: u32) -> std::ops::Range<u32> {
+const fn periodic_chain_keys(chains: u32) -> std::ops::Range<u32> {
     0..chains
 }
 

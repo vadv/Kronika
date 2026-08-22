@@ -237,6 +237,7 @@ start_kronika() {
     export KRONIKA_DEMO_DURATION_S="${KRONIKA_DEMO_DURATION_S:-0}"
     export KRONIKA_DEMO_COLLECTOR_LOG=stderr
     export KRONIKA_DEMO_WORKLOAD_DSN="${KRONIKA_DEMO_WORKLOAD_DSN:-host=127.0.0.1 port=$PGB_PORT user=$WORKLOAD_USER dbname=$WORKLOAD_DATABASE application_name=kronika-demo-workload}"
+    export KRONIKA_DEMO_WORKLOAD_VACUUM_DSN="${KRONIKA_DEMO_WORKLOAD_VACUUM_DSN:-host=127.0.0.1 port=$PG_PORT user=$WORKLOAD_USER dbname=$WORKLOAD_DATABASE application_name=kronika-demo-vacuum}"
 
     start_as kronika /usr/local/bin/kronika-web
     WEB_PID=$STARTED_PID

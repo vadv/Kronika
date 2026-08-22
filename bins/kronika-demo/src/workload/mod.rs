@@ -12,6 +12,7 @@ mod events;
 mod locks;
 mod naming;
 mod schema;
+mod vacuum;
 
 use anyhow::{Context, Result};
 use std::fmt;
@@ -26,6 +27,8 @@ use tokio_postgres::{Client, NoTls};
 pub(crate) struct WorkloadConfig {
     /// Where the workload connects, normally through `PgBouncer`.
     pub(crate) dsn: String,
+    /// Direct `PostgreSQL` connection used for session-scoped `VACUUM` tuning.
+    pub(crate) vacuum_dsn: String,
     /// How many schemas to create.
     pub(crate) schemas: u32,
     /// How many tables to create in each schema.
@@ -44,12 +47,19 @@ pub(crate) struct WorkloadConfig {
     pub(crate) lock_round_interval_s: u64,
     /// Pause between bounded slow/error episodes, seconds.
     pub(crate) event_round_interval_s: u64,
+    /// Rows maintained in the dedicated vacuum showcase table.
+    pub(crate) vacuum_rows: u32,
+    /// Pause between bounded vacuum episodes, seconds.
+    pub(crate) vacuum_round_interval_s: u64,
+    /// Per-statement timeout for update and vacuum work, seconds.
+    pub(crate) vacuum_statement_timeout_s: u64,
 }
 
 impl fmt::Debug for WorkloadConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkloadConfig")
             .field("dsn", &"[redacted]")
+            .field("vacuum_dsn", &"[redacted]")
             .field("schemas", &self.schemas)
             .field("tables_per_schema", &self.tables_per_schema)
             .field("ddl_concurrency", &self.ddl_concurrency)
@@ -59,6 +69,12 @@ impl fmt::Debug for WorkloadConfig {
             .field("lock_hold_ms", &self.lock_hold_ms)
             .field("lock_round_interval_s", &self.lock_round_interval_s)
             .field("event_round_interval_s", &self.event_round_interval_s)
+            .field("vacuum_rows", &self.vacuum_rows)
+            .field("vacuum_round_interval_s", &self.vacuum_round_interval_s)
+            .field(
+                "vacuum_statement_timeout_s",
+                &self.vacuum_statement_timeout_s,
+            )
             .finish()
     }
 }
@@ -95,8 +111,11 @@ impl WorkloadConfig {
         let Ok(dsn) = std::env::var("KRONIKA_DEMO_WORKLOAD_DSN") else {
             return Ok(None);
         };
+        let vacuum_dsn =
+            std::env::var("KRONIKA_DEMO_WORKLOAD_VACUUM_DSN").unwrap_or_else(|_| dsn.clone());
         let config = Self {
             dsn,
+            vacuum_dsn,
             schemas: env_u32("KRONIKA_DEMO_WORKLOAD_SCHEMAS", 4)?,
             tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 40)?,
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
@@ -106,6 +125,12 @@ impl WorkloadConfig {
             lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
             lock_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S", 45)?,
             event_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S", 60)?,
+            vacuum_rows: env_u32("KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS", 100_000)?,
+            vacuum_round_interval_s: env_u64("KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S", 180)?,
+            vacuum_statement_timeout_s: env_u64(
+                "KRONIKA_DEMO_WORKLOAD_VACUUM_STATEMENT_TIMEOUT_S",
+                30,
+            )?,
         };
         config.validate()?;
         Ok(Some(config))
@@ -124,6 +149,7 @@ impl WorkloadConfig {
             ),
             ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions),
             ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains),
+            ("KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS", self.vacuum_rows),
         ] {
             anyhow::ensure!(value > 0, "{key} must be greater than zero");
         }
@@ -142,6 +168,14 @@ impl WorkloadConfig {
         anyhow::ensure!(
             self.event_round_interval_s > 0,
             "KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.vacuum_round_interval_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.vacuum_statement_timeout_s > 0,
+            "KRONIKA_DEMO_WORKLOAD_VACUUM_STATEMENT_TIMEOUT_S must be greater than zero"
         );
         Ok(())
     }
@@ -225,6 +259,11 @@ async fn run(config: WorkloadConfig, stop: Arc<AtomicBool>) -> Result<()> {
         let config = config.clone();
         let stop = Arc::clone(&stop);
         async move { events::run_rounds(&config, &stop).await }
+    }));
+    tasks.push(tokio::spawn({
+        let config = config.clone();
+        let stop = Arc::clone(&stop);
+        async move { vacuum::run_rounds(&config, &stop).await }
     }));
     for task in tasks {
         let _joined = task.await;
