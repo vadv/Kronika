@@ -1,4 +1,6 @@
-//! Direct PostgreSQL MCP surfaces over the typed web API readers.
+//! Direct `PostgreSQL` MCP surfaces over the typed web API readers.
+
+mod locks;
 
 use std::collections::HashSet;
 
@@ -61,19 +63,19 @@ const LOCK_FIELDS: &[&str] = &[
     "wait_event_type",
     "wait_event",
     "query",
-    "locktype",
-    "mode",
-    "database",
-    "relation",
-    "relname",
-    "page",
-    "tuple",
-    "virtualxid",
-    "transactionid",
-    "classid",
-    "objid",
-    "objsubid",
-    "target",
+    "lock_locktype",
+    "lock_mode",
+    "lock_database",
+    "lock_relation",
+    "lock_relname",
+    "lock_page",
+    "lock_tuple",
+    "lock_virtualxid",
+    "lock_transactionid",
+    "lock_classid",
+    "lock_objid",
+    "lock_objsubid",
+    "lock_target",
     "waitstart",
 ];
 const DATABASE_FIELDS: &[&str] = &[
@@ -268,20 +270,7 @@ pub(super) fn execute(
             },
             cancelled,
         ),
-        "kronika_find_postgresql_locks" => direct(
-            state,
-            args,
-            DirectSpec {
-                section: "pg_locks",
-                key: "locks",
-                defaults: LOCK_FIELDS,
-                default_order: "pid",
-                search: false,
-                relation: false,
-                whole_set: true,
-            },
-            cancelled,
-        ),
+        "kronika_find_postgresql_locks" => locks::execute(state, args, cancelled),
         "kronika_find_postgresql_vacuum" => vacuum(state, args, cancelled),
         "kronika_find_postgresql_statements" => direct(
             state,
