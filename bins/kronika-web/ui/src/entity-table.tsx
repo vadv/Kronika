@@ -39,6 +39,7 @@ export interface EntityColumn {
   readonly valueScale?: number | null
   readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
   readonly width?: number
+  readonly expandToHeader?: boolean
   readonly sticky?: boolean | string
   readonly sortable?: boolean
   readonly available?: ((row: DataRow) => boolean) | undefined
@@ -180,6 +181,11 @@ export function EntityTable({
         const needed = wanted[index]
         const own = current[field.field] === undefined || current[field.field] === automatic.current[field.field]
         if (needed === undefined || !own) return
+        if (field.expandToHeader === false) {
+          delete next[field.field]
+          delete automatic.current[field.field]
+          return
+        }
         if (needed > (field.width ?? 128)) {
           next[field.field] = needed
           automatic.current[field.field] = needed

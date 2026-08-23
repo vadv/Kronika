@@ -4341,7 +4341,10 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const table = document.querySelector('[data-testid="process-table"]')
       const headers = [...table.querySelectorAll('[role="columnheader"]')]
       const names = headers.map((header) => header.querySelector('.entity-sort span')?.textContent.trim() ?? '')
+      const pid = headers[names.indexOf('PID')]
+      const command = headers[names.indexOf('Command')]
       const user = headers[names.indexOf('User')]
+      const state = headers[names.indexOf('State')]
       const start = headers[names.indexOf('START')]
       const row = [...table.querySelectorAll('.entity-row')].find((candidate) => candidate.textContent.includes('2686712'))
       const cells = [...row.querySelectorAll('[role="cell"]')]
@@ -4352,12 +4355,18 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       return {
         divider: getComputedStyle(summary).borderLeftWidth,
         gap: summaryRect.left - tabs.right,
+        pidWidth: pid.getBoundingClientRect().width,
+        commandWidth: command.getBoundingClientRect().width,
+        stateWidth: state.getBoundingClientRect().width,
         start: { clipped: startValue.scrollWidth > startValue.clientWidth + 1, text: startValue.textContent, width: start.getBoundingClientRect().width },
         userWidth: user.getBoundingClientRect().width,
       }
     })()`)
-    assert.ok(Math.abs(treeGeometry.userWidth - 104) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.start.width - 198) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.pidWidth - 82) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.commandWidth - 400) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.userWidth - 88) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.stateWidth - 50) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.start.width - 180) <= 1, JSON.stringify(treeGeometry))
     assert.equal(treeGeometry.start.clipped, false, JSON.stringify(treeGeometry))
     assert.match(treeGeometry.start.text, /\d{2}:\d{2}:\d{2}$/)
     assert.equal(treeGeometry.divider, "0px", JSON.stringify(treeGeometry))

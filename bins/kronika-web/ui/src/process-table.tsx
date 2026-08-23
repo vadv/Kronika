@@ -37,14 +37,14 @@ export interface Field {
   readonly sticky?: "pid" | "command"
 }
 
-const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 62, sticky: "pid" }
-const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
-const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 340, sticky: "command" }
-const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
-const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 104 }
+const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 82, sticky: "pid" }
+const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 340, sticky: "command" }
+const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 400, sticky: "command" }
+const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 50 }
+const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 88 }
 export const PROCESS_USER_FIELDS: readonly Field[] = [
   USER,
-  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 132 },
+  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 114 },
 ]
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
@@ -79,7 +79,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     PID, TREE_COMMAND, USER,
     field("percent", "cpu_percent", "col.cpu_percent", 72), field("percent", "mem_percent", "col.mem_percent", 72),
     field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("id", "tty", "col.tty", 70),
-    STATE, field("timestamp", "starttime", "col.starttime", 198), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
+    STATE, field("timestamp", "starttime", "col.starttime", 180), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 
@@ -271,6 +271,7 @@ export function ProcessTable({
       sortValue: (row) => sortable(row, field),
       sortable: lens !== "tree" && field.kind !== "user",
       ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
+      ...(field.id === "state" ? { expandToHeader: false } : {}),
       width: field.size,
     }
   }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])

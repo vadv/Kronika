@@ -50,9 +50,17 @@ test("process users retain exact numeric identity and honest unresolved fallback
   assert.deepEqual(helpers.processTableDefaultOrder("disk"), { column: "read_bytes", descending: true })
 })
 
-test("Tree uses compact identity columns and enough room for full second precision", () => {
-  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "user").size, 104)
-  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 198)
+test("process lenses share the measured identity width contract", () => {
+  for (const lens of ["generic", "cpu", "memory", "disk", "tree"]) {
+    const columns = LENS_FIELDS[lens]
+    assert.equal(columns.find(({ id }) => id === "pid").size, 82, `${lens} PID`)
+    assert.equal(columns.find(({ id }) => id === "command").size, lens === "tree" ? 400 : 340, `${lens} Command`)
+    assert.equal(columns.find(({ id }) => id === "state").size, 50, `${lens} State`)
+  }
+  assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "user").size, 88)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "user").size, 88)
+  assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "effective_user").size, 114)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 180)
 })
 
 test("process lens tabs hand off to the summary without a fake splitter", async () => {
