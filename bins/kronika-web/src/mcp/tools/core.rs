@@ -1,3 +1,5 @@
+mod discovery;
+mod pagination;
 mod tree;
 
 use std::ops::Bound::Included;
@@ -9,7 +11,7 @@ use super::{Failure, Payload};
 use crate::api::{self, ApiError, ValueCollection, ValueLimits, ValueStopReason};
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::mcp::State;
-use crate::route::{Filter, HeatmapRequest, HourRequest, Order, Route, SnapshotRequest, Window};
+use crate::route::{Filter, HeatmapRequest, Order, Route, SnapshotRequest, Window};
 
 const HOUR_US: i64 = 3_600_000_000;
 const MAX_SEGMENTS: usize = 64;
@@ -24,7 +26,7 @@ pub(super) fn execute(
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     match name {
-        "kronika_get_context" => context(state),
+        "kronika_get_context" => discovery::payload(state),
         "kronika_list_hours" => hours(state, args, budget, cancelled),
         "kronika_rank_heatmap" => heatmap(state, args, budget, cancelled),
         "kronika_list_findings" => findings(state, args, budget, cancelled),
@@ -38,106 +40,36 @@ pub(super) fn execute(
     }
 }
 
-fn context(state: &State) -> Result<Payload, Failure> {
-    let semantics = crate::product_semantics::all()
-        .map_err(|error| Failure::bounded("semantics_unreadable", error.to_string()))?;
-    Ok(Payload {
-        anchor: anchor(None, None, None),
-        data: json!({
-            "context": {
-                "historical_only": true,
-                "synthetic_demo": state.synthetic_demo,
-                "configured_sources": source_values(state.sources),
-                "limits": {
-                    "request_body_bytes": super::super::REQUEST_BODY_BYTES,
-                    "structured_content_bytes": super::super::STRUCTURED_CONTENT_BYTES,
-                    "response_body_bytes": super::super::RESPONSE_BODY_BYTES,
-                    "segments": MAX_SEGMENTS,
-                    "physical_row_visits": MAX_ROWS,
-                    "concurrent_heavy_scans": 2,
-                }
-            },
-            "surfaces": [
-                {"tool": "kronika_get_context"},
-                {"tool": "kronika_list_hours"},
-                {"tool": "kronika_rank_heatmap", "surfaces": ["processes", "statements", "plans", "databases", "tables", "indexes", "cgroups"]},
-                {"tool": "kronika_list_findings"},
-                {"tool": "kronika_get_timeline"},
-                {"tool": "kronika_get_host_context", "lenses": ["identity", "cpu", "memory", "storage", "filesystem", "network", "kernel", "cgroup"]},
-                {"tool": "kronika_find_processes", "lenses": ["identity", "cpu", "memory", "disk", "tree"]}
-            ],
-            "semantics": semantics,
-        }),
-        page: page(0, false, None, "complete"),
-        warnings: Vec::new(),
-        summary:
-            "Kronika returned its read-only historical surfaces, limits, and accepted semantics."
-                .to_owned(),
-    })
-}
-
 fn hours(
     state: &State,
     args: &Map<String, Value>,
-    budget: usize,
+    _budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
-    reject_cursor(args)?;
     let from = optional_i64(args, "from_us")?;
     let to = optional_i64(args, "to_us")?;
     validate_optional_window(from, to)?;
     let limit = usize_arg(args, "limit", 100, 500)?;
-    let collected = run_route(
-        state,
-        Route::Hour(HourRequest {
-            window: Window { from, to },
-            series: None,
-        }),
-        budget,
-        1,
+    let paged = pagination::hours(
+        &state.data_root,
+        Window { from, to },
+        optional_string(args, "cursor")?,
+        limit,
         cancelled,
     )?;
-    let available = collected
-        .records
-        .first()
-        .and_then(|record| record.get("available_hours"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let selected = available
-        .into_iter()
-        .filter(|hour| {
-            hour.as_str()
-                .and_then(|hour| hour.parse::<i64>().ok())
-                .is_some_and(|hour| {
-                    from.is_none_or(|from| hour.saturating_add(HOUR_US - 1) >= from)
-                        && to.is_none_or(|to| hour <= to)
-                })
-        })
-        .collect::<Vec<_>>();
-    let truncated = selected.len() > limit;
-    let hours = selected
-        .into_iter()
-        .take(limit)
-        .filter_map(|start| {
-            let start = start.as_str()?.parse::<i64>().ok()?;
-            Some(json!({
-                "start_us": start.to_string(),
-                "end_us": start.saturating_add(HOUR_US - 1).to_string(),
-            }))
-        })
-        .collect::<Vec<_>>();
+    let page_value = page(
+        paged.page.returned,
+        paged.page.truncated,
+        paged.page.next_cursor.as_deref(),
+        paged.page.stop_reason,
+    );
+    let returned = paged.hours.len();
     Ok(Payload {
         anchor: anchor(None, None, None),
-        data: json!({"hours": hours, "sources": source_values(state.sources)}),
-        page: page(
-            hours.len(),
-            truncated,
-            None,
-            if truncated { "row_limit" } else { "complete" },
-        ),
-        warnings: warnings(&collected.records),
-        summary: format!("Kronika returned {} recorded UTC hour(s).", hours.len()),
+        data: json!({"hours": paged.hours, "sources": source_values(state.sources)}),
+        page: page_value,
+        warnings: Vec::new(),
+        summary: format!("Kronika returned {returned} recorded UTC hour(s)."),
     })
 }
 
@@ -152,8 +84,9 @@ fn heatmap(
     validate_window(from, to)?;
     let surface = required_string(args, "surface")?;
     let cut = required_string(args, "cut")?;
-    let (section, fields, labels, semantic) = heatmap_cut(surface, cut)?;
-    admit_window(state, from, to, Some(section))?;
+    let spec = discovery::heatmap_cut(surface, cut)
+        .ok_or_else(|| Failure::input("cut", "cut is not an accepted metric for this surface."))?;
+    admit_window(state, from, to, Some(spec.section))?;
     let columns = usize_arg(args, "columns", 12, 1_440)?;
     let top = usize_arg(args, "top", 25, 500)?;
     let group = match optional_string(args, "group")? {
@@ -174,11 +107,19 @@ fn heatmap(
         Route::Heatmap(HeatmapRequest {
             from,
             to,
-            section: section.to_owned(),
-            fields: fields.iter().map(|field| (*field).to_owned()).collect(),
+            section: spec.section.to_owned(),
+            fields: spec
+                .fields
+                .iter()
+                .map(|field| (*field).to_owned())
+                .collect(),
             columns,
             top,
-            labels: labels.iter().map(|field| (*field).to_owned()).collect(),
+            labels: spec
+                .labels
+                .iter()
+                .map(|field| (*field).to_owned())
+                .collect(),
             group,
             type_id: None,
         }),
@@ -211,7 +152,7 @@ fn heatmap(
             "rows": rows,
             "totals": totals,
             "others": others,
-            "semantics": [semantic],
+            "semantics": [spec.semantic()],
         }),
         page: page(
             rows.len(),
@@ -230,97 +171,75 @@ fn heatmap(
 fn findings(
     state: &State,
     args: &Map<String, Value>,
-    budget: usize,
+    _budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
-    reject_cursor(args)?;
     let (from, to) = required_window(args)?;
     admit_window(state, from, to, None)?;
     let limit = usize_arg(args, "limit", 100, 500)?;
     let surface = optional_string(args, "surface")?;
     let kind = optional_string(args, "kind")?;
-    let collected = collect_hour(
+    let paged = pagination::findings(
         state,
-        from,
-        to,
-        budget,
-        limit.saturating_add(256),
+        Window {
+            from: Some(from),
+            to: Some(to),
+        },
+        surface,
+        kind,
+        optional_string(args, "cursor")?,
+        limit,
         cancelled,
     )?;
-    let mut found = records_named(&collected.records, "finding");
-    found.retain(|finding| {
-        surface.is_none_or(|surface| finding["logical_name"] == surface)
-            && kind.is_none_or(|kind| finding["kind"] == kind)
-    });
-    let truncated = found.len() > limit || collected.stop_reason != ValueStopReason::Complete;
-    found.truncate(limit);
+    let page_value = page(
+        paged.page.returned,
+        paged.page.truncated,
+        paged.page.next_cursor.as_deref(),
+        paged.page.stop_reason,
+    );
+    let returned = paged.findings.len();
     Ok(Payload {
         anchor: anchor(None, Some(from), None),
-        data: json!({"findings": found, "semantics": []}),
-        page: page(
-            found.len(),
-            truncated,
-            None,
-            if truncated { "row_limit" } else { "complete" },
-        ),
-        warnings: warnings(&collected.records),
-        summary: format!("Kronika returned {} sparse finding(s).", found.len()),
+        data: json!({"findings": paged.findings, "semantics": paged.semantics}),
+        page: page_value,
+        warnings: paged.warnings,
+        summary: format!("Kronika returned {returned} sparse finding(s)."),
     })
 }
 
 fn timeline(
     state: &State,
     args: &Map<String, Value>,
-    budget: usize,
+    _budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
-    reject_cursor(args)?;
     let (from, to) = required_window(args)?;
     admit_window(state, from, to, None)?;
     let limit = usize_arg(args, "limit", 200, 1_000)?;
     let wanted = string_array(args, "lanes")?;
-    let collected = collect_hour(
+    let paged = pagination::timeline(
         state,
-        from,
-        to,
-        budget,
-        limit.saturating_add(256),
+        Window {
+            from: Some(from),
+            to: Some(to),
+        },
+        &wanted,
+        optional_string(args, "cursor")?,
+        limit,
         cancelled,
     )?;
-    let mut lanes = collected
-        .records
-        .iter()
-        .filter(|record| record["record"] == "lane" || record["record"] == "point")
-        .filter(|record| {
-            wanted.is_empty()
-                || record
-                    .get("lane")
-                    .or_else(|| record.get("series"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|lane| wanted.iter().any(|wanted| wanted == lane))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut markers = records_named(&collected.records, "finding");
-    let truncated = lanes.len().saturating_add(markers.len()) > limit
-        || collected.stop_reason != ValueStopReason::Complete;
-    if lanes.len() >= limit {
-        lanes.truncate(limit);
-        markers.clear();
-    } else {
-        markers.truncate(limit - lanes.len());
-    }
-    let returned = lanes.len().saturating_add(markers.len());
+    let page_value = page(
+        paged.page.returned,
+        paged.page.truncated,
+        paged.page.next_cursor.as_deref(),
+        paged.page.stop_reason,
+    );
+    let returned = paged.lanes.len().saturating_add(paged.markers.len());
     Ok(Payload {
         anchor: anchor(None, Some(from), None),
-        data: json!({"lanes": lanes, "markers": markers, "semantics": []}),
-        page: page(
-            returned,
-            truncated,
-            None,
-            if truncated { "row_limit" } else { "complete" },
-        ),
-        warnings: warnings(&collected.records),
+        data: json!({"lanes": paged.lanes, "markers": paged.markers, "semantics": paged.semantics}),
+        page: page_value,
+        warnings: paged.warnings,
         summary: format!("Kronika returned {returned} native Timeline record(s)."),
     })
 }
@@ -454,29 +373,6 @@ fn processes(
     })
 }
 
-fn collect_hour(
-    state: &State,
-    from: i64,
-    to: i64,
-    budget: usize,
-    records: usize,
-    cancelled: &impl Fn() -> bool,
-) -> Result<ValueCollection, Failure> {
-    run_route(
-        state,
-        Route::Hour(HourRequest {
-            window: Window {
-                from: Some(from),
-                to: Some(to),
-            },
-            series: None,
-        }),
-        budget,
-        records,
-        cancelled,
-    )
-}
-
 fn run_route(
     state: &State,
     route: Route,
@@ -581,257 +477,6 @@ fn admit_window(state: &State, from: i64, to: i64, section: Option<&str>) -> Res
         ));
     }
     Ok(())
-}
-
-fn heatmap_cut(
-    surface: &str,
-    cut: &str,
-) -> Result<
-    (
-        &'static str,
-        &'static [&'static str],
-        &'static [&'static str],
-        Value,
-    ),
-    Failure,
-> {
-    let (section, fields, labels, unit, scale) = match (surface, cut) {
-        ("processes", "cpu") => (
-            "os_process",
-            &["utime", "stime"][..],
-            &[][..],
-            "seconds",
-            Some("clock_ticks"),
-        ),
-        ("processes", "rss") => (
-            "os_process",
-            &["rmem_kb"][..],
-            &[][..],
-            "bytes",
-            Some("kib"),
-        ),
-        ("processes", "io_read") => ("os_process", &["read_bytes"][..], &[][..], "bytes", None),
-        ("processes", "io_write") => ("os_process", &["write_bytes"][..], &[][..], "bytes", None),
-        ("processes", "majflt") => ("os_process", &["majflt"][..], &[][..], "count", None),
-        ("processes", "run_delay") => (
-            "os_process",
-            &["rundelay_ns"][..],
-            &[][..],
-            "nanoseconds",
-            None,
-        ),
-        ("statements", "exec_time") => (
-            "pg_stat_statements",
-            &["total_exec_time"][..],
-            &["datname", "usename"][..],
-            "milliseconds",
-            None,
-        ),
-        ("statements", "calls") => (
-            "pg_stat_statements",
-            &["calls"][..],
-            &["datname", "usename"][..],
-            "count",
-            None,
-        ),
-        ("statements", "rows") => (
-            "pg_stat_statements",
-            &["rows"][..],
-            &["datname", "usename"][..],
-            "count",
-            None,
-        ),
-        ("statements", "shared_read") => (
-            "pg_stat_statements",
-            &["shared_blks_read"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("statements", "shared_dirtied") => (
-            "pg_stat_statements",
-            &["shared_blks_dirtied"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("statements", "temp_written") => (
-            "pg_stat_statements",
-            &["temp_blks_written"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("statements", "wal_bytes") => (
-            "pg_stat_statements",
-            &["wal_bytes"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            None,
-        ),
-        ("plans", "exec_time") => (
-            "pg_store_plans",
-            &["total_time"][..],
-            &["datname", "usename"][..],
-            "milliseconds",
-            None,
-        ),
-        ("plans", "calls") => (
-            "pg_store_plans",
-            &["calls"][..],
-            &["datname", "usename"][..],
-            "count",
-            None,
-        ),
-        ("plans", "rows") => (
-            "pg_store_plans",
-            &["rows"][..],
-            &["datname", "usename"][..],
-            "count",
-            None,
-        ),
-        ("plans", "shared_read") => (
-            "pg_store_plans",
-            &["shared_blks_read"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("plans", "temp_written") => (
-            "pg_store_plans",
-            &["temp_blks_written"][..],
-            &["datname", "usename"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("databases", "commits") => (
-            "pg_stat_database",
-            &["xact_commit"][..],
-            &["datname"][..],
-            "count",
-            None,
-        ),
-        ("databases", "rollbacks") => (
-            "pg_stat_database",
-            &["xact_rollback"][..],
-            &["datname"][..],
-            "count",
-            None,
-        ),
-        ("databases", "db_read") => (
-            "pg_stat_database",
-            &["blks_read"][..],
-            &["datname"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("databases", "temp_bytes") => (
-            "pg_stat_database",
-            &["temp_bytes"][..],
-            &["datname"][..],
-            "bytes",
-            None,
-        ),
-        ("databases", "deadlocks") => (
-            "pg_stat_database",
-            &["deadlocks"][..],
-            &["datname"][..],
-            "count",
-            None,
-        ),
-        ("tables", "writes") => (
-            "pg_stat_user_tables",
-            &["n_tup_ins", "n_tup_upd", "n_tup_del"][..],
-            &["datname", "schemaname", "relname"][..],
-            "count",
-            None,
-        ),
-        ("tables", "seq_read") => (
-            "pg_stat_user_tables",
-            &["seq_tup_read"][..],
-            &["datname", "schemaname", "relname"][..],
-            "count",
-            None,
-        ),
-        ("tables", "heap_read") => (
-            "pg_stat_user_tables",
-            &["heap_blks_read"][..],
-            &["datname", "schemaname", "relname"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("tables", "dead_tuples") => (
-            "pg_stat_user_tables",
-            &["n_dead_tup"][..],
-            &["datname", "schemaname", "relname"][..],
-            "count",
-            None,
-        ),
-        ("tables", "autovacuum_time") => (
-            "pg_stat_user_tables",
-            &["total_autovacuum_time"][..],
-            &["datname", "schemaname", "relname"][..],
-            "milliseconds",
-            None,
-        ),
-        ("indexes", "idx_scan") => (
-            "pg_stat_user_indexes",
-            &["idx_scan"][..],
-            &["datname", "schemaname", "relname", "indexrelname"][..],
-            "count",
-            None,
-        ),
-        ("indexes", "idx_tup_read") => (
-            "pg_stat_user_indexes",
-            &["idx_tup_read"][..],
-            &["datname", "schemaname", "relname", "indexrelname"][..],
-            "count",
-            None,
-        ),
-        ("indexes", "idx_blks_read") => (
-            "pg_stat_user_indexes",
-            &["idx_blks_read"][..],
-            &["datname", "schemaname", "relname", "indexrelname"][..],
-            "bytes",
-            Some("block_size"),
-        ),
-        ("cgroups", "cg_cpu") => (
-            "os_cgroup_cpu",
-            &["usage_usec"][..],
-            &[][..],
-            "microseconds",
-            None,
-        ),
-        ("cgroups", "cg_throttled") => (
-            "os_cgroup_cpu",
-            &["throttled_usec"][..],
-            &[][..],
-            "microseconds",
-            None,
-        ),
-        ("cgroups", "cg_read") => ("os_cgroup_io", &["rbytes"][..], &[][..], "bytes", None),
-        ("cgroups", "cg_write") => ("os_cgroup_io", &["wbytes"][..], &[][..], "bytes", None),
-        ("cgroups", "cg_rios") => ("os_cgroup_io", &["rios"][..], &[][..], "count", None),
-        ("cgroups", "cg_wios") => ("os_cgroup_io", &["wios"][..], &[][..], "count", None),
-        _ => {
-            return Err(Failure::input(
-                "cut",
-                "cut is not an accepted metric for this surface.",
-            ));
-        }
-    };
-    Ok((
-        section,
-        fields,
-        labels,
-        json!({
-            "id": format!("heatmap.{surface}.{cut}"),
-            "origin": "accepted_presentation",
-            "fields": fields,
-            "unit": unit,
-            "scale_by": scale,
-        }),
-    ))
 }
 
 fn required_window(args: &Map<String, Value>) -> Result<(i64, i64), Failure> {
@@ -954,16 +599,6 @@ fn filter_values(args: &Map<String, Value>) -> Result<Vec<Filter>, Failure> {
             })
         })
         .collect()
-}
-
-fn reject_cursor(args: &Map<String, Value>) -> Result<(), Failure> {
-    if args.contains_key("cursor") {
-        return Err(Failure::input(
-            "cursor",
-            "This first bounded implementation has no continuation cursor for this surface.",
-        ));
-    }
-    Ok(())
 }
 
 fn process_order(lens: &str) -> &'static str {
