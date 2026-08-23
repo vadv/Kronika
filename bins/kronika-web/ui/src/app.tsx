@@ -130,7 +130,7 @@ function processRequest(lens: Lens): SectionRequest {
 function section(name: string): SectionRequest { return { section: name } }
 
 const HELP_SYSTEM = [
-  { label: "system.metric.health.label", help: "system.metric.health.help" },
+  { label: "system.metric.health.label", help: "lane.health.os_health.help" },
   { label: "system.metric.cpu_used_cores.label", help: "system.metric.cpu_used_cores.help" },
   { label: "system.metric.cpu_capacity.label", help: "system.metric.cpu_capacity.help" },
   { label: "system.metric.cpu_actual_frequency.label", help: "system.metric.cpu_actual_frequency.help" },

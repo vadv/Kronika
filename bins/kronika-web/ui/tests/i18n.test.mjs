@@ -4,7 +4,8 @@ import test from "node:test"
 
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
-test("flat dictionaries reject duplicates and empty values", () => {
+test("flat dictionaries reject unstable keys, duplicates and empty values", () => {
+  assert.throws(() => parseDictionary('справка.процесс: "x"', "sample"), /invalid stable key/)
   assert.throws(() => parseDictionary('app.title: "A"\napp.title: "B"', "sample"), /duplicate key/)
   assert.throws(() => parseDictionary('app.title: "  "', "sample"), /nonempty/)
 })
@@ -32,6 +33,7 @@ test("PostgreSQL buffer and block metric labels stay canonical English in RU", a
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
+  for (const key of [...Object.keys(english), ...Object.keys(russian)]) assert.doesNotMatch(key, /[А-Яа-яЁё]/u, key)
   const keys = Object.keys(english).filter((key) => !key.startsWith("filter.field.") && key.endsWith(".label") && /(?:blks|blocks|buffer_hit)/.test(key))
   assert.ok(keys.length >= 29)
   for (const key of keys) assert.equal(russian[key], english[key], key)
@@ -39,7 +41,7 @@ test("PostgreSQL buffer and block metric labels stay canonical English in RU", a
   assert.equal(english["pg.field.shared_blks_hit.label"], "Shared buffer hit bytes")
   assert.equal(english["pg.field.temp_blks_written.label"], "Temp buffer written bytes")
   assert.match(russian["pg.field.shared_blks_read.help"], /[А-Яа-яЁё]/u)
-  assert.equal(russian["filter.field.buffer_hit.label"], "Попадания в буфер")
+  assert.equal(russian["filter.field.buffer_hit.label"], english["filter.field.buffer_hit.label"])
 })
 
 test("quantitative search labels and unit tokens stay canonical English in RU", async () => {
@@ -77,6 +79,17 @@ test("RU keeps technical labels in English and localizes help", async () => {
 
   const canonical = [
     "nav.sources", "inspector.timeline", "system.history", "pg.sections", "pg.section.activity", "pg.section.statements",
+    "lens.tree", "pg.section.vacuum", "detail.pg_snapshot.label", "process.summary.postgresql", "process.summary.major_faults",
+    "col.cpu_percent.label", "col.mem_percent.label", "col.starttime.label", "col.cpu_time.label", "col.minflt.label", "col.majflt.label",
+    "system.metric.mem_s_reclaimable.label", "system.metric.mem_s_unreclaim.label", "system.metric.swap_free.label", "system.metric.swap_total.label",
+    "system.metric.cpu_pressure.label", "system.metric.memory_pressure.label", "system.metric.io_pressure.label", "system.metric.filesystem_free_min.label",
+    "system.metric.network.label", "system.field.cpu_id.label", "filter.field.size.label", "filter.field.table_count.label", "filter.field.index_count.label",
+    "filter.field.buffer_hit.label", "filter.field.seq_scan_rate.label", "filter.field.change_rate.label", "filter.field.autovacuum_rate.label",
+    "filter.field.autovacuum_mean.label", "filter.field.xid_age.label", "filter.field.scan_rate.label", "pg.pid.label", "pg.datid.label",
+    "pg.vacuum.at_sample", "pg.vacuum.load.read.label", "pg.vacuum.load.write.label", "pg.vacuum.load.block_wait.label",
+    "lane.cpu_stall.label", "lane.io_stall.label", "events.source.locks", "events.source.archiver", "events.source.cgroup_memory",
+    "events.metric.data_corruption", "pg.field.checksum_failures.label", "pg.field.min_mxid_age.label", "pg.field.sessions_fatal.label",
+    "pg.field.sessions_killed.label", "pg.field.failed_count.label",
     "pg.lens.label", "pg.lens.load", "pg.lens.per_call", "pg.lens.io", "pg.lens.resources", "pg.lens.stability",
     "pg.value.legend", "pg.value.good", "pg.value.warning", "pg.value.critical",
     "activity.title", "activity.retry", "activity.cut_label", "activity.cut.exec_time", "activity.cut.calls", "activity.cut.rows",
@@ -92,6 +105,10 @@ test("RU keeps technical labels in English and localizes help", async () => {
     ].map((field) => `pg.field.${field}.label`),
   ]
   for (const key of canonical) assert.equal(russian[key], english[key], key)
+  for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("pg.vacuum.") && candidate.endsWith(".label"))) {
+    assert.equal(russian[key], english[key], key)
+  }
+  assert.equal(english["filter.field.seq_scan_rate.label"], "Seq scan rate")
   for (const key of ["events.field.holding_pids", "events.field.wait_queue"]) {
     assert.equal(russian[key], english[key], key)
   }
@@ -134,6 +151,11 @@ test("RU keeps technical labels in English and localizes help", async () => {
   for (const text of Object.entries(russian).filter(([key]) => key.startsWith("activity.")).map(([, value]) => value)) {
     assert.doesNotMatch(text, /болтлив|тяж[её]л|намека|давит|нагружает|ему мал|довод/i)
   }
+  const technicalScope = Object.entries(russian)
+    .filter(([key]) => /^(?:pg\.(?:field|vacuum|vitals)|system\.(?:field|metric)|events|filter\.field)\./.test(key))
+    .map(([, value]) => value)
+    .join("\n")
+  assert.doesNotMatch(technicalScope, /бэкенд|кортеж|вакуум|очистк|контрольн\S*\s+точ|PSI CPU|PSI I\/O|последовательн\S*\s+скан|сканирован\S*\s+индекс/iu)
   assert.match(activitySource, /`Query ID \$\{queryId \?\? "—"\}`/)
   assert.doesNotMatch(activitySource, /`queryid /)
 })
@@ -190,9 +212,9 @@ test("project dictionaries cover the active UI keys", async () => {
   const required = new Set([
     ...["host", "processes", "postgresql", "events"].map((name) => `nav.${name}`),
     ...["overview", "cpu", "memory", "storage", "network"].map((name) => `section.${name}`),
-    ...["generic", "cpu", "memory", "disk"].map((name) => `lens.${name}`),
+    ...["generic", "cpu", "memory", "disk", "tree"].map((name) => `lens.${name}`),
     ...["event", "known_bad", "spike"].map((name) => `locator.${name}`),
-    ...["overview", "activity", "statements", "plans", "locks", "databases"].map((name) => `pg.section.${name}`),
+    ...["overview", "activity", "statements", "plans", "locks", "databases", "vacuum"].map((name) => `pg.section.${name}`),
   ])
   for (const root of roots) {
     if (Object.hasOwn(english, root)) {
@@ -325,6 +347,7 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   assert.doesNotMatch(englishSource, /Local · offline|Hover over|No source row|collection scope/)
   assert.doesNotMatch(russianSource, /Наведите указатель|исходное значение|исходной строки|Область сбора/)
   assert.doesNotMatch(appSource, /\[\.\.\.HELP_SYSTEM, \.\.\.HELP_PROCESS\]/)
+  assert.match(appSource, /label: "system\.metric\.health\.label", help: "lane\.health\.os_health\.help"/)
   assert.doesNotMatch(eventsSource, /lens-tabs|locator\.spike/)
   assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
   assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)

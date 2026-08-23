@@ -23,6 +23,18 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "pid", "command", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar",
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
+  assert.deepEqual(fields("tree"), [
+    "pid", "command", "user", "cpu_percent", "mem_percent", "vmem_kb", "rmem_kb", "tty", "state", "starttime", "cpu_time_seconds",
+  ])
+  assert.deepEqual(
+    LENS_FIELDS.tree.filter(({ id }) => ["cpu_percent", "mem_percent", "starttime", "cpu_time_seconds"].includes(id)).map(({ id, label, help }) => ({ id, label, help })),
+    [
+      { id: "cpu_percent", label: "col.cpu_percent.label", help: "col.cpu_percent.help" },
+      { id: "mem_percent", label: "col.mem_percent.label", help: "col.mem_percent.help" },
+      { id: "starttime", label: "col.starttime.label", help: "col.starttime.help" },
+      { id: "cpu_time_seconds", label: "col.cpu_time.label", help: "col.cpu_time.help" },
+    ],
+  )
 })
 
 test("process users retain exact numeric identity and honest unresolved fallback", () => {
