@@ -1,5 +1,7 @@
 //! Bounded expert MCP surfaces over the typed web API readers.
 
+mod events;
+
 use kronika_registry::{
     ColumnType, Semantics, TypeContract, contract, logical_section_name, registry,
 };
@@ -8,10 +10,7 @@ use serde_json::{Map, Value, json};
 use super::State;
 use crate::api::{self, ApiError, ValueCollection, ValueLimits, ValueStopReason};
 use crate::product_semantics::SemanticPolicy;
-use crate::route::{
-    DataRequest, Filter, HourRequest, Order, Route, RowsRequest, SegmentRequest, SeriesRequest,
-    SnapshotRequest, Window,
-};
+use crate::route::{Filter, HourRequest, Order, Route, SeriesRequest, SnapshotRequest, Window};
 
 const HOUR_US: i64 = 3_600_000_000;
 const MAX_SEGMENTS: usize = 64;
@@ -24,28 +23,6 @@ const DEFAULT_PAGE_ROWS: usize = 100;
 const DEFAULT_HISTORY_SAMPLES: usize = 2_000;
 const DEFAULT_DATA_BYTES: usize = 32 * 1_024;
 const MAX_DATA_BYTES: usize = 96 * 1_024;
-
-const EVENT_SECTIONS: &[&str] = &[
-    "pg_log_errors",
-    "pg_log_checkpoints",
-    "pg_log_autovacuum",
-    "pg_log_slow_queries",
-    "pg_log_lock_waits",
-    "pg_log_lifecycle",
-    "pgbouncer_events",
-];
-
-const EVENT_LONG_TEXT_FIELDS: &[&str] = &[
-    "pattern",
-    "sample",
-    "detail",
-    "hint",
-    "context",
-    "statement",
-    "message",
-    "query_detail",
-    "text",
-];
 
 #[derive(Debug)]
 pub(super) struct ExpertPayload {
@@ -76,7 +53,7 @@ pub(super) fn execute(
     cancelled: &impl Fn() -> bool,
 ) -> Result<ExpertPayload, ExpertFailure> {
     match name {
-        "kronika_find_events" => events(state, args, cancelled),
+        "kronika_find_events" => events::execute(state, args, cancelled),
         "kronika_get_metric_history" => history(state, args, cancelled),
         "kronika_get_snapshot" => snapshot(state, args, cancelled),
         "kronika_get_row_detail" => row_detail(state, args, cancelled),
@@ -447,178 +424,6 @@ fn detail_text_field(
         }
     }
     Ok(text_field)
-}
-
-fn events(
-    state: &State,
-    args: &Map<String, Value>,
-    cancelled: &impl Fn() -> bool,
-) -> Result<ExpertPayload, ExpertFailure> {
-    if args.contains_key("find") {
-        return Err(failure(
-            "unsupported_find",
-            "Events has no shared Rust public field registry; use sources and fields",
-            Some("find"),
-            false,
-        ));
-    }
-    if args.contains_key("cursor") {
-        return Err(failure(
-            "unsupported_cursor",
-            "cross-segment Event continuation is not available on the shared rows path",
-            Some("cursor"),
-            false,
-        ));
-    }
-    let from = decimal_i64(args, "from_us")?;
-    let to = decimal_i64(args, "to_us")?;
-    bounded_window(from, to)?;
-    let requested_sources = strings(args, "sources", EVENT_SECTIONS.len())?;
-    let sources: Vec<&str> = if requested_sources.is_empty() {
-        EVENT_SECTIONS.to_vec()
-    } else {
-        requested_sources
-            .iter()
-            .map(String::as_str)
-            .map(|source| {
-                EVENT_SECTIONS
-                    .contains(&source)
-                    .then_some(source)
-                    .ok_or_else(|| {
-                        failure(
-                            "unsupported_source",
-                            format!("unsupported Event source {source:?}"),
-                            Some("sources"),
-                            false,
-                        )
-                    })
-            })
-            .collect::<Result<_, _>>()?
-    };
-    let requested_fields = strings(args, "fields", MAX_FIELDS)?;
-    if requested_fields
-        .iter()
-        .any(|field| EVENT_LONG_TEXT_FIELDS.contains(&field.as_str()))
-    {
-        return Err(failure(
-            "text_field_requires_detail",
-            "Event rows do not expose unbounded message, query, or statement text",
-            Some("fields"),
-            false,
-        ));
-    }
-    let page_size = usize_arg(args, "page_size", DEFAULT_PAGE_ROWS, 1, MAX_PAGE_ROWS)?;
-    let catalog = catalog(
-        state,
-        Window {
-            from: Some(from),
-            to: Some(to),
-        },
-        cancelled,
-    )?;
-    ensure_segment_budget(&catalog.records)?;
-    let mut events = Vec::new();
-    let mut stop = ValueStopReason::Complete;
-    'segments: for segment in catalog_segments(&catalog.records) {
-        for source in &sources {
-            if events.len() >= page_size {
-                stop = ValueStopReason::RecordLimit;
-                break 'segments;
-            }
-            if !segment.sections.iter().any(|name| name == source) {
-                continue;
-            }
-            let fields = event_fields(source, &requested_fields)?;
-            let mut projected = vec!["ts".to_owned()];
-            projected.extend(fields.iter().cloned());
-            projected.sort();
-            projected.dedup();
-            let route = Route::Rows(RowsRequest {
-                data: DataRequest {
-                    segment: SegmentRequest {
-                        segment_id: segment.id,
-                        section: (*source).to_owned(),
-                    },
-                    fields: projected.clone(),
-                    filters: Vec::new(),
-                    type_id: None,
-                    after: None,
-                },
-                order: order(args)?,
-                page_size: page_size.saturating_sub(events.len()),
-                cursor: None,
-            });
-            let rows = collect(
-                state,
-                route,
-                ValueLimits {
-                    records: page_size.saturating_sub(events.len()).saturating_add(8),
-                    ndjson_bytes: data_budget(args)?,
-                },
-                cancelled,
-            )?;
-            let layout = first_layout(&rows.records);
-            for row in records_named(&rows.records, "row") {
-                let Some(timestamp) = row_value(&row, &layout, "ts").and_then(Value::as_str) else {
-                    continue;
-                };
-                let Ok(timestamp_number) = timestamp.parse::<i64>() else {
-                    continue;
-                };
-                if timestamp_number < from || timestamp_number > to {
-                    continue;
-                }
-                let type_id = row.get("type_id").cloned().unwrap_or(Value::Null);
-                let tier = event_tier(source, &row, &layout)?;
-                events.push(json!({
-                    "section": source,
-                    "tier": tier,
-                    "semantic_id": format!("event.{source}.tier"),
-                    "segment_id": segment.id.to_string(),
-                    "type_id": type_id,
-                    "row_ordinal": row.get("ordinal").cloned().unwrap_or(Value::Null),
-                    "timestamp_us": timestamp,
-                    "fields": row_fields(&row, &layout, &fields),
-                }));
-                if events.len() >= page_size {
-                    stop = ValueStopReason::RecordLimit;
-                    break 'segments;
-                }
-            }
-            if rows.stop_reason != ValueStopReason::Complete {
-                stop = rows.stop_reason;
-                break 'segments;
-            }
-        }
-    }
-    if stop == ValueStopReason::Cancelled {
-        return Err(failure("cancelled", "Event read was cancelled", None, true));
-    }
-    let semantics = event_semantics()?;
-    let returned = events.len();
-    let mut warnings = catalog_warnings(&catalog.records);
-    if stop != ValueStopReason::Complete {
-        warnings.push(json!({
-            "code": "continuation_unavailable",
-            "message": "the shared Event row reader has no cross-segment query cursor yet"
-        }));
-    }
-    Ok(ExpertPayload {
-        anchor: anchor_for_window(from, to, &catalog.records),
-        data: json!({
-            "groups": [],
-            "events": events,
-            "semantics": semantics,
-        }),
-        page: page(
-            returned,
-            stop != ValueStopReason::Complete,
-            None,
-            stop.code(),
-        ),
-        warnings,
-        summary: format!("Returned {returned} recorded Event rows."),
-    })
 }
 
 #[derive(Clone)]
@@ -1051,40 +856,6 @@ fn selected_fields(
     Ok(fields)
 }
 
-fn event_fields(section: &str, requested: &[String]) -> Result<Vec<String>, ExpertFailure> {
-    let layouts = registry()
-        .iter()
-        .filter(|item| logical_section_name(item.type_id.get()).is_some_and(|name| name == section))
-        .collect::<Vec<_>>();
-    if requested.is_empty() {
-        return Ok(layouts
-            .iter()
-            .flat_map(|layout| layout.columns)
-            .filter(|column| column.name != "ts" && column.ty != ColumnType::StrId)
-            .map(|column| column.name.to_owned())
-            .take(MAX_FIELDS)
-            .collect());
-    }
-    for field in requested {
-        if !registry()
-            .iter()
-            .any(|layout| layout.column(field).is_some())
-        {
-            return Err(failure(
-                "no_such_column",
-                format!("no recorded Event layout has field {field:?}"),
-                Some("fields"),
-                false,
-            ));
-        }
-    }
-    Ok(requested
-        .iter()
-        .filter(|field| layouts.iter().any(|layout| layout.column(field).is_some()))
-        .cloned()
-        .collect())
-}
-
 fn order(args: &Map<String, Value>) -> Result<Order, ExpertFailure> {
     match args.get("direction").and_then(Value::as_str) {
         None | Some("asc") => Ok(Order::Asc),
@@ -1104,14 +875,6 @@ fn records_named(records: &[Value], name: &str) -> Vec<Value> {
         .filter(|record| record.get("record").and_then(Value::as_str) == Some(name))
         .cloned()
         .collect()
-}
-
-fn first_layout(records: &[Value]) -> Option<Value> {
-    records
-        .iter()
-        .find(|record| record.get("record").and_then(Value::as_str) == Some("layout"))
-        .and_then(|record| record.get("layout"))
-        .cloned()
 }
 
 fn empty_object() -> Value {
@@ -1293,78 +1056,6 @@ fn snapshot_payload(
             "Returned {returned} rows from the latest recorded sample at or before the requested time."
         ),
     })
-}
-
-fn layout_columns(layout: &Option<Value>) -> Vec<String> {
-    layout
-        .as_ref()
-        .and_then(|layout| layout.get("columns"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|column| column.get("name").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn row_value<'a>(row: &'a Value, layout: &Option<Value>, field: &str) -> Option<&'a Value> {
-    let index = layout_columns(layout)
-        .iter()
-        .position(|name| name == field)?;
-    row.get("values")?.as_array()?.get(index)
-}
-
-fn row_fields(row: &Value, layout: &Option<Value>, fields: &[String]) -> Value {
-    Value::Object(
-        fields
-            .iter()
-            .map(|field| {
-                (
-                    field.clone(),
-                    row_value(row, layout, field)
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                )
-            })
-            .collect(),
-    )
-}
-
-fn event_tier(section: &str, row: &Value, layout: &Option<Value>) -> Result<Value, ExpertFailure> {
-    let id = format!("event.{section}.tier");
-    let definition = crate::product_semantics::get(&id)
-        .map_err(|error| failure("semantics_unreadable", error.to_string(), None, false))?
-        .ok_or_else(|| {
-            failure(
-                "semantics_unreadable",
-                format!("missing accepted Event tier for {section}"),
-                None,
-                false,
-            )
-        })?;
-    let SemanticPolicy::EventTier {
-        discriminator,
-        tiers,
-        fallback,
-        ..
-    } = &definition.policy
-    else {
-        return Err(failure(
-            "semantics_unreadable",
-            format!("invalid accepted Event tier for {section}"),
-            None,
-            false,
-        ));
-    };
-    let selected = discriminator
-        .as_deref()
-        .and_then(|field| row_value(row, layout, field))
-        .and_then(Value::as_u64)
-        .and_then(|index| usize::try_from(index).ok())
-        .and_then(|index| tiers.get(index))
-        .unwrap_or(fallback);
-    serde_json::to_value(selected)
-        .map_err(|error| failure("semantics_unreadable", error.to_string(), None, false))
 }
 
 fn event_semantics() -> Result<Vec<Value>, ExpertFailure> {

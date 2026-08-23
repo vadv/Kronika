@@ -578,6 +578,7 @@ impl<'a> Parser<'a> {
 
 pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
+        "events" => EVENT_SEARCH_FIELDS,
         "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
@@ -1117,6 +1118,13 @@ const fn search_quantity_aliases(
         }),
     }
 }
+
+const EVENT_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["category", "source", "logical_name"]),
+    search_string("kind", &[], &["kind"]),
+    search_string("source", &[], &["source", "logical_name"]),
+    search_string("category", &[], &["category"]),
+];
 
 const STATEMENT_SEARCH_FIELDS: &[SearchField] = &[
     search_string("text", &["q"], &["query", "datname", "usename"]),

@@ -29,6 +29,72 @@ use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
 use crate::route::{SeriesRequest, Window};
 
+/// The accepted shared structured-search grammar specialized to Event facts.
+pub(crate) struct EventSearch(StructuredSearch);
+
+impl EventSearch {
+    pub(crate) fn parse(raw: &str) -> Result<Self, ApiError> {
+        StructuredSearch::parse(raw, "events")
+            .map(Self)
+            .map_err(|_diagnostic| ApiError::BadFilter("find".to_owned()))
+    }
+
+    pub(crate) fn canonical(&self) -> &str {
+        self.0.canonical()
+    }
+
+    pub(crate) fn matches(
+        &self,
+        source: &str,
+        tier: &str,
+        row: &Row,
+        dictionary: &Dictionary,
+    ) -> bool {
+        self.0.matches_all(|clause| {
+            let matches = |candidate: &str| search_value_matches(candidate, &clause.value);
+            let category = row.get("category").and_then(event_cell_text);
+            match clause.key {
+                "text" => {
+                    matches(source)
+                        || matches(tier)
+                        || category.as_deref().is_some_and(matches)
+                        || row.iter().any(|(_name, cell)| {
+                            event_resolved_text(cell, dictionary).is_some_and(matches)
+                        })
+                }
+                "kind" => matches(tier),
+                "source" => matches(source),
+                "category" => category.as_deref().is_some_and(matches),
+                _other => false,
+            }
+        })
+    }
+}
+
+fn event_cell_text(cell: &Cell) -> Option<String> {
+    match cell {
+        Cell::I16(value) => Some(value.to_string()),
+        Cell::I32(value) => Some(value.to_string()),
+        Cell::I64(value) | Cell::Ts(value) => Some(value.to_string()),
+        Cell::U32(value) => Some(value.to_string()),
+        Cell::U64(value) => Some(value.to_string()),
+        Cell::Bool(value) => Some(value.to_string()),
+        Cell::F64(value) if value.is_finite() => Some(value.to_string()),
+        Cell::Null | Cell::StrId(_) | Cell::ListI32(_) | Cell::F64(_) => None,
+    }
+}
+
+fn event_resolved_text<'a>(cell: &Cell, dictionary: &'a Dictionary) -> Option<&'a str> {
+    let Cell::StrId(id) = cell else {
+        return None;
+    };
+    let bytes = match dictionary.resolve(*id)? {
+        Resolved::Str(bytes) => bytes,
+        Resolved::Blob(blob) => blob.stored_bytes,
+    };
+    std::str::from_utf8(bytes).ok()
+}
+
 pub(crate) struct PreparedSnapshot {
     reader: Reader,
     anchor: SegmentRef,

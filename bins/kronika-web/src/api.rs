@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::route::{ActiveCursor, Route};
 
 mod catalog;
+mod events;
 mod heatmap;
 mod history;
 mod hour;
@@ -20,6 +21,7 @@ mod row_detail;
 mod rows;
 mod snapshot;
 
+pub(crate) use events::{EventPageError, EventPageRequest, EventSourceRequest, read_event_page};
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 
 #[cfg(test)]

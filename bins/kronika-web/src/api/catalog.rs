@@ -232,7 +232,7 @@ fn source_name(bit: u32) -> Option<&'static str> {
         .map(|family| family.name)
 }
 
-fn warning_value(warning: &StoreWarning) -> Value {
+pub(super) fn warning_value(warning: &StoreWarning) -> Value {
     let affected = match warning.affected {
         StoreObject::Segment(address) => json!({
             "kind": "segment",
