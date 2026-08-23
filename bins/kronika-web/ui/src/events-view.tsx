@@ -7,7 +7,7 @@ import { useDisplayTime } from "./display-time-context"
 import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
 import { MINUTE_COLUMNS, groupEvents, type EventEntry } from "./events-groups"
-import { findingCategory, findingKey, findingOrder, findingSource } from "./finding-presentation"
+import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
 import { compact, shownMoment, type Locale } from "./model"
@@ -280,13 +280,13 @@ function DigestStrip({ bad, minutes }: { readonly bad: boolean; readonly minutes
 interface MarkGroup {
   readonly key: string
   readonly kind: Finding["kind"]
-  readonly title: string
+  readonly metric: FindingMetric
   readonly source: string
   readonly findings: readonly Finding[]
   readonly minutes: readonly number[]
 }
 
-function groupMarks(marks: readonly Finding[], hour: number, t: Translate): readonly MarkGroup[] {
+export function groupMarks(marks: readonly Finding[], hour: number, t: Translate): readonly MarkGroup[] {
   const groups = new Map<string, Finding[]>()
   for (const finding of marks) {
     const key = `${finding.kind}\u{1f}${finding.logicalName}\u{1f}${finding.typeId}\u{1f}${finding.fieldOrdinal}`
@@ -305,7 +305,7 @@ function groupMarks(marks: readonly Finding[], hour: number, t: Translate): read
     return [{
       key: `mark:${key}`,
       kind: first.kind,
-      title: findingCategory(first, t),
+      metric: findingMetric(first, t),
       source: findingSource(first, t),
       findings: findings.slice().sort((left, right) => findingOrder(right, left)),
       minutes,
@@ -313,7 +313,7 @@ function groupMarks(marks: readonly Finding[], hour: number, t: Translate): read
   }).sort((left, right) => right.findings.length - left.findings.length || left.key.localeCompare(right.key))
 }
 
-function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFinding, onToggle, t }: {
+export function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFinding, onToggle, t }: {
   readonly expanded: boolean
   readonly group: MarkGroup
   readonly hour: number
@@ -344,14 +344,18 @@ function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFinding, onTo
         <Icon size={13} />
       </span>
       <span className="min-w-0">
-        <strong className="block truncate text-xs font-medium text-fg">{group.source}</strong>
-        <small className="mt-[3px] block truncate text-xs text-fg3">{group.title}</small>
+        <strong className="block truncate text-xs font-medium text-fg" data-testid="event-mark-label">{group.metric.label}</strong>
+        <small className="mt-[3px] block truncate text-xs text-fg3">
+          {group.source}
+          {group.metric.boundary !== null && <><span aria-hidden="true"> · </span><span data-testid="event-mark-boundary">{group.metric.boundary}</span></>}
+        </small>
       </span>
       <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(group.findings.length, locale)}</span>
       <span className="max-[760px]:hidden"><MarkStrip group={group} hour={hour} onCursor={onCursor} t={t} /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]">
+      <p className="mb-[7px] mt-0 text-xs leading-[1.45] text-fg3" data-testid="event-mark-help">{t(group.metric.helpKey)}</p>
       <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
         {group.findings.slice(0, shown).map((finding) => <button
           className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2.5 border-0 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-s3"
