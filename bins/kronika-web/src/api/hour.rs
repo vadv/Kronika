@@ -3,7 +3,7 @@
 use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 
-use kronika_index::{finding_keys, resource_selected, series_keys};
+use kronika_index::{finding_keys, resource_selected, resource_selected_read_only, series_keys};
 use kronika_reader::{Cell, Listing, Reader, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, contract};
 use serde_json::{Value, json};
@@ -42,6 +42,13 @@ pub(crate) struct PreparedHour {
     window: Window,
     hours: Vec<i64>,
     series: Option<SeriesRequest>,
+    index_access: IndexAccess,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum IndexAccess {
+    Publishing,
+    ReadOnly,
 }
 
 pub(super) fn prepare(
@@ -49,6 +56,7 @@ pub(super) fn prepare(
     request: HourRequest,
     configured_sources: u32,
     synthetic_demo: bool,
+    index_access: IndexAccess,
 ) -> Result<PreparedHour, ApiError> {
     let started = std::time::Instant::now();
     let requested = request.window;
@@ -98,6 +106,7 @@ pub(super) fn prepare(
         window,
         hours,
         series: request.series,
+        index_access,
     })
 }
 
@@ -171,6 +180,7 @@ impl PreparedHour {
             segments,
             window,
             series,
+            index_access,
             ..
         } = self;
         if let Some(series) = series {
@@ -209,7 +219,12 @@ impl PreparedHour {
             keys.extend(finding_keys(segment));
             keys.sort_unstable();
             keys.dedup();
-            let resource = resource_selected(&root, &reader, segment, &keys)?;
+            let resource = match index_access {
+                IndexAccess::Publishing => resource_selected(&root, &reader, segment, &keys)?,
+                IndexAccess::ReadOnly => {
+                    resource_selected_read_only(&root, &reader, segment, &keys)?
+                }
+            };
             if !emit(json!({
                 "record": "index",
                 "segment": { "id": segment.id().to_string() },

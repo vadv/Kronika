@@ -1,0 +1,877 @@
+//! Direct PostgreSQL MCP surfaces over the typed web API readers.
+
+use std::collections::HashSet;
+
+use serde_json::{Map, Value, json};
+
+use super::State;
+use crate::api::{self, ApiError, ValueLimits, ValueStopReason};
+use crate::route::{
+    Filter, HourRequest, Order, RelationGroup, Route, SeriesRequest, SnapshotRequest, Window,
+};
+
+const HOUR_US: i64 = 3_600_000_000;
+const MAX_ROWS: usize = 500;
+const MAX_FIELDS: usize = 32;
+const MAX_SECTIONS: usize = 16;
+const MAX_SEGMENTS: usize = 64;
+const RETAINED_RECORDS: usize = MAX_ROWS + MAX_SECTIONS + MAX_SEGMENTS + 8;
+
+const OVERVIEW_SECTIONS: &[&str] = &[
+    "pg_settings",
+    "pg_stat_database",
+    "pg_stat_wal",
+    "pg_stat_checkpointer",
+    "pg_stat_bgwriter",
+    "pg_stat_archiver",
+    "pg_stat_io",
+    "pg_wal_storage",
+    "pg_prepared_xacts",
+];
+const ACTIVITY_FIELDS: &[&str] = &[
+    "pid",
+    "leader_pid",
+    "datid",
+    "datname",
+    "usename",
+    "application_name",
+    "client_addr",
+    "backend_type",
+    "state",
+    "wait_event_type",
+    "wait_event",
+    "query",
+    "query_id",
+    "backend_xid_age",
+    "backend_xmin_age",
+    "backend_start",
+    "xact_start",
+    "query_start",
+    "state_change",
+];
+const LOCK_FIELDS: &[&str] = &[
+    "pid",
+    "blocked_by",
+    "datid",
+    "datname",
+    "usename",
+    "application_name",
+    "backend_type",
+    "state",
+    "wait_event_type",
+    "wait_event",
+    "query",
+    "locktype",
+    "mode",
+    "database",
+    "relation",
+    "relname",
+    "page",
+    "tuple",
+    "virtualxid",
+    "transactionid",
+    "classid",
+    "objid",
+    "objsubid",
+    "target",
+    "waitstart",
+];
+const DATABASE_FIELDS: &[&str] = &[
+    "datid",
+    "datname",
+    "xact_commit",
+    "xact_rollback",
+    "blks_read",
+    "blks_hit",
+    "tup_returned",
+    "tup_fetched",
+    "tup_inserted",
+    "tup_updated",
+    "tup_deleted",
+    "conflicts",
+    "temp_files",
+    "temp_bytes",
+    "deadlocks",
+    "checksum_failures",
+    "sessions",
+    "sessions_abandoned",
+    "sessions_fatal",
+    "sessions_killed",
+    "frozen_xid_age",
+    "min_mxid_age",
+];
+const STATEMENT_FIELDS: &[&str] = &[
+    "queryid",
+    "dbid",
+    "userid",
+    "toplevel",
+    "datname",
+    "usename",
+    "query",
+    "calls",
+    "total_exec_time",
+    "total_time",
+    "total_plan_time",
+    "rows",
+    "shared_blks_hit",
+    "shared_blks_read",
+    "shared_blks_dirtied",
+    "shared_blks_written",
+    "local_blks_hit",
+    "local_blks_read",
+    "temp_blks_read",
+    "temp_blks_written",
+    "wal_bytes",
+    "wal_records",
+    "wal_fpi",
+    "wal_buffers_full",
+    "min_time",
+    "max_time",
+    "mean_time",
+    "stddev_time",
+    "min_exec_time",
+    "max_exec_time",
+    "mean_exec_time",
+    "stddev_exec_time",
+];
+const PLAN_FIELDS: &[&str] = &[
+    "userid",
+    "dbid",
+    "queryid",
+    "queryid_stat_statements",
+    "planid",
+    "datname",
+    "usename",
+    "plan",
+    "calls",
+    "total_time",
+    "rows",
+    "min_time",
+    "max_time",
+    "mean_time",
+    "stddev_time",
+    "first_call",
+    "last_call",
+    "shared_blks_read",
+    "shared_blks_hit",
+    "shared_blks_dirtied",
+    "local_blks_hit",
+    "local_blks_read",
+    "temp_blks_read",
+    "cmd_type",
+    "relids",
+];
+const TABLE_FIELDS: &[&str] = &[
+    "tuple_throughput",
+    "sequential_share_pct",
+    "seq_scan",
+    "idx_scan",
+    "seq_tuples_per_scan",
+    "idx_tuples_per_scan",
+    "dml_total",
+    "insert_share_pct",
+    "update_share_pct",
+    "delete_share_pct",
+    "hot_pct",
+    "new_page_pct",
+    "dead_pct",
+    "n_mod_since_analyze",
+    "n_ins_since_vacuum",
+    "vacuum_count",
+    "autovacuum_count",
+    "analyze_count",
+    "autoanalyze_count",
+    "last_vacuum",
+    "last_autovacuum",
+    "last_analyze",
+    "last_autoanalyze",
+    "displayed_storage_bytes",
+    "main_fork_bytes",
+    "toast_bytes",
+    "buffer_hit_pct",
+    "xid_age",
+    "mxid_age",
+];
+const INDEX_FIELDS: &[&str] = &[
+    "idx_scan",
+    "idx_tup_read",
+    "idx_tup_fetch",
+    "tuples_per_scan",
+    "fetches_per_scan",
+    "last_idx_scan",
+    "last_idx_scan_never",
+    "no_scans",
+    "main_fork_bytes",
+    "idx_blks_read",
+    "idx_blks_hit",
+    "buffer_hit_pct",
+    "state_severity",
+    "indisvalid",
+    "indisready",
+    "indisunique",
+    "indisprimary",
+    "indisexclusion",
+];
+
+#[derive(Debug)]
+pub(super) struct PostgresqlPayload {
+    pub(super) anchor: Value,
+    pub(super) data: Value,
+    pub(super) page: Value,
+    pub(super) warnings: Vec<Value>,
+    pub(super) summary: String,
+}
+
+#[derive(Debug)]
+pub(super) struct PostgresqlFailure {
+    pub(super) code: &'static str,
+    pub(super) message: String,
+    pub(super) parameter: Option<String>,
+    pub(super) retryable: bool,
+}
+
+struct Anchor {
+    segment_id: i64,
+    active_wal_position: Option<String>,
+    warnings: Vec<Value>,
+}
+
+struct DirectSpec {
+    section: &'static str,
+    key: &'static str,
+    defaults: &'static [&'static str],
+    default_order: &'static str,
+    search: bool,
+    relation: bool,
+    whole_set: bool,
+}
+
+pub(super) fn execute(
+    state: &State,
+    name: &str,
+    args: &Map<String, Value>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    match name {
+        "kronika_get_postgresql_overview" => overview(state, args, cancelled),
+        "kronika_find_postgresql_activity" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_stat_activity",
+                key: "activity",
+                defaults: ACTIVITY_FIELDS,
+                default_order: "query_start",
+                search: false,
+                relation: false,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_locks" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_locks",
+                key: "locks",
+                defaults: LOCK_FIELDS,
+                default_order: "pid",
+                search: false,
+                relation: false,
+                whole_set: true,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_vacuum" => vacuum(state, args, cancelled),
+        "kronika_find_postgresql_statements" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_stat_statements",
+                key: "statements",
+                defaults: STATEMENT_FIELDS,
+                default_order: "total_exec_time",
+                search: true,
+                relation: false,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_plans" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_store_plans",
+                key: "plans",
+                defaults: PLAN_FIELDS,
+                default_order: "total_time",
+                search: true,
+                relation: false,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_databases" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_stat_database",
+                key: "databases",
+                defaults: DATABASE_FIELDS,
+                default_order: "xact_commit",
+                search: false,
+                relation: false,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_tables" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_stat_user_tables",
+                key: "tables",
+                defaults: TABLE_FIELDS,
+                default_order: "derived.tuple_throughput",
+                search: true,
+                relation: true,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        "kronika_find_postgresql_indexes" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_stat_user_indexes",
+                key: "indexes",
+                defaults: INDEX_FIELDS,
+                default_order: "idx_scan",
+                search: true,
+                relation: true,
+                whole_set: false,
+            },
+            cancelled,
+        ),
+        _ => Err(failure(
+            "unsupported_tool",
+            format!("unsupported PostgreSQL tool {name}"),
+            Some("name"),
+        )),
+    }
+}
+
+fn direct(
+    state: &State,
+    args: &Map<String, Value>,
+    spec: DirectSpec,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    let at = timestamp(args, "at_us")?;
+    if !spec.search && args.contains_key("find") {
+        return Err(input(
+            "find",
+            "find is not supported by the shared Rust field registry for this surface",
+        ));
+    }
+    if spec.whole_set && args.contains_key("cursor") {
+        return Err(input(
+            "cursor",
+            "lock graph reads do not accept a partial-set cursor",
+        ));
+    }
+    let fields = fields(args, spec.defaults)?;
+    let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
+    let page_size = if spec.whole_set {
+        MAX_ROWS
+    } else {
+        page_size(args)?
+    };
+    let direction = direction(args)?;
+    let order = args
+        .get("order")
+        .map(|value| string(value, "order"))
+        .transpose()?
+        .unwrap_or(spec.default_order)
+        .to_owned();
+    let group = if spec.relation {
+        Some(group(args)?)
+    } else {
+        None
+    };
+    let filters = if spec.section == "pg_stat_user_indexes"
+        && args.get("lens").and_then(Value::as_str) == Some("low_activity")
+    {
+        vec![Filter {
+            column: "no_scans".to_owned(),
+            value: "true".to_owned(),
+        }]
+    } else {
+        Vec::new()
+    };
+    let request = SnapshotRequest {
+        segment_id: anchor.segment_id,
+        at,
+        sections: vec![spec.section.to_owned()],
+        fields,
+        by: vec![order],
+        direction,
+        group,
+        page_size: Some(page_size),
+        cursor: args
+            .get("cursor")
+            .map(|value| string(value, "cursor").map(str::to_owned))
+            .transpose()?,
+        search: if spec.search {
+            args.get("find")
+                .map(|value| string(value, "find").map(str::to_owned))
+                .transpose()?
+        } else {
+            None
+        },
+        first_match: false,
+        text: None,
+        filters,
+        type_id: None,
+        row_ordinal: None,
+    };
+    let collected = collect(state, Route::Snapshot(Box::new(request)), cancelled)?;
+    let page = page(&collected.records, collected.stop_reason);
+    if spec.whole_set && page.get("truncated").and_then(Value::as_bool) == Some(true) {
+        return Err(failure(
+            "whole_set_bound_exceeded",
+            "the recorded lock set exceeds the 500-row whole-set bound",
+            Some("page_size"),
+        ));
+    }
+    let selected = selected_at(&collected.records);
+    let records = content_records(collected.records);
+    let returned = record_rows(&records);
+    let mut data = Map::new();
+    data.insert(spec.key.to_owned(), Value::Array(records));
+    if spec.key == "locks" {
+        data.insert("components".to_owned(), Value::Array(Vec::new()));
+    }
+    data.insert("semantics".to_owned(), Value::Array(Vec::new()));
+    Ok(PostgresqlPayload {
+        anchor: anchor_value(at, selected, Some(&anchor)),
+        data: Value::Object(data),
+        page,
+        warnings: anchor.warnings,
+        summary: format!("Returned {returned} recorded PostgreSQL {} rows.", spec.key),
+    })
+}
+
+fn overview(
+    state: &State,
+    args: &Map<String, Value>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    let at = timestamp(args, "at_us")?;
+    let fields = fields(args, &[])?;
+    let anchor = resolve_anchor(state, at, OVERVIEW_SECTIONS, cancelled)?;
+    let request = SnapshotRequest {
+        segment_id: anchor.segment_id,
+        at,
+        sections: OVERVIEW_SECTIONS
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        fields,
+        by: Vec::new(),
+        direction: Order::Desc,
+        group: None,
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let collected = collect(state, Route::Snapshot(Box::new(request)), cancelled)?;
+    let selected = selected_at(&collected.records);
+    let layouts = collected
+        .records
+        .iter()
+        .filter(|record| record.get("record").and_then(Value::as_str) == Some("layout"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let records = content_records(collected.records);
+    let returned = record_rows(&records);
+    Ok(PostgresqlPayload {
+        anchor: anchor_value(at, selected, Some(&anchor)),
+        data: json!({"overview": {"records": records}, "layouts": layouts, "health": {}, "semantics": []}),
+        page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
+        warnings: anchor.warnings,
+        summary: format!("Returned {returned} recorded PostgreSQL overview rows."),
+    })
+}
+
+fn vacuum(
+    state: &State,
+    args: &Map<String, Value>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    if args.contains_key("find") {
+        return Err(input(
+            "find",
+            "find is not supported by the shared Rust field registry for Vacuum",
+        ));
+    }
+    if args.contains_key("cursor") {
+        return Err(input(
+            "cursor",
+            "Vacuum exact-series records do not yet expose a continuation cursor",
+        ));
+    }
+    let from = timestamp(args, "from_us")?;
+    let to = timestamp(args, "to_us")?;
+    if from > to || from.div_euclid(HOUR_US) != to.div_euclid(HOUR_US) {
+        return Err(input(
+            "to_us",
+            "Vacuum intervals must be ordered and contained in one UTC hour",
+        ));
+    }
+    let fields = fields(args, &[])?;
+    let request = HourRequest {
+        window: Window {
+            from: Some(from),
+            to: Some(to),
+        },
+        series: Some(SeriesRequest {
+            section: "pg_stat_progress_vacuum".to_owned(),
+            fields,
+            filters: Vec::new(),
+            type_id: None,
+            group: None,
+        }),
+    };
+    let collected = collect(state, Route::Hour(request), cancelled)?;
+    let selected = selected_at(&collected.records);
+    let records = content_records(collected.records);
+    let returned = record_rows(&records);
+    Ok(PostgresqlPayload {
+        anchor: json!({
+            "hour_start_us": from.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string(),
+            "requested_at_us": Value::Null,
+            "selected_at_us": selected.map(|value| value.to_string()),
+            "segment_id": Value::Null,
+            "active_wal_position": Value::Null,
+        }),
+        data: json!({"episodes": records, "semantics": []}),
+        page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
+        warnings: Vec::new(),
+        summary: format!("Returned {returned} exact recorded Vacuum series rows."),
+    })
+}
+
+fn collect(
+    state: &State,
+    route: Route,
+    cancelled: &impl Fn() -> bool,
+) -> Result<api::ValueCollection, PostgresqlFailure> {
+    let prepared =
+        api::prepare_for_mcp(&state.data_root, state.sources, state.synthetic_demo, route)
+            .map_err(api_failure)?;
+    let collected = prepared
+        .collect_values(
+            ValueLimits {
+                records: RETAINED_RECORDS,
+                ndjson_bytes: super::STRUCTURED_CONTENT_BYTES,
+            },
+            cancelled,
+        )
+        .map_err(api_failure)?;
+    match collected.stop_reason {
+        ValueStopReason::Complete => Ok(collected),
+        ValueStopReason::Cancelled => Err(failure(
+            "cancelled",
+            "the PostgreSQL read was cancelled",
+            None,
+        )),
+        ValueStopReason::RecordLimit | ValueStopReason::ByteLimit => Err(failure(
+            "result_bound_exceeded",
+            "the typed PostgreSQL record stream exceeds the retained result bound",
+            Some("page_size"),
+        )),
+    }
+}
+
+fn resolve_anchor(
+    state: &State,
+    at: i64,
+    sections: &[&str],
+    cancelled: &impl Fn() -> bool,
+) -> Result<Anchor, PostgresqlFailure> {
+    if sections.len() > MAX_SECTIONS {
+        return Err(failure(
+            "section_bound_exceeded",
+            "more than 16 logical sections were requested",
+            Some("section"),
+        ));
+    }
+    let hour_start = at.div_euclid(HOUR_US).saturating_mul(HOUR_US);
+    let prepared = api::prepare_for_mcp(
+        &state.data_root,
+        state.sources,
+        state.synthetic_demo,
+        Route::Catalog(Window {
+            from: Some(hour_start),
+            to: Some(at),
+        }),
+    )
+    .map_err(api_failure)?;
+    let catalog = prepared
+        .collect_values(
+            ValueLimits {
+                records: MAX_SEGMENTS + 16,
+                ndjson_bytes: super::STRUCTURED_CONTENT_BYTES,
+            },
+            cancelled,
+        )
+        .map_err(api_failure)?;
+    if catalog.stop_reason != ValueStopReason::Complete {
+        return Err(failure(
+            "segment_bound_exceeded",
+            "the selected hour exceeds the 64-segment catalog bound",
+            None,
+        ));
+    }
+    let wanted = sections.iter().copied().collect::<HashSet<_>>();
+    let mut any = Vec::new();
+    let mut matching = Vec::new();
+    let mut warnings = Vec::new();
+    for record in catalog.records {
+        match record.get("record").and_then(Value::as_str) {
+            Some("finished_segment" | "active_segment") => {
+                let Some(id) = record.get("id").and_then(decimal_i64) else {
+                    continue;
+                };
+                let wal = record
+                    .pointer("/cursor/wal_position")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let carries = record
+                    .get("sections")
+                    .and_then(Value::as_array)
+                    .is_some_and(|stored| {
+                        stored.iter().any(|section| {
+                            section
+                                .get("logical_name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|name| wanted.contains(name))
+                        })
+                    });
+                any.push((id, wal.clone()));
+                if carries {
+                    matching.push((id, wal));
+                }
+            }
+            Some("warning") => warnings.push(record),
+            _ => {}
+        }
+    }
+    if any.len() > MAX_SEGMENTS {
+        return Err(failure(
+            "segment_bound_exceeded",
+            "the selected hour exceeds the 64-segment catalog bound",
+            None,
+        ));
+    }
+    let selected = matching
+        .into_iter()
+        .max_by_key(|(id, _)| *id)
+        .or_else(|| any.into_iter().max_by_key(|(id, _)| *id))
+        .ok_or_else(|| {
+            failure(
+                "no_recorded_data",
+                "no recorded segment exists at the requested time",
+                Some("at_us"),
+            )
+        })?;
+    Ok(Anchor {
+        segment_id: selected.0,
+        active_wal_position: selected.1,
+        warnings,
+    })
+}
+
+fn fields(args: &Map<String, Value>, defaults: &[&str]) -> Result<Vec<String>, PostgresqlFailure> {
+    let Some(value) = args.get("fields") else {
+        return Ok(defaults.iter().map(|value| (*value).to_owned()).collect());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| input("fields", "fields must be an array"))?;
+    if values.len() > MAX_FIELDS {
+        return Err(input("fields", "fields may contain at most 32 names"));
+    }
+    let mut seen = HashSet::new();
+    values
+        .iter()
+        .map(|value| {
+            let field = string(value, "fields")?;
+            if field.is_empty() || !seen.insert(field) {
+                return Err(input("fields", "field names must be nonempty and unique"));
+            }
+            Ok(field.to_owned())
+        })
+        .collect()
+}
+
+fn timestamp(args: &Map<String, Value>, name: &'static str) -> Result<i64, PostgresqlFailure> {
+    args.get(name).and_then(decimal_i64).ok_or_else(|| {
+        input(
+            name,
+            format!("{name} must be a nonnegative decimal timestamp within i64"),
+        )
+    })
+}
+
+fn decimal_i64(value: &Value) -> Option<i64> {
+    value
+        .as_str()?
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value >= 0)
+}
+
+fn page_size(args: &Map<String, Value>) -> Result<usize, PostgresqlFailure> {
+    let Some(value) = args.get("page_size") else {
+        return Ok(100);
+    };
+    let value = value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| input("page_size", "page_size must be an integer"))?;
+    if !(1..=MAX_ROWS).contains(&value) {
+        return Err(input("page_size", "page_size must be between 1 and 500"));
+    }
+    Ok(value)
+}
+
+fn direction(args: &Map<String, Value>) -> Result<Order, PostgresqlFailure> {
+    match args
+        .get("direction")
+        .map(|value| string(value, "direction"))
+        .transpose()?
+    {
+        None | Some("desc") => Ok(Order::Desc),
+        Some("asc") => Ok(Order::Asc),
+        Some(_) => Err(input("direction", "direction must be asc or desc")),
+    }
+}
+
+fn group(args: &Map<String, Value>) -> Result<RelationGroup, PostgresqlFailure> {
+    match args
+        .get("group")
+        .map(|value| string(value, "group"))
+        .transpose()?
+    {
+        None | Some("object") => Ok(RelationGroup::Object),
+        Some("database") => Ok(RelationGroup::Database),
+        Some("schema") => Ok(RelationGroup::Schema),
+        Some("tablespace") => Ok(RelationGroup::Tablespace),
+        Some(_) => Err(input(
+            "group",
+            "group must be object, database, schema, or tablespace",
+        )),
+    }
+}
+
+fn string<'a>(value: &'a Value, parameter: &'static str) -> Result<&'a str, PostgresqlFailure> {
+    value
+        .as_str()
+        .ok_or_else(|| input(parameter, format!("{parameter} must be a string")))
+}
+
+fn page(records: &[Value], stop: ValueStopReason) -> Value {
+    records.iter().find(|record| record.get("record").and_then(Value::as_str) == Some("snapshot_page")).map_or_else(
+        || json!({"returned": record_rows(records), "truncated": false, "next_cursor": null, "stop_reason": stop.code()}),
+        |record| json!({
+            "returned": record.get("returned").and_then(decimal_usize).unwrap_or(0),
+            "truncated": record.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            "next_cursor": record.get("next_cursor").cloned().unwrap_or(Value::Null),
+            "stop_reason": if record.get("has_more").and_then(Value::as_bool) == Some(true) { "page_limit" } else { stop.code() },
+        }),
+    )
+}
+
+fn decimal_usize(value: &Value) -> Option<usize> {
+    value.as_str()?.parse().ok()
+}
+
+fn content_records(records: Vec<Value>) -> Vec<Value> {
+    records
+        .into_iter()
+        .filter(|record| {
+            !matches!(
+                record.get("record").and_then(Value::as_str),
+                Some("snapshot" | "snapshot_page" | "hour")
+            )
+        })
+        .collect()
+}
+
+fn record_rows(records: &[Value]) -> usize {
+    records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.get("record").and_then(Value::as_str),
+                Some("row" | "relation")
+            )
+        })
+        .count()
+}
+
+fn selected_at(records: &[Value]) -> Option<i64> {
+    records
+        .iter()
+        .filter_map(|record| {
+            record
+                .get("timestamp")
+                .or_else(|| record.get("sample_to"))
+                .and_then(decimal_i64)
+        })
+        .max()
+}
+
+fn anchor_value(at: i64, selected: Option<i64>, anchor: Option<&Anchor>) -> Value {
+    json!({
+        "hour_start_us": at.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string(),
+        "requested_at_us": at.to_string(),
+        "selected_at_us": selected.map(|value| value.to_string()),
+        "segment_id": anchor.map(|value| value.segment_id.to_string()),
+        "active_wal_position": anchor.and_then(|value| value.active_wal_position.clone()),
+    })
+}
+
+fn api_failure(error: ApiError) -> PostgresqlFailure {
+    let retryable = error.source_changed_during_read();
+    PostgresqlFailure {
+        code: error.code(),
+        message: error.to_string(),
+        parameter: error.parameter().map(str::to_owned),
+        retryable,
+    }
+}
+
+fn input(parameter: &'static str, message: impl Into<String>) -> PostgresqlFailure {
+    failure("invalid_input", message, Some(parameter))
+}
+
+fn failure(
+    code: &'static str,
+    message: impl Into<String>,
+    parameter: Option<&str>,
+) -> PostgresqlFailure {
+    PostgresqlFailure {
+        code,
+        message: message.into(),
+        parameter: parameter.map(str::to_owned),
+        retryable: false,
+    }
+}

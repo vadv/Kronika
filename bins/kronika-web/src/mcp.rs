@@ -1,6 +1,8 @@
 //! Stateless Model Context Protocol transport for recorded Kronika history.
 
 mod catalog;
+mod expert;
+mod postgresql;
 mod tools;
 
 use std::fmt::Display;
@@ -31,11 +33,7 @@ pub(crate) const STRUCTURED_CONTENT_BYTES: usize = 96 * 1_024;
 pub(crate) const TEXT_SUMMARY_BYTES: usize = 2 * 1_024;
 
 const INSTRUCTIONS: &str = "Start with kronika_rank_heatmap and kronika_list_findings for an interval. Kronika reads only recorded history; it never connects to PostgreSQL or executes commands. Ranked activity is not an anomaly or a cause. Drill into the direct Process, PostgreSQL, and Event tools, then request native metric history or exact row detail. Preserve exact timestamps, nulls, units, physical identities, and cursors.";
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "the historical surface handlers consume this concrete read state in following commits"
-)]
+#[derive(Debug, Clone)]
 pub(crate) struct State {
     pub(crate) data_root: PathBuf,
     pub(crate) sources: u32,
@@ -134,9 +132,14 @@ impl ServerHandler for KronikaMcp {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
-        std::future::ready(tools::dispatch(&self.state, request).map(Into::into))
+        let state = self.state.as_ref().clone();
+        async move {
+            tools::dispatch(state, request, move || context.ct.is_cancelled())
+                .await
+                .map(Into::into)
+        }
     }
 }
 

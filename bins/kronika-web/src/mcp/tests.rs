@@ -162,26 +162,32 @@ fn mcp_tool_catalog_cost() {
     );
 }
 
-#[test]
-fn dispatch_allowlists_known_tools_without_fabricating_data() {
+#[tokio::test]
+async fn dispatch_allowlists_known_tools_without_fabricating_data() {
     let state = super::State {
         data_root: PathBuf::from("unused-mcp-test-root"),
         sources: 3,
         synthetic_demo: false,
         heavy_scans: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
     };
-    let known = super::tools::dispatch(&state, CallToolRequestParams::new("kronika_rank_heatmap"))
-        .expect("known tool");
-    assert_eq!(known.is_error, Some(true));
+    let known = super::tools::dispatch(
+        state.clone(),
+        CallToolRequestParams::new("kronika_get_context"),
+        || false,
+    )
+    .await
+    .expect("known tool");
+    assert_eq!(known.is_error, Some(false));
     assert_eq!(
         known
             .structured_content
             .as_ref()
-            .and_then(|value| value.pointer("/error/code")),
-        Some(&Value::String("not_wired".to_owned()))
+            .and_then(|value| value.pointer("/data/context/historical_only")),
+        Some(&Value::Bool(true))
     );
 
-    let unknown = super::tools::dispatch(&state, CallToolRequestParams::new("run_sql"))
+    let unknown = super::tools::dispatch(state, CallToolRequestParams::new("run_sql"), || false)
+        .await
         .expect_err("unknown tool");
     assert_eq!(unknown.code, ErrorCode::INVALID_PARAMS);
     assert_eq!(unknown.message, "tool not found");
@@ -323,8 +329,8 @@ async fn legacy_initialize_and_tools_list_are_stateless() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(headers.get("mcp-session-id").is_none());
     assert_eq!(
-        body.pointer("/result/structuredContent/error/code"),
-        Some(&json!("not_wired"))
+        body.pointer("/result/structuredContent/data/context/historical_only"),
+        Some(&json!(true))
     );
 }
 

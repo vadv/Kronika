@@ -364,6 +364,41 @@ pub(crate) fn prepare_with_demo(
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
+    prepare_with_index_access(
+        root,
+        sources,
+        synthetic_demo,
+        route,
+        if_none_match,
+        hour::IndexAccess::Publishing,
+    )
+}
+
+/// Prepare the same typed records without publishing selected derived indexes.
+pub(crate) fn prepare_for_mcp(
+    root: &Path,
+    sources: u32,
+    synthetic_demo: bool,
+    route: Route,
+) -> Result<Prepared, ApiError> {
+    prepare_with_index_access(
+        root,
+        sources,
+        synthetic_demo,
+        route,
+        None,
+        hour::IndexAccess::ReadOnly,
+    )
+}
+
+fn prepare_with_index_access(
+    root: &Path,
+    sources: u32,
+    synthetic_demo: bool,
+    route: Route,
+    if_none_match: Option<&str>,
+    index_access: hour::IndexAccess,
+) -> Result<Prepared, ApiError> {
     match route {
         Route::Catalog(window) => {
             catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
@@ -372,7 +407,7 @@ pub(crate) fn prepare_with_demo(
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
         Route::Hour(request) => {
-            hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
+            hour::prepare(root, request, sources, synthetic_demo, index_access).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, *request).map(Prepared::Snapshot),
