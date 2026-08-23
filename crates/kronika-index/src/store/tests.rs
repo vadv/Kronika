@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::io::Read as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
 
-use kronika_format::DictLimits;
+use kronika_format::{Crc32c, DictLimits};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use kronika_registry::instance_metadata::InstanceMetadata;
@@ -25,9 +27,77 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 
 use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
 
-use super::{finding_keys, path_of, read, resource, series_keys};
+use super::{finding_keys, path_of, read, resource, resource_selected_read_only, series_keys};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
+
+#[derive(Debug, PartialEq, Eq)]
+struct RootEntrySnapshot {
+    path: PathBuf,
+    is_directory: bool,
+    is_file: bool,
+    len: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    inode: u64,
+    links: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    content_checksum: Option<u32>,
+}
+
+fn root_snapshot(root: &Path) -> Vec<RootEntrySnapshot> {
+    let mut snapshot = Vec::new();
+    snapshot_entry(root, root, &mut snapshot);
+    snapshot.sort_by(|left, right| left.path.cmp(&right.path));
+    snapshot
+}
+
+fn snapshot_entry(root: &Path, path: &Path, snapshot: &mut Vec<RootEntrySnapshot>) {
+    let metadata = std::fs::symlink_metadata(path).expect("snapshot metadata");
+    snapshot.push(RootEntrySnapshot {
+        path: path
+            .strip_prefix(root)
+            .expect("path below root")
+            .to_path_buf(),
+        is_directory: metadata.is_dir(),
+        is_file: metadata.is_file(),
+        len: metadata.len(),
+        mode: metadata.mode(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        inode: metadata.ino(),
+        links: metadata.nlink(),
+        modified: (metadata.mtime(), metadata.mtime_nsec()),
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        content_checksum: metadata.is_file().then(|| file_checksum(path)),
+    });
+    if metadata.is_dir() {
+        let mut entries = std::fs::read_dir(path)
+            .expect("snapshot directory")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("snapshot entries");
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            snapshot_entry(root, &entry.path(), snapshot);
+        }
+    }
+}
+
+fn file_checksum(path: &Path) -> u32 {
+    let mut file = std::fs::File::open(path).expect("snapshot file");
+    let mut checksum = Crc32c::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = file.read(&mut buffer).expect("hash snapshot file");
+        if read == 0 {
+            break;
+        }
+        checksum.update(&buffer[..read]);
+    }
+    checksum.finalize()
+}
 
 fn address() -> SegmentAddress {
     address_at(SEGMENT_ID)
@@ -735,6 +805,106 @@ fn an_index_lives_beside_its_finished_segment() {
 #[test]
 fn active_data_never_gets_an_index_path() {
     assert_eq!(path_of(Path::new("/data/active.wal")), None);
+}
+
+#[test]
+fn read_only_selected_finished_resource_does_not_publish_a_missing_index() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_fixture(&mut journal);
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Finished);
+    let index_path = path_of(reader.open_segment(&segment).expect("segment").path())
+        .expect("finished index path");
+    let keys = series_keys(&segment, "health");
+    let before = root_snapshot(directory.path());
+
+    let selected = resource_selected_read_only(directory.path(), &reader, &segment, &keys)
+        .expect("read-only selected resource");
+
+    assert!(!selected.persisted);
+    assert_eq!(selected.index.checksum, None);
+    assert_eq!(selected.index.blocks.len(), 3);
+    assert!(!index_path.exists());
+    assert_eq!(root_snapshot(directory.path()), before);
+}
+
+#[test]
+fn read_only_selected_finished_resource_does_not_replace_an_invalid_index() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_direct_fixture(&mut journal, SEGMENT_ID, 5);
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Finished);
+    let published = resource(directory.path(), &reader, &segment, "pg_log_errors")
+        .expect("publish fixture index");
+    let index_path = path_of(reader.open_segment(&segment).expect("segment").path())
+        .expect("finished index path");
+    let canonical = std::fs::read(&index_path).expect("canonical index");
+    let valid_before = root_snapshot(directory.path());
+    let reused = resource_selected_read_only(
+        directory.path(),
+        &reader,
+        &segment,
+        &series_keys(&segment, "pg_log_errors"),
+    )
+    .expect("reuse valid index");
+    assert_eq!(reused, published);
+    assert_eq!(root_snapshot(directory.path()), valid_before);
+
+    std::fs::write(&index_path, &canonical[..10]).expect("truncate index");
+    let keys = series_keys(&segment, "pg_log_errors");
+    let before = root_snapshot(directory.path());
+
+    let selected = resource_selected_read_only(directory.path(), &reader, &segment, &keys)
+        .expect("derive invalid index in memory");
+
+    assert!(!selected.persisted);
+    assert_eq!(selected.index.checksum, None);
+    assert_eq!(selected.index.blocks, published.index.blocks);
+    assert_eq!(root_snapshot(directory.path()), before);
+    assert_eq!(
+        std::fs::read(index_path).expect("unchanged index"),
+        &canonical[..10]
+    );
+}
+
+#[test]
+fn read_only_selected_active_resource_does_not_mutate_the_wal_root() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_fixture(&mut journal);
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Active);
+    let keys = series_keys(&segment, "health");
+    let before = root_snapshot(directory.path());
+
+    let selected = resource_selected_read_only(directory.path(), &reader, &segment, &keys)
+        .expect("read active selected resource");
+
+    assert!(!selected.persisted);
+    assert_eq!(selected.index.checksum, None);
+    assert_eq!(selected.index.blocks.len(), 3);
+    assert_eq!(root_snapshot(directory.path()), before);
 }
 
 #[test]

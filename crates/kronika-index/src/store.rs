@@ -201,6 +201,42 @@ pub fn resource_selected(
     }
 }
 
+/// Load selected blocks without publishing or replacing derived files.
+///
+/// Existing finished IDX files are opened read-only. Missing or invalid
+/// selected blocks and active WAL data are derived only in memory.
+///
+/// # Errors
+///
+/// Returns reader, index, layout, or build failures.
+pub fn resource_selected_read_only(
+    root: &Path,
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    keys: &[SeriesKey],
+) -> Result<ResourceIndex, LoadError> {
+    if segment_ref.kind() == SegmentKind::Finished {
+        let data_root = DataRoot::open(root)?;
+        let address = address_of(segment_ref.id())?;
+        if let Some(mut file) = data_root.open_idx(address)?
+            && let Ok(selected) = read_target(&mut file, keys)
+            && contains_targets(&selected, keys)
+        {
+            return Ok(ResourceIndex {
+                index: selected,
+                persisted: true,
+            });
+        }
+    }
+
+    let segment = reader.open_segment(segment_ref)?;
+    let index = build_selected_from_reader(reader, segment_ref, &segment, keys)?;
+    Ok(ResourceIndex {
+        index: targeted(index, keys, None),
+        persisted: false,
+    })
+}
+
 /// Return every sparse-finding block present in one segment.
 #[must_use]
 pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {

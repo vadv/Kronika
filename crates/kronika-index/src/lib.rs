@@ -21,5 +21,5 @@ pub use series::{
 };
 pub use store::{
     EXTENSION, LoadError, ResourceIndex, finding_keys, path_of, read, resource, resource_selected,
-    series_keys,
+    resource_selected_read_only, series_keys,
 };
