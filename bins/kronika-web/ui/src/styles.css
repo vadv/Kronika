@@ -234,6 +234,11 @@
 .heat-5 { fill: var(--color-heat-5); }
 .heat-6 { fill: var(--color-heat-6); }
 
+/* A cell that prints two readings names both, in the order the values appear;
+   each name keeps its own help. */
+.use-lane-names { align-items: baseline; display: flex; gap: 4px; min-width: 0; }
+.use-lane-names > .label-help + .label-help::before { color: var(--color-fg4); content: "·"; margin-right: 4px; }
+
 @utility use-row {
   border-bottom: 1px solid var(--color-line); cursor: pointer; display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); transition: background-color 80ms var(--ease-out);
   @media (max-width: 760px) { grid-template-columns: 80px repeat(3, minmax(0, 1fr)); }
@@ -597,9 +602,9 @@
 .timeline-lanes .label-help:focus-within { opacity: 1; }
 
 /* Keep one row activation target while preserving keyboard help access. */
-.use-lane > .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.use-lane > .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
-.use-lane > .label-help > .help-dot:focus-visible { opacity: 1; }
+.use-lane .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.use-lane .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
+.use-lane .label-help > .help-dot:focus-visible { opacity: 1; }
 
 .use-header-cell .help-dot { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .use-header-cell:hover .help-dot,
@@ -691,6 +696,19 @@
 }
 
 @media (max-width: 520px) {
+  /* Four columns leave a reading 88px for a label, a number and the help dot,
+     so labels collapsed to "In …" and the dot sat on the number. The resource
+     name takes its own line and each reading stacks its label over its value. */
+  .use-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .use-row > .use-resource { grid-column: 1 / -1; padding-block: 5px; }
+  .use-row[data-testid="use-row-cgroups"] { grid-template-columns: minmax(0, 1fr); }
+  .use-table > header > span:first-child { display: none; }
+  .use-table > header { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* The help dot is absolutely positioned at right: 7px; without this gutter
+     the value runs under it. */
+  .use-cell { padding-right: 22px; }
+  .use-cell > span:first-child { align-items: flex-start; flex-direction: column; gap: 0; }
+  .use-cell strong { white-space: normal; }
   /* Wrapped, these four facts cost four lines of the table. One scrolling row
      keeps every one of them and returns the height to rows. */
   .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }

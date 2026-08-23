@@ -472,7 +472,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       return
     }
     if (url.pathname === "/api/hour") {
-      ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
+      const from = Number(url.searchParams.get("from") ?? HOUR)
+      ndjson(response, [...timelineRecords(from), ...networkLaneRecords(from)])
       return
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -1522,6 +1523,30 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 420 })
     await settleLayout(cdp)
     await assertHoverGeometryStable(cdp, '[data-testid="system-cpu-composition"]', "420px System dock")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 667, mobile: true, width: 375 })
+    await settleLayout(cdp)
+    const ledger = await cdp.evaluate(`(() => {
+      const cells = [...document.querySelectorAll('.use-cell')].flatMap((cell) => {
+        const label = cell.querySelector(':scope > span > span')
+        const value = cell.querySelector('strong')
+        const dot = cell.querySelector('.label-help')
+        if (label === null || value === null) return []
+        return [{
+          clipped: label.scrollWidth > label.clientWidth || value.scrollWidth > value.clientWidth,
+          label: label.textContent,
+          under: dot === null ? false : dot.getBoundingClientRect().left < value.getBoundingClientRect().right - .5,
+          value: value.textContent,
+        }]
+      })
+      const network = document.querySelector('[data-testid="use-row-network"] .use-cell > span > span')
+      return { cells, network: network?.textContent ?? null, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
+    })()`)
+    // A cell that prints two readings must name both: labelled "RX" over
+    // "884 B/s · 888 B/s", the second number has no name.
+    assert.equal(ledger.network, "RX · TX", JSON.stringify(ledger))
+    assert.deepEqual(ledger.cells.filter((cell) => cell.clipped), [], `phone ledger clips: ${JSON.stringify(ledger.cells)}`)
+    assert.deepEqual(ledger.cells.filter((cell) => cell.under), [], `phone help dot sits on the value: ${JSON.stringify(ledger.cells)}`)
+    assert.equal(ledger.sideways, false, JSON.stringify(ledger))
     for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => { try {
@@ -3919,6 +3944,16 @@ function expansionGeometryExpression() {
 
 // At or below 520 px the preview grows by the 44 px cursor row, which is the
 // only way to step the cursor without a keyboard.
+// The network row is the only ledger cell that prints two readings, so it is
+// the only one that can name one series and show two.
+function networkLaneRecords(hour) {
+  const at = hour + (AT - HOUR)
+  return [
+    { record: "lane", segment_id: SEGMENT, lane: "net_rx", ts: String(at), value: 884 },
+    { record: "lane", segment_id: SEGMENT, lane: "net_tx", ts: String(at), value: 888 },
+  ]
+}
+
 function previewHeight(width) {
   return width <= 520 ? 190 : 124
 }
