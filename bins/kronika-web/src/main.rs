@@ -13,6 +13,7 @@ mod auth;
 mod body;
 mod config;
 mod encoding;
+mod mcp;
 mod route;
 mod ui;
 
@@ -27,7 +28,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{
     ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, ETAG, HeaderValue,
-    IF_NONE_MATCH, SET_COOKIE, VARY, WWW_AUTHENTICATE,
+    IF_NONE_MATCH, ORIGIN, SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -51,13 +52,17 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("listen on {}", config.listen))?;
+    let mcp_service = Arc::new(mcp::service(&config));
     println!("ready {}", config.listen);
 
     loop {
         let (stream, _peer) = listener.accept().await.context("accept a connection")?;
         let config = Arc::clone(&config);
+        let mcp_service = Arc::clone(&mcp_service);
         tokio::spawn(async move {
-            let service = service_fn(move |request| answer(Arc::clone(&config), request));
+            let service = service_fn(move |request| {
+                answer(Arc::clone(&config), Arc::clone(&mcp_service), request)
+            });
             if let Err(error) = http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
                 .await
@@ -70,6 +75,7 @@ async fn main() -> Result<()> {
 
 async fn answer(
     config: Arc<Config>,
+    mcp_service: Arc<mcp::Service>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<WebBody>, Infallible> {
     let routed = if config.authentication_required {
@@ -91,6 +97,7 @@ async fn answer(
         RequestTarget::Session(session) => {
             session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
         }
+        RequestTarget::Mcp => mcp::response(&mcp_service, request).await,
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
         }
@@ -161,6 +168,25 @@ fn route_request_with_authentication<B>(
         }
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
+    if path == "/mcp" {
+        if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
+            return Err(RequestError::Unauthorized {
+                challenge: !is_ui_request(request.headers()),
+            });
+        }
+        if request.headers().contains_key(ORIGIN) {
+            return Err(RequestError::OriginNotAllowed);
+        }
+        if request.uri().query().is_some() {
+            return Err(RequestError::Route(RouteError::BadParameter(
+                "query".to_owned(),
+            )));
+        }
+        if request.method() != Method::POST {
+            return Err(RequestError::MethodNotAllowed("POST"));
+        }
+        return Ok(RequestTarget::Mcp);
+    }
     if path != "/api" && !path.starts_with("/api/") {
         return Err(RequestError::Route(RouteError::NoSuchPath));
     }
@@ -185,6 +211,7 @@ enum RequestTarget {
         coding: ContentCoding,
     },
     Session(SessionTarget),
+    Mcp,
     Api {
         route: route::Route,
         accepted: AcceptedEncodings,
@@ -204,6 +231,7 @@ enum RequestError {
     Unauthorized { challenge: bool },
     Route(RouteError),
     MethodNotAllowed(&'static str),
+    OriginNotAllowed,
     UiEncodingNotAcceptable,
     ApiEncodingNotAcceptable,
 }
@@ -219,6 +247,7 @@ impl RequestError {
                 refused(StatusCode::BAD_REQUEST, "bad_parameter", Some(&parameter))
             }
             Self::MethodNotAllowed(allow) => method_not_allowed(allow),
+            Self::OriginNotAllowed => refused(StatusCode::FORBIDDEN, "origin_not_allowed", None),
             Self::UiEncodingNotAcceptable => encoding_not_acceptable(false),
             Self::ApiEncodingNotAcceptable => encoding_not_acceptable(true),
         }
