@@ -164,7 +164,7 @@ export function EventsView({
       </header>
       {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} marks={markGroups} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
-      <div className={`${digest === MARKS_TILE ? "" : "min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
+      <div className={`${digest === MARKS_TILE ? "" : "max-[520px]:min-h-0 min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
         {digest === MARKS_TILE && <p className="table-empty" role="status">{t("events.marks.only")}</p>}
         {digest !== MARKS_TILE && <>
         {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}

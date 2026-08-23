@@ -168,7 +168,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     return () => controller.abort()
   }, [hour])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden max-[760px]:flex-wrap max-[760px]:overflow-visible" data-status={status}>
+  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden min-[521px]:max-[760px]:flex-wrap min-[521px]:max-[760px]:overflow-visible" data-status={status}>
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="flex h-[25px] flex-none items-center gap-1.5 px-2" key={metric.field}>
