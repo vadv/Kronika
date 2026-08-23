@@ -353,17 +353,13 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     heatmap
         .stream(
             &mut |record| {
-                response.extend_from_slice(&record);
+                response.push(record);
                 true
             },
             &|| false,
         )
         .expect("stream heatmap");
-    let records: Vec<Value> = response
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).expect("NDJSON record"))
-        .collect();
+    let records = response;
     assert_eq!(records[0]["entity_count"], 129);
     assert_eq!(records[1]["identity"], json!(["/mount-128"]));
     assert_eq!(records[1]["cells"], json!([128.0]));
@@ -392,27 +388,24 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     ungrouped
         .stream(
             &mut |record| {
-                response.extend_from_slice(&record);
+                response.push(record);
                 true
             },
             &|| false,
         )
         .expect("stream ungrouped heatmap");
-    let lines: Vec<&[u8]> = response
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .collect();
+    let lines = response;
     assert_eq!(lines.len(), 132, "header, every row, and two bands");
-    let header: Value = serde_json::from_slice(lines[0]).expect("ungrouped header");
-    let first: Value = serde_json::from_slice(lines[1]).expect("first ungrouped row");
+    let header = &lines[0];
+    let first = &lines[1];
     assert_eq!(header["top"], 129);
     assert_eq!(first["identity"], json!([128, 0, "/mount-128"]));
     assert_eq!(first["labels"], json!(["/mount-128"]));
     assert_eq!(first["cells"].as_array().map(Vec::len), Some(1_440));
     assert_eq!(first["cells"][0], json!(128.0));
     assert!(first["cells"][1].is_null());
-    let totals: Value = serde_json::from_slice(lines[130]).expect("totals band");
-    let others: Value = serde_json::from_slice(lines[131]).expect("others band");
+    let totals = &lines[130];
+    let others = &lines[131];
     assert_eq!(totals["band"], "totals");
     assert_eq!(others["band"], "others");
 }

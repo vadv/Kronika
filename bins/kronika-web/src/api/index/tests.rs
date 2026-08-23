@@ -78,13 +78,12 @@ fn event_stream_contains_only_sparse_locator_facts() {
         "pg_log_lifecycle",
         block,
         None,
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream findings");
+    );
     assert!(streamed);
     assert_eq!(rows.len(), 2);
     assert_eq!(
@@ -137,17 +136,16 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
         }],
     };
     let mut rows = Vec::new();
-    stream_findings(
+    assert!(stream_findings(
         "pg_log_errors",
         block,
         None,
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream findings");
+    ));
     assert_eq!(
         rows[1],
         serde_json::json!({
@@ -193,20 +191,19 @@ fn an_hour_keeps_only_inclusive_window_findings_and_recounts_them() {
             .collect(),
     };
     let mut rows = Vec::new();
-    stream_findings(
+    assert!(stream_findings(
         "pg_log_lifecycle",
         block,
         Some(Window {
             from: Some(100),
             to: Some(200),
         }),
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream filtered findings");
+    ));
 
     assert_eq!(rows[0]["total_hits"], 3);
     assert_eq!(rows[0]["truncated"], false);
@@ -281,8 +278,8 @@ fn bounded_index_rows() -> Vec<serde_json::Value> {
             from: Some(100),
             to: Some(200),
         }),
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("index JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
@@ -372,40 +369,38 @@ fn a_filtered_truncated_block_never_counts_out_of_window_locators() {
             .collect(),
     };
     let mut rows = Vec::new();
-    stream_findings(
+    assert!(stream_findings(
         "pg_log_lifecycle",
         block.clone(),
         Some(Window {
             from: Some(100),
             to: Some(200),
         }),
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream truncated findings");
+    ));
 
     assert_eq!(rows[0]["total_hits"], 2);
     assert_eq!(rows[0]["truncated"], true);
     assert_eq!(rows.len(), 3);
 
     rows.clear();
-    stream_findings(
+    assert!(stream_findings(
         "pg_log_lifecycle",
         block,
         Some(Window {
             from: Some(90),
             to: Some(100),
         }),
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream window before omitted tail");
+    ));
 
     assert_eq!(rows[0]["total_hits"], 2);
     assert_eq!(rows[0]["truncated"], false);
@@ -421,20 +416,19 @@ fn a_filtered_empty_truncated_block_keeps_its_unknown_tail_visible() {
         findings: Vec::new(),
     };
     let mut rows = Vec::new();
-    stream_findings(
+    assert!(stream_findings(
         "pg_log_lifecycle",
         block,
         Some(Window {
             from: Some(100),
             to: Some(200),
         }),
-        &mut |line| {
-            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+        &mut |value| {
+            rows.push(value);
             true
         },
         &|| false,
-    )
-    .expect("stream empty truncated findings");
+    ));
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["total_hits"], 0);

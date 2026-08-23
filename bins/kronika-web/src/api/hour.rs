@@ -6,13 +6,12 @@ use std::path::{Path, PathBuf};
 use kronika_index::{finding_keys, resource_selected, series_keys};
 use kronika_reader::{Cell, Listing, Reader, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, contract};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::catalog::{PreparedCatalog, metric_source_bit, source_bit};
 use super::history::stream_plans;
 use super::index::stream_series;
 use super::query::plans;
-use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
@@ -149,18 +148,18 @@ impl PreparedHour {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let started = std::time::Instant::now();
         let count = self.segments.len();
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "hour",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
                 "available_hours": self.hours.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -211,12 +210,12 @@ impl PreparedHour {
             keys.sort_unstable();
             keys.dedup();
             let resource = resource_selected(&root, &reader, segment, &keys)?;
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "index",
                 "segment": { "id": segment.id().to_string() },
                 "logical_name": SERIES,
                 "checksum": resource.index.checksum.map(|value| format!("{value:08x}")),
-            }))?) {
+            })) {
                 return Ok(());
             }
             if !stream_series(SERIES, resource, Some(window), emit, cancelled)? {
@@ -304,7 +303,7 @@ fn emit_series(
     segment_ref: &SegmentRef,
     window: Window,
     series: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
@@ -320,10 +319,10 @@ fn emit_series(
     };
     match plans(&segment, &request, true) {
         Ok(plans) => {
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "series_segment",
                 "segment": { "id": segment_ref.id().to_string() },
-            }))?) {
+            })) {
                 return Ok(false);
             }
             stream_plans(
@@ -345,19 +344,19 @@ fn emit_lanes(
     segment_ref: &SegmentRef,
     window: Window,
     state: &mut lanes::State,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
     for point in lanes::collect(&segment, window, state)? {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "lane",
                 "segment_id": segment_ref.id().to_string(),
                 "lane": point.key,
                 "ts": point.ts.to_string(),
                 "value": point.value,
-            }))?)
+            }))
         {
             return Ok(false);
         }

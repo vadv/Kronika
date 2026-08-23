@@ -16,7 +16,7 @@ use super::search::{
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns,
     resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
@@ -1996,7 +1996,7 @@ pub(super) fn stream_history(
     listed: &[SegmentRef],
     window: Window,
     request: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let group = request
@@ -2062,7 +2062,7 @@ pub(super) fn stream_history(
         logical_name: request.section.clone(),
         plans: Vec::new(),
     };
-    if cancelled() || !emit(relation_layout(&section, kind, group, &fields)?) {
+    if cancelled() || !emit(relation_layout(&section, kind, group, &fields)) {
         return Ok(());
     }
     let selected = selected_history_layouts(reader, &sources, datid, from, to, cancelled)?;
@@ -2099,10 +2099,10 @@ pub(super) fn stream_history(
     for ((_timestamp, _key), aggregate) in aggregates {
         if segment_id != Some(aggregate.source.segment_id) {
             segment_id = Some(aggregate.source.segment_id);
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "series_segment",
                 "segment": { "id": aggregate.source.segment_id.to_string() },
-            }))?) {
+            })) {
                 return Ok(());
             }
         }
@@ -2117,7 +2117,7 @@ pub(super) fn stream_history(
             from: aggregate.from,
             to: aggregate.to,
         };
-        if cancelled() || !emit(relation_record(&section, kind, group, &row, false)?) {
+        if cancelled() || !emit(relation_record(&section, kind, group, &row, false)) {
             return Ok(());
         }
     }
@@ -2139,7 +2139,7 @@ fn stream_tablespace_history(
     request: &SeriesRequest,
     kind: RelationKind,
     fields: &[String],
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let tablespace_oid = history_tablespace_oid(&request.filters)?;
@@ -2153,7 +2153,7 @@ fn stream_tablespace_history(
             kind,
             RelationGroup::Tablespace,
             fields,
-        )?)
+        ))
     {
         return Ok(());
     }
@@ -2266,10 +2266,10 @@ fn stream_tablespace_history(
         aggregate.to = Some(timestamp);
         if emitted_segment != Some(source.segment_id) {
             emitted_segment = Some(source.segment_id);
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "series_segment",
                 "segment": { "id": source.segment_id.to_string() },
-            }))?) {
+            })) {
                 return Ok(());
             }
         }
@@ -2296,7 +2296,7 @@ fn stream_tablespace_history(
                 RelationGroup::Tablespace,
                 &row,
                 false,
-            )?)
+            ))
         {
             return Ok(());
         }
@@ -3183,7 +3183,7 @@ impl PreparedSnapshot {
     )]
     pub(super) fn emit_relation_page(
         &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let [section] = self.sections.as_slice() else {
@@ -3199,14 +3199,7 @@ impl PreparedSnapshot {
                 return Err(ApiError::NoSuchColumn(name.clone()));
             }
         }
-        if cancelled()
-            || !emit(relation_layout(
-                section,
-                kind,
-                group,
-                &self.relation_fields,
-            )?)
-        {
+        if cancelled() || !emit(relation_layout(section, kind, group, &self.relation_fields)) {
             return Ok(());
         }
         let contexts = self.partitioned_contexts(section, cancelled)?;
@@ -3298,12 +3291,12 @@ impl PreparedSnapshot {
                     group,
                     &row,
                     group == RelationGroup::Object,
-                )?)
+                ))
             {
                 return Ok(());
             }
         }
-        let _connected = emit(record(json!({
+        let _connected = emit(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "group": group_name(group),
@@ -3317,7 +3310,7 @@ impl PreparedSnapshot {
             "order_direction": order_name(self.direction),
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
-        }))?);
+        }));
         Ok(())
     }
 }
@@ -3463,7 +3456,7 @@ fn relation_layout(
     kind: RelationKind,
     group: RelationGroup,
     selected: &[String],
-) -> Result<Vec<u8>, ApiError> {
+) -> Value {
     let available = kind.fields(group);
     let columns = selected
         .iter()
@@ -3477,12 +3470,12 @@ fn relation_layout(
             })
         })
         .collect::<Vec<_>>();
-    record(json!({
+    json!({
         "record": "relation_layout",
         "logical_name": section.logical_name,
         "group": group_name(group),
         "columns": columns,
-    }))
+    })
 }
 
 fn relation_record(
@@ -3491,7 +3484,7 @@ fn relation_record(
     group: RelationGroup,
     row: &RelationRow,
     physical_source: bool,
-) -> Result<Vec<u8>, ApiError> {
+) -> Value {
     let values = relation_values(&row.metrics);
     let source = physical_source.then(|| {
         json!({
@@ -3501,7 +3494,7 @@ fn relation_record(
             "timestamp": row.source.timestamp.to_string(),
         })
     });
-    record(json!({
+    json!({
         "record": "relation",
         "logical_name": section.logical_name,
         "group": group_name(group),
@@ -3510,7 +3503,7 @@ fn relation_record(
         "sample_from": row.from.map(|value| value.to_string()),
         "sample_to": row.to.map(|value| value.to_string()),
         "source": source,
-    }))
+    })
 }
 
 fn relation_values(metrics: &BTreeMap<String, Option<Metric>>) -> Map<String, Value> {
@@ -4035,17 +4028,13 @@ mod tests {
             from: Some(10),
             to: Some(20),
         };
-        let object: Value = serde_json::from_slice(
-            &relation_record(
-                &section,
-                RelationKind::Indexes,
-                RelationGroup::Object,
-                &row,
-                true,
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let object = relation_record(
+            &section,
+            RelationKind::Indexes,
+            RelationGroup::Object,
+            &row,
+            true,
+        );
         assert_eq!(object["record"], "relation");
         assert_eq!(object["key"]["datid"], "7");
         assert_eq!(object["key"]["relid"], "17");
@@ -4056,17 +4045,13 @@ mod tests {
         assert_eq!(object["source"]["segment_id"], "7");
         assert_eq!(object["source"]["ordinal"], "91");
 
-        let aggregate: Value = serde_json::from_slice(
-            &relation_record(
-                &section,
-                RelationKind::Indexes,
-                RelationGroup::Database,
-                &row,
-                false,
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let aggregate = relation_record(
+            &section,
+            RelationKind::Indexes,
+            RelationGroup::Database,
+            &row,
+            false,
+        );
         assert!(aggregate["source"].is_null());
         assert!(aggregate["key"].get("indexrelid").is_none());
         assert!(aggregate["key"].get("relid").is_none());

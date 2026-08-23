@@ -12,7 +12,7 @@ use kronika_registry::{ColumnClass, ColumnType, logical_section_name, registry};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
-use super::render::{cell, record};
+use super::render::cell;
 use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::route::{DataRequest, HeatmapRequest, SegmentRequest};
 
@@ -104,7 +104,7 @@ impl PreparedHeatmap {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let started = std::time::Instant::now();
@@ -131,7 +131,7 @@ impl PreparedHeatmap {
             if !self.cumulative {
                 grouped.others_total = band_peak(&grouped.others);
             }
-            self.emit_grouped(&grouped, emit, cancelled)?;
+            self.emit_grouped(&grouped, emit, cancelled);
         }
         eprintln!(
             "kronika-web: heatmap section={} field={} segments={} entities={} out_of_order={} elapsed_us={}",
@@ -443,7 +443,7 @@ impl PreparedHeatmap {
         &self,
         ranked: &Ranked,
         seen_rows: &HashMap<(i64, u32), u64>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let request = &self.request;
@@ -465,7 +465,7 @@ impl PreparedHeatmap {
                 "end": interval_end(request.from, request.to, request.columns, index).to_string(),
             })).collect::<Vec<_>>(),
         });
-        if cancelled() || !emit(record(header)?) {
+        if cancelled() || !emit(header) {
             return Ok(());
         }
         let mut winner_sums = vec![CellSum::default(); request.columns];
@@ -494,7 +494,7 @@ impl PreparedHeatmap {
                     "total": number(row.total),
                     "cells": rendered,
                 });
-                if cancelled() || !emit(record(rendered)?) {
+                if cancelled() || !emit(rendered) {
                     return Ok(());
                 }
             }
@@ -527,20 +527,20 @@ impl PreparedHeatmap {
                     Some(current.map_or(*value, |stored| stored.max(*value)))
                 })
         };
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "heatmap_band",
             "band": "totals",
             "total": number(totals_total),
             "cells": totals,
-        }))?) {
+        })) {
             return Ok(());
         }
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "heatmap_band",
             "band": "others",
             "total": number(others_total),
             "cells": other_values.into_iter().map(number).collect::<Vec<_>>(),
-        }))?) {
+        })) {
             return Ok(());
         }
         Ok(())
@@ -549,9 +549,9 @@ impl PreparedHeatmap {
     fn emit_grouped(
         &self,
         grouped: &Grouped,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
+    ) {
         let request = &self.request;
         let cumulative = self.cumulative;
         let header = json!({
@@ -572,12 +572,12 @@ impl PreparedHeatmap {
                 "end": interval_end(request.from, request.to, request.columns, index).to_string(),
             })).collect::<Vec<_>>(),
         });
-        if cancelled() || !emit(record(header)?) {
-            return Ok(());
+        if cancelled() || !emit(header) {
+            return;
         }
         for row in &grouped.rows {
             if cancelled()
-                || !emit(record(json!({
+                || !emit(json!({
                     "record": "heatmap_row",
                     "type_id": "0",
                     "identity": row.values,
@@ -585,28 +585,25 @@ impl PreparedHeatmap {
                     "members": row.members,
                     "total": number(row.total),
                     "cells": row.cells.iter().map(|cell| number(*cell)).collect::<Vec<_>>(),
-                }))?)
+                }))
             {
-                return Ok(());
+                return;
             }
         }
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "heatmap_band",
             "band": "totals",
             "total": number(grouped.totals_total),
             "cells": grouped.totals.iter().map(|sum| number(sum.value())).collect::<Vec<_>>(),
-        }))?) {
-            return Ok(());
+        })) {
+            return;
         }
-        if !emit(record(json!({
+        let _connected = emit(json!({
             "record": "heatmap_band",
             "band": "others",
             "total": number(grouped.others_total),
             "cells": grouped.others.iter().map(|sum| number(sum.value())).collect::<Vec<_>>(),
-        }))?) {
-            return Ok(());
-        }
-        Ok(())
+        }));
     }
 
     fn data_request(&self, segment: &SegmentRef, with_labels: bool) -> DataRequest {

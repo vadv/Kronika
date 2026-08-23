@@ -5,6 +5,7 @@ use std::path::Path;
 
 use hyper::StatusCode;
 use kronika_reader::{Reader, ReaderError, SegmentRef};
+use serde_json::Value;
 
 use crate::route::{ActiveCursor, Route};
 
@@ -17,6 +18,9 @@ mod query;
 mod render;
 mod rows;
 mod snapshot;
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 pub(crate) use hour::process_summary::{
@@ -101,6 +105,26 @@ impl Prepared {
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
+        let mut failure = None;
+        self.stream_values(
+            &mut |value| match render::record(&value) {
+                Ok(bytes) => emit(bytes),
+                Err(error) => {
+                    failure = Some(error);
+                    false
+                }
+            },
+            cancelled,
+        )?;
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Emit the exact typed records used by the HTTP representation.
+    pub(crate) fn stream_values(
+        self,
+        emit: &mut impl FnMut(Value) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
         match self {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
@@ -111,6 +135,118 @@ impl Prepared {
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
+    }
+
+    /// Retain typed records without crossing either exact NDJSON budget.
+    pub(crate) fn collect_values(
+        self,
+        limits: ValueLimits,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<ValueCollection, ApiError> {
+        let saw_cancel = std::cell::Cell::new(false);
+        let tracked_cancel = || {
+            let stopped = cancelled();
+            saw_cancel.set(saw_cancel.get() || stopped);
+            stopped
+        };
+        let mut collector = ValueCollector::new(limits);
+        self.stream_values(&mut |value| collector.push(value), &tracked_cancel)?;
+        collector.finish(saw_cancel.get())
+    }
+}
+
+/// Exact caps for a retained typed record stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValueLimits {
+    pub(crate) records: usize,
+    pub(crate) ndjson_bytes: usize,
+}
+
+/// Why a bounded typed stream stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueStopReason {
+    Complete,
+    RecordLimit,
+    ByteLimit,
+    Cancelled,
+}
+
+impl ValueStopReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::RecordLimit => "record_limit",
+            Self::ByteLimit => "byte_limit",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Bounded typed output shared by the direct API and MCP callers.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ValueCollection {
+    pub(crate) records: Vec<Value>,
+    pub(crate) ndjson_bytes: usize,
+    pub(crate) stop_reason: ValueStopReason,
+}
+
+struct ValueCollector {
+    limits: ValueLimits,
+    records: Vec<Value>,
+    ndjson_bytes: usize,
+    stop_reason: Option<ValueStopReason>,
+    failure: Option<ApiError>,
+}
+
+impl ValueCollector {
+    const fn new(limits: ValueLimits) -> Self {
+        Self {
+            limits,
+            records: Vec::new(),
+            ndjson_bytes: 0,
+            stop_reason: None,
+            failure: None,
+        }
+    }
+
+    fn push(&mut self, value: Value) -> bool {
+        if self.records.len() >= self.limits.records {
+            self.stop_reason = Some(ValueStopReason::RecordLimit);
+            return false;
+        }
+        let bytes = match render::record(&value) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.failure = Some(error);
+                return false;
+            }
+        };
+        let Some(total) = self.ndjson_bytes.checked_add(bytes.len()) else {
+            self.stop_reason = Some(ValueStopReason::ByteLimit);
+            return false;
+        };
+        if total > self.limits.ndjson_bytes {
+            self.stop_reason = Some(ValueStopReason::ByteLimit);
+            return false;
+        }
+        self.records.push(value);
+        self.ndjson_bytes = total;
+        true
+    }
+
+    fn finish(self, cancelled: bool) -> Result<ValueCollection, ApiError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        Ok(ValueCollection {
+            records: self.records,
+            ndjson_bytes: self.ndjson_bytes,
+            stop_reason: self.stop_reason.unwrap_or(if cancelled {
+                ValueStopReason::Cancelled
+            } else {
+                ValueStopReason::Complete
+            }),
+        })
     }
 }
 

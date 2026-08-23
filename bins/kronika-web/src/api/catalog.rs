@@ -7,7 +7,6 @@ use kronika_reader::{Listing, Reader, SegmentKind, SegmentRef, StoreObject, Stor
 use kronika_registry::{logical_section_name, section_implementation, section_name};
 use serde_json::{Value, json};
 
-use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta, log_warnings};
 use crate::config::{SOURCE_FAMILIES, SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::route::Window;
@@ -75,7 +74,7 @@ impl PreparedCatalog {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let present_sources = self.present_sources.unwrap_or_else(|| {
@@ -95,7 +94,7 @@ impl PreparedCatalog {
                 .fold(0_u32, |present, bit| present | bit)
         });
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "catalog",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
@@ -105,7 +104,7 @@ impl PreparedCatalog {
                     present_sources,
                     metric_sources,
                 ),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -117,12 +116,12 @@ impl PreparedCatalog {
                 SegmentKind::Finished => finished(segment),
                 SegmentKind::Active => active(segment)?,
             };
-            if !emit(record(value)?) {
+            if !emit(value) {
                 return Ok(());
             }
         }
         for warning in &self.listing.warnings {
-            if cancelled() || !emit(record(warning_value(warning))?) {
+            if cancelled() || !emit(warning_value(warning)) {
                 return Ok(());
             }
         }

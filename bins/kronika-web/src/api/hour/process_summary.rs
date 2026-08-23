@@ -10,7 +10,6 @@ use kronika_registry::{contract, logical_section_name};
 use serde_json::{Value, json};
 
 use crate::api::ApiError;
-use crate::api::render::record;
 use crate::route::{SeriesRequest, Window};
 
 pub(super) const SECTION: &str = "os_process_summary";
@@ -307,7 +306,7 @@ pub(super) fn stream(
     segments: &[SegmentRef],
     window: Window,
     request: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let fields = selected_fields(request)?;
@@ -321,7 +320,8 @@ pub(super) fn stream(
     let activities = activity_pids(&opened, cancelled)?;
     let moments = process_moments(&opened, cancelled)?;
     let summaries = summaries(&opened, &moments, &activities, cancelled)?;
-    emit_summaries(&summaries, window, &fields, emit, cancelled)
+    emit_summaries(&summaries, window, &fields, emit, cancelled);
+    Ok(())
 }
 
 fn selected_fields(request: &SeriesRequest) -> Result<Vec<FieldSpec>, ApiError> {
@@ -681,9 +681,9 @@ fn emit_summaries(
     summaries: &BTreeMap<i64, Summary>,
     window: Window,
     fields: &[FieldSpec],
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
+) {
     let mut segment_id = None;
     let mut ordinal = 0_u64;
     for (ts, summary) in summaries {
@@ -691,36 +691,33 @@ fn emit_summaries(
             continue;
         }
         if cancelled() {
-            return Ok(());
+            return;
         }
         if segment_id != Some(summary.segment_id) {
             segment_id = Some(summary.segment_id);
             ordinal = 0;
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "series_segment",
                 "segment": { "id": summary.segment_id.to_string() },
-            }))?)
-                || !emit(record(json!({
-                    "record": "layout",
-                    "layout": layout(fields),
-                }))?)
-            {
-                return Ok(());
+            })) || !emit(json!({
+                "record": "layout",
+                "layout": layout(fields),
+            })) {
+                return;
             }
         }
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "row",
             "type_id": DERIVED_TYPE_ID,
             "ordinal": ordinal.to_string(),
             "timestamp": ts.to_string(),
             "identity": [],
             "values": summary.values(fields),
-        }))?) {
-            return Ok(());
+        })) {
+            return;
         }
         ordinal = ordinal.saturating_add(1);
     }
-    Ok(())
 }
 
 fn inside(ts: i64, window: Window) -> bool {

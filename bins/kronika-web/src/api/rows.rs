@@ -6,7 +6,7 @@ use kronika_reader::{Dictionary, Row, Segment, SegmentKind, SegmentRef};
 use serde_json::{Value, json};
 
 use super::query::{Plan, apply_tail, chunk_dictionary, plans};
-use super::render::{cell, projected_layout, record};
+use super::render::{cell, projected_layout};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{Order, RowsRequest};
 
@@ -99,11 +99,11 @@ impl PreparedRows {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "rows",
                 "segment": {
                     "id": self.segment.id().to_string(),
@@ -122,7 +122,7 @@ impl PreparedRows {
                     Order::Desc => "desc",
                 },
                 "page_size": self.page_size.to_string(),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -140,10 +140,10 @@ impl PreparedRows {
                     )
                 })
                 .collect::<Vec<_>>();
-            if !emit(record(json!({
+            if !emit(json!({
                 "record": "layout",
                 "layout": projected_layout(&self.logical_name, plan.contract, &fields),
-            }))?) {
+            })) {
                 return Ok(());
             }
         }
@@ -156,16 +156,16 @@ impl PreparedRows {
             return Ok(());
         }
         let next = page.next.map(Cursor::encode);
-        let _sent = emit(record(json!({
+        let _sent = emit(json!({
             "record": "page",
             "next_cursor": next,
-        }))?);
+        }));
         Ok(())
     }
 
     fn asc(
         &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Page, ApiError> {
         let mut page = AscPage {
@@ -239,7 +239,7 @@ impl PreparedRows {
         layout_index: usize,
         rows: &mut Vec<(u64, Row)>,
         page: &mut AscPage,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled() {
@@ -274,7 +274,7 @@ impl PreparedRows {
 
     fn desc(
         &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Page, ApiError> {
         let mut emitted = 0_usize;
@@ -338,8 +338,8 @@ impl PreparedRows {
                         break;
                     }
                     match row_record(plan, ordinal, &row, &dictionary) {
-                        Ok(bytes) => {
-                            connected = emit(bytes);
+                        Ok(value) => {
+                            connected = emit(value);
                             emitted = emitted.saturating_add(1);
                         }
                         Err(error) => {
@@ -394,7 +394,7 @@ fn row_record(
     ordinal: u64,
     row: &Row,
     dictionary: &Dictionary,
-) -> Result<Vec<u8>, ApiError> {
+) -> Result<Value, ApiError> {
     let values = plan
         .fields
         .iter()
@@ -405,7 +405,7 @@ fn row_record(
                 .map_or(Ok(Value::Null), |value| cell(value, dictionary))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    record(json!({
+    Ok(json!({
         "record": "row",
         "type_id": plan.type_id.to_string(),
         "ordinal": ordinal.to_string(),

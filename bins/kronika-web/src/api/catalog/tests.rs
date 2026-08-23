@@ -96,6 +96,6 @@ fn catalog_labels_only_explicit_synthetic_demo_data() {
             &|| false,
         )
         .expect("catalog stream");
-    let header: serde_json::Value = serde_json::from_slice(&records[0]).expect("catalog record");
+    let header = &records[0];
     assert_eq!(header["demo"], "synthetic");
 }

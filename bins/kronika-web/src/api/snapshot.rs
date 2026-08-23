@@ -24,7 +24,7 @@ use self::search::{
 #[cfg(test)]
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use super::query::{Plan, plans, resolved_dictionary};
-use super::render::{cell, projected_layout, record, shorten};
+use super::render::{cell, projected_layout, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
 use crate::route::{SeriesRequest, Window};
@@ -468,7 +468,7 @@ pub(super) fn stream_relation_history(
     listed: &[SegmentRef],
     window: Window,
     request: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     relation::stream_history(reader, listed, window, request, emit, cancelled)
@@ -982,15 +982,15 @@ impl PreparedSnapshot {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "snapshot",
                 "segment": { "id": self.anchor.id().to_string() },
                 "at": self.at.to_string(),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -1033,11 +1033,11 @@ impl PreparedSnapshot {
     fn emit_partitioned_section(
         &self,
         section: &SectionPlans,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         for plan in &section.plans {
-            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+            if cancelled() || !Self::emit_layout(section, plan, emit) {
                 return Ok(false);
             }
         }
@@ -1056,7 +1056,7 @@ impl PreparedSnapshot {
     fn emit_context_rows(
         &self,
         context: &PageContext<'_>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let (start_row, row_count) = self
@@ -1132,7 +1132,7 @@ impl PreparedSnapshot {
         process_users: &ProcessUsers,
         selection_dictionary: &Dictionary,
         rows: &mut Vec<(u64, Row)>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         #[cfg(test)]
@@ -1175,7 +1175,7 @@ impl PreparedSnapshot {
                 process_users,
                 self.text,
             )?;
-            if cancelled() || !emit(record(&value)?) {
+            if cancelled() || !emit(value) {
                 return Ok(false);
             }
         }
@@ -1187,11 +1187,11 @@ impl PreparedSnapshot {
         section: &SectionPlans,
         layout_index: usize,
         plan: &Plan,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
         facts: &mut HashMap<i64, PageFacts>,
     ) -> Result<bool, ApiError> {
-        if !Self::emit_layout(section, plan, emit)? {
+        if !Self::emit_layout(section, plan, emit) {
             return Ok(false);
         }
         if !plan.applies() {
@@ -1216,8 +1216,8 @@ impl PreparedSnapshot {
     fn emit_layout(
         section: &SectionPlans,
         plan: &Plan,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-    ) -> Result<bool, ApiError> {
+        emit: &mut impl FnMut(Value) -> bool,
+    ) -> bool {
         let fields = plan
             .fields
             .iter()
@@ -1249,17 +1249,17 @@ impl PreparedSnapshot {
                 }
             }
         }
-        Ok(emit(record(json!({
+        emit(json!({
             "record": "layout",
             "layout": layout,
             "rates": output_rate_fields(plan),
-        }))?))
+        }))
     }
 
     fn emit_untimed(
         &self,
         plan: &Plan,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let (start_row, row_count) = self
@@ -1296,7 +1296,7 @@ impl PreparedSnapshot {
         plan: &Plan,
         rows: Vec<(u64, Row)>,
         rates: RateContext<'_>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let selection_dictionary = plan.selection_dictionary(source, &rows)?;
@@ -1323,7 +1323,7 @@ impl PreparedSnapshot {
         plan: &Plan,
         staged: Vec<StagedRow>,
         rates: RateContext<'_>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let dictionary = retained_dictionary(source, &staged)?;
@@ -1345,7 +1345,7 @@ impl PreparedSnapshot {
                 &process_users,
                 self.text,
             )?;
-            if cancelled() || !emit(record(&value)?) {
+            if cancelled() || !emit(value) {
                 return Ok(false);
             }
         }
@@ -1354,14 +1354,14 @@ impl PreparedSnapshot {
 
     fn emit_page(
         &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
         for plan in &section.plans {
-            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+            if cancelled() || !Self::emit_layout(section, plan, emit) {
                 return Ok(());
             }
         }
@@ -1429,13 +1429,13 @@ impl PreparedSnapshot {
             },
             self.direction,
             emit,
-        )?;
+        );
         Ok(())
     }
 
     fn emit_first_match(
         &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let [section] = self.sections.as_slice() else {
@@ -1443,7 +1443,7 @@ impl PreparedSnapshot {
         };
         let wanted = self.first_match_query_id.ok_or(ApiError::BadCursor)?;
         for plan in &section.plans {
-            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+            if cancelled() || !Self::emit_layout(section, plan, emit) {
                 return Ok(());
             }
         }
@@ -1471,7 +1471,7 @@ impl PreparedSnapshot {
                 &ProcessUsers::default(),
                 None,
             )?;
-            if cancelled() || !emit(record(&value)?) {
+            if cancelled() || !emit(value) {
                 return Ok(());
             }
             returned = 1;
@@ -1489,7 +1489,8 @@ impl PreparedSnapshot {
             },
             self.direction,
             emit,
-        )
+        );
+        Ok(())
     }
 
     fn first_match_row(
@@ -1565,7 +1566,7 @@ impl PreparedSnapshot {
         contexts: &[PageContext<'_>],
         process_users: &HashMap<usize, ProcessUsers>,
         ranked: Vec<PageRankedRow>,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
@@ -1615,7 +1616,7 @@ impl PreparedSnapshot {
                     .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
-            if cancelled() || !emit(record(&value)?) {
+            if cancelled() || !emit(value) {
                 return Ok(false);
             }
         }
@@ -1627,8 +1628,8 @@ impl PreparedSnapshot {
         contexts: &[PageContext<'_>],
         metadata: &PageMetadata,
         direction: Order,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-    ) -> Result<(), ApiError> {
+        emit: &mut impl FnMut(Value) -> bool,
+    ) {
         let mut order_by = Vec::new();
         for context in contexts {
             if let Some(order) = &context.order
@@ -1645,7 +1646,7 @@ impl PreparedSnapshot {
             .iter()
             .filter_map(|context| context.sample_to)
             .max();
-        let _connected = emit(record(json!({
+        let _connected = emit(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "eligible": metadata.eligible.to_string(),
@@ -1661,8 +1662,7 @@ impl PreparedSnapshot {
             },
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
-        }))?);
-        Ok(())
+        }));
     }
 
     fn page_contexts<'a>(

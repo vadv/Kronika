@@ -12,7 +12,6 @@ use kronika_reader::{SegmentKind, SegmentRef};
 use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
-use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
 use crate::encoding::etag_matches;
 use crate::route::{SegmentRequest, Window};
@@ -72,16 +71,16 @@ impl PreparedIndex {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "index",
                 "segment": segment_value(&self.segment),
                 "logical_name": self.logical_name,
                 "checksum": self.resource.index.checksum.map(|value| format!("{value:08x}")),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -93,7 +92,7 @@ pub(super) fn stream_series(
     logical_name: &str,
     resource: ResourceIndex,
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     {
@@ -104,16 +103,16 @@ pub(super) fn stream_series(
                 } else {
                     logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
                 };
-                if !stream_findings(finding_logical_name, block, window, emit, cancelled)? {
+                if !stream_findings(finding_logical_name, block, window, emit, cancelled) {
                     return Ok(false);
                 }
                 continue;
             }
             if cancelled()
-                || !emit(record(json!({
+                || !emit(json!({
                     "record": "layout",
                     "layout": block_layout(logical_name, &block)?,
-                }))?)
+                }))
             {
                 return Ok(false);
             }
@@ -132,14 +131,14 @@ pub(super) fn stream_series(
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
                         if cancelled()
-                            || !emit(record(json!({
+                            || !emit(json!({
                                 "record": "point",
                                 "series": series,
                                 "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
                                 "ts": point.timestamp.to_string(),
                                 "identity": {},
                                 "value": point.value,
-                            }))?)
+                            }))
                         {
                             return Ok(false);
                         }
@@ -150,14 +149,14 @@ pub(super) fn stream_series(
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
                         if cancelled()
-                            || !emit(record(json!({
+                            || !emit(json!({
                                 "record": "point",
                                 "series": "transactions_per_second",
                                 "type_id": type_id.to_string(),
                                 "ts": point.timestamp.to_string(),
                                 "identity": { "datid": point.datid },
                                 "value": point.value,
-                            }))?)
+                            }))
                         {
                             return Ok(false);
                         }
@@ -168,14 +167,14 @@ pub(super) fn stream_series(
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
                         if cancelled()
-                            || !emit(record(json!({
+                            || !emit(json!({
                                 "record": "point",
                                 "series": "active_backends",
                                 "type_id": type_id.to_string(),
                                 "ts": point.timestamp.to_string(),
                                 "identity": {},
                                 "value": point.count,
-                            }))?)
+                            }))
                         {
                             return Ok(false);
                         }
@@ -192,9 +191,9 @@ fn stream_findings(
     logical_name: &str,
     mut block: FindingBlock,
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
+) -> bool {
     if let Some(window) = window {
         let omitted_may_intersect = block.truncated
             && block
@@ -208,19 +207,19 @@ fn stream_findings(
         block.truncated = omitted_may_intersect;
     }
     if cancelled()
-        || !emit(record(json!({
+        || !emit(json!({
             "record": "findings",
             "logical_name": logical_name,
             "type_id": block.type_id.to_string(),
             "total_hits": block.total_hits,
             "truncated": block.truncated,
-        }))?)
+        }))
     {
-        return Ok(false);
+        return false;
     }
     for finding in block.findings {
         if cancelled() {
-            return Ok(false);
+            return false;
         }
         let mut value = json!({
             "record": "finding",
@@ -234,11 +233,11 @@ fn stream_findings(
         if let Some(category) = finding.category {
             value["category"] = category.into();
         }
-        if !emit(record(value)?) {
-            return Ok(false);
+        if !emit(value) {
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 const fn block_len(block: &SeriesBlock) -> usize {

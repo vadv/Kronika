@@ -5,10 +5,10 @@ use std::path::Path;
 
 use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
 use kronika_reader::{Cell, Row, Segment, SegmentKind};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::query::{Plan, apply_tail, plans, streaming_chunk_dictionary, validate_row_dictionary};
-use super::render::{cell, projected_layout, record};
+use super::render::{cell, projected_layout};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{ActiveCursor, DataRequest, Window};
 
@@ -58,11 +58,11 @@ impl PreparedHistory {
 
     pub(super) fn stream(
         self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "history",
                 "segment": {
                     "id": self.segment.id().to_string(),
@@ -81,7 +81,7 @@ impl PreparedHistory {
                     "segment_id": cursor.segment_id.to_string(),
                     "wal_position": cursor.wal_position.to_string(),
                 })),
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -102,14 +102,14 @@ impl PreparedHistory {
     fn stream_health(
         &self,
         plan: HealthPlan,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        emit: &mut impl FnMut(Value) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         if cancelled()
-            || !emit(record(json!({
+            || !emit(json!({
                 "record": "layout",
                 "layout": super::index::section_layout("health", 0)?,
-            }))?)
+            }))
         {
             return Ok(());
         }
@@ -140,7 +140,6 @@ impl PreparedHistory {
             return Ok(());
         }
         let mut ordinal = 0_u64;
-        let mut failure = None;
         visit_health_points(
             &self.segment,
             || !cancelled(),
@@ -153,30 +152,19 @@ impl PreparedHistory {
                 {
                     return true;
                 }
-                let value = point
-                    .value
-                    .map_or(serde_json::Value::Null, |value| json!(value));
+                let value = point.value.map_or(Value::Null, |value| json!(value));
                 let values = vec![value; plan.field_count];
-                match record(json!({
+                connected = emit(json!({
                     "record": "row",
                     "type_id": "0",
                     "ordinal": point_ordinal.to_string(),
                     "timestamp": point.timestamp.to_string(),
                     "identity": [],
                     "values": values,
-                })) {
-                    Ok(bytes) => connected = emit(bytes),
-                    Err(error) => {
-                        failure = Some(error);
-                        connected = false;
-                    }
-                }
+                }));
                 connected
             },
         )?;
-        if let Some(error) = failure {
-            return Err(error);
-        }
         Ok(())
     }
 }
@@ -211,7 +199,7 @@ fn emit_chunk(
     segment: &Segment,
     plan: &Plan,
     rows: &mut Vec<(u64, Row)>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     if cancelled() {
@@ -231,17 +219,14 @@ fn emit_chunk(
             .identity
             .iter()
             .map(|name| {
-                row.get(name).map_or(Ok(serde_json::Value::Null), |value| {
-                    cell(value, &dictionary)
-                })
+                row.get(name)
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let timestamp = plan
             .timestamp
             .and_then(|name| row.get(name))
-            .map_or(Ok(serde_json::Value::Null), |value| {
-                cell(value, &dictionary)
-            })?;
+            .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?;
         let values = plan
             .fields
             .iter()
@@ -249,19 +234,17 @@ fn emit_chunk(
                 field
                     .column
                     .and_then(|name| row.get(name))
-                    .map_or(Ok(serde_json::Value::Null), |value| {
-                        cell(value, &dictionary)
-                    })
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "row",
             "type_id": plan.type_id.to_string(),
             "ordinal": ordinal.to_string(),
             "timestamp": timestamp,
             "identity": identity,
             "values": values,
-        }))?) {
+        })) {
             return Ok(false);
         }
     }
@@ -273,7 +256,7 @@ pub(super) fn stream_plans(
     logical_name: &str,
     plans: &[Plan],
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    emit: &mut impl FnMut(Value) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     for plan in plans {
@@ -290,10 +273,10 @@ pub(super) fn stream_plans(
                 )
             })
             .collect::<Vec<_>>();
-        if !emit(record(json!({
+        if !emit(json!({
             "record": "layout",
             "layout": projected_layout(logical_name, plan.contract, &fields),
-        }))?) {
+        })) {
             return Ok(false);
         }
         if !plan.applies() {
