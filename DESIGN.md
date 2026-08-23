@@ -485,6 +485,136 @@ only to create a signed first-party HttpOnly session cookie, then uses that
 cookie for protected API requests. The check stays in one place outside the
 handlers.
 
+### MCP historical analysis
+
+`kronika-web` exposes recorded history at `POST /mcp` on its existing listener.
+It uses `rmcp` 3.1.4 Streamable HTTP without server session state or
+`Mcp-Session-Id`, and accepts the modern stateless and initialize-era client
+flows supported by the pinned SDK. There is no separate daemon, stdio wrapper,
+WebSocket, or old two-endpoint SSE transport.
+
+The endpoint passes through the web API admission check before collecting its
+body. Disabled authentication means open access; required authentication
+accepts the same HTTP Basic credentials and the same signed cookie fallback.
+Every request carrying `Origin` is rejected. MCP adds no CORS, OAuth, token
+store, TLS termination, proxy identity, or wider listener.
+
+MCP receives the configured Kronika root from web; no argument accepts another
+root, a DSN, SQL, or a command. It reads finished ZMS and the valid active WAL
+prefix through the existing reader. A selected finished-index read may derive
+the required blocks in memory but never creates, replaces, or updates an
+`.idx`. MCP writes, stages, and locks nothing in the data root. It never
+connects to PostgreSQL, executes SQL, starts a subprocess, or changes the
+collector, sources, storage format, or cadence.
+
+Start an investigation with ranked recorded activity and sparse accepted
+findings. Use the timeline to place them against health and shared host or
+PostgreSQL lanes, then open a direct entity surface. Native metric history and
+exact row or text detail are bounded follow-ups. Heatmap ranks activity among
+the entities recorded in the interval; it does not claim a statistical anomaly
+or a cause.
+
+The v1 catalog has these exact stable names:
+
+| # | Tool | Purpose |
+|---:|---|---|
+| 1 | `kronika_get_context` | Recorded sources, semantics, lenses, cuts, and limits |
+| 2 | `kronika_list_hours` | Recorded UTC hours and source families |
+| 3 | `kronika_rank_heatmap` | Ranked activity in exact interval buckets |
+| 4 | `kronika_list_findings` | Accepted boundaries and indexed events |
+| 5 | `kronika_get_timeline` | Native health and shared-lane history |
+| 6 | `kronika_get_host_context` | Recorded host capacity and state |
+| 7 | `kronika_find_processes` | Process identity, CPU, memory, disk, and tree lenses |
+| 8 | `kronika_get_postgresql_overview` | Cluster-level PostgreSQL state and capacity |
+| 9 | `kronika_find_postgresql_activity` | Backends, state, waits, transactions, and query facts |
+| 10 | `kronika_find_postgresql_locks` | Recorded blockers, PIDs, and lock targets |
+| 11 | `kronika_find_postgresql_vacuum` | Vacuum episodes, phases, progress, and accepted risk |
+| 12 | `kronika_find_postgresql_statements` | Statement load, per-call cost, I/O, resources, and stability |
+| 13 | `kronika_find_postgresql_plans` | Stored-plan load, timing, I/O, and identity |
+| 14 | `kronika_find_postgresql_databases` | Database work, failures, and transaction-age risk |
+| 15 | `kronika_find_postgresql_tables` | Table access, changes, maintenance, storage, and freeze state |
+| 16 | `kronika_find_postgresql_indexes` | Index usage, inactivity, storage, and state |
+| 17 | `kronika_find_events` | Recorded PostgreSQL and PgBouncer events |
+| 18 | `kronika_get_metric_history` | Native-cadence samples for selected identities and fields |
+| 19 | `kronika_get_snapshot` | Bounded sample-at-or-before rows from one allowlisted section |
+| 20 | `kronika_get_row_detail` | One exact projected row or bounded text chunk by locator |
+
+The tools are typed façades over the same catalog/hour, selected-index,
+Heatmap, snapshot/search/relation, history, row/detail, and product-semantics
+code used by HTTP. They never call the server through HTTP. The expert snapshot
+covers one allowlisted logical section and is not a normal first analysis
+surface. PostgreSQL has direct surfaces because their rows, transformations,
+whole-set requirements, and costs differ; there is no generic PostgreSQL
+`view` tool.
+
+`kronika_find_processes` owns the tree lens and order. It transforms one
+bounded complete process snapshot and returns PID, PPID, start time, parent,
+depth, and stable tree order. It is not another tool, and exceeding the
+whole-set bound is an error rather than a partial tree. One-row process detail
+is the same Process `find`; process series use metric history, and PostgreSQL
+context uses Activity.
+
+The `find` argument uses the same bounded public structured-search parser and
+field registry as HTTP. Lenses, semantic ordering, projections, filters, and
+cursors retain their product vocabulary. Exact statement and plan lookup uses
+`find: "query_id:X"` or `find: "plan_id:X"` on the direct Statement or Plan
+tool. MCP has no second query language or point-ID tools.
+
+Each result preserves the physical layout and the recorded time of every row
+or sample. Timestamps, cursors, identifiers, and large integers outside JSON's
+lossless range are decimal strings; units come from the registry. Snapshots
+select the latest real sample at or before the requested time. Histories keep
+native cadence, nulls, mixed-layout availability, and counter behavior without
+interpolation, resampling, or future fill.
+
+Cursors are opaque and bound to the normalized query, physical position, and
+active WAL prefix where applicable. A cursor from another query is an error.
+If the active source changes before coherent publication, the tool returns a
+stable retryable source-change error instead of combining two prefixes. A
+bounded success states why it stopped and returns a continuation cursor when
+matching data remains.
+
+Results carry a compact semantic dictionary referenced by rows and cells. It
+contains accepted units, formulas and operands, thresholds or expected bands,
+finding metadata, warning/critical tones, Vacuum phase and risk, relation state
+severity, and event tier. Each entry identifies its origin as `recorded`,
+`kronika_derived`, or `accepted_presentation`. One typed Rust registry supplies
+the same semantics to HTTP and MCP.
+
+`structuredContent` is canonical. The concise English text says what was
+returned and whether another page exists; it never copies rows or large text
+from the structured result.
+
+MCP adds no historical baseline, anomaly score, inferred cause, diagnosis,
+confidence or completeness state, new threshold, new Vacuum class, new event
+tier, or action recommendation. Clients may reason over returned facts; the
+server does not create another classification engine.
+
+All limits are constants beside the MCP schemas, and zero never means
+unlimited:
+
+| Resource | Default | Hard limit |
+|---|---:|---:|
+| JSON-RPC request / complete uncompressed response | — | 64 KiB / 128 KiB |
+| Structured data / concise English text summary | 32 KiB / — | 96 KiB / 2 KiB |
+| Rows per page / fields / filters / logical sections | 100 / tool-specific | 500 / 32 / 16 / 16 |
+| History identities / all samples / timeline records | 4 / 2,000 / 200 | 16 / 10,000 / 1,000 |
+| Segments / physical row visits / decoded cells | — | 64 / 1,000,000 / 2,000,000 |
+| Large text chunk / calendar window | 16 KiB / one UTC hour | 32 KiB / one hour |
+| Queue wait / context deadline / scan deadline | — | 1 s / 5 s / 45 s |
+| Concurrent heavy blocking MCP scans | — | 2 process-wide |
+
+Each surface also bounds distinct or ranked entities and selected dictionary
+IDs. Filters run before page accounting, and dictionary resolution touches only
+retained rows. A first row or text value too large for the result returns a
+stable bounded error or a text-chunk cursor. Every bounded response includes an
+explicit stop reason.
+
+Budget, deadline, and cancellation checks run between segments and decoded-row
+batches and before dictionary resolution or result append. No call materializes
+a complete segment, hour, dictionary, or index. The heavy-scan semaphore does
+not change the existing path for ordinary web reads.
+
 ### Shipped interface
 
 The React and TypeScript interface is built ahead of Rust into one
@@ -568,7 +698,8 @@ The panel takes the two `os_process` samples nearest the episode's own first
 and last recorded moment and reports their delta — CPU time, bytes read and
 written, block-I/O wait, major page faults — as what the process did in that
 span, next to a comparison against what PG itself reports scanning. This is a
-hint about cost, not proof the vacuum alone produced it: a manual `VACUUM`'s
+hint about cost; it does not establish that the vacuum alone produced it: a
+manual `VACUUM`'s
 backend may have done other work in the same window, and the panel says so
 rather than pretending otherwise.
 Events is the grouped log console described below; the same findings stay
@@ -854,7 +985,7 @@ attribution rules; this vocabulary does not add a Plan-node or relation join.
 PostgreSQL interval values use adjacent real samples with the same public
 entity identity, a positive elapsed interval, and exact nonnegative counter
 subtraction. Counter rollback makes the dependent value null. Optional
-`stats_since`, `first_call`, reset-info sidecars, and reset-continuity proof do
+`stats_since`, `first_call`, reset-info sidecars, and reset-continuity metadata do
 not gate display, search, ordering, or history: their absence does not suppress
 otherwise useful recorded data. Plans expose the exact cumulative `calls`
 counter separately from `Calls/s`, and `calls>...` / `calls<...` compare the
