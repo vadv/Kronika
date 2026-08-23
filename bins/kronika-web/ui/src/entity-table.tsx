@@ -57,6 +57,7 @@ export function EntityTable({
   empty,
   finding,
   findingField,
+  filterRows,
   label,
   loading = false,
   locale,
@@ -86,6 +87,7 @@ export function EntityTable({
   readonly empty: string
   readonly finding?: Finding | null | undefined
   readonly findingField?: string | null | undefined
+  readonly filterRows?: ((rows: readonly DataRow[], pattern: string) => readonly DataRow[]) | undefined
   readonly label: string
   readonly loading?: boolean | undefined
   readonly locale: Locale
@@ -133,8 +135,10 @@ export function EntityTable({
     ...(field.sortValue === undefined ? {} : { sortUndefined: "last" as const }),
   })), [fields, locale, serverSorted, t])
   const data = useMemo(
-    () => filterTableRows(rows, fields, pattern, serverSorted === true, searchSurface),
-    [fields, pattern, rows, searchSurface, serverSorted],
+    () => filterRows === undefined
+      ? filterTableRows(rows, fields, pattern, serverSorted === true, searchSurface)
+      : [...filterRows(rows, pattern)],
+    [fields, filterRows, pattern, rows, searchSurface, serverSorted],
   )
   const table = useReactTable({
     columns,
@@ -233,7 +237,7 @@ export function EntityTable({
     : null
   return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
-    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true && filterRows === undefined ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {

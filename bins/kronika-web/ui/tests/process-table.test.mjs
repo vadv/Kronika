@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processRowLabel, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -48,6 +48,26 @@ test("process users retain exact numeric identity and honest unresolved fallback
   assert.equal(helpers.processUserSearch(row({ euid: 9999, effective_user: null }), effective), null)
   assert.deepEqual(helpers.processTableDefaultOrder("generic"), { column: "pid", descending: false })
   assert.deepEqual(helpers.processTableDefaultOrder("disk"), { column: "read_bytes", descending: true })
+})
+
+test("Tree uses compact identity columns and enough room for full second precision", () => {
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "user").size, 104)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 198)
+})
+
+test("process lens tabs hand off to the summary without a fake splitter", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  assert.match(styles, /\.lensbar > \.process-summary-inline \{ padding-left: 2px; \}/)
+  assert.doesNotMatch(styles, /\.lensbar > \.process-summary-inline \{[^}]*border-left/)
+})
+
+test("Tree row accessibility names the parent and depth without reading connector glyphs", () => {
+  const t = (key, slots = {}) => `${key}:${Object.entries(slots).map(([name, stored]) => `${name}=${stored}`).join(",")}`
+  const root = { logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values: { cmdline: "/sbin/init", pid: 1, process_tree_depth: 0 } }
+  const child = { ...root, ordinal: "2", values: { cmdline: "postgres", pid: 22, process_tree_depth: 2, process_tree_parent_pid: 10 } }
+  assert.match(helpers.processRowLabel(root, "tree", t), /^process\.tree\.row\.root:command=\/sbin\/init,pid=1/)
+  assert.match(helpers.processRowLabel(child, "tree", t), /^process\.tree\.row\.child:.*command=postgres.*depth=2.*parent=10.*pid=22/)
+  assert.match(helpers.processRowLabel(child, "cpu", t), /^table\.activate:pid=22/)
 })
 
 test("process sticky headers share live offsets and stacking classes with their cells", async () => {

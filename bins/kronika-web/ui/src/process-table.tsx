@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch } from "react"
+import { useCallback, useEffect, useMemo, useState, type Dispatch } from "react"
 
 import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding, type SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
@@ -25,6 +25,7 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import { filterProcessForest } from "./process-tree"
 
 export interface Field {
   readonly id: string
@@ -40,10 +41,10 @@ const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
 const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 340, sticky: "command" }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
-const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 140 }
+const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 104 }
 export const PROCESS_USER_FIELDS: readonly Field[] = [
   USER,
-  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 160 },
+  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 132 },
 ]
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
@@ -78,7 +79,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     PID, TREE_COMMAND, USER,
     field("percent", "cpu_percent", "col.cpu_percent", 72), field("percent", "mem_percent", "col.mem_percent", 72),
     field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("id", "tty", "col.tty", 70),
-    STATE, field("timestamp", "starttime", "col.starttime", 165), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
+    STATE, field("timestamp", "starttime", "col.starttime", 198), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 
@@ -274,6 +275,7 @@ export function ProcessTable({
     }
   }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
   const activeOrder = order ?? processTableDefaultOrder(lens)
+  const filterRows = useCallback((candidates: readonly DataRow[], query: string) => filterProcessForest(candidates, query, ticksPerSecond), [ticksPerSecond])
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = densePageState !== "idle" || canLoadMore
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
@@ -293,6 +295,7 @@ export function ProcessTable({
     empty={t("table.empty")}
     finding={finding}
     findingField={findingField}
+    filterRows={lens === "tree" ? filterRows : undefined}
     label={t("table.processes")}
     locale={locale}
     onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined}
@@ -303,7 +306,7 @@ export function ProcessTable({
     order={activeOrder}
     pattern={pattern}
     rowKey={processKey}
-    rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
+    rowLabel={(row) => processRowLabel(row, lens, t)}
     rows={rows}
     searchRequest={searchRequest}
     searchSurface="os_process"
@@ -315,6 +318,20 @@ export function ProcessTable({
     />
     {paging !== undefined && <div className="lens-tabs flex-none" data-testid="table-paging">{paging}</div>}
   </div>
+}
+
+export function processRowLabel(row: DataRow, lens: Lens, t: Translate): string {
+  const pid = identifier(value(row, "pid"))
+  if (lens !== "tree") return t("table.activate", { pid })
+  const depth = asNumber(value(row, "process_tree_depth")) ?? 0
+  const command = processCommand(row)
+  if (depth === 0) return t("process.tree.row.root", { command, pid })
+  return t("process.tree.row.child", {
+    command,
+    depth,
+    parent: identifier(value(row, "process_tree_parent_pid")),
+    pid,
+  })
 }
 
 export function processTableDefaultOrder(lens: Lens): TableOrder {

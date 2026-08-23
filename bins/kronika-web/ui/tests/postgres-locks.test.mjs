@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const locks = await importModule('export { buildLockForest } from "../src/postgres-locks.ts"')
+const locks = await importModule('export { buildLockForest, filterLockForest } from "../src/postgres-locks.ts"')
 
 const HOUR = 1_780_000_000_000_000
 
@@ -26,7 +26,9 @@ test("a simple chain walks root first, each waiter directly under its blocker", 
   assert.deepEqual(pids(forest), [70, 76, 77])
   assert.deepEqual(depths(forest), [1, 2, 3])
   assert.equal(forest[0].values.lock_tree_prefix, "")
+  assert.equal(forest[0].values.lock_tree_parent_pid, null)
   assert.equal(forest[1].values.lock_tree_prefix, "└─ ")
+  assert.equal(forest[1].values.lock_tree_parent_pid, 70)
   assert.equal(forest[2].values.lock_tree_prefix, "   └─ ")
 })
 
@@ -87,4 +89,18 @@ test("rows for an unrelated pid referenced as a blocker but never recorded are i
   const forest = locks.buildLockForest(rows)
   assert.deepEqual(pids(forest), [5])
   assert.equal(forest[0].values.lock_tree_depth, 1)
+})
+
+test("lock search keeps the complete blocker path to each matched waiter", () => {
+  const forest = locks.buildLockForest([
+    row(70, [], { query: "root" }),
+    row(76, [70], { query: "middle" }),
+    row(77, [76], { query: "target" }),
+    row(90, [], { query: "other" }),
+  ])
+  assert.deepEqual(pids(locks.filterLockForest(forest, "target")), [70, 76, 77])
+  assert.deepEqual(pids(locks.filterLockForest(forest, "pid:77")), [70, 76, 77])
+
+  const multiple = locks.buildLockForest([row(10, []), row(20, []), row(30, [10, 20], { query: "target" })])
+  assert.deepEqual(pids(locks.filterLockForest(multiple, "target")), [10, 30, 20])
 })

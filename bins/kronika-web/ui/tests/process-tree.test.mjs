@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const tree = await importModule('export { buildProcessForest, scheduledTicks } from "../src/process-tree.ts"')
+const tree = await importModule('export { buildProcessForest, filterProcessForest, scheduledTicks } from "../src/process-tree.ts"')
 
 const HOUR = 1_780_000_000_000_000
 const SHAPE_ONLY = { intervalSeconds: null, memTotalKb: null, previousTicks: new Map(), ticksPerSecond: 100 }
@@ -25,8 +25,12 @@ test("a simple parent/child chain walks the parent first, each child directly un
   const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [1, 2, 3])
   assert.equal(forest[0].values.process_tree_prefix, "")
+  assert.equal(forest[0].values.process_tree_depth, 0)
+  assert.equal(forest[0].values.process_tree_parent_pid, null)
   assert.equal(forest[1].values.process_tree_prefix, "└─ ")
+  assert.equal(forest[1].values.process_tree_parent_pid, 1)
   assert.equal(forest[2].values.process_tree_prefix, "   └─ ")
+  assert.equal(forest[2].values.process_tree_depth, 2)
 })
 
 test("two children of the same parent are siblings, only the last gets the closing connector", () => {
@@ -93,4 +97,27 @@ test("scheduled ticks are the sum the delta is taken on, and missing either half
   assert.equal(at({ utime: 900, stime: 300 }), 1_200)
   assert.equal(at({ utime: null, stime: 300 }), null)
   assert.equal(at({ utime: 900 }), null)
+})
+
+test("Tree search keeps matched rows with their parent chain", () => {
+  const forest = tree.buildProcessForest([
+    row(1, 0, { cmdline: "/sbin/init", rmem_kb: 512, user: "root" }),
+    row(2, 1, { cmdline: "postgres", rmem_kb: 4_096, user: "postgres" }),
+    row(3, 2, { cmdline: "autovacuum worker", rmem_kb: 1_024, user: "postgres" }),
+    row(4, 1, { cmdline: "nginx", rmem_kb: 768, user: "www-data" }),
+  ], SHAPE_ONLY)
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "autovacuum", 100)), [1, 2, 3])
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "user:postgres", 100)), [1, 2, 3])
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "rss>2MiB", 100)), [1, 2])
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "pid:4 OR rss>2MiB", 100)), [1, 2, 4])
+})
+
+test("Tree numeric search uses API rate units", () => {
+  const forest = tree.buildProcessForest([
+    row(1, 0, { blkdelay_ticks: 25, read_bytes: 2_000_000, rundelay_ns: 40_000_000, stime: 10, utime: 20 }),
+    row(2, 1, { blkdelay_ticks: 1, read_bytes: 100, rundelay_ns: 1_000, stime: 1, utime: 1 }),
+  ], SHAPE_ONLY)
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "cpu_cores>0.2 AND disk_read_rate>1MB/s", 100)), [1])
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "run_delay>30ms/s", 100)), [1])
+  assert.deepEqual(pids(tree.filterProcessForest(forest, "block_io_delay>200ms/s", 100)), [1])
 })

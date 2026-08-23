@@ -1,5 +1,6 @@
 import type { DataRow } from "./api"
-import { value } from "./model"
+import { asNumber, value } from "./model"
+import { parseSearch, rowMatchesSearch } from "./search"
 
 // Build parent-first order while keeping disconnected lock chains contiguous.
 
@@ -78,6 +79,7 @@ export function buildLockForest(rows: readonly DataRow[]): readonly DataRow[] {
       values: {
         ...row.values,
         lock_tree_depth: depth,
+        lock_tree_parent_pid: parentPid,
         lock_tree_prefix: prefix,
         lock_tree_extra_blockers: extraBlockers,
         lock_tree_waits_on_prepared: preparedWaiters.has(pid),
@@ -97,4 +99,31 @@ export function buildLockForest(rows: readonly DataRow[]): readonly DataRow[] {
   }
 
   return output
+}
+
+export function filterLockForest(rows: readonly DataRow[], pattern: string): readonly DataRow[] {
+  const parsed = parseSearch(pattern, "pg_locks")
+  if (!parsed.ok || parsed.query.canonical === "") return rows
+  const byPid = new Map(rows.flatMap((row) => {
+    const pid = asNumber(value(row, "pid"))
+    return pid === null ? [] : [[pid, row] as const]
+  }))
+  const included = new Set<number>()
+  for (const row of rows) {
+    if (!rowMatchesSearch(row, parsed.query, "pg_locks")) continue
+    const pid = asNumber(value(row, "pid"))
+    const extraCell = value(row, "lock_tree_extra_blockers")
+    const pending = [pid, ...(Array.isArray(extraCell) ? extraCell.map((entry) => typeof entry === "number" ? entry : null) : [])]
+    while (pending.length > 0) {
+      const current = pending.pop() ?? null
+      if (current === null || included.has(current)) continue
+      included.add(current)
+      const parent = byPid.get(current)
+      pending.push(parent === undefined ? null : asNumber(value(parent, "lock_tree_parent_pid")))
+    }
+  }
+  return rows.filter((row) => {
+    const pid = asNumber(value(row, "pid"))
+    return pid !== null && included.has(pid)
+  })
 }

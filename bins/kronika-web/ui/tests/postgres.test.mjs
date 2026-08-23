@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, lockDetailColumns, lockRowLabel, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -413,6 +413,7 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.deepEqual(fields(helpers.planColumns("io")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
   assert.deepEqual(fields(helpers.planColumns("identity")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"])
   assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event", "waitstart"])
+  assert.equal(fields(helpers.lockDetailColumns((key) => key)).at(-1), "blocked_by")
   assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
   for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
   assert.equal(fields(helpers.DATABASE_COLUMNS).includes("datid"), false)
@@ -427,6 +428,18 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.equal(helpers.statementDefaultOrder("resources"), "wal_bytes")
   assert.equal(helpers.statementDefaultOrder("stability"), "calls_per_second")
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
+})
+
+test("lock accessibility exposes exact parents, extra blocker PIDs, and prepared waits", () => {
+  const t = (key, slots = {}) => key === "pg.locks.prepared_transaction" ? "prepared transaction" : `${key}:${Object.values(slots).join(",")}`
+  const row = { logicalName: "pg_locks", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1011002", values: {
+    blocked_by: [10, 20, 25, 0], pid: 30, lock_tree_depth: 3, lock_tree_parent_pid: 10, lock_tree_extra_blockers: [20, 25], lock_tree_waits_on_prepared: true,
+  } }
+  const label = helpers.lockRowLabel(row, t)
+  assert.match(label, /pg\.locks\.row\.waiter:3,10,30/)
+  assert.match(label, /pg\.locks\.row\.extra:20, 25/)
+  assert.match(label, /pg\.locks\.row\.prepared:/)
+  assert.equal(helpers.lockDetailColumns(t).at(-1).render(row), "PID 10, PID 20, PID 25, prepared transaction")
 })
 
 test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {

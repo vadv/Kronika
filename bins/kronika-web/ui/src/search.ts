@@ -49,6 +49,8 @@ export interface SearchQuantity {
   readonly unit: string
 }
 
+export type SearchQuantityValue = (row: DataRow, field: string) => number | null
+
 export interface SearchClause {
   readonly canonical: string
   readonly field: SearchField
@@ -274,10 +276,16 @@ export function withoutSearchClause(query: SearchQuery, index: number): string {
   return expr === null ? "" : renderExpr(expr)
 }
 
-export function rowMatchesSearch(row: DataRow, query: SearchQuery, surface: SearchSurface): boolean {
+export function rowMatchesSearch(row: DataRow, query: SearchQuery, surface: SearchSurface, quantityValue?: SearchQuantityValue): boolean {
   if (query.canonical === "") return true
-  const matches = (clause: Pick<SearchClause, "field" | "value">) => {
-    if (clause.field.kind === "quantity") return false
+  const matches = (clause: SearchClause) => {
+    if (clause.field.kind === "quantity") {
+      const stored = quantityValue?.(row, clause.field.key) ?? null
+      const wanted = clause.quantity
+      if (stored === null || wanted === undefined) return false
+      const threshold = Number(wanted.numerator) / Number(wanted.denominator)
+      return clause.operator === ">" ? stored > threshold : clause.operator === "<" && stored < threshold
+    }
     return clause.field.columns.some((column) => {
       if (surface === "pg_store_plans" && clause.field.key === "query_id") {
         const wanted = row.typeId === "1004001" ? "queryid_stat_statements" : "queryid"
@@ -290,7 +298,10 @@ export function rowMatchesSearch(row: DataRow, query: SearchQuery, surface: Sear
       return globMatcher(clause.value)?.(stored) ?? true
     })
   }
-  if (!query.structured) return matches({ field: searchFields(surface)[0]!, value: query.freeText ?? "" })
+  if (!query.structured) {
+    const field = searchFields(surface)[0]!
+    return matches({ canonical: "", field, key: field.key, operator: ":", value: query.freeText ?? "" })
+  }
   return query.expr !== null && evaluateExpr(query.expr, matches)
 }
 

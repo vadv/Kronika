@@ -13,7 +13,7 @@ import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, t
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
 import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, vacuumLoadShares, vacuumProcessLoad, type VacuumEpisode, type VacuumProcessLoad } from "./postgres-vacuum"
-import { buildLockForest } from "./postgres-locks"
+import { buildLockForest, filterLockForest } from "./postgres-locks"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { InspectorChartPortal, InspectorPortal, InspectorRelatedPortal } from "./inspector"
@@ -192,7 +192,7 @@ function columnsInOrder(columns: readonly EntityColumn[], fields: readonly strin
   })
 }
 
-function lockPidCell(row: DataRow): ReactNode {
+function lockPidCell(row: DataRow, t: Translate): ReactNode {
   const pid = identifier(value(row, "pid"))
   const depth = asNumber(value(row, "lock_tree_depth")) ?? 1
   const prefix = rawText(value(row, "lock_tree_prefix")) ?? ""
@@ -200,11 +200,11 @@ function lockPidCell(row: DataRow): ReactNode {
   const extraBlockers = Array.isArray(extraCell) ? extraCell : []
   const waitsOnPrepared = value(row, "lock_tree_waits_on_prepared") === true
   const notes = [
-    ...(extraBlockers.length > 0 ? [`+${extraBlockers.length}`] : []),
-    ...(waitsOnPrepared ? ["+prepared"] : []),
+    ...extraBlockers.map((blocker) => `+${identifier(blocker)}`),
+    ...(waitsOnPrepared ? [`+${t("pg.locks.prepared_transaction")}`] : []),
   ]
   return (
-    <span className="lock-tree-cell" data-role={depth === 1 ? "root" : "waiter"}>
+    <span className="lock-tree-cell" data-role={depth === 1 ? "root" : "waiter"} title={notes.join(" ") || undefined}>
       {prefix !== "" && <span aria-hidden="true" className="lock-tree-prefix">{prefix}</span>}
       <span aria-hidden="true" className="lock-tree-marker">{depth === 1 ? "●" : "▸"}</span>
       <span className="lock-tree-pid">{pid}</span>
@@ -213,13 +213,47 @@ function lockPidCell(row: DataRow): ReactNode {
   )
 }
 
+function blockedByCell(row: DataRow, t: Translate): ReactNode {
+  const cell = value(row, "blocked_by")
+  if (!Array.isArray(cell) || cell.length === 0) return "—"
+  return cell.map((blocker) => blocker === 0 ? t("pg.locks.prepared_transaction") : `PID ${identifier(blocker)}`).join(", ")
+}
+
+export function lockRowLabel(row: DataRow, t: Translate): string {
+  const pid = identifier(value(row, "pid"))
+  const depth = asNumber(value(row, "lock_tree_depth")) ?? 1
+  const parent = asNumber(value(row, "lock_tree_parent_pid"))
+  const extraCell = value(row, "lock_tree_extra_blockers")
+  const extra = Array.isArray(extraCell) ? extraCell.map(identifier) : []
+  const parts = [parent === null
+    ? t("pg.locks.row.root", { pid })
+    : t("pg.locks.row.waiter", { depth, parent, pid })]
+  if (extra.length > 0) parts.push(t("pg.locks.row.extra", { pids: extra.join(", ") }))
+  if (value(row, "lock_tree_waits_on_prepared") === true) parts.push(t("pg.locks.row.prepared"))
+  return parts.join(". ")
+}
+
 const LOCK_COLUMN_DEFS: readonly EntityColumn[] = [
-  { ...id("pid", 150, true, false), render: lockPidCell }, pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
+  id("pid", 190, true, false), pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
   text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
   pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
-// Preserve buildLockForest order; lock-tree columns are not sortable.
-export const LOCK_COLUMNS: readonly EntityColumn[] = LOCK_COLUMN_DEFS.map((column) => ({ ...column, sortable: false }))
+export function lockColumns(t: Translate): readonly EntityColumn[] {
+  return LOCK_COLUMN_DEFS.map((column) => ({
+    ...column,
+    ...(column.field === "pid" ? { render: (row: DataRow) => lockPidCell(row, t) } : {}),
+    sortable: false,
+  }))
+}
+
+export function lockDetailColumns(t: Translate): readonly EntityColumn[] {
+  return [
+    ...lockColumns(t),
+    { field: "blocked_by", help: "pg.field.blocked_by.help", kind: "id", label: "pg.field.blocked_by.label", render: (row) => blockedByCell(row, t), sortable: false, width: 220 },
+  ]
+}
+
+export const LOCK_COLUMNS: readonly EntityColumn[] = lockColumns((key) => key)
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [
   text("datname", 170, true, false), number("numbackends", 135), number("xact_commit", 145), number("xact_rollback", 145), number("sessions", 125),
@@ -330,6 +364,8 @@ export function PostgresView({
 }) {
   const available = (name: string) => data.availableSections.includes(name)
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
+  const locks = useMemo(() => lockColumns(t), [t])
+  const lockDetails = useMemo(() => lockDetailColumns(t), [t])
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
     if (tab === undefined || tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
@@ -353,7 +389,7 @@ export function PostgresView({
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
-    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} transformRows={buildLockForest} />}
+    {section === "locks" && <PgEntityView columns={locks} context={context} detailColumns={lockDetails} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} transformRows={buildLockForest} />}
     {section === "databases" && <><DatabasesActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onPattern={onPattern} t={t} /><PgEntityView columns={postgresByteColumns(DATABASE_COLUMNS, blockSize)} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} /></>}
     {section === "tables" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_tables" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} /></>}
     {section === "indexes" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_indexes" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} /></>}
@@ -1005,7 +1041,9 @@ function PgEntityView({
     : null
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const displayedRows = useMemo(
-    () => filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
+    () => section === "pg_locks"
+      ? filterLockForest(rows, pattern ?? "")
+      : filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
     [dense, pattern, rows, section, visibleColumns],
   )
   const recordedAt = displayedRows.reduce<number | null>(
@@ -1024,7 +1062,7 @@ function PgEntityView({
   const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
   return <div className={`pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]${contentSized ? "" : " pg-entity-fill"}`} data-content-sized={contentSized || undefined} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <div className={`pg-entity-main min-w-0${contentSized ? "" : " pg-stretch"}`}>
-      <EntityTable columns={visibleColumns} contentSized={contentSized} contextLabel={activeContext?.label} empty={t("table.no_rows")} loading={tablesLoading || rows.length === 0 && densePageState === "loading"} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
+      <EntityTable columns={visibleColumns} contentSized={contentSized} contextLabel={activeContext?.label} empty={t("table.no_rows")} filterRows={section === "pg_locks" ? filterLockForest : undefined} loading={tablesLoading || rows.length === 0 && densePageState === "loading"} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} rowLabel={section === "pg_locks" ? (row) => lockRowLabel(row, t) : undefined} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging">{paging}</div>}
     </div>
     {selected !== null && <InspectorPortal identity={`postgres:${section}:${rowKey(selected)}`} onClose={() => { setSelected(null); onSelectedKey?.(null) }} title={detailTitle(selected, section, t)}><PgDetail allRows={allRows} columns={visibleDetailColumns} cursor={cursor} historyField={selectedHistoryField} historyRevision={historyRevision} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onCursor={onCursor} onRelated={onRelated} row={selected} section={section} segments={segments ?? NO_SEGMENTS} t={t} /></InspectorPortal>}

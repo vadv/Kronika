@@ -618,7 +618,7 @@
 .process-summary-inline .label-help:focus-within { opacity: 1; }
 
 .lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.lensbar > .process-summary-inline { border-left: 1px solid var(--color-line2); padding-left: 8px; }
+.lensbar > .process-summary-inline { padding-left: 2px; }
 
 .vacuum-chip { border: 1px solid var(--color-line3); border-radius: var(--radius-xs); color: var(--color-fg2); display: inline-block; font-family: var(--font-sans); font-size: var(--text-xs); line-height: 1.5; max-width: 100%; overflow: hidden; padding: 0 6px; text-overflow: ellipsis; white-space: nowrap; }
 .vacuum-chip[data-risk="heavy"] { background: color-mix(in srgb, var(--color-warn) 10%, transparent); border-color: var(--color-warn); color: var(--color-warn); }
