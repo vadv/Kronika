@@ -72,7 +72,10 @@ fn protocol_request(body: Vec<u8>) -> Request<Full<Bytes>> {
 }
 
 async fn protocol_json(request: Request<Full<Bytes>>) -> (StatusCode, hyper::HeaderMap, Value) {
-    let response = super::response(&super::service(&config()), request).await;
+    let directory = tempfile::tempdir().expect("temporary MCP protocol data root");
+    let mut web = config();
+    web.data_root = directory.path().to_owned();
+    let response = super::response(&super::service(&web), request).await;
     let status = response.status();
     let headers = response.headers().clone();
     let body = response
@@ -164,8 +167,9 @@ fn mcp_tool_catalog_cost() {
 
 #[tokio::test]
 async fn dispatch_allowlists_known_tools_without_fabricating_data() {
+    let directory = tempfile::tempdir().expect("temporary MCP dispatch data root");
     let state = super::State {
-        data_root: PathBuf::from("unused-mcp-test-root"),
+        data_root: directory.path().to_owned(),
         sources: 3,
         synthetic_demo: false,
         heavy_scans: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),

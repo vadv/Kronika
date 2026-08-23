@@ -21,6 +21,10 @@ mod row_detail;
 mod rows;
 mod snapshot;
 
+pub(crate) use catalog::{
+    metric_source_bit as catalog_metric_source_bit, source_bit as catalog_source_bit,
+    warning_value as catalog_warning_value,
+};
 pub(crate) use events::{EventPageError, EventPageRequest, EventSourceRequest, read_event_page};
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 

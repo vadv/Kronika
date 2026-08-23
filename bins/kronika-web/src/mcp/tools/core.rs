@@ -26,7 +26,7 @@ pub(super) fn execute(
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     match name {
-        "kronika_get_context" => discovery::payload(state),
+        "kronika_get_context" => discovery::payload(state, cancelled),
         "kronika_list_hours" => hours(state, args, budget, cancelled),
         "kronika_rank_heatmap" => heatmap(state, args, budget, cancelled),
         "kronika_list_findings" => findings(state, args, budget, cancelled),

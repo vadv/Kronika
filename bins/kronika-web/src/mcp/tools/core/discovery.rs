@@ -1,12 +1,19 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use kronika_reader::{Reader, SegmentKind, SegmentRef};
+use kronika_registry::{logical_section_name, section_implementation, section_name};
 use serde_json::{Map, Value, json};
 
 use super::{Failure, HOUR_US, MAX_ROWS, MAX_SEGMENTS, Payload};
-use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
+use crate::api::{catalog_metric_source_bit, catalog_source_bit, catalog_warning_value};
+use crate::config::{SOURCE_FAMILIES, SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::mcp::{
     REQUEST_BODY_BYTES, RESPONSE_BODY_BYTES, STRUCTURED_CONTENT_BYTES, State, TEXT_SUMMARY_BYTES,
 };
+
+const MAX_CONTEXT_LAYOUTS: usize = 256;
+const MAX_CONTEXT_LAYOUT_PRESENCES: usize = 512;
+const MAX_WARNING_RECORDS: usize = 64;
 
 pub(super) struct HeatmapCut {
     pub(super) surface: &'static str,
@@ -391,7 +398,8 @@ pub(super) fn heatmap_cut(surface: &str, cut: &str) -> Option<&'static HeatmapCu
         .find(|candidate| candidate.surface == surface && candidate.cut == cut)
 }
 
-pub(super) fn payload(state: &State) -> Result<Payload, Failure> {
+pub(super) fn payload(state: &State, cancelled: &impl Fn() -> bool) -> Result<Payload, Failure> {
+    let recorded = recorded_context(state, cancelled)?;
     let semantics = crate::product_semantics::all()
         .map_err(|error| Failure::bounded("semantics_unreadable", error.to_string()))?;
     Ok(Payload {
@@ -403,15 +411,184 @@ pub(super) fn payload(state: &State) -> Result<Payload, Failure> {
                 "authentication": "web_boundary",
                 "synthetic_demo": state.synthetic_demo,
                 "configured_sources": source_values(state.sources),
+                "recorded": recorded.value,
                 "limits": global_limits(),
             },
             "surfaces": surfaces(),
             "semantics": semantics,
         }),
         page: super::page(20, false, None, "complete"),
-        warnings: Vec::new(),
-        summary: "Kronika returned the exact 20 read-only historical tools, accepted lenses and cuts, limits, and semantics.".to_owned(),
+        warnings: recorded.warnings,
+        summary: "Kronika returned the exact 20 read-only historical tools, latest recorded layouts, accepted lenses and cuts, limits, and semantics.".to_owned(),
     })
+}
+
+struct RecordedContext {
+    value: Value,
+    warnings: Vec<Value>,
+}
+
+fn recorded_context(
+    state: &State,
+    cancelled: &impl Fn() -> bool,
+) -> Result<RecordedContext, Failure> {
+    check_cancelled(cancelled)?;
+    let reader = Reader::open(&state.data_root).map_err(unreadable)?;
+    let discovery = reader.catalog_discovery().map_err(unreadable)?;
+    check_cancelled(cancelled)?;
+    let mut latest = None;
+    for (_from, to) in discovery.ranges() {
+        check_cancelled(cancelled)?;
+        latest = Some(latest.map_or(to, |current: i64| current.max(to)));
+    }
+    let listing = if let Some(latest) = latest {
+        discovery.segments(latest..=latest).map_err(unreadable)?
+    } else {
+        discovery.segments(..).map_err(unreadable)?
+    };
+    check_cancelled(cancelled)?;
+    if listing.segments.len() > MAX_SEGMENTS {
+        return Err(Failure::bounded(
+            "segment_limit_exceeded",
+            "The latest recorded instant overlaps more than 64 segments.",
+        ));
+    }
+    if listing.warnings.len() > MAX_WARNING_RECORDS {
+        return Err(Failure::bounded(
+            "warning_limit_exceeded",
+            "The recorded store warnings exceed their bounded result limit.",
+        ));
+    }
+    let value = latest.map_or_else(
+        || Ok(empty_recorded_context()),
+        |latest| recorded_value(latest, &listing.segments, cancelled),
+    )?;
+    let warnings = listing.warnings.iter().map(catalog_warning_value).collect();
+    Ok(RecordedContext { value, warnings })
+}
+
+fn recorded_value(
+    latest: i64,
+    segments: &[SegmentRef],
+    cancelled: &impl Fn() -> bool,
+) -> Result<Value, Failure> {
+    let mut layouts = BTreeMap::<u32, BTreeSet<i64>>::new();
+    let mut layout_presences = 0_usize;
+    let mut present_sources = 0_u32;
+    let mut metric_sources = 0_u32;
+    for segment in segments {
+        check_cancelled(cancelled)?;
+        for section in segment.sections() {
+            check_cancelled(cancelled)?;
+            layout_presences = layout_presences.saturating_add(1);
+            if layout_presences > MAX_CONTEXT_LAYOUT_PRESENCES {
+                return Err(Failure::bounded(
+                    "layout_limit_exceeded",
+                    "The latest recorded instant contains more than 512 segment-layout presences.",
+                ));
+            }
+            layouts
+                .entry(section.type_id)
+                .or_default()
+                .insert(segment.id());
+            present_sources |= catalog_source_bit(section.type_id).unwrap_or(0);
+            metric_sources |= catalog_metric_source_bit(section.type_id).unwrap_or(0);
+        }
+    }
+    if layouts.len() > MAX_CONTEXT_LAYOUTS {
+        return Err(Failure::bounded(
+            "layout_limit_exceeded",
+            "The latest recorded instant contains more than 256 physical layouts.",
+        ));
+    }
+    Ok(json!({
+        "as_of_us": latest.to_string(),
+        "source_families": recorded_sources(present_sources, metric_sources),
+        "layouts": layouts
+            .into_iter()
+            .map(|(type_id, segment_ids)| layout_value(type_id, segment_ids))
+            .collect::<Vec<_>>(),
+        "segments": segments.iter().map(segment_value).collect::<Vec<_>>(),
+    }))
+}
+
+fn empty_recorded_context() -> Value {
+    json!({
+        "as_of_us": null,
+        "source_families": recorded_sources(0, 0),
+        "layouts": [],
+        "segments": [],
+    })
+}
+
+fn recorded_sources(present: u32, metrics: u32) -> Vec<Value> {
+    [("os", SOURCE_OS), ("postgresql", SOURCE_POSTGRESQL)]
+        .into_iter()
+        .map(|(name, bit)| {
+            json!({
+                "name": name,
+                "present": present & bit != 0,
+                "metrics_present": metrics & bit != 0,
+            })
+        })
+        .collect()
+}
+
+fn layout_value(type_id: u32, segment_ids: BTreeSet<i64>) -> Value {
+    json!({
+        "logical_name": logical_section_name(type_id),
+        "physical_name": section_name(type_id),
+        "type_id": type_id.to_string(),
+        "implementation": section_implementation(type_id),
+        "source_family": source_name(catalog_source_bit(type_id)),
+        "segment_ids": segment_ids
+            .into_iter()
+            .map(|segment_id| segment_id.to_string())
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn source_name(bit: Option<u32>) -> Option<&'static str> {
+    let bit = bit?;
+    SOURCE_FAMILIES
+        .iter()
+        .find(|family| family.bit == bit)
+        .map(|family| family.name)
+}
+
+fn segment_value(segment: &SegmentRef) -> Value {
+    json!({
+        "segment_id": segment.id().to_string(),
+        "kind": match segment.kind() {
+            SegmentKind::Finished => "finished",
+            SegmentKind::Active => "active",
+        },
+        "min_ts_us": segment.min_ts().to_string(),
+        "max_ts_us": segment.max_ts().to_string(),
+        "active_wal_position": segment.active_position().map(|value| value.to_string()),
+    })
+}
+
+fn check_cancelled(cancelled: &impl Fn() -> bool) -> Result<(), Failure> {
+    if cancelled() {
+        Err(Failure {
+            code: "cancelled",
+            message: "The historical read was cancelled.".to_owned(),
+            parameter: None,
+            retryable: true,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn unreadable(error: kronika_reader::ReaderError) -> Failure {
+    Failure {
+        code: "unreadable",
+        message: error.to_string(),
+        parameter: None,
+        retryable: true,
+    }
 }
 
 fn surfaces() -> Vec<Value> {
@@ -499,6 +676,9 @@ fn global_limits() -> Value {
         "context_deadline_seconds": super::super::CONTEXT_DEADLINE.as_secs(),
         "scan_deadline_seconds": super::super::SCAN_DEADLINE.as_secs(),
         "concurrent_heavy_scans": 2,
+        "context_layouts": MAX_CONTEXT_LAYOUTS,
+        "context_layout_presences": MAX_CONTEXT_LAYOUT_PRESENCES,
+        "store_warnings": MAX_WARNING_RECORDS,
     })
 }
 

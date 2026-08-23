@@ -211,7 +211,7 @@ fn source_family_values(configured: u32, present: u32, metrics: u32) -> Vec<Valu
         .collect()
 }
 
-pub(super) const fn source_bit(type_id: u32) -> Option<u32> {
+pub(crate) const fn source_bit(type_id: u32) -> Option<u32> {
     match type_id {
         1_001_001..=1_019_999 | 2_001_001..=2_199_999 => Some(SOURCE_POSTGRESQL),
         1_100_001..=1_299_999 => Some(SOURCE_OS),
@@ -219,7 +219,7 @@ pub(super) const fn source_bit(type_id: u32) -> Option<u32> {
     }
 }
 
-pub(super) fn metric_source_bit(type_id: u32) -> Option<u32> {
+pub(crate) fn metric_source_bit(type_id: u32) -> Option<u32> {
     let bit = source_bit(type_id)?;
     let is_log = logical_section_name(type_id).is_some_and(|name| name.starts_with("pg_log_"));
     (!is_log).then_some(bit)
@@ -232,7 +232,7 @@ fn source_name(bit: u32) -> Option<&'static str> {
         .map(|family| family.name)
 }
 
-pub(super) fn warning_value(warning: &StoreWarning) -> Value {
+pub(crate) fn warning_value(warning: &StoreWarning) -> Value {
     let affected = match warning.affected {
         StoreObject::Segment(address) => json!({
             "kind": "segment",
