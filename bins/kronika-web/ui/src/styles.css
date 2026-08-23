@@ -637,10 +637,14 @@
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }
-/* Tree state tone applies to the row; hot overrides running. */
-.process-table .entity-row:has([data-field="state"][data-value-tone="good"]) { background-color: color-mix(in srgb, var(--color-ok) 9%, var(--color-s1)); }
+/* A row is toned by its state letter and by its load, the way top shades one:
+   running is calm, uninterruptible sleep and a hot CPU are not. Later rules win,
+   so load overrides state and a dead process overrides everything. */
+.process-table .entity-row:has(:is([data-field="state"], [data-field="process_stat"])[data-value-tone="good"]) { background-color: color-mix(in srgb, var(--color-ok) 9%, var(--color-s1)); }
+.process-table .entity-row:has(:is([data-field="state"], [data-field="process_stat"])[data-value-tone="warning"]) { background-color: color-mix(in srgb, var(--color-warn) 10%, var(--color-s1)); }
 .process-table .entity-row:has([data-field="cpu_percent"][data-value-tone="warning"]) { background-color: color-mix(in srgb, var(--color-warn) 10%, var(--color-s1)); }
 .process-table .entity-row:has([data-field="cpu_percent"][data-value-tone="critical"]) { background-color: color-mix(in srgb, var(--color-bad) 12%, var(--color-s1)); }
+.process-table .entity-row:has(:is([data-field="state"], [data-field="process_stat"])[data-value-tone="critical"]) { background-color: color-mix(in srgb, var(--color-bad) 12%, var(--color-s1)); }
 .value-tone-warning,
 .value-tone-critical { background: color-mix(in srgb, currentColor 5%, transparent); }
 .event-finding { box-shadow: inset 2px 0 var(--finding-edge); }

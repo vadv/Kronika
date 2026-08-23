@@ -4,11 +4,13 @@ export type ValueTone = "good" | "warning" | "critical" | "inactive"
 
 export function semanticValueTone(field: string, cell: Cell, rate = false, row?: DataRow): ValueTone | null {
   const text = typeof cell === "string" ? cell.trim() : null
-  if (field === "state") {
+  // process_stat is the ps STAT string: the state letter carries the tone,
+  // the flags after it do not.
+  if (field === "state" || field === "process_stat") {
     if (text === "idle in transaction (aborted)") return "critical"
     if (text === "idle in transaction") return "warning"
     // Process state may be a character or its ASCII code.
-    const stateChar = text ?? asciiChar(cell)
+    const stateChar = (text ?? asciiChar(cell))?.charAt(0)
     if (stateChar === "R") return "good"
     if (stateChar === "D") return "warning"
     if (stateChar === "Z") return "critical"
