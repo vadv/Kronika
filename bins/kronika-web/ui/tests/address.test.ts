@@ -8,7 +8,7 @@ test("an address survives a round trip through the query string", () => {
     ...DEFAULT_ADDRESS,
     at: 1_786_445_580_254_226,
     view: "processes" as const,
-    lens: "cpu" as const,
+    lens: "tree" as const,
     pgLens: "load" as const,
     sort: { column: "utime", descending: true },
     row: "1244346:1784523346370000",
@@ -60,7 +60,7 @@ test("an unreadable value falls back instead of failing", () => {
 
   assert.equal(address.at, null)
   assert.equal(address.view, "processes")
-  assert.equal(address.lens, "cpu")
+  assert.equal(address.lens, "tree")
   assert.equal(address.sort, null)
   // Links written before the Host ledger keep landing on the Host page.
   assert.equal(readAddress("view=host.cpu").view, "host")

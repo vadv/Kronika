@@ -324,7 +324,9 @@ enum GlobToken {
 // section and dictionary reads for snapshot and relation-history consumers.
 const SNAPSHOT_CHUNK_ROWS: usize = 1_024;
 const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
-const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user", "cpu_time_ticks"];
+const PROCESS_USER_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const CPU_TIME_VIRTUAL_FIELD: &str = "cpu_time_ticks";
 const MAX_PROCESS_USERS: usize = 4 * 1024;
 
 #[derive(Default)]
@@ -687,8 +689,14 @@ fn section_plans(
                     if !fields.is_empty() {
                         plan.order_output_fields(&fields);
                     }
-                    if !selected_virtual.is_empty() {
+                    if selected_virtual
+                        .iter()
+                        .any(|field| PROCESS_USER_VIRTUAL_FIELDS.contains(field))
+                    {
                         plan.add_projection_columns(&["uid", "euid", "scope"]);
+                    }
+                    if selected_virtual.contains(&CPU_TIME_VIRTUAL_FIELD) {
+                        plan.add_projection_columns(&["utime", "stime"]);
                     }
                     if logical_name == "pg_store_plans" {
                         plan.add_aliased_output("calls_per_second", "calls");
@@ -1233,13 +1241,21 @@ impl PreparedSnapshot {
             && let Some(columns) = layout.get_mut("columns").and_then(Value::as_array_mut)
         {
             for column in columns {
-                if column
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| PROCESS_VIRTUAL_FIELDS.contains(&name))
-                {
+                let Some(name) = column.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                if name == CPU_TIME_VIRTUAL_FIELD {
                     *column = json!({
-                        "name": column.get("name").cloned().unwrap_or(Value::Null),
+                        "name": name,
+                        "type": "i64",
+                        "class": "gauge",
+                        "unit": "jiffies",
+                        "nullable": true,
+                        "available": true,
+                    });
+                } else if PROCESS_USER_VIRTUAL_FIELDS.contains(&name) {
+                    *column = json!({
+                        "name": name,
                         "type": "dictionary_value",
                         "class": "label",
                         "unit": "none",
@@ -2585,6 +2601,10 @@ impl PreparedSnapshot {
         let mut values = Vec::with_capacity(plan.fields.len());
         for field in &plan.fields {
             let Some(column) = field.column else {
+                if field.name == CPU_TIME_VIRTUAL_FIELD {
+                    values.push(scheduled_ticks(row));
+                    continue;
+                }
                 let uid_column = match field.name.as_str() {
                     "user" => Some("uid"),
                     "effective_user" => Some("euid"),
@@ -4340,6 +4360,23 @@ fn section_projection(segment: &Segment, logical_name: &str, fields: &[String]) 
 struct Moments {
     current: i64,
     previous: Option<i64>,
+}
+
+/// Lifetime CPU time of one process, in clock ticks.
+///
+/// Cumulative columns leave a snapshot row as rates, so the total the process
+/// has burned since it started is served separately.
+fn scheduled_ticks(row: &Row) -> Value {
+    let ticks = |column| match row.get(column) {
+        Some(&Cell::I64(value)) => Some(value),
+        _ => None,
+    };
+    match (ticks("utime"), ticks("stime")) {
+        (Some(user), Some(system)) => user
+            .checked_add(system)
+            .map_or(Value::Null, |total| Value::String(total.to_string())),
+        _ => Value::Null,
+    }
 }
 
 /// Returns null without a valid nondecreasing predecessor.

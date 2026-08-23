@@ -61,7 +61,7 @@ const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "tablespace", "obje
 export const DEFAULT_ADDRESS: Address = {
   at: null,
   view: "processes",
-  lens: "cpu",
+  lens: "tree",
   pgLens: "load",
   pgLevel: "object",
   datid: null,

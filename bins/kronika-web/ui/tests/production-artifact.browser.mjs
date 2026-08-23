@@ -4344,7 +4344,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const pid = headers[names.indexOf('PID')]
       const command = headers[names.indexOf('Command')]
       const user = headers[names.indexOf('User')]
-      const state = headers[names.indexOf('State')]
+      const state = headers[names.indexOf('STAT')]
       const start = headers[names.indexOf('START')]
       const row = [...table.querySelectorAll('.entity-row')].find((candidate) => candidate.textContent.includes('2686712'))
       const cells = [...row.querySelectorAll('[role="cell"]')]
@@ -4363,12 +4363,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       }
     })()`)
     assert.ok(Math.abs(treeGeometry.pidWidth - 82) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.commandWidth - 400) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.commandWidth - 620) <= 1, JSON.stringify(treeGeometry))
     assert.ok(Math.abs(treeGeometry.userWidth - 88) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.stateWidth - 50) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.start.width - 180) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.stateWidth - 62) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.start.width - 92) <= 1, JSON.stringify(treeGeometry))
     assert.equal(treeGeometry.start.clipped, false, JSON.stringify(treeGeometry))
-    assert.match(treeGeometry.start.text, /\d{2}:\d{2}:\d{2}$/)
+    // ps prints the clock inside the shown day and the civil date before it.
+    assert.match(treeGeometry.start.text, /^(?:\d{2}:\d{2}|\d{2}\.\d{2}\.\d{4})$/)
     assert.equal(treeGeometry.divider, "0px", JSON.stringify(treeGeometry))
     assert.ok(treeGeometry.gap >= 7 && treeGeometry.gap <= 11, JSON.stringify(treeGeometry))
     await cdp.evaluate(`(() => {

@@ -6004,3 +6004,63 @@ fn a_moment_before_the_first_sample_here_is_answered_from_the_segment_before() {
     );
     assert_eq!(rows[0]["timestamp"], "100");
 }
+
+#[test]
+fn lifetime_cpu_time_rides_the_snapshot_beside_the_rates_it_cannot_be_derived_from() {
+    let mut fixture = Fixture::new();
+    fixture.append_quantitative_processes();
+    fixture.finish();
+
+    // The tree lens never asks for utime and stime, so the column has to pull
+    // its own inputs into the projection.
+    let alone = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=cpu_time_ticks&by=pid&page_size=2"
+        ),
+        None,
+    ))
+    .expect("lifetime cpu time without its inputs");
+    assert_eq!(
+        row_records(&alone)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!([6, "0"]), serde_json::json!([5, "50"]),]
+    );
+
+    let records = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=utime&field=stime&field=cpu_time_ticks&by=pid&page_size=2"
+        ),
+        None,
+    ))
+    .expect("lifetime cpu time snapshot");
+
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("process layout");
+    let column = layout["layout"]["columns"]
+        .as_array()
+        .expect("layout columns")
+        .iter()
+        .find(|column| column["name"] == "cpu_time_ticks")
+        .expect("lifetime cpu column");
+    assert_eq!(column["type"], "i64");
+    assert_eq!(column["class"], "gauge");
+    assert_eq!(column["unit"], "jiffies");
+    assert_eq!(layout["rates"], serde_json::json!(["utime", "stime"]));
+
+    // Process 5 was first seen at this moment, so it has no rate to show and
+    // its lifetime total is the only CPU reading the row can carry.
+    assert_eq!(
+        row_records(&records)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!([6, 0.0, 0.0, "0"]),
+            serde_json::json!([5, Value::Null, Value::Null, "50"]),
+        ]
+    );
+}
