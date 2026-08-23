@@ -86,7 +86,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     PID, TREE_COMMAND, USER,
     percentField("cpu_percent", "col.cpu_percent", 72), percentField("mem_percent", "col.mem_percent", 72),
     kibField("vmem_kb", "col.vmem", 96), kibField("rmem_kb", "col.rmem", 96), idField("tty", "col.tty", 70),
-    STATE, timestampField("starttime", "col.starttime", 210), secondsField("cpu_time_seconds", "col.cpu_time", 84),
+    STATE, timestampField("starttime", "col.starttime", 165), secondsField("cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 

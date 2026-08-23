@@ -76,6 +76,14 @@ test("a Linux process state carries its own top-style tones, distinct from Postg
   assert.equal(semanticValueTone("state", "S"), null)
 })
 
+test("a Linux process state still tones correctly when the cell arrives as its raw ASCII code, not the character", () => {
+  assert.equal(semanticValueTone("state", "R".charCodeAt(0)), "good")
+  assert.equal(semanticValueTone("state", "D".charCodeAt(0)), "warning")
+  assert.equal(semanticValueTone("state", "Z".charCodeAt(0)), "critical")
+  assert.equal(semanticValueTone("state", "I".charCodeAt(0)), "inactive")
+  assert.equal(semanticValueTone("state", "S".charCodeAt(0)), null)
+})
+
 test("%CPU crosses into a top-style warning, then critical, at busy but plain round numbers", () => {
   assert.equal(semanticValueTone("cpu_percent", 49.999), null)
   assert.equal(semanticValueTone("cpu_percent", 50), "warning")

@@ -9,11 +9,13 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
     if (text === "idle in transaction") return "warning"
     // Linux process state, ps/top style: running is worth noticing, stuck in
     // uninterruptible sleep points at I/O, a zombie means nobody reaped it,
-    // and an idle kernel thread is the one state safe to visually skip.
-    if (text === "R") return "good"
-    if (text === "D") return "warning"
-    if (text === "Z") return "critical"
-    if (text === "I") return "inactive"
+    // and an idle kernel thread is the one state safe to visually skip. The
+    // cell can arrive as the character itself or its raw ASCII code.
+    const stateChar = text ?? asciiChar(cell)
+    if (stateChar === "R") return "good"
+    if (stateChar === "D") return "warning"
+    if (stateChar === "Z") return "critical"
+    if (stateChar === "I") return "inactive"
   }
   if (field === "wait_event_type" && text !== null && text !== "") return "warning"
 
@@ -60,6 +62,10 @@ function textCell(cell: Cell | undefined): string | null {
   return typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean"
     ? String(cell).trim()
     : null
+}
+
+function asciiChar(cell: Cell): string | null {
+  return typeof cell === "number" && Number.isFinite(cell) ? String.fromCharCode(cell) : null
 }
 
 function numericCell(cell: Cell): number | null {

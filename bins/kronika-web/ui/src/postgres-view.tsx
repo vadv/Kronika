@@ -417,10 +417,13 @@ export function PostgresView({
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
         const highlight = tabHighlight(data, tab.id, cursor)
-        return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
-          <span>{t(`pg.section.${tab.id}`)}</span>
-          {highlight.count > 0 && <span className="pg-tab-badge" data-attention={highlight.attention} title={t(highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count", { count: highlight.count })}>{compact(highlight.count, locale)}</span>}
-        </button>
+        return <span className={`pg-tab${tab.divide === true ? " ml-2 border-l border-line4" : ""}`} key={tab.id}>
+          <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
+            <span>{t(`pg.section.${tab.id}`)}</span>
+            {highlight.count > 0 && <span className="pg-tab-badge" data-attention={highlight.attention}>{compact(highlight.count, locale)}</span>}
+          </button>
+          {highlight.count > 0 && <LabelHelp helpKey={highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count"} helpText={t(highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count", { count: highlight.count })} iconOnly labelKey={`pg.section.${tab.id}`} t={t} testId={`pg-tab-badge-help-${tab.id}`} />}
+        </span>
       })}
     </nav>
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}

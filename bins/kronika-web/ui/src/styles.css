@@ -202,11 +202,12 @@
 }
 @utility pg-tabs {
   background: var(--color-s1); border-bottom: 1px solid var(--color-line2); display: flex; gap: 2px; margin-top: 8px; min-height: 34px; overflow-x: auto; padding: 3px 4px 0;
-  & button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs) var(--radius-xs) 0 0; color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; gap: 6px; padding: 0 11px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+  & button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs) var(--radius-xs) 0 0; color: var(--color-fg3); cursor: pointer; display: flex; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; gap: 6px; padding: 0 11px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
   & button:hover { background: var(--color-s3); color: var(--color-fg2); }
   & button[aria-current="page"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
   & button:disabled { cursor: not-allowed; opacity: .35; }
 }
+.pg-tab { align-items: center; display: inline-flex; flex: 0 0 auto; gap: 3px; }
 .pg-tab-badge { background: var(--color-s3); border-radius: var(--radius-xs); color: var(--color-fg3); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; line-height: 1.6; min-width: 15px; padding: 0 5px; text-align: center; }
 .pg-tab-badge[data-attention="true"] { background: color-mix(in srgb, var(--color-warn) 16%, transparent); color: var(--color-warn); }
 @utility use-table {
