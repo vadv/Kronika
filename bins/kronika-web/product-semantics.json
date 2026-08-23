@@ -1,0 +1,358 @@
+{
+  "version": 1,
+  "definitions": [
+    {
+      "id": "value_tone.rate_zero",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": [],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": { "kind": "rate_zero_tone", "tone": "inactive" }
+    },
+    {
+      "id": "value_tone.state",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["state"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "text_value_tone",
+        "field": "state",
+        "values": {
+          "idle in transaction (aborted)": "critical",
+          "idle in transaction": "warning",
+          "R": "good",
+          "D": "warning",
+          "Z": "critical",
+          "I": "inactive"
+        },
+        "ascii_values": true,
+        "nonempty_tone": null
+      }
+    },
+    {
+      "id": "value_tone.wait_event_type",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["wait_event_type"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "text_value_tone",
+        "field": "wait_event_type",
+        "values": {},
+        "ascii_values": false,
+        "nonempty_tone": "warning"
+      }
+    },
+    {
+      "id": "value_tone.mean_exec_ms_per_call",
+      "origin": "accepted_presentation",
+      "unit": "milliseconds_per_call",
+      "formula": "execution_ms_per_second / calls_per_second",
+      "operands": ["execution_ms_per_second", "calls_per_second"],
+      "thresholds": [
+        { "operator": "gte", "value": 5000, "tone": "critical" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 5000 },
+      "policy": { "kind": "numeric_value_tone", "field": "mean_exec_ms_per_call", "active_client_only": false }
+    },
+    {
+      "id": "value_tone.mean_exec_time_ms",
+      "origin": "accepted_presentation",
+      "unit": "milliseconds",
+      "formula": null,
+      "operands": ["mean_exec_time_ms"],
+      "thresholds": [
+        { "operator": "gte", "value": 5000, "tone": "critical" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 5000 },
+      "policy": { "kind": "numeric_value_tone", "field": "mean_exec_time_ms", "active_client_only": false }
+    },
+    {
+      "id": "value_tone.query_duration_ms",
+      "origin": "accepted_presentation",
+      "unit": "milliseconds",
+      "formula": "(sample_timestamp - query_start) / 1000",
+      "operands": ["sample_timestamp", "query_start", "backend_type", "state"],
+      "thresholds": [
+        { "operator": "gte", "value": 5000, "tone": "critical" },
+        { "operator": "gte", "value": 1000, "tone": "warning" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 1000 },
+      "policy": { "kind": "numeric_value_tone", "field": "query_duration_ms", "active_client_only": true }
+    },
+    {
+      "id": "value_tone.transaction_duration_ms",
+      "origin": "accepted_presentation",
+      "unit": "milliseconds",
+      "formula": "(sample_timestamp - xact_start) / 1000",
+      "operands": ["sample_timestamp", "xact_start", "backend_type", "state"],
+      "thresholds": [
+        { "operator": "gte", "value": 60000, "tone": "critical" },
+        { "operator": "gte", "value": 5000, "tone": "warning" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 5000 },
+      "policy": { "kind": "numeric_value_tone", "field": "transaction_duration_ms", "active_client_only": true }
+    },
+    {
+      "id": "value_tone.hit_pct",
+      "origin": "accepted_presentation",
+      "unit": "percent",
+      "formula": "100 * shared_blks_hit / (shared_blks_hit + shared_blks_read)",
+      "operands": ["shared_blks_hit", "shared_blks_read"],
+      "thresholds": [
+        { "operator": "lt", "value": 90, "tone": "critical" },
+        { "operator": "lt", "value": 99, "tone": "warning" },
+        { "operator": "gte", "value": 99, "tone": "good" }
+      ],
+      "expected_band": { "min_inclusive": 99, "max_exclusive": null },
+      "policy": { "kind": "numeric_value_tone", "field": "hit_pct", "active_client_only": false }
+    },
+    {
+      "id": "value_tone.cv",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": "stddev_exec_time_ms / mean_exec_time_ms",
+      "operands": ["stddev_exec_time_ms", "mean_exec_time_ms"],
+      "thresholds": [
+        { "operator": "lt", "value": 1, "tone": "good" },
+        { "operator": "lt", "value": 3, "tone": "warning" },
+        { "operator": "gte", "value": 3, "tone": "critical" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 1 },
+      "policy": { "kind": "numeric_value_tone", "field": "cv", "active_client_only": false }
+    },
+    {
+      "id": "value_tone.plan_time_pct",
+      "origin": "accepted_presentation",
+      "unit": "percent",
+      "formula": "100 * planning_ms_per_second / (planning_ms_per_second + execution_ms_per_second)",
+      "operands": ["planning_ms_per_second", "execution_ms_per_second"],
+      "thresholds": [
+        { "operator": "lt", "value": 50, "tone": "good" },
+        { "operator": "lt", "value": 80, "tone": "warning" },
+        { "operator": "gte", "value": 80, "tone": "critical" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 50 },
+      "policy": { "kind": "numeric_value_tone", "field": "plan_time_pct", "active_client_only": false }
+    },
+    {
+      "id": "value_tone.cpu_percent",
+      "origin": "accepted_presentation",
+      "unit": "percent",
+      "formula": "100 * cpu_ticks / ticks_per_second / interval_seconds",
+      "operands": ["utime", "stime", "ticks_per_second", "interval_seconds"],
+      "thresholds": [
+        { "operator": "gte", "value": 90, "tone": "critical" },
+        { "operator": "gte", "value": 50, "tone": "warning" }
+      ],
+      "expected_band": { "min_inclusive": null, "max_exclusive": 50 },
+      "policy": { "kind": "numeric_value_tone", "field": "cpu_percent", "active_client_only": false }
+    },
+    {
+      "id": "vacuum.episode_adjacency",
+      "origin": "accepted_presentation",
+      "unit": "sampling_intervals",
+      "formula": "recorded_interval * adjacency_factor",
+      "operands": ["recorded_interval"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": { "kind": "vacuum_episode", "adjacency_factor": 2.5 }
+    },
+    {
+      "id": "vacuum.no_movement",
+      "origin": "accepted_presentation",
+      "unit": "samples",
+      "formula": "trailing equal readings in one phase and index cycle",
+      "operands": ["phase", "index_vacuum_count", "heap_blks_scanned", "heap_blks_vacuumed", "indexes_processed"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "vacuum_no_movement",
+        "samples": 3,
+        "phases": [
+          { "phase": "scanning heap", "field": "heap_blks_scanned", "unavailable_type_ids": [] },
+          { "phase": "vacuuming heap", "field": "heap_blks_vacuumed", "unavailable_type_ids": [] },
+          { "phase": "vacuuming indexes", "field": "indexes_processed", "unavailable_type_ids": ["1012004"] },
+          { "phase": "cleaning up indexes", "field": "indexes_processed", "unavailable_type_ids": ["1012004"] },
+          { "phase": "truncating heap", "field": "phase", "unavailable_type_ids": [] }
+        ]
+      }
+    },
+    {
+      "id": "vacuum.phase_risk",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["phase"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "vacuum_risk",
+        "default": "ordinary",
+        "order": ["dangerous", "heavy", "ordinary"],
+        "phases": {
+          "cleaning up indexes": "heavy",
+          "initializing": "ordinary",
+          "performing final cleanup": "ordinary",
+          "scanning heap": "ordinary",
+          "truncating heap": "dangerous",
+          "vacuuming heap": "heavy",
+          "vacuuming indexes": "heavy"
+        }
+      }
+    },
+    {
+      "id": "relation.index_state_severity",
+      "origin": "kronika_derived",
+      "unit": null,
+      "formula": "maximum index state severity",
+      "operands": ["indisvalid", "indisready"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "relation_severity",
+        "states": [
+          { "valid": true, "ready": true, "severity": 0 },
+          { "valid": true, "ready": false, "severity": 1 },
+          { "valid": false, "ready": null, "severity": 2 }
+        ]
+      }
+    },
+    {
+      "id": "event.tier_order",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": [],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": { "kind": "event_tier_order", "tiers": ["critical", "notable", "routine"] }
+    },
+    {
+      "id": "event.pg_log_errors.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["severity"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_errors",
+        "discriminator": "severity",
+        "tiers": ["notable", "critical", "critical", "routine", "routine"],
+        "fallback": "notable",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pg_log_slow_queries.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": [],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_slow_queries",
+        "discriminator": null,
+        "tiers": [],
+        "fallback": "notable",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pg_log_autovacuum.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": [],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_autovacuum",
+        "discriminator": null,
+        "tiers": [],
+        "fallback": "routine",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pg_log_checkpoints.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["phase"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_checkpoints",
+        "discriminator": "phase",
+        "tiers": ["routine", "routine", "notable"],
+        "fallback": "routine",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pg_log_lock_waits.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": [],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_lock_waits",
+        "discriminator": null,
+        "tiers": [],
+        "fallback": "notable",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pg_log_lifecycle.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["kind"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pg_log_lifecycle",
+        "discriminator": "kind",
+        "tiers": ["critical", "notable", "notable"],
+        "fallback": "notable",
+        "provenance": "recorded"
+      }
+    },
+    {
+      "id": "event.pgbouncer_events.tier",
+      "origin": "accepted_presentation",
+      "unit": null,
+      "formula": null,
+      "operands": ["level"],
+      "thresholds": [],
+      "expected_band": null,
+      "policy": {
+        "kind": "event_tier",
+        "section": "pgbouncer_events",
+        "discriminator": "level",
+        "tiers": ["critical", "notable", "notable", "routine", "routine", "routine"],
+        "fallback": "routine",
+        "provenance": "recorded"
+      }
+    }
+  ]
+}

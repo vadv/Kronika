@@ -14,6 +14,7 @@ mod body;
 mod config;
 mod encoding;
 mod mcp;
+mod product_semantics;
 mod route;
 mod ui;
 

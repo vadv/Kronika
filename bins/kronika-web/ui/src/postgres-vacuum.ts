@@ -1,6 +1,7 @@
 import type { DataRow } from "./api"
 import { asNumber, rawText, value } from "./model"
 import { exactCounterDelta } from "./postgres-metrics"
+import { semantic, type VacuumRisk } from "./product-semantics"
 
 // The vacuum ledger: one recorded hour of pg_stat_progress_vacuum, grouped
 // into episodes for display. Grouping is presentation over recorded values,
@@ -11,29 +12,23 @@ import { exactCounterDelta } from "./postgres-metrics"
 // than this many recorded sampling intervals: collection drifts, so exactly
 // one interval would split ordinary runs. Without a recorded interval the
 // time condition is not applied — nothing is invented in its place.
-export const EPISODE_ADJACENCY_FACTOR = 2.5
+const EPISODE_POLICY = semantic("vacuum.episode_adjacency", "vacuum_episode").policy
+export const EPISODE_ADJACENCY_FACTOR = EPISODE_POLICY.adjacency_factor
 
 // How many consecutive samples with an unchanged designated counter make the
 // "No movement" reading.
-export const NO_MOVEMENT_SAMPLES = 3
+const NO_MOVEMENT_POLICY = semantic("vacuum.no_movement", "vacuum_no_movement").policy
+export const NO_MOVEMENT_SAMPLES = NO_MOVEMENT_POLICY.samples
 
-export type VacuumRisk = "ordinary" | "heavy" | "dangerous"
+export type { VacuumRisk } from "./product-semantics"
 
 // Fixed by phase name, never computed from observed load. `truncating heap`
 // is dangerous unconditionally: the phase is set before the conditional
 // AccessExclusiveLock attempt.
-const PHASE_RISK: Readonly<Record<string, VacuumRisk>> = {
-  "cleaning up indexes": "heavy",
-  "initializing": "ordinary",
-  "performing final cleanup": "ordinary",
-  "scanning heap": "ordinary",
-  "truncating heap": "dangerous",
-  "vacuuming heap": "heavy",
-  "vacuuming indexes": "heavy",
-}
+const RISK_POLICY = semantic("vacuum.phase_risk", "vacuum_risk").policy
 
 export function phaseRisk(phase: string | null): VacuumRisk {
-  return phase === null ? "ordinary" : PHASE_RISK[phase] ?? "ordinary"
+  return phase === null ? RISK_POLICY.default : RISK_POLICY.phases[phase] ?? RISK_POLICY.default
 }
 
 export interface VacuumEpisode {
@@ -108,13 +103,8 @@ function finishEpisode(rows: readonly DataRow[]): VacuumEpisode {
 // (PG10-16) does not record index progress, so its index phases never claim
 // stillness.
 function movementField(phase: string | null, typeId: string): string | null {
-  if (phase === "scanning heap") return "heap_blks_scanned"
-  if (phase === "vacuuming heap") return "heap_blks_vacuumed"
-  if (phase === "vacuuming indexes" || phase === "cleaning up indexes") {
-    return typeId === "1012004" ? null : "indexes_processed"
-  }
-  if (phase === "truncating heap") return "phase"
-  return null
+  const policy = NO_MOVEMENT_POLICY.phases.find((candidate) => candidate.phase === phase)
+  return policy === undefined || policy.unavailable_type_ids.includes(typeId) ? null : policy.field
 }
 
 function noMovement(phaseRows: readonly DataRow[], last: DataRow): VacuumEpisode["noMovement"] {
@@ -146,7 +136,7 @@ export function vacuumAtTimestamp(rows: readonly DataRow[], cursor: number): num
   return at
 }
 
-const RISK_ORDER: Readonly<Record<VacuumRisk, number>> = { dangerous: 0, heavy: 1, ordinary: 2 }
+const RISK_ORDER = Object.fromEntries(RISK_POLICY.order.map((risk, index) => [risk, index])) as Readonly<Record<VacuumRisk, number>>
 
 // At-sample episodes first, riskiest first, longest phase first; everything
 // last seen earlier follows, newest first.

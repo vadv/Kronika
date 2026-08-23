@@ -1,54 +1,35 @@
 import type { Cell, DataRow } from "./api"
+import { semantic, semanticsOf, type ValueTone } from "./product-semantics"
 
-export type ValueTone = "good" | "warning" | "critical" | "inactive"
+export type { ValueTone } from "./product-semantics"
+
+const RATE_ZERO_TONE = semantic("value_tone.rate_zero", "rate_zero_tone").policy.tone
+const TEXT_TONES = new Map(semanticsOf("text_value_tone").map((definition) => [definition.policy.field, definition.policy]))
+const NUMERIC_TONES = new Map(semanticsOf("numeric_value_tone").map((definition) => [definition.policy.field, definition]))
 
 export function semanticValueTone(field: string, cell: Cell, rate = false, row?: DataRow): ValueTone | null {
   const text = typeof cell === "string" ? cell.trim() : null
-  if (field === "state") {
-    if (text === "idle in transaction (aborted)") return "critical"
-    if (text === "idle in transaction") return "warning"
-    // Process state may be a character or its ASCII code.
-    const stateChar = text ?? asciiChar(cell)
-    if (stateChar === "R") return "good"
-    if (stateChar === "D") return "warning"
-    if (stateChar === "Z") return "critical"
-    if (stateChar === "I") return "inactive"
+  const textPolicy = TEXT_TONES.get(field)
+  if (textPolicy !== undefined) {
+    const reading = text ?? (textPolicy.ascii_values ? asciiChar(cell) : null)
+    if (reading !== null) {
+      const tone = textPolicy.values[reading]
+      if (tone !== undefined) return tone
+    }
+    if (textPolicy.nonempty_tone !== null && text !== null && text !== "") return textPolicy.nonempty_tone
   }
-  if (field === "wait_event_type" && text !== null && text !== "") return "warning"
 
   const number = numericCell(cell)
   if (number === null) return null
-  if (rate && number === 0) return "inactive"
+  if (rate && number === 0) return RATE_ZERO_TONE
 
-  if ((field === "query_duration_ms" || field === "transaction_duration_ms")
-    && row !== undefined
-    && !isActiveClient(row)) return null
-
-  switch (field) {
-    case "mean_exec_ms_per_call":
-    case "mean_exec_time_ms":
-      return number >= 5_000 ? "critical" : null
-    case "query_duration_ms":
-      if (number >= 5_000) return "critical"
-      return number >= 1_000 ? "warning" : null
-    case "transaction_duration_ms":
-      if (number >= 60_000) return "critical"
-      return number >= 5_000 ? "warning" : null
-    case "hit_pct":
-      if (number < 90) return "critical"
-      return number < 99 ? "warning" : "good"
-    case "cv":
-      if (number < 1) return "good"
-      return number < 3 ? "warning" : "critical"
-    case "plan_time_pct":
-      if (number < 50) return "good"
-      return number < 80 ? "warning" : "critical"
-    case "cpu_percent":
-      if (number >= 90) return "critical"
-      return number >= 50 ? "warning" : null
-    default:
-      return null
+  const definition = NUMERIC_TONES.get(field)
+  if (definition === undefined) return null
+  if (definition.policy.active_client_only && row !== undefined && !isActiveClient(row)) return null
+  for (const threshold of definition.thresholds) {
+    if (threshold.operator === "lt" ? number < threshold.value : number >= threshold.value) return threshold.tone
   }
+  return null
 }
 
 function isActiveClient(row: DataRow): boolean {

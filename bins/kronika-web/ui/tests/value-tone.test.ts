@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import { semanticValueTone } from "../src/value-tone.ts"
+import { importModule } from "./import-module.mjs"
+
+const { semanticValueTone } = await importModule('export { semanticValueTone } from "../src/value-tone.ts"')
 
 test("null and workload volume remain neutral while zero rates are inactive", () => {
   assert.equal(semanticValueTone("calls_per_second", null, true), null)

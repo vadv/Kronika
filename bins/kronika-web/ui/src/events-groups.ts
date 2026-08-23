@@ -1,9 +1,10 @@
 import type { DataRow } from "./api"
 import { asNumber, rawText } from "./model"
+import { semantic, semanticsOf, type EventTier } from "./product-semantics"
 
-export type EventTier = "critical" | "notable" | "routine"
+export type { EventTier } from "./product-semantics"
 
-export const EVENT_TIERS: readonly EventTier[] = ["critical", "notable", "routine"]
+export const EVENT_TIERS = semantic("event.tier_order", "event_tier_order").policy.tiers
 
 export type EventStat =
   | { readonly kind: "pg.errors"; readonly severity: number; readonly category: number | null; readonly sqlstate: string | null; readonly database: string | null; readonly username: string | null }
@@ -50,10 +51,14 @@ export function slowThresholdMs(rows: readonly DataRow[]): number | null {
 export const MINUTE_COLUMNS = 60
 const MINUTE_US = 60_000_000
 
-const TIER_ORDER: Readonly<Record<EventTier, number>> = { critical: 0, notable: 1, routine: 2 }
-const ERROR_TIERS: readonly EventTier[] = ["notable", "critical", "critical", "routine", "routine"]
-const LIFECYCLE_TIERS: readonly EventTier[] = ["critical", "notable", "notable"]
-const PGBOUNCER_TIERS: readonly EventTier[] = ["critical", "notable", "notable", "routine", "routine", "routine"]
+const TIER_ORDER = Object.fromEntries(EVENT_TIERS.map((tier, index) => [tier, index])) as Readonly<Record<EventTier, number>>
+const EVENT_TIER_POLICIES = new Map(semanticsOf("event_tier").map((definition) => [definition.policy.section, definition.policy]))
+
+function eventTier(section: string, value?: number | null): EventTier {
+  const policy = EVENT_TIER_POLICIES.get(section)
+  if (policy === undefined) throw new Error(`missing event tier semantic for ${section}`)
+  return value === undefined || value === null ? policy.fallback : policy.tiers[value] ?? policy.fallback
+}
 
 export function groupEvents(streams: Readonly<Record<string, readonly DataRow[]>>, hour: number): readonly EventEntry[] {
   const thresholdMs = slowThresholdMs(streams.pg_settings ?? [])
@@ -77,7 +82,7 @@ function groupErrors(rows: readonly DataRow[], hour: number): readonly EventEntr
     .map(({ key, first, members }) => {
       const weights = members.map((row) => number(row, "count") ?? 1)
       return build(`errors:${key}`, "pg_log_errors", members, hour, weights, {
-        tier: ERROR_TIERS[number(first, "severity") ?? 0] ?? "notable",
+        tier: eventTier("pg_log_errors", number(first, "severity") ?? 0),
         text: text(first, "pattern"),
         stat: {
           kind: "pg.errors",
@@ -97,7 +102,7 @@ function groupSlowQueries(rows: readonly DataRow[], hour: number, thresholdMs: n
       const weights = members.map((row) => number(row, "count") ?? 1)
       const slowest = members.reduce((left, right) => (number(right, "max_duration_ms") ?? 0) > (number(left, "max_duration_ms") ?? 0) ? right : left, first)
       return build(`slow:${key}`, "pg_log_slow_queries", members, hour, weights, {
-        tier: "notable",
+        tier: eventTier("pg_log_slow_queries"),
         text: text(slowest, "sample") ?? key,
         stat: {
           kind: "pg.slow",
@@ -114,7 +119,7 @@ function groupAutovacuum(rows: readonly DataRow[], hour: number): readonly Event
     .map(({ key, first, members }) => {
       const last = members[members.length - 1] ?? first
       return build(`autovacuum:${key}`, "pg_log_autovacuum", members, hour, null, {
-        tier: "routine",
+        tier: eventTier("pg_log_autovacuum"),
         text: text(first, "relation"),
         stat: {
           kind: "pg.autovacuum",
@@ -137,7 +142,7 @@ function groupCheckpoints(rows: readonly DataRow[], hour: number): readonly Even
     const timed = starts.filter((row) => (text(row, "reason") ?? "").includes("time")).length
     const completes = ordinary.filter((row) => number(row, "phase") === 1)
     entries.push(build("checkpoints", "pg_log_checkpoints", ordinary, hour, null, {
-      tier: "routine",
+      tier: eventTier("pg_log_checkpoints", 0),
       text: null,
       count: Math.max(completes.length, starts.length),
       stat: {
@@ -152,7 +157,7 @@ function groupCheckpoints(rows: readonly DataRow[], hour: number): readonly Even
   }
   if (warnings.length > 0) {
     entries.push(build("checkpoints:warning", "pg_log_checkpoints", warnings, hour, null, {
-      tier: "notable",
+      tier: eventTier("pg_log_checkpoints", 2),
       text: null,
       stat: { kind: "pg.checkpoint_warning", secondsApart: min(warnings, "seconds_apart") },
     }))
@@ -186,7 +191,7 @@ function groupLockEpisodes(rows: readonly DataRow[], hour: number): readonly Eve
     hour,
     null,
     {
-      tier: "notable",
+      tier: eventTier("pg_log_lock_waits"),
       text: null,
       count: Math.max(waits, 1),
       stat: {
@@ -211,7 +216,7 @@ function groupLockEpisodes(rows: readonly DataRow[], hour: number): readonly Eve
 
 function lifecycleEntries(rows: readonly DataRow[], hour: number): readonly EventEntry[] {
   return rows.map((row, index) => build(`lifecycle:${index}:${row.ordinal}`, "pg_log_lifecycle", [row], hour, null, {
-    tier: LIFECYCLE_TIERS[number(row, "kind") ?? 0] ?? "notable",
+    tier: eventTier("pg_log_lifecycle", number(row, "kind") ?? 0),
     text: text(row, "message"),
     stat: {
       kind: "pg.lifecycle",
@@ -227,7 +232,7 @@ function groupPgbouncer(rows: readonly DataRow[], hour: number): readonly EventE
   return grouped(rows, (row) => `${text(row, "level") ?? ""}\u{1f}${text(row, "text") ?? ""}`)
     .map(({ key, first, members }) => {
       return build(`pgbouncer:${key}`, "pgbouncer_events", members, hour, null, {
-        tier: PGBOUNCER_TIERS[number(first, "level") ?? 3] ?? "routine",
+        tier: eventTier("pgbouncer_events", number(first, "level") ?? 3),
         text: text(first, "text"),
         stat: {
           kind: "pgbouncer.events",
