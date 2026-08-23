@@ -16,8 +16,11 @@ mod hour;
 mod index;
 mod query;
 mod render;
+mod row_detail;
 mod rows;
 mod snapshot;
+
+pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 
 #[cfg(test)]
 mod tests;

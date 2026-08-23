@@ -1,6 +1,8 @@
 //! Bounded expert MCP surfaces over the typed web API readers.
 
-use kronika_registry::{ColumnType, Semantics, contract, logical_section_name, registry};
+use kronika_registry::{
+    ColumnType, Semantics, TypeContract, contract, logical_section_name, registry,
+};
 use serde_json::{Map, Value, json};
 
 use super::State;
@@ -60,6 +62,11 @@ pub(super) struct ExpertFailure {
     pub(super) message: String,
     pub(super) parameter: Option<String>,
     pub(super) retryable: bool,
+}
+
+struct RowDetailQuery {
+    timestamp: i64,
+    request: api::RowDetailRequest,
 }
 
 pub(super) fn execute(
@@ -269,22 +276,60 @@ fn row_detail(
     args: &Map<String, Value>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<ExpertPayload, ExpertFailure> {
-    if args.contains_key("cursor") {
+    let query = row_detail_query(args)?;
+    if cancelled() {
         return Err(failure(
-            "unsupported_cursor",
-            "row detail has no continuation without a text chunk",
-            Some("cursor"),
-            false,
+            "cancelled",
+            "row detail read was cancelled",
+            None,
+            true,
         ));
     }
-    if args.contains_key("text_field") {
+    let segment_id = query.request.segment_id;
+    let timestamp = query.timestamp;
+    let detail = api::read_row_detail(&state.data_root, &query.request).map_err(api_failure)?;
+    if cancelled() {
         return Err(failure(
-            "text_chunk_unsupported",
-            "the shared reader cannot byte-chunk a dictionary value without resolving it in full",
-            Some("text_field"),
-            false,
+            "cancelled",
+            "row detail read was cancelled",
+            None,
+            true,
         ));
     }
+    let has_more = detail.next_cursor.is_some();
+    let bounded = has_more || detail.source_truncated;
+    let stop_reason = if has_more {
+        "text_chunk_limit"
+    } else if detail.source_truncated {
+        "source_truncated"
+    } else {
+        "complete"
+    };
+    Ok(ExpertPayload {
+        anchor: json!({
+            "hour_start_us": Value::Null,
+            "requested_at_us": timestamp.to_string(),
+            "selected_at_us": timestamp.to_string(),
+            "segment_id": segment_id.to_string(),
+            "active_wal_position": detail.active_position.map(|value| value.to_string()),
+        }),
+        data: json!({
+            "row": detail.row,
+            "text_chunk": detail.text_chunk.unwrap_or_else(empty_object),
+            "semantics": [detail.layout],
+        }),
+        page: page(1, bounded, detail.next_cursor, stop_reason),
+        warnings: Vec::new(),
+        summary: if has_more {
+            "Returned one exact projected row and a bounded text chunk; another stored chunk is available."
+                .to_owned()
+        } else {
+            "Returned one exact projected recorded row and its requested text detail.".to_owned()
+        },
+    })
+}
+
+fn row_detail_query(args: &Map<String, Value>) -> Result<RowDetailQuery, ExpertFailure> {
     let segment_id = decimal_i64(args, "segment_id")?;
     let type_id = u32_arg(args, "type_id")?;
     let ordinal = decimal_u64(args, "row_ordinal")?;
@@ -305,6 +350,58 @@ fn row_detail(
             false,
         )
     })?;
+    let fields = detail_fields(args, section, type_id, contract)?;
+    let text_field = detail_text_field(args, type_id, contract)?;
+    let byte_offset = optional_usize_arg(
+        args,
+        "byte_offset",
+        0,
+        usize::try_from(u32::MAX).unwrap_or(usize::MAX),
+    )?
+    .map(|value| u64::try_from(value).unwrap_or(u64::MAX));
+    let byte_limit = usize_arg(args, "byte_limit", 16 * 1_024, 1, 32 * 1_024)?;
+    let cursor = args
+        .get("cursor")
+        .map(|_value| string(args, "cursor").map(ToOwned::to_owned))
+        .transpose()?;
+    if text_field.is_none() && cursor.is_some() {
+        return Err(failure(
+            "invalid_cursor",
+            "a row-detail continuation cursor requires text_field",
+            Some("cursor"),
+            false,
+        ));
+    }
+    if text_field.is_none() && byte_offset.is_some() {
+        return Err(failure(
+            "invalid_parameter",
+            "byte_offset requires text_field",
+            Some("byte_offset"),
+            false,
+        ));
+    }
+    Ok(RowDetailQuery {
+        timestamp,
+        request: api::RowDetailRequest {
+            segment_id,
+            type_id,
+            row_ordinal: ordinal,
+            timestamp_us: timestamp,
+            fields,
+            text_field,
+            byte_offset,
+            byte_limit,
+            cursor,
+        },
+    })
+}
+
+fn detail_fields(
+    args: &Map<String, Value>,
+    section: &str,
+    type_id: u32,
+    contract: &'static TypeContract,
+) -> Result<Vec<String>, ExpertFailure> {
     let fields = selected_fields(args, section, Some(type_id))?;
     for field in &fields {
         if contract
@@ -319,72 +416,37 @@ fn row_detail(
             ));
         }
     }
-    let request = SnapshotRequest {
-        segment_id,
-        at: timestamp,
-        sections: vec![section.to_owned()],
-        fields,
-        by: Vec::new(),
-        direction: Order::Asc,
-        group: None,
-        page_size: None,
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: Some(type_id),
-        row_ordinal: Some(ordinal),
-    };
-    let collected = collect(
-        state,
-        Route::Snapshot(Box::new(request)),
-        ValueLimits {
-            records: 8,
-            ndjson_bytes: data_budget(args)?,
-        },
-        cancelled,
-    )?;
-    if collected.stop_reason == ValueStopReason::Cancelled {
-        return Err(failure(
-            "cancelled",
-            "row detail read was cancelled",
-            None,
-            true,
-        ));
-    }
-    if collected.stop_reason == ValueStopReason::ByteLimit {
-        return Err(first_row_too_large());
-    }
-    let row = records_named(&collected.records, "row")
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            failure(
-                "locator_mismatch",
-                "the exact row locator no longer identifies a recorded row",
-                None,
+    Ok(fields)
+}
+
+fn detail_text_field(
+    args: &Map<String, Value>,
+    type_id: u32,
+    contract: &'static TypeContract,
+) -> Result<Option<String>, ExpertFailure> {
+    let text_field = args
+        .get("text_field")
+        .map(|_value| string(args, "text_field").map(ToOwned::to_owned))
+        .transpose()?;
+    if let Some(field) = text_field.as_deref() {
+        let Some(column) = contract.column(field) else {
+            return Err(failure(
+                "no_such_column",
+                format!("physical type id {type_id} has no field {field:?}"),
+                Some("text_field"),
                 false,
-            )
-        })?;
-    let layout = first_layout(&collected.records).unwrap_or_else(empty_object);
-    Ok(ExpertPayload {
-        anchor: json!({
-            "hour_start_us": Value::Null,
-            "requested_at_us": timestamp.to_string(),
-            "selected_at_us": timestamp.to_string(),
-            "segment_id": segment_id.to_string(),
-            "active_wal_position": Value::Null,
-        }),
-        data: json!({
-            "row": row,
-            "text_chunk": {},
-            "semantics": [layout],
-        }),
-        page: page(1, false, None, "complete"),
-        warnings: Vec::new(),
-        summary: "Returned one exact projected recorded row.".to_owned(),
-    })
+            ));
+        };
+        if column.ty != ColumnType::StrId {
+            return Err(failure(
+                "text_field_not_text",
+                format!("field {field:?} is not a recorded text or blob value"),
+                Some("text_field"),
+                false,
+            ));
+        }
+    }
+    Ok(text_field)
 }
 
 fn events(
@@ -733,6 +795,37 @@ fn usize_arg(
         ));
     }
     Ok(value)
+}
+
+fn optional_usize_arg(
+    args: &Map<String, Value>,
+    name: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<Option<usize>, ExpertFailure> {
+    let Some(value) = args.get(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| {
+            failure(
+                "invalid_parameter",
+                format!("{name} must be an integer"),
+                Some(name),
+                false,
+            )
+        })?;
+    if !(minimum..=maximum).contains(&value) {
+        return Err(failure(
+            "invalid_parameter",
+            format!("{name} must be between {minimum} and {maximum}"),
+            Some(name),
+            false,
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn data_budget(args: &Map<String, Value>) -> Result<usize, ExpertFailure> {

@@ -156,7 +156,7 @@ fn blob_value(stored: &[u8], full_len: u64, truncated: bool, hash: Option<[u8; 3
     Value::Object(value)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
