@@ -7,6 +7,7 @@ use std::time::Duration;
 use rmcp::ErrorData;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use serde_json::{Map, Value, json};
+use tokio::sync::OwnedSemaphorePermit;
 
 use super::{State, catalog, expert, postgresql};
 
@@ -96,10 +97,18 @@ pub(super) async fn dispatch(
     cancelled: impl Fn() -> bool + Send + Sync + 'static,
 ) -> Result<CallToolResult, ErrorData> {
     let name = request.name.into_owned();
-    if catalog::find(&name).is_none() {
+    let Some(tool) = catalog::find(&name) else {
         return Err(ErrorData::invalid_params("tool not found", None));
-    }
+    };
     let args = request.arguments.unwrap_or_default();
+    if let Some(parameter) = unknown_argument(tool, &args) {
+        return Ok(result_from_failure(Failure {
+            code: "invalid_input",
+            message: format!("unknown argument {parameter:?}"),
+            parameter: Some(parameter.to_owned()),
+            retryable: false,
+        }));
+    }
     let budget = match data_budget(&args) {
         Ok(budget) => budget,
         Err(result) => return Ok(result),
@@ -108,102 +117,13 @@ pub(super) async fn dispatch(
     if external() {
         return Ok(result_from_failure(cancelled_failure()));
     }
-    let permit = match tokio::time::timeout(QUEUE_WAIT, state.heavy_scans.clone().acquire_owned())
-        .await
-    {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(_closed)) => {
-            return Ok(result_from_failure(Failure {
-                code: "unavailable",
-                message: "The historical scan admission gate is unavailable.".to_owned(),
-                parameter: None,
-                retryable: true,
-            }));
-        }
-        Err(_elapsed) => {
-            return Ok(result_from_failure(Failure {
-                code: "busy",
-                message: "Two historical scans are already running; retry this call.".to_owned(),
-                parameter: None,
-                retryable: true,
-            }));
-        }
-    };
-    if external() {
-        return Ok(result_from_failure(cancelled_failure()));
-    }
-
     let guard = Arc::new(ScanGuard::new(external, cells_per_visit(&name, &args)));
-    let task_guard = Arc::clone(&guard);
-    let task_name = name.clone();
-    let task = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let stopped = || task_guard.cancelled();
-        if task_name.starts_with("kronika_find_postgresql_")
-            || task_name == "kronika_get_postgresql_overview"
-        {
-            postgresql::execute(&state, &task_name, &args, &stopped)
-                .map(|payload| Payload {
-                    anchor: payload.anchor,
-                    data: payload.data,
-                    page: payload.page,
-                    warnings: payload.warnings,
-                    summary: payload.summary,
-                })
-                .map_err(|failure| Failure {
-                    code: failure.code,
-                    message: failure.message,
-                    parameter: failure.parameter,
-                    retryable: failure.retryable,
-                })
-        } else if matches!(
-            task_name.as_str(),
-            "kronika_find_events"
-                | "kronika_get_metric_history"
-                | "kronika_get_snapshot"
-                | "kronika_get_row_detail"
-        ) {
-            expert::execute(&state, &task_name, &args, &stopped)
-                .map(|payload| Payload {
-                    anchor: payload.anchor,
-                    data: payload.data,
-                    page: payload.page,
-                    warnings: payload.warnings,
-                    summary: payload.summary,
-                })
-                .map_err(|failure| Failure {
-                    code: failure.code,
-                    message: failure.message,
-                    parameter: failure.parameter,
-                    retryable: failure.retryable,
-                })
-        } else {
-            core::execute(&state, &task_name, &args, budget, &stopped)
-        }
-    });
     let deadline = if name == "kronika_get_context" {
         CONTEXT_DEADLINE
     } else {
         SCAN_DEADLINE
     };
-    let executed = match tokio::time::timeout(deadline, task).await {
-        Ok(Ok(executed)) => executed,
-        Ok(Err(_join)) => Err(Failure {
-            code: "internal_error",
-            message: "The historical scan worker failed.".to_owned(),
-            parameter: None,
-            retryable: true,
-        }),
-        Err(_elapsed) => {
-            guard.deadline_hit.store(true, Ordering::Relaxed);
-            return Ok(result_from_failure(Failure {
-                code: "deadline_exceeded",
-                message: "The bounded historical scan exceeded its deadline.".to_owned(),
-                parameter: None,
-                retryable: true,
-            }));
-        }
-    };
+    let executed = execute_with_deadline(state, name, args, budget, &guard, deadline).await;
     if guard.client_cancelled.load(Ordering::Relaxed) {
         return Ok(result_from_failure(cancelled_failure()));
     }
@@ -217,6 +137,116 @@ pub(super) async fn dispatch(
         Ok(payload) => Ok(result_from_payload(payload, budget)),
         Err(failure) => Ok(result_from_failure(failure)),
     }
+}
+
+async fn acquire_permit(state: &State) -> Result<OwnedSemaphorePermit, Failure> {
+    match tokio::time::timeout(QUEUE_WAIT, Arc::clone(&state.heavy_scans).acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_closed)) => Err(Failure {
+            code: "unavailable",
+            message: "The historical scan admission gate is unavailable.".to_owned(),
+            parameter: None,
+            retryable: true,
+        }),
+        Err(_elapsed) => Err(Failure {
+            code: "busy",
+            message: "Two historical scans are already running; retry this call.".to_owned(),
+            parameter: None,
+            retryable: true,
+        }),
+    }
+}
+
+async fn execute_with_deadline(
+    state: State,
+    name: String,
+    args: Map<String, Value>,
+    budget: usize,
+    guard: &Arc<ScanGuard>,
+    deadline: Duration,
+) -> Result<Payload, Failure> {
+    let permit = acquire_permit(&state).await?;
+    if guard.cancelled() {
+        return Err(cancelled_failure());
+    }
+    let task_guard = Arc::clone(guard);
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        execute_tool(&state, &name, &args, budget, &|| task_guard.cancelled())
+    });
+    match tokio::time::timeout(deadline, task).await {
+        Ok(Ok(executed)) => executed,
+        Ok(Err(_join)) => Err(Failure {
+            code: "internal_error",
+            message: "The historical scan worker failed.".to_owned(),
+            parameter: None,
+            retryable: true,
+        }),
+        Err(_elapsed) => {
+            guard.deadline_hit.store(true, Ordering::Relaxed);
+            Err(Failure {
+                code: "deadline_exceeded",
+                message: "The bounded historical scan exceeded its deadline.".to_owned(),
+                parameter: None,
+                retryable: true,
+            })
+        }
+    }
+}
+
+fn execute_tool(
+    state: &State,
+    name: &str,
+    args: &Map<String, Value>,
+    budget: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Payload, Failure> {
+    if name.starts_with("kronika_find_postgresql_") || name == "kronika_get_postgresql_overview" {
+        postgresql::execute(state, name, args, cancelled)
+            .map(|payload| Payload {
+                anchor: payload.anchor,
+                data: payload.data,
+                page: payload.page,
+                warnings: payload.warnings,
+                summary: payload.summary,
+            })
+            .map_err(|failure| Failure {
+                code: failure.code,
+                message: failure.message,
+                parameter: failure.parameter,
+                retryable: failure.retryable,
+            })
+    } else if matches!(
+        name,
+        "kronika_find_events"
+            | "kronika_get_metric_history"
+            | "kronika_get_snapshot"
+            | "kronika_get_row_detail"
+    ) {
+        expert::execute(state, name, args, cancelled)
+            .map(|payload| Payload {
+                anchor: payload.anchor,
+                data: payload.data,
+                page: payload.page,
+                warnings: payload.warnings,
+                summary: payload.summary,
+            })
+            .map_err(|failure| Failure {
+                code: failure.code,
+                message: failure.message,
+                parameter: failure.parameter,
+                retryable: failure.retryable,
+            })
+    } else {
+        core::execute(state, name, args, budget, cancelled)
+    }
+}
+
+fn unknown_argument<'a>(tool: &rmcp::model::Tool, args: &'a Map<String, Value>) -> Option<&'a str> {
+    let properties = tool.input_schema.get("properties")?.as_object()?;
+    args.keys()
+        .find(|name| !properties.contains_key(*name))
+        .map(String::as_str)
 }
 
 fn data_budget(args: &Map<String, Value>) -> Result<usize, CallToolResult> {

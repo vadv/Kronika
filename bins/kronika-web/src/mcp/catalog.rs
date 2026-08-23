@@ -14,6 +14,17 @@ pub(super) fn find(name: &str) -> Option<&'static Tool> {
 }
 
 fn build() -> Vec<Tool> {
+    let mut tools = discovery_tools();
+    tools.extend(analysis_tools());
+    tools.extend(postgresql_state_tools());
+    tools.extend(postgresql_query_tools());
+    tools.extend(postgresql_relation_tools());
+    tools.extend(event_history_tools());
+    tools.extend(expert_detail_tools());
+    tools
+}
+
+fn discovery_tools() -> Vec<Tool> {
     vec![
         tool(
             "kronika_get_context",
@@ -103,6 +114,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn analysis_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_get_timeline",
             "Historical Timeline",
@@ -186,6 +202,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn postgresql_state_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_get_postgresql_overview",
             "PostgreSQL Overview",
@@ -267,6 +288,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn postgresql_query_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_find_postgresql_statements",
             "PostgreSQL Statements",
@@ -335,6 +361,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn postgresql_relation_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_find_postgresql_tables",
             "PostgreSQL Tables",
@@ -399,6 +430,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn event_history_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_find_events",
             "Events and logs",
@@ -444,6 +480,11 @@ fn build() -> Vec<Tool> {
                 ("semantics", array_object()),
             ])),
         ),
+    ]
+}
+
+fn expert_detail_tools() -> Vec<Tool> {
+    vec![
         tool(
             "kronika_get_snapshot",
             "Expert historical snapshot",
@@ -573,6 +614,11 @@ fn output(data_properties: JsonObject) -> Arc<JsonObject> {
         ),
         ("additionalProperties", json!(false)),
     ]);
+    let data = Value::Object(map([
+        ("type", json!("object")),
+        ("properties", Value::Object(data_properties)),
+        ("additionalProperties", json!(false)),
+    ]));
     Arc::new(map([
         ("type", json!("object")),
         (
@@ -580,14 +626,7 @@ fn output(data_properties: JsonObject) -> Arc<JsonObject> {
             Value::Object(map([
                 ("status", json!({"const": "ok"})),
                 ("anchor", Value::Object(anchor)),
-                (
-                    "data",
-                    json!({
-                        "type": "object",
-                        "properties": data_properties,
-                        "additionalProperties": false
-                    }),
-                ),
+                ("data", data),
                 ("page", Value::Object(page)),
                 ("warnings", array_object()),
             ])),

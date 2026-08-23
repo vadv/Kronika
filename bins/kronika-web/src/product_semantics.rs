@@ -150,8 +150,8 @@ pub(crate) enum EventTier {
 pub(crate) struct ProductSemanticsError(String);
 
 impl fmt::Display for ProductSemanticsError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

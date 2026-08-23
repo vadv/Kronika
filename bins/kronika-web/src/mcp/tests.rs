@@ -193,6 +193,38 @@ async fn dispatch_allowlists_known_tools_without_fabricating_data() {
     assert_eq!(unknown.message, "tool not found");
 }
 
+#[tokio::test]
+async fn dispatch_rejects_arguments_outside_the_advertised_schema() {
+    let state = super::State {
+        data_root: PathBuf::from("unused-mcp-test-root"),
+        sources: 3,
+        synthetic_demo: false,
+        heavy_scans: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+    };
+    let mut request = CallToolRequestParams::new("kronika_get_context");
+    request.arguments = Some(serde_json::Map::from_iter([(
+        "sql".to_owned(),
+        json!("select 1"),
+    )]));
+    let result = super::tools::dispatch(state, request, || false)
+        .await
+        .expect("known tool");
+    assert_eq!(
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code")),
+        Some(&json!("invalid_input"))
+    );
+    assert_eq!(
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/parameter")),
+        Some(&json!("sql"))
+    );
+}
+
 #[test]
 fn service_is_stateless_and_uses_exact_transport_caps() {
     let service = super::service(&config());
