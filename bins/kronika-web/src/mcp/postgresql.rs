@@ -1,6 +1,7 @@
 //! Direct `PostgreSQL` MCP surfaces over the typed web API readers.
 
 mod locks;
+mod vacuum;
 
 use std::collections::HashSet;
 
@@ -8,9 +9,7 @@ use serde_json::{Map, Value, json};
 
 use super::State;
 use crate::api::{self, ApiError, ValueLimits, ValueStopReason};
-use crate::route::{
-    Filter, HourRequest, Order, RelationGroup, Route, SeriesRequest, SnapshotRequest, Window,
-};
+use crate::route::{Filter, Order, RelationGroup, Route, SnapshotRequest, Window};
 
 const HOUR_US: i64 = 3_600_000_000;
 const MAX_ROWS: usize = 500;
@@ -271,7 +270,7 @@ pub(super) fn execute(
             cancelled,
         ),
         "kronika_find_postgresql_locks" => locks::execute(state, args, cancelled),
-        "kronika_find_postgresql_vacuum" => vacuum(state, args, cancelled),
+        "kronika_find_postgresql_vacuum" => vacuum::execute(state, args, cancelled),
         "kronika_find_postgresql_statements" => direct(
             state,
             args,
@@ -495,64 +494,6 @@ fn overview(
         page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
         warnings: anchor.warnings,
         summary: format!("Returned {returned} recorded PostgreSQL overview rows."),
-    })
-}
-
-fn vacuum(
-    state: &State,
-    args: &Map<String, Value>,
-    cancelled: &impl Fn() -> bool,
-) -> Result<PostgresqlPayload, PostgresqlFailure> {
-    if args.contains_key("find") {
-        return Err(input(
-            "find",
-            "find is not supported by the shared Rust field registry for Vacuum",
-        ));
-    }
-    if args.contains_key("cursor") {
-        return Err(input(
-            "cursor",
-            "Vacuum exact-series records do not yet expose a continuation cursor",
-        ));
-    }
-    let from = timestamp(args, "from_us")?;
-    let to = timestamp(args, "to_us")?;
-    if from > to || from.div_euclid(HOUR_US) != to.div_euclid(HOUR_US) {
-        return Err(input(
-            "to_us",
-            "Vacuum intervals must be ordered and contained in one UTC hour",
-        ));
-    }
-    let fields = fields(args, &[])?;
-    let request = HourRequest {
-        window: Window {
-            from: Some(from),
-            to: Some(to),
-        },
-        series: Some(SeriesRequest {
-            section: "pg_stat_progress_vacuum".to_owned(),
-            fields,
-            filters: Vec::new(),
-            type_id: None,
-            group: None,
-        }),
-    };
-    let collected = collect(state, Route::Hour(request), cancelled)?;
-    let selected = selected_at(&collected.records);
-    let records = content_records(collected.records);
-    let returned = record_rows(&records);
-    Ok(PostgresqlPayload {
-        anchor: json!({
-            "hour_start_us": from.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string(),
-            "requested_at_us": Value::Null,
-            "selected_at_us": selected.map(|value| value.to_string()),
-            "segment_id": Value::Null,
-            "active_wal_position": Value::Null,
-        }),
-        data: json!({"episodes": records, "semantics": []}),
-        page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
-        warnings: Vec::new(),
-        summary: format!("Returned {returned} exact recorded Vacuum series rows."),
     })
 }
 
