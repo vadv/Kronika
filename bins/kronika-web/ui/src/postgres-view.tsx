@@ -262,55 +262,6 @@ const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonl
   { id: "indexes", sections: ["pg_stat_user_indexes"] },
 ]
 
-// Which recorded findings (IDX event locators / known-bad marks, see
-// DESIGN.md "Highlighting") a tab's badge counts. Separate from TABS[].sections
-// above: that list is what data enables the tab, this is what's worth a look —
-// a log-derived layout (e.g. pg_log_autovacuum) highlights a different tab than
-// the live snapshot it has no other relation to.
-const TAB_FINDING_SECTIONS: Readonly<Record<PostgresSection, readonly string[]>> = {
-  overview: ["pg_log_errors", "pg_log_checkpoints"],
-  activity: ["pg_log_lifecycle"],
-  vacuum: ["pg_log_autovacuum"],
-  locks: ["pg_locks", "pg_log_lock_waits"],
-  statements: ["pg_log_slow_queries"],
-  plans: [],
-  databases: ["pg_stat_database"],
-  tables: [],
-  indexes: [],
-}
-
-interface TabHighlight {
-  readonly count: number
-  readonly attention: boolean
-}
-
-// A finding minutes away from the cursor is not "here" — the badge would
-// stay lit for the rest of the hour and stop meaning anything.
-const TAB_HIGHLIGHT_WINDOW_US = 60_000_000
-
-export function tabHighlight(data: HourData, tab: PostgresSection, cursor: number): TabHighlight {
-  const sections = TAB_FINDING_SECTIONS[tab]
-  if (sections.length === 0) return { count: 0, attention: false }
-  const nearby = data.findings.filter(
-    (finding) => sections.includes(finding.logicalName) && Math.abs(finding.timestamp - cursor) <= TAB_HIGHLIGHT_WINDOW_US,
-  )
-  return { count: nearby.length, attention: nearby.some((finding) => finding.kind === "known_bad") }
-}
-
-// With nothing explicitly selected, the row nearest the cursor stands in:
-// the badge said something is worth a look here, this points at which row.
-// A known-bad mark outranks a plain event within the same window.
-export function autoFinding(data: HourData, logicalName: string, cursor: number): Finding | null {
-  const nearby = data.findings.filter(
-    (finding) => finding.logicalName === logicalName && Math.abs(finding.timestamp - cursor) <= TAB_HIGHLIGHT_WINDOW_US,
-  )
-  const ranked = nearby.filter((finding) => finding.kind === "known_bad").length > 0
-    ? nearby.filter((finding) => finding.kind === "known_bad")
-    : nearby
-  return ranked.reduce((closest: Finding | null, finding) => (
-    closest === null || Math.abs(finding.timestamp - cursor) < Math.abs(closest.timestamp - cursor) ? finding : closest
-  ), null)
-}
 
 export function PostgresView({
   context,
@@ -416,14 +367,9 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
-        const highlight = tabHighlight(data, tab.id, cursor)
-        return <span className={`pg-tab${tab.divide === true ? " ml-2 border-l border-line4" : ""}`} key={tab.id}>
-          <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
-            <span>{t(`pg.section.${tab.id}`)}</span>
-            {highlight.count > 0 && <span className="pg-tab-badge" data-attention={highlight.attention}>{compact(highlight.count, locale)}</span>}
-          </button>
-          {highlight.count > 0 && <LabelHelp helpKey={highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count"} helpText={t(highlight.attention ? "pg.tab_badge.attention" : "pg.tab_badge.count", { count: highlight.count })} iconOnly labelKey={`pg.section.${tab.id}`} t={t} testId={`pg-tab-badge-help-${tab.id}`} />}
-        </span>
+        return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">
+          <span>{t(`pg.section.${tab.id}`)}</span>
+        </button>
       })}
     </nav>
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
@@ -433,8 +379,8 @@ export function PostgresView({
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
-    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : autoFinding(data, "pg_locks", cursor)} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} transformRows={transformLockRows} />}
-    {section === "databases" && <><DatabasesActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onPattern={onPattern} t={t} /><PgEntityView columns={postgresByteColumns(DATABASE_COLUMNS, blockSize)} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : autoFinding(data, "pg_stat_database", cursor)} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} /></>}
+    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} transformRows={transformLockRows} />}
+    {section === "databases" && <><DatabasesActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onPattern={onPattern} t={t} /><PgEntityView columns={postgresByteColumns(DATABASE_COLUMNS, blockSize)} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} /></>}
     {section === "tables" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_tables" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} /></>}
     {section === "indexes" && <><RelationsActivity blockSize={blockSize} cursor={cursor} hour={hour} level={relationLevel} locale={locale} onCursor={onCursor} onPattern={onPattern} section="pg_stat_user_indexes" t={t} /><PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} /></>}
   </>

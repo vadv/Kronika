@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, autoFinding, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, tabHighlight, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, visibleLockRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, visibleLockRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -675,61 +675,3 @@ test("database totals omit PostgreSQL's shared-object statistics row", () => {
   assert.equal(helpers.postgresDatabaseCount([shared, database]), 1)
 })
 
-test("a tab's badge counts only its own mapped findings within a minute of the cursor, and flags known_bad separately from a plain event", () => {
-  const CURSOR = 10_000_000
-  const finding = (logicalName, kind, timestamp) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal: "0", segmentId: "a", timestamp, typeId: "0" })
-
-  const nearby = { findingGroups: [], findings: [finding("pg_log_lock_waits", "event", CURSOR - 30_000_000)] }
-  assert.deepEqual(helpers.tabHighlight(nearby, "locks", CURSOR), { attention: false, count: 1 })
-
-  const contended = {
-    findingGroups: [],
-    findings: [finding("pg_locks", "known_bad", CURSOR), finding("pg_log_lock_waits", "event", CURSOR + 60_000_000)],
-  }
-  assert.deepEqual(helpers.tabHighlight(contended, "locks", CURSOR), { attention: true, count: 2 })
-
-  // A finding recorded under a different tab's section never leaks into this one's count.
-  const elsewhere = { findingGroups: [], findings: [finding("pg_log_autovacuum", "event", CURSOR)] }
-  assert.deepEqual(helpers.tabHighlight(elsewhere, "locks", CURSOR), { attention: false, count: 0 })
-  assert.deepEqual(helpers.tabHighlight(elsewhere, "vacuum", CURSOR), { attention: false, count: 1 })
-
-  // A finding outside the window reads as nothing here, however many happened earlier in the hour.
-  const stale = { findingGroups: [], findings: [finding("pg_log_autovacuum", "event", CURSOR + 60_000_001)] }
-  assert.deepEqual(helpers.tabHighlight(stale, "vacuum", CURSOR), { attention: false, count: 0 })
-
-  // Tabs with no mapped findings section never claim a count.
-  assert.deepEqual(helpers.tabHighlight({ findingGroups: [], findings: [] }, "tables", CURSOR), { attention: false, count: 0 })
-})
-
-test("without an explicit selection, the row nearest the cursor stands in, preferring a known_bad mark over a plain event", () => {
-  const CURSOR = 10_000_000
-  const finding = (logicalName, kind, timestamp, rowOrdinal) => ({ category: null, fieldOrdinal: 0, kind, logicalName, rowOrdinal, segmentId: "a", timestamp, typeId: "0" })
-
-  assert.equal(helpers.autoFinding({ findings: [] }, "pg_locks", CURSOR), null)
-
-  // Outside the window: nothing stands in, even though it's the only finding recorded.
-  const stale = { findings: [finding("pg_locks", "event", CURSOR + 60_000_001, "0")] }
-  assert.equal(helpers.autoFinding(stale, "pg_locks", CURSOR), null)
-
-  // A different section's finding never leaks into this one's auto-pick.
-  const elsewhere = { findings: [finding("pg_log_lock_waits", "known_bad", CURSOR, "0")] }
-  assert.equal(helpers.autoFinding(elsewhere, "pg_locks", CURSOR), null)
-
-  // Two plain events nearby: the nearer one wins.
-  const twoEvents = {
-    findings: [
-      finding("pg_locks", "event", CURSOR - 40_000_000, "far"),
-      finding("pg_locks", "event", CURSOR + 5_000_000, "near"),
-    ],
-  }
-  assert.equal(helpers.autoFinding(twoEvents, "pg_locks", CURSOR).rowOrdinal, "near")
-
-  // A farther known_bad still outranks a nearer plain event.
-  const mixed = {
-    findings: [
-      finding("pg_locks", "event", CURSOR + 1_000_000, "near-event"),
-      finding("pg_locks", "known_bad", CURSOR - 40_000_000, "far-known-bad"),
-    ],
-  }
-  assert.equal(helpers.autoFinding(mixed, "pg_locks", CURSOR).rowOrdinal, "far-known-bad")
-})
