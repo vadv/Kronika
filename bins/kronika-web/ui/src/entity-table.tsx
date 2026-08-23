@@ -25,6 +25,8 @@ import { semanticValueTone } from "./value-tone"
 // Must match --spacing-row.
 const ROW_PX = 24
 const SKELETON_ROWS = 8
+// Past half the narrow rung, a pinned column leaves room for no other.
+const NARROW_STICKY_MAX = 260
 
 export interface EntityColumn {
   readonly field: string
@@ -129,6 +131,7 @@ export function EntityTable({
     meta: {
       numeric: NUMERIC_KINDS.has(field.kind ?? "text"),
       sticky: field.sticky,
+      wide: (field.width ?? 128) > NARROW_STICKY_MAX,
       help: field.help,
       label: field.label,
     },
@@ -256,7 +259,7 @@ export function EntityTable({
               {sorted !== false && <i className="ml-[5px] not-italic text-accent2">{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
             {columnHelp(header.column.columnDef.meta) !== null && <LabelHelp helpKey={columnHelp(header.column.columnDef.meta)!.help} iconOnly labelKey={columnHelp(header.column.columnDef.meta)!.label} t={t} />}
-            <span className="column-grip absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize touch-none hover:bg-accent3 hover:opacity-50" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
+            <span className="column-grip absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize touch-none hover:bg-accent3 hover:opacity-50" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} />
           </div>
         })}
       </div>
@@ -427,7 +430,7 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 }
 
 export function sticky(meta: unknown, head: boolean): string {
-  const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
+  const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean; readonly wide?: boolean } | undefined
   const box = "flex-none min-w-0 overflow-hidden border-b border-line px-[7px] [.process-table_&]:px-2"
   const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
   const name = typeof cell?.sticky === "string" ? cell.sticky : ""
@@ -441,6 +444,7 @@ export function sticky(meta: unknown, head: boolean): string {
     name,
     // Keep the PID column below the pinned command shadow.
     name === "sticky-command" ? "shadow-[5px_0_8px_var(--color-shadow-b)] max-[760px]:static max-[760px]:shadow-none" : "",
+    pinned && cell?.wide === true ? "max-[520px]:static max-[520px]:shadow-none" : "",
   ].filter(Boolean).join(" ")
 }
 

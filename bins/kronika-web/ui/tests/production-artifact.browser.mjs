@@ -5721,3 +5721,76 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await removeBrowserProfile(profile)
   }
 })
+
+// A narrow-width rule declared before the base value it must beat loses the
+// cascade and does nothing. Both of these shipped that way and passed review,
+// because the responsive suite matches the text of the stylesheet rather than
+// what the browser resolves. Assert the resolved geometry instead.
+test("narrow ledger rules win the cascade at phone width", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      return ndjson(response, url.searchParams.has("section") ? [] : [
+        ...timelineRecords(HOUR),
+        { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 42 },
+      ])
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, systemSnapshotRecords())
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("cascade browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 915, mobile: true, width: 412 })
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
+    await cdp.waitFor(`document.querySelector('[data-testid="use-table"] .use-row') !== null`, "a host ledger row", 15_000)
+    await settleLayout(cdp)
+
+    const resolved = await cdp.evaluate(`(() => {
+      const row = document.querySelector('[data-testid="use-table"] .use-row')
+      const tracks = getComputedStyle(row).gridTemplateColumns.split(" ")
+      return { client: document.documentElement.clientWidth, first: tracks[0], tracks: tracks.length }
+    })()`)
+    // The <=760px rule pins the first track to 80px; the base value is a
+    // minmax(96px, 130px) that resolves to 96px or more when it wrongly wins.
+    assert.equal(resolved.client, 412, JSON.stringify(resolved))
+    assert.equal(resolved.tracks, 4, JSON.stringify(resolved))
+    assert.equal(resolved.first, "80px", JSON.stringify(resolved))
+
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
