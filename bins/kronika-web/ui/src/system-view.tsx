@@ -666,7 +666,7 @@ function SystemGroupChart({
   if (SYSTEM_METRICS.every((spec) => spec.id !== metricId)) return null
   return <div className="grid min-w-0 gap-[7px]" data-testid={`system-group-chart-${groupKey}`}>
     <div aria-label={t(`section.${selectedMetric.spec.group}`)} className="dock-tabs history-selector flex max-w-full flex-wrap gap-[5px] p-px" role="group">
-      {meta.chips.map((spec) => <button aria-pressed={spec.id === meta.chartChip(metricId)} data-testid={`system-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
+      {meta.chips.map((spec) => <button aria-pressed={spec.id === meta.chartChip(metricId)} data-testid={`system-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(metricTabLabel(spec))}</button>)}
     </div>
     {breakdown.length === 0
       ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
@@ -1083,6 +1083,12 @@ function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (v
 // metric's unit. Only the network throughput pair qualifies today.
 function secondMetricLane(spec: MetricSpec): string | null {
   return spec.id === "network_rx" ? "net_tx" : null
+}
+
+// A metric drawing a second lane is named for the pair on its tab, while the
+// chart goes on naming each series. "RX" over a chart of RX and TX is wrong.
+function metricTabLabel(spec: MetricSpec): string {
+  return secondMetricLane(spec) === null ? spec.label : "system.metric.network.label"
 }
 
 function laneChartPoints(data: HourData, lane: string): readonly ChartPoint[] {

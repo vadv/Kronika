@@ -3,9 +3,10 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const tree = await importModule('export { buildProcessForest } from "../src/process-tree.ts"')
+const tree = await importModule('export { buildProcessForest, scheduledTicks } from "../src/process-tree.ts"')
 
 const HOUR = 1_780_000_000_000_000
+const SHAPE_ONLY = { intervalSeconds: null, memTotalKb: null, previousTicks: new Map(), ticksPerSecond: 100 }
 
 let ordinal = 0
 function row(pid, ppid, extra = {}) {
@@ -21,7 +22,7 @@ function pids(forest) { return forest.map((r) => r.values.pid) }
 
 test("a simple parent/child chain walks the parent first, each child directly under it", () => {
   const rows = [row(3, 2), row(1, 0), row(2, 1)]
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [1, 2, 3])
   assert.equal(forest[0].values.process_tree_prefix, "")
   assert.equal(forest[1].values.process_tree_prefix, "└─ ")
@@ -30,7 +31,7 @@ test("a simple parent/child chain walks the parent first, each child directly un
 
 test("two children of the same parent are siblings, only the last gets the closing connector", () => {
   const rows = [row(1, 0), row(2, 1), row(3, 1)]
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [1, 2, 3])
   assert.equal(forest[1].values.process_tree_prefix, "├─ ")
   assert.equal(forest[2].values.process_tree_prefix, "└─ ")
@@ -38,49 +39,62 @@ test("two children of the same parent are siblings, only the last gets the closi
 
 test("a continuing ancestor branch draws a vertical bar, not blank indentation", () => {
   const rows = [row(1, 0), row(2, 1), row(3, 1), row(4, 2)]
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [1, 2, 4, 3])
   assert.equal(forest[2].values.process_tree_prefix, "│  └─ ")
 })
 
 test("two unrelated process trees (different sessions/services) stay separate and ordered by root pid", () => {
   const rows = [row(50, 10), row(10, 0), row(1, 0), row(2, 1)]
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [1, 2, 10, 50])
 })
 
 test("a pid whose recorded parent is not in this snapshot renders as its own root, not dropped", () => {
   const rows = [row(2, 1)] // pid 1 never arrived in this page
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [2])
   assert.equal(forest[0].values.process_tree_prefix, "")
 })
 
 test("a two-process cycle still renders both processes, rooted at the lower pid, without looping", () => {
   const rows = [row(20, 10), row(10, 20)]
-  const forest = tree.buildProcessForest(rows, HOUR, 100, 2_048_000)
+  const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest).slice().sort((left, right) => left - right), [10, 20])
   assert.equal(forest.length, 2)
 })
 
-test("%CPU is scheduled time over wall time since starttime, %MEM is resident over host total, TIME is scheduled seconds", () => {
-  const CURSOR = HOUR + 60_000_000 // one minute after starttime
-  const rows = [row(1, 0, { utime: 300, stime: 300, starttime: HOUR, rmem_kb: 512_000 })]
-  const [annotated] = tree.buildProcessForest(rows, CURSOR, 100, 2_048_000)
-  assert.equal(annotated.values.cpu_time_seconds, 6) // (300+300)/100 ticks-per-second
-  assert.equal(annotated.values.cpu_percent, 10) // 6s scheduled / 60s elapsed * 100
-  assert.equal(annotated.values.mem_percent, 25) // 512000/2048000 * 100
+test("%CPU is the share of one core burned since the previous snapshot, the way top counts it", () => {
+  // 600 ticks at 100/s = 6 CPU-seconds burned across a 12-second interval.
+  const rows = [row(1, 0, { utime: 900, stime: 300, rmem_kb: 512_000 })]
+  const previousTicks = new Map([[1, 600]])
+  const [busy] = tree.buildProcessForest(rows, { intervalSeconds: 12, memTotalKb: 2_048_000, previousTicks, ticksPerSecond: 100 })
+  assert.equal(busy.values.cpu_percent, 50)
+  assert.equal(busy.values.cpu_time_seconds, 12) // TIME stays the lifetime total
+  assert.equal(busy.values.mem_percent, 25)
+
+  // A long-lived process that burned nothing this interval reads zero, not
+  // the near-zero lifetime average it used to show.
+  const [idle] = tree.buildProcessForest(rows, { intervalSeconds: 12, memTotalKb: null, previousTicks: new Map([[1, 1_200]]), ticksPerSecond: 100 })
+  assert.equal(idle.values.cpu_percent, 0)
 })
 
-test("a missing input yields a null metric instead of a wrong number", () => {
-  const rows = [row(1, 0, { utime: null, stime: 300, starttime: HOUR, rmem_kb: 512_000 })]
-  const [withoutUtime] = tree.buildProcessForest(rows, HOUR + 1_000_000, 100, 2_048_000)
-  assert.equal(withoutUtime.values.cpu_time_seconds, null)
-  assert.equal(withoutUtime.values.cpu_percent, null)
+test("without a usable preceding sample %CPU is missing rather than guessed", () => {
+  const rows = [row(1, 0, { utime: 900, stime: 300, rmem_kb: 512_000 })]
+  const inputs = (extra) => ({ intervalSeconds: 12, memTotalKb: 2_048_000, previousTicks: new Map([[1, 600]]), ticksPerSecond: 100, ...extra })
+  assert.equal(tree.buildProcessForest(rows, inputs({ previousTicks: new Map() }))[0].values.cpu_percent, null)
+  assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: null }))[0].values.cpu_percent, null)
+  assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: 0 }))[0].values.cpu_percent, null)
+  assert.equal(tree.buildProcessForest(rows, inputs({ ticksPerSecond: null }))[0].values.cpu_percent, null)
+  // A counter that went backwards (pid reused) is not a negative reading.
+  assert.equal(tree.buildProcessForest(rows, inputs({ previousTicks: new Map([[1, 9_999]]) }))[0].values.cpu_percent, null)
+  // %MEM is independent of the interval and still reported.
+  assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: null }))[0].values.mem_percent, 25)
+})
 
-  const [withoutTicks] = tree.buildProcessForest(rows, HOUR + 1_000_000, null, 2_048_000)
-  assert.equal(withoutTicks.values.cpu_percent, null)
-
-  const [withoutMemTotal] = tree.buildProcessForest(rows, HOUR + 1_000_000, 100, null)
-  assert.equal(withoutMemTotal.values.mem_percent, null)
+test("scheduled ticks are the sum the delta is taken on, and missing either half is unusable", () => {
+  const at = (values) => tree.scheduledTicks(row(1, 0, values))
+  assert.equal(at({ utime: 900, stime: 300 }), 1_200)
+  assert.equal(at({ utime: null, stime: 300 }), null)
+  assert.equal(at({ utime: 900 }), null)
 })
