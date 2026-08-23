@@ -8,6 +8,14 @@ const events = await importModule(
   { plugins: [registryPlugin([{
     typeId: "1100001", logicalName: "os_process", identity: ["pid"],
     columns: ["ts", "pid", "starttime", "read_bytes"],
+  }, {
+    typeId: "1005004", logicalName: "pg_stat_database", identity: ["datid"],
+    // Ordinals are the contract: 16 deadlocks, 20/21 the wraparound ages,
+    // 25 checksum_failures, 32/33 the session counters.
+    columns: [...Array.from({ length: 16 }, (_, i) => `pad${i}`), "deadlocks",
+      "pad17", "pad18", "pad19", "frozen_xid_age", "min_mxid_age",
+      "pad22", "pad23", "pad24", "checksum_failures",
+      ...Array.from({ length: 6 }, (_, i) => `pad${26 + i}`), "sessions_fatal", "sessions_killed"],
   }])] },
 )
 const t = (key) => ({ "unit.ms": " ms", "unit.per_call": "/call", "unit.per_second": "/s" })[key] ?? key
@@ -43,3 +51,23 @@ test("event identity fields remain exact while ordinary readings stay bounded", 
   assert.equal(events.eventValue(finding, "tiny", 4e-7, "en", t), "4E-7")
 })
 
+test("every known-bad boundary reaches Events with a named source and a stated boundary", () => {
+  const known = (logicalName, typeId, fieldOrdinal) => events.findingMetric({ fieldOrdinal, kind: "known_bad", logicalName, typeId }, t)
+  for (const [logicalName, typeId, fieldOrdinal, field, boundary] of [
+    ["pg_stat_database", "1005004", 25, "checksum_failures", "events.boundary.increased"],
+    ["pg_stat_database", "1005004", 32, "sessions_fatal", "events.boundary.increased"],
+    ["pg_stat_database", "1005004", 33, "sessions_killed", "events.boundary.increased"],
+    ["pg_stat_database", "1005004", 20, "frozen_xid_age", "events.boundary.wraparound"],
+    ["pg_stat_database", "1005004", 21, "min_mxid_age", "events.boundary.wraparound"],
+    ["pg_stat_archiver", "1008001", 4, "failed_count", "events.boundary.increased"],
+    ["os_cgroup_memory", "1202002", 13, "oom_kill", "events.boundary.increased"],
+    ["pg_locks", "1011002", 2, "blocked_by", "events.boundary.contention"],
+    ["pg_log_errors", "2001001", 4, "category", "events.boundary.data_corruption"],
+  ]) {
+    const metric = known(logicalName, typeId, fieldOrdinal)
+    assert.equal(metric.field, field, logicalName + " " + field)
+    assert.equal(metric.boundary, boundary, logicalName + " boundary")
+    // A section with no mapping falls through to its raw name; these must not.
+    assert.notEqual(metric.label, "events.metric.unavailable", logicalName + " label")
+  }
+})
