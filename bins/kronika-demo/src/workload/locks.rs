@@ -1,4 +1,4 @@
-//! PostgreSQL queues each chain's conflicting row locks in FIFO order.
+//! `PostgreSQL` queues each chain's conflicting row locks in FIFO order.
 
 use super::{WorkloadConfig, connect_as, naming, wait_for_stop};
 use std::sync::Arc;

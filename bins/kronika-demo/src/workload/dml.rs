@@ -17,7 +17,7 @@ pub(crate) enum Action {
     SlowQuery,
     /// Emits a syntax error.
     BadStatement,
-    /// Emits PgBouncer's "no such database" event.
+    /// Emits `PgBouncer`'s "no such database" event.
     BadDatabase,
 }
 

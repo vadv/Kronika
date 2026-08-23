@@ -1,4 +1,4 @@
-//! Optional PostgreSQL workload enabled by `KRONIKA_DEMO_WORKLOAD_DSN`.
+//! Optional `PostgreSQL` workload enabled by `KRONIKA_DEMO_WORKLOAD_DSN`.
 
 mod dml;
 mod events;
@@ -18,7 +18,7 @@ use tokio_postgres::{Client, Config, NoTls};
 
 #[derive(Clone)]
 pub(crate) struct WorkloadConfig {
-    /// DML connection, normally through PgBouncer.
+    /// DML connection, normally through `PgBouncer`.
     pub(crate) dsn: String,
     /// Direct connection for session-scoped settings.
     pub(crate) direct_dsn: String,
