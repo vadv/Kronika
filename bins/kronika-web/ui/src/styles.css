@@ -155,17 +155,6 @@
   & span { color: var(--color-fg3); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500; }
   & h2 { font-size: var(--text-md); margin-top: 4px; overflow-wrap: anywhere; }
 }
-@utility pg-overview-section {
-  background: var(--color-s1); margin-top: 8px;
-  & > h2 { border-bottom: 1px solid var(--color-line2); color: var(--color-fg2); font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 600; margin: 0; min-height: 28px; padding: 8px 8px 0; }
-  & > dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0;
-    @media (max-width: 1000px) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    @media (max-width: 760px) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  & > dl > div { border-bottom: 1px solid var(--color-line); min-height: 46px; padding: 8px; }
-  & dt { color: var(--color-fg3); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500; overflow-wrap: anywhere; }
-  & dd { color: var(--color-fg); font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; margin: 6px 0 0; overflow-wrap: anywhere; }
-}
-
 @utility panel {
   background: var(--color-s1); min-width: 0;
 }
@@ -693,6 +682,7 @@
   /* Full-bleed rows leave no room for the segmented field. */
   .process-workspace > .lensbar > .lens-tabs { background: transparent; border: 0; border-radius: 0; padding: 2px 4px; }
   .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
+  @media (max-width: 520px) { .process-summary-inline { border-top: 0; flex-basis: auto; } }
   .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
 }
