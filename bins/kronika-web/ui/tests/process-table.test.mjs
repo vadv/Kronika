@@ -24,17 +24,8 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
   assert.deepEqual(fields("tree"), [
-    "pid", "command", "user", "cpu_percent", "mem_percent", "vmem_kb", "rmem_kb", "tty", "state", "starttime", "cpu_time_seconds",
+    "user", "pid", "cpu_percent", "mem_percent", "vmem_kb", "rmem_kb", "tty", "process_stat", "starttime", "cpu_time_seconds", "command",
   ])
-  assert.deepEqual(
-    LENS_FIELDS.tree.filter(({ id }) => ["cpu_percent", "mem_percent", "starttime", "cpu_time_seconds"].includes(id)).map(({ id, label, help }) => ({ id, label, help })),
-    [
-      { id: "cpu_percent", label: "col.cpu_percent.label", help: "col.cpu_percent.help" },
-      { id: "mem_percent", label: "col.mem_percent.label", help: "col.mem_percent.help" },
-      { id: "starttime", label: "col.starttime.label", help: "col.starttime.help" },
-      { id: "cpu_time_seconds", label: "col.cpu_time.label", help: "col.cpu_time.help" },
-    ],
-  )
 })
 
 test("process users retain exact numeric identity and honest unresolved fallback", () => {
@@ -54,18 +45,22 @@ test("process lenses share the measured identity width contract", () => {
   for (const lens of ["generic", "cpu", "memory", "disk", "tree"]) {
     const columns = LENS_FIELDS[lens]
     assert.equal(columns.find(({ id }) => id === "pid").size, 82, `${lens} PID`)
-    assert.equal(columns.find(({ id }) => id === "command").size, lens === "tree" ? 400 : 340, `${lens} Command`)
-    assert.equal(columns.find(({ id }) => id === "state").size, 50, `${lens} State`)
+    assert.equal(columns.find(({ id }) => id === "command").size, lens === "tree" ? 620 : 340, `${lens} Command`)
+  }
+  for (const lens of ["generic", "cpu", "memory", "disk"]) {
+    assert.equal(LENS_FIELDS[lens].find(({ id }) => id === "state").size, 50, `${lens} State`)
   }
   assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "user").size, 88)
   assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "user").size, 88)
   assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "effective_user").size, 114)
-  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 180)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "process_stat").size, 62)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 92)
 })
 
-test("process lens tabs hand off to the summary without a fake splitter", async () => {
+test("process lens tabs read as one control, and only on the Processes bar, without a fake splitter", async () => {
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
-  assert.match(styles, /\.lensbar > \.process-summary-inline \{ padding-left: 2px; \}/)
+  assert.match(styles, /\.process-workspace > \.lensbar > \.lens-tabs \{[^}]*background: var\(--color-s1\)[^}]*border: 1px solid/)
+  assert.doesNotMatch(styles, /^\.lensbar > \.lens-tabs \{[^}]*border: 1px/m)
   assert.doesNotMatch(styles, /\.lensbar > \.process-summary-inline \{[^}]*border-left/)
 })
 

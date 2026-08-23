@@ -302,6 +302,10 @@ search selectors are resolved by the server before ordering and pagination;
 text search covers command plus both resolved names. No query path consults
 the live host identity database.
 
+A snapshot serves every cumulative column as a rate, which leaves no room for
+the CPU time a process has burned since it started. `cpu_time_ticks` carries
+that total, as the plain sum of `utime` and `stime` in clock ticks.
+
 ### cgroup and container
 
 | Metric | atop | predecessor | internal | Kronika |

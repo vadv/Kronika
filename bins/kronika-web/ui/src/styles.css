@@ -618,6 +618,7 @@
 .process-summary-inline .label-help:focus-within { opacity: 1; }
 
 .lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.process-workspace > .lensbar > .lens-tabs { background: var(--color-s1); border: 1px solid var(--color-line2); border-radius: var(--radius-sm); padding: 1px; }
 .lensbar > .process-summary-inline { padding-left: 2px; }
 
 .vacuum-chip { border: 1px solid var(--color-line3); border-radius: var(--radius-xs); color: var(--color-fg2); display: inline-block; font-family: var(--font-sans); font-size: var(--text-xs); line-height: 1.5; max-width: 100%; overflow: hidden; padding: 0 6px; text-overflow: ellipsis; white-space: nowrap; }
@@ -689,6 +690,8 @@
 @media (max-width: 760px) {
   .lensbar { flex-wrap: wrap; gap: 0; padding: 0; }
   .lensbar > .lens-tabs { flex: 1 0 100%; padding: 2px 4px; }
+  /* Full-bleed rows leave no room for the segmented field. */
+  .process-workspace > .lensbar > .lens-tabs { background: transparent; border: 0; border-radius: 0; padding: 2px 4px; }
   .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
   .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
