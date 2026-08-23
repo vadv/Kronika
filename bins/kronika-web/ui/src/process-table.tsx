@@ -25,14 +25,6 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
-import { semanticValueTone } from "./value-tone"
-
-const TONE_TEXT_CLASS: Readonly<Record<string, string>> = {
-  good: "text-ok",
-  warning: "text-warn",
-  critical: "text-bad",
-  inactive: "text-fg4",
-}
 
 export interface Field {
   readonly id: string
@@ -57,36 +49,36 @@ export const PROCESS_USER_FIELDS: readonly Field[] = [
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
     PID, COMMAND,
-    idField("ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
-    idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
-    numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
-    idField("exit_signal", "col.exit_signal", 70), STATE,
+    field("id", "ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
+    field("id", "gid", "col.gid", 70), field("id", "egid", "col.egid", 70),
+    field("number", "num_threads", "col.threads", 84), field("id", "tty", "col.tty", 70),
+    field("id", "exit_signal", "col.exit_signal", 70), STATE,
   ],
   cpu: [
-    PID, COMMAND, coresField("utime", "col.utime", 84),
-    coresField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 96),
-    rateField("blkdelay_ticks", "col.blkdelay", 84), rateField("nvcsw", "col.nvcsw", 84),
-    rateField("nivcsw", "col.nivcsw", 84), idField("curcpu", "col.curcpu", 70), numberField("nice", "col.nice", 84),
-    numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
+    PID, COMMAND, field("cores", "utime", "col.utime", 84),
+    field("cores", "stime", "col.stime", 84), field("ns", "rundelay_ns", "col.rundelay", 96),
+    field("rate", "blkdelay_ticks", "col.blkdelay", 84), field("rate", "nvcsw", "col.nvcsw", 84),
+    field("rate", "nivcsw", "col.nivcsw", 84), field("id", "curcpu", "col.curcpu", 70), field("number", "nice", "col.nice", 84),
+    field("number", "prio", "col.prio", 84), field("number", "rtprio", "col.rtprio", 84), field("id", "policy", "col.policy", 70),
     STATE,
   ],
   memory: [
-    PID, COMMAND, kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
-    kibField("vswap_kb", "col.vswap", 96), rateField("minflt", "col.minflt", 84),
-    rateField("majflt", "col.majflt", 84), STATE,
+    PID, COMMAND, field("kib", "rmem_kb", "col.rmem", 96), field("kib", "vmem_kb", "col.vmem", 96),
+    field("kib", "vswap_kb", "col.vswap", 96), field("rate", "minflt", "col.minflt", 84),
+    field("rate", "majflt", "col.majflt", 84), STATE,
   ],
   disk: [
-    PID, COMMAND, bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
-    rateField("syscr", "col.syscr", 84),
-    rateField("syscw", "col.syscw", 84), bytesField("rchar", "col.rchar", 96),
-    bytesField("wchar", "col.wchar", 96), bytesField("cancelled_write_bytes", "col.cancelled_write", 96),
-    rateField("blkdelay_ticks", "col.blkdelay", 84), STATE,
+    PID, COMMAND, field("bytes", "read_bytes", "col.read_bytes", 96), field("bytes", "write_bytes", "col.write_bytes", 96),
+    field("rate", "syscr", "col.syscr", 84),
+    field("rate", "syscw", "col.syscw", 84), field("bytes", "rchar", "col.rchar", 96),
+    field("bytes", "wchar", "col.wchar", 96), field("bytes", "cancelled_write_bytes", "col.cancelled_write", 96),
+    field("rate", "blkdelay_ticks", "col.blkdelay", 84), STATE,
   ],
   tree: [
     PID, TREE_COMMAND, USER,
-    percentField("cpu_percent", "col.cpu_percent", 72), percentField("mem_percent", "col.mem_percent", 72),
-    kibField("vmem_kb", "col.vmem", 96), kibField("rmem_kb", "col.rmem", 96), idField("tty", "col.tty", 70),
-    STATE, timestampField("starttime", "col.starttime", 165), secondsField("cpu_time_seconds", "col.cpu_time", 84),
+    field("percent", "cpu_percent", "col.cpu_percent", 72), field("percent", "mem_percent", "col.mem_percent", 72),
+    field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("id", "tty", "col.tty", 70),
+    STATE, field("timestamp", "starttime", "col.starttime", 165), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 
@@ -99,13 +91,16 @@ export interface ProcessSummaryMetric {
   readonly kind: SummaryKind
 }
 
+// Generic and Tree both answer "who is on this host", not a resource question.
+const IDENTITY_SUMMARY: readonly ProcessSummaryMetric[] = [
+  summaryMetric("processes", "process.summary.processes", "count"),
+  summaryMetric("threads", "process.summary.threads", "count"),
+  summaryMetric("runnable", "process.summary.running", "count"),
+  summaryMetric("postgresql", "process.summary.postgresql", "count"),
+]
+
 export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSummaryMetric[]>> = {
-  generic: [
-    summaryMetric("processes", "process.summary.processes", "count"),
-    summaryMetric("threads", "process.summary.threads", "count"),
-    summaryMetric("runnable", "process.summary.running", "count"),
-    summaryMetric("postgresql", "process.summary.postgresql", "count"),
-  ],
+  generic: IDENTITY_SUMMARY,
   cpu: [
     summaryMetric("user_cores", "process.summary.user_time", "cores"),
     summaryMetric("system_cores", "process.summary.system_time", "cores"),
@@ -124,12 +119,7 @@ export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSumm
     summaryMetric("read_calls_per_second", "process.summary.read_calls", "1/s"),
     summaryMetric("write_calls_per_second", "process.summary.write_calls", "1/s"),
   ],
-  tree: [
-    summaryMetric("processes", "process.summary.processes", "count"),
-    summaryMetric("threads", "process.summary.threads", "count"),
-    summaryMetric("runnable", "process.summary.running", "count"),
-    summaryMetric("postgresql", "process.summary.postgresql", "count"),
-  ],
+  tree: IDENTITY_SUMMARY,
 }
 
 export const PROCESS_SUMMARY_FIELDS: readonly string[] = [...new Set(Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field)))]
@@ -362,9 +352,7 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
     : field.kind === "timestamp" ? (timestamp === null ? "—" : time.timestamp(timestamp))
     : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
-  const tone = field.field === undefined ? null : semanticValueTone(field.field, cell)
-  const toneClass = tone === null ? "" : ` value-tone-${tone} ${TONE_TEXT_CLASS[tone]}`
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap${toneClass} ${isCommand || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{treePrefix !== "" && <span aria-hidden="true" className="process-tree-prefix">{treePrefix}</span>}{isCommand && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${isCommand || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{treePrefix !== "" && <span aria-hidden="true" className="process-tree-prefix">{treePrefix}</span>}{isCommand && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
     ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
     : output}</span>
 }
@@ -406,15 +394,6 @@ function kib(number: number | null): number | null {
   return number === null ? null : number * 1024
 }
 
-function rateField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "rate", size } }
-
-function coresField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "cores", size } }
-
-function idField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "id", size } }
-function numberField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "number", size } }
-function kibField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "kib", size } }
-function bytesField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "bytes", size } }
-function nsField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "ns", size } }
-function percentField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "percent", size } }
-function secondsField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "seconds", size } }
-function timestampField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "timestamp", size } }
+function field(kind: Field["kind"], id: string, key: string, size: number): Field {
+  return { id, field: id, label: `${key}.label`, help: `${key}.help`, kind, size }
+}

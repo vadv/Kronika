@@ -66,10 +66,10 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
-import { annotateProcessMetrics, buildProcessForest } from "./process-tree"
+import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -113,6 +113,10 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
 }
 
 function processRequest(lens: Lens): SectionRequest {
+  // The tree needs every process at one moment, unranked. Omitting pageSize
+  // is how this loader already says that: the request then goes through the
+  // ordinary unpaged path instead of the server-ranked dense one.
+  if (lens === "tree") return { section: "os_process" }
   const selected = processTableDefaultOrder(lens).column
   return {
     section: "os_process",
@@ -254,12 +258,11 @@ function App({ locale, onLocale, t }: {
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
   const viewRequests = useMemo(() => {
-    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }]
+    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
       planRequest(planLens),
-      PLAN_INFO_REQUEST,
       ...POSTGRESQL_CONTEXT_REQUESTS,
     ]
     if (activeRelation && visibleSource === "postgresql") {
@@ -610,31 +613,11 @@ function App({ locale, onLocale, t }: {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
-  // The Tree lens needs every process at this instant, unranked — the
-  // opposite of the dense, server-ranked page the other lenses share — so it
-  // fetches its own full os_process snapshot instead of reading data.processes.
-  const [processTreeSnapshot, setProcessTreeSnapshot] = useState<{ readonly processes: readonly DataRow[]; readonly memTotalKb: number | null }>({ processes: [], memTotalKb: null })
-  useEffect(() => {
-    if (lens !== "tree") return undefined
-    const segment = segmentBoundAt(segments, cursor)
-    if (segment === null) { setProcessTreeSnapshot({ processes: [], memTotalKb: null }); return undefined }
-    const controller = new AbortController()
-    acceptResponse(
-      loadSnapshot(segment.id, cursor, [{ section: "os_process" }, { section: "os_meminfo", fields: ["mem_total"] }], controller.signal),
-      controller.signal,
-      (loaded) => setProcessTreeSnapshot({
-        processes: loaded.sections.os_process ?? [],
-        memTotalKb: asNumber(value((loaded.sections.os_meminfo ?? [])[0] ?? null, "mem_total")),
-      }),
-      () => setProcessTreeSnapshot({ processes: [], memTotalKb: null }),
-    )
-    return () => controller.abort()
-  }, [lens, segments, cursor])
-  const processForest = useMemo(
-    () => buildProcessForest(annotateProcessMetrics(processTreeSnapshot.processes, cursor, ticksPerSecond, processTreeSnapshot.memTotalKb)),
-    [cursor, processTreeSnapshot, ticksPerSecond],
-  )
-  const processTableRows = lens === "tree" ? processForest : processRows
+  const processTableRows = useMemo(() => {
+    if (lens !== "tree") return processRows
+    const memTotalKb = asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total"))
+    return buildProcessForest(allProcessRows, cursor, ticksPerSecond, memTotalKb)
+  }, [allProcessRows, cursor, data.sections.os_meminfo, lens, processRows, ticksPerSecond])
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))

@@ -324,11 +324,13 @@ const LOCATOR_CELL: Readonly<Record<string, string>> = {
   spike: "bg-[color-mix(in_srgb,var(--color-warn)_12%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
 }
 const TABLE_END_GUTTER = 8
+// Both hooks name the same thing: styles.css treats .entity-value and
+// .numeric-cell alike, and process rows label their value span the latter.
 const VALUE_TONE: Readonly<Record<string, string>> = {
-  good: "[&_.entity-value]:text-ok",
-  warning: "[&_.entity-value]:text-warn",
-  critical: "[&_.entity-value]:text-bad",
-  inactive: "[&_.entity-value]:text-fg4",
+  good: "[&_.entity-value]:text-ok [&_.numeric-cell]:text-ok",
+  warning: "[&_.entity-value]:text-warn [&_.numeric-cell]:text-warn",
+  critical: "[&_.entity-value]:text-bad [&_.numeric-cell]:text-bad",
+  inactive: "[&_.entity-value]:text-fg4 [&_.numeric-cell]:text-fg4",
 }
 
 export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {

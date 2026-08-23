@@ -15,7 +15,7 @@ use super::{
     MIN_MXID_AGE_FIELD, MOUNT_FREE_BYTES_FIELD, OOM_KILL_FIELD, OS_CGROUP_MEMORY_V1, OS_CPU,
     OS_LOADAVG, OS_MEMINFO, OS_MOUNTINFO, OS_VMSTAT, OVERALL_HEALTH_FIELD, PG_LOG_SLOW_QUERIES,
     PG_STAT_ARCHIVER, SESSIONS_FATAL_FIELD, SESSIONS_KILLED_FIELD, SLOW_QUERY_DURATION_FIELD,
-    WRAPAROUND_AGE_THRESHOLD, activity_layouts, checksum_layouts, optional_i64, session_layouts,
+    WRAPAROUND_AGE_THRESHOLD, activity_layouts, has_checksum, has_sessions, optional_i64,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -75,9 +75,8 @@ impl FindingBuilder {
         Ok(())
     }
 
-    /// Seeds `deadlocks_before` (all four layouts) and, on layouts that carry
-    /// the column, `checksum_failures_before` / `sessions_before` too, from one
-    /// walk of the previous segment's section instead of one walk per counter.
+    /// Seeds `deadlocks_before`, and on layouts carrying those columns
+    /// `checksum_failures_before` / `sessions_before` too.
     pub(super) fn observe_prior_database_counters(
         &mut self,
         segment: &Segment,
@@ -86,8 +85,8 @@ impl FindingBuilder {
         if segment.rows_of(type_id).is_none() {
             return Ok(());
         }
-        let has_checksum = checksum_layouts().contains(&type_id);
-        let has_sessions = session_layouts().contains(&type_id);
+        let has_checksum = has_checksum(type_id);
+        let has_sessions = has_sessions(type_id);
         let mut fields: Vec<&str> = vec!["ts", "datid", "deadlocks"];
         if has_checksum {
             fields.push("checksum_failures");
@@ -217,13 +216,7 @@ impl FindingBuilder {
                     .cpu_before
                     .is_some_and(|before| cpu_busy_at_least_80(before, current))
                 {
-                    cpu_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: CPU_IDLE_FIELD,
-                        row_ordinal,
-                        timestamp: current.timestamp,
-                    });
+                    cpu_hits.push(known_bad(CPU_IDLE_FIELD, row_ordinal, current.timestamp));
                 }
                 self.cpu_before = Some(current);
             }
@@ -265,13 +258,7 @@ impl FindingBuilder {
                     .get(timestamp)
                     .map_or(0, |snapshot| snapshot.online);
                 if online != 0 && load1.is_finite() && *load1 >= 2.0 * f64::from(online) {
-                    load_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: LOAD1_FIELD,
-                        row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                    load_hits.push(known_bad(LOAD1_FIELD, row_ordinal, *timestamp));
                 }
                 true
             },
@@ -315,13 +302,7 @@ impl FindingBuilder {
                     && available <= total
                     && i128::from(*available) * 100 <= i128::from(*total) * 10
                 {
-                    memory_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: MEM_AVAILABLE_FIELD,
-                        row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                    memory_hits.push(known_bad(MEM_AVAILABLE_FIELD, row_ordinal, *timestamp));
                 }
                 true
             },
@@ -365,13 +346,7 @@ impl FindingBuilder {
                     && free <= total
                     && i128::from(*total - *free) * 100 >= i128::from(*total) * 90
                 {
-                    mount_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: MOUNT_FREE_BYTES_FIELD,
-                        row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                    mount_hits.push(known_bad(MOUNT_FREE_BYTES_FIELD, row_ordinal, *timestamp));
                 }
                 true
             },
@@ -403,13 +378,11 @@ impl FindingBuilder {
                 ) && duration.is_finite()
                     && *duration >= 5_000.0
                 {
-                    query_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: SLOW_QUERY_DURATION_FIELD,
+                    query_hits.push(known_bad(
+                        SLOW_QUERY_DURATION_FIELD,
                         row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                        *timestamp,
+                    ));
                 }
                 true
             },
@@ -443,13 +416,7 @@ impl FindingBuilder {
                     && *timestamp > before_ts
                     && after > before
                 {
-                    oom_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: OOM_KILL_FIELD,
-                        row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                    oom_hits.push(known_bad(OOM_KILL_FIELD, row_ordinal, *timestamp));
                 }
                 self.oom_before = Some((*timestamp, current));
                 true
@@ -485,13 +452,11 @@ impl FindingBuilder {
                     && *timestamp > before_ts
                     && *failed_count > before
                 {
-                    archiver_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: ARCHIVER_FAILED_COUNT_FIELD,
+                    archiver_hits.push(known_bad(
+                        ARCHIVER_FAILED_COUNT_FIELD,
                         row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                        *timestamp,
+                    ));
                 }
                 self.archiver_before = Some((*timestamp, *failed_count));
                 true
@@ -506,9 +471,6 @@ impl FindingBuilder {
     /// database; such a row is skipped rather than treated as zero.
     /// `sessions_fatal` and `sessions_killed` are independent counters; either
     /// one growing fires its own finding, they are never summed.
-    ///
-    /// One walk per `pg_stat_database` layout covers every counter and
-    /// threshold that section carries, instead of one walk per check.
     pub(super) fn find_database_counters(
         &mut self,
         segment: &Segment,
@@ -518,8 +480,8 @@ impl FindingBuilder {
         if !self.requested.contains(&type_id) || segment.rows_of(type_id).is_none() {
             return Ok(());
         }
-        let has_checksum = checksum_layouts().contains(&type_id);
-        let has_sessions = session_layouts().contains(&type_id);
+        let has_checksum = has_checksum(type_id);
+        let has_sessions = has_sessions(type_id);
         let mut fields: Vec<&str> =
             vec!["ts", "datid", "deadlocks", "frozen_xid_age", "min_mxid_age"];
         if has_checksum {
@@ -571,13 +533,7 @@ impl FindingBuilder {
             && timestamp > before_ts
             && deadlocks > before
         {
-            hits.push(Finding {
-                kind: FindingKind::KnownBad,
-                category: None,
-                field_ordinal: DATABASE_DEADLOCKS_FIELD,
-                row_ordinal,
-                timestamp,
-            });
+            hits.push(known_bad(DATABASE_DEADLOCKS_FIELD, row_ordinal, timestamp));
         }
         self.deadlocks_before.insert(key, (timestamp, deadlocks));
     }
@@ -596,13 +552,7 @@ impl FindingBuilder {
             && timestamp > before_ts
             && after > before
         {
-            hits.push(Finding {
-                kind: FindingKind::KnownBad,
-                category: None,
-                field_ordinal: CHECKSUM_FAILURES_FIELD,
-                row_ordinal,
-                timestamp,
-            });
+            hits.push(known_bad(CHECKSUM_FAILURES_FIELD, row_ordinal, timestamp));
         }
         self.checksum_failures_before
             .insert(key, (timestamp, current));
@@ -626,22 +576,10 @@ impl FindingBuilder {
             && timestamp > before_ts
         {
             if *fatal > before_fatal {
-                hits.push(Finding {
-                    kind: FindingKind::KnownBad,
-                    category: None,
-                    field_ordinal: SESSIONS_FATAL_FIELD,
-                    row_ordinal,
-                    timestamp,
-                });
+                hits.push(known_bad(SESSIONS_FATAL_FIELD, row_ordinal, timestamp));
             }
             if *killed > before_killed {
-                hits.push(Finding {
-                    kind: FindingKind::KnownBad,
-                    category: None,
-                    field_ordinal: SESSIONS_KILLED_FIELD,
-                    row_ordinal,
-                    timestamp,
-                });
+                hits.push(known_bad(SESSIONS_KILLED_FIELD, row_ordinal, timestamp));
             }
         }
         self.sessions_before
@@ -721,13 +659,7 @@ impl FindingBuilder {
                     u32::try_from(ordinal).ok(),
                 ) && !blocked_by.is_empty()
                 {
-                    lock_hits.push(Finding {
-                        kind: FindingKind::KnownBad,
-                        category: None,
-                        field_ordinal: LOCKS_BLOCKED_BY_FIELD,
-                        row_ordinal,
-                        timestamp: *timestamp,
-                    });
+                    lock_hits.push(known_bad(LOCKS_BLOCKED_BY_FIELD, row_ordinal, *timestamp));
                 }
                 true
             },
@@ -775,13 +707,11 @@ impl FindingBuilder {
             if let Some(sample) = sample
                 && sample.count > service_slots
             {
-                hits.entry(sample.type_id).or_default().push(Finding {
-                    kind: FindingKind::KnownBad,
-                    category: None,
-                    field_ordinal: activity_state_field(sample.type_id),
-                    row_ordinal: sample.row_ordinal,
+                hits.entry(sample.type_id).or_default().push(known_bad(
+                    activity_state_field(sample.type_id),
+                    sample.row_ordinal,
                     timestamp,
-                });
+                ));
             }
         }
     }
@@ -801,13 +731,11 @@ impl FindingBuilder {
                     if point.value.is_some_and(|value| value < 50)
                         && let Some(row_ordinal) = u32::try_from(ordinal).ok()
                     {
-                        health_hits.push(Finding {
-                            kind: FindingKind::KnownBad,
-                            category: None,
-                            field_ordinal: OVERALL_HEALTH_FIELD,
+                        health_hits.push(known_bad(
+                            OVERALL_HEALTH_FIELD,
                             row_ordinal,
-                            timestamp: point.timestamp,
-                        });
+                            point.timestamp,
+                        ));
                     }
                 }
             }
@@ -859,6 +787,19 @@ pub(super) fn cpu_busy_at_least_80(before: CpuRaw, current: CpuRaw) -> bool {
     total > 0 && busy * 100 >= total * 80
 }
 
+/// Every boundary in this file marks the same way: the crossed field, the row
+/// it was read from, and that row's timestamp. Only `pg_log_errors` carries a
+/// category, and it builds its findings inline.
+const fn known_bad(field_ordinal: u16, row_ordinal: u32, timestamp: i64) -> Finding {
+    Finding {
+        kind: FindingKind::KnownBad,
+        category: None,
+        field_ordinal,
+        row_ordinal,
+        timestamp,
+    }
+}
+
 pub(super) const fn crosses_wraparound_age(age: i64) -> bool {
     age >= WRAPAROUND_AGE_THRESHOLD
 }
@@ -870,22 +811,10 @@ fn push_wraparound_findings(
     timestamp: i64,
 ) {
     if optional_i64(row.get("frozen_xid_age")).is_some_and(crosses_wraparound_age) {
-        hits.push(Finding {
-            kind: FindingKind::KnownBad,
-            category: None,
-            field_ordinal: FROZEN_XID_AGE_FIELD,
-            row_ordinal,
-            timestamp,
-        });
+        hits.push(known_bad(FROZEN_XID_AGE_FIELD, row_ordinal, timestamp));
     }
     if optional_i64(row.get("min_mxid_age")).is_some_and(crosses_wraparound_age) {
-        hits.push(Finding {
-            kind: FindingKind::KnownBad,
-            category: None,
-            field_ordinal: MIN_MXID_AGE_FIELD,
-            row_ordinal,
-            timestamp,
-        });
+        hits.push(known_bad(MIN_MXID_AGE_FIELD, row_ordinal, timestamp));
     }
 }
 

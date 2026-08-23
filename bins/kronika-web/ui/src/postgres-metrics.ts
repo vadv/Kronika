@@ -7,7 +7,6 @@ export const PG_STAT_STATEMENTS_TYPE_IDS = [
 ] as const
 
 export const PG_STORE_PLANS_TYPE_IDS = ["1003001", "1004001", "1018001"] as const
-export const PG_STORE_PLANS_INFO_TYPE_IDS = ["1016001"] as const
 
 export type StatementLens = "load" | "per_call" | "io" | "resources" | "stability"
 export type PlanLens = "load" | "timing" | "io" | "identity"
@@ -287,12 +286,6 @@ export interface PostgresSectionRequest {
   readonly defaultOrder?: readonly string[]
   readonly order?: Readonly<Record<string, readonly string[]>>
   readonly fallbackOrder?: readonly string[]
-}
-
-export const PLAN_INFO_REQUEST: PostgresSectionRequest = {
-  section: "pg_store_plans_info",
-  typeIds: PG_STORE_PLANS_INFO_TYPE_IDS,
-  fieldsByType: fieldsByType(PG_STORE_PLANS_INFO_TYPE_IDS),
 }
 
 const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> = {

@@ -304,14 +304,14 @@ const fn pg_locks_layouts() -> [u32; 2] {
     [PG_LOCKS_V1, PG_LOCKS_V2]
 }
 
-/// Layouts carrying `checksum_failures` (absent on the base `1_005_001`).
-const fn checksum_layouts() -> [u32; 3] {
-    [1_005_002, 1_005_003, 1_005_004]
+/// `checksum_failures` is absent on the base `1_005_001` layout.
+pub(super) const fn has_checksum(type_id: u32) -> bool {
+    matches!(type_id, 1_005_002..=1_005_004)
 }
 
-/// Layouts carrying `sessions_fatal` / `sessions_killed`.
-const fn session_layouts() -> [u32; 2] {
-    [1_005_003, 1_005_004]
+/// `sessions_fatal` / `sessions_killed` arrived with PG14.
+pub(super) const fn has_sessions(type_id: u32) -> bool {
+    matches!(type_id, 1_005_003 | 1_005_004)
 }
 
 const fn cgroup_memory_layouts() -> [u32; 2] {

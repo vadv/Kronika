@@ -92,7 +92,6 @@ test("the three plan layouts and info use their exact physical variants", () => 
   }
   assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
   assert.deepEqual(metrics.postgresIdentity("1016001"), [])
-  assert.deepEqual(metrics.PLAN_INFO_REQUEST.fieldsByType["1016001"], ["dealloc", "stats_reset"])
 })
 
 test("snapshot decoration preserves physical cells and derives only available rates", () => {
