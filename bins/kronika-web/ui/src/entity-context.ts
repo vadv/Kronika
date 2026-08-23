@@ -17,8 +17,9 @@ export function entityContext(finding: Finding, row: DataRow | null, t?: Transla
   const layout = registry.find((candidate) => candidate.typeId === finding.typeId)
   if (row === null || row.logicalName !== finding.logicalName || row.typeId !== finding.typeId
     || layout === undefined) return null
-  const fields = finding.logicalName === "os_process" || finding.logicalName === "pg_stat_activity"
-    ? ["pid"] : layout.identity
+  // The activity threshold is snapshot-wide; its locator row does not identify a backend.
+  if (finding.logicalName === "pg_stat_activity") return null
+  const fields = finding.logicalName === "os_process" ? ["pid"] : layout.identity
   if (fields.length === 0) return null
   const identity = fields.map((field) => [field, rawText(value(row, field))] as const)
   if (identity.some(([, stored]) => stored === null)) return null
@@ -47,8 +48,6 @@ export function contextualRows(
   return filtered.length === 0 && exact !== null && contextMatches(exact, context) ? [exact] : filtered
 }
 
-// A system finding names the section that owns its resource. What describes the
-// machine as a whole — health, topology, PSI, interrupts — stays on the overview.
 export function findingRoute(finding: Finding): FindingRoute {
   const name = finding.logicalName
   if (name === "os_process") return "processes"

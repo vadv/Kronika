@@ -4332,6 +4332,56 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null && new URL(location.href).searchParams.get('row') === null && new URL(location.href).searchParams.get('panel') === null`, `${viewport.kind} closed Inspector`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes&lens=tree` })
+    await cdp.waitFor(`document.querySelector('[data-testid="lens-tree"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the Process Tree")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === 'ru'`, "the Russian Process Tree")
+    await settleLayout(cdp)
+    const treeGeometry = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      const headers = [...table.querySelectorAll('[role="columnheader"]')]
+      const names = headers.map((header) => header.querySelector('.entity-sort span')?.textContent.trim() ?? '')
+      const pid = headers[names.indexOf('PID')]
+      const command = headers[names.indexOf('Command')]
+      const user = headers[names.indexOf('User')]
+      const state = headers[names.indexOf('State')]
+      const start = headers[names.indexOf('START')]
+      const row = [...table.querySelectorAll('.entity-row')].find((candidate) => candidate.textContent.includes('2686712'))
+      const cells = [...row.querySelectorAll('[role="cell"]')]
+      const startValue = cells[names.indexOf('START')].querySelector('span')
+      const tabs = document.querySelector('.process-workspace > .lensbar > .lens-tabs').getBoundingClientRect()
+      const summary = document.querySelector('.process-summary-inline')
+      const summaryRect = summary.getBoundingClientRect()
+      return {
+        divider: getComputedStyle(summary).borderLeftWidth,
+        gap: summaryRect.left - tabs.right,
+        pidWidth: pid.getBoundingClientRect().width,
+        commandWidth: command.getBoundingClientRect().width,
+        stateWidth: state.getBoundingClientRect().width,
+        start: { clipped: startValue.scrollWidth > startValue.clientWidth + 1, text: startValue.textContent, width: start.getBoundingClientRect().width },
+        userWidth: user.getBoundingClientRect().width,
+      }
+    })()`)
+    assert.ok(Math.abs(treeGeometry.pidWidth - 82) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.commandWidth - 400) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.userWidth - 88) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.stateWidth - 50) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.start.width - 180) <= 1, JSON.stringify(treeGeometry))
+    assert.equal(treeGeometry.start.clipped, false, JSON.stringify(treeGeometry))
+    assert.match(treeGeometry.start.text, /\d{2}:\d{2}:\d{2}$/)
+    assert.equal(treeGeometry.divider, "0px", JSON.stringify(treeGeometry))
+    assert.ok(treeGeometry.gap >= 7 && treeGeometry.gap <= 11, JSON.stringify(treeGeometry))
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'user:postgres')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length === 2`, "the filtered Process Tree with its parent")
+    const treeLabels = await cdp.evaluate(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].map((row) => row.getAttribute('aria-label'))`)
+    assert.match(treeLabels[0], /корневой процесс/)
+    assert.match(treeLabels[1], /дочерний процесс PID 2686800, уровень 1/)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity&panel=chart` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]') !== null && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, "exact adjacent PostgreSQL Chart state")
     await cdp.evaluate(`(() => {
@@ -4421,7 +4471,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1 && document.querySelector('[data-testid="pg-entity-layout"]').dataset.contentSized === 'true'`, "filtered sparse PostgreSQL Activity")
     const sparseBefore = await cdp.evaluate(sparsePostgresGeometry())
     assert.equal(sparseBefore.activity.contentSized, true, JSON.stringify(sparseBefore))
-    assert.ok(sparseBefore.activity.scrollHeight <= 72, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.activity.scrollHeight <= sparseBefore.activity.scrollContentHeight + 15, JSON.stringify(sparseBefore))
     assert.ok(sparseBefore.activity.horizontal, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.activity.overflowX, "auto", JSON.stringify(sparseBefore))
@@ -4786,7 +4836,7 @@ function exactIndexRecords() {
 function snapshotRecords() {
   const processColumns = [
     "ts", "pid", "comm", "cmdline", "ppid", "uid", "euid", "gid", "egid", "num_threads", "tty", "exit_signal",
-    "state", "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "curcpu", "nice", "prio", "rtprio", "policy",
+    "state", "starttime", "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "curcpu", "nice", "prio", "rtprio", "policy",
     "rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar", "cancelled_write_bytes",
     "user", "effective_user",
   ]
@@ -4797,7 +4847,8 @@ function snapshotRecords() {
   ]
   const processValues = (pid, index) => [
     String(AT), pid, pid === 2_686_712 ? "postgres" : `worker-${index}`, pid === 2_686_712 ? "postgres: artifact_db artifact_role 192.0.2.72" : null,
-    1, pid === 2_686_712 ? 26 : 1000, pid === 2_686_712 ? 27 : 1000, 1000, 1000, 2 + index % 4, 0, 17, index % 3 === 0 ? 82 : 83,
+    pid === 2_686_712 ? 2_686_800 : 1, pid === 2_686_712 ? 26 : 1000, pid === 2_686_712 ? 27 : 1000, 1000, 1000, 2 + index % 4, 0, 17, index % 3 === 0 ? 82 : 83,
+    String(Date.UTC(2022, 5, 16, 4, 30, index % 60) * 1_000),
     1000 + index, 300 + index, 5_000_000 + index, 12 + index, 50 + index, 3 + index, index % 8, -5, 15, 0, 0,
     1024 + index, 4096 + index, index % 3, 20 + index, 2 + index, 4096 + index, 8192 + index, 4 + index, 5 + index, 16_384 + index, 32_768 + index, 0,
     pid === 2_686_712 ? "postgres" : "app", pid === 2_686_712 ? "postgres-worker" : "app",

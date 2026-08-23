@@ -83,6 +83,8 @@ test("CPU frequency stays policy-scoped and keeps actual separate from scaling",
   ] }
   const actual = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_actual_frequency")
   const scaling = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_scaling_frequency")
+  assert.equal(actual.help, "system.metric.cpu_actual_frequency.help")
+  assert.equal(scaling.help, "system.metric.cpu_scaling_frequency.help")
   assert.deepEqual(helpers.metricPoints({ points: [], sections }, actual).map(({ value }) => value), [null, null])
   const scalingValues = helpers.metricPoints({ points: [], sections }, scaling).map(({ value }) => value)
   assert.ok(Math.abs(scalingValues[0] - 6_200 / 3) < Number.EPSILON * 2_100)
@@ -359,6 +361,12 @@ test("System entity tables keep exact meaning-first orders and rate presentation
   const disk = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_diskstats")
   for (const field of ["reads", "writes", "read_bytes", "write_bytes"]) assert.equal(disk.columns.find((column) => column.field === field).rate, true)
   for (const field of ["read_latency_ms", "write_latency_ms", "device_busy", "average_queue"]) assert.notEqual(disk.columns.find((column) => column.field === field).historyFields, undefined)
+  for (const [field, help] of [
+    ["read_latency_ms", "system.field.read_latency_ms.help"],
+    ["write_latency_ms", "system.field.write_latency_ms.help"],
+    ["device_busy", "system.field.device_busy.help"],
+    ["average_queue", "system.field.average_queue.help"],
+  ]) assert.equal(disk.columns.find((column) => column.field === field).help, help)
 })
 
 test("hidden mount device IDs remain exact request and history identity", () => {

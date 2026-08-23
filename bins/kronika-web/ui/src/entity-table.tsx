@@ -22,8 +22,7 @@ import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
-// Matches --spacing-row: virtualized offsets and the content-sized height
-// are computed from the same number the CSS row height uses.
+// Must match --spacing-row.
 const ROW_PX = 24
 const SKELETON_ROWS = 8
 
@@ -40,6 +39,7 @@ export interface EntityColumn {
   readonly valueScale?: number | null
   readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
   readonly width?: number
+  readonly expandToHeader?: boolean
   readonly sticky?: boolean | string
   readonly sortable?: boolean
   readonly available?: ((row: DataRow) => boolean) | undefined
@@ -58,6 +58,7 @@ export function EntityTable({
   empty,
   finding,
   findingField,
+  filterRows,
   label,
   loading = false,
   locale,
@@ -87,6 +88,7 @@ export function EntityTable({
   readonly empty: string
   readonly finding?: Finding | null | undefined
   readonly findingField?: string | null | undefined
+  readonly filterRows?: ((rows: readonly DataRow[], pattern: string) => readonly DataRow[]) | undefined
   readonly label: string
   readonly loading?: boolean | undefined
   readonly locale: Locale
@@ -134,8 +136,10 @@ export function EntityTable({
     ...(field.sortValue === undefined ? {} : { sortUndefined: "last" as const }),
   })), [fields, locale, serverSorted, t])
   const data = useMemo(
-    () => filterTableRows(rows, fields, pattern, serverSorted === true, searchSurface),
-    [fields, pattern, rows, searchSurface, serverSorted],
+    () => filterRows === undefined
+      ? filterTableRows(rows, fields, pattern, serverSorted === true, searchSurface)
+      : [...filterRows(rows, pattern)],
+    [fields, filterRows, pattern, rows, searchSurface, serverSorted],
   )
   const table = useReactTable({
     columns,
@@ -177,6 +181,11 @@ export function EntityTable({
         const needed = wanted[index]
         const own = current[field.field] === undefined || current[field.field] === automatic.current[field.field]
         if (needed === undefined || !own) return
+        if (field.expandToHeader === false) {
+          delete next[field.field]
+          delete automatic.current[field.field]
+          return
+        }
         if (needed > (field.width ?? 128)) {
           next[field.field] = needed
           automatic.current[field.field] = needed
@@ -202,17 +211,14 @@ export function EntityTable({
     ? -1
     : rendered.findIndex((row) => rowMatchesLocator(row.original, finding))
   useLayoutEffect(() => {
-    // A dense table may have a retained vertical offset when filtering makes
-    // it sparse. Horizontal-only mode owns no vertical navigation, so reveal
-    // the exact header/row stack before paint.
+    // Clear retained vertical offset before switching to horizontal-only scrolling.
     if (contentSized && parent.current !== null) parent.current.scrollTop = 0
   }, [contentSized, rendered.length])
   useEffect(() => {
     if (!contentSized && locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [contentSized, finding, locatedIndex, virtual])
   const width = table.getTotalSize()
-  // This is real scrollable content, not scroll-padding: at the rightmost
-  // position the last header help/grip and cell stop before the owning edge.
+  // Keep the final header control and cell inside the scrollable edge.
   const contentWidth = width + TABLE_END_GUTTER
   useLayoutEffect(() => {
     const root = parent.current
@@ -237,7 +243,7 @@ export function EntityTable({
     : null
   return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
-    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true && filterRows === undefined ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
@@ -260,7 +266,6 @@ export function EntityTable({
           : searchRequest.phase === "error"
             ? <div className="table-empty" role="alert">{searchMessage}</div>
             : loading
-          // Loading and empty are different truths; never report one as the other.
               ? <div role="status">
                 <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
                 <div aria-hidden="true" data-testid="table-skeleton">
@@ -301,7 +306,7 @@ export function EntityTable({
                 const stored = field === undefined ? null : value(row.original, field.field)
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
                 const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
-                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone} ${VALUE_TONE[tone] ?? ""}`}${exact ? ` locator-cell ${LOCATOR_CELL[activeFinding.kind] ?? ""}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
+                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone} ${VALUE_TONE[tone] ?? ""}`}${exact ? ` locator-cell ${LOCATOR_CELL[activeFinding.kind] ?? ""}` : ""}`} data-field={field?.field} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
                   {toneText !== null && <span aria-hidden="true" className="mr-[5px] h-2.5 flex-none border-l-2 border-current" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </div>
@@ -313,8 +318,6 @@ export function EntityTable({
   </section>
 }
 
-// A row and a cell mark a finding with their own edge; selection keeps its
-// accent stripe alongside.
 const LOCATOR_ROW: Readonly<Record<string, string>> = {
   known_bad: "shadow-[inset_3px_0_var(--color-bad)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-bad)]",
   spike: "shadow-[inset_3px_0_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-warn)]",
@@ -325,10 +328,10 @@ const LOCATOR_CELL: Readonly<Record<string, string>> = {
 }
 const TABLE_END_GUTTER = 8
 const VALUE_TONE: Readonly<Record<string, string>> = {
-  good: "[&_.entity-value]:text-ok",
-  warning: "[&_.entity-value]:text-warn",
-  critical: "[&_.entity-value]:text-bad",
-  inactive: "[&_.entity-value]:text-fg4",
+  good: "[&_.entity-value]:text-ok [&_.numeric-cell]:text-ok",
+  warning: "[&_.entity-value]:text-warn [&_.numeric-cell]:text-warn",
+  critical: "[&_.entity-value]:text-bad [&_.numeric-cell]:text-bad",
+  inactive: "[&_.entity-value]:text-fg4 [&_.numeric-cell]:text-fg4",
 }
 
 export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {
@@ -425,10 +428,6 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 
 export function sticky(meta: unknown, head: boolean): string {
   const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
-  // Shared box first, then the head/body difference. The names stay as hooks
-  // for the per-table overrides that have not moved onto markup yet.
-  // Shared box first, then the head/body difference, then what the process
-  // table asks of both. The names stay as hooks for the tests.
   const box = "flex-none min-w-0 overflow-hidden border-b border-line px-[7px] [.process-table_&]:px-2"
   const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
   const name = typeof cell?.sticky === "string" ? cell.sticky : ""
@@ -440,8 +439,7 @@ export function sticky(meta: unknown, head: boolean): string {
     cell?.numeric === true ? "align-right" : "",
     pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit" : "",
     name,
-    // The pinned command column casts a shadow over the scrolled body; the pid
-    // column sits behind it and must not.
+    // Keep the PID column below the pinned command shadow.
     name === "sticky-command" ? "shadow-[5px_0_8px_var(--color-shadow-b)] max-[760px]:static max-[760px]:shadow-none" : "",
   ].filter(Boolean).join(" ")
 }

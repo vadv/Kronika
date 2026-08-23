@@ -7,6 +7,12 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
   if (field === "state") {
     if (text === "idle in transaction (aborted)") return "critical"
     if (text === "idle in transaction") return "warning"
+    // Process state may be a character or its ASCII code.
+    const stateChar = text ?? asciiChar(cell)
+    if (stateChar === "R") return "good"
+    if (stateChar === "D") return "warning"
+    if (stateChar === "Z") return "critical"
+    if (stateChar === "I") return "inactive"
   }
   if (field === "wait_event_type" && text !== null && text !== "") return "warning"
 
@@ -37,6 +43,9 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
     case "plan_time_pct":
       if (number < 50) return "good"
       return number < 80 ? "warning" : "critical"
+    case "cpu_percent":
+      if (number >= 90) return "critical"
+      return number >= 50 ? "warning" : null
     default:
       return null
   }
@@ -50,6 +59,10 @@ function textCell(cell: Cell | undefined): string | null {
   return typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean"
     ? String(cell).trim()
     : null
+}
+
+function asciiChar(cell: Cell): string | null {
+  return typeof cell === "number" && Number.isFinite(cell) ? String.fromCharCode(cell) : null
 }
 
 function numericCell(cell: Cell): number | null {

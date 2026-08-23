@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processRowLabel, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -23,18 +23,59 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "pid", "command", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar",
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
+  assert.deepEqual(fields("tree"), [
+    "pid", "command", "user", "cpu_percent", "mem_percent", "vmem_kb", "rmem_kb", "tty", "state", "starttime", "cpu_time_seconds",
+  ])
+  assert.deepEqual(
+    LENS_FIELDS.tree.filter(({ id }) => ["cpu_percent", "mem_percent", "starttime", "cpu_time_seconds"].includes(id)).map(({ id, label, help }) => ({ id, label, help })),
+    [
+      { id: "cpu_percent", label: "col.cpu_percent.label", help: "col.cpu_percent.help" },
+      { id: "mem_percent", label: "col.mem_percent.label", help: "col.mem_percent.help" },
+      { id: "starttime", label: "col.starttime.label", help: "col.starttime.help" },
+      { id: "cpu_time_seconds", label: "col.cpu_time.label", help: "col.cpu_time.help" },
+    ],
+  )
 })
 
 test("process users retain exact numeric identity and honest unresolved fallback", () => {
   const [user, effective] = helpers.PROCESS_USER_FIELDS
   const row = (values) => ({ logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values })
-  assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres (26)")
+  assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres")
   assert.equal(helpers.processUser(row({ euid: 9999, effective_user: null }), effective), "9999")
+  assert.equal(helpers.processUser(row({ euid: 9999, effective_user: "  " }), effective), "9999")
   assert.equal(helpers.processUserSearch(row({ uid: 26, user: "postgres" }), user), "user:postgres")
   assert.equal(helpers.processUserSearch(row({ euid: 27, effective_user: "postgres worker" }), effective), 'effective_user:"postgres worker"')
   assert.equal(helpers.processUserSearch(row({ euid: 9999, effective_user: null }), effective), null)
   assert.deepEqual(helpers.processTableDefaultOrder("generic"), { column: "pid", descending: false })
   assert.deepEqual(helpers.processTableDefaultOrder("disk"), { column: "read_bytes", descending: true })
+})
+
+test("process lenses share the measured identity width contract", () => {
+  for (const lens of ["generic", "cpu", "memory", "disk", "tree"]) {
+    const columns = LENS_FIELDS[lens]
+    assert.equal(columns.find(({ id }) => id === "pid").size, 82, `${lens} PID`)
+    assert.equal(columns.find(({ id }) => id === "command").size, lens === "tree" ? 400 : 340, `${lens} Command`)
+    assert.equal(columns.find(({ id }) => id === "state").size, 50, `${lens} State`)
+  }
+  assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "user").size, 88)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "user").size, 88)
+  assert.equal(LENS_FIELDS.generic.find(({ id }) => id === "effective_user").size, 114)
+  assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 180)
+})
+
+test("process lens tabs hand off to the summary without a fake splitter", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  assert.match(styles, /\.lensbar > \.process-summary-inline \{ padding-left: 2px; \}/)
+  assert.doesNotMatch(styles, /\.lensbar > \.process-summary-inline \{[^}]*border-left/)
+})
+
+test("Tree row accessibility names the parent and depth without reading connector glyphs", () => {
+  const t = (key, slots = {}) => `${key}:${Object.entries(slots).map(([name, stored]) => `${name}=${stored}`).join(",")}`
+  const root = { logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values: { cmdline: "/sbin/init", pid: 1, process_tree_depth: 0 } }
+  const child = { ...root, ordinal: "2", values: { cmdline: "postgres", pid: 22, process_tree_depth: 2, process_tree_parent_pid: 10 } }
+  assert.match(helpers.processRowLabel(root, "tree", t), /^process\.tree\.row\.root:command=\/sbin\/init,pid=1/)
+  assert.match(helpers.processRowLabel(child, "tree", t), /^process\.tree\.row\.child:.*command=postgres.*depth=2.*parent=10.*pid=22/)
+  assert.match(helpers.processRowLabel(child, "cpu", t), /^table\.activate:pid=22/)
 })
 
 test("process sticky headers share live offsets and stacking classes with their cells", async () => {
@@ -44,7 +85,6 @@ test("process sticky headers share live offsets and stacking classes with their 
     { id: "rmem_kb", size: 142, sticky: false },
   ])
   assert.deepEqual([...offsets], [["pid", 0], ["command", 86]])
-  // The hooks a pinned column needs, whatever presentation rides along with them.
   const head = helpers.sticky({ sticky: "sticky-pid" }, true).split(" ")
   const body = helpers.sticky({ numeric: true, sticky: "sticky-command" }, false).split(" ")
   for (const name of ["entity-header-cell", "entity-sticky", "sticky-pid", "sticky", "left-0", "z-40"]) assert.ok(head.includes(name), `${name} in ${head}`)
@@ -67,6 +107,7 @@ test("all sixteen process aggregate readings use the exact complete-set history 
     cpu: ["user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second"],
     memory: ["resident_kib", "virtual_kib", "swap_kib", "major_faults_per_second"],
     disk: ["read_bytes_per_second", "write_bytes_per_second", "read_calls_per_second", "write_calls_per_second"],
+    tree: ["processes", "threads", "runnable", "postgresql"],
   })
   const source = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
   assert.match(source, /loadSeries\(hour, "os_process_summary", \{\}, PROCESS_SUMMARY_FIELDS, controller\.signal\)/)

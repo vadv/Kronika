@@ -38,35 +38,40 @@ export interface ProcessHistorySeries extends HistoryField {
   readonly points: readonly ChartPoint[]
 }
 
+const CPU_HISTORY: readonly HistoryField[] = [
+  { counter: true, field: "utime", key: "col.utime", kind: "cores" },
+  { counter: true, field: "stime", key: "col.stime", kind: "cores" },
+  { counter: true, field: "rundelay_ns", key: "col.rundelay", kind: "ns" },
+  { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
+  { counter: true, field: "nvcsw", key: "col.nvcsw", kind: "rate" },
+  { counter: true, field: "nivcsw", key: "col.nivcsw", kind: "rate" },
+  { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
+  { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
+]
+const MEMORY_HISTORY: readonly HistoryField[] = [
+  { field: "rmem_kb", key: "col.rmem", kind: "kib" },
+  { field: "vmem_kb", key: "col.vmem", kind: "kib" },
+  { field: "vswap_kb", key: "col.vswap", kind: "kib" },
+  { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
+  { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
+]
+const DISK_HISTORY: readonly HistoryField[] = [
+  { counter: true, field: "read_bytes", key: "col.read_bytes", kind: "bytes" },
+  { counter: true, field: "write_bytes", key: "col.write_bytes", kind: "bytes" },
+  { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", kind: "bytes" },
+  { counter: true, field: "syscr", key: "col.syscr", kind: "rate" },
+  { counter: true, field: "syscw", key: "col.syscw", kind: "rate" },
+  { counter: true, field: "rchar", key: "col.rchar", kind: "bytes" },
+  { counter: true, field: "wchar", key: "col.wchar", kind: "bytes" },
+  { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
+]
+
 const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   generic: [{ field: "num_threads", key: "col.threads", kind: "number" }],
-  cpu: [
-    { counter: true, field: "utime", key: "col.utime", kind: "cores" },
-    { counter: true, field: "stime", key: "col.stime", kind: "cores" },
-    { counter: true, field: "rundelay_ns", key: "col.rundelay", kind: "ns" },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
-    { counter: true, field: "nvcsw", key: "col.nvcsw", kind: "rate" },
-    { counter: true, field: "nivcsw", key: "col.nivcsw", kind: "rate" },
-    { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
-    { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
-  ],
-  memory: [
-    { field: "rmem_kb", key: "col.rmem", kind: "kib" },
-    { field: "vmem_kb", key: "col.vmem", kind: "kib" },
-    { field: "vswap_kb", key: "col.vswap", kind: "kib" },
-    { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
-    { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
-  ],
-  disk: [
-    { counter: true, field: "read_bytes", key: "col.read_bytes", kind: "bytes" },
-    { counter: true, field: "write_bytes", key: "col.write_bytes", kind: "bytes" },
-    { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", kind: "bytes" },
-    { counter: true, field: "syscr", key: "col.syscr", kind: "rate" },
-    { counter: true, field: "syscw", key: "col.syscw", kind: "rate" },
-    { counter: true, field: "rchar", key: "col.rchar", kind: "bytes" },
-    { counter: true, field: "wchar", key: "col.wchar", kind: "bytes" },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
-  ],
+  tree: [...CPU_HISTORY, ...MEMORY_HISTORY.filter((field) => field.field !== "minflt" && field.field !== "majflt"), ...DISK_HISTORY],
+  cpu: CPU_HISTORY,
+  memory: MEMORY_HISTORY,
+  disk: DISK_HISTORY,
 }
 
 export const PROCESS_HISTORY_FIELDS: readonly string[] = [
@@ -87,7 +92,6 @@ export function DetailDock({
   t,
   ticksPerSecond,
 }: {
-  // Only to mark the dock as linked; its facts live in their own panel.
   readonly activity: DataRow | null
   readonly cursor: number
   readonly hour: number

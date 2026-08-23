@@ -68,6 +68,29 @@ test("statement stability and planning use exact inclusive boundaries", () => {
   assert.equal(semanticValueTone("plan_time_pct", 80), "critical")
 })
 
+test("a Linux process state carries its own top-style tones, distinct from PostgreSQL's idle-in-transaction states", () => {
+  assert.equal(semanticValueTone("state", "R"), "good")
+  assert.equal(semanticValueTone("state", "D"), "warning")
+  assert.equal(semanticValueTone("state", "Z"), "critical")
+  assert.equal(semanticValueTone("state", "I"), "inactive")
+  assert.equal(semanticValueTone("state", "S"), null)
+})
+
+test("a Linux process state still tones correctly when the cell arrives as its raw ASCII code, not the character", () => {
+  assert.equal(semanticValueTone("state", "R".charCodeAt(0)), "good")
+  assert.equal(semanticValueTone("state", "D".charCodeAt(0)), "warning")
+  assert.equal(semanticValueTone("state", "Z".charCodeAt(0)), "critical")
+  assert.equal(semanticValueTone("state", "I".charCodeAt(0)), "inactive")
+  assert.equal(semanticValueTone("state", "S".charCodeAt(0)), null)
+})
+
+test("%CPU crosses into a top-style warning, then critical, at busy but plain round numbers", () => {
+  assert.equal(semanticValueTone("cpu_percent", 49.999), null)
+  assert.equal(semanticValueTone("cpu_percent", 50), "warning")
+  assert.equal(semanticValueTone("cpu_percent", 89.999), "warning")
+  assert.equal(semanticValueTone("cpu_percent", 90), "critical")
+})
+
 test("workload volume and identifiers stay neutral", () => {
   assert.equal(semanticValueTone("execution_ms_per_second", 10_000), null)
   assert.equal(semanticValueTone("rows_per_second", 86_400_000), null)
@@ -82,7 +105,7 @@ test("semantic tones coexist with exact locator classes", async () => {
   assert.match(table, /value-tone-\$\{tone\}.*locator-cell/)
   assert.match(table, /aria-label=\{toneText === null \|\| field === undefined \? undefined : `\$\{toneText\}: \$\{cellAriaValue\(stored, field, locale, t\)\}`\}/)
   assert.doesNotMatch(table, /\$\{toneText\}: \$\{rawText\(stored\)/)
-  assert.match(table, /critical: "\[&_\.entity-value\]:text-bad"/)
+  assert.match(table, /critical: "\[&_\.entity-value\]:text-bad \[&_\.numeric-cell\]:text-bad"/)
   assert.match(table, /border-l-2 border-current/)
   assert.doesNotMatch(table, /value-tone-critical[^"]*box-shadow/)
   assert.match(table, /known_bad: "[^"]*\[&_\.entity-value\]:text-fg-hi"/)

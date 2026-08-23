@@ -16,13 +16,11 @@ export interface Address {
   readonly metric: string | null
 }
 
-// A closed set: Detail, Chart, and the relation panels a selection can open.
-// Back must land on the panel the reader left, so the panel is addressed.
 export const INSPECTOR_PANELS = ["chart", "detail", "pg_stat_activity", "os_process", "pg_stat_statements", "pg_store_plans"] as const
 
 export type InspectorPanel = (typeof INSPECTOR_PANELS)[number] | null
 
-// Detail is implied by a row and never written; the others ride the address.
+// Detail is implied by a row and omitted from the URL.
 function addressablePanel(panel: string | null): InspectorPanel {
   const known = INSPECTOR_PANELS.find((candidate) => candidate === panel) ?? null
   return known === "detail" ? null : known
@@ -42,7 +40,7 @@ export type View =
   | "pg.indexes"
   | "events"
 
-type Lens = "generic" | "cpu" | "memory" | "disk"
+type Lens = "generic" | "cpu" | "memory" | "disk" | "tree"
 export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
@@ -56,7 +54,7 @@ const VIEWS: readonly View[] = [
   "events",
 ]
 
-const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk"]
+const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk", "tree"]
 const PG_LENSES: readonly PgLens[] = ["load", "per_call", "io", "resources", "stability", "timing", "identity", "access", "changes", "maintenance", "size_buffers", "freeze", "usage", "low_activity", "state"]
 const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "tablespace", "object"]
 
@@ -85,8 +83,7 @@ export function readAddress(search: string): Address {
   const lens = parameters.get("lens")
   const pgLens = parameters.get("pg_lens")
   const pgLevel = PG_LEVELS.find((known) => known === parameters.get("level")) ?? DEFAULT_ADDRESS.pgLevel
-  // Links written before the Host ledger carried a section suffix; they all
-  // land on the one Host page now.
+  // Legacy host.* views map to Host.
   const resolvedView = VIEWS.find((known) => known === view)
     ?? (view !== null && view.startsWith("host.") ? "host" as View : DEFAULT_ADDRESS.view)
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
@@ -113,8 +110,7 @@ export function readAddress(search: string): Address {
     tablespaceOid: relation && pgLevel === "object" ? oid(parameters.get("tablespace_oid")) : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
     row,
-    // Row-only links predate Inspector and continue to open Detail. Chart is
-    // source-neutral and can therefore be linked without an entity row.
+    // Legacy row-only links open Detail; Chart does not require a row.
     panel: addressablePanel(requestedPanel) ?? (row !== null && row !== "" ? "detail" : null),
     find: parameters.get("find") ?? "",
     metric,

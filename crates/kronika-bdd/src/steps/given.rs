@@ -1,5 +1,3 @@
-//! Building the world a scenario runs against: settings, fixtures, data roots.
-
 use super::table_rows;
 use crate::BddWorld;
 use crate::collector::{Run, copy_tree};
@@ -10,8 +8,6 @@ use cucumber::given;
 use kronika_format::JOURNAL_MAGIC;
 use std::path::PathBuf;
 
-/// Where the fixture trees live. The BDD image sets this; a checkout run picks
-/// them up beside the features.
 fn fixtures_dir() -> PathBuf {
     std::env::var("KRONIKA_FIXTURES").map_or_else(|_unset| PathBuf::from("fixtures"), PathBuf::from)
 }
@@ -29,6 +25,17 @@ fn collector_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
         .take()
         .map_or_else(|| tempfile::tempdir().context("create a data root"), Ok)?;
     world.run = Some(Run::spawn(root, &world.env)?);
+    Ok(())
+}
+
+#[given("a demo workload with these settings")]
+fn demo_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
+    for row in table_rows(step, &["variable", "value"])? {
+        let [key, value] = row.as_slice() else {
+            anyhow::bail!("a settings row needs a variable and a value, got {row:?}");
+        };
+        world.demo_env.push((key.clone(), value.clone()));
+    }
     Ok(())
 }
 
@@ -88,6 +95,23 @@ fn postgres_by_path(world: &mut BddWorld) {
         "KRONIKA_PG_LOGS".to_owned(),
         path.to_string_lossy().into_owned(),
     ));
+}
+
+#[given("the demo workload uses that PostgreSQL")]
+fn demo_uses_postgres(world: &mut BddWorld) -> Result<()> {
+    let dsn = world
+        .postgres
+        .as_ref()
+        .context("a PostgreSQL was started")?
+        .dsn
+        .clone();
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DSN".to_owned(), dsn.clone()));
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN".to_owned(), dsn));
+    Ok(())
 }
 
 #[given("the collector reaches PgBouncer by DSN")]

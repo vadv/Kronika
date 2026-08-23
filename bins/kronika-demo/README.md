@@ -25,8 +25,8 @@ Password: forensics
 
 Processes is the default view. Host, Processes, PostgreSQL, and Events expose
 the collected hour through the normal Kronika UI. PostgreSQL includes
-Overview, Activity, Statements, Plans, Locks, Databases, Tables, Indexes, and
-Settings when the corresponding samples are present. PgBouncer is represented
+Overview, Activity, Vacuum, Locks, Statements, Plans, Databases, Tables, and
+Indexes when the corresponding samples are present. PgBouncer is represented
 by its real log events under Events; Kronika does not currently have a separate
 PgBouncer dashboard.
 
@@ -99,25 +99,49 @@ sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `KRONIKA_DEMO_WORKLOAD_DSN` | unset | Workload connection, normally through PgBouncer. |
-| `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 4 | Schemas to create. |
-| `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 40 | Tables per schema. |
+| `KRONIKA_DEMO_WORKLOAD_DIRECT_DSN` | required with workload | Direct PostgreSQL connection for the plan story and session-scoped Vacuum settings. It must not point at transaction-pooled PgBouncer. The image sets this to its embedded PostgreSQL. |
+| `KRONIKA_DEMO_WORKLOAD_SCHEMAS` | 1 | Commerce schemas to create. |
+| `KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA` | 8 | Recognizable commerce tables to create. |
 | `KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY` | 4 | Concurrent setup connections. |
 | `KRONIKA_DEMO_WORKLOAD_SESSIONS` | 4 | Long-lived DML sessions. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 2 | Total lock chains: one remains contended and the others run in rounds. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 3 | Transactions in each lock chain; must be at least two. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 1500 | Lock hold time per link in the cycling chains, milliseconds. |
-| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 30 | Pause between cycling lock rounds, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS` | 1 | Independent lock chains in each bounded round. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH` | 4 | Transactions in each lock chain. Together with the hold time, this must let an earlier waiter acquire the row and a later waiter reach the fixed 10-second statement timeout. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS` | 4000 | Lock hold time per link in a lock round, milliseconds. |
+| `KRONIKA_DEMO_WORKLOAD_LOCK_ROUND_INTERVAL_S` | 120 | Quiet pause after each lock round, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_EVENT_ROUND_INTERVAL_S` | 180 | Quiet pause after one slow query, one bad statement, and one bad-database attempt. |
+| `KRONIKA_DEMO_WORKLOAD_PLAN_ROWS` | 300000 | Rows maintained in `shop.orders` for the plan-change story. |
+| `KRONIKA_DEMO_WORKLOAD_PLAN_WORKERS` | 4 | Concurrent `checkout-api` sessions exercising the same query. |
+| `KRONIKA_DEMO_WORKLOAD_PLAN_BASELINE_S` | 12 | Indexed baseline and recovery window, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_PLAN_REGRESSION_S` | 30 | Window without the supporting checkout index, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_PLAN_ROUND_INTERVAL_S` | 120 | Quiet pause after a complete plan-change round, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS` | 100000 | Rows in the dedicated Vacuum showcase table. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_ROUND_INTERVAL_S` | 180 | Quiet pause after each Vacuum episode, seconds. |
+| `KRONIKA_DEMO_WORKLOAD_VACUUM_STATEMENT_TIMEOUT_S` | 30 | Finite timeout for each update and Vacuum statement, seconds. |
 
-Each session uses a fixed pseudo-random sequence. Four table shapes produce
-varied statements across 160 tables without pathological setup load. Steady
-sessions run bounded insert, update, select, and delete traffic, plus a small
-fixed share of slow and failing statements for real log-derived events. Lock
-chains use PostgreSQL row locks; they are not fabricated findings.
+The default workload is one commerce application: `shop.orders`, `customers`,
+`order_items`, `products`, `inventory`, `payments`, `event_log`, and `sessions`.
+Named clients such as `checkout-api`, `catalog-api`, `payments-worker`, and
+`vacuum-worker` make the recorded activity attributable. Steady sessions run bounded
+insert, single-row update, select, and delete traffic.
+
+The opening investigation reel runs the same checkout query against
+`shop.orders` before, during, and after a supporting index is dropped and
+restored. Kronika therefore records two plans under one query ID: a fast indexed
+baseline and recovery around a slower sequential-scan interval. A finite row-lock
+convoy begins after 65 seconds, Vacuum after 95 seconds, and explicit log/error
+events after 140 seconds. Each incident has statement and transaction timeouts
+and a long quiet period, so the historical screens show both the problem and
+the recovery while the live database remains usable. The image samples
+PostgreSQL every 5 seconds so each bounded episode crosses at least one
+collection tick. No scenario disables `statement_timeout` or
+`idle_in_transaction_session_timeout`.
 
 For a direct binary run:
 
 ```sh
 KRONIKA_COLLECTOR_BIN=target/x86_64-unknown-linux-gnu/debug/kronika-collector \
+KRONIKA_DEMO_WORKLOAD_DSN='host=127.0.0.1 port=6432 user=kronika_demo dbname=kronika_demo' \
+KRONIKA_DEMO_WORKLOAD_DIRECT_DSN='host=127.0.0.1 port=5432 user=kronika_demo dbname=kronika_demo' \
     kronika-demo
 ```
 

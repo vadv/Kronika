@@ -13,17 +13,6 @@
 .u-cursor-pt { background-clip: padding-box !important; border: 0 solid; border-radius: 50%; }
 .u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
 
-/* Theme tokens (dark values). Every colour lives in the --color-* namespace, so
-   a utility (`text-fg3`), a rule and a chart sampling the name from script all
-   read the same value; the light theme redefines the same names.
-
-   Two typefaces, each with a fixed role: IBM Plex Sans is the interface
-   (navigation, labels, buttons, prose), JetBrains Mono is the data (values,
-   identifiers, timestamps, queries). The faces themselves are embedded by
-   scripts/build.mjs from ui/assets. Chart series identity lives in
-   --color-series-*; status meaning lives in --color-ok/warn/bad/event and is
-   never reused as a series. Both series sets pass the colour-vision and
-   contrast checks against their surface. */
 @theme {
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -102,17 +91,13 @@
 @keyframes loading-spin { to { transform: rotate(360deg); } }
 @keyframes skeleton-fade { from { opacity: .4; } to { opacity: .95; } }
 
-/* A touch pointer, at any width: the help mark needs a real target there. */
+/* Keep help targets 44px for touch pointers. */
 @custom-variant coarse (@media (hover: none), (pointer: coarse));
 
-/* The interface label: small sans, sentence case. The single uppercase voice
-   in the product is the KRONIKA wordmark. */
 @utility ui-label {
   color: var(--color-fg3); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500;
 }
 
-/* The detail key/value row, shared by the process dock, the PostgreSQL detail
-   and the event detail. */
 @utility detail-row {
   align-items: baseline; border-top: 1px solid var(--color-line); display: grid; gap: 8px; grid-template-columns: minmax(0, min(10rem, 40%)) minmax(0, 1fr); min-height: 22px; padding: 3px 0;
 }
@@ -122,8 +107,6 @@
 @utility detail-dt {
   color: var(--color-fg3); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500; hyphens: none; min-width: 0; overflow: hidden; overflow-wrap: normal; word-break: normal;
 }
-/* The empty/loading paragraph shared by the entity table, the events console
-   and the System panels. */
 @utility loading-ring {
   border: 2px solid var(--color-line3); border-radius: 50%; border-top-color: var(--color-accent); display: inline-block; height: 14px; margin-right: 6px; width: 14px;
 }
@@ -140,16 +123,12 @@
   @media (max-width: 520px) { text-align: left; }
 }
 
-/* PostgreSQL screen components. Repeated compositions live as utilities so the
-   markup stays readable and the rules stay inside the utilities layer. */
 @utility lensbar {
   align-items: center; background: var(--color-s2); border-bottom: 1px solid var(--color-line2); display: flex; gap: 8px; margin-top: 8px; min-height: 28px; padding: 2px 8px;
   & > span { color: var(--color-fg3); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500; margin-right: 4px; }
 }
 @utility lens-tabs {
   display: flex; gap: 2px;
-  /* Every control on a lens bar shares one 25px line, so the tabs, the metric
-     chips and the status read as one row rather than three heights. */
   & > button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs); color: var(--color-fg3); cursor: pointer; display: inline-flex; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; justify-content: center; min-height: 25px; min-width: 56px; padding: 2px 10px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
   & > button:hover { background: var(--color-s3); color: var(--color-fg2); }
   & > button:is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"]) { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
@@ -160,8 +139,6 @@
   & > pre { color: var(--color-event-edge); font-family: var(--font-mono); font-size: var(--text-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 }
 @utility pg-stretch {
-  /* Inside the full-height PostgreSQL shell every layer gives its height to
-     the table instead of growing the page. */
   :is(.pg-table-shell) & { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
 }
 .pg-table-shell .pg-entity-fill {
@@ -189,9 +166,6 @@
   & dd { color: var(--color-fg); font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; margin: 6px 0 0; overflow-wrap: anywhere; }
 }
 
-/* System screen components: the resource table, the metric groups and the dock
-   tab strip. Repeated compositions stay named for the same reason as the
-   PostgreSQL ones. */
 @utility panel {
   background: var(--color-s1); min-width: 0;
 }
@@ -202,7 +176,7 @@
 }
 @utility pg-tabs {
   background: var(--color-s1); border-bottom: 1px solid var(--color-line2); display: flex; gap: 2px; margin-top: 8px; min-height: 34px; overflow-x: auto; padding: 3px 4px 0;
-  & button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs) var(--radius-xs) 0 0; color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; gap: 6px; padding: 0 11px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+  & button { align-items: center; background: transparent; border: 0; border-radius: var(--radius-xs) var(--radius-xs) 0 0; color: var(--color-fg3); cursor: pointer; display: flex; font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; gap: 6px; padding: 0 11px; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
   & button:hover { background: var(--color-s3); color: var(--color-fg2); }
   & button[aria-current="page"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
   & button:disabled { cursor: not-allowed; opacity: .35; }
@@ -231,8 +205,6 @@
   cursor: pointer;
   transition: background-color 80ms var(--ease-out);
   &:hover { background: var(--color-s3); }
-  /* The drilled row stays marked: its filter now owns the table below, which
-     the reader reaches only after the ledger steps out of the way. */
   &[data-active] { background: var(--color-accent-soft); border-left-color: var(--color-accent); }
   &[data-active]:hover { background: var(--color-accent-soft); }
 }
@@ -287,8 +259,6 @@
   & button[aria-pressed="true"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
 }
 
-/* Shared chrome: the top bar, its tab strips, the help mark and the loading
-   ring. Named utilities because more than one screen renders each. */
 @utility topbar {
   align-items: center; background: var(--color-s-sticky); border-bottom: 1px solid var(--color-line2); display: flex; flex: 0 0 40px; flex-wrap: nowrap; gap: 8px; height: 40px; min-height: 40px; overflow: hidden; padding: 0 8px; position: relative; top: 0; z-index: 50;
   @media (max-width: 1000px) {
@@ -325,10 +295,7 @@
   align-items: center; display: flex; margin-left: auto;
   & > * + * { margin-left: 4px; }
 }
-/* The bar is one fixed 40px row that hides its overflow, so this cluster must
-   never wrap: a wrapped line is clipped, and its divider hangs into nothing.
-   It shrinks and truncates instead, and both readings share one baseline
-   despite their different sizes. */
+/* The fixed-height bar truncates instead of wrapping. */
 @utility cursor-time {
   align-items: baseline; color: var(--color-accent3); display: flex; flex: 0 1 auto; flex-wrap: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; gap: 9px; min-width: 0;
   & > span { align-items: baseline; display: inline-flex; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -404,8 +371,7 @@
 }
 
 @layer base {
-  /* The app owns its scroll positions; anchoring would move the page after a
-     chart closes. */
+  /* The app owns scroll positions, so disable browser anchoring. */
   html { overflow-anchor: none; }
   body { background: var(--color-bg); min-height: 100vh; min-width: 320px; }
 }
@@ -414,7 +380,6 @@
   h1, h2 { color: var(--color-fg-hi); font-weight: 600; margin: 0; }
   h1 { font-size: var(--text-lg); }
   h2 { font-size: var(--text-md); }
-  /* The wordmark is the one uppercase voice in the product. */
   .topbar h1 { font-size: var(--text-sm); letter-spacing: .08em; text-transform: uppercase; }
   code, kbd, pre, samp { font-family: var(--font-mono); }
   @media (prefers-reduced-motion: reduce) {
@@ -422,11 +387,7 @@
   }
 }
 
-/* Forensic workstation shell. The timeline remains an honest, permanently
-   visible instrument; the table receives every remaining pixel. */
-/* 28px rail + 94px figure: the figure keeps the marker lane, the plot and
-   the x-axis inside the instrument. The figure height itself lives on the
-   preview variant class in uplot-chart.tsx. */
+/* 28px rail + 94px figure must match the preview chart. */
 .timeline-preview {
   box-sizing: border-box;
   flex: 0 0 124px;
@@ -494,8 +455,6 @@
 .timeline-open-chart:hover { background: var(--color-s3); }
 .snapshot-time { align-items: center; display: inline-flex; flex: 0 0 auto; min-height: 25px; white-space: nowrap; }
 
-/* While the Inspector holds the full chart, the preview yields its figure and
-   keeps its rail: the plot and its marker lane exist once. */
 .inspector-chart-open .timeline-preview {
   flex-basis: 30px;
   height: 30px;
@@ -516,9 +475,6 @@
   width: var(--inspector-width);
   z-index: 45;
 }
-/* The operator-invoked full-screen chart: the Inspector takes the viewport
-   below the top bar and its charts grow to the freed height. Escape or the
-   same control restores the docked width. */
 .inspector.inspector-maximized {
   border-left: 0;
   border-top: 0;
@@ -638,43 +594,32 @@
 .inspector-detail-slot > .system-entity-history { padding: 5px 4px 9px; }
 .inspector-scrim { display: none; }
 
-/* The inline group chart is the row's primary reading: it gets dock-scale
-   height inside the expansion. */
 .use-expansion .uplot-figure { height: 320px; min-height: 320px; }
 
-/* The Chart tab slot holds the selected entity's history section. Its metric
-   buttons wrap instead of hiding behind a horizontal scrollbar. */
 .inspector-chart-slot { padding: 10px 8px; }
 .inspector-chart-slot .history-selector,
 .inspector-chart-slot .system-history-selector { flex-wrap: wrap; gap: 4px; overflow-x: visible; padding-bottom: 0; }
 
-/* The rail chips' help marks stay reachable but quiet until pointed at. */
 .timeline-lanes .label-help { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .timeline-lanes .lane-label:hover .label-help,
 .timeline-lanes .label-help:focus-within { opacity: 1; }
 
-/* A ledger row is one click target — the row itself. Its lanes are explained
-   through their own names: the term carries a dotted rule and the sign that
-   would have sat in every cell is an invisible target over it, so the row has
-   no second mark to hit and the keyboard still reaches the help. */
+/* Keep one row activation target while preserving keyboard help access. */
 .use-lane > .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .use-lane > .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
 .use-lane > .label-help > .help-dot:focus-visible { opacity: 1; }
 
-/* The column names carry what the ledger's three readings mean. */
 .use-header-cell .help-dot { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .use-header-cell:hover .help-dot,
 .use-header-cell .help-dot:focus-visible { opacity: 1; }
 
-/* The summary help marks stay reachable but quiet until pointed at. */
 .process-summary-inline .label-help { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .process-summary-inline div:hover > .label-help,
 .process-summary-inline .label-help:focus-within { opacity: 1; }
 
 .lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.lensbar > .process-summary-inline { padding-left: 2px; }
 
-/* Vacuum ledger: the risk of a phase is fixed by its name. A dangerous phase
-   carries a red left rail on its row so it reads without horizontal scroll. */
 .vacuum-chip { border: 1px solid var(--color-line3); border-radius: var(--radius-xs); color: var(--color-fg2); display: inline-block; font-family: var(--font-sans); font-size: var(--text-xs); line-height: 1.5; max-width: 100%; overflow: hidden; padding: 0 6px; text-overflow: ellipsis; white-space: nowrap; }
 .vacuum-chip[data-risk="heavy"] { background: color-mix(in srgb, var(--color-warn) 10%, transparent); border-color: var(--color-warn); color: var(--color-warn); }
 .vacuum-chip[data-risk="dangerous"] { background: color-mix(in srgb, var(--color-bad) 12%, transparent); border-color: var(--color-bad); color: var(--color-bad); }
@@ -684,9 +629,6 @@
 .vacuum-tick[data-risk="heavy"] { fill: var(--color-warn); }
 .vacuum-tick[data-risk="dangerous"] { fill: var(--color-bad); }
 
-/* Scan progress: a trend line over the episode's own samples, not a number
-   crammed beside two others. Colored by the current phase's risk, like the
-   phase chip it sits beside. */
 .vacuum-progress-cell { align-items: center; display: inline-flex; gap: 6px; }
 .vacuum-progress-spark { color: var(--color-accent3); flex: none; height: 16px; width: 64px; }
 .vacuum-progress-cell[data-risk="heavy"] .vacuum-progress-spark { color: var(--color-warn); }
@@ -694,9 +636,21 @@
 .vacuum-progress-spark path { stroke: currentColor; }
 .vacuum-progress-cell strong { color: var(--color-fg2); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 400; }
 
+.lock-tree-cell { align-items: center; display: inline-flex; font-family: var(--font-mono); font-variant-numeric: tabular-nums; gap: 4px; white-space: pre; }
+.lock-tree-prefix { color: var(--color-fg4); }
+.lock-tree-marker { color: var(--color-accent3); flex: none; }
+.lock-tree-cell[data-role="waiter"] .lock-tree-marker { color: var(--color-fg3); }
+.lock-tree-note { color: var(--color-fg3); font-size: var(--text-xs); white-space: nowrap; }
+[data-testid="pg-locks-table"] .entity-row:has(.lock-tree-cell[data-role="root"]) { border-top: 1px solid var(--color-line2); }
+
+.process-tree-prefix { color: var(--color-fg4); font-family: var(--font-mono); white-space: pre; }
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }
+/* Tree state tone applies to the row; hot overrides running. */
+.process-table .entity-row:has([data-field="state"][data-value-tone="good"]) { background-color: color-mix(in srgb, var(--color-ok) 9%, var(--color-s1)); }
+.process-table .entity-row:has([data-field="cpu_percent"][data-value-tone="warning"]) { background-color: color-mix(in srgb, var(--color-warn) 10%, var(--color-s1)); }
+.process-table .entity-row:has([data-field="cpu_percent"][data-value-tone="critical"]) { background-color: color-mix(in srgb, var(--color-bad) 12%, var(--color-s1)); }
 .value-tone-warning,
 .value-tone-critical { background: color-mix(in srgb, currentColor 5%, transparent); }
 .event-finding { box-shadow: inset 2px 0 var(--finding-edge); }
@@ -735,7 +689,7 @@
 @media (max-width: 760px) {
   .lensbar { flex-wrap: wrap; gap: 0; padding: 0; }
   .lensbar > .lens-tabs { flex: 1 0 100%; padding: 2px 4px; }
-  .process-summary-inline { border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); }
+  .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
   .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
 }

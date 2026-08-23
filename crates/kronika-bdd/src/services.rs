@@ -1,25 +1,14 @@
-//! Starting the databases a log scenario needs.
-//!
-//! Nothing here writes a log file by hand. A scenario asserts what the
-//! collector made of what `PostgreSQL` and `PgBouncer` actually wrote, so the
-//! servers are the real ones, started in the image the suite runs in.
-
 use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-/// Where `PostgreSQL` keeps its cluster and its log.
 const PG_DATA: &str = "/tmp/kronika-pgdata";
-/// Where `PgBouncer` keeps its configuration and its log.
 const PGB_DIR: &str = "/tmp/kronika-pgbouncer";
-/// The unix user `PostgreSQL` runs as; it refuses to run as root.
 const PG_USER: &str = "postgres";
 const PG_PORT: &str = "5432";
-/// Each pooler binds its own port, so a scenario never waits for the last
-/// one's socket to be released. The base is keyed on the process so parallel
-/// runs of the suite stay apart.
+// Process-derived ports separate parallel suite processes.
 fn next_pgb_port() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
     static BASE: OnceLock<u16> = OnceLock::new();
@@ -28,27 +17,19 @@ fn next_pgb_port() -> u16 {
     base + NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One started `PostgreSQL`.
 #[derive(Debug)]
 pub(crate) struct Postgres {
-    /// The log file the collector is pointed at.
     pub(crate) log_path: PathBuf,
-    /// How the collector reaches the server for `log_line_prefix`.
     pub(crate) dsn: String,
-    /// The `psql` invocation a statement is run through.
     psql: String,
 }
 
-/// One started `PgBouncer`.
 #[derive(Debug)]
 pub(crate) struct PgBouncer {
-    /// How to reach the admin console, which is what `SHOW CONFIG` needs.
     pub(crate) dsn: String,
-    /// The `psql` invocation a client connects through, minus its database.
     psql: String,
 }
 
-/// Run a command, failing with what it printed.
 pub(crate) fn run(command: &mut Command) -> Result<String> {
     let output = command
         .output()
@@ -70,7 +51,6 @@ fn as_postgres(line: &str) -> Result<String> {
     run(Command::new("su").args([PG_USER, "-c", line]))
 }
 
-/// The directory the `PostgreSQL` server binaries are installed in.
 fn pg_bin() -> Result<String> {
     let listing = std::fs::read_dir("/usr/lib/postgresql").context("no PostgreSQL is installed")?;
     let mut versions: Vec<String> = listing
@@ -85,10 +65,7 @@ fn pg_bin() -> Result<String> {
 }
 
 impl Postgres {
-    /// Initialize and start a cluster whose `log_destination` is `destination`.
-    ///
-    /// The log file's name follows the destination, which is what tells the
-    /// collector how to read it.
+    /// The destination selects the log filename extension read by the collector.
     pub(crate) fn start(destination: &str) -> Result<Self> {
         let bin = pg_bin()?;
         stop_previous(&bin);
@@ -137,8 +114,7 @@ impl Postgres {
         })
     }
 
-    /// Run one statement, whether or not the server accepts it: a scenario
-    /// asks for statements that fail on purpose.
+    /// Ignores SQL exit status so expected failures can be collected.
     pub(crate) fn statement(&self, sql: &str) -> Result<()> {
         let quoted = sql.replace('\'', r"'\''");
         Command::new("su")
@@ -151,10 +127,18 @@ impl Postgres {
             .context("run psql")?;
         Ok(())
     }
+
+    pub(crate) fn scalar(&self, sql: &str) -> Result<String> {
+        let quoted = sql.replace('\'', r"'\''");
+        let output = as_postgres(&format!(
+            "{} --tuples-only --no-align --command '{quoted}'",
+            self.psql
+        ))?;
+        Ok(output.trim().to_owned())
+    }
 }
 
 impl PgBouncer {
-    /// Start a pooler in front of the running cluster.
     pub(crate) fn start() -> Result<Self> {
         let dir = Path::new(PGB_DIR);
         stop_previous_pooler(dir);
@@ -179,11 +163,9 @@ impl PgBouncer {
             ),
         )
         .context("write the pooler configuration")?;
-        // PgBouncer refuses to run as root, so it runs as the same unix user
-        // the server does.
+        // PgBouncer refuses to run as root.
         as_postgres(&format!("pgbouncer -d {PGB_DIR}/pgbouncer.ini"))?;
-        // `-d` returns before the listener is up, and a client that arrives
-        // first is refused by the kernel and leaves nothing in the log.
+        // `-d` returns before the listener accepts connections.
         let ready = format!(
             "{}/psql --host=127.0.0.1 --port={port} --username={PG_USER} \
              --dbname=pgbouncer --command 'show version'",
@@ -199,8 +181,6 @@ impl PgBouncer {
         }
         anyhow::ensure!(answered, "the pooler never answered on its admin console");
         Ok(Self {
-            // SHOW CONFIG needs the account in stats_users, which the
-            // configuration above grants; no administrative right beyond that.
             dsn: format!("host=127.0.0.1 port={port} user={PG_USER} dbname=pgbouncer"),
             psql: format!(
                 "{}/psql --host=127.0.0.1 --port={port} --username={PG_USER}",
@@ -209,7 +189,6 @@ impl PgBouncer {
         })
     }
 
-    /// Connect through the pooler to `database`, whether or not it exists.
     pub(crate) fn connect_to(&self, database: &str) -> Result<()> {
         Command::new("su")
             .args([
@@ -223,7 +202,6 @@ impl PgBouncer {
     }
 }
 
-/// Add the scenario's settings to a fresh cluster's configuration.
 fn append_config(path: &Path, settings: &str) -> Result<()> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
@@ -234,8 +212,7 @@ fn append_config(path: &Path, settings: &str) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// A scenario that ran before this one left a server running; it goes before
-/// its data directory does.
+// Stop the previous server before removing its data directory.
 fn stop_previous(bin: &str) {
     let _stopped = as_postgres(&format!(
         "{bin}/pg_ctl --pgdata={PG_DATA} --mode=immediate --wait --timeout=30 stop"
@@ -243,15 +220,12 @@ fn stop_previous(bin: &str) {
 }
 
 fn stop_previous_pooler(dir: &Path) {
-    // Each pooler owns its port, so this only stops the last one from writing
-    // into a directory the next scenario is about to reset.
+    // Stop the last pooler before resetting its shared directory.
     if let Ok(pid) = std::fs::read_to_string(dir.join("pgbouncer.pid")) {
         let _killed = run(Command::new("kill").args(["-TERM", pid.trim()]));
     }
 }
 
-/// Start from an empty directory, so a second scenario is not a resumption of
-/// the first.
 fn reset_directory(path: &Path) -> Result<()> {
     if path.exists() {
         std::fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;

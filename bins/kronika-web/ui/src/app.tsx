@@ -13,6 +13,7 @@ import {
   loadSnapshot,
   loadSnapshotGroups,
   mergeSnapshotData,
+  segmentBoundAt,
   snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
@@ -65,9 +66,10 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
+import { buildProcessForest, scheduledTicks } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -85,6 +87,8 @@ import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
 
 type Theme = "dark" | "light"
+
+const EMPTY_TICKS: ReadonlyMap<number, number> = new Map()
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
@@ -111,6 +115,8 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
 }
 
 function processRequest(lens: Lens): SectionRequest {
+  // Omit pageSize to request the complete snapshot for the tree.
+  if (lens === "tree") return { section: "os_process" }
   const selected = processTableDefaultOrder(lens).column
   return {
     section: "os_process",
@@ -124,7 +130,7 @@ function processRequest(lens: Lens): SectionRequest {
 function section(name: string): SectionRequest { return { section: name } }
 
 const HELP_SYSTEM = [
-  { label: "system.metric.health.label", help: "system.metric.health.help" },
+  { label: "system.metric.health.label", help: "lane.health.os_health.help" },
   { label: "system.metric.cpu_used_cores.label", help: "system.metric.cpu_used_cores.help" },
   { label: "system.metric.cpu_capacity.label", help: "system.metric.cpu_capacity.help" },
   { label: "system.metric.cpu_actual_frequency.label", help: "system.metric.cpu_actual_frequency.help" },
@@ -252,12 +258,11 @@ function App({ locale, onLocale, t }: {
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
   const viewRequests = useMemo(() => {
-    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }]
+    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
       planRequest(planLens),
-      PLAN_INFO_REQUEST,
       ...POSTGRESQL_CONTEXT_REQUESTS,
     ]
     if (activeRelation && visibleSource === "postgresql") {
@@ -608,12 +613,48 @@ function App({ locale, onLocale, t }: {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
+  // CPU% uses the preceding process snapshot.
+  // Cache by recorded snapshot, not by cursor position within its interval.
+  const treeAt = lens === "tree" ? allProcessRows[0]?.timestamp ?? null : null
+  const [previousProcessCpu, setPreviousProcessCpu] = useState<{ readonly at: number; readonly interval: number | null; readonly ticks: ReadonlyMap<number, number> } | null>(null)
+  useEffect(() => {
+    const segment = treeAt === null ? null : segmentBoundAt(segments, treeAt)
+    if (treeAt === null || segment === null) return undefined
+    const controller = new AbortController()
+    acceptResponse(
+      loadSnapshot(segment.id, treeAt - 1, [{ section: "os_process", fields: ["pid", "utime", "stime"] }], controller.signal),
+      controller.signal,
+      (loaded) => {
+        const rows = loaded.sections.os_process ?? []
+        const ticks = new Map<number, number>()
+        for (const row of rows) {
+          const pid = asNumber(value(row, "pid"))
+          const scheduled = scheduledTicks(row)
+          if (pid !== null && scheduled !== null) ticks.set(pid, scheduled)
+        }
+        const before = rows[0]?.timestamp
+        setPreviousProcessCpu({ at: treeAt, interval: before === undefined ? null : (treeAt - before) / 1_000_000, ticks })
+      },
+      () => setPreviousProcessCpu(null),
+    )
+    return () => controller.abort()
+  }, [segments, treeAt])
+  const processTableRows = useMemo(() => {
+    if (lens !== "tree") return processRows
+    const previous = previousProcessCpu?.at === treeAt ? previousProcessCpu : null
+    return buildProcessForest(allProcessRows, {
+      intervalSeconds: previous?.interval ?? null,
+      memTotalKb: asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total")),
+      previousTicks: previous?.ticks ?? EMPTY_TICKS,
+      ticksPerSecond,
+    })
+  }, [allProcessRows, cursor, data.sections.os_meminfo, lens, previousProcessCpu, processRows, ticksPerSecond, treeAt])
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))
     return pid === null ? [] : [pid]
   })), [pgRows])
-  const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
+  const selectedProcess = processTableRows.find((row) => processKey(row) === selectedKey) ?? null
   useEffect(() => {
     if (selectedFinding?.logicalName === "os_process" && findingRow !== null) {
       setSelectedKey(processKey(findingRow))
@@ -775,9 +816,7 @@ function App({ locale, onLocale, t }: {
     setRelationFilters((current) => relationFiltersForSection(current, next))
   }, [navigateSearchSurface, pgSection])
   const openRelated = useCallback((target: RelatedNavigation) => {
-    // A drill names a new subject. The context pinned by an earlier finding
-    // would otherwise be ANDed into the request beside the drilled filter,
-    // and the two together select nothing.
+    // A related drill replaces any finding context.
     clearEntityContext()
     navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
     setSource("postgresql")
@@ -861,13 +900,8 @@ function App({ locale, onLocale, t }: {
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
-  // Chart stands alone; Detail and every relation panel need a selection to
-  // describe, and a panel outside this set would close the Inspector on its
-  // own tab click.
   const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
-    // Closing destroys the detail whichever tab is active; the registered
-    // dismiss keeps the owning view's selection in step.
     inspectorDismiss.current?.()
     setInspectorPanel(null)
     if (visibleSource === "processes") setSelectedKey(null)
@@ -942,14 +976,14 @@ function App({ locale, onLocale, t }: {
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
         <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
-            {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
+            {(["cpu", "memory", "disk", "generic", "tree"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
-          <span className="snapshot-time">{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
+          <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
-          <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} densePageState={densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
+          <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
       {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
@@ -986,8 +1020,6 @@ function TimeValue({ label, output, testId }: { readonly label: string; readonly
   return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
 }
 
-// How stale the page is answers the operator's question; the wall clock of the
-// last refresh only answers it after arithmetic, and costs twice the width.
 function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly clock: string; readonly locale: Locale; readonly t: Translate }) {
   const [now, setNow] = useState(() => Date.now() * 1_000)
   useEffect(() => {
@@ -995,11 +1027,6 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     return () => clearInterval(timer)
   }, [])
   const age = humanAge((now - at) / 1_000_000, locale)
-  // Its own lane, so the freshness never reads as part of the cursor time. The
-  // word steps aside on narrow bars; the title keeps it.
-  // The cursor time is the reading that matters; how stale the page is answers
-  // a rarer question, so it moves under the mark beside it instead of taking a
-  // lane of its own on the bar.
   return <span className="flex items-baseline text-xs text-fg4" data-testid="updated-time">
     <LabelHelp
       helpKey="refresh.updated"
@@ -1012,8 +1039,6 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   </span>
 }
 
-// The previous completed initial load is a fact from this browser, shown as
-// history — never as a promise about the current one.
 const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
 
 function readLastLoadSeconds(): number | null {
@@ -1030,9 +1055,7 @@ function readLastLoadSeconds(): number | null {
 function writeLastLoadSeconds(seconds: number): void {
   try {
     localStorage.setItem(LOAD_SECONDS_KEY, String(Math.round(seconds * 10) / 10))
-  } catch {
-    // The hint is optional; storage denial is not an error.
-  }
+  } catch {}
 }
 
 function StateCard({ message }: { readonly message: string }) {

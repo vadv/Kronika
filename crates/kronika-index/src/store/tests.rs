@@ -4,17 +4,21 @@ use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::os_cgroup_memory::OsCgroupMemoryV2;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_topology::OsTopology;
+use kronika_registry::pg_locks::PgLocksV2;
 use kronika_registry::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_stat_archiver::PgStatArchiver;
+use kronika_registry::pg_stat_database::PgStatDatabaseV4;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -328,6 +332,152 @@ fn cpu_row(ts: i64, cpu_id: i32, user: i64, idle: i64, scope: u8) -> OsCpu {
     }
 }
 
+fn lock_row(ts: i64, pid: i32, blocked_by: Vec<i32>, label: StrId) -> PgLocksV2 {
+    PgLocksV2 {
+        ts: Ts(ts),
+        pid,
+        blocked_by,
+        datid: 5,
+        datname: label,
+        usename: Some(label),
+        application_name: label,
+        client_addr: label,
+        backend_type: label,
+        state: Some(label),
+        wait_event_type: None,
+        wait_event: None,
+        query: label,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: None,
+        xact_start: None,
+        query_start: None,
+        state_change: None,
+        lock_locktype: None,
+        lock_mode: None,
+        lock_database: None,
+        lock_relation: None,
+        lock_relname: None,
+        lock_page: None,
+        lock_tuple: None,
+        lock_virtualxid: None,
+        lock_transactionid: None,
+        lock_classid: None,
+        lock_objid: None,
+        lock_objsubid: None,
+        lock_target: None,
+        waitstart: None,
+    }
+}
+
+fn archiver_row(ts: i64, failed_count: i64) -> PgStatArchiver {
+    PgStatArchiver {
+        ts: Ts(ts),
+        archived_count: 0,
+        last_archived_wal: None,
+        last_archived_time: None,
+        failed_count,
+        last_failed_wal: None,
+        last_failed_time: None,
+        stats_reset: None,
+    }
+}
+
+fn cgroup_memory_row(ts: i64, cgroup_path: StrId, oom_kill: i64) -> OsCgroupMemoryV2 {
+    OsCgroupMemoryV2 {
+        ts: Ts(ts),
+        cgroup_path,
+        current: 0,
+        max: None,
+        anon: 0,
+        file: 0,
+        kernel: 0,
+        slab: 0,
+        shmem: 0,
+        low_events: 0,
+        high_events: 0,
+        max_events: 0,
+        oom_events: 0,
+        oom_kill,
+        scope: 3,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one fixture row exercises five independent boundary checks at once"
+)]
+fn database_v4_row(
+    ts: i64,
+    datid: u32,
+    checksum_failures: Option<i64>,
+    frozen_xid_age: Option<i64>,
+    min_mxid_age: Option<i64>,
+    sessions_fatal: i64,
+    sessions_killed: i64,
+) -> PgStatDatabaseV4 {
+    PgStatDatabaseV4 {
+        ts: Ts(ts),
+        datid,
+        datname: Some(StrId(1)),
+        numbackends: Some(1),
+        xact_commit: 0,
+        xact_rollback: 0,
+        blks_read: 0,
+        blks_hit: 0,
+        tup_returned: 0,
+        tup_fetched: 0,
+        tup_inserted: 0,
+        tup_updated: 0,
+        tup_deleted: 0,
+        conflicts: 0,
+        temp_files: 0,
+        temp_bytes: 0,
+        deadlocks: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        stats_reset: None,
+        frozen_xid_age,
+        min_mxid_age,
+        datconnlimit: Some(-1),
+        datallowconn: Some(true),
+        datistemplate: Some(false),
+        checksum_failures,
+        checksum_last_failure: None,
+        session_time: 0.0,
+        active_time: 0.0,
+        idle_in_transaction_time: 0.0,
+        sessions: 0,
+        sessions_abandoned: 0,
+        sessions_fatal,
+        sessions_killed,
+        parallel_workers_to_launch: 0,
+        parallel_workers_launched: 0,
+    }
+}
+
+fn append_database_rows(journal: &mut Journal, segment_id: i64, rows: &[PgStatDatabaseV4]) {
+    let mut interner = Interner::new(DictLimits::default());
+    let label = StrId(interner.intern(b"DB-FIXTURE").expect("intern label").get());
+    let dictionary = dict::encode(interner.window()).expect("dictionary");
+    let mut buffers = SectionBuffers::new();
+    for &row in rows {
+        let mut row = row;
+        row.datname = Some(label);
+        buffers.push(row).expect("database row");
+    }
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode database fixture")
+        .expect("nonempty database fixture");
+    journal
+        .append(
+            SegmentId::new(segment_id).expect("database segment id"),
+            &part,
+        )
+        .expect("append database fixture");
+}
+
 fn append_log_event_rows(
     buffers: &mut SectionBuffers,
     timestamp: i64,
@@ -520,6 +670,24 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category:
             scope: 0,
         })
         .expect("mount row");
+    buffers
+        .push(lock_row(later, 70, vec![], label))
+        .expect("lock root row");
+    buffers
+        .push(lock_row(later, 71, vec![70], label))
+        .expect("lock waiter row");
+    buffers
+        .push(archiver_row(segment_id, 2))
+        .expect("archiver baseline row");
+    buffers
+        .push(archiver_row(later, 5))
+        .expect("archiver growth row");
+    buffers
+        .push(cgroup_memory_row(segment_id, label, 1))
+        .expect("cgroup memory baseline row");
+    buffers
+        .push(cgroup_memory_row(later, label, 3))
+        .expect("cgroup memory growth row");
     append_log_event_rows(&mut buffers, later, label, error_category);
     let part = buffers
         .flush(&dictionary)
@@ -1005,6 +1173,78 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one assertion checks one exact stored finding"
+)]
+fn assert_direct_boundary_finding(
+    root: &Path,
+    reader: &Reader,
+    segment: &SegmentRef,
+    logical_name: &str,
+    type_id: u32,
+    field_ordinal: u16,
+    row_ordinal: u32,
+) {
+    let selected = resource(root, reader, segment, logical_name).expect("direct finding resource");
+    let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
+        panic!("one direct finding block for {logical_name}");
+    };
+    assert_eq!(block.type_id, type_id);
+    assert_eq!(block.total_hits, 1);
+    assert!(!block.truncated);
+    assert_eq!(block.findings.len(), 1);
+    assert_eq!(block.findings[0].kind, FindingKind::KnownBad);
+    assert_eq!(block.findings[0].category, None);
+    assert_eq!(block.findings[0].field_ordinal, field_ordinal);
+    assert_eq!(block.findings[0].row_ordinal, row_ordinal);
+    assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
+}
+
+fn assert_log_event_finding(
+    root: &Path,
+    reader: &Reader,
+    segment: &SegmentRef,
+    logical_name: &str,
+    type_id: u32,
+) {
+    let selected = resource(root, reader, segment, logical_name).expect("log event resource");
+    let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
+        panic!("one event locator block for {logical_name}");
+    };
+    assert_eq!(block.type_id, type_id);
+    let expected_hits = if matches!(type_id, 2_001_001 | 2_004_001) {
+        2
+    } else {
+        1
+    };
+    assert_eq!(block.total_hits, expected_hits);
+    assert!(!block.truncated);
+    assert_eq!(block.findings.len(), expected_hits as usize);
+    assert_eq!(block.findings[0].kind, FindingKind::Event);
+    assert_eq!(
+        block.findings[0].category,
+        (type_id == 2_001_001).then_some(5)
+    );
+    assert_eq!(block.findings[0].field_ordinal, 0);
+    assert_eq!(block.findings[0].row_ordinal, 0);
+    assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
+    if type_id == 2_004_001 {
+        assert_eq!(block.findings[1].kind, FindingKind::KnownBad);
+        assert_eq!(block.findings[1].category, None);
+        assert_eq!(block.findings[1].field_ordinal, 6);
+        assert_eq!(block.findings[1].row_ordinal, 0);
+        assert_eq!(block.findings[1].timestamp, SEGMENT_ID + 1_000_000);
+    }
+    if type_id == 2_001_001 {
+        assert_eq!(block.findings[1].kind, FindingKind::KnownBad);
+        assert_eq!(block.findings[1].category, Some(5));
+        assert_eq!(block.findings[1].field_ordinal, 4);
+        assert_eq!(block.findings[1].row_ordinal, 0);
+        assert_eq!(block.findings[1].timestamp, SEGMENT_ID + 1_000_000);
+    }
+}
+
 #[test]
 fn direct_boundaries_and_log_events_use_exact_production_fields() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -1023,21 +1263,19 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("os_cpu", 1_102_001, 5, 1),
         ("os_loadavg", 1_105_001, 1, 0),
         ("os_mountinfo", 1_112_002, 9, 0),
+        ("pg_locks", 1_011_002, 2, 1),
+        ("pg_stat_archiver", 1_008_001, 4, 1),
+        ("os_cgroup_memory", 1_202_002, 13, 1),
     ] {
-        let selected = resource(directory.path(), &reader, &segment, logical_name)
-            .expect("direct finding resource");
-        let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
-            panic!("one direct finding block for {logical_name}");
-        };
-        assert_eq!(block.type_id, type_id);
-        assert_eq!(block.total_hits, 1);
-        assert!(!block.truncated);
-        assert_eq!(block.findings.len(), 1);
-        assert_eq!(block.findings[0].kind, FindingKind::KnownBad);
-        assert_eq!(block.findings[0].category, None);
-        assert_eq!(block.findings[0].field_ordinal, field_ordinal);
-        assert_eq!(block.findings[0].row_ordinal, row_ordinal);
-        assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
+        assert_direct_boundary_finding(
+            directory.path(),
+            &reader,
+            &segment,
+            logical_name,
+            type_id,
+            field_ordinal,
+            row_ordinal,
+        );
     }
 
     for (logical_name, type_id) in [
@@ -1048,31 +1286,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("pg_log_lock_waits", 2_005_002),
         ("pg_log_lifecycle", 2_006_001),
     ] {
-        let selected = resource(directory.path(), &reader, &segment, logical_name)
-            .expect("log event resource");
-        let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
-            panic!("one event locator block for {logical_name}");
-        };
-        assert_eq!(block.type_id, type_id);
-        let expected_hits = if type_id == 2_004_001 { 2 } else { 1 };
-        assert_eq!(block.total_hits, expected_hits);
-        assert!(!block.truncated);
-        assert_eq!(block.findings.len(), expected_hits as usize);
-        assert_eq!(block.findings[0].kind, FindingKind::Event);
-        assert_eq!(
-            block.findings[0].category,
-            (type_id == 2_001_001).then_some(5)
-        );
-        assert_eq!(block.findings[0].field_ordinal, 0);
-        assert_eq!(block.findings[0].row_ordinal, 0);
-        assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
-        if type_id == 2_004_001 {
-            assert_eq!(block.findings[1].kind, FindingKind::KnownBad);
-            assert_eq!(block.findings[1].category, None);
-            assert_eq!(block.findings[1].field_ordinal, 6);
-            assert_eq!(block.findings[1].row_ordinal, 0);
-            assert_eq!(block.findings[1].timestamp, SEGMENT_ID + 1_000_000);
-        }
+        assert_log_event_finding(directory.path(), &reader, &segment, logical_name, type_id);
     }
 
     let raw = reader.open_segment(&segment).expect("finished segment");
@@ -1105,6 +1319,165 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         !bytes.windows(copied.len()).any(|window| window == copied),
         "event locators contain no source row text"
     );
+}
+
+#[test]
+fn pg_stat_database_boundaries_use_exact_production_fields() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+
+    // datid 1 grows every counter and crosses both wraparound ages; datid 2
+    // stays flat; datid 3 has no checksums and stays just under threshold.
+    append_database_rows(
+        &mut journal,
+        SEGMENT_ID,
+        &[
+            database_v4_row(SEGMENT_ID, 1, Some(3), Some(0), Some(0), 0, 0),
+            database_v4_row(SEGMENT_ID, 2, Some(7), Some(0), Some(0), 0, 0),
+            database_v4_row(SEGMENT_ID, 3, None, Some(0), Some(0), 0, 0),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish prior segment");
+    journal.reset().expect("reset after prior segment");
+
+    let current_id = SEGMENT_ID + 1_000_000;
+    append_database_rows(
+        &mut journal,
+        current_id,
+        &[
+            database_v4_row(
+                current_id,
+                1,
+                Some(4),
+                Some(1_600_000_000),
+                Some(1_600_000_000),
+                1,
+                1,
+            ),
+            database_v4_row(current_id, 2, Some(7), Some(0), Some(0), 0, 0),
+            database_v4_row(
+                current_id,
+                3,
+                None,
+                Some(1_599_999_999),
+                Some(1_599_999_999),
+                0,
+                0,
+            ),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let listing = reader.catalog_segments(..).expect("catalog segments");
+    let current = listing
+        .segments
+        .into_iter()
+        .find(|segment| segment.id() == current_id)
+        .expect("current finished segment");
+    let selected = resource(directory.path(), &reader, &current, "pg_stat_database")
+        .expect("pg_stat_database resource");
+    let block = selected
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            SeriesBlock::Findings(block) if block.type_id == 1_005_004 => Some(block),
+            _ => None,
+        })
+        .expect("pg_stat_database finding block");
+    assert_eq!(block.type_id, 1_005_004);
+    assert_eq!(block.total_hits, 5);
+    assert!(!block.truncated);
+    assert_eq!(block.findings.len(), 5);
+    for finding in &block.findings {
+        assert_eq!(finding.kind, FindingKind::KnownBad);
+        assert_eq!(finding.category, None);
+        assert_eq!(
+            finding.row_ordinal, 0,
+            "only datid 1's row crosses a boundary"
+        );
+        assert_eq!(finding.timestamp, current_id);
+    }
+    assert_eq!(
+        block
+            .findings
+            .iter()
+            .map(|finding| finding.field_ordinal)
+            .collect::<Vec<_>>(),
+        [20, 21, 25, 32, 33]
+    );
+}
+
+#[test]
+fn archiver_and_cgroup_memory_growth_ignores_a_flat_interval() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+
+    let mut interner = Interner::new(DictLimits::default());
+    let cgroup_path = StrId(
+        interner
+            .intern(b"/kubepods/burstable/pod-fixture")
+            .expect("intern cgroup path")
+            .get(),
+    );
+    let dictionary = dict::encode(interner.window()).expect("dictionary");
+    let mut buffers = SectionBuffers::new();
+    let flat = SEGMENT_ID + 1_000_000;
+    let grows = SEGMENT_ID + 2_000_000;
+    for row in [
+        archiver_row(SEGMENT_ID, 2),
+        archiver_row(flat, 2),
+        archiver_row(grows, 5),
+    ] {
+        buffers.push(row).expect("archiver row");
+    }
+    for row in [
+        cgroup_memory_row(SEGMENT_ID, cgroup_path, 1),
+        cgroup_memory_row(flat, cgroup_path, 1),
+        cgroup_memory_row(grows, cgroup_path, 4),
+    ] {
+        buffers.push(row).expect("cgroup memory row");
+    }
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode fixture")
+        .expect("nonempty fixture");
+    journal.append(address().id, &part).expect("append fixture");
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Finished);
+
+    for (logical_name, type_id, field_ordinal) in [
+        ("pg_stat_archiver", 1_008_001, 4),
+        ("os_cgroup_memory", 1_202_002, 13),
+    ] {
+        let selected =
+            resource(directory.path(), &reader, &segment, logical_name).expect("resource");
+        let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
+            panic!("one finding block for {logical_name}");
+        };
+        assert_eq!(block.type_id, type_id);
+        assert_eq!(block.total_hits, 1, "the flat interval must not also fire");
+        assert!(!block.truncated);
+        assert_eq!(block.findings.len(), 1);
+        assert_eq!(block.findings[0].kind, FindingKind::KnownBad);
+        assert_eq!(block.findings[0].category, None);
+        assert_eq!(block.findings[0].field_ordinal, field_ordinal);
+        assert_eq!(block.findings[0].row_ordinal, 2);
+        assert_eq!(block.findings[0].timestamp, grows);
+    }
 }
 
 #[test]

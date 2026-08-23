@@ -52,8 +52,9 @@ WORKDIR /work
 COPY . .
 # Release, because one scenario holds the collector to its peak-RSS limit and
 # a debug build carries megabytes the shipped binary does not.
-RUN cargo build --locked --release -p kronika-collector -p kronika-dump -p kronika-bdd
+RUN cargo build --locked --release -p kronika-collector -p kronika-demo -p kronika-dump -p kronika-bdd
 ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-collector
+ENV KRONIKA_DEMO_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-demo
 ENV KRONIKA_FEATURES=/work/crates/kronika-bdd/features
 ENV KRONIKA_FIXTURES=/work/crates/kronika-bdd/fixtures
 CMD ["/work/target/x86_64-unknown-linux-gnu/release/kronika-bdd"]

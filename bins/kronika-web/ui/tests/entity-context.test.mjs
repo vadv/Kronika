@@ -40,7 +40,7 @@ test("finding routes choose the shared entity lens", () => {
   assert.equal(helpers.findingRoute(finding(row("os_diskstats", "1108001", "1", {}))), "system")
 })
 
-test("context keeps exact identities while process and Activity use PID only", () => {
+test("context keeps exact identities, process uses PID, and an Activity count names no backend", () => {
   const process = row("os_process", "1100001", "1", { pid: 41, starttime: "9007199254740997", read_bytes: 3 })
   const oldStatement = row("pg_stat_statements", "1002001", "2", { queryid: "9", userid: "10", dbid: "11", query: "select 1" })
   const newStatement = row("pg_stat_statements", "1002003", "3", { queryid: "9", userid: "10", dbid: "11", toplevel: false, datname: "app", usename: "reporter", query: "select 1" })
@@ -66,11 +66,7 @@ test("context keeps exact identities while process and Activity use PID only", (
   assert.deepEqual(planContext.identity, [["userid", "10"], ["dbid", "11"], ["queryid", "9"], ["planid", "12"]])
   assert.deepEqual(helpers.entityContext(finding(database), database).identity, [["datid", "16384"]])
   assert.deepEqual(helpers.entityContext(finding(device), device).identity, [["major", "8"], ["minor", "1"]])
-  const activityContext = helpers.entityContext(finding(activity), activity)
-  assert.deepEqual(activityContext.identity, [["pid", "42"]])
-  assert.equal(helpers.contextMatches({ ...activity, typeId: "1001002", values: { ...activity.values, backend_start: "9007199254741000" } }, activityContext), true)
-  assert.equal(helpers.contextMatches({ ...activity, values: { ...activity.values, pid: 43 } }, activityContext), false)
-  assert.equal(helpers.contextMatches({ ...activity, timestamp: 200 }, activityContext), true)
+  assert.equal(helpers.entityContext(finding(activity), activity), null)
 })
 
 test("context filtering injects an omitted exact row without changing page order", () => {

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type Dispatch } from "react"
+import { useCallback, useEffect, useMemo, useState, type Dispatch } from "react"
 
 import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding, type SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
+import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import {
@@ -10,6 +11,7 @@ import {
   humanBytes,
   humanCores,
   humanDuration,
+  humanPercent,
   identifier,
   measure,
   processCommand,
@@ -23,52 +25,61 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import { filterProcessForest } from "./process-tree"
 
 export interface Field {
   readonly id: string
   readonly field?: string
   readonly label: string
   readonly help: string
-  readonly kind: "id" | "user" | "command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
+  readonly kind: "id" | "user" | "command" | "tree_command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns" | "percent" | "seconds" | "timestamp"
   readonly size: number
   readonly sticky?: "pid" | "command"
 }
 
-const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 62, sticky: "pid" }
-const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
-const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
+const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 82, sticky: "pid" }
+const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 340, sticky: "command" }
+const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 400, sticky: "command" }
+const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 50 }
+const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 88 }
 export const PROCESS_USER_FIELDS: readonly Field[] = [
-  { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 140 },
-  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 160 },
+  USER,
+  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 114 },
 ]
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
     PID, COMMAND,
-    idField("ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
-    idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
-    numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
-    idField("exit_signal", "col.exit_signal", 70), STATE,
+    field("id", "ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
+    field("id", "gid", "col.gid", 70), field("id", "egid", "col.egid", 70),
+    field("number", "num_threads", "col.threads", 84), field("id", "tty", "col.tty", 70),
+    field("id", "exit_signal", "col.exit_signal", 70), STATE,
   ],
   cpu: [
-    PID, COMMAND, coresField("utime", "col.utime", 84),
-    coresField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 96),
-    rateField("blkdelay_ticks", "col.blkdelay", 84), rateField("nvcsw", "col.nvcsw", 84),
-    rateField("nivcsw", "col.nivcsw", 84), idField("curcpu", "col.curcpu", 70), numberField("nice", "col.nice", 84),
-    numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
+    PID, COMMAND, field("cores", "utime", "col.utime", 84),
+    field("cores", "stime", "col.stime", 84), field("ns", "rundelay_ns", "col.rundelay", 96),
+    field("rate", "blkdelay_ticks", "col.blkdelay", 84), field("rate", "nvcsw", "col.nvcsw", 84),
+    field("rate", "nivcsw", "col.nivcsw", 84), field("id", "curcpu", "col.curcpu", 70), field("number", "nice", "col.nice", 84),
+    field("number", "prio", "col.prio", 84), field("number", "rtprio", "col.rtprio", 84), field("id", "policy", "col.policy", 70),
     STATE,
   ],
   memory: [
-    PID, COMMAND, kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
-    kibField("vswap_kb", "col.vswap", 96), rateField("minflt", "col.minflt", 84),
-    rateField("majflt", "col.majflt", 84), STATE,
+    PID, COMMAND, field("kib", "rmem_kb", "col.rmem", 96), field("kib", "vmem_kb", "col.vmem", 96),
+    field("kib", "vswap_kb", "col.vswap", 96), field("rate", "minflt", "col.minflt", 84),
+    field("rate", "majflt", "col.majflt", 84), STATE,
   ],
   disk: [
-    PID, COMMAND, bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
-    rateField("syscr", "col.syscr", 84),
-    rateField("syscw", "col.syscw", 84), bytesField("rchar", "col.rchar", 96),
-    bytesField("wchar", "col.wchar", 96), bytesField("cancelled_write_bytes", "col.cancelled_write", 96),
-    rateField("blkdelay_ticks", "col.blkdelay", 84), STATE,
+    PID, COMMAND, field("bytes", "read_bytes", "col.read_bytes", 96), field("bytes", "write_bytes", "col.write_bytes", 96),
+    field("rate", "syscr", "col.syscr", 84),
+    field("rate", "syscw", "col.syscw", 84), field("bytes", "rchar", "col.rchar", 96),
+    field("bytes", "wchar", "col.wchar", 96), field("bytes", "cancelled_write_bytes", "col.cancelled_write", 96),
+    field("rate", "blkdelay_ticks", "col.blkdelay", 84), STATE,
+  ],
+  tree: [
+    PID, TREE_COMMAND, USER,
+    field("percent", "cpu_percent", "col.cpu_percent", 72), field("percent", "mem_percent", "col.mem_percent", 72),
+    field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("id", "tty", "col.tty", 70),
+    STATE, field("timestamp", "starttime", "col.starttime", 180), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
   ],
 }
 
@@ -81,13 +92,15 @@ export interface ProcessSummaryMetric {
   readonly kind: SummaryKind
 }
 
+const IDENTITY_SUMMARY: readonly ProcessSummaryMetric[] = [
+  summaryMetric("processes", "process.summary.processes", "count"),
+  summaryMetric("threads", "process.summary.threads", "count"),
+  summaryMetric("runnable", "process.summary.running", "count"),
+  summaryMetric("postgresql", "process.summary.postgresql", "count"),
+]
+
 export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSummaryMetric[]>> = {
-  generic: [
-    summaryMetric("processes", "process.summary.processes", "count"),
-    summaryMetric("threads", "process.summary.threads", "count"),
-    summaryMetric("runnable", "process.summary.running", "count"),
-    summaryMetric("postgresql", "process.summary.postgresql", "count"),
-  ],
+  generic: IDENTITY_SUMMARY,
   cpu: [
     summaryMetric("user_cores", "process.summary.user_time", "cores"),
     summaryMetric("system_cores", "process.summary.system_time", "cores"),
@@ -106,9 +119,10 @@ export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSumm
     summaryMetric("read_calls_per_second", "process.summary.read_calls", "1/s"),
     summaryMetric("write_calls_per_second", "process.summary.write_calls", "1/s"),
   ],
+  tree: IDENTITY_SUMMARY,
 }
 
-export const PROCESS_SUMMARY_FIELDS: readonly string[] = Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field))
+export const PROCESS_SUMMARY_FIELDS: readonly string[] = [...new Set(Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field)))]
 
 export interface ProcessSummaryState {
   readonly hour: number | null
@@ -249,18 +263,20 @@ export function ProcessTable({
     const help = processHeaderHelp(field)
     return {
       field: field.id,
-      ...(field.kind === "command" ? { filterValue: processCommand } : {}),
+      ...(field.kind === "command" || field.kind === "tree_command" ? { filterValue: processCommand } : {}),
       ...(help === undefined ? {} : { help }),
       kind: entityKind(field.kind),
       label: field.label,
       render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} onSearch={onPattern} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
       sortValue: (row) => sortable(row, field),
-      sortable: field.kind !== "user",
+      sortable: lens !== "tree" && field.kind !== "user",
       ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
+      ...(field.id === "state" ? { expandToHeader: false } : {}),
       width: field.size,
     }
   }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
   const activeOrder = order ?? processTableDefaultOrder(lens)
+  const filterRows = useCallback((candidates: readonly DataRow[], query: string) => filterProcessForest(candidates, query, ticksPerSecond), [ticksPerSecond])
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = densePageState !== "idle" || canLoadMore
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
@@ -280,6 +296,7 @@ export function ProcessTable({
     empty={t("table.empty")}
     finding={finding}
     findingField={findingField}
+    filterRows={lens === "tree" ? filterRows : undefined}
     label={t("table.processes")}
     locale={locale}
     onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined}
@@ -290,7 +307,7 @@ export function ProcessTable({
     order={activeOrder}
     pattern={pattern}
     rowKey={processKey}
-    rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
+    rowLabel={(row) => processRowLabel(row, lens, t)}
     rows={rows}
     searchRequest={searchRequest}
     searchSurface="os_process"
@@ -304,8 +321,22 @@ export function ProcessTable({
   </div>
 }
 
+export function processRowLabel(row: DataRow, lens: Lens, t: Translate): string {
+  const pid = identifier(value(row, "pid"))
+  if (lens !== "tree") return t("table.activate", { pid })
+  const depth = asNumber(value(row, "process_tree_depth")) ?? 0
+  const command = processCommand(row)
+  if (depth === 0) return t("process.tree.row.root", { command, pid })
+  return t("process.tree.row.child", {
+    command,
+    depth,
+    parent: identifier(value(row, "process_tree_parent_pid")),
+    pid,
+  })
+}
+
 export function processTableDefaultOrder(lens: Lens): TableOrder {
-  if (lens === "generic") return { column: "pid", descending: false }
+  if (lens === "generic" || lens === "tree") return { column: "pid", descending: false }
   if (lens === "memory") return { column: "rmem_kb", descending: true }
   if (lens === "disk") return { column: "read_bytes", descending: true }
   return { column: "utime", descending: true }
@@ -320,24 +351,34 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "kib": return humanBytes(kib(asNumber(cell)), locale)
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
     case "ns": return humanDuration(cell, locale, "nanoseconds", t("unit.per_second"))
+    case "seconds": return humanDuration(cell, locale, "seconds")
+    case "percent": return humanPercent(cell, locale)
     case "id": case "user": return identifier(cell)
-    case "command": return ""
+    case "command": case "tree_command": case "timestamp": return ""
   }
 }
 
 export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly onSearch?: ((pattern: string) => void) | undefined; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
+  const time = useDisplayTime()
   const cell = field.field === undefined ? null : value(row, field.field)
-  const output = field.kind === "command" ? processCommand(row) : field.kind === "user" ? processUser(row, field) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
+  const isCommand = field.kind === "command" || field.kind === "tree_command"
+  const treePrefix = field.kind === "tree_command" ? rawText(value(row, "process_tree_prefix")) ?? "" : ""
+  const timestamp = field.kind === "timestamp" ? asNumber(cell) : null
+  const output = isCommand ? processCommand(row)
+    : field.kind === "user" ? processUser(row, field)
+    : field.kind === "timestamp" ? (timestamp === null ? "—" : time.timestamp(timestamp))
+    : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${isCommand || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{treePrefix !== "" && <span aria-hidden="true" className="process-tree-prefix">{treePrefix}</span>}{isCommand && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] font-sans text-xs font-semibold text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
     ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
     : output}</span>
 }
 
+// Use UID only when no captured username exists.
 export function processUser(row: DataRow, field: Field): string {
-  const uid = identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
   const name = field.field === undefined ? null : rawText(value(row, field.field))
-  return name === null || name.trim() === "" ? uid : `${name} (${uid})`
+  if (name !== null && name.trim() !== "") return name
+  return identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
 }
 
 export function processUserSearch(row: DataRow, field: Field): string | null {
@@ -348,7 +389,7 @@ export function processUserSearch(row: DataRow, field: Field): string | null {
 }
 
 function sortable(row: DataRow, field: Field): string | number | null {
-  if (field.kind === "command") return processCommand(row)
+  if (field.kind === "command" || field.kind === "tree_command") return processCommand(row)
   if (field.kind === "user") return processUser(row, field)
   const cell = field.field === undefined ? null : value(row, field.field)
   if (field.kind === "state") return stateText(cell)
@@ -358,7 +399,8 @@ function sortable(row: DataRow, field: Field): string | number | null {
 
 function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "id") return "id"
-  if (kind === "command" || kind === "state" || kind === "user") return "text"
+  if (kind === "command" || kind === "tree_command" || kind === "state" || kind === "user") return "text"
+  if (kind === "timestamp") return "timestamp"
   return "number"
 }
 
@@ -370,12 +412,6 @@ function kib(number: number | null): number | null {
   return number === null ? null : number * 1024
 }
 
-function rateField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "rate", size } }
-
-function coresField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "cores", size } }
-
-function idField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "id", size } }
-function numberField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "number", size } }
-function kibField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "kib", size } }
-function bytesField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "bytes", size } }
-function nsField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "ns", size } }
+function field(kind: Field["kind"], id: string, key: string, size: number): Field {
+  return { id, field: id, label: `${key}.label`, help: `${key}.help`, kind, size }
+}

@@ -28,28 +28,8 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, lockDetailColumns, lockRowLabel, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
-)
-
-const overviewHelpers = await importModule(
-  'export { pgMetricHistoryPlan } from "../src/postgres-view.tsx"',
-  { plugins: [registryPlugin([{
-    typeId: "overview-1", logicalName: "pg_stat_checkpointer", identity: ["kind_id"],
-    columns: ["ts", "kind_id", "mode", "writes", "latency_ms", "enabled"],
-    columnMetadata: [
-      { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
-      { name: "kind_id", type: "u32", class: "label", unit: null },
-      { name: "mode", type: "u32", class: "label", unit: null },
-      { name: "writes", type: "u64", class: "cumulative", unit: "count" },
-      { name: "latency_ms", type: "f64", class: "gauge", unit: "milliseconds" },
-      { name: "enabled", type: "bool", class: "label", unit: null },
-    ],
-  }, {
-    typeId: "info-1", logicalName: "pg_store_plans_info", identity: [],
-    columns: ["ts", "dealloc", "stats_reset"],
-  }])],
-  },
 )
 
 function layout(typeId, logicalName, identity, fields) {
@@ -159,26 +139,6 @@ test("dense statement histories cover per-call and percentage lens metrics", () 
 })
 
 
-test("one overview history request covers every chart field without proof-only dependencies", async () => {
-  const rate = (field) => ({ field, kind: "number", label: field, rate: true, sortable: true, width: 125 })
-  const gauge = { field: "latency_ms", kind: "milliseconds", label: "latency_ms", width: 145 }
-
-  const info = overviewHelpers.pgMetricHistoryPlan("info-1", [rate("dealloc")])
-  assert.deepEqual(info.fields, ["dealloc"])
-  assert.deepEqual(info.columns.map(({ cumulative }) => cumulative), [true])
-
-  const mixed = overviewHelpers.pgMetricHistoryPlan("overview-1", [rate("writes"), gauge])
-  assert.deepEqual(mixed.fields, ["writes", "latency_ms"])
-  assert.deepEqual(mixed.columns.map(({ column, cumulative }) => [column.field, cumulative]), [
-    ["writes", true],
-    ["latency_ms", false],
-  ])
-
-  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId\]\)/)
-  assert.doesNotMatch(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId, /)
-})
-
 test("Overview multirow histories keep complete fixed identities", () => {
   const io = row("1009002", { backend_type: "client backend", object: "relation", context: "normal", reads: 4 }, "pg_stat_io")
   assert.equal(helpers.sameEntity(io, { ...io, values: { ...io.values, reads: 9 } }, "pg_stat_io"), true)
@@ -211,8 +171,6 @@ test("activity keeps a compact operator table and uses relative detail durations
   assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
   assert.deepEqual(helpers.activityColumns(true).slice(0, 4).map(({ field }) => field), ["pid", "backend_type", "datname", "usename"])
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
-  // Backend age can only ever chart as a slope-1 ramp; the chip is gone, the
-  // number stays in the detail list.
   const viewSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"))
   assert.match(viewSource, /column\.field !== "backend_age_ms"/)
 })
@@ -434,10 +392,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /pg-plans-empty/)
   assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
-  assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
-  // The count belongs to the rows under it: an entity context or a filter
-  // that empties the body must empty the count with it.
   assert.match(source, /tableState\([^)]*displayedRows\.length/)
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
@@ -457,7 +412,8 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.deepEqual(fields(helpers.planColumns("timing")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
   assert.deepEqual(fields(helpers.planColumns("io")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
   assert.deepEqual(fields(helpers.planColumns("identity")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"])
-  assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "blocked_by", "state", "wait_event_type", "wait_event", "waitstart"])
+  assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event", "waitstart"])
+  assert.equal(fields(helpers.lockDetailColumns((key) => key)).at(-1), "blocked_by")
   assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
   for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
   assert.equal(fields(helpers.DATABASE_COLUMNS).includes("datid"), false)
@@ -474,6 +430,18 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
 })
 
+test("lock accessibility exposes exact parents, extra blocker PIDs, and prepared waits", () => {
+  const t = (key, slots = {}) => key === "pg.locks.prepared_transaction" ? "prepared transaction" : `${key}:${Object.values(slots).join(",")}`
+  const row = { logicalName: "pg_locks", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1011002", values: {
+    blocked_by: [10, 20, 25, 0], pid: 30, lock_tree_depth: 3, lock_tree_parent_pid: 10, lock_tree_extra_blockers: [20, 25], lock_tree_waits_on_prepared: true,
+  } }
+  const label = helpers.lockRowLabel(row, t)
+  assert.match(label, /pg\.locks\.row\.waiter:3,10,30/)
+  assert.match(label, /pg\.locks\.row\.extra:20, 25/)
+  assert.match(label, /pg\.locks\.row\.prepared:/)
+  assert.equal(helpers.lockDetailColumns(t).at(-1).render(row), "PID 10, PID 20, PID 25, prepared transaction")
+})
+
 test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
   const stubTime = { timestamp: (ts) => String(ts) }
   const stubT = (key, slots) => slots === undefined ? key : `${key}:${JSON.stringify(slots)}`
@@ -482,28 +450,20 @@ test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
   const pg16 = row("1012004", { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9, is_autovacuum: false, heap_blks_scanned: 1, heap_blks_total: 2, heap_blks_vacuumed: 0, index_vacuum_count: 0, num_dead_tuples: 5, max_dead_tuples: 9 })
   const episodes = new Map()
   const all = helpers.vacuumColumns([pg18], episodes, 5, null, stubTime, "en", stubT)
-  // The table carries no bare OID column; the identity reads as a relation,
-  // resolved from the row itself, no lookup involved.
   assert.equal(all.some(({ field }) => field === "datid" || field === "relid"), false)
   const relationColumn = all.find(({ field }) => field === "datname")
   assert.equal(relationColumn?.render?.(pg18), "app.public.orders")
-  // A row without a resolved name falls back to the OID inside one string,
-  // never as its own column.
   const relationColumn16 = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT).find(({ field }) => field === "datname")
   assert.equal(relationColumn16?.render?.(pg16), "app · relid=73")
-  // Progress is its own column, separate from the plain heap size.
   assert.ok(all.some(({ field }) => field === "vacuum_progress"))
   assert.ok(all.some(({ field }) => field === "heap_blks_scanned"))
   const sizeColumn = all.find(({ field }) => field === "heap_blks_scanned")
   assert.doesNotMatch(String(sizeColumn?.render?.(pg18)), /%/)
-  // PG17/18 columns exist only when the hour recorded such a layout.
   assert.ok(all.some(({ field }) => field === "indexes_processed"))
   assert.ok(all.some(({ field }) => field === "delay_time"))
   const old = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT)
   assert.equal(old.some(({ field }) => field === "indexes_processed" || field === "delay_time"), false)
-  // Every column except PID explains itself.
   assert.equal(all.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
-  // The raw detail block drops the OIDs and keeps every layout field, per layout.
   const detail18 = helpers.vacuumDetailColumns(pg18, null).map(({ field }) => field)
   assert.equal(detail18.some((field) => field === "datid" || field === "relid"), false)
   for (const field of ["is_autovacuum", "dead_tuple_bytes", "max_dead_tuple_bytes", "num_dead_item_ids", "indexes_total", "delay_time"]) assert.ok(detail18.includes(field), field)
@@ -528,7 +488,6 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     ...helpers.vacuumColumns([progressRow], new Map(), 1, null, stubTime, "en", stubT),
     ...helpers.vacuumDetailColumns(progressRow, null),
     ...helpers.vacuumDetailColumns({ ...progressRow, typeId: "1012004" }, null),
-    // The worker strip above the table explains itself the same way.
     { field: "vacuum_workers", help: "pg.vacuum.workers.help", label: "pg.vacuum.workers.label" },
   ]
   const groups = [
@@ -550,8 +509,6 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
     if (column.help.startsWith("pg.vacuum.")) usedVacuumHelp.add(column.help)
   }
-  // The OS process-load block reads its help keys straight in JSX (LabelHelp),
-  // not through an EntityColumn, so it needs its own scan of the source text.
   const postgresViewSource = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   for (const match of postgresViewSource.matchAll(/pg\.vacuum\.load(\.[a-z_]+)?\.help/g)) {
     assert.equal(Object.hasOwn(english, match[0]), true, match[0])

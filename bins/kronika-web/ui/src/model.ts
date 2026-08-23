@@ -2,7 +2,7 @@ import type { Cell, DataRow } from "./api"
 import type { Translate } from "./help"
 
 export type Locale = "en" | "ru"
-export type Lens = "generic" | "cpu" | "memory" | "disk"
+export type Lens = "generic" | "cpu" | "memory" | "disk" | "tree"
 
 export function shownMoment(
   sections: Readonly<Record<string, readonly DataRow[]>>,
@@ -134,8 +134,7 @@ function durationUnits(locale: Locale) {
     : { "hour": "h", microsecond: "µs", millisecond: "ms", minute: "min", nanosecond: "ns", "second": "s" }
 }
 
-// Elapsed wall time is read at a glance, so it stops at whole seconds where a
-// measured duration would still report milliseconds.
+// Elapsed wall time rounds to seconds; measured durations retain subsecond precision.
 export function humanAge(seconds: number, locale: Locale): string {
   const whole = Math.max(0, Math.floor(seconds))
   if (whole < 60) return `${whole} ${durationUnits(locale).second}`
@@ -164,8 +163,7 @@ export function humanDuration(cell: Cell, locale: Locale, input: DurationInputUn
   return `${compact(scaled, locale)} ${unit}${suffix}`
 }
 
-// One unit for the whole axis: composite «33м 20с» / «1ч 06м» ticks read as
-// noise. The unit comes from the top of the range and holds for every tick.
+// Use one unit for all axis ticks, chosen from the range maximum.
 export function humanDurationAxis(milliseconds: number, rangeMax: number, locale: Locale): string {
   const magnitude = Math.abs(rangeMax)
   const input = magnitude > 0 && magnitude < 0.001
@@ -269,9 +267,7 @@ export function activityFor(
   if (process === null) return { row: null, snapshotTime: null }
   const pid = asNumber(value(process, "pid"))
   if (pid === null) return { row: null, snapshotTime: null }
-  // One collection pass can stamp each database's Activity rows a little
-  // differently. Resolve identity first so an unrelated database cannot own
-  // the globally nearest timestamp and hide the selected backend.
+  // Filter by PID before choosing the nearest per-database Activity timestamp.
   const matching = activities.filter((activity) => asNumber(value(activity, "pid")) === pid)
   const activitySnapshot = snapshot(matching, cursor)
   const snapshotTime = activitySnapshot[0]?.timestamp ?? null
