@@ -1,20 +1,14 @@
 import type { DataRow } from "./api"
 import { value } from "./model"
 
-// pg_locks rows arrive as a flat, PID-sorted list: each waiter's blockers are
-// data on the row, not a position in the table. This rebuilds that recorded
-// graph into a walk order so the table itself reads as the wait tree —
-// blockers first, their waiters immediately under them, independent chains
-// never interleaved.
+// Build parent-first order while keeping disconnected lock chains contiguous.
 
 function parsePid(row: DataRow): number | null {
   const cell = value(row, "pid")
   return typeof cell === "number" && Number.isFinite(cell) ? cell : null
 }
 
-// `blocked_by` holds the recorded `pg_blocking_pids(pid)` edges; `0` is the
-// prepared-transaction placeholder (crates/kronika-registry/src/codec/pg_locks.rs)
-// and never has a row of its own, so it never becomes a tree edge.
+// blocked_by=0 denotes a prepared transaction and has no row or tree edge.
 function parseBlockers(row: DataRow): readonly number[] {
   const cell = value(row, "blocked_by")
   return Array.isArray(cell) ? cell.filter((entry): entry is number => typeof entry === "number" && entry !== 0) : []
@@ -44,8 +38,7 @@ export function buildLockForest(rows: readonly DataRow[]): readonly DataRow[] {
     }
   }
 
-  // Union-find over the (undirected) blocking edges: two chains that never
-  // touch must never interleave in the walk, even when their pids do.
+  // Union-find keeps disconnected chains from interleaving.
   const parent = new Map<number, number>()
   const find = (pid: number): number => {
     let root = pid
@@ -98,9 +91,7 @@ export function buildLockForest(rows: readonly DataRow[]): readonly DataRow[] {
   for (const componentRoot of [...components.keys()].sort((left, right) => left - right)) {
     const members = (components.get(componentRoot) as number[]).slice().sort((left, right) => left - right)
     const roots = members.filter((pid) => (blockersOf.get(pid) ?? []).length === 0)
-    // A component with no zero-blocker member is a caught cycle (mutual
-    // wait, mid-deadlock-detection): still render it, rooted at its lowest
-    // pid, rather than dropping the rows.
+    // Cycles have no blocker-free root; start at the lowest PID.
     for (const root of roots.length > 0 ? roots : [members[0] as number]) walk(root, null, 1, [], true)
     for (const pid of members) if (!visited.has(pid)) walk(pid, null, 1, [], true)
   }

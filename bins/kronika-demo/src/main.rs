@@ -1,24 +1,4 @@
-//! Runs the collector for a bounded window and reports what it cost.
-//!
-//! This is the data source for the segment-size benchmarks: it publishes real
-//! segments from the live host, then prints their size next to the collector's
-//! peak resident set and CPU time. Every later stage of the project extends
-//! the same run.
-//!
-//! The report names every section the run produced and how many rows of it
-//! reached a segment, so pointing `KRONIKA_PG_LOG` or `KRONIKA_PGBOUNCER_LOG`
-//! at a live log shows those events in the same summary.
-//!
-//! Environment: `KRONIKA_DEMO_DIR` (default `demo-data`),
-//! `KRONIKA_DEMO_DURATION_S` (default `60`; `0` runs until `SIGTERM` or
-//! `SIGINT` instead of an already-elapsed deadline), `KRONIKA_COLLECTOR_BIN`
-//! (default `kronika-collector` next to this binary). Any `KRONIKA_*`
-//! variable the collector reads passes through unchanged.
-//!
-//! Setting `KRONIKA_DEMO_WORKLOAD_DSN` also drives a `PostgreSQL` workload
-//! (a commerce schema, steady DML, a before/during/after plan regression, and
-//! bounded lock, event, and `VACUUM` episodes) alongside the collector; see
-//! `workload` for its configuration.
+//! Runs the collector and optional demo workload for a bounded measurement window.
 #![allow(
     clippy::multiple_crate_versions,
     reason = "the registry's arrow/parquet stack and the workload's rand/tokio-postgres \
@@ -41,10 +21,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use workload::{Workload, WorkloadConfig};
 
-/// How often the demo reads the collector's footprint while it runs.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// How long to wait for a clean shutdown after `SIGTERM` before giving up.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn env_or(key: &str, default: &str) -> String {
@@ -59,7 +37,6 @@ fn collector_log_to_stderr(raw: Option<&str>) -> Result<bool> {
     }
 }
 
-/// The collector binary: the operator's choice, else the one next to us.
 fn collector_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("KRONIKA_COLLECTOR_BIN") {
         return Ok(PathBuf::from(path));
@@ -104,7 +81,6 @@ fn spawn_collector(
     Ok((child, log_description))
 }
 
-/// Total bytes and count of the `.zms` files under `root`.
 fn measure_segments(root: &Path) -> Result<(usize, u64)> {
     let mut count = 0_usize;
     let mut bytes = 0_u64;
@@ -181,8 +157,7 @@ fn main() -> Result<()> {
         workload.stop();
     }
 
-    // SIGTERM, not kill(): the collector writes its open segment on the way out
-    // and the measured size would be short without it.
+    // Use SIGTERM so the collector flushes its open segment before measurement.
     kill(
         Pid::from_raw(i32::try_from(pid).context("collector pid exceeds i32")?),
         Signal::SIGTERM,

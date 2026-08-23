@@ -51,7 +51,7 @@ test("two unrelated process trees (different sessions/services) stay separate an
 })
 
 test("a pid whose recorded parent is not in this snapshot renders as its own root, not dropped", () => {
-  const rows = [row(2, 1)] // pid 1 never arrived in this page
+  const rows = [row(2, 1)]
   const forest = tree.buildProcessForest(rows, SHAPE_ONLY)
   assert.deepEqual(pids(forest), [2])
   assert.equal(forest[0].values.process_tree_prefix, "")
@@ -65,16 +65,14 @@ test("a two-process cycle still renders both processes, rooted at the lower pid,
 })
 
 test("%CPU is the share of one core burned since the previous snapshot, the way top counts it", () => {
-  // 600 ticks at 100/s = 6 CPU-seconds burned across a 12-second interval.
+  // 600 ticks / 100 Hz / 12 seconds = 50%.
   const rows = [row(1, 0, { utime: 900, stime: 300, rmem_kb: 512_000 })]
   const previousTicks = new Map([[1, 600]])
   const [busy] = tree.buildProcessForest(rows, { intervalSeconds: 12, memTotalKb: 2_048_000, previousTicks, ticksPerSecond: 100 })
   assert.equal(busy.values.cpu_percent, 50)
-  assert.equal(busy.values.cpu_time_seconds, 12) // TIME stays the lifetime total
+  assert.equal(busy.values.cpu_time_seconds, 12)
   assert.equal(busy.values.mem_percent, 25)
 
-  // A long-lived process that burned nothing this interval reads zero, not
-  // the near-zero lifetime average it used to show.
   const [idle] = tree.buildProcessForest(rows, { intervalSeconds: 12, memTotalKb: null, previousTicks: new Map([[1, 1_200]]), ticksPerSecond: 100 })
   assert.equal(idle.values.cpu_percent, 0)
 })
@@ -86,9 +84,7 @@ test("without a usable preceding sample %CPU is missing rather than guessed", ()
   assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: null }))[0].values.cpu_percent, null)
   assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: 0 }))[0].values.cpu_percent, null)
   assert.equal(tree.buildProcessForest(rows, inputs({ ticksPerSecond: null }))[0].values.cpu_percent, null)
-  // A counter that went backwards (pid reused) is not a negative reading.
   assert.equal(tree.buildProcessForest(rows, inputs({ previousTicks: new Map([[1, 9_999]]) }))[0].values.cpu_percent, null)
-  // %MEM is independent of the interval and still reported.
   assert.equal(tree.buildProcessForest(rows, inputs({ intervalSeconds: null }))[0].values.mem_percent, 25)
 })
 

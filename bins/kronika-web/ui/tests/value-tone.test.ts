@@ -105,8 +105,6 @@ test("semantic tones coexist with exact locator classes", async () => {
   assert.match(table, /value-tone-\$\{tone\}.*locator-cell/)
   assert.match(table, /aria-label=\{toneText === null \|\| field === undefined \? undefined : `\$\{toneText\}: \$\{cellAriaValue\(stored, field, locale, t\)\}`\}/)
   assert.doesNotMatch(table, /\$\{toneText\}: \$\{rawText\(stored\)/)
-  // One tone reaches both value-span hooks: PostgreSQL rows label theirs
-  // .entity-value, process rows label theirs .numeric-cell.
   assert.match(table, /critical: "\[&_\.entity-value\]:text-bad \[&_\.numeric-cell\]:text-bad"/)
   assert.match(table, /border-l-2 border-current/)
   assert.doesNotMatch(table, /value-tone-critical[^"]*box-shadow/)

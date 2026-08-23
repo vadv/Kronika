@@ -1,5 +1,3 @@
-//! Periodic table churn and throttled `VACUUM` episodes.
-
 use super::{WorkloadConfig, connect_as, wait_for_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,10 +38,7 @@ fn run_sql(timeout_s: u64) -> Vec<String> {
     ]
 }
 
-/// Run a real update-plus-vacuum episode immediately and then at a fixed,
-/// quiet cadence. This uses a direct `PostgreSQL` connection because the
-/// throttling settings are session-scoped and must not cross `PgBouncer`'s
-/// transaction-pooling boundary.
+/// Uses a direct connection because vacuum settings are session-scoped.
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
     let client = match connect_as(&config.direct_dsn, "vacuum-worker").await {
         Ok(client) => client,

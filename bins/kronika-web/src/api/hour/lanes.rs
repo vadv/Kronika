@@ -1,5 +1,3 @@
-//! Computes normalized timeline lanes from stored samples.
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
@@ -69,8 +67,7 @@ fn retain_latest<T>(samples: &mut BTreeMap<i64, T>) {
     }
 }
 
-/// Carries counter state across segments. A shared boundary row is suppressed
-/// because a retained-tail read can turn it into a conflicting null.
+/// Carries counter state without re-emitting the shared boundary row.
 pub(super) struct State {
     counters: Counters,
     emitted_before: i64,
@@ -382,8 +379,7 @@ fn record_activity_sample(
     counters.running.entry(ts).or_insert(0.0);
     counters.waiting.entry(ts).or_insert(0.0);
     counters.lock_waiting.entry(ts).or_insert(0.0);
-    // pg_locks includes every PostgreSQL backend, so its expiry signal must
-    // not inherit the client-only filtering used by the public wait lane.
+    // Lock-wait expiry counts all backends, unlike the client-only public lane.
     if wait_event_type == Some(b"Lock".as_slice()) {
         *counters.lock_waiting.entry(ts).or_insert(0.0) += 1.0;
     }

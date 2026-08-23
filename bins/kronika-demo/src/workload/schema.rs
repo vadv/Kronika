@@ -1,28 +1,16 @@
-//! Creates the workload's schemas and tables.
-//!
-//! Table shapes rotate through a fixed set so the workload's queries and
-//! rows are not one shape repeated throughout: `pg_stat_statements`
-//! and the system tables view get something genuinely varied to show.
-
 use super::{WorkloadConfig, connect_as, naming};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::task::JoinSet;
 
-/// One work item: a schema-qualified table to create.
 #[derive(Debug, Clone, Copy)]
 struct Table {
     schema: u32,
     index_in_schema: u32,
 }
 
-/// The `CREATE TABLE` column list for one of the rotating shapes, keyed by
-/// `table.index_in_schema % SHAPES.len()`.
-///
-/// Every column but `id` has a default: the workload's `Insert` action names
-/// only `id`, the one column every shape shares, so it stays shape-agnostic
-/// instead of needing to know which columns each shape requires.
+// Every non-id column has a default; DML inserts only id across all shapes.
 const SHAPES: [&str; 8] = [
     "(id bigint primary key, customer_id bigint not null default 0, \
      status text not null default 'paid', total_cents bigint not null default 0, \
@@ -44,10 +32,8 @@ const SHAPES: [&str; 8] = [
      metadata jsonb not null default '{}'::jsonb)",
 ];
 
-/// Log a setup progress line at most this often, in tables created.
 const PROGRESS_STEP: usize = 500;
 
-/// The table's name and its `CREATE TABLE ... (...)` statement.
 fn table_ddl(table: Table) -> (String, String) {
     let name = naming::table_name(table.schema, table.index_in_schema);
     let shape = SHAPES[table.index_in_schema as usize % SHAPES.len()];
@@ -57,15 +43,8 @@ fn table_ddl(table: Table) -> (String, String) {
     )
 }
 
-/// Create every configured schema and table, fanning DDL out over
-/// `config.ddl_concurrency` independent connections.
-///
-/// A single failed statement is logged and does not stop the rest: this is a
-/// demo aid, not the product's durability contract.
-///
-/// # Errors
-///
-/// Returns an error when the schema-setup connection cannot be opened.
+/// Creates schemas and tables concurrently.
+/// Individual table failures are logged; setup errors are returned.
 pub(crate) async fn create_all(config: &WorkloadConfig) -> Result<()> {
     let setup = connect_as(&config.dsn, "deploy-migration")
         .await
@@ -124,11 +103,7 @@ async fn create_chunk(
         .context("open a DDL connection")?;
     for table in chunk {
         let (name, ddl) = table_ddl(*table);
-        // `batch_execute`, not `execute`: the workload connects through
-        // PgBouncer in transaction-pooling mode, and `execute`'s implicit
-        // prepared statement does not survive a pooled connection switching
-        // backend between calls. The simple query protocol has no such
-        // statement to lose.
+        // Use the simple-query protocol across PgBouncer transaction pooling.
         if let Err(error) = client.batch_execute(&ddl).await {
             eprintln!("kronika-demo: create table {name} failed: {error:?}");
             continue;

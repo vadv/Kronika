@@ -1,14 +1,4 @@
-//! Lock-wait chains: several independent groups of transactions that
-//! deliberately serialize on the same row, so `pg_locks`, blocked sessions in
-//! `pg_stat_activity`, and `pg_log_lock_waits` events are real, not
-//! simulated. Every chain runs in a bounded round, followed by a quiet
-//! interval with no demo-owned lock wait.
-//!
-//! Each chain targets its own row. Every link in a chain issues the exact
-//! same `UPDATE ... WHERE id = <chain key>` inside its own transaction.
-//! Successful links hold the row for a fixed duration before committing.
-//! `PostgreSQL`'s row-lock queue is FIFO, so later links wait behind earlier
-//! ones until the final waiter reaches its finite statement timeout.
+//! PostgreSQL queues each chain's conflicting row locks in FIFO order.
 
 use super::{WorkloadConfig, connect_as, naming, wait_for_stop};
 use std::sync::Arc;
@@ -20,7 +10,6 @@ mod tests;
 
 const LOCK_STATEMENT_TIMEOUT_S: u64 = 10;
 
-/// Run lock-chain rounds until `stop` is set.
 pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
     let table = naming::table_name(0, 0);
     if let Err(error) = ensure_keys(&config.dsn, &table, config.lock_chains).await {
@@ -28,8 +17,7 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
         return;
     }
 
-    // Let the first plan-regression story finish before the lock rows
-    // appears. A new visitor gets distinct shapes instead of stacked noise.
+    // Offset lock episodes from plan-regression episodes.
     wait_for_stop(stop, Duration::from_secs(65)).await;
 
     while !stop.load(Ordering::Relaxed) {
@@ -39,10 +27,6 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
     }
 }
 
-/// Insert one row per chain, so every chain's `UPDATE` has a row to lock.
-///
-/// Uses `batch_execute` with the key inlined, not a bound parameter: see the
-/// note on `hold_one_link` about `PgBouncer` transaction pooling.
 async fn ensure_keys(dsn: &str, table: &str, chains: u32) -> anyhow::Result<()> {
     let client = connect_as(dsn, "scenario-setup").await?;
     for key in 0..chains {
@@ -132,13 +116,7 @@ fn lock_update_sql(table: &str, key: i64) -> String {
     )
 }
 
-/// Lock row `key` in `table` for `hold`, inside its own transaction on its
-/// own connection.
-///
-/// `batch_execute` with `key` inlined, not `execute` with a bound parameter:
-/// the connection runs through `PgBouncer` in transaction-pooling mode, and
-/// the simple query protocol has no prepared statement that could outlive
-/// the pooled backend this transaction happens to land on.
+// The simple-query protocol avoids prepared statements across pooled backends.
 async fn hold_one_link(dsn: &str, application_name: &str, table: &str, key: i64, hold: Duration) {
     let client = match connect_as(dsn, application_name).await {
         Ok(client) => client,

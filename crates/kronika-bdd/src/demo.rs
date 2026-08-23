@@ -1,5 +1,3 @@
-//! Running the shipped demo binary against the scenario's real services.
-
 use anyhow::{Context as _, Result};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -19,7 +17,6 @@ fn binary() -> Result<PathBuf> {
     Ok(dir.join("kronika-demo"))
 }
 
-/// One demo process and the operator-visible log it writes.
 #[derive(Debug)]
 pub(crate) struct DemoRun {
     _root: tempfile::TempDir,
@@ -30,7 +27,6 @@ pub(crate) struct DemoRun {
 }
 
 impl DemoRun {
-    /// Start the demo with the scenario's settings.
     pub(crate) fn spawn(env: &[(String, String)]) -> Result<Self> {
         let root = tempfile::tempdir().context("create a demo data root")?;
         let log_path = root.path().join("demo.log");
@@ -59,7 +55,6 @@ impl DemoRun {
         })
     }
 
-    /// Wait for the configured bounded run to finish successfully.
     pub(crate) fn wait(&mut self, timeout: Duration) -> Result<()> {
         let started = Instant::now();
         let child = self.child.as_mut().context("the demo was already reaped")?;
@@ -78,7 +73,6 @@ impl DemoRun {
         }
     }
 
-    /// Everything the demo and its collector wrote to stdout and stderr.
     pub(crate) fn log(&self) -> Result<String> {
         std::fs::read_to_string(&self.log_path).context("read demo.log")
     }

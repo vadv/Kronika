@@ -22,8 +22,7 @@ import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
-// Matches --spacing-row: virtualized offsets and the content-sized height
-// are computed from the same number the CSS row height uses.
+// Must match --spacing-row.
 const ROW_PX = 24
 const SKELETON_ROWS = 8
 
@@ -202,17 +201,14 @@ export function EntityTable({
     ? -1
     : rendered.findIndex((row) => rowMatchesLocator(row.original, finding))
   useLayoutEffect(() => {
-    // A dense table may have a retained vertical offset when filtering makes
-    // it sparse. Horizontal-only mode owns no vertical navigation, so reveal
-    // the exact header/row stack before paint.
+    // Clear retained vertical offset before switching to horizontal-only scrolling.
     if (contentSized && parent.current !== null) parent.current.scrollTop = 0
   }, [contentSized, rendered.length])
   useEffect(() => {
     if (!contentSized && locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [contentSized, finding, locatedIndex, virtual])
   const width = table.getTotalSize()
-  // This is real scrollable content, not scroll-padding: at the rightmost
-  // position the last header help/grip and cell stop before the owning edge.
+  // Keep the final header control and cell inside the scrollable edge.
   const contentWidth = width + TABLE_END_GUTTER
   useLayoutEffect(() => {
     const root = parent.current
@@ -260,7 +256,6 @@ export function EntityTable({
           : searchRequest.phase === "error"
             ? <div className="table-empty" role="alert">{searchMessage}</div>
             : loading
-          // Loading and empty are different truths; never report one as the other.
               ? <div role="status">
                 <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
                 <div aria-hidden="true" data-testid="table-skeleton">
@@ -313,8 +308,6 @@ export function EntityTable({
   </section>
 }
 
-// A row and a cell mark a finding with their own edge; selection keeps its
-// accent stripe alongside.
 const LOCATOR_ROW: Readonly<Record<string, string>> = {
   known_bad: "shadow-[inset_3px_0_var(--color-bad)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-bad)]",
   spike: "shadow-[inset_3px_0_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-warn)]",
@@ -324,8 +317,6 @@ const LOCATOR_CELL: Readonly<Record<string, string>> = {
   spike: "bg-[color-mix(in_srgb,var(--color-warn)_12%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
 }
 const TABLE_END_GUTTER = 8
-// Both hooks name the same thing: styles.css treats .entity-value and
-// .numeric-cell alike, and process rows label their value span the latter.
 const VALUE_TONE: Readonly<Record<string, string>> = {
   good: "[&_.entity-value]:text-ok [&_.numeric-cell]:text-ok",
   warning: "[&_.entity-value]:text-warn [&_.numeric-cell]:text-warn",
@@ -427,10 +418,6 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 
 export function sticky(meta: unknown, head: boolean): string {
   const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
-  // Shared box first, then the head/body difference. The names stay as hooks
-  // for the per-table overrides that have not moved onto markup yet.
-  // Shared box first, then the head/body difference, then what the process
-  // table asks of both. The names stay as hooks for the tests.
   const box = "flex-none min-w-0 overflow-hidden border-b border-line px-[7px] [.process-table_&]:px-2"
   const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
   const name = typeof cell?.sticky === "string" ? cell.sticky : ""
@@ -442,8 +429,7 @@ export function sticky(meta: unknown, head: boolean): string {
     cell?.numeric === true ? "align-right" : "",
     pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit" : "",
     name,
-    // The pinned command column casts a shadow over the scrolled body; the pid
-    // column sits behind it and must not.
+    // Keep the PID column below the pinned command shadow.
     name === "sticky-command" ? "shadow-[5px_0_8px_var(--color-shadow-b)] max-[760px]:static max-[760px]:shadow-none" : "",
   ].filter(Boolean).join(" ")
 }

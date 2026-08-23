@@ -115,9 +115,7 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
 }
 
 function processRequest(lens: Lens): SectionRequest {
-  // The tree needs every process at one moment, unranked. Omitting pageSize
-  // is how this loader already says that: the request then goes through the
-  // ordinary unpaged path instead of the server-ranked dense one.
+  // Omit pageSize to request the complete snapshot for the tree.
   if (lens === "tree") return { section: "os_process" }
   const selected = processTableDefaultOrder(lens).column
   return {
@@ -615,11 +613,8 @@ function App({ locale, onLocale, t }: {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
-  // %CPU is a delta, so the tree needs the snapshot before the one on screen.
-  // Keyed on that recorded moment rather than the cursor: moving the cursor
-  // inside one recorded interval changes nothing this reads. Asking for
-  // `at - 1` lands on the preceding recorded moment, and the projection is
-  // three columns rather than the whole row.
+  // CPU% uses the preceding process snapshot.
+  // Cache by recorded snapshot, not by cursor position within its interval.
   const treeAt = lens === "tree" ? allProcessRows[0]?.timestamp ?? null : null
   const [previousProcessCpu, setPreviousProcessCpu] = useState<{ readonly at: number; readonly interval: number | null; readonly ticks: ReadonlyMap<number, number> } | null>(null)
   useEffect(() => {
@@ -821,9 +816,7 @@ function App({ locale, onLocale, t }: {
     setRelationFilters((current) => relationFiltersForSection(current, next))
   }, [navigateSearchSurface, pgSection])
   const openRelated = useCallback((target: RelatedNavigation) => {
-    // A drill names a new subject. The context pinned by an earlier finding
-    // would otherwise be ANDed into the request beside the drilled filter,
-    // and the two together select nothing.
+    // A related drill replaces any finding context.
     clearEntityContext()
     navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
     setSource("postgresql")
@@ -907,13 +900,8 @@ function App({ locale, onLocale, t }: {
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
-  // Chart stands alone; Detail and every relation panel need a selection to
-  // describe, and a panel outside this set would close the Inspector on its
-  // own tab click.
   const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
-    // Closing destroys the detail whichever tab is active; the registered
-    // dismiss keeps the owning view's selection in step.
     inspectorDismiss.current?.()
     setInspectorPanel(null)
     if (visibleSource === "processes") setSelectedKey(null)
@@ -1032,8 +1020,6 @@ function TimeValue({ label, output, testId }: { readonly label: string; readonly
   return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
 }
 
-// How stale the page is answers the operator's question; the wall clock of the
-// last refresh only answers it after arithmetic, and costs twice the width.
 function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly clock: string; readonly locale: Locale; readonly t: Translate }) {
   const [now, setNow] = useState(() => Date.now() * 1_000)
   useEffect(() => {
@@ -1041,11 +1027,6 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     return () => clearInterval(timer)
   }, [])
   const age = humanAge((now - at) / 1_000_000, locale)
-  // Its own lane, so the freshness never reads as part of the cursor time. The
-  // word steps aside on narrow bars; the title keeps it.
-  // The cursor time is the reading that matters; how stale the page is answers
-  // a rarer question, so it moves under the mark beside it instead of taking a
-  // lane of its own on the bar.
   return <span className="flex items-baseline text-xs text-fg4" data-testid="updated-time">
     <LabelHelp
       helpKey="refresh.updated"
@@ -1058,8 +1039,6 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   </span>
 }
 
-// The previous completed initial load is a fact from this browser, shown as
-// history — never as a promise about the current one.
 const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
 
 function readLastLoadSeconds(): number | null {
@@ -1076,9 +1055,7 @@ function readLastLoadSeconds(): number | null {
 function writeLastLoadSeconds(seconds: number): void {
   try {
     localStorage.setItem(LOAD_SECONDS_KEY, String(Math.round(seconds * 10) / 10))
-  } catch {
-    // The hint is optional; storage denial is not an error.
-  }
+  } catch {}
 }
 
 function StateCard({ message }: { readonly message: string }) {

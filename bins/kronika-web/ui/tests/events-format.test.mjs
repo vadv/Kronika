@@ -67,7 +67,6 @@ test("every known-bad boundary reaches Events with a named source and a stated b
     const metric = known(logicalName, typeId, fieldOrdinal)
     assert.equal(metric.field, field, logicalName + " " + field)
     assert.equal(metric.boundary, boundary, logicalName + " boundary")
-    // A section with no mapping falls through to its raw name; these must not.
     assert.notEqual(metric.label, "events.metric.unavailable", logicalName + " label")
   }
 })

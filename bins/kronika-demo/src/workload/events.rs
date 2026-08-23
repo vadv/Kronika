@@ -1,6 +1,3 @@
-//! Bounded slow and failing statement episodes for `PostgreSQL` and
-//! `PgBouncer`.
-
 use super::dml::Action;
 use super::{WorkloadConfig, connect_as, dml, naming, wait_for_stop};
 use std::sync::Arc;

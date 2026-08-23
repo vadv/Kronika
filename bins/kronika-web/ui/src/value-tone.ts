@@ -7,10 +7,7 @@ export function semanticValueTone(field: string, cell: Cell, rate = false, row?:
   if (field === "state") {
     if (text === "idle in transaction (aborted)") return "critical"
     if (text === "idle in transaction") return "warning"
-    // Linux process state, ps/top style: running is worth noticing, stuck in
-    // uninterruptible sleep points at I/O, a zombie means nobody reaped it,
-    // and an idle kernel thread is the one state safe to visually skip. The
-    // cell can arrive as the character itself or its raw ASCII code.
+    // Process state may be a character or its ASCII code.
     const stateChar = text ?? asciiChar(cell)
     if (stateChar === "R") return "good"
     if (stateChar === "D") return "warning"

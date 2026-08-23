@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Healthy means the database, pooler, web API, and core demo sections are usable.
 set -euo pipefail
 
 PG_BIN=/usr/lib/postgresql/15/bin

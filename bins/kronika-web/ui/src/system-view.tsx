@@ -147,21 +147,13 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
 const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"] as const
 const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
 const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
-// The share components the usage chart draws under its own line: the recorded
-// counters as percent of capacity, on the axis the usage line already owns.
 const CPU_SHARE_BREAKDOWN_IDS = ["cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
-// Token order series-1..7 plus the neutral total: the palette was validated
-// for colour-vision separation in exactly this adjacency.
 const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "amber", "green", "violet", "red", "blue", "gray", "rose"]
 
-// The mount history request fetches both sides of the pair at once.
 const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }
 const MOUNT_INODE_PAIR_COLUMN: SystemEntityColumn = { ...number("available_inodes"), historyFields: ["available_inodes", "total_inodes"] }
 
-// Resource tabs own one operator question at a time. Static topology never
-// masquerades as temporal history, and cgroup accounting never appears under
-// host block-device or memory totals.
 function sectionEntities(section: string, mode: HostMode | null): readonly string[] {
   if (section === "cpu") return []
   if (section === "storage") {
@@ -205,8 +197,6 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   network_drops: ["os_netdev", ["rx_drop", "tx_drop"]],
 }
 
-// A UseTable row picks the whole group; the lane the row reports is the metric
-// the detail chart opens on. Grouped metrics keep their own lanes.
 const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
   cpu: "cpu",
   memory: "memory",
@@ -217,8 +207,6 @@ const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
 export type SystemGroup = "cpu" | "memory" | "storage" | "network"
 type HostMode = "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
 
-// The ledger rows map onto metric groups and entity sections; cgroups is a
-// tables-only row in a container environment.
 const LEDGER_SECTION: Readonly<Record<LedgerKey, string>> = {
   cpu: "cpu",
   memory: "memory",
@@ -243,8 +231,6 @@ const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
   network: "network_rx",
 }
 
-// A UseTable row picks the whole group and opens the metric the row
-// reports: the lane the table already shows, if any, else the first in the group.
 function resourceSelection(available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
   const lane = RESOURCE_LANE[resource]
   const target = available.find(({ spec }) => spec.id === lane)
@@ -252,21 +238,15 @@ function resourceSelection(available: readonly { readonly points: readonly Chart
   return target?.spec.id ?? null
 }
 
-// The group of every metric a resource row opens: both the lane the row leads
-// with and the submetrics its chips offer.
 function metricResource(spec: MetricSpec): UseResourceKey | null {
   return (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === spec.group) ?? null
 }
 
-// The lane the detail chart leads with when a group is picked without a row:
-// the resource lane when the group belongs to one, otherwise the health track.
 function groupLane(group: MetricSpec["group"]): string {
   const match = (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === group)
   return match === undefined ? "health" : RESOURCE_LANE[match]
 }
 
-// A metric's own lane: the metric's exact id when the timeline carries it, the
-// mapped lane for normalized metrics, otherwise the resource or health lane.
 function metricLane(spec: MetricSpec): string {
   if (normalizedMetricLanes(spec).some(([lane]) => lane === spec.id)) return spec.id
   const lane = timelineLane(spec.id)
@@ -460,8 +440,7 @@ export function SystemView({
         return frequency !== undefined && frequency !== null && Number.isFinite(frequency)
       }))), [data])
   const selectedSpec = metric === null ? undefined : SYSTEM_METRICS.find((spec) => spec.id === metric)
-  // Ledger disclosure lives here; the chosen metric stays in the address. A
-  // deep-linked metric opens its own row.
+  // The address owns the chosen metric and opens its ledger row.
   const [expanded, setExpanded] = useState<ReadonlySet<LedgerKey>>(() => {
     const key = selectedSpec === undefined ? null : metricResource(selectedSpec)
     return new Set<LedgerKey>(key === null ? [] : [key])
@@ -535,8 +514,6 @@ export function SystemView({
           const allRows = systemEntityRows(data, entity.section, cursor)
           const activeContext = context?.logicalName === entity.section ? context : null
           const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
-          // A section the hour carries is loading, not absent, while its
-          // snapshot catches up; a section without rows stays honestly absent.
           if (rows.length === 0 && activeContext === null && !tablesLoading) return null
           if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
           const finding = focus?.logicalName === entity.section ? focus : null
@@ -576,8 +553,6 @@ export function SystemView({
   </>
 }
 
-// One expanded row's chart: the group's metric chips and the composition or
-// single-series history that used to hide inside the Inspector dock.
 function SystemGroupChart({
   available,
   cursor,
@@ -604,8 +579,6 @@ function SystemGroupChart({
   readonly t: Translate
 }) {
   const selectedSpec = SYSTEM_METRICS.find((spec) => spec.id === metricId) ?? SYSTEM_METRICS[0]!
-  // The spec comes from the static catalog so the chart keeps its frame while
-  // its section is mid-reload; the points honestly empty out for that window.
   const selectedMetric = {
     points: available.find(({ spec }) => spec.id === selectedSpec.id)?.points ?? [],
     spec: selectedSpec,
@@ -618,8 +591,7 @@ function SystemGroupChart({
   const fallbackPoints = selectedMetric.points
   const request = useMemo(() => metricHistoryRequest(selectedMetric.spec), [selectedMetric.spec])
   const requestKey = request === null ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  // The usage line arrives with the hour, but its breakdown does not: the
-  // share components need the per-CPU history even when the line is full.
+  // CPU-share components require per-CPU history.
   const needsHistory = request !== null && requestKey !== null
     && (distinctTimes(fallbackPoints) <= 1 || selectedMetric.spec.id === "cpu_busy")
   const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
@@ -642,8 +614,6 @@ function SystemGroupChart({
     locale,
     t,
   ), [historyRows, historyUsesRates, locale, selectedMetric.spec.id, t])
-  // The usage chart leads with its own hour-borne line; the recorded share
-  // components draw under it once their history arrives.
   const breakdown = useMemo(() => {
     if (selectedMetric.spec.id !== "cpu_busy" || componentSeries.length === 0) return componentSeries
     const spec = selectedMetric.spec
@@ -773,12 +743,8 @@ function StorageTopologyReference({ devices, edges, mounts, t }: { readonly devi
   </section>
 }
 
-// The dock is the System counterpart of the PostgreSQL detail panel: a click
-// on a Use row or a metric chip opens it on the resource's group, and the chart
-// lives only inside it — nothing on the page silently swaps its content.
-// `free_bytes` stores statvfs.f_bavail: capacity available to an unprivileged
-// writer. It is not f_bfree, so Total − Available must never be called Used.
-// Chart the two exact stored facts without inventing allocated/reserved space.
+// free_bytes is statvfs.f_bavail, not f_bfree.
+// Chart Total and Available without deriving Used.
 export function mountPairSeries(rows: readonly DataRow[], t: Translate, kind: "bytes" | "inodes" = "bytes"): readonly RecordedSeries[] {
   const totalField = kind === "bytes" ? "total_bytes" : "total_inodes"
   const availableField = kind === "bytes" ? "free_bytes" : "available_inodes"
@@ -991,8 +957,6 @@ function entityMetricPoints(rows: readonly DataRow[], column: SystemEntityColumn
     : points
 }
 
-// The identity columns name the row for humans; the JSON composite stays a
-// React key and never reaches a title.
 function entityRowLabel(row: DataRow): string {
   const layout = registry.find((candidate) => candidate.typeId === row.typeId && candidate.logicalName === row.logicalName)
   const parts = layout === undefined ? [] : layout.identity
@@ -1001,9 +965,7 @@ function entityRowLabel(row: DataRow): string {
   return parts.length === 0 ? entityRowKey(row) : parts.join(" · ")
 }
 
-// A selection key embeds its typeId; a panel owns the key only when one of
-// its section's layouts carries that typeId. Foreign panels leave the shared
-// selection alone, so several expanded ledger rows coexist.
+// A panel accepts only selection keys carrying one of its type IDs.
 export function entityKeyOwnedBySection(key: string, section: string): boolean {
   let typeId: string | null = null
   if (key.startsWith("[")) {
@@ -1064,8 +1026,6 @@ function timelineLane(metric: string | undefined): string {
   return "health"
 }
 
-// The lanes a metric reports on the timeline, with the transform the stored
-// lane value needs to match the metric's unit.
 function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
   const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
     cpu_busy: [["cpu_busy", (number) => number]],
@@ -1079,14 +1039,10 @@ function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (v
   return mapping[spec.id] ?? []
 }
 
-// The second timeline lane a metric chart overlays, when the pair shares the
-// metric's unit. Only the network throughput pair qualifies today.
 function secondMetricLane(spec: MetricSpec): string | null {
   return spec.id === "network_rx" ? "net_tx" : null
 }
 
-// A metric drawing a second lane is named for the pair on its tab, while the
-// chart goes on naming each series. "RX" over a chart of RX and TX is wrong.
 function metricTabLabel(spec: MetricSpec): string {
   return secondMetricLane(spec) === null ? spec.label : "system.metric.network.label"
 }
@@ -1119,9 +1075,7 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
   }
   if (spec.derive !== undefined) return derivedPoints(data, spec.derive)
   if (spec.section === undefined || spec.field === undefined) return []
-  // Counter rollups stay absent until the section layout announces its rate
-  // columns; without the rates a raw counter reads as a climbing total, not a
-  // per-second value.
+  // A raw cumulative column is not a rate.
   if (metricClass(spec) === "cumulative" && !(data.rateColumns?.[spec.section] ?? []).includes(spec.field)) return []
   const field = spec.field
   return buildMetricSamples(sectionRows(data, spec.section), (row) => {
@@ -1132,12 +1086,6 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
 
 const BREAKDOWN_MEMBER_IDS: ReadonlySet<string> = new Set([...CPU_BREAKDOWN_IDS, ...MEMORY_BREAKDOWN_IDS])
 
-// The composition chart already legends every breakdown member; the dock offers
-// one chip for it — the group's lane metric — instead of a strip of chips that
-// all draw the same picture.
-// Metrics that describe the machine, not its hour: charting them draws a flat
-// line. They keep their reading in the group's tables and stay out of the chip
-// strip and out of the default selection.
 export const INVENTORY_METRIC_IDS: ReadonlySet<string> = new Set([
   "cpu_capacity",
   "device_count",
@@ -1178,8 +1126,7 @@ export function resourceBreakdownSeries(
       : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
   return ids.flatMap((id, index) => {
     const spec = SYSTEM_METRICS.find((candidate) => candidate.id === id)
-    // Under the usage anchor the first colour belongs to the usage line the
-    // chart prepends, so the components start one step in.
+    // The prepended usage line owns the first series color.
     const color = BREAKDOWN_COLORS[selectedId === "cpu_busy" ? index + 1 : index]
     if (spec === undefined || color === undefined) return []
     const points = spec.derive === undefined
@@ -1202,8 +1149,6 @@ export function resourceBreakdownSeries(
 }
 
 export function metricHistoryRequest(spec: MetricSpec): MetricHistoryRequest | null {
-  // The usage chart carries the recorded share breakdown, so its history is
-  // the per-CPU counters — the same request the share metrics make.
   if (spec.id === "cpu_busy") {
     spec = SYSTEM_METRICS.find((candidate) => candidate.id === "cpu_user") ?? spec
   }
@@ -1328,9 +1273,7 @@ function frequencyBreakdownSeries(rows: readonly DataRow[], field: string, t: Tr
   }))
 }
 
-// The rollup peaks across devices at every instant. Counter layouts divide
-// per device first — the peak of sums would double-count devices that share a
-// busy period — while rate layouts peak directly.
+// Compute counter rates per device before taking the per-instant maximum.
 function peakDeviceRate(rows: readonly DataRow[], field: string, rates: boolean, scale: number): readonly ChartPoint[] {
   if (rates) return aggregateRows(rows, (sampleRows) => maxField(sampleRows, field, scale))
   const devices = new Map<string, DataRow[]>()
@@ -1354,10 +1297,7 @@ function peakDeviceRate(rows: readonly DataRow[], field: string, rates: boolean,
     .map(({ segmentId, timestamp, peak }) => ({ segmentId, timestamp, value: peak }))
 }
 
-// The dock's storage chart is the rollup broken back down: one line per
-// device, computed exactly like the peak's per-device leg. A device that
-// registered no activity all hour is a flat zero and stays out of the
-// picture; if every device was idle the flat truth is shown whole.
+// Hide all-hour-zero devices unless every device was idle.
 function deviceBreakdownSeries(
   rows: readonly DataRow[],
   field: string,
@@ -1416,8 +1356,7 @@ function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly Data
   )
 }
 
-// The worst device carries the rollup: a host is as busy as its busiest disk,
-// an average would hide one saturated device behind idle ones.
+// The rollup is the busiest device, not an average.
 function maxField(rows: readonly DataRow[], field: string, scale: number): number | null | undefined {
   let peak: number | null = null
   for (const row of rows) {
@@ -1585,8 +1524,7 @@ function cumulativeRate(points: readonly ChartPoint[]): readonly ChartPoint[] {
 
 function metricClass(spec: MetricSpec): RegistryColumn["class"] | null {
   if (spec.section === undefined || spec.field === undefined) return null
-  // A counter the collector already turns into a rate reads as a gauge here:
-  // the value is a per-second reading, not a climbing total.
+  // Normalized os_* series are already rates.
   if ((spec.series ?? "").startsWith("os_")) return "gauge"
   return registry.flatMap((layout) => layout.logicalName === spec.section ? layout.columnMetadata ?? [] : [])
     .find(({ name }) => name === spec.field)?.class ?? null
@@ -1607,7 +1545,7 @@ export function metricValue(value: Cell, locale: Locale, unit: string): string {
 export function metricChartValue(value: number, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
   if (unit === " cores") return humanCores(value, locale)
-  // Memory charts read in bytes: an axis of «млн KiB» is a lie of scale.
+  // Convert KiB to bytes before charting.
   if (unit === " KiB") return humanBytes(value * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)
@@ -1735,9 +1673,6 @@ function derivedMetric(id: string, group: MetricSpec["group"], label: string, se
   return { id, group, label: `${label}.label`, help: `${label}.help`, series, derive, unit }
 }
 
-// A metric the hour's own timeline already carries. Its points arrive with the
-// hour rather than being computed from the section's rows, so it reads exactly
-// what the resource ledger's row reads.
 function laneMetric(id: string, group: MetricSpec["group"], label: string, unit: string): MetricSpec {
   return { id, group, label: `${label}.label`, help: `${label}.help`, unit }
 }

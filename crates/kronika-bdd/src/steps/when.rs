@@ -1,5 +1,3 @@
-//! Driving the run: letting it collect, damaging its journal, restarting it.
-
 use super::table_rows;
 use crate::BddWorld;
 use crate::collector::{Run, files_under};

@@ -1,5 +1,3 @@
-//! Assertions against the demo process and its `PostgreSQL` state.
-
 use super::table_rows;
 use crate::BddWorld;
 use anyhow::{Context as _, Result};

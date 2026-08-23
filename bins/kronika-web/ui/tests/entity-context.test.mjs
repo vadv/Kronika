@@ -66,8 +66,6 @@ test("context keeps exact identities, process uses PID, and an Activity count na
   assert.deepEqual(planContext.identity, [["userid", "10"], ["dbid", "11"], ["queryid", "9"], ["planid", "12"]])
   assert.deepEqual(helpers.entityContext(finding(database), database).identity, [["datid", "16384"]])
   assert.deepEqual(helpers.entityContext(finding(device), device).identity, [["major", "8"], ["minor", "1"]])
-  // The only Activity boundary counts active backends across the snapshot, so
-  // it names no backend and must not filter the table down to one.
   assert.equal(helpers.entityContext(finding(activity), activity), null)
 })
 

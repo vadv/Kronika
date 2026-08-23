@@ -1,5 +1,3 @@
-//! Explicit finding comparisons over production-decoded rows.
-
 mod direct;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,7 +56,6 @@ const DATA_CORRUPTION_CATEGORY: u8 = 5;
 const WRAPAROUND_AGE_THRESHOLD: i64 = 1_600_000_000;
 const EVENT_TIMESTAMP_FIELD: u16 = 0;
 
-/// Temporary state used only while one IDX is being built.
 #[derive(Debug)]
 pub(crate) struct FindingBuilder {
     requested: BTreeSet<u32>,
@@ -108,7 +105,6 @@ impl FindingBuilder {
         })
     }
 
-    /// Consume relevant rows from one preceding finished ZMS.
     pub(crate) fn observe_prior(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if self.requested.contains(&OS_CPU) {
             self.observe_prior_cpu(segment)?;

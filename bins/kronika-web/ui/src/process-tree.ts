@@ -1,17 +1,11 @@
 import type { DataRow } from "./api"
 import { asNumber, value } from "./model"
 
-// os_process rows arrive as a server-ranked, paginated page — the opposite
-// of what a tree needs. The tree lens fetches every process at one moment
-// instead (app.tsx) and hands the flat list here to walk by ppid, exactly
-// like ps -f: parent first, each child indented directly under it, natural
-// process order rather than any ranking.
+// The tree lens supplies an unpaged snapshot for parent-first ordering.
 
 export interface ProcessMetricInputs {
-  /** Wall seconds between the two recorded snapshots being compared. */
   readonly intervalSeconds: number | null
   readonly memTotalKb: number | null
-  /** `utime + stime` at the previous recorded snapshot, by pid. */
   readonly previousTicks: ReadonlyMap<number, number>
   readonly ticksPerSecond: number | null
 }
@@ -22,12 +16,8 @@ export function scheduledTicks(row: DataRow): number | null {
   return utime === null || stime === null ? null : utime + stime
 }
 
-// %CPU is what top shows: the share of one core this process burned between
-// the two recorded snapshots, not the ps lifetime average -- a backend that
-// pinned a core for the last interval but has run for days averages to zero,
-// which is what made the column read 0% on a busy host. TIME stays the
-// lifetime total, as it is in both tools. Without a preceding snapshot there
-// is no interval to divide by and %CPU is missing rather than guessed.
+// CPU% is interval CPU time divided by one core; TIME is lifetime CPU time.
+// A missing or rolled-back baseline yields null.
 function metrics(row: DataRow, pid: number | null, inputs: ProcessMetricInputs): Record<string, number | null> {
   const { intervalSeconds, memTotalKb, previousTicks, ticksPerSecond } = inputs
   const ticks = scheduledTicks(row)
@@ -87,9 +77,7 @@ export function buildProcessForest(
   }
 
   for (const root of roots) walk(root, [], true, 0)
-  // A pid whose recorded parent didn't make it into this snapshot's roots
-  // list (a cycle, or a parent this pid points to but that never got added
-  // as a root) still needs to appear rather than silently vanish.
+  // Walk unvisited PIDs so cycles cannot drop rows.
   for (const pid of byPid.keys()) if (!visited.has(pid)) walk(pid, [], true, 0)
 
   return output

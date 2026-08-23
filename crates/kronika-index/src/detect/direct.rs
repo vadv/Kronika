@@ -1,5 +1,3 @@
-//! Explicit known-bad comparisons.
-
 use std::collections::BTreeMap;
 
 use kronika_reader::{Cell, Segment};
@@ -75,8 +73,6 @@ impl FindingBuilder {
         Ok(())
     }
 
-    /// Seeds `deadlocks_before`, and on layouts carrying those columns
-    /// `checksum_failures_before` / `sessions_before` too.
     pub(super) fn observe_prior_database_counters(
         &mut self,
         segment: &Segment,
@@ -465,12 +461,8 @@ impl FindingBuilder {
         Ok(())
     }
 
-    /// `frozen_xid_age` and `min_mxid_age` are absolute ages; no prior sample
-    /// is needed to compare them against the fixed wraparound threshold.
-    /// `checksum_failures` is `None` when data checksums are disabled on that
-    /// database; such a row is skipped rather than treated as zero.
-    /// `sessions_fatal` and `sessions_killed` are independent counters; either
-    /// one growing fires its own finding, they are never summed.
+    /// Absolute ages need no predecessor. Null checksum counters are skipped.
+    /// Fatal and killed session counters are tested separately.
     pub(super) fn find_database_counters(
         &mut self,
         segment: &Segment,
@@ -787,9 +779,6 @@ pub(super) fn cpu_busy_at_least_80(before: CpuRaw, current: CpuRaw) -> bool {
     total > 0 && busy * 100 >= total * 80
 }
 
-/// Every boundary in this file marks the same way: the crossed field, the row
-/// it was read from, and that row's timestamp. Only `pg_log_errors` carries a
-/// category, and it builds its findings inline.
 const fn known_bad(field_ordinal: u16, row_ordinal: u32, timestamp: i64) -> Finding {
     Finding {
         kind: FindingKind::KnownBad,

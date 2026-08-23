@@ -1,11 +1,4 @@
-//! Optional `PostgreSQL` workload the demo drives alongside the collector.
-//!
-//! Disabled unless `KRONIKA_DEMO_WORKLOAD_DSN` is set, which leaves
-//! `kronika-demo` exactly as it behaves without this feature. The Vacuum
-//! direct-only scenarios also require an explicit direct `PostgreSQL` DSN; numeric tuning
-//! variables have defaults sized for a demo container: one recognizable
-//! commerce schema, a steady mix of reads and writes, and short real
-//! investigation episodes, so a fresh `docker run` tells a coherent story.
+//! Optional PostgreSQL workload enabled by `KRONIKA_DEMO_WORKLOAD_DSN`.
 
 mod dml;
 mod events;
@@ -23,46 +16,28 @@ use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
 use tokio_postgres::{Client, Config, NoTls};
 
-/// Validated workload configuration.
 #[derive(Clone)]
 pub(crate) struct WorkloadConfig {
-    /// Where the workload connects, normally through `PgBouncer`.
+    /// DML connection, normally through PgBouncer.
     pub(crate) dsn: String,
-    /// Direct `PostgreSQL` connection used for the plan story and Vacuum tuning.
+    /// Direct connection for session-scoped settings.
     pub(crate) direct_dsn: String,
-    /// How many schemas to create.
     pub(crate) schemas: u32,
-    /// How many tables to create in each schema.
     pub(crate) tables_per_schema: u32,
-    /// How many connections run `CREATE TABLE` concurrently during setup.
     pub(crate) ddl_concurrency: u32,
-    /// How many long-lived sessions run steady-state DML.
     pub(crate) sessions: u32,
-    /// Total independent lock chains in each periodic round.
     pub(crate) lock_chains: u32,
-    /// How many transactions make up one lock chain.
     pub(crate) lock_chain_depth: u32,
-    /// How long each link in a chain holds its lock, milliseconds.
     pub(crate) lock_hold_ms: u64,
-    /// Pause between lock-chain rounds, seconds.
     pub(crate) lock_round_interval_s: u64,
-    /// Pause between bounded slow/error episodes, seconds.
     pub(crate) event_round_interval_s: u64,
-    /// Rows kept in the orders table used by the plan-regression story.
     pub(crate) plan_rows: u32,
-    /// Checkout sessions that exercise each plan.
     pub(crate) plan_workers: u32,
-    /// Seconds the indexed plan runs before and after a regression.
     pub(crate) plan_baseline_s: u64,
-    /// Seconds the checkout query runs without its supporting index.
     pub(crate) plan_regression_s: u64,
-    /// Quiet pause after a complete before/during/after plan story.
     pub(crate) plan_round_interval_s: u64,
-    /// Rows maintained in the dedicated vacuum showcase table.
     pub(crate) vacuum_rows: u32,
-    /// Pause between bounded vacuum episodes, seconds.
     pub(crate) vacuum_round_interval_s: u64,
-    /// Per-statement timeout for update and vacuum work, seconds.
     pub(crate) vacuum_statement_timeout_s: u64,
 }
 
@@ -127,14 +102,6 @@ fn required_direct_dsn(raw: Option<String>) -> Result<String> {
 }
 
 impl WorkloadConfig {
-    /// Read the workload configuration from the environment.
-    ///
-    /// Returns `Ok(None)` when `KRONIKA_DEMO_WORKLOAD_DSN` is unset.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the direct `PostgreSQL` DSN is absent or a tuning
-    /// variable does not parse.
     pub(crate) fn from_env() -> Result<Option<Self>> {
         let Ok(dsn) = std::env::var("KRONIKA_DEMO_WORKLOAD_DSN") else {
             return Ok(None);
@@ -232,12 +199,6 @@ impl WorkloadConfig {
     }
 }
 
-/// Connect to `dsn` with a scenario-specific identity and drive its connection
-/// on a background task.
-///
-/// # Errors
-///
-/// Returns an error when the connection cannot be established.
 fn connection_config(dsn: &str, application_name: &str) -> Result<Config> {
     let mut config = dsn
         .parse::<Config>()
@@ -259,23 +220,14 @@ pub(crate) async fn connect_as(dsn: &str, application_name: &str) -> Result<Clie
     Ok(client)
 }
 
-/// A running workload: the Tokio runtime driving it and the flag that stops
-/// it.
 pub(crate) struct Workload {
     runtime: Runtime,
     stop: Arc<AtomicBool>,
 }
 
-/// How long `Workload::stop` waits for tasks to notice the stop flag and
-/// return before dropping whatever is still running.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(25);
 
 impl Workload {
-    /// Start the workload on its own multi-thread runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the runtime cannot be created.
     pub(crate) fn start(config: WorkloadConfig) -> Result<Self> {
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -292,8 +244,6 @@ impl Workload {
         Ok(Self { runtime, stop })
     }
 
-    /// Signal every task to finish its current operation and stop, then wait
-    /// up to `SHUTDOWN_GRACE` before dropping anything still running.
     pub(crate) fn stop(self) {
         self.stop.store(true, Ordering::SeqCst);
         self.runtime.shutdown_timeout(SHUTDOWN_GRACE);

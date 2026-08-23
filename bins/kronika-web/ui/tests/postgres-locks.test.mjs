@@ -21,7 +21,6 @@ function pids(forest) { return forest.map((r) => r.values.pid) }
 function depths(forest) { return forest.map((r) => r.values.lock_tree_depth) }
 
 test("a simple chain walks root first, each waiter directly under its blocker", () => {
-  // Fed out of order to prove the walk reconstructs the chain, not just echoes input order.
   const rows = [row(77, [76]), row(70, []), row(76, [70])]
   const forest = locks.buildLockForest(rows)
   assert.deepEqual(pids(forest), [70, 76, 77])

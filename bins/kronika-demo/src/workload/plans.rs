@@ -1,6 +1,4 @@
-//! A bounded before/during/after query-plan story over the same normalized
-//! checkout query. While the workload runtime is alive, index recovery keeps
-//! opening fresh connections until it succeeds.
+//! Restores the demo index before starting another plan-regression round.
 
 use super::{WorkloadConfig, connect_as, wait_for_stop};
 use std::sync::Arc;

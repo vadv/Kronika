@@ -28,7 +28,6 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
 test("process users retain exact numeric identity and honest unresolved fallback", () => {
   const [user, effective] = helpers.PROCESS_USER_FIELDS
   const row = (values) => ({ logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values })
-  // A resolved name stands alone; the uid appears only when there is no name.
   assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres")
   assert.equal(helpers.processUser(row({ euid: 9999, effective_user: null }), effective), "9999")
   assert.equal(helpers.processUser(row({ euid: 9999, effective_user: "  " }), effective), "9999")
@@ -46,7 +45,6 @@ test("process sticky headers share live offsets and stacking classes with their 
     { id: "rmem_kb", size: 142, sticky: false },
   ])
   assert.deepEqual([...offsets], [["pid", 0], ["command", 86]])
-  // The hooks a pinned column needs, whatever presentation rides along with them.
   const head = helpers.sticky({ sticky: "sticky-pid" }, true).split(" ")
   const body = helpers.sticky({ numeric: true, sticky: "sticky-command" }, false).split(" ")
   for (const name of ["entity-header-cell", "entity-sticky", "sticky-pid", "sticky", "left-0", "z-40"]) assert.ok(head.includes(name), `${name} in ${head}`)

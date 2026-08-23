@@ -192,11 +192,6 @@ function columnsInOrder(columns: readonly EntityColumn[], fields: readonly strin
   })
 }
 
-// The pid column carries the tree drawn by buildLockForest: an indent and
-// connector prefix for depth, a marker for root (holds the lock) vs waiter,
-// and a small footnote for the rare row a single tree edge can't capture —
-// a second blocker, or a wait on a prepared transaction (pid 0, no row of
-// its own).
 function lockPidCell(row: DataRow): ReactNode {
   const pid = identifier(value(row, "pid"))
   const depth = asNumber(value(row, "lock_tree_depth")) ?? 1
@@ -223,7 +218,7 @@ const LOCK_COLUMN_DEFS: readonly EntityColumn[] = [
   text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
   pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
-// Row order IS the tree (buildLockForest), so no column here may re-sort it.
+// Preserve buildLockForest order; lock-tree columns are not sortable.
 export const LOCK_COLUMNS: readonly EntityColumn[] = LOCK_COLUMN_DEFS.map((column) => ({ ...column, sortable: false }))
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [
@@ -233,8 +228,6 @@ export const DATABASE_COLUMNS: readonly EntityColumn[] = [
   number("temp_files", 125), bytes("temp_bytes", 145), number("conflicts", 125), number("deadlocks", 125), number("frozen_xid_age", 155),
 ]
 
-// Live work first — who runs, who blocks, what they run — then the stored
-// objects, each group ordered by scope. `divide` opens the second group.
 const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[]; readonly divide?: true }[] = [
   { id: "overview" },
   { id: "activity", sections: ["pg_stat_activity"] },
@@ -447,10 +440,6 @@ function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, 
   return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="ml-auto flex items-center gap-[5px] text-xs text-fg4 [&_i]:ml-2 [&_i]:inline-block [&_i]:h-1.5 [&_i]:w-1.5 [&_i]:rounded-full" aria-label={t("pg.value.legend")}><i className="bg-ok" />{t("pg.value.good")}<i className="bg-warn" />{t("pg.value.warning")}<i className="bg-bad" />{t("pg.value.critical")}</div></div>
 }
 
-// The Vacuum tab: one recorded hour of pg_stat_progress_vacuum as episode
-// rows. The hour loads once; episode grouping, risk and stillness live in
-// postgres-vacuum.ts. Relation names resolve as enrichment and the row stays
-// complete on its own datname/relid when they do not.
 function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onOrder, onPattern, onRelated, onSelectedKey, order, pattern, searchRequest, segments, selectedKey, tablesLoading, t }: {
   readonly cursor: number
   readonly data: HourData
@@ -475,25 +464,18 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   useEffect(() => {
     const controller = new AbortController()
     acceptResponse(
-      // No field list: the server already emits every column defined by
-      // whatever layout each segment actually carries. Naming the union of
-      // all three PG-version shapes here would ask a segment that only ever
-      // saw one of them for a column its own layout does not define — the
-      // ordinary case for one instance running one PostgreSQL major — and
-      // that request fails outright rather than filling nulls.
+      // Omit fields so each segment returns its own physical layout.
+      // Requesting a cross-version union would reject layout-absent columns.
       loadSeries(hour, "pg_stat_progress_vacuum", {}, [], controller.signal),
       controller.signal,
       (rows) => setHourRows(rows),
-      // A failed hour read leaves the cursor snapshot as the honest fallback.
       () => setHourRows(null),
     )
     return () => controller.abort()
   }, [hour, historyRevision])
   const allRows = hourRows ?? data.sections.pg_stat_progress_vacuum ?? NO_ROWS
 
-  // The recorded sampling cadence and clock rate; a segment without the
-  // fields shows nothing and episode adjacency falls back to identity and
-  // counters alone, and the process-load block skips the tick-scaled facts.
+  // Missing cadence or clock metadata disables the dependent calculations.
   const [intervalSeconds, setIntervalSeconds] = useState<number | null>(null)
   const [ticksPerSecond, setTicksPerSecond] = useState<number | null>(null)
   const anchorId = segmentBoundAt(segments, cursor)?.id ?? null
@@ -613,12 +595,8 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   </>
 }
 
-// The relation name is resolved server-side, in the same query that reads
-// the view, from `pg_class`/`pg_namespace`; it is absent only when the
-// vacuumed relation belongs to a database this connection cannot see. `relid`
-// is a `pg_class` OID and does not get reused in any timeframe this product
-// cares about, so it stands in as the fallback identity — never shown as a
-// bare number, only inside the one relation string it identifies.
+// relid is the fallback identity when the recorded relation name is absent.
+// Display it only as part of the relation label, never as a bare OID.
 function vacuumRelationLabel(row: DataRow): string {
   const datname = rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
   const schema = rawText(value(row, "schemaname"))
@@ -766,11 +744,7 @@ export function vacuumColumns(
   ]
 }
 
-// The Inspector raw block: the table's fields plus every layout column the
-// table folds or omits. Layout-absent values render as N/A through told().
-// `datid`/`relid` stay out: the relation is already named, in full, in the
-// header above this list, and a bare OID beside it explains nothing a DBA
-// would act on.
+// Layout-absent fields render as N/A.
 export function vacuumDetailColumns(row: DataRow, blockSize: number | null): readonly EntityColumn[] {
   const extra = (field: string, kind: NonNullable<EntityColumn["kind"]>): EntityColumn =>
     ({ field, label: `pg.vacuum.${field}.label`, help: `pg.vacuum.${field}.help`, kind, width: 140 })
@@ -788,9 +762,7 @@ export function vacuumDetailColumns(row: DataRow, blockSize: number | null): rea
   ], blockSize)
 }
 
-// A compact percent-over-samples line for the episode's own recorded points,
-// scaled to its own span — not the hour's — since a row's samples cluster in
-// a few minutes. Too few points to show a trend render as a single dot.
+// Scale progress to the episode's samples, not the full hour.
 function VacuumProgressSpark({ series }: { readonly series: readonly number[] }) {
   const width = 64
   const height = 16
@@ -811,7 +783,6 @@ function VacuumProgressSpark({ series }: { readonly series: readonly number[] })
   </svg>
 }
 
-// The episode as recorded: its phase strip across the hour and its facts.
 function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
   readonly episode: VacuumEpisode
   readonly hour: number
@@ -846,10 +817,6 @@ function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
   </section>
 }
 
-// The vacuuming backend as an OS process: its recorded work across the
-// episode's own window, then its current identity via the same panel the
-// PostgreSQL backend's own Process tab uses. One bounded hour-wide request
-// for the PID, no field list — the server answers with the whole layout.
 function VacuumProcessTab({ blockSize, cursor, episode, hour, locale, t, ticksPerSecond }: {
   readonly blockSize: number | null
   readonly cursor: number
@@ -886,13 +853,8 @@ function VacuumProcessTab({ blockSize, cursor, episode, hour, locale, t, ticksPe
   </section>
 }
 
-// What this recorded process actually did between the episode's first and
-// last sample: CPU spent, bytes really read from and written to storage, and
-// where recorded, how that read compares to what PG itself reports scanning
-// — a hint at how much of the scan came from disk rather than shared
-// buffers, not a claim about cause. A backend running a manual VACUUM may
-// have done other work in the same span; the number is the honest span
-// total either way, never narrowed to "just the vacuum" by inference.
+// Process deltas span the episode endpoints.
+// A manual VACUUM backend may include other work in that interval.
 function VacuumLoadFacts({ blockSize, episode, load, locale, t, ticksPerSecond }: {
   readonly blockSize: number | null
   readonly episode: VacuumEpisode
@@ -1046,12 +1008,6 @@ function PgEntityView({
     () => filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
     [dense, pattern, rows, section, visibleColumns],
   )
-  // The count describes the rows under it, not the page before the context
-  // and the filter narrowed it; the two disagreeing is what made an empty
-  // table read as a loaded one.
-  // A section PostgreSQL only emits under some condition keeps its last rows
-  // until the next one arrives, so the moment they were recorded is stated
-  // rather than guessed at from any other signal.
   const recordedAt = displayedRows.reduce<number | null>(
     (latest, row) => latest === null || row.timestamp > latest ? row.timestamp : latest,
     null,
@@ -1117,8 +1073,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   const entityRows = useMemo(() => allRows.filter((candidate) => sameEntity(candidate, row, section)), [allRows, row, section])
   const localHistoryRows = useMemo(() => [...entityRows.filter((candidate) => rowKey(candidate) !== rowKey(row)), row], [entityRows, row])
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
-  // Backend age is sample time minus backend start: the chart can only ever be
-  // a slope-1 ramp. The number stays in the detail list; the chip goes away.
+  // Backend age is a slope-1 derived series, so it is not charted.
   const chartColumns = useMemo(() => columns.filter((column) => column.field !== "backend_age_ms" && chartableColumn(column)
     && (dense ? denseHistoryFields(row.typeId, column.field).length !== 0 : chartColumnAvailable(section, entityRows, column))), [columns, dense, entityRows, row.typeId, section])
   const preferredField = chartColumns.some(({ field }) => field === historyField) ? historyField : chartColumns[0]?.field ?? null
@@ -1141,9 +1096,6 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   const planTarget = section === "pg_store_plans" ? statementsForPlan(row) : null
   const activityTarget = section === "pg_stat_activity" ? statementsForActivity(row) : null
   const statementTarget = section === "pg_stat_statements" ? plansForStatement(row) : null
-  // The OS process recorded under the backend's PID. The PostgreSQL view never
-  // loads os_process, so the panel fetches its one row at the cursor; a PID
-  // with nothing recorded reads as missing, not as an absent tab.
   const backendPid = section === "pg_stat_activity" ? asNumber(value(row, "pid")) : null
   const [backendProcess, setBackendProcess] = useState<DataRow | null | undefined>(undefined)
   useEffect(() => {

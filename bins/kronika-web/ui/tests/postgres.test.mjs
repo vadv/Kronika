@@ -171,8 +171,6 @@ test("activity keeps a compact operator table and uses relative detail durations
   assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
   assert.deepEqual(helpers.activityColumns(true).slice(0, 4).map(({ field }) => field), ["pid", "backend_type", "datname", "usename"])
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
-  // Backend age can only ever chart as a slope-1 ramp; the chip is gone, the
-  // number stays in the detail list.
   const viewSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"))
   assert.match(viewSource, /column\.field !== "backend_age_ms"/)
 })
@@ -395,8 +393,6 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
-  // The count belongs to the rows under it: an entity context or a filter
-  // that empties the body must empty the count with it.
   assert.match(source, /tableState\([^)]*displayedRows\.length/)
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
@@ -416,7 +412,6 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.deepEqual(fields(helpers.planColumns("timing")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
   assert.deepEqual(fields(helpers.planColumns("io")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
   assert.deepEqual(fields(helpers.planColumns("identity")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"])
-  // blocked_by is drawn as the tree itself (buildLockForest), not a raw text column.
   assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event", "waitstart"])
   assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
   for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
@@ -442,28 +437,20 @@ test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
   const pg16 = row("1012004", { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9, is_autovacuum: false, heap_blks_scanned: 1, heap_blks_total: 2, heap_blks_vacuumed: 0, index_vacuum_count: 0, num_dead_tuples: 5, max_dead_tuples: 9 })
   const episodes = new Map()
   const all = helpers.vacuumColumns([pg18], episodes, 5, null, stubTime, "en", stubT)
-  // The table carries no bare OID column; the identity reads as a relation,
-  // resolved from the row itself, no lookup involved.
   assert.equal(all.some(({ field }) => field === "datid" || field === "relid"), false)
   const relationColumn = all.find(({ field }) => field === "datname")
   assert.equal(relationColumn?.render?.(pg18), "app.public.orders")
-  // A row without a resolved name falls back to the OID inside one string,
-  // never as its own column.
   const relationColumn16 = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT).find(({ field }) => field === "datname")
   assert.equal(relationColumn16?.render?.(pg16), "app · relid=73")
-  // Progress is its own column, separate from the plain heap size.
   assert.ok(all.some(({ field }) => field === "vacuum_progress"))
   assert.ok(all.some(({ field }) => field === "heap_blks_scanned"))
   const sizeColumn = all.find(({ field }) => field === "heap_blks_scanned")
   assert.doesNotMatch(String(sizeColumn?.render?.(pg18)), /%/)
-  // PG17/18 columns exist only when the hour recorded such a layout.
   assert.ok(all.some(({ field }) => field === "indexes_processed"))
   assert.ok(all.some(({ field }) => field === "delay_time"))
   const old = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT)
   assert.equal(old.some(({ field }) => field === "indexes_processed" || field === "delay_time"), false)
-  // Every column except PID explains itself.
   assert.equal(all.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
-  // The raw detail block drops the OIDs and keeps every layout field, per layout.
   const detail18 = helpers.vacuumDetailColumns(pg18, null).map(({ field }) => field)
   assert.equal(detail18.some((field) => field === "datid" || field === "relid"), false)
   for (const field of ["is_autovacuum", "dead_tuple_bytes", "max_dead_tuple_bytes", "num_dead_item_ids", "indexes_total", "delay_time"]) assert.ok(detail18.includes(field), field)
@@ -488,7 +475,6 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     ...helpers.vacuumColumns([progressRow], new Map(), 1, null, stubTime, "en", stubT),
     ...helpers.vacuumDetailColumns(progressRow, null),
     ...helpers.vacuumDetailColumns({ ...progressRow, typeId: "1012004" }, null),
-    // The worker strip above the table explains itself the same way.
     { field: "vacuum_workers", help: "pg.vacuum.workers.help", label: "pg.vacuum.workers.label" },
   ]
   const groups = [
@@ -510,8 +496,6 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
     if (column.help.startsWith("pg.vacuum.")) usedVacuumHelp.add(column.help)
   }
-  // The OS process-load block reads its help keys straight in JSX (LabelHelp),
-  // not through an EntityColumn, so it needs its own scan of the source text.
   const postgresViewSource = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   for (const match of postgresViewSource.matchAll(/pg\.vacuum\.load(\.[a-z_]+)?\.help/g)) {
     assert.equal(Object.hasOwn(english, match[0]), true, match[0])
@@ -659,4 +643,3 @@ test("database totals omit PostgreSQL's shared-object statistics row", () => {
   const database = { ...row("1003001", { datid: 16_384 }), logicalName: "pg_stat_database" }
   assert.equal(helpers.postgresDatabaseCount([shared, database]), 1)
 })
-

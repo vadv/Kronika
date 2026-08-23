@@ -1,5 +1,3 @@
-//! Building the world a scenario runs against: settings, fixtures, data roots.
-
 use super::table_rows;
 use crate::BddWorld;
 use crate::collector::{Run, copy_tree};
@@ -10,8 +8,6 @@ use cucumber::given;
 use kronika_format::JOURNAL_MAGIC;
 use std::path::PathBuf;
 
-/// Where the fixture trees live. The BDD image sets this; a checkout run picks
-/// them up beside the features.
 fn fixtures_dir() -> PathBuf {
     std::env::var("KRONIKA_FIXTURES").map_or_else(|_unset| PathBuf::from("fixtures"), PathBuf::from)
 }

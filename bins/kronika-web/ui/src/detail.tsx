@@ -92,7 +92,6 @@ export function DetailDock({
   t,
   ticksPerSecond,
 }: {
-  // Only to mark the dock as linked; its facts live in their own panel.
   readonly activity: DataRow | null
   readonly cursor: number
   readonly hour: number

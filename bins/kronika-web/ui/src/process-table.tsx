@@ -91,7 +91,6 @@ export interface ProcessSummaryMetric {
   readonly kind: SummaryKind
 }
 
-// Generic and Tree both answer "who is on this host", not a resource question.
 const IDENTITY_SUMMARY: readonly ProcessSummaryMetric[] = [
   summaryMetric("processes", "process.summary.processes", "count"),
   summaryMetric("threads", "process.summary.threads", "count"),
@@ -357,8 +356,7 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
     : output}</span>
 }
 
-// The uid stands in only when the collector could not resolve a name; a
-// resolved name plus its uid is the same fact told twice.
+// Use UID only when no captured username exists.
 export function processUser(row: DataRow, field: Field): string {
   const name = field.field === undefined ? null : rawText(value(row, field.field))
   if (name !== null && name.trim() !== "") return name

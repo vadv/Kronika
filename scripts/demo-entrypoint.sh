@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Starts and supervises every process in the self-contained interactive demo.
 set -Eeuo pipefail
 umask 0027
 
@@ -34,19 +33,8 @@ start_as() {
     STARTED_PID=$!
 }
 
-# kronika-demo spawns kronika-collector as a plain child process, which
-# inherits whatever ambient capabilities kronika-demo itself keeps across
-# this uid drop. The collector's own read of a foreign-uid process's
-# /proc/PID/io already retries under a briefly switched fsuid/fsgid on
-# EACCES (see kronika-source-os); that switch is a no-op without
-# cap_setuid/cap_setgid in the caller's permitted set, and an unprivileged
-# setuid() drop clears the permitted set unless something asks to keep
-# these two. Keeping exactly these two, and nothing else, is what lets the
-# collector read PostgreSQL's own I/O counters while still running as an
-# unprivileged, non-root user. setpriv takes capability names without the
-# "cap_" prefix, and a capability only reaches the ambient set if it is
-# also passed to --inh-caps: the kernel refuses to raise a capability that
-# is not already inheritable, silently, with no error.
+# The collector needs CAP_SETUID/CAP_SETGID to switch fsuid/fsgid for PostgreSQL's
+# /proc/PID/io. setpriv requires ambient capabilities in the inheritable set.
 start_as_with_caps() {
     local user=$1
     local caps=$2
