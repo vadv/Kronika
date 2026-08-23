@@ -691,6 +691,12 @@
 }
 
 @media (max-width: 520px) {
+  /* Wrapped, these four facts cost four lines of the table. One scrolling row
+     keeps every one of them and returns the height to rows. */
+  .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }
+  /* The cursor band above prints this instant already, and beside it the
+     lensbar copy reads as a second, different time. */
+  .lensbar > .snapshot-time { display: none; }
   .inspector-scrim { top: 68px; }
   .inspector {
     border-left: 0;

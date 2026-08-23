@@ -4263,6 +4263,27 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
             text: reading.textContent,
           }
         })()`)
+        // Wrapped, the four summary facts cost four lines; scrolled, they cost
+        // one and every fact is still reachable.
+        const summary = await cdp.evaluate(`(() => {
+          const summary = document.querySelector('.process-summary-inline')
+          const stamp = document.querySelector('.lensbar > .snapshot-time')
+          const facts = [...summary.children]
+          return {
+            duplicateStamp: stamp !== null && getComputedStyle(stamp).display !== 'none',
+            facts: facts.length,
+            head: document.querySelector('[data-testid="process-table"] .entity-head').getBoundingClientRect().top,
+            height: summary.getBoundingClientRect().height,
+            lensbar: document.querySelector('.lensbar').getBoundingClientRect().height,
+            reachable: summary.scrollWidth <= summary.clientWidth || summary.scrollWidth <= summary.clientWidth + summary.scrollLeftMax || getComputedStyle(summary).overflowX === 'auto',
+          }
+        })()`)
+        assert.ok(summary.facts >= 4, `${viewport.kind} keeps every summary fact: ${JSON.stringify(summary)}`)
+        assert.ok(summary.height <= 32, `${viewport.kind} summary must stay one row: ${JSON.stringify(summary)}`)
+        assert.equal(summary.reachable, true, `${viewport.kind} summary must scroll, not clip: ${JSON.stringify(summary)}`)
+        assert.equal(summary.duplicateStamp, false, `${viewport.kind} prints the cursor instant once: ${JSON.stringify(summary)}`)
+        assert.ok(summary.head <= 400, `${viewport.kind} table head sits at ${summary.head}`)
+
         assert.match(health.text, /Overall .* OS .* PostgreSQL/, JSON.stringify(health))
         assert.equal(health.clipped, false, `${viewport.kind} health split clips: ${JSON.stringify(health)}`)
         assert.ok(health.saturated <= health.room, `${viewport.kind} saturated health split needs ${health.saturated} of ${health.room}`)
