@@ -389,6 +389,9 @@
 .timeline-lane-name { flex: 0 1 auto; }
 .timeline-lane-reading { flex: 1 1 auto; }
 .timeline-preview-picker { display: none; }
+/* The cursor control is a phone affordance: a pointer has the plot and a
+   keyboard has the arrows, so above 520 px it is not rendered at all. */
+.cursor-row { display: none; }
 .timeline-inspector {
   border-top: 0;
   margin-top: 0;
@@ -705,7 +708,64 @@
   .inspector-head { padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
   .inspector-body { padding-bottom: env(safe-area-inset-bottom); }
   .timeline-lanes { display: none; }
-  .timeline-preview-picker { display: grid; grid-template-columns: 88px minmax(0, 1fr); }
+  /* The rail's reading truncates at this width, and a clipped health split
+     reads as one number. The cursor row below the plot carries it in full. */
+  .timeline-preview-reading { display: none; }
+  .timeline-preview { flex-basis: 190px; height: 190px; min-height: 190px; }
+  .cursor-row {
+    align-items: center;
+    border-top: 1px solid var(--color-line2);
+    display: grid;
+    flex: 0 0 66px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    grid-template-rows: 22px 44px;
+    height: 66px;
+    min-height: 66px;
+  }
+  .cursor-row-step {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: var(--color-fg2);
+    cursor: pointer;
+    display: flex;
+    grid-row: 2;
+    height: 44px;
+    justify-content: center;
+    width: 44px;
+  }
+  .cursor-row-step:disabled { color: var(--color-fg4); cursor: not-allowed; opacity: .4; }
+  .cursor-row-reading {
+    align-self: center;
+    color: var(--color-accent3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    grid-column: 1 / -1;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    padding-inline: 4px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cursor-row-time {
+    color: var(--color-fg2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cursor-row-time b { color: var(--color-fg4); font-family: var(--font-sans); font-weight: 500; margin-right: 4px; }
+  .timeline-preview-picker { display: grid; grid-template-columns: minmax(0, 1fr); }
   .timeline-preview-picker > select {
     background: var(--color-s2);
     border: 1px solid var(--color-line3);
@@ -716,7 +776,7 @@
     height: 24px;
     min-width: 0;
     padding-inline: 5px;
-    width: 88px;
+    width: 100%;
   }
   .timeline-open-chart span:last-child { display: none; }
   .timeline-open-chart { flex-basis: 36px; padding-inline: 9px; width: 36px; }

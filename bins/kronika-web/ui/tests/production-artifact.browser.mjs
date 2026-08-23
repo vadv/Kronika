@@ -3917,6 +3917,12 @@ function expansionGeometryExpression() {
   })()`
 }
 
+// At or below 520 px the preview grows by the 44 px cursor row, which is the
+// only way to step the cursor without a keyboard.
+function previewHeight(width) {
+  return width <= 520 ? 190 : 124
+}
+
 async function settleLayout(cdp) {
   await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
 }
@@ -4195,7 +4201,72 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(closed.inspector, false, viewport.kind)
       assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
-      assert.ok(Math.abs(closed.preview.height - 124) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+      assert.ok(Math.abs(closed.preview.height - previewHeight(viewport.width)) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+
+      const cursorRow = await cdp.evaluate(`(() => {
+        const row = document.querySelector('[data-testid="cursor-row"]')
+        if (row === null || getComputedStyle(row).display === 'none') return { shown: false }
+        const reading = row.querySelector('[data-testid="cursor-row-reading"]')
+        const stamp = row.querySelector('[data-testid="cursor-row-time"]')
+        const buttons = [...row.querySelectorAll('button')].map((button) => {
+          const box = button.getBoundingClientRect()
+          return { disabled: button.disabled, height: box.height, label: button.getAttribute('aria-label'), width: box.width }
+        })
+        const fits = (node) => node.scrollWidth <= node.clientWidth
+        return {
+          buttons,
+          height: row.getBoundingClientRect().height,
+          readingFits: fits(reading), readingText: reading.textContent,
+          shown: true,
+          stampFits: fits(stamp), stampText: stamp.textContent,
+        }
+      })()`)
+      if (viewport.width > 520) {
+        assert.equal(cursorRow.shown, false, `${viewport.kind} has the plot and the arrow keys: ${JSON.stringify(cursorRow)}`)
+      } else {
+        assert.equal(cursorRow.shown, true, `${viewport.kind}: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.buttons.length, 2, JSON.stringify(cursorRow))
+        assert.equal(cursorRow.height, 66, JSON.stringify(cursorRow))
+        assert.ok(cursorRow.buttons.every((button) => button.height >= 44 && button.width >= 44), `${viewport.kind} cursor steps stay tappable: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.readingFits, true, `${viewport.kind} lane reading must not clip: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.stampFits, true, `${viewport.kind} cursor instant must not clip: ${JSON.stringify(cursorRow)}`)
+        assert.match(cursorRow.stampText, /Cursor/)
+        assert.match(cursorRow.stampText, /Recorded/)
+        assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timeline-preview-reading"]') === null || getComputedStyle(document.querySelector('[data-testid="timeline-preview-reading"]')).display === 'none'`), true, `${viewport.kind} keeps one reading, not a clipped copy`)
+        const before = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
+        await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:first-of-type').click()`)
+        await cdp.waitFor(`new URL(location.href).searchParams.get('at') !== ${JSON.stringify(before)}`, `${viewport.kind} cursor stepped back`)
+        const stepped = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
+        assert.ok(Number(stepped) < Number(before), `${viewport.kind} stepped to ${stepped} from ${before}`)
+        await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:last-of-type').click()`)
+        await cdp.waitFor(`new URL(location.href).searchParams.get('at') === ${JSON.stringify(before)}`, `${viewport.kind} cursor stepped forward`)
+
+        // The health split is the reading both roles route on, and the widest
+        // one the formatter can produce. RU spaces its percent sign, so its
+        // saturated form is the worst case at any width.
+        await cdp.evaluate(`(() => {
+          const select = document.querySelector('[data-testid="timeline-preview-metric-select"]')
+          select.value = 'health'
+          select.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        await cdp.waitFor(`document.querySelector('[data-testid="cursor-row-reading"]')?.textContent.includes('Overall')`, `${viewport.kind} health split`)
+        await settleLayout(cdp)
+        const health = await cdp.evaluate(`(() => {
+          const reading = document.querySelector('[data-testid="cursor-row-reading"]')
+          const style = getComputedStyle(reading)
+          const context = document.createElement('canvas').getContext('2d')
+          context.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily
+          return {
+            clipped: reading.scrollWidth > reading.clientWidth,
+            room: reading.clientWidth,
+            saturated: context.measureText('Overall 100 % · OS 100 % · PostgreSQL 100 %').width,
+            text: reading.textContent,
+          }
+        })()`)
+        assert.match(health.text, /Overall .* OS .* PostgreSQL/, JSON.stringify(health))
+        assert.equal(health.clipped, false, `${viewport.kind} health split clips: ${JSON.stringify(health)}`)
+        assert.ok(health.saturated <= health.room, `${viewport.kind} saturated health split needs ${health.saturated} of ${health.room}`)
+      }
 
       await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, `${viewport.kind} Detail Inspector`)
@@ -4230,7 +4301,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] .inspector-chart-slot [data-testid="process-history"]') !== null`, `${viewport.kind} entity Chart Inspector`)
       await settleLayout(cdp)
       assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true, `${viewport.kind} entity chart replaces the shared timeline`)
-      assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5, `${viewport.kind} preview keeps its figure beside the entity chart`)
+      assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - previewHeight(viewport.width)) <= .5, `${viewport.kind} preview keeps its figure beside the entity chart`)
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null`, `${viewport.kind} Inspector closed`)
       await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
