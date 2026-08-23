@@ -33,6 +33,18 @@ test("mode switching formats the same exact instant and omits subseconds", () =>
   assert.doesNotMatch(utc.timestamp(instant), /\.987|654/)
 })
 
+test("START shows the clock inside the shown day and the civil date before it", () => {
+  const formatter = createDisplayTimeFormatter("en", "browser", "Europe/Moscow")
+  const hour = Date.UTC(2026, 7, 18, 8) * 1_000
+  const sameDay = Date.UTC(2026, 7, 18, 8, 15, 47) * 1_000
+  const previousDay = Date.UTC(2026, 7, 17, 20, 15, 47) * 1_000
+  assert.equal(formatter.startTime(sameDay, hour), "11:15")
+  assert.equal(formatter.startTime(previousDay, hour), "08/17/2026")
+  assert.equal(formatter.startTime(sameDay), "08/18/2026")
+  assert.equal(formatter.startTime(null, hour), "—")
+  assert.equal(formatter.startTime(Number.NaN, hour), "—")
+})
+
 test("selected-day context removes only an unambiguous repeated civil date", () => {
   const formatter = createDisplayTimeFormatter("en", "browser", "Europe/Moscow")
   const hour = Date.UTC(2026, 7, 18, 8) * 1_000

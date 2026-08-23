@@ -35,6 +35,7 @@ export function DisplayTimeScope({ children, hour }: { readonly children: ReactN
   const value = useMemo<DisplayTimeValue>(() => hour === null ? parent : ({
     ...parent,
     range: (from, to) => parent.range(from, to, hour),
+    startTime: (timestamp) => parent.startTime(timestamp, hour),
     timestamp: (timestamp) => parent.timestamp(timestamp, hour),
   }), [hour, parent])
   return <DisplayTimeContext.Provider value={value}>{children}</DisplayTimeContext.Provider>

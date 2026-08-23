@@ -15,6 +15,7 @@ export interface DisplayTimeFormatter {
   hourRange(timestamp: number): { readonly date: string; readonly primary: string }
   monthKey(timestamp: number): string
   range(from: number, to: number, context?: number): { readonly from: string; readonly to: string }
+  startTime(timestamp: number | null, context?: number): string
   timestamp(timestamp: number | null, context?: number): string
 }
 
@@ -52,6 +53,11 @@ export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone
   const timestamp = (value: number | null, context?: number) => value === null || !Number.isFinite(value)
     ? "—"
     : context !== undefined && dayKey(value) === dayKey(context) ? time(value, true) : `${date(value)} · ${time(value, true)}`
+  // ps prints the clock for a process started within the shown day and the
+  // civil date for anything older.
+  const startTime = (value: number | null, context?: number) => value === null || !Number.isFinite(value)
+    ? "—"
+    : context !== undefined && dayKey(value) === dayKey(context) ? time(value) : date(value)
   const range = (from: number, to: number, context?: number) => {
     const compact = context !== undefined && dayKey(from) === dayKey(context) && dayKey(to) === dayKey(context) && dayKey(from) === dayKey(to)
     return compact
@@ -75,6 +81,7 @@ export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone
     },
     monthKey: (timestamp) => dayKey(timestamp).slice(0, 7),
     range,
+    startTime,
     timestamp,
   }
 }

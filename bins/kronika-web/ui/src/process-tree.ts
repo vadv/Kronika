@@ -4,35 +4,31 @@ import { parseSearch, rowMatchesSearch } from "./search"
 
 // The tree lens supplies an unpaged snapshot for parent-first ordering.
 
-export interface ProcessMetricInputs {
-  readonly intervalSeconds: number | null
-  readonly memTotalKb: number | null
-  readonly previousTicks: ReadonlyMap<number, number>
-  readonly ticksPerSecond: number | null
-}
-
-export function scheduledTicks(row: DataRow): number | null {
-  const utime = asNumber(value(row, "utime"))
-  const stime = asNumber(value(row, "stime"))
-  return utime === null || stime === null ? null : utime + stime
-}
-
-// CPU% is interval CPU time divided by one core; TIME is lifetime CPU time.
-// A missing or rolled-back baseline yields null.
-function metrics(row: DataRow, pid: number | null, inputs: ProcessMetricInputs): Record<string, number | null> {
-  const { intervalSeconds, memTotalKb, previousTicks, ticksPerSecond } = inputs
-  const ticks = scheduledTicks(row)
-  const before = pid === null ? undefined : previousTicks.get(pid)
-  const usable = ticksPerSecond !== null && ticksPerSecond > 0
-  const burned = ticks === null || before === undefined || ticks < before ? null : ticks - before
+// A snapshot row carries the cumulative columns as rates: the layout record
+// names them under `rates`, so utime and stime arrive as jiffies per second.
+// Lifetime CPU time arrives separately, as cpu_time_ticks.
+function metrics(row: DataRow, memTotalKb: number | null, ticksPerSecond: number | null): Record<string, number | string | null> {
+  const cores = processQuantity(row, "cpu_cores", ticksPerSecond)
   const rmemKb = asNumber(value(row, "rmem_kb"))
+  const lifetimeTicks = asNumber(value(row, "cpu_time_ticks"))
   return {
-    cpu_percent: burned === null || !usable || intervalSeconds === null || intervalSeconds <= 0
-      ? null
-      : (burned / ticksPerSecond / intervalSeconds) * 100,
-    cpu_time_seconds: ticks === null || !usable ? null : ticks / ticksPerSecond,
+    cpu_percent: cores === null ? null : cores * 100,
+    cpu_time_seconds: lifetimeTicks === null || ticksPerSecond === null || ticksPerSecond <= 0 ? null : lifetimeTicks / ticksPerSecond,
     mem_percent: rmemKb === null || memTotalKb === null || memTotalKb <= 0 ? null : (rmemKb / memTotalKb) * 100,
+    process_stat: processStat(row),
   }
+}
+
+// The STAT column of ps: the state letter, then the flags this collection can
+// tell. Session leadership and foreground group are not recorded, so `s` and
+// `+` never appear.
+function processStat(row: DataRow): string | null {
+  const state = asNumber(value(row, "state"))
+  if (state === null) return null
+  const nice = asNumber(value(row, "nice"))
+  const threads = asNumber(value(row, "num_threads"))
+  const priority = nice === null || nice === 0 ? "" : nice < 0 ? "<" : "N"
+  return `${String.fromCharCode(state)}${priority}${threads !== null && threads > 1 ? "l" : ""}`
 }
 
 function processQuantity(row: DataRow, field: string, ticksPerSecond: number | null): number | null {
@@ -96,7 +92,8 @@ export function filterProcessForest(rows: readonly DataRow[], pattern: string, t
 
 export function buildProcessForest(
   rows: readonly DataRow[],
-  inputs: ProcessMetricInputs,
+  memTotalKb: number | null,
+  ticksPerSecond: number | null,
 ): readonly DataRow[] {
   const byPid = new Map<number, DataRow>()
   for (const row of rows) {
@@ -126,19 +123,20 @@ export function buildProcessForest(
     visited.add(pid)
     const row = byPid.get(pid)
     if (row === undefined) return
-    const prefix = depth === 0 ? "" : ancestorBars.join("") + (isLastChild ? "└─ " : "├─ ")
+    // ps draws one leading space, four columns per ancestor, then `\_`.
+    const prefix = depth === 0 ? "" : ` ${ancestorBars.join("")}\\_ `
     output.push({
       ...row,
       values: {
         ...row.values,
-        ...metrics(row, pid, inputs),
+        ...metrics(row, memTotalKb, ticksPerSecond),
         process_tree_depth: depth,
         process_tree_parent_pid: depth === 0 ? null : asNumber(value(row, "ppid")),
         process_tree_prefix: prefix,
       },
     })
     const kids = (children.get(pid) ?? []).sort((left, right) => left - right)
-    const childBars = depth === 0 ? ancestorBars : [...ancestorBars, isLastChild ? "   " : "│  "]
+    const childBars = depth === 0 ? ancestorBars : [...ancestorBars, isLastChild ? "    " : "|   "]
     kids.forEach((kid, index) => walk(kid, childBars, index === kids.length - 1, depth + 1))
   }
 

@@ -17,6 +17,8 @@ import {
   processCommand,
   processKey,
   rawText,
+  processCpuTime,
+  processTty,
   stateText,
   value,
   type Lens,
@@ -32,14 +34,16 @@ export interface Field {
   readonly field?: string
   readonly label: string
   readonly help: string
-  readonly kind: "id" | "user" | "command" | "tree_command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns" | "percent" | "seconds" | "timestamp"
+  readonly kind: "id" | "user" | "command" | "tree_command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns" | "percent" | "seconds" | "cpu_time" | "timestamp" | "start_time" | "tty"
   readonly size: number
   readonly sticky?: "pid" | "command"
 }
 
 const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 82, sticky: "pid" }
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 340, sticky: "command" }
-const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 400, sticky: "command" }
+// ps keeps identity on the left and the full command line last, pinning nothing.
+const TREE_PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 82 }
+const TREE_COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "tree_command", size: 620 }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 50 }
 const USER: Field = { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 88 }
 export const PROCESS_USER_FIELDS: readonly Field[] = [
@@ -52,7 +56,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     PID, COMMAND,
     field("id", "ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
     field("id", "gid", "col.gid", 70), field("id", "egid", "col.egid", 70),
-    field("number", "num_threads", "col.threads", 84), field("id", "tty", "col.tty", 70),
+    field("number", "num_threads", "col.threads", 84), field("tty", "tty", "col.tty", 70),
     field("id", "exit_signal", "col.exit_signal", 70), STATE,
   ],
   cpu: [
@@ -75,11 +79,14 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     field("bytes", "wchar", "col.wchar", 96), field("bytes", "cancelled_write_bytes", "col.cancelled_write", 96),
     field("rate", "blkdelay_ticks", "col.blkdelay", 84), STATE,
   ],
+  // The ps axufwwww column order: identity, load, memory, terminal, state, times, command.
   tree: [
-    PID, TREE_COMMAND, USER,
+    USER, TREE_PID,
     field("percent", "cpu_percent", "col.cpu_percent", 72), field("percent", "mem_percent", "col.mem_percent", 72),
-    field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("id", "tty", "col.tty", 70),
-    STATE, field("timestamp", "starttime", "col.starttime", 180), field("seconds", "cpu_time_seconds", "col.cpu_time", 84),
+    field("kib", "vmem_kb", "col.vmem", 96), field("kib", "rmem_kb", "col.rmem", 96), field("tty", "tty", "col.tty", 70),
+    field("state", "process_stat", "col.stat", 62), field("start_time", "starttime", "col.starttime", 92),
+    field("cpu_time", "cpu_time_seconds", "col.cpu_time", 84),
+    TREE_COMMAND,
   ],
 }
 
@@ -271,7 +278,7 @@ export function ProcessTable({
       sortValue: (row) => sortable(row, field),
       sortable: lens !== "tree" && field.kind !== "user",
       ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
-      ...(field.id === "state" ? { expandToHeader: false } : {}),
+      ...(field.id === "state" || field.id === "process_stat" ? { expandToHeader: false } : {}),
       width: field.size,
     }
   }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
@@ -352,9 +359,11 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
     case "ns": return humanDuration(cell, locale, "nanoseconds", t("unit.per_second"))
     case "seconds": return humanDuration(cell, locale, "seconds")
+    case "cpu_time": return processCpuTime(cell)
+    case "tty": return processTty(cell)
     case "percent": return humanPercent(cell, locale)
     case "id": case "user": return identifier(cell)
-    case "command": case "tree_command": case "timestamp": return ""
+    case "command": case "tree_command": case "timestamp": case "start_time": return ""
   }
 }
 
@@ -363,9 +372,10 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
   const cell = field.field === undefined ? null : value(row, field.field)
   const isCommand = field.kind === "command" || field.kind === "tree_command"
   const treePrefix = field.kind === "tree_command" ? rawText(value(row, "process_tree_prefix")) ?? "" : ""
-  const timestamp = field.kind === "timestamp" ? asNumber(cell) : null
+  const timestamp = field.kind === "timestamp" || field.kind === "start_time" ? asNumber(cell) : null
   const output = isCommand ? processCommand(row)
     : field.kind === "user" ? processUser(row, field)
+    : field.kind === "start_time" ? time.startTime(timestamp)
     : field.kind === "timestamp" ? (timestamp === null ? "—" : time.timestamp(timestamp))
     : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
@@ -400,7 +410,8 @@ function sortable(row: DataRow, field: Field): string | number | null {
 function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "id") return "id"
   if (kind === "command" || kind === "tree_command" || kind === "state" || kind === "user") return "text"
-  if (kind === "timestamp") return "timestamp"
+  if (kind === "tty") return "id"
+  if (kind === "timestamp" || kind === "start_time") return "timestamp"
   return "number"
 }
 
