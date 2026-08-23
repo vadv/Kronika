@@ -357,10 +357,12 @@ export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSec
     : output}</span>
 }
 
+// The uid stands in only when the collector could not resolve a name; a
+// resolved name plus its uid is the same fact told twice.
 export function processUser(row: DataRow, field: Field): string {
-  const uid = identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
   const name = field.field === undefined ? null : rawText(value(row, field.field))
-  return name === null || name.trim() === "" ? uid : `${name} (${uid})`
+  if (name !== null && name.trim() !== "") return name
+  return identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
 }
 
 export function processUserSearch(row: DataRow, field: Field): string | null {

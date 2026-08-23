@@ -28,8 +28,10 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
 test("process users retain exact numeric identity and honest unresolved fallback", () => {
   const [user, effective] = helpers.PROCESS_USER_FIELDS
   const row = (values) => ({ logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values })
-  assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres (26)")
+  // A resolved name stands alone; the uid appears only when there is no name.
+  assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres")
   assert.equal(helpers.processUser(row({ euid: 9999, effective_user: null }), effective), "9999")
+  assert.equal(helpers.processUser(row({ euid: 9999, effective_user: "  " }), effective), "9999")
   assert.equal(helpers.processUserSearch(row({ uid: 26, user: "postgres" }), user), "user:postgres")
   assert.equal(helpers.processUserSearch(row({ euid: 27, effective_user: "postgres worker" }), effective), 'effective_user:"postgres worker"')
   assert.equal(helpers.processUserSearch(row({ euid: 9999, effective_user: null }), effective), null)
