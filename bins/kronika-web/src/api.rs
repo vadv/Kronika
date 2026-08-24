@@ -5,7 +5,9 @@ use std::path::Path;
 
 use hyper::StatusCode;
 use kronika_reader::{Reader, ReaderError, SegmentRef};
+use sha2::{Digest as _, Sha256};
 
+use crate::encoding::etag_matches;
 use crate::route::{ActiveCursor, Route};
 
 mod catalog;
@@ -60,10 +62,14 @@ pub(crate) struct ResponseMeta {
 
 impl ResponseMeta {
     const fn ok(cache: CachePolicy) -> Self {
+        Self::ok_with_etag(cache, None)
+    }
+
+    const fn ok_with_etag(cache: CachePolicy, etag: Option<String>) -> Self {
         Self {
             status: StatusCode::OK,
             cache,
-            etag: None,
+            etag,
         }
     }
 }
@@ -228,19 +234,67 @@ pub(crate) fn prepare_with_demo(
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
-    match route {
+    let prepared = match route {
         Route::Catalog(window) => {
             catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
         }
-        Route::Index(request) => index::prepare(root, request, if_none_match),
+        Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, *request).map(Prepared::Snapshot),
+        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+    }?;
+    let meta = prepared.meta();
+    if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {
+        return Ok(not_modified);
     }
+    Ok(prepared)
+}
+
+fn conditional_not_modified(meta: ResponseMeta, if_none_match: Option<&str>) -> Option<Prepared> {
+    meta.etag
+        .as_deref()
+        .zip(if_none_match)
+        .is_some_and(|(current, offered)| etag_matches(offered, current))
+        .then(|| {
+            Prepared::Empty(ResponseMeta {
+                status: StatusCode::NOT_MODIFIED,
+                ..meta
+            })
+        })
+}
+
+fn weak_etag<I, S>(resource: &str, shape: &str, segments: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: std::borrow::Borrow<SegmentRef>,
+{
+    let mut digest = Sha256::new();
+    digest.update(resource.len().to_le_bytes());
+    digest.update(resource.as_bytes());
+    digest.update(shape.len().to_le_bytes());
+    digest.update(shape.as_bytes());
+    let mut found = false;
+    for segment in segments {
+        let segment = segment.borrow();
+        if segment.kind() == kronika_reader::SegmentKind::Active {
+            return None;
+        }
+        found = true;
+        digest.update(segment.id().to_le_bytes());
+        digest.update(segment.min_ts().to_le_bytes());
+        digest.update(segment.max_ts().to_le_bytes());
+        digest.update(segment.sections().len().to_le_bytes());
+        for section in segment.sections() {
+            digest.update(section.type_id.to_le_bytes());
+            digest.update(section.rows.to_le_bytes());
+            digest.update(section.bytes.to_le_bytes());
+        }
+    }
+    found.then(|| format!("W/\"{:x}\"", digest.finalize()))
 }
 
 fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
