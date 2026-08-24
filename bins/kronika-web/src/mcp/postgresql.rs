@@ -222,6 +222,7 @@ fn direct(
         direction,
         group,
         postgresql: Some(PostgresqlSurfaceRequest { surface, order }),
+        process: None,
         page_size: Some(page_size),
         cursor: args
             .get("cursor")
@@ -399,6 +400,7 @@ fn overview(
         direction: Order::Desc,
         group: None,
         postgresql: None,
+        process: None,
         page_size: None,
         cursor: None,
         search: None,

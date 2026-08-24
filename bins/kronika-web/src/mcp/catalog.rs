@@ -146,23 +146,20 @@ fn surface_tools() -> Vec<Tool> {
         tool(
             "kronika_find_processes",
             "Processes",
-            "List and search Linux processes at one sample using identity, CPU, memory, disk, or bounded tree lenses. Tree is an order of this surface.",
+            "List and search Linux processes at one sample using generic, CPU, memory, disk, or bounded tree lenses.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
                     ("find", find_expression()),
                     (
                         "lens",
-                        enumeration(&["identity", "cpu", "memory", "disk", "tree"]),
+                        enumeration(&["generic", "cpu", "memory", "disk", "tree"]),
                     ),
-                    (
-                        "order",
-                        short_string("Accepted Process semantic order or tree."),
-                    ),
+                    ("order", short_string("Accepted Process semantic order.")),
                     ("direction", enumeration(&["asc", "desc"])),
                     ("fields", fields()),
                     ("cursor", cursor()),
-                    ("page_size", integer(1, 500, 100)),
+                    ("page_size", integer(1, 500, 200)),
                 ])),
                 &["at_us"],
             ),

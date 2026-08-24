@@ -215,12 +215,12 @@ fn runtime_calls() -> [(&'static str, Value, &'static str, &'static str); 11] {
             "kronika_find_processes",
             json!({
                 "at_us": LAST_PROCESS_AT.to_string(),
-                "lens": "identity",
+                "lens": "generic",
                 "fields": ["pid", "ppid", "utime"],
                 "page_size": 10,
             }),
             "/data/processes",
-            "Returned 1 Process row(s) for the identity lens.",
+            "Returned 1 Process row(s) for the generic lens.",
         ),
         (
             "kronika_find_events",

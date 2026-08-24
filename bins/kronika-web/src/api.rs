@@ -430,7 +430,12 @@ fn prepare_with_index_access(
             hour::prepare(root, request, sources, synthetic_demo, index_access).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+        Route::Snapshot(mut request) => {
+            if request.process.is_some() {
+                surface::resolve_process_surface(&mut request)?;
+            }
+            snapshot::prepare(root, *request, if_none_match)
+        }
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {

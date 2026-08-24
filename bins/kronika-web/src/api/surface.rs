@@ -6,9 +6,105 @@ use kronika_registry::contract;
 
 use super::ApiError;
 use crate::route::{
-    Filter, IndexLens, PlanLens, PostgresqlSurface, RelationGroup, SnapshotRequest, StatementLens,
-    TableLens,
+    Filter, IndexLens, Order, PlanLens, PostgresqlSurface, ProcessLens, RelationGroup,
+    SnapshotRequest, StatementLens, TableLens,
 };
+
+pub(crate) const PROCESS_PAGE_SIZE: usize = 200;
+
+pub(crate) fn resolve_process_surface(
+    request: &mut SnapshotRequest,
+) -> Result<ProcessLens, ApiError> {
+    let Some(product) = request.process.as_ref() else {
+        return Err(ApiError::NoSuchSection);
+    };
+    if request.sections.as_slice() != ["os_process"] {
+        return Err(ApiError::NoSuchSection);
+    }
+    let lens = product.lens;
+    if lens == ProcessLens::Tree {
+        return Ok(lens);
+    }
+    let default_order = match lens {
+        ProcessLens::Generic => "pid",
+        ProcessLens::Cpu => "utime",
+        ProcessLens::Memory => "rmem_kb",
+        ProcessLens::Disk => "read_bytes",
+        ProcessLens::Tree => unreachable!(),
+    };
+    let order = product.order.as_deref().unwrap_or(default_order);
+    request.by = process_order_tokens(lens, order)
+        .ok_or_else(|| ApiError::NoSuchColumn(order.to_owned()))?;
+    request.direction = product
+        .direction
+        .unwrap_or(if lens == ProcessLens::Generic {
+            Order::Asc
+        } else {
+            Order::Desc
+        });
+    request.page_size.get_or_insert(PROCESS_PAGE_SIZE);
+    Ok(lens)
+}
+
+fn process_order_tokens(lens: ProcessLens, requested: &str) -> Option<Vec<String>> {
+    const GENERIC: &[&str] = &[
+        "pid",
+        "command",
+        "ppid",
+        "gid",
+        "egid",
+        "num_threads",
+        "tty",
+        "exit_signal",
+        "state",
+    ];
+    const CPU: &[&str] = &[
+        "pid",
+        "command",
+        "utime",
+        "stime",
+        "rundelay_ns",
+        "blkdelay_ticks",
+        "nvcsw",
+        "nivcsw",
+        "curcpu",
+        "nice",
+        "prio",
+        "rtprio",
+        "policy",
+        "state",
+    ];
+    const MEMORY: &[&str] = &[
+        "pid", "command", "rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt", "state",
+    ];
+    const DISK: &[&str] = &[
+        "pid",
+        "command",
+        "read_bytes",
+        "write_bytes",
+        "syscr",
+        "syscw",
+        "rchar",
+        "wchar",
+        "cancelled_write_bytes",
+        "blkdelay_ticks",
+        "state",
+    ];
+    let accepted = match lens {
+        ProcessLens::Generic => GENERIC,
+        ProcessLens::Cpu => CPU,
+        ProcessLens::Memory => MEMORY,
+        ProcessLens::Disk => DISK,
+        ProcessLens::Tree => return None,
+    };
+    accepted.contains(&requested).then(|| {
+        if requested == "command" {
+            vec!["cmdline".to_owned(), "comm".to_owned()]
+        } else {
+            vec![requested.to_owned()]
+        }
+    })
+}
 
 pub(crate) const LOCK_GRAPH_FIELDS: &[&str] = &["pid", "blocked_by", "datname", "lock_target"];
 
@@ -742,8 +838,64 @@ mod tests {
 
     use kronika_registry::{PgStatStatementsV1, PgStorePlansOsscV1, Section as _};
 
-    use super::{postgresql_fields_for_layouts, postgresql_order_tokens, postgresql_surface};
-    use crate::route::{PostgresqlSurface, RelationGroup};
+    use super::{
+        postgresql_fields_for_layouts, postgresql_order_tokens, postgresql_surface,
+        resolve_process_surface,
+    };
+    use crate::route::{Order, PostgresqlSurface, ProcessLens, RelationGroup, Route, parse};
+
+    #[test]
+    fn process_lenses_share_web_defaults_and_semantic_command_order() {
+        for (lens, expected_lens, expected_order, expected_direction) in [
+            (
+                "generic",
+                ProcessLens::Generic,
+                ["pid"].as_slice(),
+                Order::Asc,
+            ),
+            ("cpu", ProcessLens::Cpu, ["utime"].as_slice(), Order::Desc),
+            (
+                "memory",
+                ProcessLens::Memory,
+                ["rmem_kb"].as_slice(),
+                Order::Desc,
+            ),
+            (
+                "disk",
+                ProcessLens::Disk,
+                ["read_bytes"].as_slice(),
+                Order::Desc,
+            ),
+        ] {
+            let Route::Snapshot(mut request) = parse(
+                "/api/segments/7/snapshot",
+                Some(&format!("at=9&section=os_process&lens={lens}")),
+            )
+            .expect("Process route") else {
+                panic!("snapshot route");
+            };
+            assert_eq!(
+                resolve_process_surface(&mut request).expect("resolve Process surface"),
+                expected_lens
+            );
+            assert_eq!(request.by, expected_order, "{lens}");
+            assert_eq!(request.direction, expected_direction, "{lens}");
+            assert_eq!(request.page_size, Some(200), "{lens}");
+        }
+
+        let Route::Snapshot(mut request) = parse(
+            "/api/segments/7/snapshot",
+            Some("at=9&section=os_process&lens=generic&order=command"),
+        )
+        .expect("command order") else {
+            panic!("snapshot route");
+        };
+        assert_eq!(
+            resolve_process_surface(&mut request).expect("resolve Process surface"),
+            ProcessLens::Generic
+        );
+        assert_eq!(request.by, ["cmdline", "comm"]);
+    }
 
     #[test]
     fn every_postgresql_lens_keeps_its_projection_and_default_order() {

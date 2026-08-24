@@ -62,6 +62,8 @@ pub(crate) struct SnapshotRequest {
     pub(crate) group: Option<RelationGroup>,
     /// A typed PostgreSQL product surface resolved by the shared Rust registry.
     pub(crate) postgresql: Option<PostgresqlSurfaceRequest>,
+    /// A typed Process product surface resolved by the shared Rust registry.
+    pub(crate) process: Option<ProcessSurfaceRequest>,
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
@@ -74,6 +76,35 @@ pub(crate) struct SnapshotRequest {
     pub(crate) type_id: Option<u32>,
     /// Requires `type_id` and addresses a finished source row.
     pub(crate) row_ordinal: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessSurfaceRequest {
+    pub(crate) lens: ProcessLens,
+    pub(crate) order: Option<String>,
+    pub(crate) direction: Option<Order>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessLens {
+    Generic,
+    Cpu,
+    Memory,
+    Disk,
+    Tree,
+}
+
+impl ProcessLens {
+    pub(crate) fn parse(lens: Option<&str>) -> Option<Self> {
+        match lens {
+            None | Some("tree") => Some(Self::Tree),
+            Some("generic") => Some(Self::Generic),
+            Some("cpu") => Some(Self::Cpu),
+            Some("memory") => Some(Self::Memory),
+            Some("disk") => Some(Self::Disk),
+            Some(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,7 +517,18 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     if find.is_some() && search.is_some() {
         return Err(RouteError::BadParameter("find".to_owned()));
     }
-    let typed_postgresql = lens.is_some() || semantic_order.is_some() || find.is_some();
+    let typed_surface = lens.is_some() || semantic_order.is_some() || find.is_some();
+    let process = if typed_surface && sections.as_slice() == ["os_process"] {
+        Some(ProcessSurfaceRequest {
+            lens: ProcessLens::parse(lens.as_deref())
+                .ok_or_else(|| RouteError::BadParameter("lens".to_owned()))?,
+            order: semantic_order.take(),
+            direction,
+        })
+    } else {
+        None
+    };
+    let typed_postgresql = typed_surface && process.is_none();
     let postgresql = if typed_postgresql {
         let [section] = sections.as_slice() else {
             return Err(RouteError::BadParameter("section".to_owned()));
@@ -552,6 +594,11 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || direction.is_some()
         || group.is_some();
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
+    let resolved_page_size = if process.is_some() {
+        page_size
+    } else {
+        paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE))
+    };
     Ok(SnapshotRequest {
         segment_id,
         active_position: None,
@@ -562,7 +609,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         direction: direction.unwrap_or(Order::Desc),
         group,
         postgresql,
-        page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
+        process,
+        page_size: resolved_page_size,
         cursor,
         search,
         first_match,

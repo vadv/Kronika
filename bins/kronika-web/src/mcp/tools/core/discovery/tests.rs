@@ -43,7 +43,7 @@ fn context_exposes_schema_lenses_cuts_and_hard_limits() {
 
     assert_eq!(
         process["lenses"],
-        serde_json::json!(["identity", "cpu", "memory", "disk", "tree"])
+        serde_json::json!(["generic", "cpu", "memory", "disk", "tree"])
     );
     assert!(
         heatmap["cuts"]["processes"]

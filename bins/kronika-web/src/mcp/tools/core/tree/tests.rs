@@ -230,7 +230,7 @@ fn process_continuation_anchor_reports_the_prefix_that_supplied_its_rows() {
     };
     let first_args = json!({
         "at_us": SAMPLE_AT.to_string(),
-        "lens": "identity",
+        "lens": "generic",
         "page_size": 1,
         "data_budget_bytes": STRUCTURED_CONTENT_BYTES,
     });
@@ -254,7 +254,7 @@ fn process_continuation_anchor_reports_the_prefix_that_supplied_its_rows() {
     fixture.append_processes(&[(4, 0)]);
     let next_args = json!({
         "at_us": SAMPLE_AT.to_string(),
-        "lens": "identity",
+        "lens": "generic",
         "page_size": 1,
         "cursor": cursor,
         "data_budget_bytes": STRUCTURED_CONTENT_BYTES,
@@ -346,6 +346,7 @@ fn request(search: Option<&str>, cursor: Option<&str>) -> SnapshotRequest {
         direction: Order::Desc,
         group: None,
         postgresql: None,
+        process: None,
         page_size: Some(1),
         cursor: cursor.map(str::to_owned),
         search: search.map(str::to_owned),

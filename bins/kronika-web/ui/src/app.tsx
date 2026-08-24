@@ -67,7 +67,7 @@ import {
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationOrderAvailable, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
-import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
+import { EMPTY_PROCESS_SUMMARY, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
@@ -112,16 +112,7 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
 }
 
 function processRequest(lens: Lens): SectionRequest {
-  // Omit pageSize to request the complete snapshot for the tree.
-  if (lens === "tree") return { section: "os_process" }
-  const selected = processTableDefaultOrder(lens).column
-  return {
-    section: "os_process",
-    pageSize: 200,
-    defaultOrder: [selected],
-    fallbackOrder: ["pid"],
-    order: Object.fromEntries(LENS_FIELDS[lens].map((field) => [field.id, field.id === "command" ? ["cmdline", "comm"] : [field.field ?? field.id]])),
-  }
+  return { section: "os_process", lens, ...(lens === "tree" ? {} : { pageSize: 200 }) }
 }
 
 function section(name: string): SectionRequest { return { section: name } }

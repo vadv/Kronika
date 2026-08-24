@@ -430,6 +430,7 @@ fn request() -> SnapshotRequest {
         direction: Order::Desc,
         group: None,
         postgresql: None,
+        process: None,
         page_size: Some(200),
         cursor: None,
         search: Some("needle*".to_owned()),

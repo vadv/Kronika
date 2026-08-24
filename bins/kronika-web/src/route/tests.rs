@@ -1,7 +1,7 @@
 use super::{
     ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
-    MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, PostgresqlSurface, Route,
-    RouteError, SegmentRequest, StatementLens, TableLens, Window, parse,
+    MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, PostgresqlSurface, ProcessLens,
+    Route, RouteError, SegmentRequest, StatementLens, TableLens, Window, parse,
 };
 
 #[test]
@@ -251,6 +251,31 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
         panic!("snapshot route");
     };
     assert_eq!(sized.page_size, Some(17));
+}
+
+#[test]
+fn snapshot_process_vocabulary_is_one_typed_surface_request() {
+    let Route::Snapshot(processes) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=os_process&lens=generic&find=postgres&order=command"),
+    )
+    .expect("typed Process surface") else {
+        panic!("snapshot route");
+    };
+    let process = processes.process.expect("Process surface");
+    assert_eq!(process.lens, ProcessLens::Generic);
+    assert_eq!(process.order.as_deref(), Some("command"));
+    assert_eq!(processes.search.as_deref(), Some("postgres"));
+    assert!(processes.by.is_empty());
+    assert_eq!(processes.page_size, None);
+
+    assert_eq!(
+        parse(
+            "/api/segments/7/snapshot",
+            Some("at=9&section=os_process&lens=identity"),
+        ),
+        Err(RouteError::BadParameter("lens".to_owned())),
+    );
 }
 
 #[test]

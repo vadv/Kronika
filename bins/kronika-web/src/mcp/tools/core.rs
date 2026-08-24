@@ -11,7 +11,10 @@ use super::{Failure, Payload};
 use crate::api::{self, ApiError, ValueCollection, ValueLimits, ValueStopReason};
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::mcp::State;
-use crate::route::{Filter, HeatmapRequest, Order, Route, SnapshotRequest, Window};
+use crate::route::{
+    Filter, HeatmapRequest, Order, ProcessLens, ProcessSurfaceRequest, Route, SnapshotRequest,
+    Window,
+};
 
 const HOUR_US: i64 = 3_600_000_000;
 const MAX_SEGMENTS: usize = 64;
@@ -299,16 +302,16 @@ fn processes(
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     let at = required_i64(args, "at_us")?;
-    let lens = optional_string(args, "lens")?.unwrap_or("identity");
+    let lens = optional_string(args, "lens")?.unwrap_or("tree");
+    let process_lens = ProcessLens::parse(Some(lens))
+        .ok_or_else(|| Failure::input("lens", "unknown Process lens."))?;
     let segment = select_segment_at(state, at)?;
-    let order = optional_string(args, "order")?.or_else(|| Some(process_order(lens)));
-    let route = snapshot_route(
+    let route = process_route(
         args,
         segment.id(),
         segment.active_position(),
         at,
-        "os_process",
-        order,
+        process_lens,
     )?;
     let collected = if lens == "tree" {
         let Route::Snapshot(request) = route else {
@@ -436,17 +439,65 @@ fn snapshot_route(
         sections: vec![section.to_owned()],
         fields: string_array(args, "fields")?,
         by: order
-            .map(|order| vec![stored_process_order(order)])
+            .map(|order| vec![order.to_owned()])
             .unwrap_or_default(),
         direction,
         group: None,
         postgresql: None,
+        process: None,
         page_size: Some(usize_arg(args, "page_size", 100, 500)?),
         cursor: optional_string(args, "cursor")?.map(str::to_owned),
         search: optional_string(args, "find")?.map(str::to_owned),
         first_match: false,
         text: None,
         filters: filter_values(args)?,
+        activity_visibility: None,
+        type_id: None,
+        row_ordinal: None,
+    })))
+}
+
+fn process_route(
+    args: &Map<String, Value>,
+    segment_id: i64,
+    active_position: Option<u64>,
+    at: i64,
+    lens: ProcessLens,
+) -> Result<Route, Failure> {
+    let direction = optional_string(args, "direction")?
+        .map(|direction| match direction {
+            "asc" => Ok(Order::Asc),
+            "desc" => Ok(Order::Desc),
+            _ => Err(Failure::input(
+                "direction",
+                "direction must be asc or desc.",
+            )),
+        })
+        .transpose()?;
+    Ok(Route::Snapshot(Box::new(SnapshotRequest {
+        segment_id,
+        active_position,
+        at,
+        sections: vec!["os_process".to_owned()],
+        fields: string_array(args, "fields")?,
+        by: Vec::new(),
+        direction: Order::Desc,
+        group: None,
+        postgresql: None,
+        process: Some(ProcessSurfaceRequest {
+            lens,
+            order: optional_string(args, "order")?.map(str::to_owned),
+            direction,
+        }),
+        page_size: args
+            .contains_key("page_size")
+            .then(|| usize_arg(args, "page_size", 200, 500))
+            .transpose()?,
+        cursor: optional_string(args, "cursor")?.map(str::to_owned),
+        search: optional_string(args, "find")?.map(str::to_owned),
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
         activity_visibility: None,
         type_id: None,
         row_ordinal: None,
@@ -616,26 +667,6 @@ fn filter_values(args: &Map<String, Value>) -> Result<Vec<Filter>, Failure> {
             })
         })
         .collect()
-}
-
-fn process_order(lens: &str) -> &'static str {
-    match lens {
-        "cpu" => "utime",
-        "memory" => "rmem_kb",
-        "disk" => "read_bytes",
-        _ => "pid",
-    }
-}
-
-fn stored_process_order(order: &str) -> String {
-    match order {
-        "cpu_cores" | "user_cpu_cores" => "utime",
-        "rss" => "rmem_kb",
-        "disk_read_rate" => "read_bytes",
-        "disk_write_rate" => "write_bytes",
-        other => other,
-    }
-    .to_owned()
 }
 
 fn records_named(records: &[Value], name: &str) -> Vec<Value> {

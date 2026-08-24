@@ -44,7 +44,7 @@ const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 
 export interface SectionRequest {
   readonly section: string
-  readonly lens?: StatementLens | PlanLens | RelationLens
+  readonly lens?: "generic" | "cpu" | "memory" | "disk" | "tree" | StatementLens | PlanLens | RelationLens
   readonly fields?: readonly string[]
   readonly typeIds?: readonly string[]
   readonly fieldsByType?: Readonly<Record<string, readonly string[]>>

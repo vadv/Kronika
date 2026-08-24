@@ -304,6 +304,7 @@ fn snapshot(
         direction: order(args)?,
         group: None,
         postgresql: None,
+        process: None,
         page_size: Some(page_size),
         cursor: optional_string(args, "cursor"),
         search: None,
