@@ -113,11 +113,9 @@ fn catalog_schemas_are_bounded_surface_specific_and_read_only() {
             "{} input schema",
             tool.name
         );
-        let output = tool.output_schema.as_ref().expect("output schema");
-        assert_eq!(
-            output.get("additionalProperties"),
-            Some(&Value::Bool(false)),
-            "{} output schema",
+        assert!(
+            tool.output_schema.is_none(),
+            "{} has no concrete output-schema consumer",
             tool.name
         );
         let annotations = tool.annotations.as_ref().expect("tool annotations");
@@ -170,8 +168,9 @@ fn mcp_tool_catalog_cost() {
         .sum();
     let output_schema_bytes: usize = catalog
         .iter()
-        .map(|tool| {
-            serde_json::to_vec(tool.output_schema.as_ref().expect("output schema"))
+        .filter_map(|tool| tool.output_schema.as_ref())
+        .map(|schema| {
+            serde_json::to_vec(schema)
                 .expect("output schema JSON")
                 .len()
         })
@@ -186,10 +185,10 @@ fn mcp_tool_catalog_cost() {
         estimated_tokens
     );
     assert_eq!(catalog.len(), 20);
-    assert_eq!(descriptor_bytes, 44_980);
-    assert_eq!(input_schema_bytes, 16_975);
-    assert_eq!(output_schema_bytes, 20_207);
-    assert_eq!(estimated_tokens, 11_245);
+    assert_eq!(descriptor_bytes, 23_671);
+    assert_eq!(input_schema_bytes, 16_939);
+    assert_eq!(output_schema_bytes, 0);
+    assert_eq!(estimated_tokens, 5_918);
 }
 
 #[tokio::test]
@@ -466,7 +465,11 @@ async fn legacy_initialize_and_tools_list_are_stateless() {
         headers.get(VARY),
         Some(&HeaderValue::from_static("Authorization, Cookie"))
     );
-    assert_eq!(body.pointer("/result/capabilities/tools"), Some(&json!({})));
+    assert_eq!(
+        body.pointer("/result/capabilities"),
+        Some(&json!({"tools": {}}))
+    );
+    assert!(body.pointer("/result/instructions").is_none());
 
     let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
     let (status, headers, body) = protocol_json(protocol_request(
@@ -480,6 +483,11 @@ async fn legacy_initialize_and_tools_list_are_stateless() {
             .and_then(Value::as_array)
             .map(Vec::len),
         Some(20)
+    );
+    assert!(
+        body.pointer("/result/tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().all(|tool| tool.get("outputSchema").is_none()))
     );
 
     let call = json!({
@@ -524,10 +532,60 @@ async fn modern_discovery_uses_the_official_stateless_sdk_path() {
     let (status, headers, body) = protocol_json(request).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(headers.get("mcp-session-id").is_none());
-    assert!(
-        body.pointer("/result/supportedVersions")
+    assert_eq!(
+        body.pointer("/result/supportedVersions"),
+        Some(&json!([
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25",
+            "2026-07-28",
+        ]))
+    );
+    assert_eq!(
+        body.pointer("/result/capabilities"),
+        Some(&json!({"tools": {}}))
+    );
+    assert!(body.pointer("/result/instructions").is_none());
+}
+
+#[tokio::test]
+async fn modern_tools_list_has_complete_private_cache_fields() {
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/list",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {"name": "kronika-test", "version": "1"}
+            }
+        }
+    });
+    let mut request = protocol_request(serde_json::to_vec(&list).expect("tools/list JSON"));
+    request.headers_mut().insert(
+        "mcp-protocol-version",
+        HeaderValue::from_static("2026-07-28"),
+    );
+    request
+        .headers_mut()
+        .insert("mcp-method", HeaderValue::from_static("tools/list"));
+    let (status, headers, body) = protocol_json(request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(headers.get("mcp-session-id").is_none());
+    assert_eq!(body.pointer("/result/resultType"), Some(&json!("complete")));
+    assert_eq!(body.pointer("/result/ttlMs"), Some(&json!(0)));
+    assert_eq!(body.pointer("/result/cacheScope"), Some(&json!("private")));
+    assert_eq!(
+        body.pointer("/result/tools")
             .and_then(Value::as_array)
-            .is_some_and(|versions| versions.contains(&json!("2026-07-28")))
+            .map(Vec::len),
+        Some(20)
+    );
+    assert!(
+        body.pointer("/result/tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().all(|tool| tool.get("outputSchema").is_none()))
     );
 }
 

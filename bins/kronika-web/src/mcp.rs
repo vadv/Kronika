@@ -1,4 +1,4 @@
-//! Stateless Model Context Protocol transport for recorded Kronika history.
+//! Stateless Model Context Protocol transport for Kronika history data.
 
 mod catalog;
 mod expert;
@@ -6,6 +6,7 @@ mod postgresql;
 mod semantics;
 mod tools;
 
+use std::borrow::Cow;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,8 +16,8 @@ use hyper::body::{Body, Bytes};
 use hyper::header::{CACHE_CONTROL, HeaderValue, VARY};
 use hyper::{Request, Response, StatusCode};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -33,7 +34,12 @@ pub(crate) const RESPONSE_BODY_BYTES: usize = 128 * 1_024;
 pub(crate) const STRUCTURED_CONTENT_BYTES: usize = 96 * 1_024;
 pub(crate) const TEXT_SUMMARY_BYTES: usize = 2 * 1_024;
 
-const INSTRUCTIONS: &str = "Start with kronika_rank_heatmap and kronika_list_findings for an interval. Kronika reads only recorded history; it never connects to PostgreSQL or executes commands. Ranked activity is not an anomaly or a cause. Drill into the direct Process, PostgreSQL, and Event tools, then request native metric history or exact row detail. Preserve exact timestamps, nulls, units, physical identities, and cursors.";
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+    ProtocolVersion::V_2026_07_28,
+];
 #[derive(Debug, Clone)]
 pub(crate) struct State {
     pub(crate) data_root: PathBuf,
@@ -108,14 +114,16 @@ where
 }
 
 impl ServerHandler for KronikaMcp {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(
-                Implementation::new("kronika", env!("CARGO_PKG_VERSION"))
-                    .with_title("Kronika historical analysis")
-                    .with_description("Read-only analysis of recorded Kronika history"),
-            )
-            .with_instructions(INSTRUCTIONS)
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+            Implementation::new("kronika", env!("CARGO_PKG_VERSION"))
+                .with_title("Kronika history data")
+                .with_description("Read-only access to Kronika history"),
+        )
     }
 
     fn list_tools(
@@ -123,7 +131,9 @@ impl ServerHandler for KronikaMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(catalog::all().to_vec())))
+        std::future::ready(Ok(ListToolsResult::with_all_items(catalog::all().to_vec())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

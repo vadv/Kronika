@@ -15,7 +15,7 @@ pub(super) fn find(name: &str) -> Option<&'static Tool> {
 
 fn build() -> Vec<Tool> {
     let mut tools = discovery_tools();
-    tools.extend(analysis_tools());
+    tools.extend(surface_tools());
     tools.extend(postgresql_state_tools());
     tools.extend(postgresql_query_tools());
     tools.extend(postgresql_relation_tools());
@@ -29,18 +29,13 @@ fn discovery_tools() -> Vec<Tool> {
         tool(
             "kronika_get_context",
             "Kronika context",
-            "Discover this read-only historical server, its recorded source families, limits, surfaces, lenses, cuts, and semantic definitions.",
+            "Return source families, limits, surfaces, lenses, cuts, and semantic definitions.",
             input(common(map([])), &[]),
-            output(map([
-                ("context", object()),
-                ("surfaces", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_list_hours",
-            "Recorded hours",
-            "List recorded UTC hours and source families before choosing an analysis interval. This reads catalog metadata, not live PostgreSQL.",
+            "Available hours",
+            "List UTC hours and source families available in the requested range.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC lower bound.")),
@@ -50,15 +45,11 @@ fn discovery_tools() -> Vec<Tool> {
                 ])),
                 &[],
             ),
-            output(map([
-                ("hours", array_object()),
-                ("sources", array_object()),
-            ])),
         ),
         tool(
             "kronika_rank_heatmap",
-            "Ranked activity Heatmap",
-            "Rank recorded Process or PostgreSQL entity activity over one bounded interval. Ranking means busiest recorded activity, not anomaly, diagnosis, or cause.",
+            "Activity Heatmap",
+            "Rank Process or PostgreSQL entity activity over one bounded interval by the selected cut and grouping.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -85,18 +76,11 @@ fn discovery_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us", "surface", "cut"],
             ),
-            output(map([
-                ("intervals", array_object()),
-                ("rows", array_object()),
-                ("totals", object()),
-                ("others", object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_list_findings",
-            "Sparse Findings",
-            "List recorded event locators and accepted Kronika boundary crossings in a bounded interval. Findings are sparse signals, not incidents or diagnoses.",
+            "Findings",
+            "List event locators and Kronika threshold crossings in a bounded interval.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -108,20 +92,16 @@ fn discovery_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us"],
             ),
-            output(map([
-                ("findings", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
 
-fn analysis_tools() -> Vec<Tool> {
+fn surface_tools() -> Vec<Tool> {
     vec![
         tool(
             "kronika_get_timeline",
-            "Historical Timeline",
-            "Return exact native timestamps for accepted health and shared Host or PostgreSQL lanes, with sparse markers kept separate from series values.",
+            "Timeline",
+            "Return native timestamps for health and shared Host or PostgreSQL lanes, with sparse markers separate from series values.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -132,16 +112,11 @@ fn analysis_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us"],
             ),
-            output(map([
-                ("lanes", array_object()),
-                ("markers", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_get_host_context",
             "Host context",
-            "Inspect recorded Host physical capacity and state at the sample at or before one exact UTC time, with native units and accepted health semantics.",
+            "Return Host physical capacity, state, and health values at the sample at or before one UTC time, with native units.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -167,16 +142,11 @@ fn analysis_tools() -> Vec<Tool> {
                 ])),
                 &["at_us", "lens"],
             ),
-            output(map([
-                ("rows", array_object()),
-                ("health", object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_processes",
             "Processes",
-            "List and search recorded Linux processes at one sample using identity, CPU, memory, disk, or bounded tree lenses. Tree is an order of this same surface.",
+            "List and search Linux processes at one sample using identity, CPU, memory, disk, or bounded tree lenses. Tree is an order of this surface.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -196,10 +166,6 @@ fn analysis_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("processes", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -209,7 +175,7 @@ fn postgresql_state_tools() -> Vec<Tool> {
         tool(
             "kronika_get_postgresql_overview",
             "PostgreSQL Overview",
-            "Inspect recorded PostgreSQL capacity, configuration presence, service health, and cluster-wide values without connecting to PostgreSQL.",
+            "Return PostgreSQL capacity, configuration presence, service health, and cluster-wide values.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -217,17 +183,11 @@ fn postgresql_state_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("overview", object()),
-                ("layouts", array_object()),
-                ("health", object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_activity",
             "PostgreSQL Activity",
-            "List recorded PostgreSQL backends at one sample, including state, wait, query and transaction durations, and exact Process follow-up identity.",
+            "List PostgreSQL backends at one sample, including state, wait, query and transaction durations, and optional process identifiers.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -241,15 +201,11 @@ fn postgresql_state_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("activity", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_locks",
             "PostgreSQL Locks",
-            "Inspect a bounded complete recorded PostgreSQL lock graph at one sample, preserving direct blocked_by edges, parents, depth, and prepared transactions.",
+            "Return a bounded PostgreSQL lock graph at one sample with blocked_by edges, parents, depth, and prepared transactions.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -258,16 +214,11 @@ fn postgresql_state_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("locks", array_object()),
-                ("components", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_vacuum",
             "PostgreSQL Vacuum",
-            "Inspect recorded Vacuum episodes and phases over one bounded interval, including accepted phase risk, progress, cycles, and no-movement classification.",
+            "Return Vacuum episodes and phases over one bounded interval, including phase risk, progress, cycles, and movement state.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -277,10 +228,6 @@ fn postgresql_state_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us"],
             ),
-            output(map([
-                ("episodes", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -290,7 +237,7 @@ fn postgresql_query_tools() -> Vec<Tool> {
         tool(
             "kronika_find_postgresql_statements",
             "PostgreSQL Statements",
-            "List and search recorded pg_stat_statements rows with accepted load, per-call, I/O, resource, or stability lenses. Use find query_id:X for exact Query ID lookup.",
+            "List and search pg_stat_statements rows with load, per-call, I/O, resource, or stability lenses. Use find query_id:X for Query ID lookup.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -307,15 +254,11 @@ fn postgresql_query_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("statements", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_plans",
             "PostgreSQL Plans",
-            "List and search recorded pg_store_plans rows with accepted load, timing, I/O, or identity lenses. Use find query_id:X or plan_id:X for exact lookup.",
+            "List and search pg_store_plans rows with load, timing, I/O, or identity lenses. Use find query_id:X or plan_id:X for lookup.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -329,15 +272,11 @@ fn postgresql_query_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("plans", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_databases",
             "PostgreSQL Databases",
-            "List recorded per-database work, failures, ages, and accepted tones at one sample with exact database identity and native interval values.",
+            "List per-database work, failures, ages, and tones at one sample with database identity and native interval values.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -349,10 +288,6 @@ fn postgresql_query_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("databases", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -362,7 +297,7 @@ fn postgresql_relation_tools() -> Vec<Tool> {
         tool(
             "kronika_find_postgresql_tables",
             "PostgreSQL Tables",
-            "Investigate recorded PostgreSQL table access, changes, maintenance, storage, buffers, and freeze state with the accepted relation reducer.",
+            "List and search PostgreSQL table access, changes, maintenance, storage, buffers, and freeze state with the relation reducer.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -389,15 +324,11 @@ fn postgresql_relation_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("tables", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_find_postgresql_indexes",
             "PostgreSQL Indexes",
-            "Investigate recorded PostgreSQL index usage, low activity, storage, buffers, validity, readiness, and accepted state severity.",
+            "List and search PostgreSQL index usage, low activity, storage, buffers, validity, readiness, and state severity.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
@@ -418,10 +349,6 @@ fn postgresql_relation_tools() -> Vec<Tool> {
                 ])),
                 &["at_us"],
             ),
-            output(map([
-                ("indexes", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -431,7 +358,7 @@ fn event_history_tools() -> Vec<Tool> {
         tool(
             "kronika_find_events",
             "Event rows",
-            "Search exact recorded PostgreSQL and PgBouncer Event rows over a bounded interval in global timestamp and physical-locator order.",
+            "Search PostgreSQL and PgBouncer event rows over a bounded interval in global timestamp and physical-locator order.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -446,15 +373,11 @@ fn event_history_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us", "order", "direction"],
             ),
-            output(map([
-                ("events", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_get_metric_history",
             "Native metric history",
-            "Return bounded native-cadence recorded samples for selected identities and fields. Values are not resampled, interpolated, or filled from the future.",
+            "Return bounded native-cadence samples for selected identities and fields, preserving nulls and sample times.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
@@ -466,10 +389,6 @@ fn event_history_tools() -> Vec<Tool> {
                 ])),
                 &["from_us", "to_us", "section", "fields"],
             ),
-            output(map([
-                ("series", array_object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -478,8 +397,8 @@ fn expert_detail_tools() -> Vec<Tool> {
     vec![
         tool(
             "kronika_get_snapshot",
-            "Expert historical snapshot",
-            "Read one allowlisted recorded logical section at the sample at or before an exact time. This bounded fallback is not the normal first analysis surface.",
+            "Logical-section snapshot",
+            "Read one allowlisted logical section at the sample at or before a UTC time.",
             input(
                 common(map([
                     ("section", short_string("Allowlisted logical section.")),
@@ -496,29 +415,21 @@ fn expert_detail_tools() -> Vec<Tool> {
                 ])),
                 &["section", "at_us"],
             ),
-            output(map([
-                ("rows", array_object()),
-                ("layout", object()),
-                ("semantics", array_object()),
-            ])),
         ),
         tool(
             "kronika_get_row_detail",
-            "Exact row and text detail",
-            "Read one exact recorded physical row locator and an optional bounded text chunk. Locator timestamp, type, segment, and ordinal must still match.",
+            "Row and text detail",
+            "Read one physical row locator and an optional bounded text chunk. Timestamp, type, segment, and ordinal must match.",
             input(
                 common(map([
-                    ("segment_id", decimal("Exact decimal segment identity.")),
+                    ("segment_id", decimal("Decimal segment identity.")),
                     ("type_id", integer(1, u64::from(u32::MAX), 1)),
-                    (
-                        "row_ordinal",
-                        decimal("Exact decimal physical row ordinal."),
-                    ),
-                    ("timestamp_us", timestamp("Exact recorded row timestamp.")),
+                    ("row_ordinal", decimal("Decimal physical row ordinal.")),
+                    ("timestamp_us", timestamp("Row timestamp.")),
                     ("fields", fields()),
                     (
                         "text_field",
-                        short_string("At most one recorded text or blob field."),
+                        short_string("At most one text or blob field."),
                     ),
                     ("byte_offset", integer(0, u64::from(u32::MAX), 0)),
                     ("byte_limit", integer(1, 32 * 1_024, 16 * 1_024)),
@@ -526,11 +437,6 @@ fn expert_detail_tools() -> Vec<Tool> {
                 ])),
                 &["segment_id", "type_id", "row_ordinal", "timestamp_us"],
             ),
-            output(map([
-                ("row", object()),
-                ("text_chunk", object()),
-                ("semantics", array_object()),
-            ])),
         ),
     ]
 }
@@ -540,11 +446,9 @@ fn tool(
     title: &'static str,
     description: &'static str,
     input_schema: Arc<JsonObject>,
-    output_schema: Arc<JsonObject>,
 ) -> Tool {
     Tool::new(name, description, input_schema)
         .with_title(title)
-        .with_raw_output_schema(output_schema)
         .with_annotations(
             ToolAnnotations::with_title(title)
                 .read_only(true)
@@ -577,59 +481,6 @@ fn input(properties: JsonObject, required: &[&str]) -> Arc<JsonObject> {
     ]))
 }
 
-fn output(data_properties: JsonObject) -> Arc<JsonObject> {
-    let anchor = map([
-        ("type", json!("object")),
-        (
-            "properties",
-            Value::Object(map([
-                ("hour_start_us", nullable_decimal()),
-                ("requested_at_us", nullable_decimal()),
-                ("selected_at_us", nullable_decimal()),
-                ("segment_id", nullable_decimal()),
-                ("active_wal_position", nullable_decimal()),
-            ])),
-        ),
-        ("additionalProperties", json!(false)),
-    ]);
-    let page = map([
-        ("type", json!("object")),
-        (
-            "properties",
-            Value::Object(map([
-                ("returned", json!({"type": "integer", "minimum": 0})),
-                ("truncated", json!({"type": "boolean"})),
-                ("next_cursor", nullable_string()),
-                ("stop_reason", nullable_string()),
-            ])),
-        ),
-        ("additionalProperties", json!(false)),
-    ]);
-    let data = Value::Object(map([
-        ("type", json!("object")),
-        ("properties", Value::Object(data_properties)),
-        ("additionalProperties", json!(false)),
-    ]));
-    Arc::new(map([
-        ("type", json!("object")),
-        (
-            "properties",
-            Value::Object(map([
-                ("status", json!({"const": "ok"})),
-                ("anchor", Value::Object(anchor)),
-                ("data", data),
-                ("page", Value::Object(page)),
-                ("warnings", array_object()),
-            ])),
-        ),
-        (
-            "required",
-            json!(["status", "anchor", "data", "page", "warnings"]),
-        ),
-        ("additionalProperties", json!(false)),
-    ]))
-}
-
 fn map<const N: usize>(entries: [(&str, Value); N]) -> JsonObject {
     entries
         .into_iter()
@@ -652,14 +503,6 @@ fn decimal(description: &str) -> Value {
         "maxLength": 32,
         "description": description
     })
-}
-
-fn nullable_decimal() -> Value {
-    json!({"type": ["string", "null"], "pattern": "^[0-9]+$"})
-}
-
-fn nullable_string() -> Value {
-    json!({"type": ["string", "null"]})
 }
 
 fn short_string(description: &str) -> Value {
@@ -731,12 +574,4 @@ fn integer(minimum: u64, maximum: u64, default: u64) -> Value {
 
 fn boolean(default: bool) -> Value {
     json!({"type": "boolean", "default": default})
-}
-
-fn object() -> Value {
-    json!({"type": "object"})
-}
-
-fn array_object() -> Value {
-    json!({"type": "array", "items": {"type": "object"}})
 }
