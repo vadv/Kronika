@@ -487,6 +487,25 @@ handlers.
 
 ### MCP historical analysis
 
+Kronika and its MCP server form the retrieval and data-access layer. MCP tools
+search, filter, sort, page, and read the same historical product surfaces as
+the web API. The calling model — Codex, Claude, or another client — owns
+analysis, correlation, hypotheses, and any proof the user requests.
+
+MCP v1 exposes tools only and defines no MCP Prompts. Kronika provides no global
+`initialize.instructions` and does not encode proof workflows, evidence
+collection, confidence or completeness states, anomaly scores, diagnoses,
+causal conclusions, leader selection, or investigation policy in prompts, tool
+schemas, outputs, summaries, or errors.
+
+Existing product definitions — units, formulas, thresholds, tones, findings,
+and Vacuum phase and risk classifications — remain returned semantics, not
+conclusions. MCP adds no new classification engine, threshold, class, tier, or
+action recommendation. Internal source-generation pinning and bounded reads
+exist for implementation correctness; they do not define a public proof or
+provenance model. This permanent product architecture boundary is not limited
+to PR #43.
+
 `kronika-web` exposes recorded history at `POST /mcp` on its existing listener.
 It uses `rmcp` 3.1.4 Streamable HTTP without server session state or
 `Mcp-Session-Id`, and accepts the modern stateless and initialize-era client
@@ -507,12 +526,8 @@ the required blocks in memory but never creates, replaces, or updates an
 connects to PostgreSQL, executes SQL, starts a subprocess, or changes the
 collector, sources, storage format, or cadence.
 
-Start an investigation with ranked recorded activity and sparse accepted
-findings. Use the timeline to place them against health and shared host or
-PostgreSQL lanes, then open a direct entity surface. Native metric history and
-exact row or text detail are bounded follow-ups. Heatmap ranks activity among
-the entities recorded in the interval; it does not claim a statistical anomaly
-or a cause.
+Heatmap ranks activity among the entities recorded in the interval; it does
+not claim a statistical anomaly or a cause.
 
 The v1 catalog has these exact stable names:
 
@@ -600,11 +615,6 @@ the same semantics to HTTP and MCP.
 `structuredContent` is canonical. The concise English text says what was
 returned and whether another page exists; it never copies rows or large text
 from the structured result.
-
-MCP adds no historical baseline, anomaly score, inferred cause, diagnosis,
-confidence or completeness state, new threshold, new Vacuum class, new event
-tier, or action recommendation. Clients may reason over returned facts; the
-server does not create another classification engine.
 
 All limits are constants beside the MCP schemas, and zero never means
 unlimited:
