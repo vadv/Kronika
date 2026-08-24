@@ -4344,7 +4344,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const pid = headers[names.indexOf('PID')]
       const command = headers[names.indexOf('Command')]
       const user = headers[names.indexOf('User')]
-      const state = headers[names.indexOf('State')]
+      const state = headers[names.indexOf('STAT')]
       const start = headers[names.indexOf('START')]
       const row = [...table.querySelectorAll('.entity-row')].find((candidate) => candidate.textContent.includes('2686712'))
       const cells = [...row.querySelectorAll('[role="cell"]')]
@@ -4363,12 +4363,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       }
     })()`)
     assert.ok(Math.abs(treeGeometry.pidWidth - 82) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.commandWidth - 400) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.commandWidth - 620) <= 1, JSON.stringify(treeGeometry))
     assert.ok(Math.abs(treeGeometry.userWidth - 88) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.stateWidth - 50) <= 1, JSON.stringify(treeGeometry))
-    assert.ok(Math.abs(treeGeometry.start.width - 180) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.stateWidth - 62) <= 1, JSON.stringify(treeGeometry))
+    assert.ok(Math.abs(treeGeometry.start.width - 92) <= 1, JSON.stringify(treeGeometry))
     assert.equal(treeGeometry.start.clipped, false, JSON.stringify(treeGeometry))
-    assert.match(treeGeometry.start.text, /\d{2}:\d{2}:\d{2}$/)
+    // ps prints the clock inside the shown day and the civil date before it.
+    assert.match(treeGeometry.start.text, /^(?:\d{2}:\d{2}|\d{2}\.\d{2}\.\d{4})$/)
     assert.equal(treeGeometry.divider, "0px", JSON.stringify(treeGeometry))
     assert.ok(treeGeometry.gap >= 7 && treeGeometry.gap <= 11, JSON.stringify(treeGeometry))
     await cdp.evaluate(`(() => {
@@ -5726,7 +5727,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
 // cascade and does nothing. Both of these shipped that way and passed review,
 // because the responsive suite matches the text of the stylesheet rather than
 // what the browser resolves. Assert the resolved geometry instead.
-test("narrow ledger rules win the cascade at phone width", { timeout: 60_000 }, async () => {
+test("phone width keeps narrow rules winning and nothing reserving height", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const server = createServer((request, response) => {
@@ -5784,6 +5785,29 @@ test("narrow ledger rules win the cascade at phone width", { timeout: 60_000 }, 
     assert.equal(resolved.client, 412, JSON.stringify(resolved))
     assert.equal(resolved.tracks, 4, JSON.stringify(resolved))
     assert.equal(resolved.first, "80px", JSON.stringify(resolved))
+
+    // A phone has no room for a reserved list height or a strip that stacks
+    // its readings; both pushed real rows below the fold.
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') !== null`, "the events console", 15_000)
+    await settleLayout(cdp)
+    const console412 = await cdp.evaluate(`(() => {
+      const shell = document.querySelector('[data-testid="events-console"]')
+      const reserving = [...shell.querySelectorAll("div")].filter((el) => getComputedStyle(el).minHeight === "390px")
+      return { reserving: reserving.length, divs: shell.querySelectorAll("div").length }
+    })()`)
+    assert.ok(console412.divs > 0, JSON.stringify(console412))
+    assert.equal(console412.reserving, 0, JSON.stringify(console412))
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes` })
+    await cdp.waitFor(`document.querySelector('.process-summary-inline') !== null`, "the process summary strip", 15_000)
+    await settleLayout(cdp)
+    const strip = await cdp.evaluate(`(() => {
+      const el = document.querySelector('.process-summary-inline')
+      return { overflowX: getComputedStyle(el).overflowX, wrap: getComputedStyle(el).flexWrap }
+    })()`)
+    assert.equal(strip.wrap, "nowrap", JSON.stringify(strip))
+    assert.equal(strip.overflowX, "auto", JSON.stringify(strip))
 
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])

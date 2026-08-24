@@ -27,6 +27,7 @@ pub(crate) struct PreparedHeatmap {
     segments: Vec<SegmentRef>,
     request: HeatmapRequest,
     cumulative: bool,
+    etag: Option<String>,
 }
 
 pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
@@ -42,11 +43,13 @@ pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
         .collect();
     segments.sort_by_key(SegmentRef::min_ts);
     super::catalog::log_open(segments.len(), &stored.warnings, started);
+    let etag = super::weak_etag("heatmap", &format!("{request:?}"), &segments);
     Ok(PreparedHeatmap {
         reader,
         segments,
         request,
         cumulative,
+        etag,
     })
 }
 
@@ -95,11 +98,14 @@ impl PreparedHeatmap {
             .segments
             .iter()
             .all(|segment| segment.kind() == SegmentKind::Finished);
-        ResponseMeta::ok(if settled {
-            CachePolicy::Revalidate
-        } else {
-            CachePolicy::NoStore
-        })
+        ResponseMeta::ok_with_etag(
+            if settled {
+                CachePolicy::Revalidate
+            } else {
+                CachePolicy::NoStore
+            },
+            self.etag.clone(),
+        )
     }
 
     pub(super) fn stream(

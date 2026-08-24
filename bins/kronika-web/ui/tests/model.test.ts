@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanDurationAxis, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanDurationAxis, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processCpuTime, processDefaultSort, processKey, processLens, processTty, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -199,4 +199,25 @@ test("elapsed wall time uses the shared adaptive duration scale", () => {
   assert.equal(humanAge(12.7, "ru"), "12 с")
   assert.equal(humanAge(12.7, "en"), "12 s")
   assert.equal(humanAge(95, "ru"), "1,58 мин")
+})
+
+test("the TIME column follows the ps ladder from MM:SS to DD-HH:MM:SS", () => {
+  assert.equal(processCpuTime(0), "0:00")
+  assert.equal(processCpuTime(276.18), "4:36")
+  assert.equal(processCpuTime(59.9), "0:59")
+  assert.equal(processCpuTime(3_600), "1:00:00")
+  assert.equal(processCpuTime(44_819), "12:26:59")
+  assert.equal(processCpuTime(97_230), "1-03:00:30")
+  assert.equal(processCpuTime(null), "—")
+  assert.equal(processCpuTime(-1), "—")
+})
+
+test("the TTY column names the recorded device the way ps does", () => {
+  assert.equal(processTty(0), "?")
+  assert.equal(processTty(null), "?")
+  assert.equal(processTty(34_816), "pts/0")
+  assert.equal(processTty(34_819), "pts/3")
+  assert.equal(processTty(1_025), "tty1")
+  assert.equal(processTty(1_088), "ttyS0")
+  assert.equal(processTty(2_305), "9:1")
 })

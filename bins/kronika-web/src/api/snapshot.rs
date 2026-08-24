@@ -27,7 +27,7 @@ use self::search::{
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, shorten};
-use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
+use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{
     ActivityVisibility, DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest,
 };
@@ -120,6 +120,7 @@ pub(crate) struct PreparedSnapshot {
     first_match_query_id: Option<i64>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
+    meta: ResponseMeta,
 }
 
 type Readings = BTreeMap<Vec<IdentityCell>, CounterReadings>;
@@ -422,7 +423,9 @@ enum GlobToken {
 // section and dictionary reads for snapshot and relation-history consumers.
 const SNAPSHOT_CHUNK_ROWS: usize = 1_024;
 const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
-const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user", "cpu_time_ticks"];
+const PROCESS_USER_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const CPU_TIME_VIRTUAL_FIELD: &str = "cpu_time_ticks";
 const MAX_PROCESS_USERS: usize = 4 * 1024;
 
 #[derive(Default)]
@@ -575,7 +578,11 @@ pub(super) fn stream_relation_history(
 #[cfg(test)]
 pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
-pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
+pub(super) fn prepare(
+    root: &Path,
+    request: SnapshotRequest,
+    if_none_match: Option<&str>,
+) -> Result<Prepared, ApiError> {
     validate_activity_visibility(&request)?;
     let cursor = request
         .cursor
@@ -583,16 +590,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         .map(SnapshotCursor::parse)
         .transpose()?;
     let search = prepared_search(&request, cursor.is_some())?;
-    let first_match_query_id = if request.first_match {
-        Some(
-            search
-                .as_deref()
-                .and_then(StructuredSearch::first_match_query_id)
-                .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?,
-        )
-    } else {
-        None
-    };
+    let first_match_query_id = prepared_first_match(&request, search.as_deref())?;
     let binding = snapshot_binding(&request, search.as_deref());
     let parsed = cursor
         .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
@@ -601,6 +599,11 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     }
     let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
     let segment_ref = pin(current, parsed, request.active_position)?;
+    let meta = snapshot_meta(&request, &segment_ref, &segments);
+    let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
+    if let Some(not_modified) = super::conditional_not_modified(meta.clone(), concrete_validator) {
+        return Ok(not_modified);
+    }
     let segment = reader.open_segment(&segment_ref)?;
     let active_position = segment_ref.active_position().unwrap_or(0);
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
@@ -654,7 +657,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     validate_search_projection(search.as_deref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
     drop(segment);
-    Ok(PreparedSnapshot {
+    Ok(Prepared::Snapshot(PreparedSnapshot {
         reader,
         anchor: segment_ref,
         prior_sources,
@@ -675,7 +678,41 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         first_match_query_id,
         text: request.text,
         row_ordinal: request.row_ordinal,
-    })
+        meta,
+    }))
+}
+
+fn snapshot_meta(
+    request: &SnapshotRequest,
+    anchor: &SegmentRef,
+    segments: &[SegmentRef],
+) -> ResponseMeta {
+    let candidates = std::iter::once(anchor).chain(
+        segments
+            .iter()
+            .filter(|candidate| candidate.id() < anchor.id() && candidate.min_ts() <= request.at),
+    );
+    let etag = super::weak_etag("snapshot", &format!("{request:?}"), candidates);
+    ResponseMeta::ok_with_etag(
+        match anchor.kind() {
+            SegmentKind::Finished => CachePolicy::Revalidate,
+            SegmentKind::Active => CachePolicy::NoStore,
+        },
+        etag,
+    )
+}
+
+fn prepared_first_match(
+    request: &SnapshotRequest,
+    search: Option<&StructuredSearch>,
+) -> Result<Option<i64>, ApiError> {
+    if !request.first_match {
+        return Ok(None);
+    }
+    search
+        .and_then(StructuredSearch::first_match_query_id)
+        .map(Some)
+        .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))
 }
 
 fn validate_activity_visibility(request: &SnapshotRequest) -> Result<(), ApiError> {
@@ -796,8 +833,14 @@ fn section_plans(
                     if !fields.is_empty() {
                         plan.order_output_fields(&fields);
                     }
-                    if !selected_virtual.is_empty() {
+                    if selected_virtual
+                        .iter()
+                        .any(|field| PROCESS_USER_VIRTUAL_FIELDS.contains(field))
+                    {
                         plan.add_projection_columns(&["uid", "euid", "scope"]);
+                    }
+                    if selected_virtual.contains(&CPU_TIME_VIRTUAL_FIELD) {
+                        plan.add_projection_columns(&["utime", "stime"]);
                     }
                     if logical_name == "pg_store_plans" {
                         plan.add_aliased_output("calls_per_second", "calls");
@@ -1132,11 +1175,8 @@ fn validate_exact_locator(
 }
 
 impl PreparedSnapshot {
-    pub(super) const fn meta(&self) -> ResponseMeta {
-        ResponseMeta::ok(match self.anchor.kind() {
-            SegmentKind::Finished => CachePolicy::Revalidate,
-            SegmentKind::Active => CachePolicy::NoStore,
-        })
+    pub(super) fn meta(&self) -> ResponseMeta {
+        self.meta.clone()
     }
 
     pub(super) fn stream(
@@ -1395,13 +1435,21 @@ impl PreparedSnapshot {
             && let Some(columns) = layout.get_mut("columns").and_then(Value::as_array_mut)
         {
             for column in columns {
-                if column
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| PROCESS_VIRTUAL_FIELDS.contains(&name))
-                {
+                let Some(name) = column.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                if name == CPU_TIME_VIRTUAL_FIELD {
                     *column = json!({
-                        "name": column.get("name").cloned().unwrap_or(Value::Null),
+                        "name": name,
+                        "type": "i64",
+                        "class": "gauge",
+                        "unit": "jiffies",
+                        "nullable": true,
+                        "available": true,
+                    });
+                } else if PROCESS_USER_VIRTUAL_FIELDS.contains(&name) {
+                    *column = json!({
+                        "name": name,
                         "type": "dictionary_value",
                         "class": "label",
                         "unit": "none",
@@ -2762,6 +2810,10 @@ impl PreparedSnapshot {
         let mut values = Vec::with_capacity(plan.fields.len());
         for field in &plan.fields {
             let Some(column) = field.column else {
+                if field.name == CPU_TIME_VIRTUAL_FIELD {
+                    values.push(scheduled_ticks(row));
+                    continue;
+                }
                 let uid_column = match field.name.as_str() {
                     "user" => Some("uid"),
                     "effective_user" => Some("euid"),
@@ -4614,6 +4666,23 @@ fn section_projection(segment: &Segment, logical_name: &str, fields: &[String]) 
 struct Moments {
     current: i64,
     previous: Option<i64>,
+}
+
+/// Lifetime CPU time of one process, in clock ticks.
+///
+/// Cumulative columns leave a snapshot row as rates, so the total the process
+/// has burned since it started is served separately.
+fn scheduled_ticks(row: &Row) -> Value {
+    let ticks = |column| match row.get(column) {
+        Some(&Cell::I64(value)) => Some(value),
+        _ => None,
+    };
+    match (ticks("utime"), ticks("stime")) {
+        (Some(user), Some(system)) => user
+            .checked_add(system)
+            .map_or(Value::Null, |total| Value::String(total.to_string())),
+        _ => Value::Null,
+    }
 }
 
 /// Returns null without a valid nondecreasing predecessor.

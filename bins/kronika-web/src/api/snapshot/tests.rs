@@ -9,7 +9,7 @@ use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
     compare_products, ordered_cell, plan_statement_query_id_columns, prepared_search, rate,
-    record_contributing_moment, snapshot_binding, timed_context_index,
+    record_contributing_moment, scheduled_ticks, snapshot_binding, timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
@@ -895,4 +895,34 @@ fn structured_search_boolean_diagnostics_and_bounds_have_exact_spans() {
             .code,
         "too_many_tokens"
     );
+}
+
+#[test]
+fn lifetime_cpu_time_sums_the_raw_counters_and_withholds_a_missing_half() {
+    let contract = contract(1_100_001).expect("os_process contract");
+    let at = |name: &str| {
+        contract
+            .columns
+            .iter()
+            .position(|column| column.name == name)
+            .expect("projected column")
+    };
+    let row = |user: Option<i64>, system: Option<i64>| {
+        let mut cells = vec![Cell::Null; contract.columns.len()];
+        if let Some(value) = user {
+            cells[at("utime")] = Cell::I64(value);
+        }
+        if let Some(value) = system {
+            cells[at("stime")] = Cell::I64(value);
+        }
+        Row::new(contract, cells)
+    };
+    assert_eq!(
+        scheduled_ticks(&row(Some(38_341), Some(7_788))),
+        json!("46129")
+    );
+    assert_eq!(scheduled_ticks(&row(Some(0), Some(0))), json!("0"));
+    assert_eq!(scheduled_ticks(&row(Some(1), None)), Value::Null);
+    assert_eq!(scheduled_ticks(&row(None, Some(1))), Value::Null);
+    assert_eq!(scheduled_ticks(&row(Some(i64::MAX), Some(1))), Value::Null);
 }

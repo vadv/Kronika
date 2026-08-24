@@ -141,6 +141,31 @@ export function humanAge(seconds: number, locale: Locale): string {
   return humanDuration(whole * 1_000, locale)
 }
 
+// The TTY column of ps: the device name behind the recorded tty_nr, `?` when
+// the process has no controlling terminal.
+export function processTty(cell: Cell): string {
+  const encoded = asNumber(cell)
+  if (encoded === null || encoded === 0) return "?"
+  const major = (encoded >> 8) & 0xfff
+  const minor = (encoded & 0xff) | ((encoded >> 12) & 0xfff00)
+  if (major === 136) return `pts/${minor}`
+  if (major === 4) return minor < 64 ? `tty${minor}` : `ttyS${minor - 64}`
+  return `${major}:${minor}`
+}
+
+// The TIME column of ps: MM:SS below an hour, HH:MM:SS below a day, then DD-HH:MM:SS.
+export function processCpuTime(cell: Cell): string {
+  const seconds = asNumber(cell)
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "—"
+  const whole = Math.floor(seconds)
+  const pad = (part: number) => String(part).padStart(2, "0")
+  const days = Math.floor(whole / 86_400)
+  const hours = Math.floor(whole / 3_600) % 24
+  const rest = `${pad(Math.floor(whole / 60) % 60)}:${pad(whole % 60)}`
+  if (days > 0) return `${days}-${pad(hours)}:${rest}`
+  return hours > 0 ? `${hours}:${rest}` : `${Math.floor(whole / 60)}:${pad(whole % 60)}`
+}
+
 export type DurationInputUnit = "nanoseconds" | "microseconds" | "milliseconds" | "seconds"
 
 export function humanDuration(cell: Cell, locale: Locale, input: DurationInputUnit = "milliseconds", suffix = ""): string {

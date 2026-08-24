@@ -13,7 +13,6 @@ import {
   loadSnapshot,
   loadSnapshotGroups,
   mergeSnapshotData,
-  segmentBoundAt,
   snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
@@ -69,7 +68,7 @@ import { PostgresView, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
-import { buildProcessForest, scheduledTicks } from "./process-tree"
+import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -87,8 +86,6 @@ import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
 
 type Theme = "dark" | "light"
-
-const EMPTY_TICKS: ReadonlyMap<number, number> = new Map()
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
@@ -613,48 +610,25 @@ function App({ locale, onLocale, t }: {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
-  // CPU% uses the preceding process snapshot.
-  // Cache by recorded snapshot, not by cursor position within its interval.
-  const treeAt = lens === "tree" ? allProcessRows[0]?.timestamp ?? null : null
-  const [previousProcessCpu, setPreviousProcessCpu] = useState<{ readonly at: number; readonly interval: number | null; readonly ticks: ReadonlyMap<number, number> } | null>(null)
-  useEffect(() => {
-    const segment = treeAt === null ? null : segmentBoundAt(segments, treeAt)
-    if (treeAt === null || segment === null) return undefined
-    const controller = new AbortController()
-    acceptResponse(
-      loadSnapshot(segment.id, treeAt - 1, [{ section: "os_process", fields: ["pid", "utime", "stime"] }], controller.signal),
-      controller.signal,
-      (loaded) => {
-        const rows = loaded.sections.os_process ?? []
-        const ticks = new Map<number, number>()
-        for (const row of rows) {
-          const pid = asNumber(value(row, "pid"))
-          const scheduled = scheduledTicks(row)
-          if (pid !== null && scheduled !== null) ticks.set(pid, scheduled)
-        }
-        const before = rows[0]?.timestamp
-        setPreviousProcessCpu({ at: treeAt, interval: before === undefined ? null : (treeAt - before) / 1_000_000, ticks })
-      },
-      () => setPreviousProcessCpu(null),
-    )
-    return () => controller.abort()
-  }, [segments, treeAt])
-  const processTableRows = useMemo(() => {
-    if (lens !== "tree") return processRows
-    const previous = previousProcessCpu?.at === treeAt ? previousProcessCpu : null
-    return buildProcessForest(allProcessRows, {
-      intervalSeconds: previous?.interval ?? null,
-      memTotalKb: asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total")),
-      previousTicks: previous?.ticks ?? EMPTY_TICKS,
-      ticksPerSecond,
-    })
-  }, [allProcessRows, cursor, data.sections.os_meminfo, lens, previousProcessCpu, processRows, ticksPerSecond, treeAt])
+  const memTotalKb = useMemo(
+    () => asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total")),
+    [cursor, data.sections.os_meminfo],
+  )
+  // The forest ignores entity context, so it must not rebuild when context changes.
+  const processForest = useMemo(
+    () => lens === "tree" ? buildProcessForest(allProcessRows, memTotalKb, ticksPerSecond) : null,
+    [allProcessRows, lens, memTotalKb, ticksPerSecond],
+  )
+  const processTableRows = processForest ?? processRows
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))
     return pid === null ? [] : [pid]
   })), [pgRows])
-  const selectedProcess = processTableRows.find((row) => processKey(row) === selectedKey) ?? null
+  const selectedProcess = useMemo(
+    () => processTableRows.find((row) => processKey(row) === selectedKey) ?? null,
+    [processTableRows, selectedKey],
+  )
   useEffect(() => {
     if (selectedFinding?.logicalName === "os_process" && findingRow !== null) {
       setSelectedKey(processKey(findingRow))
@@ -976,7 +950,7 @@ function App({ locale, onLocale, t }: {
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
         <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
-            {(["cpu", "memory", "disk", "generic", "tree"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
+            {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>

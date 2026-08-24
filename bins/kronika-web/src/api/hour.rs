@@ -43,6 +43,7 @@ pub(crate) struct PreparedHour {
     hours: Vec<i64>,
     series: Option<SeriesRequest>,
     index_access: IndexAccess,
+    etag: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +89,25 @@ pub(super) fn prepare(
         .collect::<Vec<_>>();
     segments.sort_by_key(SegmentRef::min_ts);
     super::catalog::log_open(segments.len(), &stored.warnings, started);
+    let shape = format!(
+        "window={window:?};hours={hours:?};series={:?};sources={configured_sources};demo={synthetic_demo}",
+        request.series
+    );
+    let etag = if segments.is_empty() {
+        None
+    } else if request.series.is_some() {
+        super::weak_etag(
+            "hour",
+            &shape,
+            listed
+                .iter()
+                .filter(|segment| window.to.is_none_or(|to| segment.min_ts() <= to)),
+        )
+    } else if stored.warnings.is_empty() {
+        super::weak_etag("hour", &shape, &segments)
+    } else {
+        None
+    };
     let catalog = request.series.is_none().then(|| {
         PreparedCatalog::from_listing(
             Listing {
@@ -109,6 +129,7 @@ pub(super) fn prepare(
         hours,
         series: request.series,
         index_access,
+        etag,
     })
 }
 
@@ -178,11 +199,14 @@ impl PreparedHour {
             .segments
             .iter()
             .all(|segment| segment.kind() == SegmentKind::Finished);
-        ResponseMeta::ok(if settled {
-            CachePolicy::Revalidate
-        } else {
-            CachePolicy::NoStore
-        })
+        ResponseMeta::ok_with_etag(
+            if settled {
+                CachePolicy::Revalidate
+            } else {
+                CachePolicy::NoStore
+            },
+            self.etag.clone(),
+        )
     }
 
     pub(super) fn stream(

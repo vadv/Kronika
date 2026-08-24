@@ -2577,6 +2577,155 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
+fn finished_browser_resources_revalidate_without_streaming_a_body() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    for target in browser_resource_targets() {
+        let initial = fixture.prepare(&target, None);
+        let meta = initial.meta();
+        assert_eq!(meta.status, StatusCode::OK, "{target}");
+        assert_eq!(meta.cache, CachePolicy::Revalidate, "{target}");
+        let etag = meta.etag.expect("finished browser resource ETag");
+        assert!(etag.starts_with("W/\""), "{target}");
+        assert!(!stream(initial).expect("finished response body").is_empty());
+
+        let matching = fixture.prepare(&target, Some(&etag));
+        assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED, "{target}");
+        assert_eq!(matching.meta().cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(
+            matching.meta().etag.as_deref(),
+            Some(etag.as_str()),
+            "{target}"
+        );
+        assert!(matches!(matching, Prepared::Empty(_)), "{target}");
+    }
+}
+
+#[test]
+fn a_validator_identifies_the_request_it_was_issued_for() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    for (issued, other) in browser_resource_targets()
+        .into_iter()
+        .zip(neighbouring_resource_targets())
+    {
+        let etag = fixture
+            .prepare(&issued, None)
+            .meta()
+            .etag
+            .expect("finished browser resource ETag");
+        let neighbour = fixture.prepare(&other, None);
+        assert_ne!(
+            neighbour.meta().etag.as_deref(),
+            Some(etag.as_str()),
+            "{other} reused the validator of {issued}"
+        );
+        assert_eq!(
+            fixture.prepare(&other, Some(&etag)).meta().status,
+            StatusCode::OK,
+            "{other} answered 304 to the validator of {issued}"
+        );
+    }
+}
+
+#[test]
+fn a_validator_stops_matching_once_the_window_gains_a_segment() {
+    let target = "/api/hour?from=100&to=200";
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    let etag = fixture
+        .prepare(target, None)
+        .meta()
+        .etag
+        .expect("finished hour ETag");
+    assert_eq!(
+        fixture.prepare(target, Some(&etag)).meta().status,
+        StatusCode::NOT_MODIFIED
+    );
+
+    fixture.append_diskstats(&[(150, 1, 5)]);
+    fixture.finish();
+    assert_eq!(
+        fixture.prepare(target, Some(&etag)).meta().status,
+        StatusCode::OK
+    );
+}
+
+#[test]
+fn matching_finished_snapshot_etag_skips_predecessor_scans() {
+    let mut fixture = Fixture::new();
+    fixture.append_relation_snapshots(
+        &[(10_000_000, 1, 77, 10), (30_000_000, 1, 77, 30)],
+        &[],
+        &[],
+    );
+    fixture.finish();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=seq_scan"
+    );
+
+    reset_relation_snapshot_operations();
+    let initial = fixture.prepare(&target, None);
+    assert!(relation_snapshot_operations().0 > 0);
+    let etag = initial.meta().etag.expect("finished snapshot ETag");
+
+    reset_relation_snapshot_operations();
+    let matching = fixture.prepare(&target, Some(&etag));
+    assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED);
+    assert_eq!(relation_snapshot_operations().0, 0);
+}
+
+#[test]
+fn active_browser_resources_are_not_reusable() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+
+    for target in browser_resource_targets() {
+        let prepared = fixture.prepare(&target, None);
+        assert_eq!(prepared.meta().status, StatusCode::OK, "{target}");
+        assert_eq!(prepared.meta().cache, CachePolicy::NoStore, "{target}");
+        assert_eq!(prepared.meta().etag, None, "{target}");
+        assert!(!stream(prepared).expect("active response body").is_empty());
+    }
+}
+
+#[test]
+fn empty_finished_hour_series_has_no_validator() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    let prepared = fixture.prepare(
+        "/api/hour?from=300&to=400&section=os_diskstats&field=reads",
+        None,
+    );
+    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(prepared.meta().etag, None);
+}
+
+// Each entry differs from its browser_resource_targets peer in one parameter.
+fn neighbouring_resource_targets() -> [String; 3] {
+    [
+        "/api/hour?from=100&to=150".to_owned(),
+        format!("/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=reads"),
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1".to_owned(),
+    ]
+}
+
+fn browser_resource_targets() -> [String; 3] {
+    [
+        "/api/hour?from=100&to=200".to_owned(),
+        format!("/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=reads"),
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=1&top=1".to_owned(),
+    ]
+}
+
+#[test]
 fn an_hour_lists_all_available_hours_but_only_selected_segments() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1)]);
@@ -6003,4 +6152,64 @@ fn a_moment_before_the_first_sample_here_is_answered_from_the_segment_before() {
         "the earlier segment answers instead of nothing"
     );
     assert_eq!(rows[0]["timestamp"], "100");
+}
+
+#[test]
+fn lifetime_cpu_time_rides_the_snapshot_beside_the_rates_it_cannot_be_derived_from() {
+    let mut fixture = Fixture::new();
+    fixture.append_quantitative_processes();
+    fixture.finish();
+
+    // The tree lens never asks for utime and stime, so the column has to pull
+    // its own inputs into the projection.
+    let alone = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=cpu_time_ticks&by=pid&page_size=2"
+        ),
+        None,
+    ))
+    .expect("lifetime cpu time without its inputs");
+    assert_eq!(
+        row_records(&alone)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!([6, "0"]), serde_json::json!([5, "50"]),]
+    );
+
+    let records = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=utime&field=stime&field=cpu_time_ticks&by=pid&page_size=2"
+        ),
+        None,
+    ))
+    .expect("lifetime cpu time snapshot");
+
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("process layout");
+    let column = layout["layout"]["columns"]
+        .as_array()
+        .expect("layout columns")
+        .iter()
+        .find(|column| column["name"] == "cpu_time_ticks")
+        .expect("lifetime cpu column");
+    assert_eq!(column["type"], "i64");
+    assert_eq!(column["class"], "gauge");
+    assert_eq!(column["unit"], "jiffies");
+    assert_eq!(layout["rates"], serde_json::json!(["utime", "stime"]));
+
+    // Process 5 was first seen at this moment, so it has no rate to show and
+    // its lifetime total is the only CPU reading the row can carry.
+    assert_eq!(
+        row_records(&records)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!([6, 0.0, 0.0, "0"]),
+            serde_json::json!([5, Value::Null, Value::Null, "50"]),
+        ]
+    );
 }

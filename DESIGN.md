@@ -1081,7 +1081,9 @@ segment's string dictionary. Process reads join only within that segment.
 `user` and `effective_user` search the resolved names before ordering and
 pagination, while `user_id` and `effective_user_id` retain exact numeric
 semantics. An unresolved UID remains visible as a number and never triggers a
-live identity lookup.
+live identity lookup. `cpu_time_ticks` is the one other server-derived process
+field: a snapshot renders cumulative columns as rates, so lifetime CPU time
+travels as its own sum of `utime` and `stime`.
 
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
 and stored as that same public expression in the URL. For PostgreSQL 14–18 an

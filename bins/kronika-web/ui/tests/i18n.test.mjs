@@ -80,7 +80,7 @@ test("RU keeps technical labels in English and localizes help", async () => {
   const canonical = [
     "nav.sources", "inspector.timeline", "system.history", "pg.sections", "pg.section.activity", "pg.section.statements",
     "lens.tree", "pg.section.vacuum", "detail.pg_snapshot.label", "process.summary.postgresql", "process.summary.major_faults",
-    "col.cpu_percent.label", "col.mem_percent.label", "col.starttime.label", "col.cpu_time.label", "col.minflt.label", "col.majflt.label",
+    "col.cpu_percent.label", "col.mem_percent.label", "col.stat.label", "col.starttime.label", "col.cpu_time.label", "col.minflt.label", "col.majflt.label",
     "system.metric.mem_s_reclaimable.label", "system.metric.mem_s_unreclaim.label", "system.metric.swap_free.label", "system.metric.swap_total.label",
     "system.metric.cpu_pressure.label", "system.metric.memory_pressure.label", "system.metric.io_pressure.label", "system.metric.filesystem_free_min.label",
     "system.metric.network.label", "system.field.cpu_id.label", "filter.field.size.label", "filter.field.table_count.label", "filter.field.index_count.label",
@@ -88,6 +88,10 @@ test("RU keeps technical labels in English and localizes help", async () => {
     "filter.field.autovacuum_mean.label", "filter.field.xid_age.label", "filter.field.scan_rate.label", "pg.pid.label", "pg.datid.label",
     "pg.vacuum.at_sample", "pg.vacuum.load.read.label", "pg.vacuum.load.write.label", "pg.vacuum.load.block_wait.label",
     "lane.cpu_stall.label", "lane.io_stall.label", "events.source.locks", "events.source.archiver", "events.source.cgroup_memory",
+    // The Host ledger names its resources and lanes in canonical English; ru
+    // drifted to "Disk" where en says "Storage" for the same row.
+    ...["cpu", "memory", "disk", "network"].map((resource) => `use.resource.${resource}`),
+    ...Object.keys(english).filter((key) => key.startsWith("use.lane.") && !key.endsWith(".help")),
     "events.metric.data_corruption", "pg.field.checksum_failures.label", "pg.field.min_mxid_age.label", "pg.field.sessions_fatal.label",
     "pg.field.sessions_killed.label", "pg.field.failed_count.label",
     "pg.lens.label", "pg.lens.load", "pg.lens.per_call", "pg.lens.io", "pg.lens.resources", "pg.lens.stability",
