@@ -462,6 +462,13 @@ pub(super) fn output_fields(
     Ok(output)
 }
 
+pub(crate) fn field_is_available(logical_name: &str, group: RelationGroup, name: &str) -> bool {
+    RelationKind::from_name(logical_name).is_ok_and(|kind| {
+        kind.fields(group).iter().any(|field| field.name == name)
+            || key_fields(kind, group).contains(&name)
+    })
+}
+
 pub(super) fn snapshot_physical_fields(
     logical_name: &str,
     group: RelationGroup,
@@ -3762,6 +3769,7 @@ mod tests {
                 column: "no_scans".to_owned(),
                 value: "true".to_owned(),
             }],
+            activity_visibility: None,
             type_id: None,
             row_ordinal: None,
         };
@@ -3824,6 +3832,7 @@ mod tests {
                 column: "tablespace_oid".to_owned(),
                 value: u32::MAX.to_string(),
             }],
+            activity_visibility: None,
             type_id: None,
             row_ordinal: None,
         };

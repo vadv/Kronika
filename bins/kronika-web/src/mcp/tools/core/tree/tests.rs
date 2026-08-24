@@ -210,6 +210,7 @@ fn request(search: Option<&str>, cursor: Option<&str>) -> SnapshotRequest {
         first_match: false,
         text: None,
         filters: Vec::new(),
+        activity_visibility: None,
         type_id: None,
         row_ordinal: None,
     }

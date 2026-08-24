@@ -437,6 +437,7 @@ fn request() -> SnapshotRequest {
             column: "dbid".to_owned(),
             value: "4".to_owned(),
         }],
+        activity_visibility: None,
         type_id: Some(1_002_006),
         row_ordinal: None,
     }

@@ -66,6 +66,7 @@ pub(crate) struct SnapshotRequest {
     pub(crate) first_match: bool,
     pub(crate) text: Option<usize>,
     pub(crate) filters: Vec<Filter>,
+    pub(crate) activity_visibility: Option<ActivityVisibility>,
     pub(crate) type_id: Option<u32>,
     /// Requires `type_id` and addresses a finished source row.
     pub(crate) row_ordinal: Option<u64>,
@@ -143,6 +144,12 @@ pub(crate) enum RelationGroup {
     Schema,
     Tablespace,
     Object,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivityVisibility {
+    pub(crate) include_idle: bool,
+    pub(crate) include_system: bool,
 }
 
 /// Bounded page request.
@@ -370,6 +377,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         first_match,
         text,
         filters,
+        activity_visibility: None,
         type_id,
         row_ordinal,
     })

@@ -30,9 +30,7 @@ pub(super) fn execute(
             "lock graphs are admitted and returned as one complete bounded set",
         ));
     }
-    // Validate the advertised bound even though a complete graph is never cut
-    // at the requested page size.
-    let _ = page_size(args)?;
+    let page_ceiling = page_size(args)?;
     let at = super::timestamp(args, "at_us")?;
     let projected = graph_fields(args)?;
     let anchor = resolve_anchor(state, at, &["pg_locks"], cancelled)?;
@@ -52,6 +50,7 @@ pub(super) fn execute(
             first_match: false,
             text: None,
             filters: Vec::new(),
+            activity_visibility: None,
             type_id: None,
             row_ordinal: None,
         })),
@@ -60,7 +59,7 @@ pub(super) fn execute(
     let graph_page = page(&collected.records, collected.stop_reason);
     let selected = selected_at(&collected.records);
     let mut decoded = decode_rows(&collected.records, "pg_locks")?;
-    admit_complete_graph(&graph_page, decoded.rows.len())?;
+    admit_complete_graph(&graph_page, decoded.rows.len(), page_ceiling)?;
     let prepared =
         prepared_transactions(state, anchor.segment_id, selected.unwrap_or(at), cancelled)?;
     decoded.warnings.extend(prepared.warnings);
@@ -106,8 +105,13 @@ fn graph_fields(args: &Map<String, Value>) -> Result<Vec<String>, PostgresqlFail
     Ok(projected)
 }
 
-fn admit_complete_graph(page: &Value, rows: usize) -> Result<(), PostgresqlFailure> {
-    if rows > MAX_ROWS
+fn admit_complete_graph(
+    page: &Value,
+    rows: usize,
+    page_ceiling: usize,
+) -> Result<(), PostgresqlFailure> {
+    if rows > page_ceiling
+        || rows > MAX_ROWS
         || page
             .get("truncated")
             .and_then(Value::as_bool)
@@ -115,7 +119,7 @@ fn admit_complete_graph(page: &Value, rows: usize) -> Result<(), PostgresqlFailu
     {
         return Err(failure(
             "whole_set_bound_exceeded",
-            "the recorded lock set exceeds the 500-row whole-set bound",
+            "the recorded lock set exceeds the requested whole-set admission bound",
             Some("page_size"),
         ));
     }
@@ -145,6 +149,7 @@ fn prepared_transactions(
         first_match: false,
         text: None,
         filters: Vec::new(),
+        activity_visibility: None,
         type_id: None,
         row_ordinal: None,
     };

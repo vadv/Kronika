@@ -425,6 +425,7 @@ fn snapshot_route(
         first_match: false,
         text: None,
         filters: filter_values(args)?,
+        activity_visibility: None,
         type_id: None,
         row_ordinal: None,
     })))

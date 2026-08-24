@@ -233,6 +233,7 @@ fn snapshot(
         first_match: false,
         text: None,
         filters,
+        activity_visibility: None,
         type_id: None,
         row_ordinal: None,
     };

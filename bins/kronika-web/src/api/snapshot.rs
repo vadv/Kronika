@@ -3,6 +3,8 @@
 mod relation;
 mod search;
 
+pub(crate) use relation::field_is_available as relation_field_is_available;
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::cmp::Reverse;
@@ -26,7 +28,9 @@ use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
-use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
+use crate::route::{
+    ActivityVisibility, DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest,
+};
 use crate::route::{SeriesRequest, Window};
 
 /// The accepted shared structured-search grammar specialized to Event facts.
@@ -112,6 +116,7 @@ pub(crate) struct PreparedSnapshot {
     cursor: Option<SnapshotCursor>,
     binding: u64,
     search: Option<Box<StructuredSearch>>,
+    activity_visibility: Option<ActivityVisibility>,
     first_match_query_id: Option<i64>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
@@ -193,6 +198,10 @@ struct PageOrder {
 #[derive(Clone)]
 enum PageOrderKind {
     Column(&'static str),
+    ActivityDuration {
+        start: &'static str,
+        state: ActivityDurationState,
+    },
     CounterRatio {
         numerator: Vec<&'static str>,
         denominator: Vec<&'static str>,
@@ -202,6 +211,13 @@ enum PageOrderKind {
         numerator: Vec<&'static str>,
         denominator: Vec<&'static str>,
     },
+}
+
+#[derive(Clone, Copy)]
+enum ActivityDurationState {
+    Any,
+    Active,
+    NotIdle,
 }
 
 enum RowWindow {
@@ -320,6 +336,22 @@ fn rows_of(reference: &SegmentRef, type_id: u32) -> Option<u64> {
 }
 
 impl PageContext<'_> {
+    fn current_at(&self, row: &Row) -> Option<i64> {
+        match &self.window {
+            RowWindow::Untimed => self
+                .plan
+                .timestamp
+                .and_then(|column| row_timestamp(row, column)),
+            RowWindow::Shared { current, .. } => Some(*current),
+            RowWindow::Partitioned {
+                column, current, ..
+            } => row
+                .get(column)
+                .and_then(|partition| current.get(&identity_cell(partition)))
+                .copied(),
+        }
+    }
+
     fn elapsed_for(&self, row: &Row) -> Option<i64> {
         match &self.window {
             RowWindow::Partitioned { column, .. } => row
@@ -544,6 +576,7 @@ pub(super) fn stream_relation_history(
 pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
+    validate_activity_visibility(&request)?;
     let cursor = request
         .cursor
         .as_deref()
@@ -638,10 +671,20 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         cursor: parsed,
         binding,
         search,
+        activity_visibility: request.activity_visibility,
         first_match_query_id,
         text: request.text,
         row_ordinal: request.row_ordinal,
     })
+}
+
+fn validate_activity_visibility(request: &SnapshotRequest) -> Result<(), ApiError> {
+    if request.activity_visibility.is_some()
+        && (request.sections.len() != 1 || request.sections[0] != "pg_stat_activity")
+    {
+        return Err(ApiError::BadFilter("activity_visibility".to_owned()));
+    }
+    Ok(())
 }
 
 fn prepared_search(
@@ -769,6 +812,9 @@ fn section_plans(
                     if let Some(search) = search {
                         plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
+                    if request.activity_visibility.is_some() && logical_name == "pg_stat_activity" {
+                        plan.add_projection_columns(&["state", "backend_type"]);
+                    }
                 }
                 sections.push(SectionPlans {
                     logical_name: logical_name.clone(),
@@ -786,6 +832,13 @@ impl PageOrder {
     fn columns(&self) -> Vec<&'static str> {
         match &self.kind {
             PageOrderKind::Column(column) => vec![*column],
+            PageOrderKind::ActivityDuration { start, state } => {
+                let mut columns = vec![*start];
+                if !matches!(state, ActivityDurationState::Any) {
+                    columns.push("state");
+                }
+                columns
+            }
             PageOrderKind::CounterRatio {
                 numerator,
                 denominator,
@@ -809,7 +862,17 @@ impl PageOrder {
             {
                 Some(*column)
             }
+            PageOrderKind::ActivityDuration { state, .. }
+                if !matches!(state, ActivityDurationState::Any)
+                    && plan
+                        .contract
+                        .column("state")
+                        .is_some_and(|column| column.ty == ColumnType::StrId) =>
+            {
+                Some("state")
+            }
             PageOrderKind::Column(_)
+            | PageOrderKind::ActivityDuration { .. }
             | PageOrderKind::CounterRatio { .. }
             | PageOrderKind::ValueRatio { .. } => None,
         }
@@ -834,6 +897,7 @@ fn page_order(logical_name: &str, plan: &Plan, requested: &[String]) -> Option<P
 )]
 fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<PageOrder> {
     let supported = match logical_name {
+        "pg_stat_activity" => matches!(plan.type_id, 1_001_001 | 1_001_002 | 1_001_004),
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
         "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
         "pg_stat_user_tables" => matches!(plan.type_id, 1_013_005..=1_013_008),
@@ -884,7 +948,36 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             },
         })
     };
+    let activity = |name, start, state| {
+        Some(PageOrder {
+            name,
+            kind: PageOrderKind::ActivityDuration {
+                start: column(&[start])?,
+                state,
+            },
+        })
+    };
     match token {
+        "derived.backend_age_ms" => activity(
+            "backend_age_ms",
+            "backend_start",
+            ActivityDurationState::Any,
+        ),
+        "derived.query_duration_ms" => activity(
+            "query_duration_ms",
+            "query_start",
+            ActivityDurationState::Active,
+        ),
+        "derived.state_duration_ms" => activity(
+            "state_duration_ms",
+            "state_change",
+            ActivityDurationState::NotIdle,
+        ),
+        "derived.transaction_duration_ms" => activity(
+            "transaction_duration_ms",
+            "xact_start",
+            ActivityDurationState::Any,
+        ),
         "derived.mean_exec_ms_per_call" => one_over(
             "mean_exec_ms_per_call",
             &["total_exec_time", "total_time"],
@@ -1760,9 +1853,12 @@ impl PreparedSnapshot {
                     sample_from: None,
                     sample_to: None,
                     order: page_order(&section.logical_name, plan, &self.by),
-                    search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
-                        search_columns(&section.logical_name, plan, search)
-                    }),
+                    search_columns: selection_columns(
+                        &section.logical_name,
+                        plan,
+                        self.search.as_deref(),
+                        self.activity_visibility,
+                    ),
                     clock_ticks_per_second: facts.clock_ticks_per_second.value(),
                     block_size: facts.block_size.value(),
                 });
@@ -1936,9 +2032,12 @@ impl PreparedSnapshot {
                 sample_from: moments.previous,
                 sample_to: Some(moments.current),
                 order: order.clone(),
-                search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
-                    search_columns(&section.logical_name, plan, search)
-                }),
+                search_columns: selection_columns(
+                    &section.logical_name,
+                    plan,
+                    self.search.as_deref(),
+                    self.activity_visibility,
+                ),
                 clock_ticks_per_second: facts.clock_ticks_per_second.value(),
                 block_size: facts.block_size.value(),
             });
@@ -2214,9 +2313,12 @@ impl PreparedSnapshot {
             sample_from: rate_state.sample_from,
             sample_to: rate_state.sample_to,
             order,
-            search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
-                search_columns(&section.logical_name, plan, search)
-            }),
+            search_columns: selection_columns(
+                &section.logical_name,
+                plan,
+                self.search.as_deref(),
+                self.activity_visibility,
+            ),
             clock_ticks_per_second: None,
             block_size: None,
         })
@@ -2499,6 +2601,12 @@ impl PreparedSnapshot {
         dictionary: &Dictionary,
     ) -> Option<PageRankedRow> {
         if !context.window.matches(&row) || !context.plan.matches(&row, dictionary) {
+            return None;
+        }
+        if self
+            .activity_visibility
+            .is_some_and(|visibility| !activity_visible(&row, dictionary, visibility))
+        {
             return None;
         }
         let identity = identity_of(context.plan, &row)?;
@@ -2937,6 +3045,9 @@ fn page_order_value(
         PageOrderKind::Column(column) => {
             column_order_value(context, row, identity, dictionary, column)
         }
+        PageOrderKind::ActivityDuration { start, state } => {
+            activity_duration_order_value(context, row, dictionary, start, *state)
+        }
         PageOrderKind::CounterRatio {
             numerator,
             denominator,
@@ -2953,6 +3064,49 @@ fn page_order_value(
             denominator,
         } => ratio_order_value(value_sum(row, numerator)?, value_sum(row, denominator)?),
     }
+}
+
+fn activity_duration_order_value(
+    context: &PageContext<'_>,
+    row: &Row,
+    dictionary: &Dictionary,
+    start: &'static str,
+    state: ActivityDurationState,
+) -> Option<PageOrderValue> {
+    let accepted_state = match state {
+        ActivityDurationState::Any => true,
+        ActivityDurationState::Active => {
+            resolved_row_bytes(row, dictionary, "state") == Some(b"active")
+        }
+        ActivityDurationState::NotIdle => {
+            resolved_row_bytes(row, dictionary, "state") != Some(b"idle")
+        }
+    };
+    if !accepted_state {
+        return None;
+    }
+    let started = match row.get(start)? {
+        Cell::I64(value) | Cell::Ts(value) => *value,
+        _other => return None,
+    };
+    let current = context.current_at(row)?;
+    (started > 0 && started <= current)
+        .then(|| PageOrderValue::Integer(i128::from(current - started)))
+}
+
+fn activity_visible(row: &Row, dictionary: &Dictionary, visibility: ActivityVisibility) -> bool {
+    let state = resolved_row_bytes(row, dictionary, "state");
+    let backend_type = resolved_row_bytes(row, dictionary, "backend_type");
+    let idle = state == Some(b"idle");
+    let system = backend_type.is_some_and(|value| !value.is_empty() && value != b"client backend");
+    (visibility.include_idle || !idle) && (visibility.include_system || !system)
+}
+
+fn resolved_row_bytes<'a>(row: &Row, dictionary: &'a Dictionary, column: &str) -> Option<&'a [u8]> {
+    let Cell::StrId(id) = row.get(column)? else {
+        return None;
+    };
+    dictionary.resolve(*id).map(stored_bytes)
 }
 
 #[expect(
@@ -3078,6 +3232,27 @@ fn search_columns(logical_name: &str, plan: &Plan, search: &StructuredSearch) ->
         for column in wanted {
             if !columns.contains(&column) {
                 columns.push(column);
+            }
+        }
+    }
+    columns
+}
+
+fn selection_columns(
+    logical_name: &str,
+    plan: &Plan,
+    search: Option<&StructuredSearch>,
+    activity_visibility: Option<ActivityVisibility>,
+) -> Vec<&'static str> {
+    let mut columns = search.map_or_else(Vec::new, |search| {
+        search_columns(logical_name, plan, search)
+    });
+    if activity_visibility.is_some() && logical_name == "pg_stat_activity" {
+        for name in ["state", "backend_type"] {
+            if let Some(column) = plan.contract.column(name)
+                && !columns.contains(&column.name)
+            {
+                columns.push(column.name);
             }
         }
     }
@@ -3970,6 +4145,16 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
     for filter in &request.filters {
         hash_part(&mut hash, b"filter-column", filter.column.as_bytes());
         hash_part(&mut hash, b"filter-value", filter.value.as_bytes());
+    }
+    if let Some(visibility) = request.activity_visibility {
+        hash_part(
+            &mut hash,
+            b"activity-visibility",
+            &[
+                u8::from(visibility.include_idle),
+                u8::from(visibility.include_system),
+            ],
+        );
     }
     if let Some(search) = search {
         hash_part(&mut hash, b"search", search.canonical().as_bytes());

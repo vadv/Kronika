@@ -27,6 +27,7 @@ pub(crate) use catalog::{
 };
 pub(crate) use events::{EventPageError, EventPageRequest, EventSourceRequest, read_event_page};
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
+pub(crate) use snapshot::relation_field_is_available;
 
 #[cfg(test)]
 mod tests;

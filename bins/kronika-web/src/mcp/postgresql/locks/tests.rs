@@ -180,19 +180,25 @@ fn graph_refuses_missing_positive_blocker_rows() {
 fn graph_admission_refuses_partial_or_oversized_sets() {
     let partial = json!({"truncated": true});
     assert_eq!(
-        admit_complete_graph(&partial, 10)
+        admit_complete_graph(&partial, 10, 10)
             .expect_err("partial graph")
             .code,
         "whole_set_bound_exceeded"
     );
     let complete = json!({"truncated": false});
     assert_eq!(
-        admit_complete_graph(&complete, 501)
+        admit_complete_graph(&complete, 501, 500)
             .expect_err("oversized graph")
             .code,
         "whole_set_bound_exceeded"
     );
-    admit_complete_graph(&complete, 500).expect("complete bounded graph");
+    assert_eq!(
+        admit_complete_graph(&complete, 11, 10)
+            .expect_err("requested admission ceiling")
+            .code,
+        "whole_set_bound_exceeded"
+    );
+    admit_complete_graph(&complete, 500, 500).expect("complete bounded graph");
 }
 
 #[test]
@@ -251,6 +257,21 @@ fn handler_returns_complete_components_locators_and_prepared_facts() {
     );
     assert_eq!(payload.page["truncated"], json!(false));
     assert_eq!(payload.page["stop_reason"], json!("complete"));
+}
+
+#[test]
+fn handler_enforces_page_size_as_a_complete_graph_admission_ceiling() {
+    let mut fixture = Fixture::new();
+    fixture.append_lock_graph();
+    let arguments = json!({"at_us": AT.to_string(), "page_size": 1});
+    let failure = execute(
+        &fixture.state(),
+        arguments.as_object().expect("argument object"),
+        &|| false,
+    )
+    .expect_err("two-row graph exceeds one-row admission ceiling");
+    assert_eq!(failure.code, "whole_set_bound_exceeded");
+    assert_eq!(failure.parameter.as_deref(), Some("page_size"));
 }
 
 fn projected_row(pid: i32, blocked_by: &[i32], datname: &str, target: &str) -> Value {
