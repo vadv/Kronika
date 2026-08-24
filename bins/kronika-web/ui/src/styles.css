@@ -784,7 +784,10 @@
   /* The help dot is absolutely positioned at right: 7px; without this gutter
      the value runs under it. */
   .use-cell { padding-right: 22px; }
-  .use-cell > span:first-child { align-items: flex-start; flex-direction: column; gap: 0; }
+  /* Names on one line, values on the next: a cell here is about 110px, and a
+     two-series name plus its readings does not fit across. */
+  .use-cell > .use-lane { align-items: baseline; flex-wrap: wrap; gap: 0 5px; }
+  .use-cell > .use-lane > strong { flex-basis: 100%; margin-left: 0; }
   .use-cell strong { white-space: normal; }
   /* Wrapped, these four facts cost four lines of the table. One scrolling row
      keeps every one of them and returns the height to rows. */
