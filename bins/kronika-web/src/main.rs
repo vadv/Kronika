@@ -13,6 +13,7 @@ mod auth;
 mod body;
 mod config;
 mod encoding;
+mod heatmap_product;
 mod mcp;
 mod product_semantics;
 mod route;

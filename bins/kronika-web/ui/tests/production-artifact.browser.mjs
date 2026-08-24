@@ -7,6 +7,8 @@ import { join } from "node:path"
 import test from "node:test"
 import { gunzipSync } from "node:zlib"
 
+import heatmapProduct from "../../product-heatmap.json" with { type: "json" }
+
 const HOUR_US = 3_600_000_000
 const HOUR = Date.UTC(2026, 7, 13, 5) * 1_000
 const AT = HOUR + 1_800_000_000
@@ -98,14 +100,14 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
     const ledger = await cdp.evaluate(`(() => ({
       top: document.querySelector('[data-testid="activity-top-count"]')?.textContent ?? "",
       totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
       others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
       cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
-      help: document.querySelectorAll('[data-testid="activity-pg_stat_statements"] .help-dot').length,
+      help: document.querySelectorAll('[data-testid="activity-statements"] .help-dot').length,
     }))()`)
     assert.equal(ledger.totals, true)
     assert.match(ledger.top, /2/)
@@ -114,7 +116,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.ok(ledger.help >= 3)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-top-50"]').click()`)
@@ -5040,8 +5042,12 @@ function targetedRelationRecords(url, label, eligible) {
 function answerHeatmap(url, response) {
   const from = Number(url.searchParams.get("from") ?? "0")
   const to = Number(url.searchParams.get("to") ?? "0")
-  const columns = Number(url.searchParams.get("columns") ?? "60")
-  const labels = url.searchParams.getAll("label")
+  const surface = heatmapProduct.surfaces.find(({ id }) => id === url.searchParams.get("surface"))
+  const cut = surface?.cuts.find(({ id }) => id === (url.searchParams.get("cut") ?? surface.default_cut))
+  const group = surface?.groups.find(({ id }) => id === (url.searchParams.get("group") ?? surface.default_group))
+  if (surface === undefined || cut === undefined || group === undefined) throw new Error(`invalid Heatmap product request ${url}`)
+  const columns = surface.default_columns
+  const labels = group.fields.length === 0 ? cut.labels : []
   const span = to - from + 1
   const intervals = Array.from({ length: columns }, (_at, index) => ({
     start: String(from + Math.floor((index * span) / columns)),
@@ -5050,8 +5056,8 @@ function answerHeatmap(url, response) {
   const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
   return ndjson(response, [
     {
-      record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
-      fields: url.searchParams.getAll("field"), class: "cumulative", labels,
+      record: "heatmap", from: String(from), to: String(to), section: cut.section,
+      fields: cut.fields, class: "cumulative", labels,
       top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
     },
     { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },

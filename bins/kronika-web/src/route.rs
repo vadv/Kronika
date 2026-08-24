@@ -10,9 +10,6 @@ const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
 const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
 const DEFAULT_HEATMAP_COLUMNS: usize = 60;
-const MAX_HEATMAP_COLUMNS: usize = 1_440;
-const DEFAULT_HEATMAP_TOP: usize = 25;
-const MAX_HEATMAP_TOP: usize = 500;
 const MAX_HEATMAP_LABELS: usize = 8;
 const MAX_HEATMAP_FIELDS: usize = 4;
 const MAX_HEATMAP_GROUP: usize = 4;
@@ -664,8 +661,12 @@ fn validate_snapshot_shape(
 }
 
 fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
+    let policy = crate::heatmap_product::policy()
+        .map_err(|_error| RouteError::BadParameter("surface".to_owned()))?;
     let mut from = None;
     let mut to = None;
+    let mut surface = None;
+    let mut cut = None;
     let mut section = None;
     let mut fields: Vec<String> = Vec::new();
     let mut columns = None;
@@ -679,6 +680,18 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         match name.as_str() {
             "from" if from.is_none() => from = Some(number("from", &value)?),
             "to" if to.is_none() => to = Some(number("to", &value)?),
+            "surface" if surface.is_none() => {
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("surface".to_owned()));
+                }
+                surface = Some(value);
+            }
+            "cut" if cut.is_none() => {
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("cut".to_owned()));
+                }
+                cut = Some(value);
+            }
             "section" if section.is_none() => {
                 if value.is_empty() || value.len() > MAX_SECTION_BYTES {
                     return Err(RouteError::BadParameter("section".to_owned()));
@@ -693,9 +706,9 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 fields.push(value);
             }
             "columns" if columns.is_none() => {
-                columns = Some(bounded("columns", &value, MAX_HEATMAP_COLUMNS)?);
+                columns = Some(bounded("columns", &value, policy.max_columns)?);
             }
-            "top" if top.is_none() => top = Some(bounded("top", &value, MAX_HEATMAP_TOP)?),
+            "top" if top.is_none() => top = Some(bounded("top", &value, policy.max_top)?),
             "label" => {
                 if value.is_empty() || labels.contains(&value) || labels.len() >= MAX_HEATMAP_LABELS
                 {
@@ -718,6 +731,27 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     if from > to {
         return Err(RouteError::BadParameter("from".to_owned()));
     }
+    if let Some(surface) = surface {
+        if section.is_some() || !fields.is_empty() || !labels.is_empty() || type_id.is_some() {
+            return Err(RouteError::BadParameter("surface".to_owned()));
+        }
+        if group.len() > 1 {
+            return Err(RouteError::BadParameter("group".to_owned()));
+        }
+        let selected = crate::heatmap_product::resolve(
+            &surface,
+            cut.as_deref(),
+            group.first().map(String::as_str),
+            columns,
+        )
+        .map_err(|error| {
+            RouteError::BadParameter(error.parameter().unwrap_or("surface").to_owned())
+        })?;
+        return Ok(selected.request(from, to, top.unwrap_or(policy.default_top), None));
+    }
+    if cut.is_some() {
+        return Err(RouteError::BadParameter("cut".to_owned()));
+    }
     if fields.is_empty() {
         return Err(RouteError::BadParameter("field".to_owned()));
     }
@@ -731,7 +765,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
         fields,
         columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
-        top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
+        top: top.unwrap_or(policy.default_top),
         labels,
         group,
         type_id,

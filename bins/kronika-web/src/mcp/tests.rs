@@ -155,6 +155,50 @@ fn catalog_does_not_advertise_inputs_that_handlers_refuse() {
 }
 
 #[test]
+fn heatmap_schema_defers_surface_defaults_to_the_shared_registry() {
+    let tool = super::catalog::find("kronika_rank_heatmap").expect("Heatmap tool");
+    let required = tool.input_schema["required"]
+        .as_array()
+        .expect("required parameters");
+    assert!(!required.iter().any(|name| name == "cut"));
+    assert!(
+        tool.input_schema["properties"]["columns"]
+            .get("default")
+            .is_none()
+    );
+    assert_eq!(
+        tool.input_schema["properties"]["surface"]["enum"],
+        serde_json::json!([
+            "processes",
+            "statements",
+            "plans",
+            "databases",
+            "tables",
+            "indexes",
+            "cgroups",
+        ])
+    );
+    assert!(
+        tool.input_schema["properties"]["group"]
+            .get("enum")
+            .is_none()
+    );
+    let policy = crate::heatmap_product::policy().expect("Heatmap policy");
+    assert_eq!(
+        tool.input_schema["properties"]["columns"]["maximum"],
+        policy.max_columns
+    );
+    assert_eq!(
+        tool.input_schema["properties"]["top"]["maximum"],
+        policy.max_top
+    );
+    assert_eq!(
+        tool.input_schema["properties"]["top"]["default"],
+        policy.default_top
+    );
+}
+
+#[test]
 fn mcp_tool_catalog_cost() {
     let catalog = super::catalog::all();
     let descriptor_bytes = serde_json::to_vec(catalog).expect("catalog JSON").len();

@@ -173,8 +173,6 @@ fn runtime_calls() -> [(&'static str, Value, &'static str, &'static str); 11] {
                 "from_us": FIRST_PROCESS_AT.to_string(),
                 "to_us": LAST_PROCESS_AT.to_string(),
                 "surface": "processes",
-                "cut": "cpu",
-                "columns": 1,
                 "top": 10,
             }),
             "/data/rows",

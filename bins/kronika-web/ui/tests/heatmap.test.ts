@@ -134,12 +134,38 @@ test("collapsing a view folds the tail rows into the others band", () => {
 
 test("cut scales fall back to raw counts without scale metadata", async () => {
   const { cutScale } = await import("../src/activity-cuts.ts")
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: 8192, clockTicks: null }), { scale: 8192, kind: "bytes" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: 100 }), { scale: 0.01, kind: "seconds" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "kib" }, { blockSize: null, clockTicks: null }), { scale: 1024, kind: "bytes" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "count" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+  assert.deepEqual(cutScale({ id: "rss", kind: "bytes", scaleBy: "block_size" }, { blockSize: 8192, clockTicks: null }), { scale: 8192, kind: "bytes" })
+  assert.deepEqual(cutScale({ id: "rss", kind: "bytes", scaleBy: "block_size" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+  assert.deepEqual(cutScale({ id: "cpu", kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: 100 }), { scale: 0.01, kind: "seconds" })
+  assert.deepEqual(cutScale({ id: "cpu", kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+  assert.deepEqual(cutScale({ id: "rss", kind: "bytes", scaleBy: "kib" }, { blockSize: null, clockTicks: null }), { scale: 1024, kind: "bytes" })
+  assert.deepEqual(cutScale({ id: "calls", kind: "count" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
+})
+
+test("the shared Heatmap registry owns web defaults and fixture recipes", async () => {
+  const { heatmapFixtureRecipe, heatmapSurface } = await import("../src/heatmap-product.ts")
+  assert.deepEqual(
+    ["processes", "statements", "plans", "databases", "tables", "indexes", "cgroups"].map((id) => {
+      const surface = heatmapSurface(id as Parameters<typeof heatmapSurface>[0])
+      return [surface.id, surface.defaultCut, surface.defaultGroup, surface.defaultColumns]
+    }),
+    [
+      ["processes", "cpu", "command", 60],
+      ["statements", "exec_time", "identity", 60],
+      ["plans", "exec_time", "identity", 60],
+      ["databases", "commits", "identity", 60],
+      ["tables", "writes", "identity", 12],
+      ["indexes", "idx_scan", "identity", 12],
+      ["cgroups", "cg_cpu", "identity", 60],
+    ],
+  )
+  assert.deepEqual(heatmapFixtureRecipe("tables", "writes", "schema"), {
+    section: "pg_stat_user_tables",
+    fields: ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+    labels: [],
+    groupFields: ["datname", "schemaname"],
+    columns: 12,
+  })
 })
 
 test("a sparse cadence fills every later column through the boundary carry", () => {

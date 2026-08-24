@@ -7,6 +7,7 @@ use serde_json::{Map, Value, json};
 use super::{Failure, HOUR_US, MAX_ROWS, MAX_SEGMENTS, Payload};
 use crate::api::{catalog_metric_source_bit, catalog_source_bit, catalog_warning_value};
 use crate::config::{SOURCE_FAMILIES, SOURCE_OS, SOURCE_POSTGRESQL};
+use crate::heatmap_product::{HeatmapConversion, HeatmapCut, HeatmapPolicy, HeatmapSurface};
 use crate::mcp::{
     REQUEST_BODY_BYTES, RESPONSE_BODY_BYTES, STRUCTURED_CONTENT_BYTES, State, TEXT_SUMMARY_BYTES,
 };
@@ -15,501 +16,14 @@ const MAX_CONTEXT_LAYOUTS: usize = 256;
 const MAX_CONTEXT_LAYOUT_PRESENCES: usize = 512;
 const MAX_WARNING_RECORDS: usize = 64;
 
-pub(super) struct HeatmapCut {
-    pub(super) surface: &'static str,
-    pub(super) cut: &'static str,
-    pub(super) section: &'static str,
-    pub(super) fields: &'static [&'static str],
-    pub(super) labels: &'static [&'static str],
-    raw_unit: HeatmapUnit,
-    scale: HeatmapScale,
-}
-
-#[derive(Clone, Copy)]
-enum HeatmapUnit {
-    Blocks,
-    Bytes,
-    ClockTicks,
-    Count,
-    Kibibytes,
-    Microseconds,
-    Milliseconds,
-    Nanoseconds,
-    Seconds,
-}
-
-impl HeatmapUnit {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Blocks => "blocks",
-            Self::Bytes => "bytes",
-            Self::ClockTicks => "clock_ticks",
-            Self::Count => "count",
-            Self::Kibibytes => "kibibytes",
-            Self::Microseconds => "microseconds",
-            Self::Milliseconds => "milliseconds",
-            Self::Nanoseconds => "nanoseconds",
-            Self::Seconds => "seconds",
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum HeatmapScale {
-    Identity,
-    FixedMultiply {
-        factor: u64,
-        target: HeatmapUnit,
-    },
-    RecordedMultiply {
-        locator: &'static str,
-        target: HeatmapUnit,
-    },
-    RecordedDivide {
-        locator: &'static str,
-        target: HeatmapUnit,
-    },
-}
-
-impl HeatmapCut {
-    const fn new(
-        surface: &'static str,
-        cut: &'static str,
-        section: &'static str,
-        fields: &'static [&'static str],
-        labels: &'static [&'static str],
-        raw_unit: HeatmapUnit,
-        scale: HeatmapScale,
-    ) -> Self {
-        Self {
-            surface,
-            cut,
-            section,
-            fields,
-            labels,
-            raw_unit,
-            scale,
-        }
-    }
-
-    pub(super) fn semantic(&self) -> Value {
-        json!({
-            "id": format!("heatmap.{}.{}", self.surface, self.cut),
-            "origin": "accepted_presentation",
-            "fields": self.fields,
-            "value_unit": self.raw_unit.name(),
-            "values_scaled": false,
-            "conversion": self.scale.semantic(),
-        })
-    }
-}
-
-impl HeatmapScale {
-    fn semantic(self) -> Value {
-        match self {
-            Self::Identity => Value::Null,
-            Self::FixedMultiply { factor, target } => json!({
-                "status": "not_applied",
-                "operation": "multiply",
-                "factor": factor.to_string(),
-                "target_unit": target.name(),
-                "origin": "exact_unit_conversion",
-            }),
-            Self::RecordedMultiply { locator, target } => json!({
-                "status": "not_applied",
-                "operation": "multiply",
-                "factor": Value::Null,
-                "target_unit": target.name(),
-                "origin": "recorded",
-                "locator": locator,
-            }),
-            Self::RecordedDivide { locator, target } => json!({
-                "status": "not_applied",
-                "operation": "divide",
-                "factor": Value::Null,
-                "target_unit": target.name(),
-                "origin": "recorded",
-                "locator": locator,
-            }),
-        }
-    }
-}
-
-const CUTS: &[HeatmapCut] = &[
-    HeatmapCut::new(
-        "processes",
-        "cpu",
-        "os_process",
-        &["utime", "stime"],
-        &[],
-        HeatmapUnit::ClockTicks,
-        HeatmapScale::RecordedDivide {
-            locator: "instance_metadata.clock_ticks_per_sec",
-            target: HeatmapUnit::Seconds,
-        },
-    ),
-    HeatmapCut::new(
-        "processes",
-        "rss",
-        "os_process",
-        &["rmem_kb"],
-        &[],
-        HeatmapUnit::Kibibytes,
-        HeatmapScale::FixedMultiply {
-            factor: 1_024,
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "processes",
-        "io_read",
-        "os_process",
-        &["read_bytes"],
-        &[],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "processes",
-        "io_write",
-        "os_process",
-        &["write_bytes"],
-        &[],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "processes",
-        "majflt",
-        "os_process",
-        &["majflt"],
-        &[],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "processes",
-        "run_delay",
-        "os_process",
-        &["rundelay_ns"],
-        &[],
-        HeatmapUnit::Nanoseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "statements",
-        "exec_time",
-        "pg_stat_statements",
-        &["total_exec_time"],
-        &["datname", "usename"],
-        HeatmapUnit::Milliseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "statements",
-        "calls",
-        "pg_stat_statements",
-        &["calls"],
-        &["datname", "usename"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "statements",
-        "rows",
-        "pg_stat_statements",
-        &["rows"],
-        &["datname", "usename"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "statements",
-        "shared_read",
-        "pg_stat_statements",
-        &["shared_blks_read"],
-        &["datname", "usename"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "statements",
-        "shared_dirtied",
-        "pg_stat_statements",
-        &["shared_blks_dirtied"],
-        &["datname", "usename"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "statements",
-        "temp_written",
-        "pg_stat_statements",
-        &["temp_blks_written"],
-        &["datname", "usename"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "statements",
-        "wal_bytes",
-        "pg_stat_statements",
-        &["wal_bytes"],
-        &["datname", "usename"],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "plans",
-        "exec_time",
-        "pg_store_plans",
-        &["total_time"],
-        &["datname", "usename"],
-        HeatmapUnit::Milliseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "plans",
-        "calls",
-        "pg_store_plans",
-        &["calls"],
-        &["datname", "usename"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "plans",
-        "rows",
-        "pg_store_plans",
-        &["rows"],
-        &["datname", "usename"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "plans",
-        "shared_read",
-        "pg_store_plans",
-        &["shared_blks_read"],
-        &["datname", "usename"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "plans",
-        "temp_written",
-        "pg_store_plans",
-        &["temp_blks_written"],
-        &["datname", "usename"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "databases",
-        "commits",
-        "pg_stat_database",
-        &["xact_commit"],
-        &["datname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "databases",
-        "rollbacks",
-        "pg_stat_database",
-        &["xact_rollback"],
-        &["datname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "databases",
-        "db_read",
-        "pg_stat_database",
-        &["blks_read"],
-        &["datname"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "databases",
-        "temp_bytes",
-        "pg_stat_database",
-        &["temp_bytes"],
-        &["datname"],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "databases",
-        "deadlocks",
-        "pg_stat_database",
-        &["deadlocks"],
-        &["datname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "tables",
-        "writes",
-        "pg_stat_user_tables",
-        &["n_tup_ins", "n_tup_upd", "n_tup_del"],
-        &["datname", "schemaname", "relname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "tables",
-        "seq_read",
-        "pg_stat_user_tables",
-        &["seq_tup_read"],
-        &["datname", "schemaname", "relname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "tables",
-        "heap_read",
-        "pg_stat_user_tables",
-        &["heap_blks_read"],
-        &["datname", "schemaname", "relname"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "tables",
-        "dead_tuples",
-        "pg_stat_user_tables",
-        &["n_dead_tup"],
-        &["datname", "schemaname", "relname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "tables",
-        "autovacuum_time",
-        "pg_stat_user_tables",
-        &["total_autovacuum_time"],
-        &["datname", "schemaname", "relname"],
-        HeatmapUnit::Milliseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "indexes",
-        "idx_scan",
-        "pg_stat_user_indexes",
-        &["idx_scan"],
-        &["datname", "schemaname", "relname", "indexrelname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "indexes",
-        "idx_tup_read",
-        "pg_stat_user_indexes",
-        &["idx_tup_read"],
-        &["datname", "schemaname", "relname", "indexrelname"],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "indexes",
-        "idx_blks_read",
-        "pg_stat_user_indexes",
-        &["idx_blks_read"],
-        &["datname", "schemaname", "relname", "indexrelname"],
-        HeatmapUnit::Blocks,
-        HeatmapScale::RecordedMultiply {
-            locator: "pg_settings.block_size",
-            target: HeatmapUnit::Bytes,
-        },
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_cpu",
-        "os_cgroup_cpu",
-        &["usage_usec"],
-        &[],
-        HeatmapUnit::Microseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_throttled",
-        "os_cgroup_cpu",
-        &["throttled_usec"],
-        &[],
-        HeatmapUnit::Microseconds,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_read",
-        "os_cgroup_io",
-        &["rbytes"],
-        &[],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_write",
-        "os_cgroup_io",
-        &["wbytes"],
-        &[],
-        HeatmapUnit::Bytes,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_rios",
-        "os_cgroup_io",
-        &["rios"],
-        &[],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-    HeatmapCut::new(
-        "cgroups",
-        "cg_wios",
-        "os_cgroup_io",
-        &["wios"],
-        &[],
-        HeatmapUnit::Count,
-        HeatmapScale::Identity,
-    ),
-];
-
-pub(super) fn heatmap_cut(surface: &str, cut: &str) -> Option<&'static HeatmapCut> {
-    CUTS.iter()
-        .find(|candidate| candidate.surface == surface && candidate.cut == cut)
-}
-
 pub(super) fn payload(state: &State, cancelled: &impl Fn() -> bool) -> Result<Payload, Failure> {
     let recorded = recorded_context(state, cancelled)?;
     let semantics = crate::product_semantics::all()
         .map_err(|error| Failure::bounded("semantics_unreadable", error.to_string()))?;
+    let heatmap_surfaces = crate::heatmap_product::surfaces()
+        .map_err(|error| Failure::bounded("heatmap_registry_unreadable", error.to_string()))?;
+    let heatmap_policy = crate::heatmap_product::policy()
+        .map_err(|error| Failure::bounded("heatmap_registry_unreadable", error.to_string()))?;
     Ok(Payload {
         anchor: super::anchor(None, None, None, None),
         data: json!({
@@ -522,7 +36,7 @@ pub(super) fn payload(state: &State, cancelled: &impl Fn() -> bool) -> Result<Pa
                 "recorded": recorded.value,
                 "limits": global_limits(),
             },
-            "surfaces": surfaces(),
+            "surfaces": tool_surfaces(heatmap_surfaces, heatmap_policy),
             "semantics": semantics,
         }),
         page: super::page(20, false, None, "complete"),
@@ -705,7 +219,10 @@ fn unreadable(error: &kronika_reader::ReaderError) -> Failure {
     }
 }
 
-fn surfaces() -> Vec<Value> {
+fn tool_surfaces(
+    heatmap_surfaces: &[HeatmapSurface],
+    heatmap_policy: &HeatmapPolicy,
+) -> Vec<Value> {
     crate::mcp::catalog::all()
         .iter()
         .map(|tool| {
@@ -719,7 +236,12 @@ fn surfaces() -> Vec<Value> {
                 surface.insert("lenses".to_owned(), lenses);
             }
             if tool.name == "kronika_rank_heatmap" {
-                surface.insert("cuts".to_owned(), heatmap_cuts());
+                surface.insert("cuts".to_owned(), heatmap_cuts(heatmap_surfaces));
+                surface.insert("groups".to_owned(), heatmap_groups(heatmap_surfaces));
+                surface.insert(
+                    "defaults".to_owned(),
+                    heatmap_defaults(heatmap_surfaces, heatmap_policy),
+                );
             }
             let limits = property_limits(properties);
             if !limits.is_empty() {
@@ -759,12 +281,105 @@ fn property_limits(properties: Option<&Map<String, Value>>) -> Map<String, Value
         .collect()
 }
 
-fn heatmap_cuts() -> Value {
-    let mut by_surface = BTreeMap::<&str, Vec<&str>>::new();
-    for spec in CUTS {
-        by_surface.entry(spec.surface).or_default().push(spec.cut);
-    }
+fn heatmap_cuts(surfaces: &[HeatmapSurface]) -> Value {
+    let by_surface = surfaces
+        .iter()
+        .map(|surface| {
+            (
+                surface.id.as_str(),
+                surface
+                    .cuts
+                    .iter()
+                    .map(|cut| cut.id.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     json!(by_surface)
+}
+
+fn heatmap_groups(surfaces: &[HeatmapSurface]) -> Value {
+    let by_surface = surfaces
+        .iter()
+        .map(|surface| {
+            (
+                surface.id.as_str(),
+                surface
+                    .groups
+                    .iter()
+                    .map(|group| group.id.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    json!(by_surface)
+}
+
+fn heatmap_defaults(surfaces: &[HeatmapSurface], policy: &HeatmapPolicy) -> Value {
+    let by_surface = surfaces
+        .iter()
+        .map(|surface| {
+            (
+                surface.id.as_str(),
+                json!({
+                    "cut": surface.default_cut,
+                    "group": surface.default_group,
+                    "columns": surface.default_columns,
+                    "top": policy.default_top,
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    json!(by_surface)
+}
+
+pub(super) fn heatmap_semantic(surface: &HeatmapSurface, cut: &HeatmapCut) -> Value {
+    json!({
+        "id": format!("heatmap.{}.{}", surface.id, cut.id),
+        "origin": "accepted_presentation",
+        "fields": cut.fields,
+        "value_unit": cut.raw_unit.name(),
+        "values_scaled": false,
+        "conversion": heatmap_conversion(&cut.conversion),
+    })
+}
+
+fn heatmap_conversion(conversion: &HeatmapConversion) -> Value {
+    match conversion {
+        HeatmapConversion::Identity => Value::Null,
+        HeatmapConversion::FixedMultiply {
+            factor,
+            target_unit,
+        } => json!({
+            "status": "not_applied",
+            "operation": "multiply",
+            "factor": factor.to_string(),
+            "target_unit": target_unit.name(),
+            "origin": "exact_unit_conversion",
+        }),
+        HeatmapConversion::RecordedMultiply {
+            locator,
+            target_unit,
+        } => json!({
+            "status": "not_applied",
+            "operation": "multiply",
+            "factor": Value::Null,
+            "target_unit": target_unit.name(),
+            "origin": "recorded",
+            "locator": locator,
+        }),
+        HeatmapConversion::RecordedDivide {
+            locator,
+            target_unit,
+        } => json!({
+            "status": "not_applied",
+            "operation": "divide",
+            "factor": Value::Null,
+            "target_unit": target_unit.name(),
+            "origin": "recorded",
+            "locator": locator,
+        }),
+    }
 }
 
 fn global_limits() -> Value {

@@ -12,8 +12,7 @@ use crate::api::{self, ApiError, ValueCollection, ValueLimits, ValueStopReason};
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::mcp::State;
 use crate::route::{
-    Filter, HeatmapRequest, Order, ProcessLens, ProcessSurfaceRequest, Route, SnapshotRequest,
-    Window,
+    Filter, Order, ProcessLens, ProcessSurfaceRequest, Route, SnapshotRequest, Window,
 };
 
 const HOUR_US: i64 = 3_600_000_000;
@@ -86,46 +85,24 @@ fn heatmap(
     let to = required_i64(args, "to_us")?;
     validate_window(from, to)?;
     let surface = required_string(args, "surface")?;
-    let cut = required_string(args, "cut")?;
-    let spec = discovery::heatmap_cut(surface, cut)
-        .ok_or_else(|| Failure::input("cut", "cut is not an accepted metric for this surface."))?;
-    admit_window(state, from, to, Some(spec.section))?;
-    let columns = usize_arg(args, "columns", 12, 1_440)?;
-    let top = usize_arg(args, "top", 25, 500)?;
-    let group = match optional_string(args, "group")? {
-        None | Some("identity") => Vec::new(),
-        Some("command") if surface == "processes" => vec!["comm".to_owned()],
-        Some("database") => vec!["datname".to_owned()],
-        Some("schema") => vec!["datname".to_owned(), "schemaname".to_owned()],
-        Some("tablespace") => vec!["tablespace".to_owned()],
-        Some(_other) => {
-            return Err(Failure::input(
-                "group",
-                "group is not valid for this surface.",
-            ));
-        }
+    let policy = crate::heatmap_product::policy().map_err(heatmap_product_failure)?;
+    let columns = if args.contains_key("columns") {
+        Some(usize_arg(args, "columns", 1, policy.max_columns)?)
+    } else {
+        None
     };
+    let selected = crate::heatmap_product::resolve(
+        surface,
+        optional_string(args, "cut")?,
+        optional_string(args, "group")?,
+        columns,
+    )
+    .map_err(heatmap_product_failure)?;
+    admit_window(state, from, to, Some(&selected.cut.section))?;
+    let top = usize_arg(args, "top", policy.default_top, policy.max_top)?;
     let collected = run_route(
         state,
-        Route::Heatmap(HeatmapRequest {
-            from,
-            to,
-            section: spec.section.to_owned(),
-            fields: spec
-                .fields
-                .iter()
-                .map(|field| (*field).to_owned())
-                .collect(),
-            columns,
-            top,
-            labels: spec
-                .labels
-                .iter()
-                .map(|field| (*field).to_owned())
-                .collect(),
-            group,
-            type_id: None,
-        }),
+        Route::Heatmap(selected.request(from, to, top, None)),
         budget,
         top.saturating_add(3),
         cancelled,
@@ -155,7 +132,7 @@ fn heatmap(
             "rows": rows,
             "totals": totals,
             "others": others,
-            "semantics": [spec.semantic()],
+            "semantics": [discovery::heatmap_semantic(selected.surface, selected.cut)],
         }),
         page: page(
             rows.len(),
@@ -629,6 +606,13 @@ fn usize_arg(
         ));
     }
     Ok(value)
+}
+
+fn heatmap_product_failure(error: crate::heatmap_product::HeatmapProductError) -> Failure {
+    error.parameter().map_or_else(
+        || Failure::bounded("heatmap_registry_unreadable", error.to_string()),
+        |parameter| Failure::input(parameter, error.to_string()),
+    )
 }
 
 fn string_array(args: &Map<String, Value>, name: &'static str) -> Result<Vec<String>, Failure> {

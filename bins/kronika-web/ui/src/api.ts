@@ -2,6 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { heatmapFixtureRecipe, type HeatmapCutId, type HeatmapGroupId, type HeatmapSurfaceId } from "./heatmap-product"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationLens, type RelationRow } from "./postgres-relations"
@@ -448,27 +449,26 @@ export async function loadSeries(
 
 export async function loadHeatmap(
   selectedHour: number,
-  section: string,
-  fields: readonly string[],
-  labels: readonly string[],
-  columns: number,
+  surface: HeatmapSurfaceId,
+  cut: HeatmapCutId,
+  group: HeatmapGroupId,
   top: number,
   signal: AbortSignal,
-  group?: readonly string[],
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
   const to = from + 3_600_000_000 - 1
-  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top, group)
+  if (bundledFixtureRange() !== null) {
+    const recipe = heatmapFixtureRecipe(surface, cut, group)
+    return fixtureHeatmap(from, recipe.section, recipe.fields, recipe.labels, recipe.columns, top, recipe.groupFields)
+  }
   const query = [
     `from=${from}`,
     `to=${to}`,
-    `section=${encodeURIComponent(section)}`,
-    ...fields.map((name) => `field=${encodeURIComponent(name)}`),
-    `columns=${columns}`,
+    `surface=${encodeURIComponent(surface)}`,
+    `cut=${encodeURIComponent(cut)}`,
+    `group=${encodeURIComponent(group)}`,
     `top=${top}`,
-    ...labels.map((name) => `label=${encodeURIComponent(name)}`),
-    ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
   ].join("&")
   const records = await request(`/api/heatmap?${query}`, signal)
   const heatmapNumber = (stored: unknown): number | null => {

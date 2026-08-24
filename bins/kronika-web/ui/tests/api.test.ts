@@ -34,6 +34,34 @@ test("an aborted NDJSON read rejects", async () => {
   await assert.rejects(readNdjson(response, "/api/example", abort.signal), { name: "AbortError" })
 })
 
+test("Heatmap requests expose only shared product surface, cut, and group ids", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/heatmap")
+    assert.equal(url.searchParams.get("surface"), "tables")
+    assert.equal(url.searchParams.get("cut"), "writes")
+    assert.equal(url.searchParams.get("group"), "schema")
+    assert.equal(url.searchParams.get("top"), "25")
+    for (const physical of ["section", "field", "label", "columns"]) {
+      assert.equal(url.searchParams.has(physical), false)
+    }
+    return ndjson([
+      { record: "heatmap", class: "cumulative", entity_count: 0, others_count: 0, intervals: [] },
+      { record: "heatmap_band", band: "totals", total: null, cells: [] },
+      { record: "heatmap_band", band: "others", total: null, cells: [] },
+    ])
+  }
+  try {
+    const view = await api.loadHeatmap(START, "tables", "writes", "schema", 25, new AbortController().signal)
+    assert.equal(view.entityCount, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 function chunkedResponse(bytes: Uint8Array, cuts: readonly number[]): Response {
   const boundaries = [...new Set([0, ...cuts, bytes.length])].sort((left, right) => left - right)
   return new Response(new ReadableStream<Uint8Array>({

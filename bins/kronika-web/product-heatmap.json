@@ -1,0 +1,429 @@
+{
+  "version": 1,
+  "policy": {
+    "default_top": 25,
+    "max_top": 500,
+    "max_columns": 1440
+  },
+  "surfaces": [
+    {
+      "id": "processes",
+      "default_cut": "cpu",
+      "default_group": "command",
+      "default_columns": 60,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "command", "fields": ["comm"] }
+      ],
+      "cuts": [
+        {
+          "id": "cpu",
+          "section": "os_process",
+          "fields": ["utime", "stime"],
+          "labels": [],
+          "raw_unit": "clock_ticks",
+          "conversion": {
+            "kind": "recorded_divide",
+            "locator": "instance_metadata.clock_ticks_per_sec",
+            "target_unit": "seconds"
+          }
+        },
+        {
+          "id": "rss",
+          "section": "os_process",
+          "fields": ["rmem_kb"],
+          "labels": [],
+          "raw_unit": "kibibytes",
+          "conversion": { "kind": "fixed_multiply", "factor": 1024, "target_unit": "bytes" }
+        },
+        {
+          "id": "io_read",
+          "section": "os_process",
+          "fields": ["read_bytes"],
+          "labels": [],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "io_write",
+          "section": "os_process",
+          "fields": ["write_bytes"],
+          "labels": [],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "majflt",
+          "section": "os_process",
+          "fields": ["majflt"],
+          "labels": [],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "run_delay",
+          "section": "os_process",
+          "fields": ["rundelay_ns"],
+          "labels": [],
+          "raw_unit": "nanoseconds",
+          "conversion": { "kind": "identity" }
+        }
+      ]
+    },
+    {
+      "id": "statements",
+      "default_cut": "exec_time",
+      "default_group": "identity",
+      "default_columns": 60,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "database", "fields": ["datname"] }
+      ],
+      "cuts": [
+        {
+          "id": "exec_time",
+          "section": "pg_stat_statements",
+          "fields": ["total_exec_time"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "milliseconds",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "calls",
+          "section": "pg_stat_statements",
+          "fields": ["calls"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "rows",
+          "section": "pg_stat_statements",
+          "fields": ["rows"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "shared_read",
+          "section": "pg_stat_statements",
+          "fields": ["shared_blks_read"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "shared_dirtied",
+          "section": "pg_stat_statements",
+          "fields": ["shared_blks_dirtied"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "temp_written",
+          "section": "pg_stat_statements",
+          "fields": ["temp_blks_written"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "wal_bytes",
+          "section": "pg_stat_statements",
+          "fields": ["wal_bytes"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        }
+      ]
+    },
+    {
+      "id": "plans",
+      "default_cut": "exec_time",
+      "default_group": "identity",
+      "default_columns": 60,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "database", "fields": ["datname"] }
+      ],
+      "cuts": [
+        {
+          "id": "exec_time",
+          "section": "pg_store_plans",
+          "fields": ["total_time"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "milliseconds",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "calls",
+          "section": "pg_store_plans",
+          "fields": ["calls"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "rows",
+          "section": "pg_store_plans",
+          "fields": ["rows"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "shared_read",
+          "section": "pg_store_plans",
+          "fields": ["shared_blks_read"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "temp_written",
+          "section": "pg_store_plans",
+          "fields": ["temp_blks_written"],
+          "labels": ["datname", "usename"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        }
+      ]
+    },
+    {
+      "id": "databases",
+      "default_cut": "commits",
+      "default_group": "identity",
+      "default_columns": 60,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "database", "fields": ["datname"] }
+      ],
+      "cuts": [
+        {
+          "id": "commits",
+          "section": "pg_stat_database",
+          "fields": ["xact_commit"],
+          "labels": ["datname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "rollbacks",
+          "section": "pg_stat_database",
+          "fields": ["xact_rollback"],
+          "labels": ["datname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "db_read",
+          "section": "pg_stat_database",
+          "fields": ["blks_read"],
+          "labels": ["datname"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "temp_bytes",
+          "section": "pg_stat_database",
+          "fields": ["temp_bytes"],
+          "labels": ["datname"],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "deadlocks",
+          "section": "pg_stat_database",
+          "fields": ["deadlocks"],
+          "labels": ["datname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        }
+      ]
+    },
+    {
+      "id": "tables",
+      "default_cut": "writes",
+      "default_group": "identity",
+      "default_columns": 12,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "database", "fields": ["datname"] },
+        { "id": "schema", "fields": ["datname", "schemaname"] },
+        { "id": "tablespace", "fields": ["tablespace"] }
+      ],
+      "cuts": [
+        {
+          "id": "writes",
+          "section": "pg_stat_user_tables",
+          "fields": ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+          "labels": ["datname", "schemaname", "relname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "seq_read",
+          "section": "pg_stat_user_tables",
+          "fields": ["seq_tup_read"],
+          "labels": ["datname", "schemaname", "relname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "heap_read",
+          "section": "pg_stat_user_tables",
+          "fields": ["heap_blks_read"],
+          "labels": ["datname", "schemaname", "relname"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        },
+        {
+          "id": "dead_tuples",
+          "section": "pg_stat_user_tables",
+          "fields": ["n_dead_tup"],
+          "labels": ["datname", "schemaname", "relname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "autovacuum_time",
+          "section": "pg_stat_user_tables",
+          "fields": ["total_autovacuum_time"],
+          "labels": ["datname", "schemaname", "relname"],
+          "raw_unit": "milliseconds",
+          "conversion": { "kind": "identity" }
+        }
+      ]
+    },
+    {
+      "id": "indexes",
+      "default_cut": "idx_scan",
+      "default_group": "identity",
+      "default_columns": 12,
+      "groups": [
+        { "id": "identity", "fields": [] },
+        { "id": "database", "fields": ["datname"] },
+        { "id": "schema", "fields": ["datname", "schemaname"] },
+        { "id": "tablespace", "fields": ["tablespace"] }
+      ],
+      "cuts": [
+        {
+          "id": "idx_scan",
+          "section": "pg_stat_user_indexes",
+          "fields": ["idx_scan"],
+          "labels": ["datname", "schemaname", "relname", "indexrelname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "idx_tup_read",
+          "section": "pg_stat_user_indexes",
+          "fields": ["idx_tup_read"],
+          "labels": ["datname", "schemaname", "relname", "indexrelname"],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "idx_blks_read",
+          "section": "pg_stat_user_indexes",
+          "fields": ["idx_blks_read"],
+          "labels": ["datname", "schemaname", "relname", "indexrelname"],
+          "raw_unit": "blocks",
+          "conversion": {
+            "kind": "recorded_multiply",
+            "locator": "pg_settings.block_size",
+            "target_unit": "bytes"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cgroups",
+      "default_cut": "cg_cpu",
+      "default_group": "identity",
+      "default_columns": 60,
+      "groups": [
+        { "id": "identity", "fields": [] }
+      ],
+      "cuts": [
+        {
+          "id": "cg_cpu",
+          "section": "os_cgroup_cpu",
+          "fields": ["usage_usec"],
+          "labels": [],
+          "raw_unit": "microseconds",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "cg_throttled",
+          "section": "os_cgroup_cpu",
+          "fields": ["throttled_usec"],
+          "labels": [],
+          "raw_unit": "microseconds",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "cg_read",
+          "section": "os_cgroup_io",
+          "fields": ["rbytes"],
+          "labels": [],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "cg_write",
+          "section": "os_cgroup_io",
+          "fields": ["wbytes"],
+          "labels": [],
+          "raw_unit": "bytes",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "cg_rios",
+          "section": "os_cgroup_io",
+          "fields": ["rios"],
+          "labels": [],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        },
+        {
+          "id": "cg_wios",
+          "section": "os_cgroup_io",
+          "fields": ["wios"],
+          "labels": [],
+          "raw_unit": "count",
+          "conversion": { "kind": "identity" }
+        }
+      ]
+    }
+  ]
+}

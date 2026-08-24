@@ -25,11 +25,19 @@ fn build() -> Vec<Tool> {
 }
 
 fn discovery_tools() -> Vec<Tool> {
+    let heatmap_policy =
+        crate::heatmap_product::policy().expect("embedded Heatmap product registry is valid");
+    let heatmap_surfaces =
+        crate::heatmap_product::surfaces().expect("embedded Heatmap product registry is valid");
+    let heatmap_surface_ids = heatmap_surfaces
+        .iter()
+        .map(|surface| surface.id.as_str())
+        .collect::<Vec<_>>();
     vec![
         tool(
             "kronika_get_context",
             "Kronika context",
-            "Return source families, limits, surfaces, lenses, cuts, and semantic definitions.",
+            "Return source families, limits, surfaces, lenses, Heatmap cuts, groups, defaults, and semantic definitions.",
             input(common(map([])), &[]),
         ),
         tool(
@@ -54,27 +62,33 @@ fn discovery_tools() -> Vec<Tool> {
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
                     ("to_us", timestamp("Inclusive UTC interval end.")),
+                    ("surface", enumeration(&heatmap_surface_ids)),
                     (
-                        "surface",
-                        enumeration(&[
-                            "processes",
-                            "statements",
-                            "plans",
-                            "databases",
-                            "tables",
-                            "indexes",
-                            "cgroups",
-                        ]),
+                        "cut",
+                        short_string(
+                            "Accepted metric cut for the surface; omitted uses its advertised default.",
+                        ),
                     ),
-                    ("cut", short_string("Accepted metric cut for the surface.")),
                     (
                         "group",
-                        enumeration(&["identity", "command", "database", "schema", "tablespace"]),
+                        short_string(
+                            "Accepted group for the surface; omitted uses its advertised default.",
+                        ),
                     ),
-                    ("columns", integer(1, 1_440, 12)),
-                    ("top", integer(1, 500, 25)),
+                    (
+                        "columns",
+                        bounded_integer(1, heatmap_policy.max_columns as u64),
+                    ),
+                    (
+                        "top",
+                        integer(
+                            1,
+                            heatmap_policy.max_top as u64,
+                            heatmap_policy.default_top as u64,
+                        ),
+                    ),
                 ])),
-                &["from_us", "to_us", "surface", "cut"],
+                &["from_us", "to_us", "surface"],
             ),
         ),
         tool(
@@ -566,6 +580,14 @@ fn integer(minimum: u64, maximum: u64, default: u64) -> Value {
         "minimum": minimum,
         "maximum": maximum,
         "default": default
+    })
+}
+
+fn bounded_integer(minimum: u64, maximum: u64) -> Value {
+    json!({
+        "type": "integer",
+        "minimum": minimum,
+        "maximum": maximum
     })
 }
 

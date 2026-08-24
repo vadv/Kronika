@@ -2,9 +2,10 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
+import { activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { loadHeatmap, loadRelatedStatementTextRow, type DataRow, type HourData, type SegmentBound } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { HEATMAP_DEFAULT_TOP, heatmapCuts, heatmapSurface, type HeatmapCutId, type HeatmapGroupId, type HeatmapProductSurface, type HeatmapSurfaceId } from "./heatmap-product"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
 import { canonicalSearch } from "./search"
@@ -12,7 +13,7 @@ import type { RelatedNavigation } from "./statement-navigation"
 
 const TOP_BLOCK = 8
 const TOP_CHOICES = [10, 25, 50, 100] as const
-const DEFAULT_TOP = 25
+const DEFAULT_TOP = HEATMAP_DEFAULT_TOP
 
 type ScaleMode = "global" | "row"
 
@@ -30,10 +31,8 @@ interface HeatmapState {
 }
 
 function useHeatmapView(
-  section: string,
-  columns: number,
-  labels: readonly string[],
-  group: readonly string[] | undefined,
+  surface: HeatmapSurfaceId,
+  group: HeatmapGroupId,
   hour: number,
   cut: ActivityCut,
   top: number,
@@ -45,7 +44,7 @@ function useHeatmapView(
     if (!enabled) return
     const controller = new AbortController()
     setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
-    loadHeatmap(hour, section, cut.fields, labels, columns, top, controller.signal, group)
+    loadHeatmap(hour, surface, cut.id, group, top, controller.signal)
       .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -53,7 +52,7 @@ function useHeatmapView(
         }
       })
     return () => controller.abort()
-  }, [columns, cut, enabled, group, hour, labels, revision, section, top])
+  }, [cut, enabled, group, hour, revision, surface, top])
   return state
 }
 
@@ -76,34 +75,38 @@ interface RowLabel {
   readonly prefix: string | null
 }
 
-function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
-  readonly columns: number
+function ActivityLedger({ activityId, cursor, cuts, defaultCut, drill, group, hour, keys, label, locale, onCursor, onView, scales, storageKey, surface, t }: {
+  readonly activityId?: string | undefined
   readonly cursor: number
-  readonly cuts: readonly ActivityCut[]
-  readonly defaultCut: string
+  readonly cuts?: readonly ActivityCut[] | undefined
+  readonly defaultCut?: HeatmapCutId | undefined
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
-  readonly group?: readonly string[] | undefined
+  readonly group?: HeatmapGroupId | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
-  readonly labels: readonly string[]
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onView?: ((view: HeatmapView) => void) | undefined
   readonly scales: ActivityScales
-  readonly section: string
   readonly storageKey: string
+  readonly surface: HeatmapProductSurface
   readonly t: Translate
 }) {
   const [open, setOpen] = useState(() => loadActivityOpen(storageKey))
-  const [cutId, setCutId] = useState(defaultCut)
+  const productCuts = cuts ?? surface.cuts
+  const productDefaultCut = defaultCut ?? surface.defaultCut
+  const productGroup = group ?? surface.defaultGroup
+  const ledgerId = activityId ?? surface.id
+  const [cutId, setCutId] = useState<HeatmapCutId>(productDefaultCut)
   const [scale, setScale] = useState<ScaleMode>("global")
   const [top, setTop] = useState<number>(DEFAULT_TOP)
   const [maximized, setMaximized] = useState(false)
   const [chosen, setChosen] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
-  const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
+  const cut = productCuts.find((candidate) => candidate.id === cutId) ?? productCuts[0] as ActivityCut
+  const state = useHeatmapView(surface.id, productGroup, hour, cut, top, revision, open)
+  const columns = Math.max(state.view?.intervals.length ?? surface.defaultColumns, 1)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -112,7 +115,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   useEffect(() => {
     if (state.view !== null) seen?.(state.view)
   }, [seen, state.view])
-  useEffect(() => setChosen(null), [hour, section])
+  useEffect(() => setChosen(null), [hour, ledgerId])
 
   // A drill filters the table below the ledger, which a full-screen ledger
   // covers; it steps back so the filtered rows are the next thing seen.
@@ -149,7 +152,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   }
 
   if (!open) {
-    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${ledgerId}`}>
       <header className="flex items-center gap-1 px-2 py-[6px]">
         <button aria-expanded={false} className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-sm font-medium text-fg2" data-testid="activity-toggle" onClick={() => toggle(true)} type="button">
           <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />
@@ -160,7 +163,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     </section>
   }
   if (state.error && state.view === null) {
-    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${ledgerId}`}>
       <div className="flex items-center gap-3 px-3 py-2 font-sans text-sm text-fg3">
         <span>{t("activity.error")}</span>
         <button className="cursor-pointer border-0 bg-transparent p-0 font-sans text-sm text-accent3 underline decoration-dotted underline-offset-2" onClick={() => setRevision((current) => current + 1)} type="button">{t("activity.retry")}</button>
@@ -168,7 +171,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     </section>
   }
   if (view === null) {
-    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}`}>
+    return <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${ledgerId}`}>
       <header className="flex items-center gap-2 border-b border-line px-3 py-[6px]">
         <h2 className="m-0 font-sans text-sm font-medium text-fg2">{t(`${keys.title}.title`)}</h2>
         <span className="font-sans text-xs text-fg4">{t("activity.loading")}</span>
@@ -183,7 +186,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     columns={columns}
     cursor={cursor}
     cut={cut}
-    cuts={cuts}
+    cuts={productCuts}
     loadedCut={state.viewCut ?? cut}
     loading={state.loading}
     chosen={chosen}
@@ -201,14 +204,14 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     onTop={setTop}
     scale={scale}
     scales={scales}
-    section={section}
+    section={ledgerId}
     t={t}
     top={top}
     view={view}
   />
   if (!maximized) return panel
   return <>
-    <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${section}-placeholder`} />
+    <section aria-label={t(`${keys.title}.title`)} className="activity-block" data-testid={`activity-${ledgerId}-placeholder`} />
     {createPortal(<div aria-label={t(`${keys.title}.title`)} className="activity-overlay" data-testid="activity-overlay" role="dialog">{panel}</div>, document.body)}
   </>
 }
@@ -246,6 +249,15 @@ const STATEMENT_KEYS: LedgerKeys = { title: "activity", bands: "activity" }
 const PLAN_KEYS: LedgerKeys = { title: "activity.plans", bands: "activity.plans" }
 const TABLE_KEYS: LedgerKeys = { title: "activity.tables", bands: "activity.tables" }
 const INDEX_KEYS: LedgerKeys = { title: "activity.indexes", bands: "activity.indexes" }
+const STATEMENT_SURFACE = heatmapSurface("statements")
+const PLAN_SURFACE = heatmapSurface("plans")
+const TABLE_SURFACE = heatmapSurface("tables")
+const INDEX_SURFACE = heatmapSurface("indexes")
+const PROCESS_SURFACE = heatmapSurface("processes")
+const DATABASE_SURFACE = heatmapSurface("databases")
+const CGROUP_SURFACE = heatmapSurface("cgroups")
+const CGROUP_CPU_CUTS = heatmapCuts(CGROUP_SURFACE, ["cg_cpu", "cg_throttled"])
+const CGROUP_IO_CUTS = heatmapCuts(CGROUP_SURFACE, ["cg_read", "cg_write", "cg_rios", "cg_wios"])
 
 export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
   readonly blockSize: number | null
@@ -293,7 +305,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
     }
   }
 
-  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} onView={setView} scales={{ blockSize, clockTicks: null }} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
+  return <ActivityLedger cursor={cursor} drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} locale={locale} onCursor={onCursor} onView={setView} scales={{ blockSize, clockTicks: null }} storageKey="kronika.activity-open" surface={STATEMENT_SURFACE} t={t} />
 }
 
 export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, t }: {
@@ -321,16 +333,10 @@ export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor,
       prefix: identityPrefix(row.labels, null),
     }
   }
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
+  return <ActivityLedger cursor={cursor} drill={drill} hour={hour} keys={PLAN_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} storageKey="kronika.activity-open.plans" surface={PLAN_SURFACE} t={t} />
 }
 
 export type RelationActivityLevel = "object" | "schema" | "database" | "tablespace"
-
-const RELATION_GROUPS: Readonly<Record<Exclude<RelationActivityLevel, "object">, readonly string[]>> = {
-  schema: ["datname", "schemaname"],
-  database: ["datname"],
-  tablespace: ["tablespace"],
-}
 
 export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCursor, onPattern, section, t }: {
   readonly blockSize: number | null
@@ -344,8 +350,9 @@ export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCu
   readonly t: Translate
 }) {
   const indexes = section === "pg_stat_user_indexes"
+  const surface = indexes ? INDEX_SURFACE : TABLE_SURFACE
   // Match the grouping selected for the relation table.
-  const group = level === "object" ? undefined : RELATION_GROUPS[level]
+  const group: HeatmapGroupId = level === "object" ? surface.defaultGroup : level
   const drill = (row: HeatmapViewRow) => {
     const name = level === "object" ? row.labels[indexes ? 3 : 2] : row.identity[row.identity.length - 1]
     if (name != null && name !== "") onPattern(name)
@@ -369,7 +376,7 @@ export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCu
       prefix: datname ?? null,
     }
   }
-  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} group={group} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={level === "object" ? (indexes ? INDEX_LABELS : TABLE_LABELS) : NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
+  return <ActivityLedger cursor={cursor} drill={drill} group={group} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} surface={surface} t={t} />
 }
 
 export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t, ticksPerSecond }: {
@@ -389,7 +396,7 @@ export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t
     text: row.identity[0] ?? "—",
     prefix: row.members === null || row.members < 2 ? null : t("activity.members", { count: row.members }),
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group={PROCESS_GROUP} hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
+  return <ActivityLedger cursor={cursor} drill={drill} hour={hour} keys={PROCESS_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} storageKey="kronika.activity-open.processes" surface={PROCESS_SURFACE} t={t} />
 }
 
 export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, t }: {
@@ -409,7 +416,7 @@ export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, o
     text: row.labels[0] ?? row.identity[0] ?? "—",
     prefix: null,
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={DATABASE_CUTS} defaultCut="commits" drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} labels={DATABASE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_database" storageKey="kronika.activity-open.databases" t={t} />
+  return <ActivityLedger cursor={cursor} drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} storageKey="kronika.activity-open.databases" surface={DATABASE_SURFACE} t={t} />
 }
 
 export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
@@ -424,22 +431,14 @@ export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
     text: row.identity[0] ?? "—",
     prefix: io && row.identity[1] != null ? `${row.identity[1]}:${row.identity[2] ?? ""}` : null,
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
+  return <ActivityLedger activityId={io ? "cgroup-io" : "cgroup-cpu"} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} surface={CGROUP_SURFACE} t={t} />
 }
 
 const DATABASE_KEYS: LedgerKeys = { title: "activity.databases", bands: "activity.databases" }
 const CGROUP_CPU_KEYS: LedgerKeys = { title: "activity.cgroup_cpu", bands: "activity.cgroups" }
 const CGROUP_IO_KEYS: LedgerKeys = { title: "activity.cgroup_io", bands: "activity.cgroups" }
 
-const DATABASE_LABELS = ["datname"] as const
-
 const PROCESS_KEYS: LedgerKeys = { title: "activity.processes", bands: "activity.processes" }
-
-const NO_LABELS = [] as const
-const PROCESS_GROUP = ["comm"] as const
-const STATEMENT_LABELS = ["datname", "usename"] as const
-const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
-const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const
 
 function identityPrefix(labels: readonly (string | null)[], marker: string | null): string | null {
   const parts = [
@@ -534,7 +533,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
   readonly maximized: boolean
   readonly onCollapse: () => void
   readonly onCursor: (timestamp: number) => void
-  readonly onCut: (id: string) => void
+  readonly onCut: (id: HeatmapCutId) => void
   readonly onMaximized: (maximized: boolean) => void
   readonly onScale: (scale: ScaleMode) => void
   readonly onTop: (top: number) => void

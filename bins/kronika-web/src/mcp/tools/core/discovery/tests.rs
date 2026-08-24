@@ -51,6 +51,14 @@ fn context_exposes_schema_lenses_cuts_and_hard_limits() {
             .is_some_and(|cuts| cuts.iter().any(|cut| cut == "cpu"))
     );
     assert_eq!(
+        heatmap["groups"]["processes"],
+        serde_json::json!(["identity", "command"])
+    );
+    assert_eq!(heatmap["defaults"]["processes"]["cut"], "cpu");
+    assert_eq!(heatmap["defaults"]["processes"]["group"], "command");
+    assert_eq!(heatmap["defaults"]["processes"]["columns"], 60);
+    assert_eq!(heatmap["defaults"]["processes"]["top"], 25);
+    assert_eq!(
         payload.data["context"]["limits"]["physical_row_visits"],
         super::super::MAX_ROWS
     );
@@ -102,19 +110,25 @@ fn context_reports_latest_recorded_layout_and_active_prefix() {
 
 #[test]
 fn heatmap_lookup_and_discovery_share_one_registry() {
-    let cut = super::heatmap_cut("tables", "writes").expect("accepted Heatmap cut");
+    let selected = crate::heatmap_product::resolve("tables", Some("writes"), None, None)
+        .expect("accepted Heatmap cut");
+    let cut = selected.cut;
 
     assert_eq!(cut.section, "pg_stat_user_tables");
     assert_eq!(cut.fields, ["n_tup_ins", "n_tup_upd", "n_tup_del"]);
-    assert!(super::heatmap_cut("tables", "cpu").is_none());
-    assert_eq!(cut.semantic()["origin"], "accepted_presentation");
-    assert_eq!(cut.semantic()["value_unit"], "count");
-    assert_eq!(cut.semantic()["values_scaled"], false);
+    assert!(crate::heatmap_product::resolve("tables", Some("cpu"), None, None).is_err());
+    let semantic = super::heatmap_semantic(selected.surface, cut);
+    assert_eq!(semantic["origin"], "accepted_presentation");
+    assert_eq!(semantic["value_unit"], "count");
+    assert_eq!(semantic["values_scaled"], false);
 
-    let blocks = super::heatmap_cut("statements", "shared_read").expect("block cut");
-    assert_eq!(blocks.semantic()["value_unit"], "blocks");
+    let blocks =
+        crate::heatmap_product::resolve("statements", Some("shared_read"), Some("identity"), None)
+            .expect("block cut");
+    let blocks_semantic = super::heatmap_semantic(blocks.surface, blocks.cut);
+    assert_eq!(blocks_semantic["value_unit"], "blocks");
     assert_eq!(
-        blocks.semantic()["conversion"],
+        blocks_semantic["conversion"],
         serde_json::json!({
             "status": "not_applied",
             "operation": "multiply",
@@ -125,12 +139,16 @@ fn heatmap_lookup_and_discovery_share_one_registry() {
         })
     );
 
-    let ticks = super::heatmap_cut("processes", "cpu").expect("clock cut");
-    assert_eq!(ticks.semantic()["value_unit"], "clock_ticks");
+    let ticks =
+        crate::heatmap_product::resolve("processes", None, None, None).expect("default clock cut");
+    let ticks_semantic = super::heatmap_semantic(ticks.surface, ticks.cut);
+    assert_eq!(ticks_semantic["value_unit"], "clock_ticks");
     assert_eq!(
-        ticks.semantic()["conversion"]["locator"],
+        ticks_semantic["conversion"]["locator"],
         "instance_metadata.clock_ticks_per_sec"
     );
+    assert_eq!(ticks.group.id, "command");
+    assert_eq!(ticks.columns, 60);
 }
 
 fn surface<'a>(context: &'a Value, name: &str) -> &'a Value {
