@@ -789,22 +789,7 @@ fn section_plans(
         if shared_projection && fields.is_empty() {
             continue;
         }
-        let selected_virtual = if logical_name == "os_process" {
-            if fields.is_empty() {
-                PROCESS_VIRTUAL_FIELDS.to_vec()
-            } else {
-                fields
-                    .iter()
-                    .filter_map(|field| {
-                        PROCESS_VIRTUAL_FIELDS
-                            .contains(&field.as_str())
-                            .then_some(field.as_str())
-                    })
-                    .collect()
-            }
-        } else {
-            Vec::new()
-        };
+        let selected_virtual = selected_virtual_fields(logical_name, &fields);
         let physical_fields = fields
             .iter()
             .filter(|field| !PROCESS_VIRTUAL_FIELDS.contains(&field.as_str()))
@@ -855,9 +840,11 @@ fn section_plans(
                     if let Some(search) = search {
                         plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
-                    if request.activity_visibility.is_some() && logical_name == "pg_stat_activity" {
-                        plan.add_projection_columns(&["state", "backend_type"]);
-                    }
+                    project_activity_fields(
+                        plan,
+                        logical_name,
+                        request.activity_visibility.is_some(),
+                    );
                 }
                 sections.push(SectionPlans {
                     logical_name: logical_name.clone(),
@@ -869,6 +856,29 @@ fn section_plans(
         }
     }
     Ok(sections)
+}
+
+fn selected_virtual_fields<'a>(logical_name: &str, fields: &'a [String]) -> Vec<&'a str> {
+    if logical_name != "os_process" {
+        return Vec::new();
+    }
+    if fields.is_empty() {
+        return PROCESS_VIRTUAL_FIELDS.to_vec();
+    }
+    fields
+        .iter()
+        .filter_map(|field| {
+            PROCESS_VIRTUAL_FIELDS
+                .contains(&field.as_str())
+                .then_some(field.as_str())
+        })
+        .collect()
+}
+
+fn project_activity_fields(plan: &mut Plan, logical_name: &str, enabled: bool) {
+    if enabled && logical_name == "pg_stat_activity" {
+        plan.add_projection_columns(&["state", "backend_type"]);
+    }
 }
 
 impl PageOrder {
