@@ -86,22 +86,29 @@ pub(super) fn collect(
     segment: &Segment,
     window: Window,
     state: &mut State,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<Vec<LanePoint>, ApiError> {
     let mut facts = Facts::default();
     for (type_id, _rows) in segment.sections() {
+        if cancelled() {
+            return Ok(Vec::new());
+        }
         let Some(name) = logical_section_name(type_id) else {
             continue;
         };
         match name {
-            "instance_metadata" => read_metadata(segment, type_id, &mut facts)?,
-            "os_cpu" => read_cpu(segment, type_id, &mut state.counters, &mut facts)?,
-            "os_psi" => read_psi(segment, type_id, &mut state.counters)?,
-            "os_meminfo" => read_memory(segment, type_id, &mut state.counters)?,
-            "os_diskstats" => read_disk(segment, type_id, &mut state.counters)?,
-            "os_netdev" => read_network(segment, type_id, &mut state.counters)?,
-            "os_vmstat" => read_vmstat(segment, type_id, &mut state.counters)?,
-            "pg_stat_activity" => read_activity(segment, type_id, &mut state.counters)?,
+            "instance_metadata" => read_metadata(segment, type_id, &mut facts, cancelled)?,
+            "os_cpu" => read_cpu(segment, type_id, &mut state.counters, &mut facts, cancelled)?,
+            "os_psi" => read_psi(segment, type_id, &mut state.counters, cancelled)?,
+            "os_meminfo" => read_memory(segment, type_id, &mut state.counters, cancelled)?,
+            "os_diskstats" => read_disk(segment, type_id, &mut state.counters, cancelled)?,
+            "os_netdev" => read_network(segment, type_id, &mut state.counters, cancelled)?,
+            "os_vmstat" => read_vmstat(segment, type_id, &mut state.counters, cancelled)?,
+            "pg_stat_activity" => read_activity(segment, type_id, &mut state.counters, cancelled)?,
             _other => {}
+        }
+        if cancelled() {
+            return Ok(Vec::new());
         }
     }
     let current = current_points(
@@ -123,9 +130,17 @@ struct Facts {
     cores: BTreeSet<i64>,
 }
 
-fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(), ApiError> {
+fn read_metadata(
+    segment: &Segment,
+    type_id: u32,
+    facts: &mut Facts,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(type_id, &["clock_ticks_per_sec"], &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         if let Some(ticks) = number(&row, "clock_ticks_per_sec") {
             #[expect(clippy::cast_possible_truncation, reason = "a hundred, in practice")]
             {
@@ -142,12 +157,16 @@ fn read_cpu(
     type_id: u32,
     counters: &mut Counters,
     facts: &mut Facts,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     const FIELDS: [&str; 8] = [
         "ts", "cpu_id", "user", "nice", "system", "irq", "softirq", "steal",
     ];
     let names = with_columns(type_id, &FIELDS, &["scope"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         if let Some(id) = number(&row, "cpu_id")
             && id >= 0.0
         {
@@ -181,9 +200,17 @@ fn cpu_busy_ticks(row: &Row) -> Option<i64> {
         })
 }
 
-fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_psi(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(type_id, &["ts", "resource", "some_total"], &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let (Some(ts), Some(resource), Some(total)) = (
             timestamp(&row, "ts"),
             number(&row, "resource"),
@@ -204,9 +231,17 @@ fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<
     Ok(())
 }
 
-fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_memory(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(type_id, &["ts", "mem_total", "mem_available"], &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let (Some(ts), Some(total), Some(available)) = (
             timestamp(&row, "ts"),
             number(&row, "mem_total"),
@@ -224,13 +259,21 @@ fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Resu
     Ok(())
 }
 
-fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_disk(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(
         type_id,
         &["ts", "io_time_ms", "io_weighted_time_ms"],
         &["scope"],
     );
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let (Some(ts), Some(busy), Some(weighted)) = (
             timestamp(&row, "ts"),
             number(&row, "io_time_ms"),
@@ -245,13 +288,21 @@ fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result
     Ok(())
 }
 
-fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_network(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     const FIELDS: [&str; 9] = [
         "ts", "rx_bytes", "tx_bytes", "rx_drop", "tx_drop", "rx_errs", "tx_errs", "rx_fifo",
         "tx_fifo",
     ];
     let names = with_columns(type_id, &FIELDS, &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let Some(ts) = timestamp(&row, "ts") else {
             return true;
         };
@@ -272,9 +323,17 @@ fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Res
     Ok(())
 }
 
-fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_vmstat(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(type_id, &["ts"], &["pswpin", "pswpout", "oom_kill"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let Some(ts) = timestamp(&row, "ts") else {
             return true;
         };
@@ -329,7 +388,12 @@ fn activity_sample(row: &Row) -> ActivitySample {
     }
 }
 
-fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_activity(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
     let names = with_columns(
         type_id,
         &[
@@ -344,6 +408,9 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
     let mut samples = Vec::new();
     let mut ids = HashSet::new();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        if cancelled() {
+            return false;
+        }
         let sample = activity_sample(&row);
         ids.extend(
             [sample.backend_type, sample.state, sample.wait_event_type]
@@ -353,8 +420,14 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         samples.push(sample);
         true
     })?;
+    if cancelled() {
+        return Ok(());
+    }
     let dictionary = segment.dictionary_for(&ids)?;
     for sample in samples {
+        if cancelled() {
+            break;
+        }
         record_activity_sample(
             counters,
             &sample,

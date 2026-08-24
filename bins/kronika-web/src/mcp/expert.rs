@@ -294,31 +294,16 @@ fn snapshot(
     let fields = selected_fields(args, section, None)?;
     let filters = object_filters(args.get("filters"))?;
     let page_size = usize_arg(args, "page_size", DEFAULT_PAGE_ROWS, 1, MAX_PAGE_ROWS)?;
-    let catalog = catalog(
-        state,
-        Window {
-            from: None,
-            to: Some(at),
-        },
-        cancelled,
-    )?;
-    ensure_segment_budget(&catalog.records)?;
-    let Some(segment) = latest_segment_with_section(&catalog.records, section, at) else {
-        return Ok(empty_snapshot(
-            at,
-            section,
-            catalog_warnings(&catalog.records),
-        ));
-    };
     let request = SnapshotRequest {
-        segment_id: segment.id,
-        active_position: segment.active_position,
+        segment_id: 0,
+        active_position: None,
         at,
         sections: vec![section.to_owned()],
         fields,
         by: optional_string(args, "order").into_iter().collect(),
         direction: order(args)?,
         group: None,
+        postgresql: None,
         page_size: Some(page_size),
         cursor: optional_string(args, "cursor"),
         search: None,
@@ -329,16 +314,50 @@ fn snapshot(
         type_id: None,
         row_ordinal: None,
     };
-    let collected = collect(
-        state,
-        Route::Snapshot(Box::new(request)),
-        ValueLimits {
-            records: page_size.saturating_add(64),
-            ndjson_bytes: data_budget(args)?,
-        },
-        cancelled,
-    )?;
-    snapshot_payload(at, segment, &collected, catalog_warnings(&catalog.records))
+    let prepared = match api::prepare_snapshot_for_mcp(&state.data_root, request, cancelled) {
+        Ok(prepared) => prepared,
+        Err(_error) if cancelled() => {
+            return Err(failure(
+                "cancelled",
+                "snapshot read was cancelled",
+                None,
+                true,
+            ));
+        }
+        Err(error) => return Err(api_failure(error)),
+    };
+    let warnings = prepared
+        .warnings
+        .iter()
+        .map(api::catalog_warning_value)
+        .collect::<Vec<_>>();
+    let Some(source) = prepared.prepared else {
+        return Ok(empty_snapshot(at, section, warnings));
+    };
+    let segment = SegmentInfo {
+        id: prepared.segment_id.ok_or_else(|| {
+            failure(
+                "unreadable",
+                "selected snapshot has no segment identity",
+                None,
+                false,
+            )
+        })?,
+        min_ts: 0,
+        max_ts: 0,
+        active_position: prepared.active_position,
+        sections: vec![section.to_owned()],
+    };
+    let collected = source
+        .collect_values(
+            ValueLimits {
+                records: page_size.saturating_add(64),
+                ndjson_bytes: data_budget(args)?,
+            },
+            cancelled,
+        )
+        .map_err(api_failure)?;
+    snapshot_payload(at, segment, &collected, warnings)
 }
 
 fn row_detail(
@@ -1059,15 +1078,6 @@ fn ensure_history_source_unchanged(
 
 fn catalog_warnings(records: &[Value]) -> Vec<Value> {
     records_named(records, "warning")
-}
-
-fn latest_segment_with_section(records: &[Value], section: &str, at: i64) -> Option<SegmentInfo> {
-    catalog_segments(records)
-        .into_iter()
-        .filter(|segment| {
-            segment.min_ts <= at && segment.sections.iter().any(|name| name == section)
-        })
-        .max_by_key(|segment| (segment.max_ts.min(at), segment.id))
 }
 
 fn anchor_for_window(from: i64, _to: i64, records: &[Value]) -> Value {

@@ -445,6 +445,7 @@ fn snapshot_route(
             .unwrap_or_default(),
         direction,
         group: None,
+        postgresql: None,
         page_size: Some(usize_arg(args, "page_size", 100, 500)?),
         cursor: optional_string(args, "cursor")?.map(str::to_owned),
         search: optional_string(args, "find")?.map(str::to_owned),

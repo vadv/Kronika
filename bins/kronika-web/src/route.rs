@@ -60,6 +60,8 @@ pub(crate) struct SnapshotRequest {
     pub(crate) by: Vec<String>,
     pub(crate) direction: Order,
     pub(crate) group: Option<RelationGroup>,
+    /// A typed PostgreSQL product surface resolved by the shared Rust registry.
+    pub(crate) postgresql: Option<PostgresqlSurfaceRequest>,
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
@@ -72,6 +74,123 @@ pub(crate) struct SnapshotRequest {
     pub(crate) type_id: Option<u32>,
     /// Requires `type_id` and addresses a finished source row.
     pub(crate) row_ordinal: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PostgresqlSurfaceRequest {
+    pub(crate) surface: PostgresqlSurface,
+    pub(crate) order: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PostgresqlSurface {
+    Activity,
+    Statements(StatementLens),
+    Plans(PlanLens),
+    Databases,
+    Tables(TableLens),
+    Indexes(IndexLens),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatementLens {
+    Load,
+    PerCall,
+    Io,
+    Resources,
+    Stability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanLens {
+    Load,
+    Timing,
+    Io,
+    Identity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableLens {
+    Access,
+    Changes,
+    Maintenance,
+    SizeBuffers,
+    Freeze,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexLens {
+    Usage,
+    LowActivity,
+    SizeBuffers,
+    State,
+}
+
+impl PostgresqlSurface {
+    pub(crate) fn parse(section: &str, lens: Option<&str>) -> Option<Self> {
+        match (section, lens) {
+            ("pg_stat_activity", None) => Some(Self::Activity),
+            ("pg_stat_statements", None | Some("load")) => {
+                Some(Self::Statements(StatementLens::Load))
+            }
+            ("pg_stat_statements", Some("per_call")) => {
+                Some(Self::Statements(StatementLens::PerCall))
+            }
+            ("pg_stat_statements", Some("io")) => Some(Self::Statements(StatementLens::Io)),
+            ("pg_stat_statements", Some("resources")) => {
+                Some(Self::Statements(StatementLens::Resources))
+            }
+            ("pg_stat_statements", Some("stability")) => {
+                Some(Self::Statements(StatementLens::Stability))
+            }
+            ("pg_store_plans", None | Some("load")) => Some(Self::Plans(PlanLens::Load)),
+            ("pg_store_plans", Some("timing")) => Some(Self::Plans(PlanLens::Timing)),
+            ("pg_store_plans", Some("io")) => Some(Self::Plans(PlanLens::Io)),
+            ("pg_store_plans", Some("identity")) => Some(Self::Plans(PlanLens::Identity)),
+            ("pg_stat_database", None) => Some(Self::Databases),
+            ("pg_stat_user_tables", None | Some("access")) => Some(Self::Tables(TableLens::Access)),
+            ("pg_stat_user_tables", Some("changes")) => Some(Self::Tables(TableLens::Changes)),
+            ("pg_stat_user_tables", Some("maintenance")) => {
+                Some(Self::Tables(TableLens::Maintenance))
+            }
+            ("pg_stat_user_tables", Some("size_buffers")) => {
+                Some(Self::Tables(TableLens::SizeBuffers))
+            }
+            ("pg_stat_user_tables", Some("freeze")) => Some(Self::Tables(TableLens::Freeze)),
+            ("pg_stat_user_indexes", None | Some("usage")) => Some(Self::Indexes(IndexLens::Usage)),
+            ("pg_stat_user_indexes", Some("low_activity")) => {
+                Some(Self::Indexes(IndexLens::LowActivity))
+            }
+            ("pg_stat_user_indexes", Some("size_buffers")) => {
+                Some(Self::Indexes(IndexLens::SizeBuffers))
+            }
+            ("pg_stat_user_indexes", Some("state")) => Some(Self::Indexes(IndexLens::State)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn section(self) -> &'static str {
+        match self {
+            Self::Activity => "pg_stat_activity",
+            Self::Statements(_) => "pg_stat_statements",
+            Self::Plans(_) => "pg_store_plans",
+            Self::Databases => "pg_stat_database",
+            Self::Tables(_) => "pg_stat_user_tables",
+            Self::Indexes(_) => "pg_stat_user_indexes",
+        }
+    }
+
+    pub(crate) const fn lens_error(section: &str) -> &'static str {
+        match section.as_bytes() {
+            b"pg_stat_statements" => "lens must be load, per_call, io, resources, or stability",
+            b"pg_store_plans" => "lens must be load, timing, io, or identity",
+            b"pg_stat_user_tables" => {
+                "lens must be access, changes, maintenance, size_buffers, or freeze"
+            }
+            b"pg_stat_user_indexes" => "lens must be usage, low_activity, size_buffers, or state",
+            _ => "lens is not supported by this surface",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,11 +361,14 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut sections = Vec::new();
     let mut fields = Vec::new();
     let mut by = Vec::new();
+    let mut lens = None;
+    let mut semantic_order = None;
     let mut direction = None;
     let mut group = None;
     let mut page_size = None;
     let mut cursor = None;
     let mut search = None;
+    let mut find = None;
     let mut first_match = None;
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
@@ -278,6 +400,20 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                     return Err(RouteError::BadParameter("by".to_owned()));
                 }
                 by.push(field);
+            }
+            "lens" if lens.is_none() => {
+                let value = decoded("lens", raw_value, true)?;
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("lens".to_owned()));
+                }
+                lens = Some(value);
+            }
+            "order" if semantic_order.is_none() => {
+                let value = decoded("order", raw_value, true)?;
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("order".to_owned()));
+                }
+                semantic_order = Some(value);
             }
             "direction" if direction.is_none() => {
                 direction = Some(match raw_value {
@@ -318,7 +454,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 cursor = Some(value);
             }
-            "search" if search.is_none() => search = Some(snapshot_search(raw_value)?),
+            "search" if search.is_none() => search = Some(snapshot_search("search", raw_value)?),
+            "find" if find.is_none() => find = Some(snapshot_search("find", raw_value)?),
             "first_match" if first_match.is_none() => {
                 if raw_value != "1" {
                     return Err(RouteError::BadParameter("first_match".to_owned()));
@@ -343,6 +480,52 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
+    if semantic_order.is_some() && !by.is_empty() {
+        return Err(RouteError::BadParameter("order".to_owned()));
+    }
+    if find.is_some() && search.is_some() {
+        return Err(RouteError::BadParameter("find".to_owned()));
+    }
+    let typed_postgresql = lens.is_some() || semantic_order.is_some() || find.is_some();
+    let postgresql = if typed_postgresql {
+        let [section] = sections.as_slice() else {
+            return Err(RouteError::BadParameter("section".to_owned()));
+        };
+        let surface = PostgresqlSurface::parse(section, lens.as_deref()).ok_or_else(|| {
+            RouteError::BadParameter(if lens.is_some() {
+                "lens".to_owned()
+            } else if semantic_order.is_some() {
+                "order".to_owned()
+            } else {
+                "find".to_owned()
+            })
+        })?;
+        if find.is_some()
+            && matches!(
+                surface,
+                PostgresqlSurface::Activity | PostgresqlSurface::Databases
+            )
+        {
+            return Err(RouteError::BadParameter("find".to_owned()));
+        }
+        if group.is_none()
+            && matches!(
+                surface,
+                PostgresqlSurface::Tables(_) | PostgresqlSurface::Indexes(_)
+            )
+        {
+            group = Some(RelationGroup::Object);
+        }
+        Some(PostgresqlSurfaceRequest {
+            surface,
+            order: semantic_order,
+        })
+    } else {
+        None
+    };
+    if let Some(find) = find {
+        search = Some(find);
+    }
     let first_match = first_match.unwrap_or(false);
     if first_match
         && (sections.as_slice() != ["pg_stat_statements"]
@@ -355,6 +538,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             || type_id.is_some()
             || row_ordinal.is_some()
             || !by.is_empty()
+            || postgresql.is_some()
             || direction.is_some()
             || group.is_some())
     {
@@ -364,6 +548,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || cursor.is_some()
         || search.is_some()
         || !by.is_empty()
+        || postgresql.is_some()
         || direction.is_some()
         || group.is_some();
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
@@ -376,6 +561,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         by,
         direction: direction.unwrap_or(Order::Desc),
         group,
+        postgresql,
         page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
         cursor,
         search,
@@ -388,11 +574,11 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     })
 }
 
-fn snapshot_search(raw: &str) -> Result<String, RouteError> {
-    let value = decoded("search", raw, true)?;
+fn snapshot_search(name: &str, raw: &str) -> Result<String, RouteError> {
+    let value = decoded(name, raw, true)?;
     let value = value.trim();
     if value.is_empty() || value.chars().count() > MAX_SEARCH_EXPRESSION_CHARS {
-        return Err(RouteError::BadParameter("search".to_owned()));
+        return Err(RouteError::BadParameter(name.to_owned()));
     }
     Ok(value.to_owned())
 }

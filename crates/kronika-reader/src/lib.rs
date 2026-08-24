@@ -11,12 +11,21 @@ mod dictionary;
 mod error;
 mod segment;
 
+use std::cmp::Reverse;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kronika_format::Catalog;
-use kronika_store::{ActiveSnapshot, FinalUnit, LocalDir, read_catalog};
+use kronika_registry::{ColumnClass, contract, logical_section_name, registry};
+use kronika_store::{ActiveSnapshot, CatalogInventory, FinalUnit, LocalDir, read_catalog};
+
+#[cfg(test)]
+std::thread_local! {
+    static SNAPSHOT_FINISHED_CATALOG_READS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
 
 pub use dictionary::Dictionary;
 pub use error::ReaderError;
@@ -154,6 +163,23 @@ pub struct Listing {
     pub warnings: Vec<StoreWarning>,
 }
 
+/// The real rows selected for one logical-section snapshot.
+#[derive(Debug)]
+pub struct SnapshotSelection {
+    /// A segment contributing the latest section sample at or before the
+    /// requested instant.
+    pub anchor: Option<SegmentRef>,
+    /// Other segments and physical layouts contributing the current sample,
+    /// newest first.
+    pub current_segments: Vec<SegmentRef>,
+    /// Segments contributing the immediately preceding real section sample,
+    /// newest first. A segment that carries both retained moments appears only
+    /// in `current_segments`.
+    pub predecessor_segments: Vec<SegmentRef>,
+    /// Files the scan set aside, and why.
+    pub warnings: Vec<StoreWarning>,
+}
+
 /// One catalog-only store scan whose full section catalogs remain unopened.
 ///
 /// A caller can inspect all recorded time ranges, choose a window, and then
@@ -270,6 +296,325 @@ impl CatalogDiscovery<'_> {
     }
 }
 
+fn select_snapshot(
+    reader: &Reader,
+    hour_start: i64,
+    at: i64,
+    logical_section: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<SnapshotSelection, ReaderError> {
+    if cancelled() {
+        return Err(cancelled_snapshot_read());
+    }
+    if hour_start > at {
+        return Ok(empty_snapshot_selection(Vec::new()));
+    }
+
+    let type_ids = registry()
+        .iter()
+        .filter(|contract| logical_section_name(contract.type_id.get()) == Some(logical_section))
+        .map(|contract| contract.type_id.get())
+        .collect::<Vec<_>>();
+    let mut inventory = reader.dir.catalog_inventory(cancelled)?;
+    if type_ids.is_empty() {
+        return Ok(empty_snapshot_selection(inventory.warnings));
+    }
+
+    let active_id = inventory.active.first().map(|part| part.segment_id.get());
+    let finished_is_canonical = active_id.is_some_and(|active_id| {
+        inventory
+            .finished
+            .iter()
+            .any(|artifact| artifact.address.id.get() == active_id)
+    });
+    let mut retained = Vec::<SnapshotContribution>::new();
+    let mut moments = SnapshotMoments::default();
+
+    if !finished_is_canonical
+        && active_bounds(&inventory.active).is_some_and(|(min_ts, _max_ts)| min_ts <= at)
+        && let Some(reference) = active_inventory_reference(reader, &inventory)?
+    {
+        record_snapshot_contribution(
+            reader,
+            reference,
+            logical_section,
+            at,
+            cancelled,
+            &mut moments,
+            &mut retained,
+        )?;
+    }
+
+    for index in (0..inventory.finished.len()).rev() {
+        if cancelled() {
+            return Err(cancelled_snapshot_read());
+        }
+        let artifact = inventory.finished[index];
+        note_snapshot_finished_catalog_read();
+        let Some(unit) = reader
+            .dir
+            .read_finished_catalog_summary(&mut inventory, artifact)?
+        else {
+            continue;
+        };
+        if moments
+            .previous
+            .is_some_and(|previous| unit.summary.max_ts < previous)
+        {
+            break;
+        }
+        if unit.summary.min_ts > at || !unit.summary.may_contain_any_nonempty_type(&type_ids) {
+            continue;
+        }
+        let reference = finished_snapshot_reference(reader, &unit)?;
+        record_snapshot_contribution(
+            reader,
+            reference,
+            logical_section,
+            at,
+            cancelled,
+            &mut moments,
+            &mut retained,
+        )?;
+    }
+
+    finish_snapshot_selection(retained, moments, inventory.warnings)
+}
+
+fn empty_snapshot_selection(warnings: Vec<StoreWarning>) -> SnapshotSelection {
+    SnapshotSelection {
+        anchor: None,
+        current_segments: Vec::new(),
+        predecessor_segments: Vec::new(),
+        warnings,
+    }
+}
+
+fn finished_snapshot_reference(
+    reader: &Reader,
+    unit: &FinalUnit,
+) -> Result<SegmentRef, ReaderError> {
+    let file = reader.dir.open_finished(unit)?;
+    let catalog = read_catalog(&file)?;
+    reader.dir.validate_finished_file(&file, unit)?;
+    Ok(SegmentRef {
+        source: SegmentSource::Finished(unit.clone()),
+        provenance: Arc::clone(&reader.provenance),
+        segment_id: unit.address.id.get(),
+        min_ts: unit.summary.min_ts,
+        max_ts: unit.summary.max_ts,
+        captured_bytes: unit.identity.len,
+        sections: sections_of(std::iter::once(&catalog)).into(),
+    })
+}
+
+fn active_inventory_reference(
+    reader: &Reader,
+    inventory: &CatalogInventory,
+) -> Result<Option<SegmentRef>, ReaderError> {
+    let Some(snapshot) = reader.dir.open_catalog_inventory_active(inventory)? else {
+        return Ok(None);
+    };
+    let (min_ts, max_ts) = active_bounds(snapshot.parts()).unwrap_or((0, 0));
+    let sections = sections_of(snapshot.parts().iter().map(|part| &part.catalog)).into();
+    Ok(Some(SegmentRef {
+        segment_id: snapshot.segment_id().get(),
+        source: SegmentSource::Active(snapshot),
+        provenance: Arc::clone(&reader.provenance),
+        min_ts,
+        max_ts,
+        captured_bytes: inventory.valid_len,
+        sections,
+    }))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "selection state and the cancellation callback stay explicit at the row boundary"
+)]
+fn record_snapshot_contribution(
+    reader: &Reader,
+    reference: SegmentRef,
+    logical_section: &str,
+    at: i64,
+    cancelled: &impl Fn() -> bool,
+    moments: &mut SnapshotMoments,
+    retained: &mut Vec<SnapshotContribution>,
+) -> Result<(), ReaderError> {
+    if !reference
+        .sections()
+        .iter()
+        .any(|section| logical_section_name(section.type_id) == Some(logical_section))
+    {
+        return Ok(());
+    }
+    let local = snapshot_moments(reader, &reference, logical_section, at, cancelled)?;
+    if local.current.is_none() {
+        return Ok(());
+    }
+    if let Some(current) = local.current {
+        moments.record(current);
+    }
+    if let Some(previous) = local.previous {
+        moments.record(previous);
+    }
+    retained.push(SnapshotContribution {
+        reference,
+        moments: local,
+    });
+    Ok(())
+}
+
+fn note_snapshot_finished_catalog_read() {
+    #[cfg(test)]
+    SNAPSHOT_FINISHED_CATALOG_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_snapshot_finished_catalog_reads() {
+    SNAPSHOT_FINISHED_CATALOG_READS.with(|reads| reads.set(0));
+}
+
+#[cfg(test)]
+fn snapshot_finished_catalog_reads() -> usize {
+    SNAPSHOT_FINISHED_CATALOG_READS.with(std::cell::Cell::get)
+}
+
+struct SnapshotContribution {
+    reference: SegmentRef,
+    moments: SnapshotMoments,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SnapshotMoments {
+    current: Option<i64>,
+    previous: Option<i64>,
+}
+
+impl SnapshotMoments {
+    fn record(&mut self, at: i64) {
+        match self.current {
+            None => self.current = Some(at),
+            Some(current) if at > current => {
+                self.previous = Some(current);
+                self.current = Some(at);
+            }
+            Some(current) if at < current => {
+                self.previous = Some(self.previous.map_or(at, |previous| previous.max(at)));
+            }
+            Some(_equal) => {}
+        }
+    }
+
+    fn contains(self, at: Option<i64>) -> bool {
+        at.is_some_and(|at| self.current == Some(at) || self.previous == Some(at))
+    }
+}
+
+fn finish_snapshot_selection(
+    mut retained: Vec<SnapshotContribution>,
+    moments: SnapshotMoments,
+    warnings: Vec<StoreWarning>,
+) -> Result<SnapshotSelection, ReaderError> {
+    let Some(current) = moments.current else {
+        return Ok(empty_snapshot_selection(warnings));
+    };
+    retained.retain(|contribution| {
+        contribution.moments.contains(Some(current))
+            || contribution.moments.contains(moments.previous)
+    });
+    let anchor_index = retained
+        .iter()
+        .enumerate()
+        .filter(|(_index, contribution)| contribution.moments.contains(Some(current)))
+        .max_by_key(|(_index, contribution)| contribution.reference.id())
+        .map(|(index, _contribution)| index)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "snapshot selection lost its current section contributor",
+            )
+        })?;
+    let anchor = retained.swap_remove(anchor_index).reference;
+    let (current, predecessors): (Vec<_>, Vec<_>) = retained
+        .into_iter()
+        .partition(|contribution| contribution.moments.contains(Some(current)));
+    let mut current_segments = current
+        .into_iter()
+        .map(|contribution| contribution.reference)
+        .collect::<Vec<_>>();
+    let mut predecessor_segments = predecessors
+        .into_iter()
+        .map(|contribution| contribution.reference)
+        .collect::<Vec<_>>();
+    current_segments.sort_unstable_by_key(|segment| Reverse(segment.id()));
+    predecessor_segments.sort_unstable_by_key(|segment| Reverse(segment.id()));
+    Ok(SnapshotSelection {
+        anchor: Some(anchor),
+        current_segments,
+        predecessor_segments,
+        warnings,
+    })
+}
+
+fn snapshot_moments(
+    reader: &Reader,
+    reference: &SegmentRef,
+    logical_section: &str,
+    at: i64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<SnapshotMoments, ReaderError> {
+    let segment = reader.open_segment(reference)?;
+    let mut moments = SnapshotMoments::default();
+    for section in reference
+        .sections()
+        .iter()
+        .filter(|section| logical_section_name(section.type_id) == Some(logical_section))
+    {
+        if cancelled() {
+            return Err(cancelled_snapshot_read());
+        }
+        let Some(timestamp) = contract(section.type_id).and_then(|contract| {
+            contract
+                .columns
+                .iter()
+                .find(|column| column.class == ColumnClass::Timestamp)
+                .map(|column| column.name)
+        }) else {
+            continue;
+        };
+        segment.visit_rows(
+            section.type_id,
+            &[timestamp],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                if let Some(Cell::Ts(stored)) = row.get(timestamp)
+                    && *stored <= at
+                {
+                    moments.record(*stored);
+                }
+                true
+            },
+        )?;
+        if cancelled() {
+            return Err(cancelled_snapshot_read());
+        }
+    }
+    Ok(moments)
+}
+
+fn cancelled_snapshot_read() -> ReaderError {
+    std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "snapshot selection was cancelled",
+    )
+    .into()
+}
+
 /// An open data directory.
 #[derive(Debug)]
 pub struct Reader {
@@ -322,6 +667,32 @@ impl Reader {
             reader: self,
             scan: self.dir.scan_catalogs()?,
         })
+    }
+
+    /// Select the latest real sample and its immediate predecessor for one
+    /// logical section at `at`.
+    ///
+    /// Finished artifacts are inspected newest first. Their compact summaries,
+    /// section catalogs, and bodies are opened only until no older segment can
+    /// contribute either retained moment. Every segment and physical layout
+    /// contributing an equal retained timestamp is preserved.
+    ///
+    /// `hour_start` identifies the UTC-hour window chosen by the caller. The
+    /// selector rejects an inverted window and may walk into older retention
+    /// for the section-aware predecessor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or decode error when a selected source cannot be read,
+    /// or an interrupted error when `cancelled` requests cancellation.
+    pub fn snapshot_selection(
+        &self,
+        hour_start: i64,
+        at: i64,
+        logical_section: &str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<SnapshotSelection, ReaderError> {
+        select_snapshot(self, hour_start, at, logical_section, cancelled)
     }
 
     /// List segment catalogs without reading finished section bodies.

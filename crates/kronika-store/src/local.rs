@@ -6,11 +6,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kronika_format::{JOURNAL_HEADER_LEN, MAX_PART_LEN, ReadAt};
-use kronika_layout::{DataRoot, DayDirectory, FileIdentity, LayoutError, LayoutLimits};
+use kronika_layout::{
+    DataRoot, DayDirectory, FileIdentity, LayoutError, LayoutLimits, SegmentArtifacts,
+};
 
 use crate::source::{
-    ActivePart, ActiveSnapshot, FinalUnit, JournalScan, LocalScan, StoreError, StoreIoFailure,
-    StoreIoOperation,
+    ActivePart, ActiveSnapshot, CatalogInventory, FinalUnit, JournalScan, LocalScan, StoreError,
+    StoreIoFailure, StoreIoOperation,
 };
 
 mod budget;
@@ -19,7 +21,8 @@ mod scan;
 mod segment;
 
 use budget::{
-    layout_io, push_warning_bounded, require_file_identity, retained_metadata_with_warnings,
+    ensure_retained_metadata, layout_io, push_warning_bounded, require_file_identity,
+    retained_metadata_with_warnings, summary_allocation_bytes,
 };
 pub use journal::is_active_journal_scan_error;
 use journal::{
@@ -37,6 +40,13 @@ const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
 const ZMS_CRC_CHUNK_BYTES: usize = 16 * 1024;
 const ARC_ALLOCATION_OVERHEAD: usize = 2 * size_of::<usize>();
 const ACTIVE_ARC_ALLOCATION_BYTES: usize = size_of::<Vec<ActivePart>>() + ARC_ALLOCATION_OVERHEAD;
+
+fn cancelled_catalog_inventory() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "catalog inventory was cancelled",
+    )
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -124,6 +134,33 @@ impl LocalDir {
                     &[warning],
                     FinishedValidation::Catalog,
                 )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Capture the active journal and strict finished-file inventory without
+    /// reading any finished catalog.
+    ///
+    /// `cancelled` is checked before the journal scan and between entries of
+    /// the finished-tree traversal. Selective readers can subsequently call
+    /// [`read_finished_catalog_summary`](Self::read_finished_catalog_summary)
+    /// newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when bounded traversal cannot produce a safe
+    /// inventory. Cancellation returns [`io::ErrorKind::Interrupted`].
+    pub fn catalog_inventory(&self, cancelled: &impl Fn() -> bool) -> io::Result<CatalogInventory> {
+        if cancelled() {
+            return Err(cancelled_catalog_inventory());
+        }
+        match self.scan_journal() {
+            Ok(journal) => self.complete_catalog_inventory(journal, &[], cancelled),
+            Err(error) if degradable_active_journal_error(&error) => {
+                let warning = self.active_journal_warning(&error);
+                let journal = empty_journal_scan(self.limits.max_metadata_bytes)?;
+                self.complete_catalog_inventory(journal, &[warning], cancelled)
             }
             Err(error) => Err(error),
         }
@@ -338,6 +375,87 @@ impl LocalDir {
         }
     }
 
+    /// Read and validate the compact catalog summary for one inventoried
+    /// finished artifact.
+    ///
+    /// A stable invalid artifact is excluded and appended to the inventory's
+    /// bounded warnings. A file replaced during inspection returns a retryable
+    /// interrupted error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the artifact changes or the shared metadata
+    /// limit cannot admit the selected summary.
+    pub fn read_finished_catalog_summary(
+        &self,
+        inventory: &mut CatalogInventory,
+        artifact: SegmentArtifacts,
+    ) -> io::Result<Option<FinalUnit>> {
+        let retained_metadata = inventory.metadata_bytes;
+        let validation_retained =
+            retained_metadata_with_warnings(retained_metadata, inventory.warnings.capacity())
+                .ok_or_else(|| budget::metadata_limit_io(self.limits.max_metadata_bytes))?;
+        let file = match self.open_pinned_zms(artifact.address, artifact.zms_identity)? {
+            ZmsOpen::Open(file) => file,
+            ZmsOpen::Invalid(failure) => {
+                push_warning_bounded(
+                    &mut inventory.warnings,
+                    invalid_zms_warning(
+                        artifact.address,
+                        artifact.zms_identity,
+                        crate::InvalidZmsReason::Io,
+                        Some(failure),
+                    ),
+                    retained_metadata,
+                    self.limits.max_metadata_bytes,
+                )?;
+                return Ok(None);
+            }
+        };
+        let summary = read_zms_summary(
+            &file,
+            validation_retained,
+            self.limits.max_metadata_bytes,
+            FinishedValidation::Catalog,
+        );
+        match classify_zms_validation(&file, artifact.zms_identity, artifact.address, summary)? {
+            Ok(summary) => {
+                let additional = summary_allocation_bytes()
+                    .checked_add(size_of::<FinalUnit>())
+                    .ok_or_else(|| budget::metadata_limit_io(self.limits.max_metadata_bytes))?;
+                ensure_retained_metadata(
+                    retained_metadata,
+                    additional,
+                    inventory.warnings.capacity(),
+                    self.limits.max_metadata_bytes,
+                )?;
+                inventory.metadata_bytes = inventory
+                    .metadata_bytes
+                    .checked_add(additional)
+                    .ok_or_else(|| budget::metadata_limit_io(self.limits.max_metadata_bytes))?;
+                Ok(Some(FinalUnit {
+                    address: artifact.address,
+                    identity: artifact.zms_identity,
+                    summary: Arc::new(summary),
+                }))
+            }
+            Err(invalid) => {
+                push_warning_bounded(
+                    &mut inventory.warnings,
+                    invalid_zms_warning(
+                        artifact.address,
+                        artifact.zms_identity,
+                        invalid.reason,
+                        invalid.failure,
+                    ),
+                    retained_metadata,
+                    self.limits.max_metadata_bytes,
+                )?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Open a finished segment file for raw byte access.
     ///
     /// # Errors
@@ -390,21 +508,19 @@ impl LocalDir {
         &self,
         scan: &LocalScan,
     ) -> Result<Option<ActiveSnapshot>, StoreError> {
-        let Some(first) = scan.active.first() else {
-            return Ok(None);
-        };
-        let file = self
-            .root
-            .open_active_journal()?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "active.wal is absent"))?;
-        validate_active_snapshot(&file, first.segment_id, scan.valid_len)?;
-        Ok(Some(ActiveSnapshot {
-            file: Arc::new(file),
-            active: Arc::clone(&scan.active),
-            part_count: scan.active.len(),
-            valid_len: scan.valid_len,
-            segment_id: first.segment_id,
-        }))
+        self.open_active_parts(&scan.active, scan.valid_len)
+    }
+
+    /// Open the exact active prefix described by a catalog inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the captured generation is no longer readable.
+    pub fn open_catalog_inventory_active(
+        &self,
+        inventory: &CatalogInventory,
+    ) -> Result<Option<ActiveSnapshot>, StoreError> {
+        self.open_active_parts(&inventory.active, inventory.valid_len)
     }
 
     /// Read the bytes of one active part from the journal.
@@ -450,6 +566,28 @@ impl LocalDir {
         expected: FileIdentity,
     ) -> io::Result<ZmsOpen> {
         Self::classify_pinned_zms(self.root.open_zms(address), address, expected)
+    }
+
+    fn open_active_parts(
+        &self,
+        active: &Arc<Vec<ActivePart>>,
+        valid_len: u64,
+    ) -> Result<Option<ActiveSnapshot>, StoreError> {
+        let Some(first) = active.first() else {
+            return Ok(None);
+        };
+        let file = self
+            .root
+            .open_active_journal()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "active.wal is absent"))?;
+        validate_active_snapshot(&file, first.segment_id, valid_len)?;
+        Ok(Some(ActiveSnapshot {
+            file: Arc::new(file),
+            active: Arc::clone(active),
+            part_count: active.len(),
+            valid_len,
+            segment_id: first.segment_id,
+        }))
     }
 
     fn open_pinned_zms_in(

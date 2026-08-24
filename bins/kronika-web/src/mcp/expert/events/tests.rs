@@ -201,7 +201,7 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
 }
 
 #[test]
-fn catalog_advertises_only_the_exact_timestamp_row_contract() {
+fn catalog_advertises_only_the_exact_timestamp_input_contract() {
     let tool = crate::mcp::catalog::find("kronika_find_events").expect("Event tool");
     let properties = tool.input_schema["properties"]
         .as_object()
@@ -214,12 +214,7 @@ fn catalog_advertises_only_the_exact_timestamp_row_contract() {
     for name in ["from_us", "to_us", "order", "direction"] {
         assert!(required.iter().any(|value| value == name), "missing {name}");
     }
-    let output = tool.output_schema.as_ref().expect("Event output schema");
-    let data = output["properties"]["data"]["properties"]
-        .as_object()
-        .expect("Event data properties");
-    assert!(data.contains_key("events"));
-    assert!(!data.contains_key("groups"));
+    assert!(tool.output_schema.is_none());
 }
 
 #[tokio::test]

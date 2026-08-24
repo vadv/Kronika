@@ -19,7 +19,9 @@ use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
-use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_stat_archiver::PgStatArchiver;
+use kronika_registry::pg_stat_bgwriter::{PgStatBgwriterV1, PgStatBgwriterV2};
+use kronika_registry::pg_stat_statements::{PgStatStatementsV1, PgStatStatementsV2};
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
@@ -29,8 +31,8 @@ use serde_json::Value;
 
 use crate::api::{
     ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
-    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
-    reset_page_operations, reset_relation_snapshot_operations,
+    prepare_snapshot_for_mcp, relation_snapshot_operations, reset_context_operations,
+    reset_first_match_rows, reset_page_operations, reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -1575,6 +1577,37 @@ fn statement(ts: i64, calls: i64, total_exec_time: f64, label: StrId) -> PgStatS
         wal_records: 0,
         wal_fpi: 0,
         wal_bytes: 0,
+    }
+}
+
+fn legacy_statement(ts: i64, queryid: i64, calls: i64, total_time: f64) -> PgStatStatementsV1 {
+    PgStatStatementsV1 {
+        ts: Ts(ts),
+        queryid: Some(queryid),
+        userid: 72,
+        dbid: 73,
+        datname: None,
+        usename: None,
+        query: None,
+        calls,
+        rows: 0,
+        total_time,
+        min_time: 0.0,
+        max_time: 0.0,
+        mean_time: 0.0,
+        stddev_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
     }
 }
 
@@ -3206,6 +3239,130 @@ fn a_snapshot_ranks_counter_rates_before_slicing_a_page() {
             serde_json::json!([2, 60_000.0])
         ]
     );
+}
+
+#[test]
+fn typed_statement_load_uses_the_legacy_total_time_order_fallback() {
+    let mut fixture = Fixture::new();
+    let mut buffers = SectionBuffers::new();
+    for row in [
+        legacy_statement(100, 1, 0, 0.0),
+        legacy_statement(200, 1, 10, 100.0),
+        legacy_statement(100, 2, 0, 0.0),
+        legacy_statement(200, 2, 10, 250.0),
+    ] {
+        buffers.push(row).expect("legacy Statement row fits");
+    }
+    fixture.append(buffers);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&lens=load&page_size=2"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("legacy typed Statement surface");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("legacy Statement layout");
+    let columns = layout["layout"]["columns"]
+        .as_array()
+        .expect("legacy Statement columns")
+        .iter()
+        .map(|column| column["name"].as_str().expect("column name"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        [
+            "queryid",
+            "dbid",
+            "userid",
+            "datname",
+            "usename",
+            "query",
+            "calls",
+            "total_time",
+            "rows",
+        ]
+    );
+    assert_eq!(row_records(&records)[0]["values"][0], "2");
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("legacy Statement page");
+    assert_eq!(page["order_by"], serde_json::json!(["total_time"]));
+}
+
+#[test]
+fn typed_plan_identity_filters_fields_missing_from_the_ossc_layout() {
+    let mut fixture = Fixture::new();
+    fixture.append_plan_snapshots(&[(100, 41, 1, 10.0), (200, 41, 4, 40.0)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_store_plans&lens=identity&page_size=10"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("OSSC typed Plan surface");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("OSSC Plan layout");
+    let columns = layout["layout"]["columns"]
+        .as_array()
+        .expect("OSSC Plan columns")
+        .iter()
+        .map(|column| column["name"].as_str().expect("column name"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        [
+            "userid",
+            "dbid",
+            "queryid",
+            "planid",
+            "datname",
+            "usename",
+            "plan",
+            "calls",
+            "calls_per_second",
+        ]
+    );
+    assert_eq!(row_records(&records).len(), 1);
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("OSSC Plan page");
+    assert_eq!(page["order_by"], serde_json::json!(["calls"]));
+}
+
+#[test]
+fn typed_relation_without_group_executes_as_an_object_surface() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 10, "app", "public", "orders"),
+        (200, 1, 11, 30, "app", "public", "orders"),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&lens=access&page_size=10"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("typed Table object surface");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "relation_layout")
+        .expect("typed Table relation layout");
+    assert_eq!(layout["group"], "object");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["group"], "object");
+    assert_eq!(rows[0]["key"]["relid"], "11");
+    assert!(rows[0]["source"].is_object());
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("typed Table page");
+    assert_eq!(page["group"], "object");
+    assert_eq!(page["order_by"], serde_json::json!(["tuple_throughput"]));
 }
 
 #[test]
@@ -6035,6 +6192,244 @@ fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"][0], serde_json::json!(200_000.0));
+}
+
+#[test]
+fn mcp_snapshot_selects_one_hour_and_the_section_predecessor() {
+    const HOUR_US: i64 = 3_600_000_000;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("open journal");
+    let hour_start = SEGMENT_ID + 100 * HOUR_US;
+
+    for offset in 0..65_i64 {
+        let id = SEGMENT_ID + offset * 1_000_000;
+        let address = SegmentAddress::new(SegmentId::new(id).expect("old id")).expect("old");
+        let mut buffers = SectionBuffers::new();
+        buffers.push(psi(id, 0, offset)).expect("old row fits");
+        let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+        journal.append(address.id, &part).expect("append old");
+        write_segment(&journal, &writer, address).expect("finish old");
+        journal.reset().expect("close old");
+    }
+
+    let predecessor_at = hour_start - 2_000_000;
+    for (offset, minor) in [(3_i64, 0_i32), (2, 1)] {
+        let address = SegmentAddress::new(
+            SegmentId::new(hour_start - offset * 100_000).expect("predecessor id"),
+        )
+        .expect("predecessor");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(diskstats(predecessor_at, minor, 10))
+            .expect("predecessor row fits");
+        let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+        journal
+            .append(address.id, &part)
+            .expect("append predecessor");
+        write_segment(&journal, &writer, address).expect("finish predecessor");
+        journal.reset().expect("close predecessor");
+    }
+
+    let unrelated =
+        SegmentAddress::new(SegmentId::new(hour_start - 100_000).expect("unrelated id"))
+            .expect("unrelated");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(psi(hour_start - 100_000, 0, 1))
+        .expect("unrelated row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal
+        .append(unrelated.id, &part)
+        .expect("append unrelated");
+    write_segment(&journal, &writer, unrelated).expect("finish unrelated");
+    journal.reset().expect("close unrelated");
+
+    let at = hour_start + 100;
+    let current =
+        SegmentAddress::new(SegmentId::new(hour_start).expect("current id")).expect("current");
+    let mut buffers = SectionBuffers::new();
+    for minor in [0, 1] {
+        buffers
+            .push(diskstats(at, minor, 30))
+            .expect("current row fits");
+    }
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(current.id, &part).expect("append current");
+    write_segment(&journal, &writer, current).expect("finish current");
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: 0,
+        active_position: None,
+        at,
+        sections: vec!["os_diskstats".to_owned()],
+        fields: vec!["minor".to_owned(), "reads".to_owned()],
+        by: Vec::new(),
+        direction: crate::route::Order::Asc,
+        group: None,
+        postgresql: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        activity_visibility: None,
+        type_id: None,
+        row_ordinal: None,
+    };
+    let selected = prepare_snapshot_for_mcp(directory.path(), request, &|| false)
+        .expect("prepare bounded snapshot");
+    assert_eq!(selected.segment_id, Some(hour_start));
+    let records = stream(selected.prepared.expect("recorded snapshot")).expect("snapshot body");
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("snapshot page");
+    assert_eq!(page["from"], predecessor_at.to_string());
+    assert_eq!(page["to"], at.to_string());
+    assert_eq!(row_records(&records).len(), 2);
+}
+
+#[test]
+fn mcp_snapshot_uses_real_current_rows_and_keeps_equal_time_layouts() {
+    const HOUR_US: i64 = 3_600_000_000;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("open journal");
+    let hour_start = SEGMENT_ID.div_euclid(HOUR_US) * HOUR_US;
+
+    let previous = SegmentAddress::new(SegmentId::new(hour_start - 1_000).expect("previous id"))
+        .expect("previous");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(bgwriter_v1(hour_start - 100, 10))
+        .expect("previous row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(previous.id, &part).expect("append previous");
+    write_segment(&journal, &writer, previous).expect("finish previous");
+    journal.reset().expect("close previous");
+
+    let current_at = hour_start + 200;
+    let current_v1 = SegmentAddress::new(SegmentId::new(hour_start + 1).expect("current v1 id"))
+        .expect("current v1");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(bgwriter_v1(current_at, 20))
+        .expect("current v1 row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal
+        .append(current_v1.id, &part)
+        .expect("append current v1");
+    write_segment(&journal, &writer, current_v1).expect("finish current v1");
+    journal.reset().expect("close current v1");
+
+    let current_v2 = SegmentAddress::new(SegmentId::new(hour_start + 2).expect("current v2 id"))
+        .expect("current v2");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(bgwriter_v2(current_at, 30))
+        .expect("current v2 row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal
+        .append(current_v2.id, &part)
+        .expect("append current v2");
+    write_segment(&journal, &writer, current_v2).expect("finish current v2");
+    journal.reset().expect("close current v2");
+
+    let future =
+        SegmentAddress::new(SegmentId::new(hour_start + 3).expect("future id")).expect("future");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(PgStatArchiver {
+            ts: Ts(hour_start + 240),
+            archived_count: 0,
+            last_archived_wal: None,
+            last_archived_time: None,
+            failed_count: 0,
+            last_failed_wal: None,
+            last_failed_time: None,
+            stats_reset: None,
+        })
+        .expect("unrelated row fits");
+    buffers
+        .push(bgwriter_v2(hour_start + 300, 40))
+        .expect("future section row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(future.id, &part).expect("append future");
+    write_segment(&journal, &writer, future).expect("finish future");
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: 0,
+        active_position: None,
+        at: hour_start + 250,
+        sections: vec!["pg_stat_bgwriter".to_owned()],
+        fields: vec!["buffers_clean".to_owned()],
+        by: Vec::new(),
+        direction: crate::route::Order::Asc,
+        group: None,
+        postgresql: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        activity_visibility: None,
+        type_id: None,
+        row_ordinal: None,
+    };
+    let selected = prepare_snapshot_for_mcp(directory.path(), request, &|| false)
+        .expect("prepare real-moment snapshot");
+    assert_eq!(selected.segment_id, Some(current_v2.id.get()));
+    let records = stream(selected.prepared.expect("recorded snapshot")).expect("snapshot body");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["type_id"].as_str().expect("type id"))
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["1006001", "1006002"])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("snapshot page");
+    assert_eq!(page["to"], current_at.to_string());
+    assert_eq!(page["from"], (hour_start - 100).to_string());
+}
+
+fn bgwriter_v1(ts: i64, buffers_clean: i64) -> PgStatBgwriterV1 {
+    PgStatBgwriterV1 {
+        ts: Ts(ts),
+        checkpoints_timed: 0,
+        checkpoints_req: 0,
+        checkpoint_write_time: 0.0,
+        checkpoint_sync_time: 0.0,
+        buffers_checkpoint: 0,
+        buffers_clean,
+        maxwritten_clean: 0,
+        buffers_backend: 0,
+        buffers_backend_fsync: 0,
+        buffers_alloc: 0,
+        stats_reset: None,
+    }
+}
+
+fn bgwriter_v2(ts: i64, buffers_clean: i64) -> PgStatBgwriterV2 {
+    PgStatBgwriterV2 {
+        ts: Ts(ts),
+        buffers_clean,
+        maxwritten_clean: 0,
+        buffers_alloc: 0,
+        stats_reset: None,
+    }
 }
 
 #[test]

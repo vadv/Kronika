@@ -3,8 +3,8 @@ import { registry } from "kronika:registry"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
-import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
+import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationLens, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
@@ -44,6 +44,7 @@ const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 
 export interface SectionRequest {
   readonly section: string
+  readonly lens?: StatementLens | PlanLens | RelationLens
   readonly fields?: readonly string[]
   readonly typeIds?: readonly string[]
   readonly fieldsByType?: Readonly<Record<string, readonly string[]>>
@@ -1352,21 +1353,27 @@ function snapshotQuery(
   const section = sections.length === 1 ? sections[0] : undefined
   const typeId = section?.typeId ?? options.typeId
   const fields = section?.fields ?? unique(sections.flatMap((request) => request.fields ?? []))
-  const ordered = section === undefined || options.rowOrdinal !== undefined
+  const ordered = section === undefined || section.lens !== undefined || options.rowOrdinal !== undefined
     ? []
     : snapshotOrder(section, order)
   const requestedOrder = section === undefined || order === undefined ? undefined : requestedSnapshotOrder(section, order)
   return [
     `at=${at}`,
     ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
+    ...(section?.lens === undefined ? [] : [`lens=${encodeURIComponent(section.lens)}`]),
     ...fields.map((field) => `field=${encodeURIComponent(field)}`),
     ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
+    ...(section?.lens === undefined || requestedOrder?.[0] === undefined
+      ? []
+      : [`order=${encodeURIComponent(requestedOrder[0])}`]),
     ...(section?.group === undefined ? [] : [`group=${section.group}`]),
     ...(requestedOrder === undefined || order?.descending !== false ? [] : ["direction=asc"]),
     ...(section?.pageSize === undefined || options.rowOrdinal !== undefined ? [] : [`page_size=${section.pageSize}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
-    ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
+    ...(options.search === undefined
+      ? []
+      : [`${section?.lens === undefined ? "search" : "find"}=${encodeURIComponent(options.search)}`]),
     ...(options.firstMatch === true ? ["first_match=1"] : []),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
@@ -1385,6 +1392,7 @@ function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefine
 }
 
 function requestedSnapshotOrder(section: SectionRequest, chosen: SnapshotOrder): readonly string[] | undefined {
+  if (section.lens !== undefined) return [chosen.column]
   return section.order === undefined
     ? section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined
     : section.order[chosen.column]

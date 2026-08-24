@@ -83,47 +83,39 @@ function parseRow(record, storedLayout, segmentId = "segment-a") {
   return parsed
 }
 
-test("relation requests keep hierarchy separate from fixed metric lenses", () => {
+test("relation requests send compact semantic lenses and hierarchy", () => {
   assert.deepEqual(relation.TABLE_LENSES, ["access", "changes", "maintenance", "size_buffers", "freeze"])
   assert.deepEqual(relation.INDEX_LENSES, ["usage", "low_activity", "size_buffers", "state"])
 
   const access = relation.relationRequest("pg_stat_user_tables", "access", "schema")
-  assert.equal(access.group, "schema")
-  assert.equal(access.pageSize, 200)
-  assert.deepEqual(access.defaultOrder, ["derived.tuple_throughput"])
-  assert.deepEqual(access.order.tuple_throughput, ["derived.tuple_throughput"])
-  assert.deepEqual(access.order.sequential_share_pct, ["derived.sequential_share_pct"])
-  assert.equal(access.fields.includes("table_count"), true)
-  assert.equal(access.fields.includes("last_seq_scan_oldest"), true)
-  assert.equal(access.fields.includes("last_seq_scan_latest"), true)
-  assert.equal(access.fields.includes("last_seq_scan_never_count"), true)
+  assert.deepEqual(access, {
+    section: "pg_stat_user_tables", lens: "access", group: "schema", pageSize: 200,
+  })
 
   const changes = relation.relationRequest("pg_stat_user_tables", "changes", "object")
-  assert.deepEqual(changes.defaultOrder, ["derived.dml_total"])
-  for (const field of ["insert_share_pct", "update_share_pct", "delete_share_pct", "dead_pct", "hot_pct", "new_page_pct"]) {
-    assert.deepEqual(changes.order[field], [`derived.${field}`])
-  }
+  assert.deepEqual(changes, {
+    section: "pg_stat_user_tables", lens: "changes", group: "object", pageSize: 200,
+  })
 
   const size = relation.relationRequest("pg_stat_user_tables", "size_buffers", "object")
-  assert.deepEqual(size.defaultOrder, ["derived.displayed_storage_bytes"])
-  for (const field of ["toast_share_pct", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "buffer_hit_pct"]) {
-    assert.deepEqual(size.order[field], [`derived.${field}`])
-  }
+  assert.deepEqual(size, {
+    section: "pg_stat_user_tables", lens: "size_buffers", group: "object", pageSize: 200,
+  })
 
   const low = relation.relationRequest("pg_stat_user_indexes", "low_activity", "object")
-  assert.deepEqual(low.defaultOrder, ["main_fork_bytes"])
-  assert.equal(low.fields.includes("no_scans"), true)
-  assert.deepEqual(low.filters, { no_scans: "true" })
+  assert.deepEqual(low, {
+    section: "pg_stat_user_indexes", lens: "low_activity", group: "object", pageSize: 200,
+  })
 
   const state = relation.relationRequest("pg_stat_user_indexes", "state", "database")
-  assert.deepEqual(state.defaultOrder, ["derived.state_severity"])
-  assert.equal(state.fields.includes("invalid_count"), true)
-  assert.equal(state.fields.includes("unready_count"), true)
-  assert.equal(state.fields.includes("indexdef"), false)
+  assert.deepEqual(state, {
+    section: "pg_stat_user_indexes", lens: "state", group: "database", pageSize: 200,
+  })
 
   const tablespace = relation.relationRequest("pg_stat_user_tables", "size_buffers", "tablespace")
-  assert.deepEqual(tablespace.fields.slice(0, 3), ["tablespace", "tablespace_oid", "table_count"])
-  assert.equal(tablespace.fields.includes("datid"), false)
+  assert.deepEqual(tablespace, {
+    section: "pg_stat_user_tables", lens: "size_buffers", group: "tablespace", pageSize: 200,
+  })
 })
 
 test("relation histories default to each selected lens's meaningful quantitative metric", () => {
@@ -135,18 +127,18 @@ test("relation histories default to each selected lens's meaningful quantitative
   assert.deepEqual(relation.relationHistoryFields("pg_stat_user_tables", "tuple_throughput", ["seq_tup_read"]), [])
 })
 
-test("rendered relation columns hide numeric identity while requests retain it", () => {
+test("rendered relation columns hide numeric identity while semantic fields retain it", () => {
   const hidden = ["datid", "relid", "indexrelid", "tablespace_oid"]
   for (const section of relation.RELATION_SECTIONS) {
     const lenses = section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES
     for (const lens of lenses) {
       for (const group of relation.RELATION_GROUPS) {
-        const request = relation.relationRequest(section, lens, group)
-        assert.equal(request.fields.includes("datid"), group !== "tablespace", `${section}:${lens}:${group}:datid projection`)
-        assert.equal(request.fields.includes("tablespace_oid"), group === "tablespace", `${section}:${lens}:${group}:tablespace projection`)
-        assert.equal(request.fields.includes("relid"), group === "object", `${section}:${lens}:${group}:relid projection`)
-        assert.equal(request.fields.includes("indexrelid"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:indexrelid projection`)
-        assert.deepEqual(Object.keys(request.order).filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:visible sorts`)
+        const semantic = relation.relationFields(section, lens, group)
+        assert.equal(semantic.includes("datid"), group !== "tablespace", `${section}:${lens}:${group}:datid projection`)
+        assert.equal(semantic.includes("tablespace_oid"), group === "tablespace", `${section}:${lens}:${group}:tablespace projection`)
+        assert.equal(semantic.includes("relid"), group === "object", `${section}:${lens}:${group}:relid projection`)
+        assert.equal(semantic.includes("indexrelid"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:indexrelid projection`)
+        assert.deepEqual(hidden.filter((field) => relation.relationOrderAvailable(section, lens, group, field)), [], `${section}:${lens}:${group}:visible sorts`)
         const fields = view.relationColumns(section, lens, group).map(({ field }) => field)
         assert.deepEqual(fields.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}`)
         assert.equal(fields.includes("datname"), group !== "tablespace", `${section}:${lens}:${group}:database name`)

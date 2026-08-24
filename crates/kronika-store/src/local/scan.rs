@@ -9,8 +9,9 @@ use kronika_layout::FileIdentity;
 
 use crate::catalog_summary::CatalogDigest;
 use crate::source::{
-    ActiveJournalWarningReason, ActivePart, FinalUnit, InvalidZmsReason, JournalScan, LocalScan,
-    StoreIoFailure, StoreIoOperation, StoreObject, StoreWarning, StoreWarningReason,
+    ActiveJournalWarningReason, ActivePart, CatalogInventory, FinalUnit, InvalidZmsReason,
+    JournalScan, LocalScan, StoreIoFailure, StoreIoOperation, StoreObject, StoreWarning,
+    StoreWarningReason,
 };
 
 use super::budget::{
@@ -27,7 +28,7 @@ use super::segment::{
     FinishedValidation, ZmsInvalid, ZmsOpen, classify_zms_validation, invalid_zms_warning,
     read_zms_summary,
 };
-use super::{ACTIVE_ARC_ALLOCATION_BYTES, LocalDir};
+use super::{ACTIVE_ARC_ALLOCATION_BYTES, LocalDir, cancelled_catalog_inventory};
 
 fn active_growth(capacity: usize, len: usize, max_parts: usize) -> Option<usize> {
     let available = max_parts.checked_sub(len)?;
@@ -226,6 +227,80 @@ impl LocalDir {
             metadata_bytes: previous_active_metadata
                 .checked_add(active_metadata)
                 .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?,
+        })
+    }
+
+    pub(super) fn complete_catalog_inventory(
+        &self,
+        journal: JournalScan,
+        initial_warnings: &[StoreWarning],
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<CatalogInventory> {
+        if cancelled() {
+            return Err(cancelled_catalog_inventory());
+        }
+        let layout = self
+            .root
+            .scan_cancellable(self.limits, cancelled)
+            .map_err(layout_io)?;
+        let segment_count = layout.segments.len();
+        ensure_scan_metadata_budget(
+            layout.metadata_bytes,
+            journal.metadata_bytes,
+            0,
+            segment_count,
+            0,
+            self.limits.max_metadata_bytes,
+        )?;
+        let retained_metadata = accounted_scan_metadata_bytes(
+            layout.metadata_bytes,
+            journal.metadata_bytes,
+            0,
+            segment_count,
+            0,
+        )
+        .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
+
+        let mut warnings = Vec::new();
+        for warning in initial_warnings {
+            if cancelled() {
+                return Err(cancelled_catalog_inventory());
+            }
+            push_warning_bounded(
+                &mut warnings,
+                *warning,
+                retained_metadata,
+                self.limits.max_metadata_bytes,
+            )?;
+        }
+        for foreign in &layout.foreign_entries {
+            if cancelled() {
+                return Err(cancelled_catalog_inventory());
+            }
+            let diagnostic = foreign.diagnostic();
+            push_warning_bounded(
+                &mut warnings,
+                StoreWarning {
+                    affected: StoreObject::Foreign(diagnostic.path),
+                    reason: StoreWarningReason::ForeignEntry(diagnostic.reason),
+                    identity: Some(diagnostic.path.file),
+                    failure: None,
+                },
+                retained_metadata,
+                self.limits.max_metadata_bytes,
+            )?;
+        }
+        if cancelled() {
+            return Err(cancelled_catalog_inventory());
+        }
+
+        Ok(CatalogInventory {
+            finished: layout.segments,
+            active: journal.active,
+            warnings,
+            valid_len: journal.valid_len,
+            committed_reset: journal.committed_reset,
+            metadata_bytes: retained_metadata,
         })
     }
 

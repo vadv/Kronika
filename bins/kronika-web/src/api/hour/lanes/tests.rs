@@ -1,11 +1,15 @@
+use std::cell::Cell as Count;
 use std::collections::BTreeMap;
 
-use kronika_reader::{Cell, Row};
-use kronika_registry::contract;
+use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
+use kronika_reader::{Cell, Reader, Row};
+use kronika_registry::os_cpu::OsCpu;
+use kronika_registry::{Ts, contract};
+use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 
 use super::{
-    ActivitySample, Counters, activity_sample, counter_sum, cpu_busy_ticks, current_points, points,
-    rate, record_activity_sample,
+    ActivitySample, Counters, State, activity_sample, collect, counter_sum, cpu_busy_ticks,
+    current_points, points, rate, record_activity_sample,
 };
 use crate::route::Window;
 
@@ -279,4 +283,73 @@ fn a_shared_boundary_row_is_not_emitted_again_by_the_next_segment() {
             .iter()
             .any(|point| point.key == "cpu_busy" && point.ts == 300 && point.value.is_some())
     );
+}
+
+#[test]
+fn lane_collection_stops_visiting_a_large_section_after_cancellation() {
+    const ROWS: usize = 4_096;
+    const CANCEL_AFTER: usize = 8;
+    const SEGMENT_ID: i64 = 1_709_164_800_000_000;
+
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let mut buffers = SectionBuffers::new();
+    for ordinal in 0..ROWS {
+        buffers
+            .push(OsCpu {
+                ts: Ts(SEGMENT_ID + i64::try_from(ordinal).expect("small fixture ordinal")),
+                cpu_id: -1,
+                user: i64::try_from(ordinal).expect("small fixture counter"),
+                nice: 0,
+                system: 0,
+                idle: 0,
+                iowait: 0,
+                irq: 0,
+                softirq: 0,
+                steal: 0,
+                guest: 0,
+                guest_nice: 0,
+                scope: 0,
+            })
+            .expect("CPU row fits");
+    }
+    let part = buffers
+        .flush(&[])
+        .expect("encode fixture rows")
+        .expect("fixture has rows");
+    journal
+        .append(SegmentId::new(SEGMENT_ID).expect("segment id"), &part)
+        .expect("append fixture rows");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let listing = reader.segments(..).expect("list active segment");
+    let segment = reader
+        .open_segment(listing.segments.first().expect("active segment"))
+        .expect("open active segment");
+    let checks = Count::new(0);
+    let cancelled = || {
+        let next = checks.get() + 1;
+        checks.set(next);
+        next >= CANCEL_AFTER
+    };
+    let mut state = State::default();
+
+    let lanes = collect(
+        &segment,
+        Window {
+            from: None,
+            to: None,
+        },
+        &mut state,
+        &cancelled,
+    )
+    .expect("cancelled lane collection");
+
+    assert!(lanes.is_empty());
+    assert!(checks.get() <= CANCEL_AFTER + 1);
+    assert!(state.counters.busy_ticks.len() < ROWS);
 }

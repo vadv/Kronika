@@ -417,7 +417,11 @@ fn emit_lanes(
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
-    for point in lanes::collect(&segment, window, state)? {
+    let points = lanes::collect(&segment, window, state, cancelled)?;
+    if cancelled() {
+        return Ok(false);
+    }
+    for point in points {
         if cancelled()
             || !emit(json!({
                 "record": "lane",

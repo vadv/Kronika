@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_topology::OsTopology;
+use kronika_registry::pg_stat_archiver::PgStatArchiver;
+use kronika_registry::pg_stat_bgwriter::{PgStatBgwriterV1, PgStatBgwriterV2};
 use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use sha2::{Digest as _, Sha256};
@@ -645,4 +647,170 @@ fn range_discovery_checks_bodies_only_after_selection() {
             .collect::<Vec<_>>(),
         vec![first_address.id.get(), second_address.id.get()]
     );
+}
+
+#[test]
+fn snapshot_selection_uses_real_section_moments_across_layouts() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+
+    for offset in 0..65_i64 {
+        let old = address(SEGMENT_ID - 65 + offset);
+        let mut buffers = SectionBuffers::new();
+        buffers.push(archiver(1)).expect("unrelated old row fits");
+        let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+        journal.append(old.id, &part).expect("append old segment");
+        write_segment(&journal, &owner, old).expect("publish old segment");
+        journal.reset().expect("reset old segment");
+    }
+
+    let previous = address(SEGMENT_ID);
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(bgwriter_v1(100, 10))
+        .expect("previous row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(previous.id, &part).expect("append previous");
+    write_segment(&journal, &owner, previous).expect("publish previous");
+    journal.reset().expect("reset previous");
+
+    let current_v1 = address(SEGMENT_ID + 1);
+    let mut buffers = SectionBuffers::new();
+    buffers.push(bgwriter_v1(200, 20)).expect("v1 row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(current_v1.id, &part).expect("append v1");
+    write_segment(&journal, &owner, current_v1).expect("publish v1");
+    journal.reset().expect("reset v1");
+
+    let current_v2 = address(SEGMENT_ID + 2);
+    let mut buffers = SectionBuffers::new();
+    buffers.push(bgwriter_v2(200, 30)).expect("v2 row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(current_v2.id, &part).expect("append v2");
+    write_segment(&journal, &owner, current_v2).expect("publish v2");
+    journal.reset().expect("reset v2");
+
+    let future = address(SEGMENT_ID + 3);
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(archiver(240))
+        .expect("unrelated current row fits");
+    buffers
+        .push(bgwriter_v2(300, 40))
+        .expect("future section row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(future.id, &part).expect("append future");
+    write_segment(&journal, &owner, future).expect("publish future");
+    journal.reset().expect("reset future");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    super::reset_snapshot_finished_catalog_reads();
+    let selected = reader
+        .snapshot_selection(0, 250, "pg_stat_bgwriter", &|| false)
+        .expect("select section snapshot");
+    assert_eq!(
+        super::snapshot_finished_catalog_reads(),
+        5,
+        "selection reads only the future, equal current contributors, predecessor, and one older catalog"
+    );
+    assert!(selected.warnings.is_empty());
+    assert_eq!(
+        selected.anchor.as_ref().map(super::SegmentRef::id),
+        Some(current_v2.id.get())
+    );
+    assert_eq!(
+        selected
+            .current_segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        vec![current_v1.id.get()],
+        "both physical layouts contributing the current moment survive"
+    );
+    assert_eq!(
+        selected
+            .predecessor_segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        vec![previous.id.get()],
+        "the immediate real predecessor survives"
+    );
+}
+
+#[test]
+fn snapshot_selection_cancels_between_finished_catalogs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+
+    for offset in 0..8_i64 {
+        let unrelated = address(SEGMENT_ID + offset);
+        let mut buffers = SectionBuffers::new();
+        buffers.push(archiver(offset)).expect("unrelated row fits");
+        let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+        journal
+            .append(unrelated.id, &part)
+            .expect("append unrelated segment");
+        write_segment(&journal, &owner, unrelated).expect("publish unrelated segment");
+        journal.reset().expect("reset unrelated segment");
+    }
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    super::reset_snapshot_finished_catalog_reads();
+    let error = reader
+        .snapshot_selection(0, 250, "pg_stat_bgwriter", &|| {
+            super::snapshot_finished_catalog_reads() >= 2
+        })
+        .expect_err("selection must honor cancellation");
+    assert!(
+        matches!(error, ReaderError::Io(ref source) if source.kind() == std::io::ErrorKind::Interrupted),
+        "cancellation must be a retryable interrupted read: {error}"
+    );
+    assert_eq!(
+        super::snapshot_finished_catalog_reads(),
+        2,
+        "no later finished catalog is read after cancellation"
+    );
+}
+
+fn bgwriter_v1(ts: i64, buffers_clean: i64) -> PgStatBgwriterV1 {
+    PgStatBgwriterV1 {
+        ts: Ts(ts),
+        checkpoints_timed: 0,
+        checkpoints_req: 0,
+        checkpoint_write_time: 0.0,
+        checkpoint_sync_time: 0.0,
+        buffers_checkpoint: 0,
+        buffers_clean,
+        maxwritten_clean: 0,
+        buffers_backend: 0,
+        buffers_backend_fsync: 0,
+        buffers_alloc: 0,
+        stats_reset: None,
+    }
+}
+
+fn bgwriter_v2(ts: i64, buffers_clean: i64) -> PgStatBgwriterV2 {
+    PgStatBgwriterV2 {
+        ts: Ts(ts),
+        buffers_clean,
+        maxwritten_clean: 0,
+        buffers_alloc: 0,
+        stats_reset: None,
+    }
+}
+
+fn archiver(ts: i64) -> PgStatArchiver {
+    PgStatArchiver {
+        ts: Ts(ts),
+        archived_count: 0,
+        last_archived_wal: None,
+        last_archived_time: None,
+        failed_count: 0,
+        last_failed_wal: None,
+        last_failed_time: None,
+        stats_reset: None,
+    }
 }

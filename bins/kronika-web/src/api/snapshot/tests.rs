@@ -429,6 +429,7 @@ fn request() -> SnapshotRequest {
         by: vec!["calls".to_owned()],
         direction: Order::Desc,
         group: None,
+        postgresql: None,
         page_size: Some(200),
         cursor: None,
         search: Some("needle*".to_owned()),

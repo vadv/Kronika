@@ -521,14 +521,13 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
 
 test("dense numeric columns advertise server sorting and text identities do not", () => {
   const lenses = [
-    ...["load", "per_call", "io", "resources", "stability"].map((lens) => [helpers.statementColumns(lens), helpers.statementRequest(lens)]),
-    ...["load", "timing", "io", "identity"].map((lens) => [helpers.planColumns(lens), helpers.planRequest(lens)]),
+    ...["load", "per_call", "io", "resources", "stability"].map((lens) => helpers.statementColumns(lens)),
+    ...["load", "timing", "io", "identity"].map((lens) => helpers.planColumns(lens)),
   ]
-  for (const [columns, request] of lenses) {
+  for (const columns of lenses) {
     for (const column of columns) {
       const quantitative = column.field !== "calls" && ["number", "id", "bytes", "milliseconds", "percent", "timestamp"].includes(column.kind)
       assert.equal(column.sortable === true, quantitative, column.field)
-      if (quantitative) assert.ok(request.order[column.field]?.length > 0, column.field)
     }
   }
 })

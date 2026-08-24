@@ -417,6 +417,41 @@ test("derived snapshot orders survive physical layout resolution", async () => {
   }
 })
 
+test("PostgreSQL lenses send one public order without physical request expansion", async () => {
+  const api = await bundledApi()
+  const seen: URL[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    seen.push(new URL(String(input), "http://kronika.invalid"))
+    return ndjson([])
+  }
+  try {
+    await api.loadSnapshot("statements", START, [{
+      section: "pg_stat_statements", lens: "resources", pageSize: 200,
+    }], new AbortController().signal, { column: "wal_per_call", descending: false }, {
+      search: "database:app AND text:vacuum*",
+    })
+    await api.loadSnapshot("indexes", START, [{
+      section: "pg_stat_user_indexes", lens: "low_activity", group: "object", pageSize: 200,
+    }], new AbortController().signal)
+
+    assert.equal(seen[0]?.searchParams.get("lens"), "resources")
+    assert.equal(seen[0]?.searchParams.get("order"), "wal_per_call")
+    assert.deepEqual(seen[0]?.searchParams.getAll("by"), [])
+    assert.deepEqual(seen[0]?.searchParams.getAll("field"), [])
+    assert.equal(seen[0]?.searchParams.get("find"), "database:app AND text:vacuum*")
+    assert.equal(seen[0]?.searchParams.has("search"), false)
+    assert.equal(seen[0]?.searchParams.get("direction"), "asc")
+    assert.equal(seen[1]?.searchParams.get("lens"), "low_activity")
+    assert.equal(seen[1]?.searchParams.get("group"), "object")
+    assert.equal(seen[1]?.searchParams.has("order"), false)
+    assert.deepEqual(seen[1]?.searchParams.getAll("by"), [])
+    assert.deepEqual([...(seen[1]?.searchParams.keys() ?? [])].filter((name) => name.startsWith("where.")), [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("fixture composite ordering uses interval deltas instead of cumulative operands", async () => {
   const api = await bundledApi()
   const row = (ordinal: string, timestamp: number, values: Readonly<Record<string, number | string>>) => ({

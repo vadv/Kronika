@@ -337,6 +337,7 @@ fn request(search: Option<&str>, cursor: Option<&str>) -> SnapshotRequest {
         by: vec!["tree".to_owned()],
         direction: Order::Desc,
         group: None,
+        postgresql: None,
         page_size: Some(1),
         cursor: cursor.map(str::to_owned),
         search: search.map(str::to_owned),

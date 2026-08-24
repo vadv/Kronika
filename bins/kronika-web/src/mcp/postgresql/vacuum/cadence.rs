@@ -27,6 +27,7 @@ pub(super) fn recorded_cadence(
         by: Vec::new(),
         direction: Order::Desc,
         group: None,
+        postgresql: None,
         page_size: Some(1),
         cursor: None,
         search: None,

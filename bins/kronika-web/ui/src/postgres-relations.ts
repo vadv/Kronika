@@ -31,8 +31,9 @@ export interface RelationRow {
 }
 
 export interface RelationRequest extends SectionRequest {
+  readonly section: RelationSection
+  readonly lens: RelationLens
   readonly group: RelationGroup
-  readonly filters?: Readonly<Record<string, string>>
 }
 
 export interface RelationDetailTarget {
@@ -280,10 +281,6 @@ export function relationHistoryFields(section: RelationSection, field: string, p
   return dependencies.every((name) => physicalFields.includes(name)) ? dependencies : []
 }
 
-export function relationSortToken(field: string): string {
-  return field.endsWith("_pct") || field.endsWith("_per_scan") || field.endsWith("_mean_ms") || ["state_severity", "tuple_throughput", "dml_total", "displayed_storage_bytes"].includes(field) ? `derived.${field}` : field
-}
-
 const ESTIMATED_ROWS = new Set(["reltuples", "n_live_tup", "n_dead_tup", "toast_n_live_tup", "toast_n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"])
 
 export function relationFieldKind(field: string): "id" | "text" | "boolean" | "timestamp" | "bytes" | "milliseconds" | "percent" | "estimated_rows" | "number" {
@@ -299,21 +296,14 @@ export function relationFieldKind(field: string): "id" | "text" | "boolean" | "t
 }
 
 export function relationRequest(section: RelationSection, lensName: RelationLens, group: RelationGroup): RelationRequest {
-  const fields = relationFields(section, lensName, group)
-  const order = Object.fromEntries(fields.filter((field) => {
-    const kind = relationFieldKind(field)
-    return kind !== "text" && kind !== "boolean" && !isRelationId(field)
-  }).map((field) => [field, [relationSortToken(field)]]))
-  const chosen = relationDefaultOrder(section, lensName)
-  return {
-    section,
-    group,
-    fields,
-    pageSize: 200,
-    defaultOrder: [relationSortToken(chosen)],
-    order,
-    ...(section === "pg_stat_user_indexes" && lensName === "low_activity" ? { filters: { no_scans: "true" } } : {}),
-  }
+  if (!isRelationLens(section, lensName)) invalid()
+  return { section, lens: lensName, group, pageSize: 200 }
+}
+
+export function relationOrderAvailable(section: RelationSection, lensName: RelationLens, group: RelationGroup, field: string): boolean {
+  if (!relationFields(section, lensName, group).includes(field)) return false
+  const kind = relationFieldKind(field)
+  return kind !== "text" && kind !== "boolean" && !isRelationId(field)
 }
 
 export function isRelationSection(value: string): value is RelationSection {

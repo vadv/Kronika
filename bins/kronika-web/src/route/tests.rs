@@ -1,7 +1,7 @@
 use super::{
     ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
-    MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
-    Window, parse,
+    MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, PostgresqlSurface, Route,
+    RouteError, SegmentRequest, StatementLens, TableLens, Window, parse,
 };
 
 #[test]
@@ -251,6 +251,81 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
         panic!("snapshot route");
     };
     assert_eq!(sized.page_size, Some(17));
+}
+
+#[test]
+fn snapshot_postgresql_vocabulary_is_one_typed_surface_request() {
+    let Route::Snapshot(statements) = parse(
+        "/api/segments/7/snapshot",
+        Some(
+            "at=9&section=pg_stat_statements&lens=per_call&find=slow+query&order=calls_per_second&direction=asc",
+        ),
+    )
+    .expect("typed Statement surface")
+    else {
+        panic!("snapshot route");
+    };
+    let postgresql = statements.postgresql.expect("PostgreSQL surface");
+    assert_eq!(
+        postgresql.surface,
+        PostgresqlSurface::Statements(StatementLens::PerCall)
+    );
+    assert_eq!(postgresql.order.as_deref(), Some("calls_per_second"));
+    assert_eq!(statements.search.as_deref(), Some("slow query"));
+    assert!(statements.by.is_empty());
+    assert_eq!(statements.page_size, Some(DEFAULT_SNAPSHOT_PAGE_SIZE));
+    assert_eq!(statements.direction, Order::Asc);
+
+    let Route::Snapshot(tables) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_user_tables&lens=freeze&group=schema"),
+    )
+    .expect("typed grouped Table surface") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(
+        tables.postgresql.expect("PostgreSQL surface").surface,
+        PostgresqlSurface::Tables(TableLens::Freeze)
+    );
+
+    let Route::Snapshot(objects) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_user_tables&lens=access"),
+    )
+    .expect("typed object Table surface") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(objects.group, Some(super::RelationGroup::Object));
+}
+
+#[test]
+fn snapshot_postgresql_vocabulary_does_not_mix_with_legacy_names() {
+    let path = "/api/segments/7/snapshot";
+    for (query, parameter) in [
+        (
+            "at=9&section=pg_stat_statements&lens=load&by=calls&order=calls_per_second",
+            "order",
+        ),
+        (
+            "at=9&section=pg_stat_statements&lens=load&search=slow&find=slow",
+            "find",
+        ),
+        ("at=9&section=pg_stat_activity&lens=load", "lens"),
+        ("at=9&section=pg_stat_database&lens=load", "lens"),
+        ("at=9&section=postgres&lens=load", "lens"),
+        ("at=9&section=pg_stat_activity&find=pid%3A42", "find"),
+        ("at=9&section=pg_stat_database&find=database%3Aapp", "find"),
+        (
+            "at=9&section=pg_stat_statements&section=pg_store_plans&lens=load",
+            "section",
+        ),
+    ] {
+        assert_eq!(
+            parse(path, Some(query)),
+            Err(RouteError::BadParameter(parameter.to_owned())),
+            "{query}",
+        );
+    }
 }
 
 #[test]

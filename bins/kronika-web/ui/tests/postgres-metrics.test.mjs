@@ -69,7 +69,7 @@ test("all six statement layouts keep exact registry identity, aliases, projectio
     assert.equal(projection.includes("mean_time"), typeId === "1002001")
     assert.equal(projection.includes("private_text"), false)
   }
-  assert.equal(metrics.statementRequest("load").defaultOrder.includes("total_time"), true)
+  assert.deepEqual(metrics.statementRequest("load"), { section: "pg_stat_statements", lens: "load", pageSize: 200 })
   assert.equal(metrics.postgresProjection("1002004").includes("stats_since"), false)
   assert.equal(metrics.postgresProjection("1002005").includes("stats_since"), true)
 })
@@ -88,7 +88,6 @@ test("the three plan layouts and info use their exact physical variants", () => 
     assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
     assert.equal(metrics.postgresProjection(typeId).includes("queryid_stat_statements"), isVadv)
     assert.equal(metrics.postgresProjection(typeId).includes("plan"), true)
-    assert.equal(metrics.planRequest("identity").fieldsByType[typeId].filter((field) => field === "calls").length, 1)
   }
   assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
   assert.deepEqual(metrics.postgresIdentity("1016001"), [])
@@ -187,63 +186,29 @@ test("a physical statement spike selects interval mean execution time", () => {
   })
 })
 
-test("statement lenses project only their exact physical operands", () => {
-  const perCall = metrics.statementRequest("per_call")
-  assert.equal(perCall.pageSize, 200)
-  assert.deepEqual(perCall.defaultOrder, ["calls"])
+test("statement lenses send compact semantic surface requests", () => {
+  assert.deepEqual(metrics.statementRequest("per_call"), {
+    section: "pg_stat_statements", lens: "per_call", pageSize: 200,
+  })
   assert.equal(metrics.statementDefaultOrder("per_call"), "calls_per_second")
-  assert.ok(perCall.fieldsByType["1002001"].includes("rows"))
-  assert.ok(perCall.fieldsByType["1002001"].includes("calls"))
-  assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
-  assert.equal(perCall.fieldsByType["1002001"].includes("wal_bytes"), false)
-  assert.equal(perCall.fieldsByType["1002001"].includes("shared_blks_dirtied"), false)
-  assert.deepEqual(perCall.order.mean_exec_ms_per_call, ["derived.mean_exec_ms_per_call"])
-  assert.deepEqual(perCall.order.rows_per_call, ["derived.rows_per_call"])
-  assert.deepEqual(perCall.order.blocks_per_call, ["derived.blocks_per_call"])
-
-  const io = metrics.statementRequest("io")
-  assert.ok(io.fieldsByType["1002001"].includes("shared_blks_dirtied"))
-  assert.equal(io.fieldsByType["1002001"].includes("blk_read_time"), false)
-  assert.deepEqual(io.order.hit_pct, ["derived.hit_pct"])
-  assert.deepEqual(io.order.shared_blks_dirtied, ["shared_blks_dirtied"])
-
-  const resources = metrics.statementRequest("resources")
-  assert.ok(resources.fieldsByType["1002006"].includes("temp_blks_written"))
-  assert.equal(resources.fieldsByType["1002006"].includes("temp_blks_read"), false)
-  assert.deepEqual(resources.defaultOrder, ["wal_bytes"])
+  assert.deepEqual(metrics.statementRequest("io"), {
+    section: "pg_stat_statements", lens: "io", pageSize: 200,
+  })
+  assert.deepEqual(metrics.statementRequest("resources"), {
+    section: "pg_stat_statements", lens: "resources", pageSize: 200,
+  })
   assert.equal(metrics.statementDefaultOrder("resources"), "wal_bytes")
-  assert.deepEqual(resources.order.wal_per_call, ["derived.wal_per_call"])
-  assert.deepEqual(resources.order.plan_time_pct, ["derived.plan_time_pct"])
-
-  const stability = metrics.statementRequest("stability")
-  assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
-  assert.ok(stability.fieldsByType["1002001"].includes("stddev_time"))
-  assert.ok(stability.fieldsByType["1002006"].includes("mean_exec_time"))
-  assert.ok(stability.fieldsByType["1002006"].includes("stddev_exec_time"))
-  assert.deepEqual(stability.defaultOrder, ["calls"])
-  assert.deepEqual(stability.order.cv, ["derived.cv"])
-  assert.deepEqual(stability.order.mean_exec_time_ms, ["mean_time", "mean_exec_time"])
+  assert.deepEqual(metrics.statementRequest("stability"), {
+    section: "pg_stat_statements", lens: "stability", pageSize: 200,
+  })
 })
 
-test("plan lenses keep bounded rows and direct per-plan statistics", () => {
+test("plan lenses send compact semantic surface requests", () => {
   for (const lens of ["load", "timing", "io", "identity"]) {
-    const request = metrics.planRequest(lens)
-    assert.equal(request.pageSize, 200)
-    assert.ok(request.fieldsByType["1003001"].includes("plan"))
+    assert.deepEqual(metrics.planRequest(lens), {
+      section: "pg_store_plans", lens, pageSize: 200,
+    })
   }
-  const timing = metrics.planRequest("timing")
-  for (const field of ["min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"]) {
-    assert.ok(timing.fieldsByType["1003001"].includes(field))
-  }
-  assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
-  assert.equal(timing.fieldsByType["1004001"].includes("queryid_stat_statements"), true)
-  assert.deepEqual(timing.order.mean_exec_time_ms, ["mean_time"])
-  assert.deepEqual(timing.order.first_call, ["first_call"])
-  const identity = metrics.planRequest("identity")
-  assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
-  assert.ok(identity.fieldsByType["1003001"].includes("calls"))
-  assert.deepEqual(identity.defaultOrder, ["calls"])
-  assert.equal(identity.fieldsByType["1003001"].includes("mean_time"), false)
   const decorated = metrics.decoratePostgresIntervalRow(
     row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),
   )

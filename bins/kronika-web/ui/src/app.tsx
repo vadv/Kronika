@@ -66,7 +66,7 @@ import {
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
-import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
+import { isRelationLens, relationOrderAvailable, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
@@ -774,7 +774,7 @@ function App({ locale, onLocale, t }: {
     setRelationLevel(navigation.group)
     setRelationFilters(navigation.filters)
     setRelationSelectedKey(navigation.selectedKey)
-    setOrder((current) => current !== null && !crossing && Object.hasOwn(relationRequest(navigation.section, nextLens, navigation.group).order ?? {}, current.column) ? current : null)
+    setOrder((current) => current !== null && !crossing && relationOrderAvailable(navigation.section, nextLens, navigation.group, current.column) ? current : null)
   }, [activeRelationLens, navigateSearchSurface, pgSection])
   const choosePgSection = useCallback((next: PostgresSection) => {
     const crossing = next !== pgSection

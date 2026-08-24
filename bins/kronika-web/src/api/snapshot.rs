@@ -15,7 +15,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell as Counter;
 
-use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
+use kronika_reader::{
+    Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef, StoreWarning,
+};
 use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
@@ -25,7 +27,7 @@ use self::search::{
 };
 #[cfg(test)]
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
-use super::query::{Plan, plans, resolved_dictionary};
+use super::query::{Plan, plans, plans_for_layouts, resolved_dictionary};
 use super::render::{cell, projected_layout, shorten};
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{
@@ -121,6 +123,13 @@ pub(crate) struct PreparedSnapshot {
     text: Option<usize>,
     row_ordinal: Option<u64>,
     meta: ResponseMeta,
+}
+
+pub(crate) struct McpSnapshotPreparation {
+    pub(crate) prepared: Option<Prepared>,
+    pub(crate) segment_id: Option<i64>,
+    pub(crate) active_position: Option<u64>,
+    pub(crate) warnings: Vec<StoreWarning>,
 }
 
 type Readings = BTreeMap<Vec<IdentityCell>, CounterReadings>;
@@ -583,6 +592,122 @@ pub(super) fn prepare(
     request: SnapshotRequest,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
+    let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    prepare_selected(
+        reader,
+        current,
+        segments,
+        &[],
+        request,
+        if_none_match,
+        &|| false,
+    )
+}
+
+pub(crate) fn prepare_for_mcp(
+    root: &Path,
+    mut request: SnapshotRequest,
+    cancelled: &impl Fn() -> bool,
+) -> Result<McpSnapshotPreparation, ApiError> {
+    let (reader, selected, warnings) =
+        select_mcp_snapshot_sources(root, request.at, &request.sections, cancelled)?;
+    let Some((current, segments, layout_sources)) = selected else {
+        return Ok(McpSnapshotPreparation {
+            prepared: None,
+            segment_id: None,
+            active_position: None,
+            warnings,
+        });
+    };
+    request.segment_id = current.id();
+    request.active_position = current.active_position();
+    let segment_id = current.id();
+    let active_position = current.active_position();
+    let prepared = prepare_selected(
+        reader,
+        current,
+        segments,
+        &layout_sources,
+        request,
+        None,
+        cancelled,
+    )?;
+    Ok(McpSnapshotPreparation {
+        prepared: Some(prepared),
+        segment_id: Some(segment_id),
+        active_position,
+        warnings,
+    })
+}
+
+const UTC_HOUR_US: i64 = 3_600_000_000;
+
+type SelectedSnapshotSources = (
+    Reader,
+    Option<(SegmentRef, Vec<SegmentRef>, Vec<SegmentRef>)>,
+    Vec<StoreWarning>,
+);
+
+fn select_mcp_snapshot_sources(
+    root: &Path,
+    at: i64,
+    sections: &[String],
+    cancelled: &impl Fn() -> bool,
+) -> Result<SelectedSnapshotSources, ApiError> {
+    check_preparation_cancelled(cancelled)?;
+    let reader = Reader::open(root)?;
+    let hour_start = at.div_euclid(UTC_HOUR_US).saturating_mul(UTC_HOUR_US);
+    let [section] = sections else {
+        return Ok((reader, None, Vec::new()));
+    };
+    let selected = reader.snapshot_selection(hour_start, at, section, cancelled)?;
+    let sources = selected.anchor.map(|anchor| {
+        let layout_sources = selected.current_segments.clone();
+        let segments = selected
+            .current_segments
+            .into_iter()
+            .chain(selected.predecessor_segments)
+            .collect();
+        (anchor, segments, layout_sources)
+    });
+    Ok((reader, sources, selected.warnings))
+}
+
+fn check_preparation_cancelled(cancelled: &impl Fn() -> bool) -> Result<(), ApiError> {
+    if cancelled() {
+        return Err(kronika_reader::ReaderError::from(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "snapshot preparation was cancelled",
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn prepare_selected(
+    reader: Reader,
+    current: SegmentRef,
+    segments: Vec<SegmentRef>,
+    layout_sources: &[SegmentRef],
+    mut request: SnapshotRequest,
+    if_none_match: Option<&str>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Prepared, ApiError> {
+    check_preparation_cancelled(cancelled)?;
+    let product_type_ids = request
+        .postgresql
+        .as_ref()
+        .map_or_else(HashSet::new, |product| {
+            std::iter::once(&current)
+                .chain(layout_sources)
+                .flat_map(|source| source.sections())
+                .filter(|section| {
+                    logical_section_name(section.type_id) == Some(product.surface.section())
+                })
+                .map(|section| section.type_id)
+                .collect()
+        });
+    super::surface::resolve_postgresql_surface(&mut request, &product_type_ids)?;
     validate_activity_visibility(&request)?;
     let cursor = request
         .cursor
@@ -597,7 +722,6 @@ pub(super) fn prepare(
     if request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
     }
-    let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
     let segment_ref = pin(current, parsed, request.active_position)?;
     let meta = snapshot_meta(&request, &segment_ref, &segments);
     let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
@@ -605,6 +729,12 @@ pub(super) fn prepare(
         return Ok(not_modified);
     }
     let segment = reader.open_segment(&segment_ref)?;
+    let mut layout_segments = Vec::with_capacity(layout_sources.len());
+    for source in layout_sources {
+        check_preparation_cancelled(cancelled)?;
+        layout_segments.push(reader.open_segment(source)?);
+    }
+    check_preparation_cancelled(cancelled)?;
     let active_position = segment_ref.active_position().unwrap_or(0);
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
         return Err(ApiError::BadCursor);
@@ -619,6 +749,7 @@ pub(super) fn prepare(
     physical_request.filters = physical_filters;
     let sections = section_plans(
         &segment,
+        &layout_segments,
         &physical_request,
         &relation_fields,
         search.as_deref(),
@@ -637,6 +768,7 @@ pub(super) fn prepare(
             &segment,
             &sections,
             request.at,
+            cancelled,
         )?
     } else {
         Vec::new()
@@ -650,6 +782,7 @@ pub(super) fn prepare(
             &sections,
             &physical_request.filters,
             request.at,
+            cancelled,
         )?
     } else {
         (Vec::new(), BTreeMap::new())
@@ -762,6 +895,7 @@ fn prepared_search(
 
 fn section_plans(
     segment: &Segment,
+    layout_segments: &[Segment],
     request: &SnapshotRequest,
     relation_fields: &[String],
     search: Option<&StructuredSearch>,
@@ -806,7 +940,21 @@ fn section_plans(
             after: None,
         };
         // Missing sections are empty so one source cannot fail the snapshot.
-        match plans(segment, &data, true) {
+        let selected_plans = if layout_segments.is_empty() {
+            plans(segment, &data, true)
+        } else {
+            let layouts = std::iter::once(segment)
+                .chain(layout_segments)
+                .flat_map(|source| source.layouts(logical_name))
+                .fold(BTreeMap::new(), |mut layouts, (type_id, section)| {
+                    layouts.entry(type_id).or_insert(section);
+                    layouts
+                })
+                .into_iter()
+                .collect();
+            plans_for_layouts(layouts, &data, true)
+        };
+        match selected_plans {
             Ok(mut plans) => {
                 for plan in &mut plans {
                     if !fields.is_empty() {
@@ -4338,6 +4486,7 @@ fn relation_preceding(
     sections: &[SectionPlans],
     filters: &[crate::route::Filter],
     at: i64,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(Vec<SegmentRef>, RetainedRelationMoments), ApiError> {
     let requested_datid = filters
         .iter()
@@ -4359,6 +4508,7 @@ fn relation_preceding(
         requested_datid.is_none(),
         at,
         &mut moments,
+        cancelled,
     )?;
     let compatible = partitioned_plans(sections)
         .map(|plan| plan.type_id)
@@ -4375,6 +4525,7 @@ fn relation_preceding(
         .collect::<Vec<_>>();
     candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
     for candidate in &candidates {
+        check_preparation_cancelled(cancelled)?;
         if !moments.is_empty()
             && moments.values().all(|samples| {
                 samples
@@ -4393,6 +4544,7 @@ fn relation_preceding(
             requested_datid.is_none(),
             at,
             &mut moments,
+            cancelled,
         )?;
     }
 
@@ -4428,8 +4580,10 @@ fn scan_relation_moments(
     discover: bool,
     at: i64,
     moments: &mut BTreeMap<(u32, IdentityCell), RetainedMoments>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     for plan in partitioned_plans(sections) {
+        check_preparation_cancelled(cancelled)?;
         if !plan.applies() {
             continue;
         }
@@ -4447,6 +4601,9 @@ fn scan_relation_moments(
             0,
             usize::MAX,
             |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
                 let (Some(stored), Some(partition)) =
                     (row_timestamp(&row, timestamp), row.get("datid"))
                 else {
@@ -4474,6 +4631,7 @@ fn scan_relation_moments(
                 true
             },
         )?;
+        check_preparation_cancelled(cancelled)?;
     }
     Ok(())
 }
@@ -4522,6 +4680,7 @@ fn preceding(
     current: &Segment,
     sections: &[SectionPlans],
     at: i64,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<Vec<SegmentRef>, ApiError> {
     let layouts = sections
         .iter()
@@ -4548,9 +4707,10 @@ fn preceding(
         .keys()
         .map(|type_id| (*type_id, ContributingMoments::default()))
         .collect::<BTreeMap<_, _>>();
-    scan_contributing_moments(current, &layouts, at, true, &mut moments)?;
+    scan_contributing_moments(current, &layouts, at, true, &mut moments, cancelled)?;
     candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
     for candidate in &candidates {
+        check_preparation_cancelled(cancelled)?;
         if moments.values().all(|samples| {
             samples
                 .previous
@@ -4560,7 +4720,7 @@ fn preceding(
             break;
         }
         let segment = reader.open_segment(candidate)?;
-        scan_contributing_moments(&segment, &layouts, at, false, &mut moments)?;
+        scan_contributing_moments(&segment, &layouts, at, false, &mut moments, cancelled)?;
     }
     let retained = moments
         .values()
@@ -4580,12 +4740,17 @@ fn scan_contributing_moments(
     at: i64,
     pin_current: bool,
     moments: &mut BTreeMap<u32, ContributingMoments>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     for (&type_id, &timestamp) in layouts {
+        check_preparation_cancelled(cancelled)?;
         if segment.rows_of(type_id).is_none() {
             continue;
         }
         segment.visit_rows(type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
+            if cancelled() {
+                return false;
+            }
             if let Some(stored) = row_timestamp(&row, timestamp)
                 && stored <= at
             {
@@ -4597,6 +4762,7 @@ fn scan_contributing_moments(
             }
             true
         })?;
+        check_preparation_cancelled(cancelled)?;
     }
     if pin_current {
         for samples in moments.values_mut() {

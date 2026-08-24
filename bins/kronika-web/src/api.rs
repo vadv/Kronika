@@ -32,8 +32,8 @@ pub(crate) use events::{
     EventPageError, EventPageRequest, EventSourceRequest, EventStopReason, read_event_page,
 };
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
-pub(crate) use snapshot::relation_field_is_available;
-pub(crate) use surface::{LOCK_GRAPH_FIELDS, field_is_public as surface_field_is_public};
+pub(crate) use snapshot::prepare_for_mcp as prepare_snapshot_for_mcp;
+pub(crate) use surface::{LOCK_GRAPH_FIELDS, postgresql_order_tokens};
 
 #[cfg(test)]
 mod tests;

@@ -33,6 +33,7 @@ pub use entry::{
 pub use index::{IdxTemp, IndexOwner};
 pub use writer::{WriterLease, WriterOwner, ZmsTemp};
 
+use discovery::cancelled_layout_scan;
 use fsops::{
     create_regular_at, ensure_directory_at, errno_to_io, errno_to_layout, link_open_file,
     open_directory_at, open_or_create_regular, open_regular_at, remove_empty_directory_at,
@@ -231,12 +232,30 @@ impl DataRoot {
     /// Returns [`LayoutError`] for exhausted limits or filesystem failures
     /// that prevent bounded traversal of the verified tree.
     pub fn scan(&self, limits: LayoutLimits) -> Result<LayoutSnapshot, LayoutError> {
+        self.scan_cancellable(limits, &|| false)
+    }
+
+    /// Performs the same strict traversal as [`scan`](Self::scan), stopping
+    /// between directory entries when `cancelled` returns `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayoutError`] for exhausted limits or filesystem failures.
+    /// Cancellation is returned as an [`io::ErrorKind::Interrupted`] I/O error.
+    pub fn scan_cancellable(
+        &self,
+        limits: LayoutLimits,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<LayoutSnapshot, LayoutError> {
         let limits = limits.validate()?;
         for attempt in 0..SCAN_RACE_ATTEMPTS {
+            if cancelled() {
+                return Err(cancelled_layout_scan());
+            }
             // Fresh per attempt: a retried scan revisits the same entries, and
             // carrying the count over would fail valid trees near the limit.
             let mut visited_entries = 0_usize;
-            match self.scan_once(limits, &mut visited_entries) {
+            match self.scan_once(limits, &mut visited_entries, cancelled) {
                 Err(LayoutError::Io(error))
                     if error.kind() == io::ErrorKind::NotFound
                         && attempt + 1 < SCAN_RACE_ATTEMPTS =>

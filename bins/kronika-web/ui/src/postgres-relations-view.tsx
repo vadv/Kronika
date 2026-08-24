@@ -26,7 +26,7 @@ import {
   relationHistory,
   relationHistoryField,
   relationHistoryFields,
-  relationRequest,
+  relationOrderAvailable,
   relationRowKey,
   type RelationGroup,
   type RelationLens,
@@ -131,12 +131,11 @@ export function relationDataRows(rows: readonly DataRow[], section: RelationSect
 }
 
 export function relationColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = [], t?: Translate): readonly EntityColumn[] {
-  const request = relationRequest(section, lens, level)
   return visibleRelationFields(section, lens, level).map((field, index) => ({
     ...relationColumn(section, field, rateFields),
     ...(t !== undefined && (field === "last_seq_scan" || field === "last_idx_scan") ? { renderNull: (row: DataRow) => value(row, `${field}_never`) === true ? t("common.never") : t("common.unavailable") } : {}),
     ...(level === "tablespace" && field === "tablespace" ? { renderNull: (row: DataRow) => `OID ${rawText(value(row, "tablespace_oid")) ?? ""}`.trim() } : {}),
-    sticky: index === 0, sortable: Object.hasOwn(request.order ?? {}, field),
+    sticky: index === 0, sortable: relationOrderAvailable(section, lens, level, field),
   }))
 }
 

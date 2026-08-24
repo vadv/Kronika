@@ -5,13 +5,13 @@ mod vacuum;
 
 use std::collections::HashSet;
 
-use kronika_registry::contract;
 use serde_json::{Map, Value, json};
 
 use super::State;
 use crate::api::{self, ApiError, ValueLimits, ValueStopReason};
 use crate::route::{
-    ActivityVisibility, Filter, Order, RelationGroup, Route, SnapshotRequest, Window,
+    ActivityVisibility, Order, PostgresqlSurface, PostgresqlSurfaceRequest, RelationGroup, Route,
+    SnapshotRequest, Window,
 };
 
 const HOUR_US: i64 = 3_600_000_000;
@@ -31,386 +31,6 @@ const OVERVIEW_SECTIONS: &[&str] = &[
     "pg_stat_io",
     "pg_wal_storage",
     "pg_prepared_xacts",
-];
-const DATABASE_FIELDS: &[&str] = &[
-    "datid",
-    "datname",
-    "xact_commit",
-    "xact_rollback",
-    "blks_read",
-    "blks_hit",
-    "tup_returned",
-    "tup_fetched",
-    "tup_inserted",
-    "tup_updated",
-    "tup_deleted",
-    "conflicts",
-    "temp_files",
-    "temp_bytes",
-    "deadlocks",
-    "checksum_failures",
-    "sessions",
-    "sessions_abandoned",
-    "sessions_fatal",
-    "sessions_killed",
-    "frozen_xid_age",
-    "min_mxid_age",
-];
-const STATEMENT_FIELDS: &[&str] = &[
-    "queryid",
-    "dbid",
-    "userid",
-    "toplevel",
-    "datname",
-    "usename",
-    "query",
-    "calls",
-    "total_exec_time",
-    "total_time",
-    "rows",
-];
-const STATEMENT_PER_CALL_FIELDS: &[&str] = &[
-    "queryid",
-    "dbid",
-    "userid",
-    "toplevel",
-    "datname",
-    "usename",
-    "query",
-    "calls",
-    "total_exec_time",
-    "total_time",
-    "rows",
-    "shared_blks_hit",
-    "shared_blks_read",
-    "local_blks_hit",
-    "local_blks_read",
-];
-const STATEMENT_IO_FIELDS: &[&str] = &[
-    "queryid",
-    "dbid",
-    "userid",
-    "toplevel",
-    "datname",
-    "usename",
-    "query",
-    "calls",
-    "shared_blks_hit",
-    "shared_blks_read",
-    "shared_blks_dirtied",
-    "shared_blks_written",
-    "local_blks_hit",
-    "local_blks_read",
-    "temp_blks_read",
-    "temp_blks_written",
-];
-const STATEMENT_RESOURCE_FIELDS: &[&str] = &[
-    "queryid",
-    "dbid",
-    "userid",
-    "toplevel",
-    "datname",
-    "usename",
-    "query",
-    "calls",
-    "total_exec_time",
-    "total_time",
-    "total_plan_time",
-    "temp_blks_written",
-    "wal_bytes",
-    "wal_records",
-    "wal_fpi",
-    "wal_buffers_full",
-];
-const STATEMENT_STABILITY_FIELDS: &[&str] = &[
-    "queryid",
-    "dbid",
-    "userid",
-    "toplevel",
-    "datname",
-    "usename",
-    "query",
-    "calls",
-    "min_time",
-    "max_time",
-    "mean_time",
-    "stddev_time",
-    "min_exec_time",
-    "max_exec_time",
-    "mean_exec_time",
-    "stddev_exec_time",
-];
-const PLAN_FIELDS: &[&str] = &[
-    "userid",
-    "dbid",
-    "queryid",
-    "queryid_stat_statements",
-    "planid",
-    "datname",
-    "usename",
-    "plan",
-    "calls",
-    "total_time",
-    "rows",
-];
-const PLAN_TIMING_FIELDS: &[&str] = &[
-    "userid",
-    "dbid",
-    "queryid",
-    "queryid_stat_statements",
-    "planid",
-    "datname",
-    "usename",
-    "plan",
-    "calls",
-    "min_time",
-    "max_time",
-    "mean_time",
-    "stddev_time",
-    "first_call",
-    "last_call",
-];
-const PLAN_IO_FIELDS: &[&str] = &[
-    "userid",
-    "dbid",
-    "queryid",
-    "queryid_stat_statements",
-    "planid",
-    "datname",
-    "usename",
-    "plan",
-    "calls",
-    "shared_blks_read",
-    "shared_blks_hit",
-    "shared_blks_dirtied",
-    "local_blks_hit",
-    "local_blks_read",
-    "temp_blks_read",
-];
-const PLAN_IDENTITY_FIELDS: &[&str] = &[
-    "userid",
-    "dbid",
-    "queryid",
-    "queryid_stat_statements",
-    "planid",
-    "datname",
-    "usename",
-    "plan",
-    "calls",
-    "cmd_type",
-    "relids",
-];
-const TABLE_FIELDS: &[&str] = &[
-    "tuple_throughput",
-    "sequential_share_pct",
-    "seq_scan",
-    "idx_scan",
-    "seq_tuples_per_scan",
-    "idx_tuples_per_scan",
-    "last_seq_scan",
-    "last_seq_scan_never",
-    "last_idx_scan",
-    "last_idx_scan_never",
-];
-const TABLE_ACCESS_AGGREGATE_FIELDS: &[&str] = &[
-    "tuple_throughput",
-    "sequential_share_pct",
-    "seq_scan",
-    "idx_scan",
-    "seq_tuples_per_scan",
-    "idx_tuples_per_scan",
-    "last_seq_scan_oldest",
-    "last_seq_scan_latest",
-    "last_seq_scan_never_count",
-    "last_idx_scan_oldest",
-    "last_idx_scan_latest",
-    "last_idx_scan_never_count",
-];
-const TABLE_CHANGE_FIELDS: &[&str] = &[
-    "dml_total",
-    "insert_share_pct",
-    "update_share_pct",
-    "delete_share_pct",
-    "hot_pct",
-    "new_page_pct",
-    "dead_pct",
-    "n_mod_since_analyze",
-    "n_ins_since_vacuum",
-];
-const TABLE_MAINTENANCE_FIELDS: &[&str] = &[
-    "vacuum_count",
-    "autovacuum_count",
-    "analyze_count",
-    "autoanalyze_count",
-    "last_vacuum",
-    "last_autovacuum",
-    "last_analyze",
-    "last_autoanalyze",
-    "toast_last_autovacuum",
-    "vacuum_mean_ms",
-    "autovacuum_mean_ms",
-    "analyze_mean_ms",
-    "autoanalyze_mean_ms",
-];
-const TABLE_MAINTENANCE_AGGREGATE_FIELDS: &[&str] = &[
-    "vacuum_count",
-    "autovacuum_count",
-    "analyze_count",
-    "autoanalyze_count",
-    "last_vacuum_oldest",
-    "last_vacuum_latest",
-    "last_vacuum_never_count",
-    "last_autovacuum_oldest",
-    "last_autovacuum_latest",
-    "last_autovacuum_never_count",
-    "last_analyze_oldest",
-    "last_analyze_latest",
-    "last_analyze_never_count",
-    "last_autoanalyze_oldest",
-    "last_autoanalyze_latest",
-    "last_autoanalyze_never_count",
-    "toast_last_autovacuum_oldest",
-    "toast_last_autovacuum_latest",
-    "toast_last_autovacuum_never_count",
-    "vacuum_mean_ms",
-    "autovacuum_mean_ms",
-    "analyze_mean_ms",
-    "autoanalyze_mean_ms",
-];
-const TABLE_SIZE_FIELDS: &[&str] = &[
-    "displayed_storage_bytes",
-    "main_fork_bytes",
-    "toast_bytes",
-    "toast_share_pct",
-    "reltuples",
-    "toast_n_live_tup",
-    "toast_n_dead_tup",
-    "toast_dead_pct",
-    "buffer_hit_pct",
-    "heap_buffer_hit_pct",
-    "index_buffer_hit_pct",
-    "toast_buffer_hit_pct",
-    "tidx_buffer_hit_pct",
-    "heap_blks_read",
-    "heap_blks_hit",
-    "idx_blks_read",
-    "idx_blks_hit",
-    "toast_blks_read",
-    "toast_blks_hit",
-    "tidx_blks_read",
-    "tidx_blks_hit",
-];
-const TABLE_FREEZE_FIELDS: &[&str] = &[
-    "xid_age",
-    "mxid_age",
-    "n_ins_since_vacuum",
-    "last_vacuum",
-    "last_autovacuum",
-];
-const TABLE_FREEZE_AGGREGATE_FIELDS: &[&str] = &[
-    "xid_age",
-    "mxid_age",
-    "n_ins_since_vacuum",
-    "last_vacuum_oldest",
-    "last_vacuum_latest",
-    "last_vacuum_never_count",
-    "last_autovacuum_oldest",
-    "last_autovacuum_latest",
-    "last_autovacuum_never_count",
-];
-const INDEX_FIELDS: &[&str] = &[
-    "idx_scan",
-    "idx_tup_read",
-    "idx_tup_fetch",
-    "tuples_per_scan",
-    "fetches_per_scan",
-    "last_idx_scan",
-    "last_idx_scan_never",
-];
-const INDEX_USAGE_AGGREGATE_FIELDS: &[&str] = &[
-    "idx_scan",
-    "idx_tup_read",
-    "idx_tup_fetch",
-    "tuples_per_scan",
-    "fetches_per_scan",
-    "last_idx_scan_oldest",
-    "last_idx_scan_latest",
-    "last_idx_scan_never_count",
-];
-const INDEX_LOW_ACTIVITY_FIELDS: &[&str] = &[
-    "no_scans",
-    "idx_scan",
-    "last_idx_scan",
-    "last_idx_scan_never",
-    "main_fork_bytes",
-];
-const INDEX_LOW_ACTIVITY_AGGREGATE_FIELDS: &[&str] = &[
-    "no_scan_count",
-    "known_scan_count",
-    "idx_scan",
-    "last_idx_scan_oldest",
-    "last_idx_scan_latest",
-    "last_idx_scan_never_count",
-    "main_fork_bytes",
-];
-const INDEX_SIZE_FIELDS: &[&str] = &[
-    "main_fork_bytes",
-    "idx_blks_read",
-    "idx_blks_hit",
-    "buffer_hit_pct",
-];
-const INDEX_STATE_FIELDS: &[&str] = &[
-    "state_severity",
-    "indisvalid",
-    "indisready",
-    "indisunique",
-    "indisprimary",
-    "indisexclusion",
-];
-const INDEX_STATE_AGGREGATE_FIELDS: &[&str] = &[
-    "state_severity",
-    "invalid_count",
-    "unready_count",
-    "unique_count",
-    "primary_count",
-    "exclusion_count",
-];
-const STATEMENT_DIRECT_ORDERS: &[&str] = &[
-    "shared_blks_hit",
-    "shared_blks_read",
-    "shared_blks_dirtied",
-    "shared_blks_written",
-    "local_blks_hit",
-    "local_blks_read",
-    "local_blks_dirtied",
-    "local_blks_written",
-    "temp_blks_read",
-    "temp_blks_written",
-    "plans",
-    "wal_bytes",
-    "wal_records",
-    "wal_fpi",
-    "wal_buffers_full",
-    "stats_since",
-    "queryid",
-];
-const PLAN_DIRECT_ORDERS: &[&str] = &[
-    "shared_blks_hit",
-    "shared_blks_read",
-    "shared_blks_dirtied",
-    "shared_blks_written",
-    "local_blks_hit",
-    "local_blks_read",
-    "local_blks_dirtied",
-    "local_blks_written",
-    "temp_blks_read",
-    "temp_blks_written",
-    "slow_log_calls",
-    "first_call",
-    "last_call",
-    "queryid",
-    "queryid_stat_statements",
-    "planid",
 ];
 
 #[derive(Debug)]
@@ -434,7 +54,6 @@ pub(super) struct PostgresqlFailure {
 struct Anchor {
     segment_id: i64,
     active_wal_position: Option<u64>,
-    type_ids: HashSet<u32>,
     warnings: Vec<Value>,
 }
 
@@ -442,17 +61,9 @@ struct Anchor {
 struct DirectSpec {
     section: &'static str,
     key: &'static str,
-    default_order: &'static str,
     search: bool,
     relation: bool,
     whole_set: bool,
-}
-
-#[derive(Debug)]
-struct ResolvedLens {
-    fields: &'static [&'static str],
-    default_order: &'static str,
-    low_activity: bool,
 }
 
 pub(super) fn execute(
@@ -470,7 +81,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_activity",
                 key: "activity",
-                default_order: "query_duration_ms",
                 search: false,
                 relation: false,
                 whole_set: false,
@@ -486,7 +96,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_statements",
                 key: "statements",
-                default_order: "execution_ms_per_second",
                 search: true,
                 relation: false,
                 whole_set: false,
@@ -500,7 +109,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_store_plans",
                 key: "plans",
-                default_order: "execution_ms_per_second",
                 search: true,
                 relation: false,
                 whole_set: false,
@@ -514,7 +122,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_database",
                 key: "databases",
-                default_order: "xact_commit",
                 search: false,
                 relation: false,
                 whole_set: false,
@@ -528,7 +135,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_user_tables",
                 key: "tables",
-                default_order: "tuple_throughput",
                 search: true,
                 relation: true,
                 whole_set: false,
@@ -542,7 +148,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_user_indexes",
                 key: "indexes",
-                default_order: "idx_scan",
                 search: true,
                 relation: true,
                 whole_set: false,
@@ -583,10 +188,9 @@ fn direct(
     } else {
         None
     };
-    let lens = lens(args, &spec, group)?;
+    let surface = surface(args, &spec)?;
     let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
-    let defaults = defaults_for_layouts(spec.section, lens.fields, &anchor.type_ids);
-    let fields = fields(args, &defaults)?;
+    let fields = fields(args, &[])?;
     let page_size = if spec.whole_set {
         MAX_ROWS
     } else {
@@ -595,27 +199,29 @@ fn direct(
     let direction = direction(args)?;
     let order = args
         .get("order")
-        .map(|value| string(value, "order"))
-        .transpose()?
-        .unwrap_or(lens.default_order);
-    let by = order_tokens(spec.section, order, group)?;
-    let filters = if lens.low_activity {
-        vec![Filter {
-            column: "no_scans".to_owned(),
-            value: "true".to_owned(),
-        }]
-    } else {
-        Vec::new()
-    };
+        .map(|value| string(value, "order").map(str::to_owned))
+        .transpose()?;
+    if let Some(requested_order) = order.as_deref()
+        && api::postgresql_order_tokens(surface, requested_order, group).is_none()
+    {
+        return Err(input(
+            "order",
+            format!(
+                "order {requested_order:?} is not accepted for {}",
+                spec.section
+            ),
+        ));
+    }
     let request = SnapshotRequest {
         segment_id: anchor.segment_id,
         active_position: anchor.active_wal_position,
         at,
         sections: vec![spec.section.to_owned()],
         fields,
-        by,
+        by: Vec::new(),
         direction,
         group,
+        postgresql: Some(PostgresqlSurfaceRequest { surface, order }),
         page_size: Some(page_size),
         cursor: args
             .get("cursor")
@@ -630,7 +236,7 @@ fn direct(
         },
         first_match: false,
         text: None,
-        filters,
+        filters: Vec::new(),
         activity_visibility: (spec.section == "pg_stat_activity")
             .then(|| activity_visibility(args))
             .transpose()?,
@@ -741,149 +347,16 @@ fn first_row_too_large() -> PostgresqlFailure {
     )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the four fixed accepted lens registries stay visibly exhaustive together"
-)]
-fn lens(
+fn surface(
     args: &Map<String, Value>,
     spec: &DirectSpec,
-    group: Option<RelationGroup>,
-) -> Result<ResolvedLens, PostgresqlFailure> {
+) -> Result<PostgresqlSurface, PostgresqlFailure> {
     let requested = args
         .get("lens")
         .map(|value| string(value, "lens"))
         .transpose()?;
-    let aggregate = group.is_some_and(|group| group != RelationGroup::Object);
-    let resolved = match (spec.section, requested) {
-        ("pg_stat_statements", None | Some("load")) => {
-            resolved(STATEMENT_FIELDS, "execution_ms_per_second")
-        }
-        ("pg_stat_statements", Some("per_call")) => {
-            resolved(STATEMENT_PER_CALL_FIELDS, "calls_per_second")
-        }
-        ("pg_stat_statements", Some("io")) => resolved(STATEMENT_IO_FIELDS, "shared_blks_read"),
-        ("pg_stat_statements", Some("resources")) => {
-            resolved(STATEMENT_RESOURCE_FIELDS, "wal_bytes")
-        }
-        ("pg_stat_statements", Some("stability")) => {
-            resolved(STATEMENT_STABILITY_FIELDS, "calls_per_second")
-        }
-        ("pg_store_plans", None | Some("load")) => resolved(PLAN_FIELDS, "execution_ms_per_second"),
-        ("pg_store_plans", Some("timing")) => resolved(PLAN_TIMING_FIELDS, "calls_per_second"),
-        ("pg_store_plans", Some("io")) => resolved(PLAN_IO_FIELDS, "shared_blks_read"),
-        ("pg_store_plans", Some("identity")) => resolved(PLAN_IDENTITY_FIELDS, "calls_per_second"),
-        ("pg_stat_user_tables", None | Some("access")) => resolved(
-            if aggregate {
-                TABLE_ACCESS_AGGREGATE_FIELDS
-            } else {
-                TABLE_FIELDS
-            },
-            "tuple_throughput",
-        ),
-        ("pg_stat_user_tables", Some("changes")) => resolved(TABLE_CHANGE_FIELDS, "dml_total"),
-        ("pg_stat_user_tables", Some("maintenance")) => resolved(
-            if aggregate {
-                TABLE_MAINTENANCE_AGGREGATE_FIELDS
-            } else {
-                TABLE_MAINTENANCE_FIELDS
-            },
-            "autovacuum_count",
-        ),
-        ("pg_stat_user_tables", Some("size_buffers")) => {
-            resolved(TABLE_SIZE_FIELDS, "displayed_storage_bytes")
-        }
-        ("pg_stat_user_tables", Some("freeze")) => resolved(
-            if aggregate {
-                TABLE_FREEZE_AGGREGATE_FIELDS
-            } else {
-                TABLE_FREEZE_FIELDS
-            },
-            "xid_age",
-        ),
-        ("pg_stat_user_indexes", None | Some("usage")) => resolved(
-            if aggregate {
-                INDEX_USAGE_AGGREGATE_FIELDS
-            } else {
-                INDEX_FIELDS
-            },
-            "idx_scan",
-        ),
-        ("pg_stat_user_indexes", Some("low_activity")) => ResolvedLens {
-            fields: if aggregate {
-                INDEX_LOW_ACTIVITY_AGGREGATE_FIELDS
-            } else {
-                INDEX_LOW_ACTIVITY_FIELDS
-            },
-            default_order: "main_fork_bytes",
-            low_activity: true,
-        },
-        ("pg_stat_user_indexes", Some("size_buffers")) => {
-            resolved(INDEX_SIZE_FIELDS, "main_fork_bytes")
-        }
-        ("pg_stat_user_indexes", Some("state")) => resolved(
-            if aggregate {
-                INDEX_STATE_AGGREGATE_FIELDS
-            } else {
-                INDEX_STATE_FIELDS
-            },
-            "state_severity",
-        ),
-        ("pg_stat_activity", None) => resolved(&[], spec.default_order),
-        ("pg_stat_database", None) => resolved(DATABASE_FIELDS, spec.default_order),
-        ("pg_stat_statements", Some(_)) => {
-            return Err(input(
-                "lens",
-                "lens must be load, per_call, io, resources, or stability",
-            ));
-        }
-        ("pg_store_plans", Some(_)) => {
-            return Err(input("lens", "lens must be load, timing, io, or identity"));
-        }
-        ("pg_stat_user_tables", Some(_)) => {
-            return Err(input(
-                "lens",
-                "lens must be access, changes, maintenance, size_buffers, or freeze",
-            ));
-        }
-        ("pg_stat_user_indexes", Some(_)) => {
-            return Err(input(
-                "lens",
-                "lens must be usage, low_activity, size_buffers, or state",
-            ));
-        }
-        (_, Some(_)) => return Err(input("lens", "lens is not supported by this surface")),
-        (_, None) => resolved(&[], spec.default_order),
-    };
-    Ok(resolved)
-}
-
-const fn resolved(fields: &'static [&'static str], default_order: &'static str) -> ResolvedLens {
-    ResolvedLens {
-        fields,
-        default_order,
-        low_activity: false,
-    }
-}
-
-fn defaults_for_layouts<'a>(
-    section: &str,
-    defaults: &'a [&'a str],
-    type_ids: &HashSet<u32>,
-) -> Vec<&'a str> {
-    if !matches!(section, "pg_stat_statements" | "pg_store_plans") || type_ids.is_empty() {
-        return defaults.to_vec();
-    }
-    defaults
-        .iter()
-        .copied()
-        .filter(|name| {
-            type_ids
-                .iter()
-                .filter_map(|type_id| contract(*type_id))
-                .any(|layout| layout.column(name).is_some())
-        })
-        .collect()
+    PostgresqlSurface::parse(spec.section, requested)
+        .ok_or_else(|| input("lens", PostgresqlSurface::lens_error(spec.section)))
 }
 
 fn activity_visibility(args: &Map<String, Value>) -> Result<ActivityVisibility, PostgresqlFailure> {
@@ -903,120 +376,6 @@ fn boolean(
             .as_bool()
             .ok_or_else(|| input(name, format!("{name} must be a boolean")))
     })
-}
-
-fn order_tokens(
-    section: &str,
-    requested: &str,
-    group: Option<RelationGroup>,
-) -> Result<Vec<String>, PostgresqlFailure> {
-    if let Some(group) = group {
-        if !api::relation_field_is_available(section, group, requested) {
-            return Err(input(
-                "order",
-                format!("order {requested:?} is not accepted for the selected relation group"),
-            ));
-        }
-        return Ok(vec![relation_order_token(requested)]);
-    }
-    direct_order_tokens(section, requested).ok_or_else(|| {
-        input(
-            "order",
-            format!("order {requested:?} is not accepted for {section}"),
-        )
-    })
-}
-
-fn direct_order_tokens(section: &str, requested: &str) -> Option<Vec<String>> {
-    let fixed = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
-    match (section, requested) {
-        ("pg_stat_activity", "backend_age_ms") => Some(fixed(&["derived.backend_age_ms"])),
-        ("pg_stat_activity", "query_duration_ms") => Some(fixed(&["derived.query_duration_ms"])),
-        ("pg_stat_activity", "state_duration_ms") => Some(fixed(&["derived.state_duration_ms"])),
-        ("pg_stat_activity", "transaction_duration_ms") => {
-            Some(fixed(&["derived.transaction_duration_ms"]))
-        }
-        ("pg_stat_activity", name) if api::surface_field_is_public("pg_stat_activity", name) => {
-            Some(vec![name.to_owned()])
-        }
-        ("pg_stat_statements" | "pg_store_plans", "calls_per_second") => Some(fixed(&["calls"])),
-        ("pg_stat_statements", "execution_ms_per_second") => {
-            Some(fixed(&["total_exec_time", "total_time"]))
-        }
-        ("pg_store_plans", "execution_ms_per_second") => Some(fixed(&["total_time"])),
-        ("pg_stat_statements" | "pg_store_plans", "rows_per_second") => Some(fixed(&["rows"])),
-        ("pg_stat_statements" | "pg_store_plans", "planning_ms_per_second") => {
-            Some(fixed(&["total_plan_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "shared_blk_read_ms_per_second") => {
-            Some(fixed(&["blk_read_time", "shared_blk_read_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "shared_blk_write_ms_per_second") => {
-            Some(fixed(&["blk_write_time", "shared_blk_write_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "local_blk_read_ms_per_second") => {
-            Some(fixed(&["local_blk_read_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "local_blk_write_ms_per_second") => {
-            Some(fixed(&["local_blk_write_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "temp_blk_read_ms_per_second") => {
-            Some(fixed(&["temp_blk_read_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "temp_blk_write_ms_per_second") => {
-            Some(fixed(&["temp_blk_write_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "mean_exec_ms_per_call") => {
-            Some(fixed(&["derived.mean_exec_ms_per_call"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "rows_per_call") => {
-            Some(fixed(&["derived.rows_per_call"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "blocks_per_call") => {
-            Some(fixed(&["derived.blocks_per_call"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "hit_pct") => Some(fixed(&["derived.hit_pct"])),
-        ("pg_stat_statements", "wal_per_call") => Some(fixed(&["derived.wal_per_call"])),
-        ("pg_stat_statements", "plan_time_pct") => Some(fixed(&["derived.plan_time_pct"])),
-        ("pg_stat_statements" | "pg_store_plans", "cv") => Some(fixed(&["derived.cv"])),
-        ("pg_stat_statements" | "pg_store_plans", "min_exec_time_ms") => {
-            Some(fixed(&["min_exec_time", "min_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "max_exec_time_ms") => {
-            Some(fixed(&["max_exec_time", "max_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "mean_exec_time_ms") => {
-            Some(fixed(&["mean_exec_time", "mean_time"]))
-        }
-        ("pg_stat_statements" | "pg_store_plans", "stddev_exec_time_ms") => {
-            Some(fixed(&["stddev_exec_time", "stddev_time"]))
-        }
-        ("pg_stat_statements", name) if STATEMENT_DIRECT_ORDERS.contains(&name) => {
-            Some(vec![name.to_owned()])
-        }
-        ("pg_store_plans", name) if PLAN_DIRECT_ORDERS.contains(&name) => {
-            Some(vec![name.to_owned()])
-        }
-        ("pg_stat_database", name) if DATABASE_FIELDS.contains(&name) => {
-            Some(vec![name.to_owned()])
-        }
-        _ => None,
-    }
-}
-
-fn relation_order_token(name: &str) -> String {
-    if name.ends_with("_pct")
-        || name.ends_with("_per_scan")
-        || name.ends_with("_mean_ms")
-        || matches!(
-            name,
-            "state_severity" | "tuple_throughput" | "dml_total" | "displayed_storage_bytes"
-        )
-    {
-        format!("derived.{name}")
-    } else {
-        name.to_owned()
-    }
 }
 
 fn overview(
@@ -1039,6 +398,7 @@ fn overview(
         by: Vec::new(),
         direction: Order::Desc,
         group: None,
+        postgresql: None,
         page_size: None,
         cursor: None,
         search: None,
@@ -1164,30 +524,20 @@ fn resolve_anchor(
                     .pointer("/cursor/wal_position")
                     .and_then(Value::as_str)
                     .and_then(|value| value.parse::<u64>().ok());
-                let type_ids = record
+                let matches_section = record
                     .get("sections")
                     .and_then(Value::as_array)
-                    .map(|stored| {
-                        stored
-                            .iter()
-                            .filter(|section| {
-                                section
-                                    .get("logical_name")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|name| wanted.contains(name))
-                            })
-                            .filter_map(|section| {
-                                section
-                                    .get("type_id")
-                                    .and_then(Value::as_str)
-                                    .and_then(|value| value.parse::<u32>().ok())
-                            })
-                            .collect::<HashSet<_>>()
-                    })
-                    .unwrap_or_default();
-                any.push((id, wal, type_ids.clone()));
-                if !type_ids.is_empty() {
-                    matching.push((id, wal, type_ids));
+                    .is_some_and(|stored| {
+                        stored.iter().any(|section| {
+                            section
+                                .get("logical_name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|name| wanted.contains(name))
+                        })
+                    });
+                any.push((id, wal));
+                if matches_section {
+                    matching.push((id, wal));
                 }
             }
             Some("warning") => warnings.push(record),
@@ -1203,8 +553,8 @@ fn resolve_anchor(
     }
     let selected = matching
         .into_iter()
-        .max_by_key(|(id, _, _)| *id)
-        .or_else(|| any.into_iter().max_by_key(|(id, _, _)| *id))
+        .max_by_key(|(id, _)| *id)
+        .or_else(|| any.into_iter().max_by_key(|(id, _)| *id))
         .ok_or_else(|| {
             failure(
                 "no_recorded_data",
@@ -1215,7 +565,6 @@ fn resolve_anchor(
     Ok(Anchor {
         segment_id: selected.0,
         active_wal_position: selected.1,
-        type_ids: selected.2,
         warnings,
     })
 }

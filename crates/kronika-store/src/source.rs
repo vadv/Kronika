@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use kronika_format::{Catalog, PartRef};
 use kronika_layout::{
-    FileIdentity, ForeignEntryReason, LayoutError, PathIdentity, SegmentAddress, SegmentId,
+    FileIdentity, ForeignEntryReason, LayoutError, PathIdentity, SegmentAddress, SegmentArtifacts,
+    SegmentId,
 };
 
 use crate::{CatalogDigest, CatalogSummary};
@@ -71,6 +72,32 @@ impl JournalScan {
     pub const fn metadata_bytes(&self) -> usize {
         self.metadata_bytes
     }
+}
+
+/// A strict store inventory whose finished catalogs have not been read.
+///
+/// Finished artifacts are sorted by numeric [`SegmentId`]. Callers can walk
+/// them newest first and ask [`super::LocalDir::read_finished_catalog_summary`]
+/// to inspect only the artifacts needed for a query.
+#[derive(Debug)]
+pub struct CatalogInventory {
+    /// Finished ZMS artifacts found by the layout traversal.
+    pub finished: Vec<SegmentArtifacts>,
+    /// Valid parts from `active.wal`, in journal order.
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the inventory shares the exact validated journal allocation"
+    )]
+    pub active: Arc<Vec<ActivePart>>,
+    /// Non-fatal diagnostics found while building or selectively inspecting
+    /// the inventory.
+    pub warnings: Vec<StoreWarning>,
+    /// Byte offset of the complete captured journal prefix.
+    pub valid_len: u64,
+    /// Whether the captured journal state is a committed reset marker phase.
+    pub committed_reset: bool,
+    /// Conservatively accounted retained metadata, excluding warning capacity.
+    pub(crate) metadata_bytes: usize,
 }
 
 /// Result of scanning a [`super::LocalDir`].

@@ -45,11 +45,6 @@ const BLOCK_COUNTERS = [
   "temp_blks_read", "temp_blks_written",
 ] as const
 
-const DIRECT_ORDER_FIELDS = [
-  ...BLOCK_COUNTERS, "plans", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full",
-  "slow_log_calls", "stats_since", "first_call", "last_call", "queryid", "queryid_stat_statements", "planid",
-] as const
-
 const STATEMENT_FIELDS = [
   "queryid", "userid", "dbid", "toplevel", "datname", "usename", "query",
   "calls", "rows", "plans", "total_time", "total_exec_time", "total_plan_time",
@@ -206,127 +201,21 @@ export function supportsPostgresDerivedOrder(typeId: string, token: string): boo
   return has(...rowExecutionStats(typeId, ["mean", "stddev"]))
 }
 
-function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): Readonly<Record<string, readonly string[]>> {
-  return Object.fromEntries(typeIds.map((typeId) => {
-    const projection = postgresProjection(typeId)
-    if (wanted === undefined) return [typeId, projection]
-    const layout = postgresLayout(typeId)
-    const physical = new Set(wanted.flatMap((field) => {
-      if (isPostgresSemanticField(field)) {
-        return unique([
-          physicalField(typeId, field),
-          ...(field === "mean_exec_ms_per_call" ? [physicalField(typeId, "calls_per_second")] : []),
-        ].filter((candidate): candidate is string => candidate !== null))
-      }
-      return physicalDependencies(typeId, field)
-    }))
-    return [typeId, projection.filter((field) => layout?.identity.includes(field) === true || physical.has(field))]
-  }))
-}
-
-function orderCandidates(typeIds: readonly string[], semantic: PostgresSemanticField): readonly string[] {
-  if (semantic === "mean_exec_ms_per_call") return ["derived.mean_exec_ms_per_call"]
-  return unique(typeIds.flatMap((typeId) => {
-    const physical = physicalField(typeId, semantic)
-    return physical === null ? [] : [physical]
-  }))
-}
-
-function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly string[]>> {
-  const semantic = Object.fromEntries(SEMANTIC_FIELDS.map((field) => [field, orderCandidates(typeIds, field)]))
-  const derived = (field: string) => [`derived.${field}`]
-  const executionStats = (names: readonly ("min" | "max" | "mean" | "stddev")[]) => unique(
-    typeIds.flatMap((typeId) => rowExecutionStats(typeId, names)),
-  )
-  return {
-    ...Object.fromEntries(DIRECT_ORDER_FIELDS.map((field) => [field, [field]])),
-    ...semantic,
-    rows_per_call: derived("rows_per_call"),
-    blocks_per_call: derived("blocks_per_call"),
-    hit_pct: derived("hit_pct"),
-    wal_per_call: derived("wal_per_call"),
-    plan_time_pct: derived("plan_time_pct"),
-    cv: derived("cv"),
-    min_exec_time_ms: executionStats(["min"]),
-    max_exec_time_ms: executionStats(["max"]),
-    mean_exec_time_ms: executionStats(["mean"]),
-    stddev_exec_time_ms: executionStats(["stddev"]),
-  }
-}
-
-function physicalDependencies(typeId: string, field: string): readonly string[] {
-  const semantic = (...fields: PostgresSemanticField[]) => unique(fields.flatMap((candidate) => {
-    const physical = physicalField(typeId, candidate)
-    return physical === null ? [] : [physical]
-  }))
-  if (field === "mean_exec_ms_per_call") return semantic("execution_ms_per_second", "calls_per_second")
-  if (field === "rows_per_call") return semantic("rows_per_second", "calls_per_second")
-  if (field === "blocks_per_call") return ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read", ...semantic("calls_per_second")]
-  if (field === "hit_pct") return ["shared_blks_hit", "shared_blks_read"]
-  if (field === "wal_per_call") return ["wal_bytes", ...semantic("calls_per_second")]
-  if (field === "plan_time_pct") return semantic("planning_ms_per_second", "execution_ms_per_second")
-  if (field === "cv") return rowExecutionStats(typeId, ["mean", "stddev"])
-  if (field === "min_exec_time_ms") return rowExecutionStats(typeId, ["min"])
-  if (field === "max_exec_time_ms") return rowExecutionStats(typeId, ["max"])
-  if (field === "mean_exec_time_ms") return rowExecutionStats(typeId, ["mean"])
-  if (field === "stddev_exec_time_ms") return rowExecutionStats(typeId, ["stddev"])
-  return [field]
-}
-
 function rowExecutionStats(typeId: string, names: readonly ("min" | "max" | "mean" | "stddev")[]): readonly string[] {
   const old = typeId === "1002001" || PG_STORE_PLANS_TYPE_IDS.includes(typeId as typeof PG_STORE_PLANS_TYPE_IDS[number])
   return names.map((name) => old ? `${name}_time` : `${name}_exec_time`)
 }
 
-export interface PostgresSectionRequest {
-  readonly section: LayoutKind["section"]
-  readonly typeIds: readonly string[]
-  readonly fieldsByType: Readonly<Record<string, readonly string[]>>
-  readonly pageSize?: number
-  readonly defaultOrder?: readonly string[]
-  readonly order?: Readonly<Record<string, readonly string[]>>
-  readonly fallbackOrder?: readonly string[]
-}
-
-const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> = {
-  load: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  per_call: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "rows_per_second", "shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"],
-  io: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "shared_blks_written", "local_blks_hit", "local_blks_read", "temp_blks_read", "temp_blks_written"],
-  resources: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "planning_ms_per_second", "temp_blks_written", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full"],
-  stability: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "mean_time", "stddev_time", "min_time", "max_time", "mean_exec_time", "stddev_exec_time", "min_exec_time", "max_exec_time"],
-}
-
-const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
-  load: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  timing: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
-  io: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
-  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "calls_per_second", "cmd_type", "relids", "queryid_stat_statements"],
-}
+export type PostgresSectionRequest =
+  | { readonly section: "pg_stat_statements"; readonly lens: StatementLens; readonly pageSize: 200 }
+  | { readonly section: "pg_store_plans"; readonly lens: PlanLens; readonly pageSize: 200 }
 
 export function statementRequest(lens: StatementLens): PostgresSectionRequest {
-  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementDefaultOrder(lens))
+  return { section: "pg_stat_statements", lens, pageSize: 200 }
 }
 
 export function planRequest(lens: PlanLens): PostgresSectionRequest {
-  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planDefaultOrder(lens))
-}
-
-function denseLensRequest(
-  section: "pg_stat_statements" | "pg_store_plans",
-  typeIds: readonly string[],
-  wanted: readonly string[],
-  defaultSemantic: string,
-): PostgresSectionRequest {
-  const order = orderMap(typeIds)
-  return {
-    section,
-    typeIds,
-    fieldsByType: fieldsByType(typeIds, wanted),
-    pageSize: 200,
-    defaultOrder: order[defaultSemantic] ?? [],
-    order,
-    fallbackOrder: ["calls"],
-  }
+  return { section: "pg_store_plans", lens, pageSize: 200 }
 }
 
 export function statementDefaultOrder(lens: StatementLens): string {
@@ -341,10 +230,6 @@ export function planDefaultOrder(lens: PlanLens): string {
   if (lens === "io") return "shared_blks_read"
   if (lens === "load") return "execution_ms_per_second"
   return "calls_per_second"
-}
-
-function isPostgresSemanticField(field: string): field is PostgresSemanticField {
-  return SEMANTIC_FIELDS.includes(field as PostgresSemanticField)
 }
 
 export interface PostgresIntervalValues extends Readonly<Record<PostgresSemanticField, number | null>> {

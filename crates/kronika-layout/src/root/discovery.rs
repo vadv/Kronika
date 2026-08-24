@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io;
 use std::path::Path;
 
 use rustix::fs::{Dir, FileType};
@@ -25,10 +26,12 @@ impl DataRoot {
         &self,
         limits: LayoutLimits,
         visited_entries: &mut usize,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<LayoutSnapshot, LayoutError> {
         let mut state = ScanState::new(limits, visited_entries);
         let mut root_entries = Dir::read_from(&*self.directory).map_err(errno_to_layout)?;
         for entry in &mut root_entries {
+            check_cancelled(cancelled)?;
             let entry = entry.map_err(errno_to_layout)?;
             let name = entry.file_name();
             let name_bytes = name.to_bytes();
@@ -95,7 +98,7 @@ impl DataRoot {
                 continue;
             }
             let year_directory = open_directory_at(&self.directory, name_string)?;
-            Self::scan_year(&year_directory, year, &mut state)?;
+            Self::scan_year(&year_directory, year, &mut state, cancelled)?;
         }
         Ok(state.finish())
     }
@@ -104,9 +107,11 @@ impl DataRoot {
         year_directory: &File,
         year: u16,
         state: &mut ScanState<'_>,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), LayoutError> {
         let mut entries = Dir::read_from(year_directory).map_err(errno_to_layout)?;
         for entry in &mut entries {
+            check_cancelled(cancelled)?;
             let entry = entry.map_err(errno_to_layout)?;
             let name = entry.file_name();
             let name_bytes = name.to_bytes();
@@ -139,7 +144,7 @@ impl DataRoot {
                 continue;
             }
             let month_directory = open_directory_at(year_directory, name_string)?;
-            Self::scan_month(&month_directory, year, month, state)?;
+            Self::scan_month(&month_directory, year, month, state, cancelled)?;
         }
         Ok(())
     }
@@ -149,9 +154,11 @@ impl DataRoot {
         year: u16,
         month: u8,
         state: &mut ScanState<'_>,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), LayoutError> {
         let mut entries = Dir::read_from(month_directory).map_err(errno_to_layout)?;
         for entry in &mut entries {
+            check_cancelled(cancelled)?;
             let entry = entry.map_err(errno_to_layout)?;
             let name = entry.file_name();
             let name_bytes = name.to_bytes();
@@ -187,7 +194,7 @@ impl DataRoot {
             let day = UtcDay::new(year, month, day_number)?;
             state.account_metadata(size_of::<UtcDay>())?;
             state.days.push(day);
-            Self::scan_day(&day_directory, day, state)?;
+            Self::scan_day(&day_directory, day, state, cancelled)?;
         }
         Ok(())
     }
@@ -196,11 +203,13 @@ impl DataRoot {
         day_directory: &File,
         day: UtcDay,
         state: &mut ScanState<'_>,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), LayoutError> {
         let mut entries = Dir::read_from(day_directory).map_err(errno_to_layout)?;
         let mut day_entries = 0_usize;
         let mut finals: BTreeMap<SegmentId, DayArtifacts> = BTreeMap::new();
         for entry in &mut entries {
+            check_cancelled(cancelled)?;
             let entry = entry.map_err(errno_to_layout)?;
             let name = entry.file_name();
             let name_bytes = name.to_bytes();
@@ -286,4 +295,19 @@ impl DataRoot {
         }
         Ok(())
     }
+}
+
+fn check_cancelled(cancelled: &impl Fn() -> bool) -> Result<(), LayoutError> {
+    if cancelled() {
+        Err(cancelled_layout_scan())
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn cancelled_layout_scan() -> LayoutError {
+    LayoutError::Io(io::Error::new(
+        io::ErrorKind::Interrupted,
+        "layout scan was cancelled",
+    ))
 }

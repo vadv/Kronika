@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentRef, StrId};
+use kronika_reader::{Cell, Dictionary, Resolved, Row, Section, Segment, SegmentRef, StrId};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
 
 use super::{ApiError, surface};
@@ -47,10 +47,24 @@ pub(super) fn plans(
     request: &DataRequest,
     history_coordinates: bool,
 ) -> Result<Vec<Plan>, ApiError> {
-    let layouts: Vec<(u32, kronika_reader::Section)> = segment
+    let layouts: Vec<(u32, Section)> = segment
         .layouts(&request.segment.section)
         .filter(|(type_id, _section)| request.type_id.is_none_or(|wanted| wanted == *type_id))
         .collect();
+    plans_for_layouts(layouts, request, history_coordinates)
+}
+
+/// Build compatible plans from physical layouts contributed by several
+/// selected snapshot sources.
+pub(super) fn plans_for_layouts(
+    layouts: Vec<(u32, Section)>,
+    request: &DataRequest,
+    history_coordinates: bool,
+) -> Result<Vec<Plan>, ApiError> {
+    let layouts = layouts
+        .into_iter()
+        .filter(|(type_id, _section)| request.type_id.is_none_or(|wanted| wanted == *type_id))
+        .collect::<Vec<_>>();
     if layouts.is_empty() {
         return Err(ApiError::NoSuchSection);
     }
