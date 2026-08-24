@@ -2,6 +2,9 @@
 
 mod events;
 
+#[cfg(test)]
+mod tests;
+
 use kronika_registry::{
     ColumnType, Semantics, TypeContract, contract, logical_section_name, registry,
 };
@@ -115,8 +118,15 @@ fn history(
         cancelled,
     )?;
     ensure_segment_budget(&catalog.records)?;
+    let source = catalog_segments(&catalog.records);
+    let active_segment = active_segment(&source);
+    let anchor = anchor_for_window(from, to, &catalog.records);
     let mut series = Vec::new();
     let mut warnings = catalog_warnings(&catalog.records);
+    let bounded_warning = json!({
+        "code": "continuation_unavailable",
+        "message": "the shared native-history reader has no query-bound cursor yet"
+    });
     let mut stop = ValueStopReason::Complete;
     let mut remaining = sample_limit;
     for filters in identities {
@@ -128,30 +138,46 @@ fn history(
             };
             break;
         }
-        let route = Route::Hour(HourRequest {
-            window: Window {
-                from: Some(from),
-                to: Some(to),
-            },
-            active_segment: None,
-            series: Some(SeriesRequest {
-                section: section.to_owned(),
-                fields: fields.clone(),
-                filters: filters.clone(),
-                type_id: None,
-                group: None,
-            }),
-        });
+        series.push(json!({
+            "identity": filters_value(&filters),
+            "records": [],
+        }));
+        let mut bounded_warnings = warnings.clone();
+        bounded_warnings.push(bounded_warning.clone());
+        let fixed = history_envelope_len(
+            &anchor,
+            &series,
+            sample_limit,
+            ValueStopReason::RecordLimit,
+            &bounded_warnings,
+        );
+        let _empty_series = series.pop();
+        if fixed >= budget {
+            stop = ValueStopReason::ByteLimit;
+            break;
+        }
+        let route = history_route(
+            from,
+            to,
+            active_segment,
+            section,
+            fields.clone(),
+            filters.clone(),
+        );
         let collected = collect(
             state,
             route,
             ValueLimits {
                 records: remaining.saturating_add(MAX_SEGMENTS * 3 + 1),
-                ndjson_bytes: budget,
+                ndjson_bytes: budget.saturating_sub(fixed),
             },
             cancelled,
         )?;
         let rows = records_named(&collected.records, "row");
+        if rows.is_empty() && collected.stop_reason != ValueStopReason::Complete {
+            stop = collected.stop_reason;
+            break;
+        }
         remaining = remaining.saturating_sub(rows.len());
         series.push(json!({
             "identity": filters_value(&filters),
@@ -172,16 +198,22 @@ fn history(
         ));
     }
     if stop == ValueStopReason::ByteLimit && returned == 0 {
-        return Err(first_row_too_large());
+        return Err(history_prefix_too_large());
     }
     if stop != ValueStopReason::Complete {
-        warnings.push(json!({
-            "code": "continuation_unavailable",
-            "message": "the shared native-history reader has no query-bound cursor yet"
-        }));
+        warnings.push(bounded_warning);
     }
-    Ok(ExpertPayload {
-        anchor: anchor_for_window(from, to, &catalog.records),
+    ensure_history_source_unchanged(
+        state,
+        Window {
+            from: Some(from),
+            to: Some(to),
+        },
+        &source,
+        cancelled,
+    )?;
+    let payload = ExpertPayload {
+        anchor,
         data: json!({
             "series": series,
             "semantics": [],
@@ -194,7 +226,61 @@ fn history(
         ),
         warnings,
         summary: format!("Returned {returned} native-cadence history samples."),
+    };
+    if super::tools::structured_envelope_len(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    ) > budget
+    {
+        return Err(history_prefix_too_large());
+    }
+    Ok(payload)
+}
+
+fn history_route(
+    from: i64,
+    to: i64,
+    active_segment: Option<(i64, u64)>,
+    section: &str,
+    fields: Vec<String>,
+    filters: Vec<Filter>,
+) -> Route {
+    Route::Hour(HourRequest {
+        window: Window {
+            from: Some(from),
+            to: Some(to),
+        },
+        active_segment,
+        series: Some(SeriesRequest {
+            section: section.to_owned(),
+            fields,
+            filters,
+            type_id: None,
+            group: None,
+        }),
     })
+}
+
+fn history_envelope_len(
+    anchor: &Value,
+    series: &[Value],
+    returned: usize,
+    stop: ValueStopReason,
+    warnings: &[Value],
+) -> usize {
+    let data = json!({
+        "series": series,
+        "semantics": [],
+    });
+    let page = page(
+        returned,
+        stop != ValueStopReason::Complete,
+        None,
+        stop.code(),
+    );
+    super::tools::structured_envelope_len(anchor, &data, &page, warnings)
 }
 
 fn snapshot(
@@ -433,7 +519,7 @@ fn detail_text_field(
     Ok(text_field)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct SegmentInfo {
     id: i64,
     min_ts: i64,
@@ -517,6 +603,15 @@ fn first_row_too_large() -> ExpertFailure {
     failure(
         "result_too_large",
         "the first selected row exceeds the structured-data budget",
+        Some("data_budget_bytes"),
+        false,
+    )
+}
+
+fn history_prefix_too_large() -> ExpertFailure {
+    failure(
+        "result_too_large",
+        "the fixed history metadata and first selected sample exceed data_budget_bytes",
         Some("data_budget_bytes"),
         false,
     )
@@ -934,6 +1029,32 @@ fn ensure_segment_budget(records: &[Value]) -> Result<(), ExpertFailure> {
     } else {
         Ok(())
     }
+}
+
+fn active_segment(segments: &[SegmentInfo]) -> Option<(i64, u64)> {
+    segments.iter().find_map(|segment| {
+        segment
+            .active_position
+            .map(|position| (segment.id, position))
+    })
+}
+
+fn ensure_history_source_unchanged(
+    state: &State,
+    window: Window,
+    expected: &[SegmentInfo],
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ExpertFailure> {
+    let current = catalog(state, window, cancelled)?;
+    if catalog_segments(&current.records) != expected {
+        return Err(failure(
+            "source_changed",
+            "the recorded metric-history source changed during the read",
+            None,
+            true,
+        ));
+    }
+    Ok(())
 }
 
 fn catalog_warnings(records: &[Value]) -> Vec<Value> {

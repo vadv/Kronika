@@ -92,6 +92,62 @@ async fn all_ten_core_and_expert_tools_execute_through_dispatch_on_recorded_data
     }
 }
 
+#[tokio::test]
+async fn metric_history_shares_the_envelope_budget_across_identities() {
+    let fixture = Fixture::new();
+    let one = dispatch(
+        &fixture,
+        "kronika_get_metric_history",
+        json!({
+            "from_us": FIRST_PROCESS_AT.to_string(),
+            "to_us": LAST_PROCESS_AT.to_string(),
+            "section": "os_process",
+            "identities": [{"pid": 42}],
+            "fields": ["utime"],
+            "sample_limit": 10,
+        }),
+    )
+    .await;
+    assert_eq!(one["status"], "ok", "single history: {one}");
+
+    let arguments = json!({
+        "from_us": FIRST_PROCESS_AT.to_string(),
+        "to_us": LAST_PROCESS_AT.to_string(),
+        "section": "os_process",
+        "identities": [{"pid": 42}, {"pid": 42}],
+        "fields": ["utime"],
+        "sample_limit": 10,
+    });
+    let complete = dispatch(&fixture, "kronika_get_metric_history", arguments.clone()).await;
+    assert_eq!(complete["status"], "ok", "complete history: {complete}");
+    let complete_bytes = serde_json::to_vec(&complete)
+        .expect("complete history envelope")
+        .len();
+    assert!(complete_bytes > 1_024);
+
+    let bounded = dispatch_with_budget(
+        &fixture,
+        "kronika_get_metric_history",
+        arguments,
+        complete_bytes - 1,
+    )
+    .await;
+    assert_eq!(bounded["status"], "ok", "bounded history: {bounded}");
+    assert!(
+        serde_json::to_vec(&bounded)
+            .expect("bounded history envelope")
+            .len()
+            <= complete_bytes - 1
+    );
+    assert!(
+        bounded["page"]["returned"]
+            .as_u64()
+            .is_some_and(|returned| (1..4).contains(&returned)),
+        "bounded history did not retain a sample prefix: {bounded}"
+    );
+    assert_eq!(bounded["page"]["stop_reason"], "byte_limit");
+}
+
 fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
     [
         (
@@ -195,13 +251,19 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
 }
 
 async fn dispatch(fixture: &Fixture, name: &str, arguments: Value) -> Value {
+    dispatch_with_budget(fixture, name, arguments, STRUCTURED_CONTENT_BYTES).await
+}
+
+async fn dispatch_with_budget(
+    fixture: &Fixture,
+    name: &str,
+    arguments: Value,
+    budget: usize,
+) -> Value {
     let Value::Object(mut arguments) = arguments else {
         panic!("{name} test arguments are an object");
     };
-    arguments.insert(
-        "data_budget_bytes".to_owned(),
-        json!(STRUCTURED_CONTENT_BYTES),
-    );
+    arguments.insert("data_budget_bytes".to_owned(), json!(budget));
     let mut request = CallToolRequestParams::new(name.to_owned());
     request.arguments = Some(arguments);
     tools::dispatch(fixture.state(), request, || false)
