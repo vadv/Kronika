@@ -2604,6 +2604,59 @@ fn finished_browser_resources_revalidate_without_streaming_a_body() {
 }
 
 #[test]
+fn a_validator_identifies_the_request_it_was_issued_for() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    for (issued, other) in browser_resource_targets()
+        .into_iter()
+        .zip(neighbouring_resource_targets())
+    {
+        let etag = fixture
+            .prepare(&issued, None)
+            .meta()
+            .etag
+            .expect("finished browser resource ETag");
+        let neighbour = fixture.prepare(&other, None);
+        assert_ne!(
+            neighbour.meta().etag.as_deref(),
+            Some(etag.as_str()),
+            "{other} reused the validator of {issued}"
+        );
+        assert_eq!(
+            fixture.prepare(&other, Some(&etag)).meta().status,
+            StatusCode::OK,
+            "{other} answered 304 to the validator of {issued}"
+        );
+    }
+}
+
+#[test]
+fn a_validator_stops_matching_once_the_window_gains_a_segment() {
+    let target = "/api/hour?from=100&to=200";
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    let etag = fixture
+        .prepare(target, None)
+        .meta()
+        .etag
+        .expect("finished hour ETag");
+    assert_eq!(
+        fixture.prepare(target, Some(&etag)).meta().status,
+        StatusCode::NOT_MODIFIED
+    );
+
+    fixture.append_diskstats(&[(150, 1, 5)]);
+    fixture.finish();
+    assert_eq!(
+        fixture.prepare(target, Some(&etag)).meta().status,
+        StatusCode::OK
+    );
+}
+
+#[test]
 fn matching_finished_snapshot_etag_skips_predecessor_scans() {
     let mut fixture = Fixture::new();
     fixture.append_relation_snapshots(
@@ -2653,6 +2706,15 @@ fn empty_finished_hour_series_has_no_validator() {
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(prepared.meta().etag, None);
+}
+
+// Each entry differs from its browser_resource_targets peer in one parameter.
+fn neighbouring_resource_targets() -> [String; 3] {
+    [
+        "/api/hour?from=100&to=150".to_owned(),
+        format!("/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=reads"),
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1".to_owned(),
+    ]
 }
 
 fn browser_resource_targets() -> [String; 3] {
