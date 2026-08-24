@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentRef, StrId};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
 
-use super::ApiError;
+use super::{ApiError, surface};
 use crate::route::{DataRequest, Filter};
 
 /// One output field and whether this physical layout carries it.
@@ -58,7 +58,7 @@ pub(super) fn plans(
         .iter()
         .map(|(type_id, _section)| contract(*type_id).ok_or(ApiError::NoSuchSection))
         .collect::<Result<_, _>>()?;
-    let output_names = output_names(&contracts, &request.fields)?;
+    let output_names = output_names(&request.segment.section, &contracts, &request.fields)?;
     validate_filter_names(&contracts, &request.filters)?;
 
     layouts
@@ -146,6 +146,7 @@ fn projection(
 }
 
 fn output_names(
+    logical_name: &str,
     contracts: &[&'static TypeContract],
     requested: &[String],
 ) -> Result<Vec<String>, ApiError> {
@@ -161,13 +162,25 @@ fn output_names(
         return Ok(requested.to_vec());
     }
 
+    let defaults = surface::default_fields(logical_name);
+    let candidates = defaults.map_or_else(
+        || {
+            contracts
+                .iter()
+                .flat_map(|contract| contract.columns.iter().map(|column| column.name))
+                .collect::<Vec<_>>()
+        },
+        <[_]>::to_vec,
+    );
     let mut names = Vec::new();
     let mut seen = HashSet::new();
-    for contract in contracts {
-        for column in contract.columns {
-            if seen.insert(column.name) {
-                names.push(column.name.to_owned());
-            }
+    for name in candidates {
+        if seen.insert(name)
+            && contracts
+                .iter()
+                .any(|contract| contract.column(name).is_some())
+        {
+            names.push(name.to_owned());
         }
     }
     Ok(names)

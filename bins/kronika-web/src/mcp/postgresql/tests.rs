@@ -1,8 +1,8 @@
 use serde_json::{Map, Value, json};
 
 use super::{
-    ACTIVITY_FIELDS, DATABASE_FIELDS, DirectSpec, INDEX_FIELDS, PLAN_FIELDS, STATEMENT_FIELDS,
-    TABLE_FIELDS, activity_visibility, direct_order_tokens, lens, order_tokens,
+    DATABASE_FIELDS, DirectSpec, INDEX_FIELDS, PLAN_FIELDS, STATEMENT_FIELDS, TABLE_FIELDS,
+    activity_visibility, direct_order_tokens, lens, order_tokens,
 };
 use crate::api;
 use crate::route::RelationGroup;
@@ -17,14 +17,13 @@ fn arguments(value: Value) -> Map<String, Value> {
 
 fn spec(
     section: &'static str,
-    defaults: &'static [&'static str],
+    _defaults: &'static [&'static str],
     default_order: &'static str,
     relation: bool,
 ) -> DirectSpec {
     DirectSpec {
         section,
         key: "test",
-        defaults,
         default_order,
         search: false,
         relation,
@@ -169,7 +168,6 @@ fn direct_and_relation_orders_are_strict_and_translate_only_accepted_semantics()
         .is_err()
     );
 
-    assert!(ACTIVITY_FIELDS.contains(&"state"));
     assert!(DATABASE_FIELDS.contains(&"datname"));
 }
 

@@ -1,7 +1,7 @@
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::{
-    ColumnClass, PgStatDatabaseV1, PgStatDatabaseV4, PgStatStatementsV1, PgStatStatementsV3,
-    Section as _,
+    ColumnClass, PgLocksV1, PgLocksV2, PgStatActivityV1, PgStatActivityV2, PgStatActivityV3,
+    PgStatDatabaseV1, PgStatDatabaseV4, PgStatStatementsV1, PgStatStatementsV3, Section as _,
 };
 
 use super::{OutputField, cells_equal, output_names, projection, typed_filter};
@@ -11,27 +11,82 @@ use crate::route::Filter;
 #[test]
 fn requested_field_may_exist_in_only_one_physical_layout() {
     let contracts = [&PgStatDatabaseV1::CONTRACT, &PgStatDatabaseV4::CONTRACT];
-    let names = output_names(&contracts, &["parallel_workers_launched".to_owned()])
-        .expect("field exists in one layout");
+    let names = output_names(
+        "pg_stat_database",
+        &contracts,
+        &["parallel_workers_launched".to_owned()],
+    )
+    .expect("field exists in one layout");
     assert_eq!(names, ["parallel_workers_launched"]);
 }
 
 #[test]
 fn a_field_absent_from_every_layout_is_rejected() {
     let contracts = [&PgStatDatabaseV1::CONTRACT, &PgStatDatabaseV4::CONTRACT];
-    let error = output_names(&contracts, &["not_a_column".to_owned()]).expect_err("unknown field");
+    let error = output_names("pg_stat_database", &contracts, &["not_a_column".to_owned()])
+        .expect_err("unknown field");
     assert!(matches!(error, ApiError::NoSuchColumn(name) if name == "not_a_column"));
 }
 
 #[test]
 fn default_projection_is_the_union_in_stable_layout_order() {
     let contracts = [&PgStatDatabaseV1::CONTRACT, &PgStatDatabaseV4::CONTRACT];
-    let names = output_names(&contracts, &[]).expect("default fields");
+    let names = output_names("pg_stat_database", &contracts, &[]).expect("default fields");
     assert_eq!(names.first().map(String::as_str), Some("ts"));
     assert!(names.iter().any(|name| name == "datname"));
     assert!(names.iter().any(|name| name == "parallel_workers_launched"));
     let unique: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     assert_eq!(unique.len(), names.len());
+}
+
+#[test]
+fn activity_defaults_are_public_and_layout_aware() {
+    for (contract, expected_datid, expected_query_id) in [
+        (&PgStatActivityV1::CONTRACT, false, false),
+        (&PgStatActivityV2::CONTRACT, false, false),
+        (&PgStatActivityV3::CONTRACT, true, true),
+    ] {
+        let names = output_names("pg_stat_activity", &[contract], &[]).expect("Activity defaults");
+        assert!(names.iter().any(|name| name == "pid"));
+        assert!(names.iter().any(|name| name == "state"));
+        assert_eq!(names.iter().any(|name| name == "datid"), expected_datid);
+        assert_eq!(
+            names.iter().any(|name| name == "query_id"),
+            expected_query_id
+        );
+        assert!(!names.iter().any(|name| name == "leader_pid"));
+    }
+
+    let error = output_names(
+        "pg_stat_activity",
+        &[&PgStatActivityV1::CONTRACT],
+        &["leader_pid".to_owned()],
+    )
+    .expect_err("PG10-12 has no leader_pid");
+    assert!(matches!(error, ApiError::NoSuchColumn(name) if name == "leader_pid"));
+}
+
+#[test]
+fn lock_defaults_are_layout_aware() {
+    for (contract, expected_waitstart) in
+        [(&PgLocksV1::CONTRACT, false), (&PgLocksV2::CONTRACT, true)]
+    {
+        let names = output_names("pg_locks", &[contract], &[]).expect("Locks defaults");
+        assert!(names.iter().any(|name| name == "pid"));
+        assert!(names.iter().any(|name| name == "blocked_by"));
+        assert_eq!(
+            names.iter().any(|name| name == "waitstart"),
+            expected_waitstart
+        );
+    }
+
+    let error = output_names(
+        "pg_locks",
+        &[&PgLocksV1::CONTRACT],
+        &["waitstart".to_owned()],
+    )
+    .expect_err("PG10-13 has no waitstart");
+    assert!(matches!(error, ApiError::NoSuchColumn(name) if name == "waitstart"));
 }
 
 #[test]

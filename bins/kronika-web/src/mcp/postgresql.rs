@@ -32,54 +32,6 @@ const OVERVIEW_SECTIONS: &[&str] = &[
     "pg_wal_storage",
     "pg_prepared_xacts",
 ];
-const ACTIVITY_FIELDS: &[&str] = &[
-    "pid",
-    "leader_pid",
-    "datid",
-    "datname",
-    "usename",
-    "application_name",
-    "client_addr",
-    "backend_type",
-    "state",
-    "wait_event_type",
-    "wait_event",
-    "query",
-    "query_id",
-    "backend_xid_age",
-    "backend_xmin_age",
-    "backend_start",
-    "xact_start",
-    "query_start",
-    "state_change",
-];
-const LOCK_FIELDS: &[&str] = &[
-    "pid",
-    "blocked_by",
-    "datid",
-    "datname",
-    "usename",
-    "application_name",
-    "backend_type",
-    "state",
-    "wait_event_type",
-    "wait_event",
-    "query",
-    "lock_locktype",
-    "lock_mode",
-    "lock_database",
-    "lock_relation",
-    "lock_relname",
-    "lock_page",
-    "lock_tuple",
-    "lock_virtualxid",
-    "lock_transactionid",
-    "lock_classid",
-    "lock_objid",
-    "lock_objsubid",
-    "lock_target",
-    "waitstart",
-];
 const DATABASE_FIELDS: &[&str] = &[
     "datid",
     "datname",
@@ -490,7 +442,6 @@ struct Anchor {
 struct DirectSpec {
     section: &'static str,
     key: &'static str,
-    defaults: &'static [&'static str],
     default_order: &'static str,
     search: bool,
     relation: bool,
@@ -519,7 +470,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_activity",
                 key: "activity",
-                defaults: ACTIVITY_FIELDS,
                 default_order: "query_duration_ms",
                 search: false,
                 relation: false,
@@ -536,7 +486,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_statements",
                 key: "statements",
-                defaults: STATEMENT_FIELDS,
                 default_order: "execution_ms_per_second",
                 search: true,
                 relation: false,
@@ -551,7 +500,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_store_plans",
                 key: "plans",
-                defaults: PLAN_FIELDS,
                 default_order: "execution_ms_per_second",
                 search: true,
                 relation: false,
@@ -566,7 +514,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_database",
                 key: "databases",
-                defaults: DATABASE_FIELDS,
                 default_order: "xact_commit",
                 search: false,
                 relation: false,
@@ -581,7 +528,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_user_tables",
                 key: "tables",
-                defaults: TABLE_FIELDS,
                 default_order: "tuple_throughput",
                 search: true,
                 relation: true,
@@ -596,7 +542,6 @@ pub(super) fn execute(
             DirectSpec {
                 section: "pg_stat_user_indexes",
                 key: "indexes",
-                defaults: INDEX_FIELDS,
                 default_order: "idx_scan",
                 search: true,
                 relation: true,
@@ -884,9 +829,8 @@ fn lens(
             },
             "state_severity",
         ),
-        ("pg_stat_activity" | "pg_stat_database", None) => {
-            resolved(spec.defaults, spec.default_order)
-        }
+        ("pg_stat_activity", None) => resolved(&[], spec.default_order),
+        ("pg_stat_database", None) => resolved(DATABASE_FIELDS, spec.default_order),
         ("pg_stat_statements", Some(_)) => {
             return Err(input(
                 "lens",
@@ -909,7 +853,7 @@ fn lens(
             ));
         }
         (_, Some(_)) => return Err(input("lens", "lens is not supported by this surface")),
-        (_, None) => resolved(spec.defaults, spec.default_order),
+        (_, None) => resolved(&[], spec.default_order),
     };
     Ok(resolved)
 }
@@ -992,7 +936,7 @@ fn direct_order_tokens(section: &str, requested: &str) -> Option<Vec<String>> {
         ("pg_stat_activity", "transaction_duration_ms") => {
             Some(fixed(&["derived.transaction_duration_ms"]))
         }
-        ("pg_stat_activity", name) if ACTIVITY_FIELDS.contains(&name) => {
+        ("pg_stat_activity", name) if api::surface_field_is_public("pg_stat_activity", name) => {
             Some(vec![name.to_owned()])
         }
         ("pg_stat_statements" | "pg_store_plans", "calls_per_second") => Some(fixed(&["calls"])),

@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 
 use super::{
-    LOCK_FIELDS, MAX_FIELDS, MAX_ROWS, PostgresqlFailure, PostgresqlPayload, State, anchor_value,
-    collect, failure, fields, input, page, page_size, resolve_anchor, selected_at,
+    MAX_FIELDS, MAX_ROWS, PostgresqlFailure, PostgresqlPayload, State, anchor_value, collect,
+    failure, fields, input, page, page_size, resolve_anchor, selected_at,
 };
+use crate::api::LOCK_GRAPH_FIELDS;
 use crate::route::{Order, Route, SnapshotRequest};
 
-const REQUIRED_GRAPH_FIELDS: &[&str] = &["pid", "blocked_by", "datname", "lock_target"];
 const PREPARED_FIELDS: &[&str] = &["datname", "prepared_count", "max_age_us", "max_xid_age_tx"];
 
 pub(super) fn execute(
@@ -96,8 +96,11 @@ pub(super) fn execute(
 }
 
 fn graph_fields(args: &Map<String, Value>) -> Result<Vec<String>, PostgresqlFailure> {
-    let mut projected = fields(args, LOCK_FIELDS)?;
-    for required in REQUIRED_GRAPH_FIELDS {
+    let mut projected = fields(args, &[])?;
+    if projected.is_empty() {
+        return Ok(projected);
+    }
+    for required in LOCK_GRAPH_FIELDS {
         if !projected.iter().any(|field| field == required) {
             projected.push((*required).to_owned());
         }

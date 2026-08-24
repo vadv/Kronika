@@ -22,6 +22,7 @@ mod render;
 mod row_detail;
 mod rows;
 mod snapshot;
+mod surface;
 
 pub(crate) use catalog::{
     metric_source_bit as catalog_metric_source_bit, source_bit as catalog_source_bit,
@@ -32,6 +33,7 @@ pub(crate) use events::{
 };
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 pub(crate) use snapshot::relation_field_is_available;
+pub(crate) use surface::{LOCK_GRAPH_FIELDS, field_is_public as surface_field_is_public};
 
 #[cfg(test)]
 mod tests;

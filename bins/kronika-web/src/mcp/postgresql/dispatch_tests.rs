@@ -4,8 +4,8 @@ use std::sync::Arc;
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
-use kronika_registry::pg_locks::PgLocksV2;
-use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_locks::{PgLocksV1, PgLocksV2};
+use kronika_registry::pg_stat_activity::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
 use kronika_registry::pg_stat_database::PgStatDatabaseV4;
 use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuumV2;
 use kronika_registry::pg_stat_statements::PgStatStatementsV6;
@@ -29,6 +29,54 @@ struct Fixture {
     directory: tempfile::TempDir,
     _writer: WriterOwner,
     journal: Journal,
+}
+
+#[derive(Clone, Copy)]
+enum ActivityLayout {
+    V1,
+    V2,
+    V3,
+}
+
+#[derive(Clone, Copy)]
+enum LockLayout {
+    V1,
+    V2,
+}
+
+struct LayoutFixture {
+    directory: tempfile::TempDir,
+    _writer: WriterOwner,
+    _journal: Journal,
+}
+
+impl LayoutFixture {
+    fn new(activity: ActivityLayout, locks: LockLayout) -> Self {
+        let directory = tempfile::tempdir().expect("temporary versioned PostgreSQL data root");
+        let root = DataRoot::open(directory.path()).expect("open versioned data root");
+        let writer = root
+            .acquire_writer(LayoutLimits::default())
+            .expect("acquire versioned fixture writer");
+        let mut journal =
+            Journal::open(&writer, JournalConfig::default()).expect("open versioned fixture WAL");
+        let address = SegmentAddress::new(SegmentId::new(SEGMENT_ID).expect("segment id"))
+            .expect("segment address");
+        append_layout_fixture(&mut journal, address, activity, locks);
+        Self {
+            directory,
+            _writer: writer,
+            _journal: journal,
+        }
+    }
+
+    fn state(&self) -> State {
+        State {
+            data_root: self.directory.path().to_owned(),
+            sources: 0b10,
+            synthetic_demo: false,
+            heavy_scans: Arc::new(Semaphore::new(2)),
+        }
+    }
 }
 
 impl Fixture {
@@ -277,6 +325,101 @@ async fn activity_dispatch_fits_rows_to_the_requested_data_budget() {
 }
 
 #[tokio::test]
+async fn activity_and_lock_defaults_execute_on_every_supported_layout_family() {
+    for (layout, datid, query_id) in [
+        (ActivityLayout::V1, false, false),
+        (ActivityLayout::V2, false, false),
+        (ActivityLayout::V3, true, true),
+    ] {
+        let fixture = LayoutFixture::new(layout, LockLayout::V2);
+        let response = dispatch_state(
+            fixture.state(),
+            "kronika_find_postgresql_activity",
+            json!({"at_us": AT.to_string()}),
+        )
+        .await;
+        assert_ok(&response, "versioned Activity default");
+        let fields = response
+            .pointer("/data/activity")
+            .and_then(Value::as_array)
+            .and_then(|records| {
+                records.iter().find_map(|record| {
+                    (record.get("record").and_then(Value::as_str) == Some("layout"))
+                        .then(|| record.pointer("/layout/columns"))
+                        .flatten()
+                })
+            })
+            .and_then(Value::as_array)
+            .map(|columns| {
+                columns
+                    .iter()
+                    .filter_map(|column| column.get("name").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| panic!("versioned Activity layout: {response}"));
+        assert!(fields.contains(&"pid"));
+        assert!(fields.contains(&"state"));
+        assert_eq!(fields.contains(&"datid"), datid);
+        assert_eq!(fields.contains(&"query_id"), query_id);
+        assert!(!fields.contains(&"leader_pid"));
+
+        if !matches!(layout, ActivityLayout::V1) {
+            let explicit = dispatch_state(
+                fixture.state(),
+                "kronika_find_postgresql_activity",
+                json!({"at_us": AT.to_string(), "fields": ["leader_pid"]}),
+            )
+            .await;
+            assert_ok(&explicit, "explicit available Activity field");
+        }
+    }
+
+    let old = LayoutFixture::new(ActivityLayout::V1, LockLayout::V1);
+    let unavailable = dispatch_state(
+        old.state(),
+        "kronika_find_postgresql_activity",
+        json!({"at_us": AT.to_string(), "fields": ["leader_pid"]}),
+    )
+    .await;
+    assert_error(&unavailable, "no_such_column", Some("leader_pid"));
+
+    for (layout, waitstart) in [(LockLayout::V1, false), (LockLayout::V2, true)] {
+        let fixture = LayoutFixture::new(ActivityLayout::V3, layout);
+        let response = dispatch_state(
+            fixture.state(),
+            "kronika_find_postgresql_locks",
+            json!({"at_us": AT.to_string()}),
+        )
+        .await;
+        assert_ok(&response, "versioned Locks default");
+        let values = response
+            .pointer("/data/locks/0/values")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("versioned Lock row values: {response}"));
+        assert!(values.contains_key("pid"));
+        assert!(values.contains_key("blocked_by"));
+        assert_eq!(values.contains_key("waitstart"), waitstart);
+        if matches!(layout, LockLayout::V2) {
+            let explicit = dispatch_state(
+                fixture.state(),
+                "kronika_find_postgresql_locks",
+                json!({"at_us": AT.to_string(), "fields": ["waitstart"]}),
+            )
+            .await;
+            assert_ok(&explicit, "explicit available Lock field");
+        }
+    }
+
+    let unavailable = dispatch_state(
+        old.state(),
+        "kronika_find_postgresql_locks",
+        json!({"at_us": AT.to_string(), "fields": ["waitstart"]}),
+    )
+    .await;
+    assert_error(&unavailable, "no_such_column", Some("waitstart"));
+}
+
+#[tokio::test]
 async fn statement_lenses_find_and_rejections_run_through_dispatch() {
     let fixture = Fixture::new();
     for lens in ["load", "per_call", "io", "resources", "stability"] {
@@ -447,16 +590,120 @@ async fn locks_vacuum_and_database_reject_advertised_but_unsupported_inputs() {
 }
 
 async fn dispatch(fixture: &Fixture, name: &str, arguments: Value) -> Value {
+    dispatch_state(fixture.state(), name, arguments).await
+}
+
+async fn dispatch_state(state: State, name: &str, arguments: Value) -> Value {
     let mut request = CallToolRequestParams::new(name.to_owned());
     let Value::Object(arguments) = arguments else {
         panic!("{name} test arguments are an object");
     };
     request.arguments = Some(arguments);
-    tools::dispatch(fixture.state(), request, || false)
+    tools::dispatch(state, request, || false)
         .await
         .unwrap_or_else(|error| panic!("{name} reached dispatch: {error:?}"))
         .structured_content
         .unwrap_or_else(|| panic!("{name} returned structured content"))
+}
+
+fn append_layout_fixture(
+    journal: &mut Journal,
+    address: SegmentAddress,
+    activity: ActivityLayout,
+    locks: LockLayout,
+) {
+    let mut interner = Interner::new(DictLimits::default());
+    let database = label(&mut interner, "inventory");
+    let role = label(&mut interner, "app");
+    let application = label(&mut interner, "fixture");
+    let client = label(&mut interner, "127.0.0.1");
+    let backend = label(&mut interner, "client backend");
+    let active = label(&mut interner, "active");
+    let query = label(&mut interner, "select 1");
+    let locktype = label(&mut interner, "transactionid");
+    let lockmode = label(&mut interner, "ShareLock");
+    let target = label(&mut interner, "transaction 42");
+    let mut buffers = SectionBuffers::new();
+
+    match activity {
+        ActivityLayout::V1 => buffers
+            .push(activity_v1_row(
+                database,
+                role,
+                application,
+                client,
+                backend,
+                active,
+                query,
+            ))
+            .expect("Activity V1 row fits"),
+        ActivityLayout::V2 => buffers
+            .push(activity_v2_row(
+                database,
+                role,
+                application,
+                client,
+                backend,
+                active,
+                query,
+            ))
+            .expect("Activity V2 row fits"),
+        ActivityLayout::V3 => buffers
+            .push(activity_v3_row(
+                database,
+                role,
+                application,
+                client,
+                backend,
+                active,
+                query,
+            ))
+            .expect("Activity V3 row fits"),
+    }
+    for (pid, blocked_by) in [(10, Vec::new()), (20, vec![10])] {
+        match locks {
+            LockLayout::V1 => buffers
+                .push(lock_v1_row(
+                    pid,
+                    blocked_by,
+                    database,
+                    role,
+                    application,
+                    client,
+                    backend,
+                    active,
+                    query,
+                    locktype,
+                    lockmode,
+                    target,
+                ))
+                .expect("Lock V1 row fits"),
+            LockLayout::V2 => buffers
+                .push(lock_row(
+                    pid,
+                    blocked_by,
+                    database,
+                    role,
+                    application,
+                    client,
+                    backend,
+                    active,
+                    query,
+                    locktype,
+                    lockmode,
+                    target,
+                ))
+                .expect("Lock V2 row fits"),
+        }
+    }
+    let dictionary = dict::encode(interner.window()).expect("encode versioned dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode versioned fixture")
+        .expect("nonempty versioned fixture");
+    journal
+        .append(address.id, &part)
+        .expect("append versioned fixture");
 }
 
 fn assert_ok(response: &Value, context: &str) {
@@ -689,6 +936,112 @@ fn activity_row(
         xact_start: state.is_some().then_some(Ts(AT - 10_000_000)),
         query_start: (state.is_some() && query.is_some()).then_some(Ts(AT - 5_000_000)),
         state_change: state.map(|_| Ts(AT - 2_000_000)),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixture spells out the recorded Activity labels"
+)]
+fn activity_v1_row(
+    datname: StrId,
+    usename: StrId,
+    application_name: StrId,
+    client_addr: StrId,
+    backend_type: StrId,
+    state: StrId,
+    query: StrId,
+) -> PgStatActivityV1 {
+    PgStatActivityV1 {
+        ts: Ts(AT),
+        pid: 101,
+        datname: Some(datname),
+        usename: Some(usename),
+        application_name,
+        client_addr,
+        backend_type,
+        state: Some(state),
+        wait_event_type: None,
+        wait_event: None,
+        query: Some(query),
+        backend_xid_age: Some(10),
+        backend_xmin_age: Some(20),
+        backend_start: Ts(AT - 60_000_000),
+        xact_start: Some(Ts(AT - 10_000_000)),
+        query_start: Some(Ts(AT - 5_000_000)),
+        state_change: Some(Ts(AT - 2_000_000)),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixture spells out the recorded Activity labels"
+)]
+fn activity_v2_row(
+    datname: StrId,
+    usename: StrId,
+    application_name: StrId,
+    client_addr: StrId,
+    backend_type: StrId,
+    state: StrId,
+    query: StrId,
+) -> PgStatActivityV2 {
+    PgStatActivityV2 {
+        ts: Ts(AT),
+        pid: 101,
+        leader_pid: Some(100),
+        datname: Some(datname),
+        usename: Some(usename),
+        application_name,
+        client_addr,
+        backend_type,
+        state: Some(state),
+        wait_event_type: None,
+        wait_event: None,
+        query: Some(query),
+        backend_xid_age: Some(10),
+        backend_xmin_age: Some(20),
+        backend_start: Ts(AT - 60_000_000),
+        xact_start: Some(Ts(AT - 10_000_000)),
+        query_start: Some(Ts(AT - 5_000_000)),
+        state_change: Some(Ts(AT - 2_000_000)),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixture spells out the recorded Activity labels"
+)]
+fn activity_v3_row(
+    datname: StrId,
+    usename: StrId,
+    application_name: StrId,
+    client_addr: StrId,
+    backend_type: StrId,
+    state: StrId,
+    query: StrId,
+) -> PgStatActivityV3 {
+    PgStatActivityV3 {
+        ts: Ts(AT),
+        pid: 101,
+        leader_pid: Some(100),
+        datid: Some(16_384),
+        datname: Some(datname),
+        usename: Some(usename),
+        application_name,
+        client_addr,
+        backend_type,
+        state: Some(state),
+        wait_event_type: None,
+        wait_event: None,
+        query: Some(query),
+        query_id: Some(71),
+        backend_xid_age: Some(10),
+        backend_xmin_age: Some(20),
+        backend_start: Ts(AT - 60_000_000),
+        xact_start: Some(Ts(AT - 10_000_000)),
+        query_start: Some(Ts(AT - 5_000_000)),
+        state_change: Some(Ts(AT - 2_000_000)),
     }
 }
 
@@ -1016,6 +1369,60 @@ fn lock_row(
         lock_objsubid: None,
         lock_target: Some(lock_target),
         waitstart: Some(Ts(AT - 100_000)),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixture spells out the recorded Lock graph"
+)]
+fn lock_v1_row(
+    pid: i32,
+    blocked_by: Vec<i32>,
+    datname: StrId,
+    usename: StrId,
+    application_name: StrId,
+    client_addr: StrId,
+    backend_type: StrId,
+    state: StrId,
+    query: StrId,
+    lock_locktype: StrId,
+    lock_mode: StrId,
+    lock_target: StrId,
+) -> PgLocksV1 {
+    PgLocksV1 {
+        ts: Ts(AT),
+        pid,
+        blocked_by,
+        datid: 16_384,
+        datname,
+        usename: Some(usename),
+        application_name,
+        client_addr,
+        backend_type,
+        state: Some(state),
+        wait_event_type: Some(lock_locktype),
+        wait_event: Some(lock_mode),
+        query,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: Some(Ts(AT - 60_000_000)),
+        xact_start: Some(Ts(AT - 5_000_000)),
+        query_start: Some(Ts(AT - 1_000_000)),
+        state_change: Some(Ts(AT - 1_000_000)),
+        lock_locktype: Some(lock_locktype),
+        lock_mode: Some(lock_mode),
+        lock_database: Some(16_384),
+        lock_relation: None,
+        lock_relname: None,
+        lock_page: None,
+        lock_tuple: None,
+        lock_virtualxid: None,
+        lock_transactionid: Some(42),
+        lock_classid: None,
+        lock_objid: None,
+        lock_objsubid: None,
+        lock_target: Some(lock_target),
     }
 }
 
