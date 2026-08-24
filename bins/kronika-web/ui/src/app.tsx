@@ -918,7 +918,7 @@ function App({ locale, onLocale, t }: {
       <div aria-live="polite" className="cursor-time max-[760px]:order-9">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
-        {cursorState === "loading" && <span className="flex items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
+        {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
         {cursorState === "missing" && <span className="cursor-missing ml-2 font-sans text-xs text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
       </div>
@@ -1004,7 +1004,7 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     return () => clearInterval(timer)
   }, [])
   const age = humanAge((now - at) / 1_000_000, locale)
-  return <span className="flex items-baseline text-xs text-fg4" data-testid="updated-time">
+  return <span className="flex flex-none items-baseline text-xs text-fg4" data-testid="updated-time">
     <LabelHelp
       helpKey="refresh.updated"
       helpText={`${t("refresh.updated")} ${t("refresh.ago", { age })} · ${clock}`}

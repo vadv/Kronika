@@ -1085,13 +1085,16 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const size = await cdp.evaluate(`(() => {
         const clientWidth = document.documentElement.clientWidth
+        const updated = document.querySelector('[data-testid="updated-help"]').getBoundingClientRect()
+        const spinner = document.querySelector('[data-testid="cursor-behind"] .loading-ring').getBoundingClientRect()
         const overflow = [...document.querySelectorAll("body *")].flatMap((node) => {
           const rect = node.getBoundingClientRect()
           return rect.right > clientWidth + 0.5 ? [{ className: node.className, right: rect.right, tag: node.tagName }] : []
         }).slice(0, 8)
-        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth }
+        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth, statusGap: spinner.left - updated.right }
       })()`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px document overflow: ${JSON.stringify(size)}`)
+      assert.ok(size.statusGap >= 15, `${width}px cursor status grouping: ${JSON.stringify(size)}`)
     }
     ndjson(heldSystemPage, systemSnapshotRecords())
     heldSystemPage = null
