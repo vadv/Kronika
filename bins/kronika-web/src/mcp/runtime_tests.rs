@@ -82,12 +82,23 @@ async fn all_ten_core_and_expert_tools_execute_through_dispatch_on_recorded_data
                 .is_some_and(|returned| returned > 0),
             "{name} did not report a recorded result: {response}"
         );
+        if name == "kronika_get_context" {
+            assert_eq!(
+                response.pointer("/data/context/recorded/segments/0/segment_id"),
+                Some(&json!(SEGMENT_ID.to_string())),
+                "Context did not discover the recorded fixture: {response}"
+            );
+        }
     }
 }
 
 fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
     [
-        ("kronika_get_context", json!({}), "/data/context/recorded"),
+        (
+            "kronika_get_context",
+            json!({}),
+            "/data/context/recorded/segments",
+        ),
         (
             "kronika_list_hours",
             json!({
