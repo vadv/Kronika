@@ -235,9 +235,8 @@
 .heat-6 { fill: var(--color-heat-6); }
 
 /* A cell that prints two readings names both, in the order the values appear;
-   each name keeps its own help. */
-.use-lane-names { align-items: baseline; display: flex; gap: 4px; min-width: 0; }
-.use-lane-names > .label-help + .label-help::before { color: var(--color-fg4); content: "·"; margin-right: 4px; }
+   each name keeps its own help mark on its own name. */
+.use-lane > .label-help + .label-help::before { color: var(--color-fg4); content: "·"; margin-right: 5px; }
 
 @utility use-row {
   border-bottom: 1px solid var(--color-line); cursor: pointer; display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); transition: background-color 80ms var(--ease-out);
@@ -605,9 +604,9 @@
 .timeline-lanes .label-help:focus-within { opacity: 1; }
 
 /* Keep one row activation target while preserving keyboard help access. */
-.use-lane .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.use-lane .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
-.use-lane .label-help > .help-dot:focus-visible { opacity: 1; }
+.use-lane > .label-help > span { border-bottom: 1px dotted var(--color-line4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.use-lane > .label-help > .help-dot { background: transparent; border: 0; height: auto; inset: 0; margin: 0; opacity: 0; position: absolute; width: auto; }
+.use-lane > .label-help > .help-dot:focus-visible { opacity: 1; }
 
 .use-header-cell .help-dot { opacity: .45; transition: opacity 120ms var(--ease-out); }
 .use-header-cell:hover .help-dot,

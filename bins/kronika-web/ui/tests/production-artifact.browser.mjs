@@ -5915,13 +5915,24 @@ test("phone width keeps narrow rules winning and nothing reserving height", { ti
     const resolved = await cdp.evaluate(`(() => {
       const row = document.querySelector('[data-testid="use-table"] .use-row')
       const tracks = getComputedStyle(row).gridTemplateColumns.split(" ")
-      return { client: document.documentElement.clientWidth, first: tracks[0], tracks: tracks.length }
+      const name = row.querySelector('.use-resource')
+      const cell = row.querySelector('.use-cell')
+      return {
+        client: document.documentElement.clientWidth,
+        first: tracks[0], tracks: tracks.length,
+        nameSpans: name === null ? null : Math.round(name.getBoundingClientRect().width),
+        nameBottom: name === null ? null : Math.round(name.getBoundingClientRect().bottom),
+        cellTop: cell === null ? null : Math.round(cell.getBoundingClientRect().top),
+        rowWidth: Math.round(row.getBoundingClientRect().width),
+      }
     })()`)
-    // The <=760px rule pins the first track to 80px; the base value is a
-    // minmax(96px, 130px) that resolves to 96px or more when it wrongly wins.
+    // At or below 520px four columns left a reading 88px for a label, a number
+    // and its help mark. The resource name takes the whole row and the three
+    // readings share the width under it.
     assert.equal(resolved.client, 412, JSON.stringify(resolved))
-    assert.equal(resolved.tracks, 4, JSON.stringify(resolved))
-    assert.equal(resolved.first, "80px", JSON.stringify(resolved))
+    assert.equal(resolved.tracks, 3, JSON.stringify(resolved))
+    assert.equal(resolved.nameSpans, resolved.rowWidth, JSON.stringify(resolved))
+    assert.ok(resolved.cellTop >= resolved.nameBottom - .5, JSON.stringify(resolved))
 
     // A phone has no room for a reserved list height or a strip that stacks
     // its readings; both pushed real rows below the fold.
