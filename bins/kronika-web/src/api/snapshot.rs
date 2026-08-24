@@ -2,6 +2,7 @@
 
 mod relation;
 mod search;
+mod summary;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -94,6 +95,7 @@ struct SnapshotCursor {
 struct PageRows {
     limit: usize,
     rows: BinaryHeap<Reverse<PageRankedRow>>,
+    summary: Option<summary::Dense>,
 }
 
 struct PageRankedRow {
@@ -179,6 +181,7 @@ struct PageContext<'a> {
     search_columns: Vec<&'static str>,
     clock_ticks_per_second: Option<u128>,
     block_size: Option<u128>,
+    summary: Option<summary::Columns>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -747,6 +750,7 @@ fn section_plans(
                     if let Some(search) = search {
                         plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
+                    summary::add_projection(logical_name, plan);
                 }
                 sections.push(SectionPlans {
                     logical_name: logical_name.clone(),
@@ -1431,7 +1435,10 @@ impl PreparedSnapshot {
             .map(|cursor| self.cursor_anchor(&contexts, &process_users, cursor))
             .transpose()?;
         let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
-        let mut page = PageRows::new(page_size.saturating_add(1));
+        let mut page = PageRows::with_summary(
+            page_size.saturating_add(1),
+            summary::Dense::new(&section.logical_name),
+        );
         let mut eligible = 0_u64;
         for context in &contexts {
             self.scan_page(
@@ -1448,6 +1455,7 @@ impl PreparedSnapshot {
                 return Ok(());
             }
         }
+        let summary = page.summary.as_ref().map(summary::Dense::json);
         let mut ranked = page.finish();
         let has_more = ranked.len() > page_size;
         let next_cursor = has_more.then(|| {
@@ -1477,6 +1485,7 @@ impl PreparedSnapshot {
                 page_size,
             },
             self.direction,
+            summary,
             emit,
         )?;
         Ok(())
@@ -1537,6 +1546,7 @@ impl PreparedSnapshot {
                 page_size: 1,
             },
             self.direction,
+            None,
             emit,
         )
     }
@@ -1676,6 +1686,7 @@ impl PreparedSnapshot {
         contexts: &[PageContext<'_>],
         metadata: &PageMetadata,
         direction: Order,
+        summary: Option<Value>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
     ) -> Result<(), ApiError> {
         let mut order_by = Vec::new();
@@ -1694,7 +1705,7 @@ impl PreparedSnapshot {
             .iter()
             .filter_map(|context| context.sample_to)
             .max();
-        let _connected = emit(record(json!({
+        let mut trailer = json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "eligible": metadata.eligible.to_string(),
@@ -1710,7 +1721,11 @@ impl PreparedSnapshot {
             },
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
-        }))?);
+        });
+        if let Some(summary) = summary {
+            trailer["summary"] = summary;
+        }
+        let _connected = emit(record(trailer)?);
         Ok(())
     }
 
@@ -1748,6 +1763,7 @@ impl PreparedSnapshot {
                     }),
                     clock_ticks_per_second: facts.clock_ticks_per_second.value(),
                     block_size: facts.block_size.value(),
+                    summary: summary::Columns::new(&section.logical_name, plan),
                 });
                 continue;
             };
@@ -1848,6 +1864,7 @@ impl PreparedSnapshot {
                     search_columns: Vec::new(),
                     clock_ticks_per_second: None,
                     block_size: None,
+                    summary: None,
                 });
             }
         }
@@ -1924,6 +1941,7 @@ impl PreparedSnapshot {
                 }),
                 clock_ticks_per_second: facts.clock_ticks_per_second.value(),
                 block_size: facts.block_size.value(),
+                summary: summary::Columns::new(&section.logical_name, plan),
             });
         }
         Ok(contexts)
@@ -2202,6 +2220,7 @@ impl PreparedSnapshot {
             }),
             clock_ticks_per_second: None,
             block_size: None,
+            summary: summary::Columns::new(&section.logical_name, plan),
         })
     }
 
@@ -2468,6 +2487,14 @@ impl PreparedSnapshot {
             return;
         };
         *eligible = eligible.saturating_add(1);
+        if let (Some(summary), Some(columns)) = (&mut page.summary, context.summary) {
+            summary.add(
+                columns,
+                context,
+                &candidate.staged.row,
+                &candidate.staged.identity,
+            );
+        }
         if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
             page.push(candidate);
         }
@@ -2682,10 +2709,11 @@ impl PreparedSnapshot {
 }
 
 impl PageRows {
-    const fn new(limit: usize) -> Self {
+    const fn with_summary(limit: usize, summary: Option<summary::Dense>) -> Self {
         Self {
             limit,
             rows: BinaryHeap::new(),
+            summary,
         }
     }
 

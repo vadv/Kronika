@@ -283,6 +283,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
         has_more: true, truncated: true, next_cursor: "next+/=", page_size: 200,
         order_by: ["wal_bytes", "total_time"], order_direction: "desc",
         from: String(START - 10_000_000), to: String(START),
+        summary: { call_rate: 12, exec_time_rate: 345, mean_exec: 28.75, row_rate: 99 },
       },
     ])
   }
@@ -299,6 +300,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
       hasMore: true, truncated: true, nextCursor: "next+/=", pageSize: 200,
       orderBy: ["wal_bytes", "total_time"], orderDirection: "desc",
       from: START - 10_000_000, to: START,
+      summary: { call_rate: 12, exec_time_rate: 345, mean_exec: 28.75, row_rate: 99 },
     }])
   } finally {
     globalThis.fetch = originalFetch
