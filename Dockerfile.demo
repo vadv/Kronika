@@ -46,6 +46,7 @@ COPY bins/kronika-collector/src/ bins/kronika-collector/src/
 COPY bins/kronika-dump/src/ bins/kronika-dump/src/
 COPY bins/kronika-demo/src/ bins/kronika-demo/src/
 COPY bins/kronika-web/build.rs bins/kronika-web/build.rs
+COPY bins/kronika-web/product-semantics.json bins/kronika-web/product-semantics.json
 COPY bins/kronika-web/src/ bins/kronika-web/src/
 COPY bins/kronika-web/ui/kronika-ui.html.gz bins/kronika-web/ui/kronika-ui.html.gz
 RUN target=$(cat /demo-target) \
