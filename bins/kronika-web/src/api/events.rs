@@ -41,7 +41,6 @@ pub(crate) struct EventPageRequest {
     pub(crate) find: Option<String>,
     pub(crate) direction: Order,
     pub(crate) page_size: usize,
-    pub(crate) value_bytes: usize,
     pub(crate) cursor: Option<String>,
 }
 
@@ -81,6 +80,7 @@ pub(crate) enum EventPageError {
     ScanLimit,
     SegmentLimit,
     WarningLimit,
+    FixedMetadataTooLarge,
     FirstRowTooLarge,
     Semantics(ProductSemanticsError),
     InvalidSemantics(String),
@@ -94,8 +94,11 @@ impl std::fmt::Display for EventPageError {
             Self::ScanLimit => f.write_str("Event scan exceeded its row or cell limit"),
             Self::SegmentLimit => f.write_str("Event scan intersects more than 64 segments"),
             Self::WarningLimit => f.write_str("Event scan encountered more than 64 store warnings"),
+            Self::FixedMetadataTooLarge => {
+                f.write_str("the fixed Event metadata exceeds the value-byte limit")
+            }
             Self::FirstRowTooLarge => {
-                f.write_str("the first Event row exceeds the value-byte limit")
+                f.write_str("the fixed Event metadata and first row exceed the value-byte limit")
             }
             Self::Semantics(error) => error.fmt(f),
             Self::InvalidSemantics(error) => f.write_str(error),
@@ -112,6 +115,7 @@ impl std::error::Error for EventPageError {
             | Self::ScanLimit
             | Self::SegmentLimit
             | Self::WarningLimit
+            | Self::FixedMetadataTooLarge
             | Self::FirstRowTooLarge
             | Self::InvalidSemantics(_) => None,
         }
@@ -223,6 +227,13 @@ struct Cursor {
     sources: u64,
 }
 
+#[derive(Clone, Copy)]
+struct CursorSource {
+    active: Option<(i64, u64)>,
+    binding: u64,
+    sources: u64,
+}
+
 struct TierPolicy {
     discriminator: Option<String>,
     tiers: Vec<EventTier>,
@@ -234,6 +245,7 @@ pub(crate) fn read_event_page(
     root: &Path,
     request: &EventPageRequest,
     cancelled: &impl Fn() -> bool,
+    page_fits: &impl Fn(usize, usize, Option<&str>, EventStopReason, Option<u64>, &[Value]) -> bool,
 ) -> Result<EventPage, EventPageError> {
     validate_request(request)?;
     let search = request
@@ -302,11 +314,14 @@ pub(crate) fn read_event_page(
     render_page(
         retained,
         request,
-        active,
-        binding,
-        source_binding,
+        CursorSource {
+            active,
+            binding,
+            sources: source_binding,
+        },
         warnings,
         cancelled,
+        page_fits,
     )
 }
 
@@ -319,9 +334,6 @@ fn validate_request(request: &EventPageRequest) -> Result<(), EventPageError> {
     }
     if request.page_size == 0 || request.page_size > MAX_PAGE_ROWS {
         return Err(ApiError::BadFilter("page_size".to_owned()).into());
-    }
-    if request.value_bytes == 0 {
-        return Err(ApiError::BadFilter("data_budget_bytes".to_owned()).into());
     }
     Ok(())
 }
@@ -523,17 +535,29 @@ fn scan_candidates(
 fn render_page(
     retained: Retained,
     request: &EventPageRequest,
-    active: Option<(i64, u64)>,
-    binding: u64,
-    sources: u64,
+    source: CursorSource,
     warnings: Vec<Value>,
     cancelled: &impl Fn() -> bool,
+    page_fits: &impl Fn(usize, usize, Option<&str>, EventStopReason, Option<u64>, &[Value]) -> bool,
 ) -> Result<EventPage, EventPageError> {
     let candidates = retained.ordered(request.direction);
     let retained_count = candidates.len();
     let target = retained_count.min(request.page_size);
     if cancelled() {
         return Err(EventPageError::Cancelled);
+    }
+    let active_position = source.active.map(|(_id, position)| position);
+    if target == 0
+        && !page_fits(
+            0,
+            0,
+            None,
+            EventStopReason::Complete,
+            active_position,
+            &warnings,
+        )
+    {
+        return Err(EventPageError::FixedMetadataTooLarge);
     }
     let dictionaries = dictionaries(&candidates[..target])?;
     let mut events = Vec::with_capacity(target);
@@ -548,14 +572,42 @@ fn render_page(
             .ok_or_else(|| missing_dictionary(candidate.key.segment_id))?;
         let value = render_event(candidate, request, dictionary)?;
         let bytes = serde_json::to_vec(&value).map_err(ApiError::from)?.len();
-        if encoded.saturating_add(bytes) > request.value_bytes {
+        let candidate_encoded = encoded
+            .saturating_add(usize::from(!events.is_empty()))
+            .saturating_add(bytes);
+        let returned = events.len().saturating_add(1);
+        let has_more = returned < retained_count;
+        let stop_reason = if returned < target {
+            EventStopReason::ByteLimit
+        } else if retained_count > request.page_size {
+            EventStopReason::PageLimit
+        } else {
+            EventStopReason::Complete
+        };
+        let next_cursor = has_more.then(|| {
+            Cursor {
+                key: candidate.key,
+                active: source.active,
+                binding: source.binding,
+                sources: source.sources,
+            }
+            .encode()
+        });
+        if !page_fits(
+            returned,
+            candidate_encoded,
+            next_cursor.as_deref(),
+            stop_reason,
+            active_position,
+            &warnings,
+        ) {
             if events.is_empty() {
                 return Err(EventPageError::FirstRowTooLarge);
             }
             byte_limited = true;
             break;
         }
-        encoded = encoded.saturating_add(bytes);
+        encoded = candidate_encoded;
         events.push(value);
     }
     let has_more = events.len() < retained_count;
@@ -570,9 +622,9 @@ fn render_page(
         let key = candidates[events.len().saturating_sub(1)].key;
         Cursor {
             key,
-            active,
-            binding,
-            sources,
+            active: source.active,
+            binding: source.binding,
+            sources: source.sources,
         }
         .encode()
     });
@@ -580,7 +632,7 @@ fn render_page(
         events,
         next_cursor,
         stop_reason,
-        active_position: active.map(|(_id, position)| position),
+        active_position,
         warnings,
     })
 }

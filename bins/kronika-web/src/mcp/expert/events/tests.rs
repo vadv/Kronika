@@ -72,6 +72,31 @@ fn continuation_allows_page_size_to_change() {
 }
 
 #[test]
+fn handler_fits_the_complete_envelope_and_retains_a_cursor() {
+    let mut fixture = Fixture::new();
+    fixture.append_initial_events();
+    let state = fixture.state();
+    let complete =
+        execute(&state, &arguments("asc", 3, None, None)).expect("complete three-row Event page");
+    let complete_bytes = payload_bytes(&complete);
+    assert!(complete_bytes > 1_024);
+
+    let mut bounded_args = arguments("asc", 3, None, None);
+    bounded_args.insert("data_budget_bytes".to_owned(), json!(complete_bytes - 1));
+    let bounded = execute(&state, &bounded_args).expect("byte-bounded Event page");
+
+    assert!(payload_bytes(&bounded) < complete_bytes);
+    assert!(
+        bounded.page["returned"]
+            .as_u64()
+            .is_some_and(|returned| (1..3).contains(&returned)),
+        "{bounded:?}"
+    );
+    assert_eq!(bounded.page["stop_reason"], "byte_limit");
+    assert!(bounded.page["next_cursor"].is_string());
+}
+
+#[test]
 fn interval_endpoints_are_inclusive_and_descending_cursor_is_exact() {
     let mut fixture = Fixture::new();
     fixture.append_initial_events();
@@ -273,6 +298,15 @@ fn sections(data: &Value) -> Vec<&str> {
         .iter()
         .map(|event| event["section"].as_str().expect("Event section"))
         .collect()
+}
+
+fn payload_bytes(payload: &super::super::ExpertPayload) -> usize {
+    crate::mcp::tools::structured_envelope_len(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    )
 }
 
 struct Fixture {

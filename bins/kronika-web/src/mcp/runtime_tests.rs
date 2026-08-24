@@ -137,7 +137,7 @@ async fn metric_history_shares_the_envelope_budget_across_identities() {
         serde_json::to_vec(&bounded)
             .expect("bounded history envelope")
             .len()
-            <= complete_bytes - 1
+            < complete_bytes
     );
     assert!(
         bounded["page"]["returned"]

@@ -34,6 +34,12 @@ const EVENT_LONG_TEXT_FIELDS: &[&str] = &[
     "text",
 ];
 
+struct EventEnvelope<'a> {
+    from: i64,
+    semantics: &'a [Value],
+    budget: usize,
+}
+
 pub(super) fn execute(
     state: &State,
     args: &Map<String, Value>,
@@ -50,6 +56,7 @@ pub(super) fn execute(
     let semantics = row_semantics(&sources)?;
     let find = optional_nonempty(args, "find")?;
     let cursor = optional_nonempty(args, "cursor")?;
+    let budget = super::data_budget(args)?;
     let page_size = super::usize_arg(
         args,
         "page_size",
@@ -57,6 +64,11 @@ pub(super) fn execute(
         1,
         super::MAX_PAGE_ROWS,
     )?;
+    let envelope = EventEnvelope {
+        from,
+        semantics: &semantics,
+        budget,
+    };
     let page = api::read_event_page(
         &state.data_root,
         &EventPageRequest {
@@ -66,10 +78,19 @@ pub(super) fn execute(
             find,
             direction,
             page_size,
-            value_bytes: super::data_budget(args)?,
             cursor,
         },
         cancelled,
+        &|returned, event_bytes, next_cursor, stop_reason, active_position, warnings| {
+            envelope.fits(
+                returned,
+                event_bytes,
+                next_cursor,
+                stop_reason,
+                active_position,
+                warnings,
+            )
+        },
     )
     .map_err(event_failure)?;
     if cancelled() {
@@ -77,17 +98,8 @@ pub(super) fn execute(
     }
     let returned = page.events.len();
     let has_more = page.next_cursor.is_some();
-    Ok(ExpertPayload {
-        anchor: json!({
-            "hour_start_us": from
-                .div_euclid(super::HOUR_US)
-                .saturating_mul(super::HOUR_US)
-                .to_string(),
-            "requested_at_us": Value::Null,
-            "selected_at_us": Value::Null,
-            "segment_id": Value::Null,
-            "active_wal_position": page.active_position.map(|value| value.to_string()),
-        }),
+    let payload = ExpertPayload {
+        anchor: event_anchor(from, page.active_position),
         data: json!({
             "events": page.events,
             "semantics": semantics,
@@ -104,7 +116,57 @@ pub(super) fn execute(
         } else {
             format!("Returned {returned} recorded Event rows.")
         },
+    };
+    if crate::mcp::tools::structured_envelope_len(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    ) > budget
+    {
+        return Err(event_metadata_too_large());
+    }
+    Ok(payload)
+}
+
+fn event_anchor(from: i64, active_position: Option<u64>) -> Value {
+    json!({
+        "hour_start_us": from
+            .div_euclid(super::HOUR_US)
+            .saturating_mul(super::HOUR_US)
+            .to_string(),
+        "requested_at_us": Value::Null,
+        "selected_at_us": Value::Null,
+        "segment_id": Value::Null,
+        "active_wal_position": active_position.map(|value| value.to_string()),
     })
+}
+
+impl EventEnvelope<'_> {
+    fn fits(
+        &self,
+        returned: usize,
+        event_bytes: usize,
+        next_cursor: Option<&str>,
+        stop_reason: api::EventStopReason,
+        active_position: Option<u64>,
+        warnings: &[Value],
+    ) -> bool {
+        let anchor = event_anchor(self.from, active_position);
+        let data = json!({
+            "events": [],
+            "semantics": self.semantics,
+        });
+        let page = super::page(
+            returned,
+            next_cursor.is_some(),
+            next_cursor.map(ToOwned::to_owned),
+            stop_reason.code(),
+        );
+        crate::mcp::tools::structured_envelope_len(&anchor, &data, &page, warnings)
+            .saturating_add(event_bytes)
+            <= self.budget
+    }
 }
 
 fn validate_order(args: &Map<String, Value>) -> Result<(), ExpertFailure> {
@@ -302,7 +364,13 @@ fn event_failure(error: EventPageError) -> ExpertFailure {
             None,
             false,
         ),
-        EventPageError::FirstRowTooLarge => super::first_row_too_large(),
+        EventPageError::FixedMetadataTooLarge => event_metadata_too_large(),
+        EventPageError::FirstRowTooLarge => super::failure(
+            "result_too_large",
+            "the fixed Event metadata and first selected row exceed data_budget_bytes",
+            Some("data_budget_bytes"),
+            false,
+        ),
         EventPageError::Semantics(error) => {
             super::failure("semantics_unreadable", error.to_string(), None, false)
         }
@@ -310,6 +378,15 @@ fn event_failure(error: EventPageError) -> ExpertFailure {
             super::failure("semantics_unreadable", message, None, false)
         }
     }
+}
+
+fn event_metadata_too_large() -> ExpertFailure {
+    super::failure(
+        "result_too_large",
+        "the fixed Event anchor, page, warnings, and semantics exceed data_budget_bytes",
+        Some("data_budget_bytes"),
+        false,
+    )
 }
 
 fn cancelled_failure() -> ExpertFailure {
