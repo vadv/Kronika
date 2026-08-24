@@ -112,9 +112,9 @@ pub(super) fn execute(
         ),
         warnings: page.warnings,
         summary: if has_more {
-            format!("Returned {returned} recorded Event rows; another matching page is available.")
+            format!("Returned {returned} Event rows; another matching page is available.")
         } else {
-            format!("Returned {returned} recorded Event rows.")
+            format!("Returned {returned} Event rows.")
         },
     };
     if crate::mcp::tools::structured_envelope_len(
@@ -360,7 +360,7 @@ fn event_failure(error: EventPageError) -> ExpertFailure {
         ),
         EventPageError::WarningLimit => super::failure(
             "warning_limit_exceeded",
-            "the Event scan encountered more than 64 recorded store warnings",
+            "the Event scan encountered more than 64 store warnings",
             None,
             false,
         ),

@@ -336,7 +336,7 @@ fn result_from_payload(payload: Payload, budget: usize) -> CallToolResult {
     let summary = if payload.summary.len() <= super::TEXT_SUMMARY_BYTES {
         payload.summary
     } else {
-        "Kronika returned a bounded historical result; inspect structuredContent.".to_owned()
+        "Returned a bounded result; inspect structuredContent.".to_owned()
     };
     result.content = vec![ContentBlock::text(summary)];
     result
@@ -385,7 +385,7 @@ fn result_from_failure(failure: Failure) -> CallToolResult {
 fn cancelled_failure() -> Failure {
     Failure {
         code: "cancelled",
-        message: "The client cancelled the historical scan.".to_owned(),
+        message: "The client cancelled the scan.".to_owned(),
         parameter: None,
         retryable: true,
     }

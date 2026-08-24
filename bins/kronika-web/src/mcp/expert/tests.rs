@@ -50,6 +50,37 @@ fn metric_history_after_read_check_rejects_a_changed_active_prefix() {
         .expect_err("changed active prefix is rejected");
 
     assert_eq!((error.code, error.retryable), ("source_changed", true));
+    assert_eq!(
+        error.message,
+        "the metric-history source changed during the read; retry the request"
+    );
+}
+
+#[test]
+fn empty_snapshot_uses_a_direct_availability_warning() {
+    let payload = super::empty_snapshot(42, "os_process", Vec::new());
+
+    assert_eq!(payload.warnings[0]["code"], "section_unavailable");
+    assert_eq!(
+        payload.summary,
+        "No sample exists at or before the requested time."
+    );
+}
+
+#[test]
+fn api_source_change_is_a_direct_retryable_error() {
+    let error = crate::api::ApiError::from(kronika_reader::ReaderError::from(std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "source moved",
+    )));
+    let failure = super::api_failure(error);
+
+    assert_eq!(failure.code, "source_changed");
+    assert_eq!(
+        failure.message,
+        "source changed during the read; retry the request"
+    );
+    assert!(failure.retryable);
 }
 
 struct Fixture {

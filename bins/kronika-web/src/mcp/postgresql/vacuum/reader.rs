@@ -61,12 +61,12 @@ pub(super) fn collect_hour(
         )),
         ValueStopReason::RecordLimit => Err(failure(
             "whole_set_bound_exceeded",
-            "the complete Vacuum native sample stream exceeds its retained record bound",
+            "the Vacuum sample stream exceeds its retained record bound",
             Some("page_size"),
         )),
         ValueStopReason::ByteLimit => Err(failure(
             "result_bound_exceeded",
-            "the complete Vacuum native sample stream exceeds its retained byte bound",
+            "the Vacuum sample stream exceeds its retained byte bound",
             Some("fields"),
         )),
     }
@@ -145,7 +145,7 @@ impl Sample {
     pub(super) fn phase(&self) -> Result<&str, PostgresqlFailure> {
         self.value("phase")
             .and_then(Value::as_str)
-            .ok_or_else(|| malformed("a Vacuum row has no recorded phase"))
+            .ok_or_else(|| malformed("a Vacuum row has no phase"))
     }
 
     pub(super) fn integer(&self, field: &str) -> Result<Option<i128>, PostgresqlFailure> {
@@ -157,7 +157,7 @@ impl Sample {
         }
         decimal_i128(value)
             .map(Some)
-            .ok_or_else(|| malformed("a Vacuum progress counter is not an exact integer"))
+            .ok_or_else(|| malformed("a Vacuum progress counter is not an integer"))
     }
 }
 
@@ -208,7 +208,7 @@ fn decode_row(
     let timestamp = row
         .get("timestamp")
         .and_then(decimal_i64)
-        .ok_or_else(|| malformed("a Vacuum row has no exact timestamp"))?;
+        .ok_or_else(|| malformed("a Vacuum row has no timestamp"))?;
     let ordinal = row
         .get("ordinal")
         .and_then(decimal_u64)
@@ -248,7 +248,7 @@ pub(super) fn admit_samples(rows: &[Sample]) -> Result<(), PostgresqlFailure> {
     if rows.len() > MAX_ROWS {
         return Err(failure(
             "sample_bound_exceeded",
-            "the complete Vacuum interval exceeds 500 native samples",
+            "the Vacuum interval exceeds 500 native samples",
             Some("from_us"),
         ));
     }
@@ -259,7 +259,7 @@ pub(super) fn admit_samples(rows: &[Sample]) -> Result<(), PostgresqlFailure> {
     if entities.len() > MAX_ENTITIES {
         return Err(failure(
             "entity_bound_exceeded",
-            "the complete Vacuum interval exceeds 256 physical identities",
+            "the Vacuum interval exceeds 256 physical identities",
             Some("from_us"),
         ));
     }
@@ -270,7 +270,7 @@ pub(super) fn admit_samples(rows: &[Sample]) -> Result<(), PostgresqlFailure> {
     if segments.len() > MAX_SEGMENTS {
         return Err(failure(
             "segment_bound_exceeded",
-            "the Vacuum interval exceeds 64 recorded segments",
+            "the Vacuum interval exceeds 64 segments",
             Some("from_us"),
         ));
     }

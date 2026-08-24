@@ -173,7 +173,11 @@ fn graph_is_parent_first_and_preserves_extra_and_prepared_edges() {
 fn graph_refuses_missing_positive_blocker_rows() {
     let failure = build_graph(vec![projected_row(30, &[10], "inventory", "waiter")], &[])
         .expect_err("incomplete graph");
-    assert_eq!(failure.code, "incomplete_lock_graph");
+    assert_eq!(failure.code, "lock_blocker_missing");
+    assert_eq!(
+        failure.message,
+        "a positive blocker PID has no row in the lock set"
+    );
 }
 
 #[test]

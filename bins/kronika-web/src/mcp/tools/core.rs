@@ -69,7 +69,7 @@ fn hours(
         data: json!({"hours": paged.hours, "sources": source_values(state.sources)}),
         page: page_value,
         warnings: Vec::new(),
-        summary: format!("Kronika returned {returned} recorded UTC hour(s)."),
+        summary: format!("Returned {returned} UTC hour(s)."),
     })
 }
 
@@ -161,10 +161,7 @@ fn heatmap(
             stop,
         ),
         warnings: warnings(&collected.records),
-        summary: format!(
-            "Kronika returned {} ranked Heatmap row(s); ranking is recorded activity, not anomaly or cause.",
-            rows.len()
-        ),
+        summary: format!("Returned {} ranked Heatmap row(s).", rows.len()),
     })
 }
 
@@ -204,7 +201,7 @@ fn findings(
         data: json!({"findings": paged.findings, "semantics": paged.semantics}),
         page: page_value,
         warnings: paged.warnings,
-        summary: format!("Kronika returned {returned} sparse finding(s)."),
+        summary: format!("Returned {returned} sparse finding(s)."),
     })
 }
 
@@ -242,7 +239,7 @@ fn timeline(
         data: json!({"lanes": paged.lanes, "markers": paged.markers, "semantics": paged.semantics}),
         page: page_value,
         warnings: paged.warnings,
-        summary: format!("Kronika returned {returned} native Timeline record(s)."),
+        summary: format!("Returned {returned} native Timeline record(s)."),
     })
 }
 
@@ -291,7 +288,7 @@ fn host(
         }),
         page: page_value,
         warnings: warnings(&collected.records),
-        summary: format!("Kronika returned recorded Host {lens} context."),
+        summary: format!("Returned Host {lens} context."),
     })
 }
 
@@ -332,7 +329,7 @@ fn processes(
         if row_count > MAX_TREE_ROWS || collected.stop_reason != ValueStopReason::Complete {
             return Err(Failure::bounded(
                 "tree_bound_exceeded",
-                "The complete Process snapshot does not fit the bounded tree admission limit.",
+                "The Process snapshot exceeds the tree admission limit.",
             ));
         }
         let matched = request
@@ -353,7 +350,7 @@ fn processes(
         {
             return Err(Failure::bounded(
                 "tree_bound_exceeded",
-                "The complete filtered Process snapshot does not fit the bounded tree admission limit.",
+                "The filtered Process snapshot exceeds the tree admission limit.",
             ));
         }
         let transformed = tree::transform(
@@ -391,9 +388,7 @@ fn processes(
         data: json!({"processes": collected.records, "semantics": process_semantics()}),
         page: page_value,
         warnings: warnings(&collected.records),
-        summary: format!(
-            "Kronika returned {row_count} recorded Process row(s) for the {lens} lens."
-        ),
+        summary: format!("Returned {row_count} Process row(s) for the {lens} lens."),
     })
 }
 
@@ -468,12 +463,7 @@ fn select_segment_at(state: &State, at: i64) -> Result<SegmentRef, Failure> {
         .into_iter()
         .filter(|segment| segment.min_ts() <= at)
         .max_by_key(|segment| (segment.min_ts(), segment.id()))
-        .ok_or_else(|| {
-            Failure::bounded(
-                "no_such_segment",
-                "No recorded segment exists at or before at_us.",
-            )
-        })
+        .ok_or_else(|| Failure::bounded("no_such_segment", "No segment exists at or before at_us."))
 }
 
 fn admit_window(state: &State, from: i64, to: i64, section: Option<&str>) -> Result<(), Failure> {
@@ -501,7 +491,7 @@ fn admit_window(state: &State, from: i64, to: i64, section: Option<&str>) -> Res
     if rows > MAX_ROWS {
         return Err(Failure::bounded(
             "scan_limit_exceeded",
-            "The selected recorded rows exceed the 1,000,000-row admission limit.",
+            "The selected rows exceed the 1,000,000-row admission limit.",
         ));
     }
     Ok(())
@@ -717,8 +707,8 @@ fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, Failure> {
         .and_then(|record| record.pointer("/segment/active_wal_position"))
         .ok_or_else(|| {
             Failure::bounded(
-                "source_provenance_unusable",
-                "The recorded snapshot has no physical source prefix.",
+                "snapshot_source_unavailable",
+                "The snapshot has no active WAL position.",
             )
         })?;
     if value.is_null() {
@@ -730,8 +720,8 @@ fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, Failure> {
         .map(Some)
         .ok_or_else(|| {
             Failure::bounded(
-                "source_provenance_unusable",
-                "The recorded snapshot has an invalid physical source prefix.",
+                "snapshot_source_unavailable",
+                "The snapshot active WAL position is invalid.",
             )
         })
 }
@@ -756,11 +746,19 @@ fn process_semantics() -> Vec<Value> {
 }
 
 fn api_failure(error: &ApiError) -> Failure {
+    if error.source_changed_during_read() {
+        return Failure {
+            code: "source_changed",
+            message: "Source changed during the read; retry the request.".to_owned(),
+            parameter: error.parameter().map(str::to_owned),
+            retryable: true,
+        };
+    }
     Failure {
         code: error.code(),
         message: error.to_string(),
         parameter: error.parameter().map(str::to_owned),
-        retryable: error.source_changed_during_read(),
+        retryable: false,
     }
 }
 
@@ -772,3 +770,7 @@ const fn unreadable(message: String) -> Failure {
         retryable: true,
     }
 }
+
+#[cfg(test)]
+#[path = "core/tests.rs"]
+mod tests;

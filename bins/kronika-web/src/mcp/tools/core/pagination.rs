@@ -312,10 +312,10 @@ impl IndexedMetadata {
         let segment_id = record
             .pointer("/segment/id")
             .and_then(Value::as_str)
-            .ok_or_else(index_provenance_failure)?;
+            .ok_or_else(index_locator_failure)?;
         let parsed = segment_id
             .parse::<i64>()
-            .map_err(|_error| index_provenance_failure())?;
+            .map_err(|_error| index_locator_failure())?;
         let active_position = source
             .active_positions
             .get(&parsed)
@@ -330,10 +330,8 @@ impl IndexedMetadata {
     }
 
     fn attach_index(&self, record: &mut Value) -> Result<(), Failure> {
-        let anchor = self.current.as_ref().ok_or_else(index_provenance_failure)?;
-        let object = record
-            .as_object_mut()
-            .ok_or_else(index_provenance_failure)?;
+        let anchor = self.current.as_ref().ok_or_else(index_locator_failure)?;
+        let object = record.as_object_mut().ok_or_else(index_locator_failure)?;
         object.insert("source".to_owned(), json!("kronika_index"));
         object.insert("segment_id".to_owned(), json!(anchor.segment_id.clone()));
         object.insert(
@@ -352,18 +350,16 @@ impl IndexedMetadata {
         let segment_id = record
             .get("segment_id")
             .and_then(Value::as_str)
-            .ok_or_else(index_provenance_failure)?;
+            .ok_or_else(index_locator_failure)?;
         let parsed = segment_id
             .parse::<i64>()
-            .map_err(|_error| index_provenance_failure())?;
+            .map_err(|_error| index_locator_failure())?;
         let active_position = source
             .active_positions
             .get(&parsed)
             .copied()
             .ok_or_else(source_changed)?;
-        let object = record
-            .as_object_mut()
-            .ok_or_else(index_provenance_failure)?;
+        let object = record.as_object_mut().ok_or_else(index_locator_failure)?;
         object.insert("source".to_owned(), json!("kronika_derived"));
         object.insert(
             "active_wal_position".to_owned(),
@@ -393,9 +389,7 @@ impl IndexedMetadata {
     fn push_finding_summary(&mut self, mut record: Value) -> Result<(), Failure> {
         self.source_truncated |= record.get("truncated").and_then(Value::as_bool) == Some(true);
         self.attach_index(&mut record)?;
-        let object = record
-            .as_object_mut()
-            .ok_or_else(index_provenance_failure)?;
+        let object = record.as_object_mut().ok_or_else(index_locator_failure)?;
         stringify_integer(object, "total_hits");
         self.push_semantic(record)
     }
@@ -415,7 +409,7 @@ impl IndexedMetadata {
         if self.warnings.len() >= MAX_WARNING_RECORDS {
             return Err(Failure::bounded(
                 "warning_limit_exceeded",
-                "The recorded store warnings exceed their bounded result limit.",
+                "Store warnings exceed their bounded result limit.",
             ));
         }
         self.warnings.push(record);
@@ -459,7 +453,7 @@ pub(super) fn hours(
         index = index.checked_add(1).ok_or_else(|| {
             Failure::bounded(
                 "position_limit_exceeded",
-                "The recorded hour position exceeds the continuation limit.",
+                "The hour position exceeds the continuation limit.",
             )
         })?;
     }
@@ -1140,13 +1134,13 @@ fn hour_count(ranges: &[HourRange], cancelled: &impl Fn() -> bool) -> Result<u64
             .ok_or_else(|| {
                 Failure::bounded(
                     "hour_limit_exceeded",
-                    "The recorded calendar range exceeds the hour-list position limit.",
+                    "The calendar range exceeds the hour-list position limit.",
                 )
             })?;
         total.checked_add(width).ok_or_else(|| {
             Failure::bounded(
                 "hour_limit_exceeded",
-                "The recorded hour count exceeds the continuation limit.",
+                "The hour count exceeds the continuation limit.",
             )
         })
     })
@@ -1271,17 +1265,16 @@ fn bad_cursor() -> Failure {
 fn source_changed() -> Failure {
     Failure {
         code: "source_changed",
-        message: "The recorded source or active WAL prefix changed; restart this paged query."
-            .to_owned(),
+        message: "Source or active WAL position changed; restart this paged query.".to_owned(),
         parameter: Some("cursor".to_owned()),
         retryable: true,
     }
 }
 
-fn index_provenance_failure() -> Failure {
+fn index_locator_failure() -> Failure {
     Failure::bounded(
-        "index_provenance_unusable",
-        "An indexed record has no exact segment provenance.",
+        "index_locator_unavailable",
+        "An indexed record has no segment locator.",
     )
 }
 

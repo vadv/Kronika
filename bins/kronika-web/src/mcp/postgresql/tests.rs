@@ -79,3 +79,27 @@ fn activity_flags_require_booleans_and_preserve_both_values() {
         assert_eq!(failure.code, "invalid_input");
     }
 }
+
+#[test]
+fn missing_snapshot_source_uses_a_direct_operational_error() {
+    let failure = super::snapshot_active_position(&[]).expect_err("missing snapshot metadata");
+
+    assert_eq!(failure.code, "snapshot_source_unavailable");
+    assert_eq!(failure.message, "the snapshot has no active WAL position");
+}
+
+#[test]
+fn api_source_change_is_a_direct_retryable_error() {
+    let error = crate::api::ApiError::from(kronika_reader::ReaderError::from(std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "source moved",
+    )));
+    let failure = super::api_failure(&error);
+
+    assert_eq!(failure.code, "source_changed");
+    assert_eq!(
+        failure.message,
+        "source changed during the read; retry the request"
+    );
+    assert!(failure.retryable);
+}

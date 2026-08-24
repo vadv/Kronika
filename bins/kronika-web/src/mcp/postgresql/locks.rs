@@ -27,7 +27,7 @@ pub(super) fn execute(
     if args.contains_key("cursor") {
         return Err(input(
             "cursor",
-            "lock graphs are admitted and returned as one complete bounded set",
+            "Locks returns one bounded set and does not accept a cursor",
         ));
     }
     let page_ceiling = page_size(args)?;
@@ -90,9 +90,7 @@ pub(super) fn execute(
             "stop_reason": "complete",
         }),
         warnings,
-        summary: format!(
-            "Returned {returned} recorded PostgreSQL lock rows in a complete mechanical graph."
-        ),
+        summary: format!("Returned {returned} PostgreSQL lock rows and blocker components."),
     })
 }
 
@@ -129,7 +127,7 @@ fn admit_complete_graph(
     {
         return Err(failure(
             "whole_set_bound_exceeded",
-            "the recorded lock set exceeds the requested whole-set admission bound",
+            "the lock set exceeds the requested admission bound",
             Some("page_size"),
         ));
     }
@@ -210,11 +208,11 @@ fn decode_rows(records: &[Value], logical_name: &str) -> Result<DecodedRows, Pos
         let type_id = record
             .get("type_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| malformed("a recorded row has no type_id"))?;
+            .ok_or_else(|| malformed("a lock row has no type_id"))?;
         let layout = layouts
             .get(type_id)
             .and_then(Value::as_object)
-            .ok_or_else(|| malformed("a recorded row has no matching projected layout"))?;
+            .ok_or_else(|| malformed("a lock row has no matching projected layout"))?;
         let columns = layout
             .get("columns")
             .and_then(Value::as_array)
@@ -222,11 +220,9 @@ fn decode_rows(records: &[Value], logical_name: &str) -> Result<DecodedRows, Pos
         let values = record
             .get("values")
             .and_then(Value::as_array)
-            .ok_or_else(|| malformed("a recorded row has no value array"))?;
+            .ok_or_else(|| malformed("a lock row has no value array"))?;
         if columns.len() != values.len() {
-            return Err(malformed(
-                "a recorded row does not match its projected layout",
-            ));
+            return Err(malformed("a lock row does not match its projected layout"));
         }
         let mut named = Map::new();
         for (column, value) in columns.iter().zip(values) {
@@ -239,7 +235,7 @@ fn decode_rows(records: &[Value], logical_name: &str) -> Result<DecodedRows, Pos
         let mut row = record
             .as_object()
             .cloned()
-            .ok_or_else(|| malformed("a recorded row is not an object"))?;
+            .ok_or_else(|| malformed("a lock row is not an object"))?;
         row.insert("logical_name".to_owned(), json!(logical_name));
         row.insert("values".to_owned(), Value::Object(named));
         rows.push(Value::Object(row));
@@ -304,7 +300,7 @@ fn build_graph(
             )
             .is_some()
         {
-            return Err(malformed("a complete lock graph contains a duplicate pid"));
+            return Err(malformed("the lock set contains a duplicate pid"));
         }
     }
     for node in nodes.values() {
@@ -314,8 +310,8 @@ fn build_graph(
             .any(|blocker| *blocker > 0 && !nodes.contains_key(blocker))
         {
             return Err(failure(
-                "incomplete_lock_graph",
-                "a positive recorded blocker PID has no row in the admitted lock set",
+                "lock_blocker_missing",
+                "a positive blocker PID has no row in the lock set",
                 None,
             ));
         }
@@ -558,7 +554,7 @@ fn enriched_row(
             .and_then(|values| values.get("pid"))
             .and_then(parse_i32),
         Some(pid),
-        "the enriched row must preserve its recorded PID"
+        "the enriched row must preserve its source PID"
     );
     Ok(Value::Object(row))
 }
@@ -636,7 +632,7 @@ fn parse_i32(value: &Value) -> Option<i32> {
 fn parse_blockers(value: &Value) -> Result<Vec<i32>, PostgresqlFailure> {
     let values = value
         .as_array()
-        .ok_or_else(|| malformed("blocked_by is not a recorded PID array"))?;
+        .ok_or_else(|| malformed("blocked_by is not a PID array"))?;
     let mut blockers = Vec::with_capacity(values.len());
     for value in values {
         let blocker = parse_i32(value)

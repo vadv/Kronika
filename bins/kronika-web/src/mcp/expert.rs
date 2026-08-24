@@ -410,10 +410,10 @@ fn row_detail(
         page: page(1, bounded, detail.next_cursor, stop_reason),
         warnings: Vec::new(),
         summary: if has_more {
-            "Returned one exact projected row and a bounded text chunk; another stored chunk is available."
+            "Returned one projected row and a bounded text chunk; another chunk is available."
                 .to_owned()
         } else {
-            "Returned one exact projected recorded row and its requested text detail.".to_owned()
+            "Returned one projected row and its requested text detail.".to_owned()
         },
     })
 }
@@ -529,7 +529,7 @@ fn detail_text_field(
         if column.ty != ColumnType::StrId {
             return Err(failure(
                 "text_field_not_text",
-                format!("field {field:?} is not a recorded text or blob value"),
+                format!("field {field:?} is not a text or blob value"),
                 Some("text_field"),
                 false,
             ));
@@ -598,7 +598,8 @@ fn api_failure(error: ApiError) -> ExpertFailure {
     };
     let parameter = error.parameter().map(ToOwned::to_owned);
     let message = match error {
-        ApiError::Unreadable(_) => "recorded data could not be read".to_owned(),
+        _ if retryable => "source changed during the read; retry the request".to_owned(),
+        ApiError::Unreadable(_) => "data could not be read".to_owned(),
         error => error.to_string(),
     };
     failure(code, message, parameter.as_deref(), retryable)
@@ -1068,7 +1069,7 @@ fn ensure_history_source_unchanged(
     if catalog_segments(&current.records) != expected {
         return Err(failure(
             "source_changed",
-            "the recorded metric-history source changed during the read",
+            "the metric-history source changed during the read; retry the request",
             None,
             true,
         ));
@@ -1106,7 +1107,7 @@ fn page(returned: usize, truncated: bool, next_cursor: Option<String>, reason: &
 
 fn empty_snapshot(at: i64, section: &str, mut warnings: Vec<Value>) -> ExpertPayload {
     warnings.push(json!({
-        "code": "section_not_recorded",
+        "code": "section_unavailable",
         "section": section,
     }));
     ExpertPayload {
@@ -1124,7 +1125,7 @@ fn empty_snapshot(at: i64, section: &str, mut warnings: Vec<Value>) -> ExpertPay
         }),
         page: page(0, false, None, "complete"),
         warnings,
-        summary: "No recorded sample exists at or before the requested time.".to_owned(),
+        summary: "No sample exists at or before the requested time.".to_owned(),
     }
 }
 
@@ -1198,7 +1199,7 @@ fn snapshot_payload(
         ),
         warnings,
         summary: format!(
-            "Returned {returned} rows from the latest recorded sample at or before the requested time."
+            "Returned {returned} rows from the latest sample at or before the requested time."
         ),
     })
 }

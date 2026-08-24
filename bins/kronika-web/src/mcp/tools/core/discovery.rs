@@ -527,7 +527,9 @@ pub(super) fn payload(state: &State, cancelled: &impl Fn() -> bool) -> Result<Pa
         }),
         page: super::page(20, false, None, "complete"),
         warnings: recorded.warnings,
-        summary: "Kronika returned the exact 20 read-only historical tools, latest recorded layouts, accepted lenses and cuts, limits, and semantics.".to_owned(),
+        summary:
+            "Returned 20 tool definitions, current layouts, lenses, cuts, limits, and semantics."
+                .to_owned(),
     })
 }
 
@@ -562,13 +564,13 @@ fn recorded_context(
     if listing.segments.len() > MAX_SEGMENTS {
         return Err(Failure::bounded(
             "segment_limit_exceeded",
-            "The latest recorded instant overlaps more than 64 segments.",
+            "The selected instant overlaps more than 64 segments.",
         ));
     }
     if listing.warnings.len() > MAX_WARNING_RECORDS {
         return Err(Failure::bounded(
             "warning_limit_exceeded",
-            "The recorded store warnings exceed their bounded result limit.",
+            "Store warnings exceed their bounded result limit.",
         ));
     }
     let value = latest.map_or_else(
@@ -596,7 +598,7 @@ fn recorded_value(
             if layout_presences > MAX_CONTEXT_LAYOUT_PRESENCES {
                 return Err(Failure::bounded(
                     "layout_limit_exceeded",
-                    "The latest recorded instant contains more than 512 segment-layout presences.",
+                    "The selected instant contains more than 512 segment-layout presences.",
                 ));
             }
             layouts
@@ -610,7 +612,7 @@ fn recorded_value(
     if layouts.len() > MAX_CONTEXT_LAYOUTS {
         return Err(Failure::bounded(
             "layout_limit_exceeded",
-            "The latest recorded instant contains more than 256 physical layouts.",
+            "The selected instant contains more than 256 physical layouts.",
         ));
     }
     Ok(json!({

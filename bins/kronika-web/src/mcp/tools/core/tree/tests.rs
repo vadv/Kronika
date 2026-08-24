@@ -105,6 +105,14 @@ fn prepare_rejects_a_partial_tree_cursor() {
 }
 
 #[test]
+fn missing_process_coordinates_use_a_direct_locator_error() {
+    let error = super::locator(&json!({})).expect_err("missing Process locator");
+
+    assert_eq!(error.code, "process_locator_unavailable");
+    assert_eq!(error.message, "A Process row has no segment_id locator.");
+}
+
+#[test]
 fn process_handler_reads_and_transforms_one_complete_recorded_snapshot() {
     let mut fixture = Fixture::new();
     fixture.append_processes(&[(1, 0), (2, 1), (3, 1)]);

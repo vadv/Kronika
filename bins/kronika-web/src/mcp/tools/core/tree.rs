@@ -94,7 +94,7 @@ pub(super) fn transform(
             return Err(Failure::bounded(
                 "tree_identity_conflict",
                 format!(
-                    "The complete Process snapshot contains more than one row for PID {}.",
+                    "The Process snapshot contains more than one row for PID {}.",
                     node.pid
                 ),
             ));
@@ -105,7 +105,7 @@ pub(super) fn transform(
     if nodes.len() > MAX_TREE_ROWS {
         return Err(Failure::bounded(
             "tree_bound_exceeded",
-            "The complete Process snapshot exceeds the 500-row tree admission limit.",
+            "The Process snapshot exceeds the 500-row tree admission limit.",
         ));
     }
 
@@ -203,7 +203,7 @@ fn column(columns: &[Value], name: &'static str) -> Result<usize, Failure> {
         .ok_or_else(|| {
             Failure::bounded(
                 "tree_layout_unusable",
-                format!("The Process tree requires the recorded {name} field."),
+                format!("The Process tree requires the {name} field."),
             )
         })
 }
@@ -240,8 +240,8 @@ fn locator(row: &Value) -> Result<Locator, Failure> {
     let field = |name| {
         row.get(name).and_then(value_text).ok_or_else(|| {
             Failure::bounded(
-                "tree_provenance_unusable",
-                format!("A Process row has no exact {name} provenance."),
+                "process_locator_unavailable",
+                format!("A Process row has no {name} locator."),
             )
         })
     };
@@ -263,7 +263,7 @@ fn decimal(value: Option<&Value>, name: &'static str) -> Result<i64, Failure> {
         .ok_or_else(|| {
             Failure::bounded(
                 "tree_layout_unusable",
-                format!("A Process row has no exact decimal {name} value."),
+                format!("A Process row has no decimal {name} value."),
             )
         })
 }
@@ -304,8 +304,9 @@ fn included_pids(
         let Some(mut pid) = locators.get(&locator).copied() else {
             return Err(Failure {
                 code: "source_changed",
-                message: "The recorded Process snapshot changed while applying the tree search."
-                    .to_owned(),
+                message:
+                    "The Process source changed while applying the tree search; retry the request."
+                        .to_owned(),
                 parameter: None,
                 retryable: true,
             });

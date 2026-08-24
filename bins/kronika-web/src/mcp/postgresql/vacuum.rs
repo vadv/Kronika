@@ -58,7 +58,7 @@ pub(super) fn execute(
     if args.contains_key("cursor") {
         return Err(input(
             "cursor",
-            "Vacuum episodes require one complete bounded native sample set",
+            "Vacuum returns one bounded episode set and does not accept a cursor",
         ));
     }
     let from = super::timestamp(args, "from_us")?;
@@ -87,7 +87,7 @@ pub(super) fn execute(
         return Err(failure(
             "whole_set_bound_exceeded",
             format!(
-                "the complete Vacuum result has {} episodes, above the admitted {}",
+                "the Vacuum result has {} episodes; page_size admits {}",
                 episodes.len(),
                 admitted_episodes.min(MAX_EPISODES)
             ),
@@ -133,9 +133,7 @@ pub(super) fn execute(
             "stop_reason": "complete",
         }),
         warnings,
-        summary: format!(
-            "Returned {returned} complete recorded Vacuum episode summaries without causal classification."
-        ),
+        summary: format!("Returned {returned} Vacuum episode summaries."),
     })
 }
 
@@ -148,10 +146,7 @@ fn projected_fields(args: &Map<String, Value>) -> Result<Vec<String>, Postgresql
         .iter()
         .find(|field| !VACUUM_FIELDS.contains(&field.as_str()))
     {
-        return Err(input(
-            "fields",
-            format!("Vacuum has no recorded field {unknown:?}"),
-        ));
+        return Err(input("fields", format!("Vacuum has no field {unknown:?}")));
     }
     Ok(projected)
 }

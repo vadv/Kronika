@@ -139,6 +139,18 @@ fn active_prefix_change_returns_the_retryable_source_error() {
     };
 
     assert_eq!((error.code, error.retryable), ("source_changed", true));
+    assert_eq!(
+        error.message,
+        "Source or active WAL position changed; restart this paged query."
+    );
+}
+
+#[test]
+fn missing_index_coordinates_use_a_direct_locator_error() {
+    let error = super::index_locator_failure();
+
+    assert_eq!(error.code, "index_locator_unavailable");
+    assert_eq!(error.message, "An indexed record has no segment locator.");
 }
 
 #[test]

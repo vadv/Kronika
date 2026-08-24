@@ -81,7 +81,7 @@ pub(super) fn health() -> Vec<Value> {
 pub(super) fn recorded_layout(layout: &Value) -> Result<Value, SemanticError> {
     let object = layout
         .as_object()
-        .ok_or_else(|| SemanticError("recorded layout is not an object".to_owned()))?;
+        .ok_or_else(|| SemanticError("layout is not an object".to_owned()))?;
     let logical_name = text(object, "logical_name")?;
     let type_id = text(object, "type_id")?;
     Ok(json!({
@@ -98,7 +98,7 @@ fn text<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str, Sema
     object
         .get(field)
         .and_then(Value::as_str)
-        .ok_or_else(|| SemanticError(format!("recorded layout has no textual {field}")))
+        .ok_or_else(|| SemanticError(format!("layout has no textual {field}")))
 }
 
 const fn index_origin(origin: IndexOrigin) -> &'static str {

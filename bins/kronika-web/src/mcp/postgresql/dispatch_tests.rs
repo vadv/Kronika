@@ -223,7 +223,7 @@ async fn all_nine_postgresql_tools_execute_through_dispatch_on_one_recorded_fixt
     ];
 
     for (name, arguments, key) in calls {
-        let response = dispatch(&fixture, name, arguments).await;
+        let (response, summary) = dispatch_with_summary(&fixture, name, arguments).await;
         assert_ok(&response, name);
         assert!(
             response
@@ -235,6 +235,16 @@ async fn all_nine_postgresql_tools_execute_through_dispatch_on_one_recorded_fixt
             returned(&response) > 0,
             "{name} returned no fixture rows: {response}"
         );
+        let expected = match key {
+            "overview" => format!("Returned {} PostgreSQL overview rows.", returned(&response)),
+            "locks" => format!(
+                "Returned {} PostgreSQL lock rows and blocker components.",
+                returned(&response)
+            ),
+            "episodes" => format!("Returned {} Vacuum episode summaries.", returned(&response)),
+            _ => format!("Returned {} PostgreSQL {key} rows.", returned(&response)),
+        };
+        assert_eq!(summary, expected, "{name} summary");
     }
 }
 
@@ -594,6 +604,31 @@ async fn dispatch(fixture: &Fixture, name: &str, arguments: Value) -> Value {
 }
 
 async fn dispatch_state(state: State, name: &str, arguments: Value) -> Value {
+    dispatch_result(state, name, arguments)
+        .await
+        .structured_content
+        .unwrap_or_else(|| panic!("{name} returned structured content"))
+}
+
+async fn dispatch_with_summary(fixture: &Fixture, name: &str, arguments: Value) -> (Value, String) {
+    let result = dispatch_result(fixture.state(), name, arguments).await;
+    let content = serde_json::to_value(&result.content).expect("serialize MCP text content");
+    let summary = content
+        .pointer("/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{name} returned a text summary: {content}"))
+        .to_owned();
+    let structured = result
+        .structured_content
+        .unwrap_or_else(|| panic!("{name} returned structured content"));
+    (structured, summary)
+}
+
+async fn dispatch_result(
+    state: State,
+    name: &str,
+    arguments: Value,
+) -> rmcp::model::CallToolResult {
     let mut request = CallToolRequestParams::new(name.to_owned());
     let Value::Object(arguments) = arguments else {
         panic!("{name} test arguments are an object");
@@ -602,8 +637,6 @@ async fn dispatch_state(state: State, name: &str, arguments: Value) -> Value {
     tools::dispatch(state, request, || false)
         .await
         .unwrap_or_else(|error| panic!("{name} reached dispatch: {error:?}"))
-        .structured_content
-        .unwrap_or_else(|| panic!("{name} returned structured content"))
 }
 
 fn append_layout_fixture(

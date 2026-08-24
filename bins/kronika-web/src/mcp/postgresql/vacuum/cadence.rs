@@ -93,8 +93,8 @@ fn missing_cadence() -> Cadence {
 
 fn cadence_warning() -> Value {
     json!({
-        "code": "cadence_not_recorded",
-        "message": "Vacuum episode adjacency has no recorded PostgreSQL cadence; no time-gap condition was applied.",
+        "code": "vacuum_cadence_unavailable",
+        "message": "PostgreSQL cadence is unavailable; Vacuum episodes were grouped without a time-gap condition.",
     })
 }
 

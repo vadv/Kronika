@@ -308,7 +308,7 @@ fn direct_page(
     if spec.whole_set && page.get("truncated").and_then(Value::as_bool) == Some(true) {
         return Err(failure(
             "whole_set_bound_exceeded",
-            "the recorded lock set exceeds the 500-row whole-set bound",
+            "the lock set exceeds the 500-row bound",
             Some("page_size"),
         ));
     }
@@ -326,7 +326,7 @@ fn direct_page(
         data: Value::Object(data),
         page,
         warnings: anchor.warnings.clone(),
-        summary: format!("Returned {returned} recorded PostgreSQL {} rows.", spec.key),
+        summary: format!("Returned {returned} PostgreSQL {} rows.", spec.key),
     })
 }
 
@@ -430,7 +430,7 @@ fn overview(
         }),
         page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
         warnings: anchor.warnings,
-        summary: format!("Returned {returned} recorded PostgreSQL overview rows."),
+        summary: format!("Returned {returned} PostgreSQL overview rows."),
     })
 }
 
@@ -557,8 +557,8 @@ fn resolve_anchor(
         .or_else(|| any.into_iter().max_by_key(|(id, _)| *id))
         .ok_or_else(|| {
             failure(
-                "no_recorded_data",
-                "no recorded segment exists at the requested time",
+                "no_data_at_time",
+                "no segment exists at the requested time",
                 Some("at_us"),
             )
         })?;
@@ -727,8 +727,8 @@ fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, Postgresql
         .and_then(|record| record.pointer("/segment/active_wal_position"))
         .ok_or_else(|| {
             failure(
-                "source_provenance_unusable",
-                "the recorded snapshot has no physical source prefix",
+                "snapshot_source_unavailable",
+                "the snapshot has no active WAL position",
                 None,
             )
         })?;
@@ -741,8 +741,8 @@ fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, Postgresql
         .map(Some)
         .ok_or_else(|| {
             failure(
-                "source_provenance_unusable",
-                "the recorded snapshot has an invalid physical source prefix",
+                "snapshot_source_unavailable",
+                "the snapshot active WAL position is invalid",
                 None,
             )
         })
@@ -757,11 +757,19 @@ fn api_failure(error: &ApiError) -> PostgresqlFailure {
             parameter
         }
     });
+    if retryable {
+        return PostgresqlFailure {
+            code: "source_changed",
+            message: "source changed during the read; retry the request".to_owned(),
+            parameter: parameter.map(str::to_owned),
+            retryable: true,
+        };
+    }
     PostgresqlFailure {
         code: error.code(),
         message: error.to_string(),
         parameter: parameter.map(str::to_owned),
-        retryable,
+        retryable: false,
     }
 }
 

@@ -59,10 +59,11 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn all_ten_core_and_expert_tools_execute_through_dispatch_on_recorded_data() {
+async fn all_eleven_core_and_expert_tools_execute_through_dispatch() {
     let fixture = Fixture::new();
-    for (name, arguments, data_pointer) in runtime_calls() {
-        let response = dispatch(&fixture, name, arguments).await;
+    for (name, arguments, data_pointer, expected_summary) in runtime_calls() {
+        let (response, summary) = dispatch_with_summary(&fixture, name, arguments).await;
+        assert_eq!(summary, expected_summary, "{name} summary");
         assert_eq!(
             response.get("status"),
             Some(&json!("ok")),
@@ -148,12 +149,13 @@ async fn metric_history_shares_the_envelope_budget_across_identities() {
     assert_eq!(bounded["page"]["stop_reason"], "byte_limit");
 }
 
-fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
+fn runtime_calls() -> [(&'static str, Value, &'static str, &'static str); 11] {
     [
         (
             "kronika_get_context",
             json!({}),
             "/data/context/recorded/segments",
+            "Returned 20 tool definitions, current layouts, lenses, cuts, limits, and semantics.",
         ),
         (
             "kronika_list_hours",
@@ -163,6 +165,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "limit": 10,
             }),
             "/data/hours",
+            "Returned 1 UTC hour(s).",
         ),
         (
             "kronika_rank_heatmap",
@@ -175,6 +178,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "top": 10,
             }),
             "/data/rows",
+            "Returned 1 ranked Heatmap row(s).",
         ),
         (
             "kronika_list_findings",
@@ -184,6 +188,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "limit": 10,
             }),
             "/data/findings",
+            "Returned 1 sparse finding(s).",
         ),
         (
             "kronika_get_timeline",
@@ -193,6 +198,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "limit": 10,
             }),
             "/data/markers",
+            "Returned 2 native Timeline record(s).",
         ),
         (
             "kronika_get_host_context",
@@ -203,6 +209,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "page_size": 10,
             }),
             "/data/rows",
+            "Returned Host identity context.",
         ),
         (
             "kronika_find_processes",
@@ -213,6 +220,21 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "page_size": 10,
             }),
             "/data/processes",
+            "Returned 1 Process row(s) for the identity lens.",
+        ),
+        (
+            "kronika_find_events",
+            json!({
+                "from_us": SEGMENT_ID.to_string(),
+                "to_us": LAST_PROCESS_AT.to_string(),
+                "sources": ["pg_log_lifecycle"],
+                "fields": ["kind", "pid"],
+                "order": "timestamp",
+                "direction": "asc",
+                "page_size": 10,
+            }),
+            "/data/events",
+            "Returned 1 Event rows.",
         ),
         (
             "kronika_get_metric_history",
@@ -225,6 +247,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "sample_limit": 10,
             }),
             "/data/series",
+            "Returned 2 native-cadence history samples.",
         ),
         (
             "kronika_get_snapshot",
@@ -235,6 +258,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "page_size": 10,
             }),
             "/data/rows",
+            "Returned 1 rows from the latest sample at or before the requested time.",
         ),
         (
             "kronika_get_row_detail",
@@ -246,6 +270,7 @@ fn runtime_calls() -> [(&'static str, Value, &'static str); 10] {
                 "fields": ["pid", "ppid", "utime"],
             }),
             "/data/row",
+            "Returned one projected row and its requested text detail.",
         ),
     ]
 }
@@ -260,6 +285,32 @@ async fn dispatch_with_budget(
     arguments: Value,
     budget: usize,
 ) -> Value {
+    dispatch_result(fixture, name, arguments, budget)
+        .await
+        .structured_content
+        .unwrap_or_else(|| panic!("{name} returned structured content"))
+}
+
+async fn dispatch_with_summary(fixture: &Fixture, name: &str, arguments: Value) -> (Value, String) {
+    let result = dispatch_result(fixture, name, arguments, STRUCTURED_CONTENT_BYTES).await;
+    let content = serde_json::to_value(&result.content).expect("serialize MCP text content");
+    let summary = content
+        .pointer("/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{name} returned a text summary: {content}"))
+        .to_owned();
+    let structured = result
+        .structured_content
+        .unwrap_or_else(|| panic!("{name} returned structured content"));
+    (structured, summary)
+}
+
+async fn dispatch_result(
+    fixture: &Fixture,
+    name: &str,
+    arguments: Value,
+    budget: usize,
+) -> rmcp::model::CallToolResult {
     let Value::Object(mut arguments) = arguments else {
         panic!("{name} test arguments are an object");
     };
@@ -269,8 +320,6 @@ async fn dispatch_with_budget(
     tools::dispatch(fixture.state(), request, || false)
         .await
         .unwrap_or_else(|error| panic!("{name} reached central dispatch: {error:?}"))
-        .structured_content
-        .unwrap_or_else(|| panic!("{name} returned structured content"))
 }
 
 fn nonempty(value: &Value) -> bool {
