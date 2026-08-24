@@ -295,13 +295,12 @@ fn cells_per_visit(name: &str, args: &Map<String, Value>) -> u64 {
 }
 
 fn result_from_payload(payload: Payload, budget: usize) -> CallToolResult {
-    let structured = json!({
-        "status": "ok",
-        "anchor": payload.anchor,
-        "data": payload.data,
-        "page": payload.page,
-        "warnings": payload.warnings,
-    });
+    let structured = structured_envelope(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    );
     let encoded = serde_json::to_vec(&structured).map_or(usize::MAX, |bytes| bytes.len());
     if encoded > budget {
         return result_from_failure(Failure::bounded(
@@ -319,6 +318,31 @@ fn result_from_payload(payload: Payload, budget: usize) -> CallToolResult {
     };
     result.content = vec![ContentBlock::text(summary)];
     result
+}
+
+pub(super) fn structured_envelope(
+    anchor: &Value,
+    data: &Value,
+    page: &Value,
+    warnings: &[Value],
+) -> Value {
+    json!({
+        "status": "ok",
+        "anchor": anchor,
+        "data": data,
+        "page": page,
+        "warnings": warnings,
+    })
+}
+
+pub(super) fn structured_envelope_len(
+    anchor: &Value,
+    data: &Value,
+    page: &Value,
+    warnings: &[Value],
+) -> usize {
+    let structured = structured_envelope(anchor, data, page, warnings);
+    serde_json::to_vec(&structured).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 fn result_from_failure(failure: Failure) -> CallToolResult {

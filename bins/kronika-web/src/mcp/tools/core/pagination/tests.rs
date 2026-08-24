@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::Arc;
 
 use kronika_format::DictLimits;
@@ -140,12 +141,187 @@ fn active_prefix_change_returns_the_retryable_source_error() {
     assert_eq!((error.code, error.retryable), ("source_changed", true));
 }
 
+#[test]
+fn findings_and_timeline_fit_the_exact_envelope_and_continue_across_budget_changes() {
+    let mut fixture = Fixture::new();
+    fixture.append(&[WINDOW_FROM + 10, WINDOW_FROM + 20, WINDOW_FROM + 30]);
+    let state = fixture.state();
+
+    for name in ["kronika_list_findings", "kronika_get_timeline"] {
+        let one = execute(&state, name, arguments(WINDOW_FROM, WINDOW_TO, 1, None))
+            .expect("single-item page");
+        let budget = payload_bytes(&one);
+        let first = execute_with_budget(
+            &state,
+            name,
+            arguments(WINDOW_FROM, WINDOW_TO, 3, None),
+            budget,
+        )
+        .expect("byte-bounded first page");
+        assert!(payload_bytes(&first) <= budget);
+        assert_eq!(first.page["returned"], 1);
+        let cursor = next_cursor(&first.page);
+
+        let rest = execute_with_budget(
+            &state,
+            name,
+            arguments(WINDOW_FROM, WINDOW_TO, 10, Some(&cursor)),
+            STRUCTURED_CONTENT_BYTES,
+        )
+        .expect("continuation with changed row and byte limits");
+        assert_eq!(rest.page["returned"], 2);
+        assert!(rest.page["next_cursor"].is_null());
+    }
+}
+
+#[test]
+fn fixed_metadata_and_first_item_have_stable_budget_errors() {
+    let query = super::Fingerprint([1; super::DIGEST_BYTES]);
+    let source = super::Fingerprint([2; super::DIGEST_BYTES]);
+    let window = crate::route::Window {
+        from: Some(WINDOW_FROM),
+        to: Some(WINDOW_TO),
+    };
+    let metadata_error = super::fit_findings_page(
+        window,
+        super::Surface::Findings,
+        query,
+        source,
+        0,
+        super::Accumulated {
+            items: Vec::new(),
+            has_more: false,
+        },
+        &[json!({"large_metadata": "m".repeat(4_096)})],
+        &[],
+        false,
+        1_024,
+    )
+    .expect_err("oversized fixed metadata");
+    assert_eq!(metadata_error.code, "result_too_large");
+    assert_eq!(
+        metadata_error.parameter.as_deref(),
+        Some("data_budget_bytes")
+    );
+    assert!(metadata_error.message.contains("metadata"));
+
+    let first_item_error = super::fit_findings_page(
+        window,
+        super::Surface::Findings,
+        query,
+        source,
+        0,
+        super::Accumulated {
+            items: vec![super::Positioned {
+                item: json!({"large_item": "i".repeat(4_096)}),
+                position: super::PositionKey(super::Fingerprint([3; super::DIGEST_BYTES])),
+            }],
+            has_more: false,
+        },
+        &[],
+        &[],
+        false,
+        1_024,
+    )
+    .expect_err("oversized first item");
+    assert_eq!(first_item_error.code, "result_too_large");
+    assert_eq!(
+        first_item_error.parameter.as_deref(),
+        Some("data_budget_bytes")
+    );
+    assert!(first_item_error.message.contains("first selected Finding"));
+}
+
+#[test]
+fn timeline_byte_fitting_keeps_the_interleaved_scan_prefix() {
+    let query = super::Fingerprint([4; super::DIGEST_BYTES]);
+    let source = super::Fingerprint([5; super::DIGEST_BYTES]);
+    let window = crate::route::Window {
+        from: Some(WINDOW_FROM),
+        to: Some(WINDOW_TO),
+    };
+    let accumulated = synthetic_timeline();
+    let page = super::candidate_page_info(
+        super::Surface::Timeline,
+        query,
+        source,
+        0,
+        &accumulated,
+        2,
+        false,
+    )
+    .expect("two-item continuation page");
+    let budget = super::envelope_len(
+        &super::super::anchor(None, window.from, None),
+        &super::timeline_data(&accumulated.items[..2], &[]),
+        &page,
+        &[],
+    );
+    let (items, fitted_page) = super::fit_timeline_page(
+        window,
+        super::Surface::Timeline,
+        query,
+        source,
+        0,
+        accumulated,
+        &[],
+        &[],
+        false,
+        budget,
+    )
+    .expect("interleaved bounded Timeline page");
+
+    assert_eq!(fitted_page.returned, 2);
+    assert!(fitted_page.next_cursor.is_some());
+    assert!(matches!(&items[0], super::TimelineItem::Lane(_)));
+    assert!(matches!(&items[1], super::TimelineItem::Marker(_)));
+}
+
+#[test]
+fn hours_checks_cancellation_during_catalog_and_page_work() {
+    let mut fixture = Fixture::new();
+    fixture.append(&[WINDOW_FROM + 10, WINDOW_FROM + HOUR + 10]);
+    let checks = Cell::new(0_usize);
+    let cancelled = || {
+        let next = checks.get().saturating_add(1);
+        checks.set(next);
+        next >= 5
+    };
+    let error = super::hours(
+        fixture.directory.path(),
+        crate::route::Window {
+            from: Some(WINDOW_FROM),
+            to: Some(WINDOW_FROM + 2 * HOUR),
+        },
+        None,
+        10,
+        &cancelled,
+    )
+    .expect_err("cancelled hour scan");
+
+    assert_eq!(error.code, "cancelled");
+    assert!(checks.get() >= 5);
+}
+
 fn execute(
     state: &State,
     name: &str,
     args: Map<String, Value>,
 ) -> Result<super::super::Payload, super::super::Failure> {
-    super::super::execute(state, name, &args, STRUCTURED_CONTENT_BYTES, &|| false)
+    execute_with_budget(state, name, args, STRUCTURED_CONTENT_BYTES)
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "test argument maps are built inline and consumed by each execution"
+)]
+fn execute_with_budget(
+    state: &State,
+    name: &str,
+    args: Map<String, Value>,
+    budget: usize,
+) -> Result<super::super::Payload, super::super::Failure> {
+    super::super::execute(state, name, &args, budget, &|| false)
 }
 
 fn arguments(from: i64, to: i64, limit: usize, cursor: Option<&str>) -> Map<String, Value> {
@@ -169,6 +345,35 @@ fn next_cursor(page: &Value) -> String {
         .as_str()
         .expect("continuation cursor")
         .to_owned()
+}
+
+fn payload_bytes(payload: &super::super::Payload) -> usize {
+    super::super::super::structured_envelope_len(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    )
+}
+
+fn synthetic_timeline() -> super::Accumulated<super::TimelineItem> {
+    super::Accumulated {
+        items: vec![
+            super::Positioned {
+                item: super::TimelineItem::Lane(json!({"sequence": 1})),
+                position: super::PositionKey(super::Fingerprint([6; super::DIGEST_BYTES])),
+            },
+            super::Positioned {
+                item: super::TimelineItem::Marker(json!({"sequence": 2})),
+                position: super::PositionKey(super::Fingerprint([7; super::DIGEST_BYTES])),
+            },
+            super::Positioned {
+                item: super::TimelineItem::Lane(json!({"sequence": 3, "large": "x".repeat(4_096)})),
+                position: super::PositionKey(super::Fingerprint([8; super::DIGEST_BYTES])),
+            },
+        ],
+        has_more: false,
+    }
 }
 
 fn hour_starts(data: &Value) -> Vec<i64> {

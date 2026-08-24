@@ -139,16 +139,20 @@ struct Accumulator<T> {
     limit: usize,
     seen: u64,
     observed_position: Option<PositionKey>,
-    last_returned: Option<PositionKey>,
-    items: Vec<T>,
+    items: Vec<Positioned<T>>,
     has_more: bool,
 }
 
 #[derive(Debug)]
 struct Accumulated<T> {
-    items: Vec<T>,
-    last_returned: Option<PositionKey>,
+    items: Vec<Positioned<T>>,
     has_more: bool,
+}
+
+#[derive(Debug)]
+struct Positioned<T> {
+    item: T,
+    position: PositionKey,
 }
 
 struct Fingerprinter(Sha256);
@@ -243,7 +247,6 @@ impl<T> Accumulator<T> {
             limit,
             seen: 0,
             observed_position: None,
-            last_returned: None,
             items: Vec::with_capacity(limit),
             has_more: false,
         }
@@ -264,8 +267,7 @@ impl<T> Accumulator<T> {
             return Ok(());
         }
         if self.items.len() < self.limit {
-            self.last_returned = Some(position);
-            self.items.push(item);
+            self.items.push(Positioned { item, position });
         } else {
             self.has_more = true;
         }
@@ -281,7 +283,6 @@ impl<T> Accumulator<T> {
         }
         Ok(Accumulated {
             items: self.items,
-            last_returned: self.last_returned,
             has_more: self.has_more,
         })
     }
@@ -423,12 +424,13 @@ pub(super) fn hours(
     let query = hours_query(window);
     let catalog = hour_catalog(root, window, cancelled)?;
     let start = page_start(cursor, Surface::Hours, query, catalog.source)?;
-    let total = hour_count(&catalog.ranges)?;
+    let total = hour_count(&catalog.ranges, cancelled)?;
     if start.offset >= total && start.offset != 0 {
         return Err(bad_cursor());
     }
     if let Some(expected) = start.expected_position {
-        let previous = hour_at(&catalog.ranges, start.offset - 1).ok_or_else(bad_cursor)?;
+        let previous =
+            hour_at(&catalog.ranges, start.offset - 1, cancelled)?.ok_or_else(bad_cursor)?;
         if hour_position(previous) != expected {
             return Err(bad_cursor());
         }
@@ -437,7 +439,7 @@ pub(super) fn hours(
     let mut index = start.offset;
     while hours.len() < limit {
         check_cancelled(cancelled)?;
-        let Some(bucket) = hour_at(&catalog.ranges, index) else {
+        let Some(bucket) = hour_at(&catalog.ranges, index, cancelled)? else {
             break;
         };
         let start_us = bucket.saturating_mul(HOUR_US);
@@ -454,7 +456,7 @@ pub(super) fn hours(
     }
     let has_more = index < total;
     let next_cursor = if has_more {
-        let last = hour_at(&catalog.ranges, index - 1).ok_or_else(bad_cursor)?;
+        let last = hour_at(&catalog.ranges, index - 1, cancelled)?.ok_or_else(bad_cursor)?;
         Some(
             Cursor {
                 surface: Surface::Hours,
@@ -478,6 +480,10 @@ pub(super) fn hours(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Findings binds two filters plus cursor, output budget, and cancellation"
+)]
 pub(super) fn findings(
     state: &State,
     window: Window,
@@ -485,6 +491,7 @@ pub(super) fn findings(
     kind: Option<&str>,
     cursor: Option<&str>,
     limit: usize,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<FindingsPage, Failure> {
     let query = findings_query(window, surface, kind);
@@ -517,23 +524,21 @@ pub(super) fn findings(
     })?;
     ensure_source_unchanged(&state.data_root, window, source.binding, cancelled)?;
     let accumulated = page.finish()?;
-    let next_cursor = next_cursor(
+    let (returned, page) = fit_findings_page(
+        window,
         Surface::Findings,
         query,
         source.binding,
         start.offset,
-        accumulated.items.len(),
-        accumulated.last_returned,
-        accumulated.has_more,
+        accumulated,
+        &metadata.semantics,
+        &metadata.warnings,
+        metadata.source_truncated,
+        budget,
     )?;
     Ok(FindingsPage {
-        page: page_info(
-            accumulated.items.len(),
-            accumulated.has_more,
-            metadata.source_truncated,
-            next_cursor,
-        ),
-        findings: accumulated.items,
+        page,
+        findings: returned,
         semantics: metadata.semantics,
         warnings: metadata.warnings,
     })
@@ -545,6 +550,7 @@ pub(super) fn timeline(
     lanes: &[String],
     cursor: Option<&str>,
     limit: usize,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<TimelinePage, Failure> {
     let mut normalized_lanes = lanes.to_vec();
@@ -591,32 +597,242 @@ pub(super) fn timeline(
     })?;
     ensure_source_unchanged(&state.data_root, window, source.binding, cancelled)?;
     let accumulated = page.finish()?;
-    let returned = accumulated.items.len();
-    let has_more = accumulated.has_more;
-    let next_cursor = next_cursor(
+    let (items, page) = fit_timeline_page(
+        window,
         Surface::Timeline,
         query,
         source.binding,
         start.offset,
-        returned,
-        accumulated.last_returned,
-        has_more,
+        accumulated,
+        &metadata.semantics,
+        &metadata.warnings,
+        metadata.source_truncated,
+        budget,
     )?;
     let mut timeline_lanes = Vec::new();
     let mut markers = Vec::new();
-    for item in accumulated.items {
+    for item in items {
         match item {
             TimelineItem::Lane(record) => timeline_lanes.push(record),
             TimelineItem::Marker(record) => markers.push(record),
         }
     }
     Ok(TimelinePage {
-        page: page_info(returned, has_more, metadata.source_truncated, next_cursor),
+        page,
         lanes: timeline_lanes,
         markers,
         semantics: metadata.semantics,
         warnings: metadata.warnings,
     })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the exact envelope fitter must retain every cursor and budget binding"
+)]
+fn fit_findings_page(
+    window: Window,
+    surface: Surface,
+    query: Fingerprint,
+    source: Fingerprint,
+    offset: u64,
+    accumulated: Accumulated<Value>,
+    semantics: &[Value],
+    warnings: &[Value],
+    source_truncated: bool,
+    budget: usize,
+) -> Result<(Vec<Value>, PageInfo), Failure> {
+    let (retained, page) = fit_page_count(
+        window,
+        surface,
+        query,
+        source,
+        offset,
+        &accumulated,
+        warnings,
+        source_truncated,
+        budget,
+        "Finding",
+        |count| {
+            json!({
+                "findings": accumulated.items[..count]
+                    .iter()
+                    .map(|positioned| positioned.item.clone())
+                    .collect::<Vec<_>>(),
+                "semantics": semantics,
+            })
+        },
+    )?;
+    Ok((
+        accumulated
+            .items
+            .into_iter()
+            .take(retained)
+            .map(|positioned| positioned.item)
+            .collect(),
+        page,
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the exact envelope fitter must retain every cursor and budget binding"
+)]
+fn fit_timeline_page(
+    window: Window,
+    surface: Surface,
+    query: Fingerprint,
+    source: Fingerprint,
+    offset: u64,
+    accumulated: Accumulated<TimelineItem>,
+    semantics: &[Value],
+    warnings: &[Value],
+    source_truncated: bool,
+    budget: usize,
+) -> Result<(Vec<TimelineItem>, PageInfo), Failure> {
+    let (retained, page) = fit_page_count(
+        window,
+        surface,
+        query,
+        source,
+        offset,
+        &accumulated,
+        warnings,
+        source_truncated,
+        budget,
+        "Timeline item",
+        |count| timeline_data(&accumulated.items[..count], semantics),
+    )?;
+    Ok((
+        accumulated
+            .items
+            .into_iter()
+            .take(retained)
+            .map(|positioned| positioned.item)
+            .collect(),
+        page,
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generic fitter receives the complete cursor and envelope binding"
+)]
+fn fit_page_count<T>(
+    window: Window,
+    surface: Surface,
+    query: Fingerprint,
+    source: Fingerprint,
+    offset: u64,
+    accumulated: &Accumulated<T>,
+    warnings: &[Value],
+    source_truncated: bool,
+    budget: usize,
+    item_name: &'static str,
+    data: impl Fn(usize) -> Value,
+) -> Result<(usize, PageInfo), Failure> {
+    let anchor = super::anchor(None, window.from, None);
+    let metadata_page = page_info(0, false, source_truncated, None);
+    let metadata_data = data(0);
+    if envelope_len(&anchor, &metadata_data, &metadata_page, warnings) > budget {
+        return Err(result_too_large(
+            "The fixed semantic metadata and warnings exceed data_budget_bytes.",
+        ));
+    }
+    if accumulated.items.is_empty() {
+        return Ok((0, metadata_page));
+    }
+
+    let evaluate = |count| -> Result<(PageInfo, usize), Failure> {
+        let page = candidate_page_info(
+            surface,
+            query,
+            source,
+            offset,
+            accumulated,
+            count,
+            source_truncated,
+        )?;
+        let encoded = envelope_len(&anchor, &data(count), &page, warnings);
+        Ok((page, encoded))
+    };
+
+    let available = accumulated.items.len();
+    let (complete_page, complete_bytes) = evaluate(available)?;
+    if complete_bytes <= budget {
+        return Ok((available, complete_page));
+    }
+
+    let (first_page, first_bytes) = evaluate(1)?;
+    if first_bytes > budget {
+        return Err(result_too_large(format!(
+            "The first selected {item_name} exceeds data_budget_bytes."
+        )));
+    }
+
+    let mut fitting = (1, first_page);
+    let mut lower = 2;
+    let mut upper = available;
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        let (page, encoded) = evaluate(middle)?;
+        if encoded <= budget {
+            fitting = (middle, page);
+            lower = middle.saturating_add(1);
+        } else {
+            upper = middle;
+        }
+    }
+    Ok(fitting)
+}
+
+fn candidate_page_info<T>(
+    surface: Surface,
+    query: Fingerprint,
+    source: Fingerprint,
+    offset: u64,
+    accumulated: &Accumulated<T>,
+    retained: usize,
+    source_truncated: bool,
+) -> Result<PageInfo, Failure> {
+    let has_more = accumulated.has_more || retained < accumulated.items.len();
+    let position = accumulated
+        .items
+        .get(retained.saturating_sub(1))
+        .map(|positioned| positioned.position);
+    let next_cursor = next_cursor(surface, query, source, offset, retained, position, has_more)?;
+    Ok(page_info(retained, has_more, source_truncated, next_cursor))
+}
+
+fn timeline_data(items: &[Positioned<TimelineItem>], semantics: &[Value]) -> Value {
+    let mut lanes = Vec::new();
+    let mut markers = Vec::new();
+    for positioned in items {
+        match &positioned.item {
+            TimelineItem::Lane(record) => lanes.push(record.clone()),
+            TimelineItem::Marker(record) => markers.push(record.clone()),
+        }
+    }
+    json!({"lanes": lanes, "markers": markers, "semantics": semantics})
+}
+
+fn envelope_len(anchor: &Value, data: &Value, page: &PageInfo, warnings: &[Value]) -> usize {
+    let page = super::page(
+        page.returned,
+        page.truncated,
+        page.next_cursor.as_deref(),
+        page.stop_reason,
+    );
+    super::super::structured_envelope_len(anchor, data, &page, warnings)
+}
+
+fn result_too_large(message: impl Into<String>) -> Failure {
+    Failure {
+        code: "result_too_large",
+        message: message.into(),
+        parameter: Some("data_budget_bytes".to_owned()),
+        retryable: false,
+    }
 }
 
 fn stream_hour(
@@ -875,8 +1091,9 @@ fn hour_catalog(
     })
 }
 
-fn hour_count(ranges: &[HourRange]) -> Result<u64, Failure> {
+fn hour_count(ranges: &[HourRange], cancelled: &impl Fn() -> bool) -> Result<u64, Failure> {
     ranges.iter().try_fold(0_u64, |total, range| {
+        check_cancelled(cancelled)?;
         let width = range
             .last
             .checked_sub(range.first)
@@ -897,19 +1114,30 @@ fn hour_count(ranges: &[HourRange]) -> Result<u64, Failure> {
     })
 }
 
-fn hour_at(ranges: &[HourRange], mut index: u64) -> Option<i64> {
+fn hour_at(
+    ranges: &[HourRange],
+    mut index: u64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<i64>, Failure> {
     for range in ranges {
+        check_cancelled(cancelled)?;
         let width = range
             .last
-            .checked_sub(range.first)?
-            .checked_add(1)
-            .and_then(|width| u64::try_from(width).ok())?;
+            .checked_sub(range.first)
+            .and_then(|width| width.checked_add(1))
+            .and_then(|width| u64::try_from(width).ok());
+        let Some(width) = width else {
+            return Ok(None);
+        };
         if index < width {
-            return range.first.checked_add(i64::try_from(index).ok()?);
+            let Some(index) = i64::try_from(index).ok() else {
+                return Ok(None);
+            };
+            return Ok(range.first.checked_add(index));
         }
         index -= width;
     }
-    None
+    Ok(None)
 }
 
 fn index_source(

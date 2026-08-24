@@ -171,7 +171,7 @@ fn heatmap(
 fn findings(
     state: &State,
     args: &Map<String, Value>,
-    _budget: usize,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     let (from, to) = required_window(args)?;
@@ -189,6 +189,7 @@ fn findings(
         kind,
         optional_string(args, "cursor")?,
         limit,
+        budget,
         cancelled,
     )?;
     let page_value = page(
@@ -210,7 +211,7 @@ fn findings(
 fn timeline(
     state: &State,
     args: &Map<String, Value>,
-    _budget: usize,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     let (from, to) = required_window(args)?;
@@ -226,6 +227,7 @@ fn timeline(
         &wanted,
         optional_string(args, "cursor")?,
         limit,
+        budget,
         cancelled,
     )?;
     let page_value = page(
