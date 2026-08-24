@@ -230,6 +230,53 @@ async fn activity_dispatch_enforces_flags_semantic_orders_and_rejections() {
 }
 
 #[tokio::test]
+async fn activity_dispatch_fits_rows_to_the_requested_data_budget() {
+    let fixture = Fixture::new();
+    let one = dispatch(
+        &fixture,
+        "kronika_find_postgresql_activity",
+        json!({
+            "at_us": AT.to_string(),
+            "include_idle": true,
+            "include_system": true,
+            "page_size": 1,
+        }),
+    )
+    .await;
+    assert_ok(&one, "one Activity row");
+    let budget = serde_json::to_vec(&one)
+        .expect("one-row Activity envelope")
+        .len()
+        .max(1_024);
+
+    let bounded = dispatch(
+        &fixture,
+        "kronika_find_postgresql_activity",
+        json!({
+            "at_us": AT.to_string(),
+            "include_idle": true,
+            "include_system": true,
+            "page_size": 3,
+            "data_budget_bytes": budget,
+        }),
+    )
+    .await;
+    assert_ok(&bounded, "byte-bounded Activity page");
+    assert!(
+        serde_json::to_vec(&bounded)
+            .expect("bounded Activity envelope")
+            .len()
+            <= budget
+    );
+    assert!((1..3).contains(&returned(&bounded)), "{bounded}");
+    assert!(
+        bounded
+            .pointer("/page/next_cursor")
+            .is_some_and(Value::is_string)
+    );
+}
+
+#[tokio::test]
 async fn statement_lenses_find_and_rejections_run_through_dispatch() {
     let fixture = Fixture::new();
     for lens in ["load", "per_call", "io", "resources", "stability"] {

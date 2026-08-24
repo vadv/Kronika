@@ -224,7 +224,7 @@ fn execute_tool(
     cancelled: &impl Fn() -> bool,
 ) -> Result<Payload, Failure> {
     if name.starts_with("kronika_find_postgresql_") || name == "kronika_get_postgresql_overview" {
-        postgresql::execute(state, name, args, cancelled)
+        postgresql::execute(state, name, args, budget, cancelled)
             .map(|payload| Payload {
                 anchor: payload.anchor,
                 data: payload.data,

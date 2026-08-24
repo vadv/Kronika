@@ -478,6 +478,7 @@ pub(super) struct PostgresqlFailure {
     pub(super) retryable: bool,
 }
 
+#[derive(Clone)]
 struct Anchor {
     segment_id: i64,
     active_wal_position: Option<u64>,
@@ -507,6 +508,7 @@ pub(super) fn execute(
     state: &State,
     name: &str,
     args: &Map<String, Value>,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<PostgresqlPayload, PostgresqlFailure> {
     match name {
@@ -523,6 +525,7 @@ pub(super) fn execute(
                 relation: false,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         "kronika_find_postgresql_locks" => locks::execute(state, args, cancelled),
@@ -539,6 +542,7 @@ pub(super) fn execute(
                 relation: false,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         "kronika_find_postgresql_plans" => direct(
@@ -553,6 +557,7 @@ pub(super) fn execute(
                 relation: false,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         "kronika_find_postgresql_databases" => direct(
@@ -567,6 +572,7 @@ pub(super) fn execute(
                 relation: false,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         "kronika_find_postgresql_tables" => direct(
@@ -581,6 +587,7 @@ pub(super) fn execute(
                 relation: true,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         "kronika_find_postgresql_indexes" => direct(
@@ -595,6 +602,7 @@ pub(super) fn execute(
                 relation: true,
                 whole_set: false,
             },
+            budget,
             cancelled,
         ),
         _ => Err(failure(
@@ -609,6 +617,7 @@ fn direct(
     state: &State,
     args: &Map<String, Value>,
     spec: DirectSpec,
+    budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<PostgresqlPayload, PostgresqlFailure> {
     let at = timestamp(args, "at_us")?;
@@ -630,7 +639,7 @@ fn direct(
         None
     };
     let lens = lens(args, &spec, group)?;
-    let mut anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
+    let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
     let defaults = defaults_for_layouts(spec.section, lens.fields, &anchor.type_ids);
     let fields = fields(args, &defaults)?;
     let page_size = if spec.whole_set {
@@ -683,8 +692,67 @@ fn direct(
         type_id: None,
         row_ordinal: None,
     };
+    fit_direct_page(state, at, &anchor, spec, request, budget, cancelled)
+}
+
+fn fit_direct_page(
+    state: &State,
+    at: i64,
+    anchor: &Anchor,
+    spec: DirectSpec,
+    mut request: SnapshotRequest,
+    budget: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    let page_size = request.page_size.unwrap_or(1);
+    let first = direct_page(state, at, anchor, spec, request.clone(), cancelled);
+    match first {
+        Ok(payload) if payload_len(&payload) <= budget => return Ok(payload),
+        Err(error) if error.code != "result_bound_exceeded" => return Err(error),
+        Ok(_) | Err(_) if page_size == 1 => return Err(first_row_too_large()),
+        Ok(_) | Err(_) => {}
+    }
+
+    let mut smallest = 1_usize;
+    let mut largest = page_size - 1;
+    let mut fitted = None;
+    while smallest <= largest {
+        if cancelled() {
+            return Err(failure(
+                "cancelled",
+                "the PostgreSQL read was cancelled",
+                None,
+            ));
+        }
+        let candidate = smallest + (largest - smallest) / 2;
+        request.page_size = Some(candidate);
+        match direct_page(state, at, anchor, spec, request.clone(), cancelled) {
+            Ok(payload) if payload_len(&payload) <= budget => {
+                fitted = Some(payload);
+                smallest = candidate + 1;
+            }
+            Ok(_)
+            | Err(PostgresqlFailure {
+                code: "result_bound_exceeded",
+                ..
+            }) => largest = candidate.saturating_sub(1),
+            Err(error) => return Err(error),
+        }
+    }
+    fitted.ok_or_else(first_row_too_large)
+}
+
+fn direct_page(
+    state: &State,
+    at: i64,
+    anchor: &Anchor,
+    spec: DirectSpec,
+    request: SnapshotRequest,
+    cancelled: &impl Fn() -> bool,
+) -> Result<PostgresqlPayload, PostgresqlFailure> {
     let collected = collect(state, Route::Snapshot(Box::new(request)), cancelled)?;
-    anchor.active_wal_position = snapshot_active_position(&collected.records)?;
+    let mut response_anchor = anchor.clone();
+    response_anchor.active_wal_position = snapshot_active_position(&collected.records)?;
     let page = page(&collected.records, collected.stop_reason);
     if spec.whole_set && page.get("truncated").and_then(Value::as_bool) == Some(true) {
         return Err(failure(
@@ -703,12 +771,29 @@ fn direct(
     }
     data.insert("semantics".to_owned(), Value::Array(Vec::new()));
     Ok(PostgresqlPayload {
-        anchor: anchor_value(at, selected, Some(&anchor)),
+        anchor: anchor_value(at, selected, Some(&response_anchor)),
         data: Value::Object(data),
         page,
-        warnings: anchor.warnings,
+        warnings: anchor.warnings.clone(),
         summary: format!("Returned {returned} recorded PostgreSQL {} rows.", spec.key),
     })
+}
+
+fn payload_len(payload: &PostgresqlPayload) -> usize {
+    super::tools::structured_envelope_len(
+        &payload.anchor,
+        &payload.data,
+        &payload.page,
+        &payload.warnings,
+    )
+}
+
+fn first_row_too_large() -> PostgresqlFailure {
+    failure(
+        "result_too_large",
+        "the fixed PostgreSQL metadata and first selected row exceed data_budget_bytes",
+        Some("data_budget_bytes"),
+    )
 }
 
 #[expect(
