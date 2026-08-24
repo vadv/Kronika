@@ -1925,7 +1925,9 @@ async fn an_active_snapshot_restarts_from_the_finished_segment_after_rollover() 
     assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert_eq!(
         response.headers().get(hyper::header::CACHE_CONTROL),
-        Some(&HeaderValue::from_static("private,no-cache")),
+        Some(&HeaderValue::from_static(
+            "private,max-age=31536000,immutable"
+        )),
         "the finished retry controls the response cache policy"
     );
     let body = response
@@ -2553,7 +2555,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 
     let prepared = fixture.prepare("/api/hour?from=0&to=1000", None);
     assert_eq!(prepared.meta().status, StatusCode::OK);
-    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(prepared.meta().cache, CachePolicy::Immutable);
     let records = stream(prepared).expect("hour body");
     let kinds = records
         .iter()
@@ -2577,7 +2579,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
-fn finished_browser_resources_revalidate_without_streaming_a_body() {
+fn finished_browser_resources_are_immutable_and_revalidate_without_a_body() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
     fixture.finish();
@@ -2586,14 +2588,14 @@ fn finished_browser_resources_revalidate_without_streaming_a_body() {
         let initial = fixture.prepare(&target, None);
         let meta = initial.meta();
         assert_eq!(meta.status, StatusCode::OK, "{target}");
-        assert_eq!(meta.cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(meta.cache, CachePolicy::Immutable, "{target}");
         let etag = meta.etag.expect("finished browser resource ETag");
         assert!(etag.starts_with("W/\""), "{target}");
         assert!(!stream(initial).expect("finished response body").is_empty());
 
         let matching = fixture.prepare(&target, Some(&etag));
         assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED, "{target}");
-        assert_eq!(matching.meta().cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(matching.meta().cache, CachePolicy::Immutable, "{target}");
         assert_eq!(
             matching.meta().etag.as_deref(),
             Some(etag.as_str()),
@@ -2702,6 +2704,20 @@ fn empty_finished_hour_series_has_no_validator() {
 
     let prepared = fixture.prepare(
         "/api/hour?from=300&to=400&section=os_diskstats&field=reads",
+        None,
+    );
+    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(prepared.meta().etag, None);
+}
+
+#[test]
+fn empty_finished_heatmap_has_no_validator() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    let prepared = fixture.prepare(
+        "/api/heatmap?from=300&to=400&section=os_diskstats&field=reads&columns=1&top=1",
         None,
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
@@ -3103,7 +3119,7 @@ fn snapshot_cache_policy_tracks_active_and_finished_inputs() {
 
     fixture.finish();
     let finished = fixture.prepare(&resource, None);
-    assert_eq!(finished.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(finished.meta().cache, CachePolicy::Immutable);
 }
 
 #[test]

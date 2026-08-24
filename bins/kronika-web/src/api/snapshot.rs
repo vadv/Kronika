@@ -595,6 +595,7 @@ fn snapshot_meta(
     let etag = super::weak_etag("snapshot", &format!("{request:?}"), candidates);
     ResponseMeta::ok_with_etag(
         match anchor.kind() {
+            SegmentKind::Finished if etag.is_some() => CachePolicy::Immutable,
             SegmentKind::Finished => CachePolicy::Revalidate,
             SegmentKind::Active => CachePolicy::NoStore,
         },

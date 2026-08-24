@@ -162,7 +162,9 @@ impl PreparedHour {
             .iter()
             .all(|segment| segment.kind() == SegmentKind::Finished);
         ResponseMeta::ok_with_etag(
-            if settled {
+            if self.etag.is_some() {
+                CachePolicy::Immutable
+            } else if settled {
                 CachePolicy::Revalidate
             } else {
                 CachePolicy::NoStore
