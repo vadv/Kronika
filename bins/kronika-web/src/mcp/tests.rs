@@ -389,6 +389,20 @@ fn mcp_authentication_and_origin_are_decided_without_a_body_trait() {
         StatusCode::UNAUTHORIZED
     );
 
+    let forbidden_without_auth = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(ORIGIN, "http://localhost")
+        .body(NotAnHttpBody)
+        .expect("request");
+    assert_eq!(
+        route_request_at(&account(), &forbidden_without_auth, NOW)
+            .expect_err("Origin takes precedence")
+            .response()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
     let mut basic = Request::builder()
         .method(Method::POST)
         .uri("/mcp")

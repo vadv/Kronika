@@ -170,13 +170,13 @@ fn route_request_with_authentication<B>(
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
     if path == "/mcp" {
+        if request.headers().contains_key(ORIGIN) {
+            return Err(RequestError::OriginNotAllowed);
+        }
         if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
             return Err(RequestError::Unauthorized {
                 challenge: !is_ui_request(request.headers()),
             });
-        }
-        if request.headers().contains_key(ORIGIN) {
-            return Err(RequestError::OriginNotAllowed);
         }
         if request.uri().query().is_some() {
             return Err(RequestError::Route(RouteError::BadParameter(
