@@ -397,6 +397,9 @@
 /* The cursor control is a phone affordance: a pointer has the plot and a
    keyboard has the arrows, so above 520 px it is not rendered at all. */
 .cursor-row { display: none; }
+/* Phone chrome: a pointer opens the plot and the search form in place, so
+   these buttons and the panel head exist only below 520 px. */
+.mobile-controls, .mobile-panel-head { display: none; }
 .timeline-inspector {
   border-top: 0;
   margin-top: 0;
@@ -696,6 +699,81 @@
 }
 
 @media (max-width: 520px) {
+  .mobile-controls {
+    align-items: center;
+    background: var(--color-s2);
+    border-bottom: 1px solid var(--color-line2);
+    display: flex;
+    gap: 5px;
+    margin-top: 8px;
+    min-height: 38px;
+    padding: 0 6px;
+  }
+  .mobile-controls > button {
+    align-items: center;
+    background: var(--color-s3);
+    border: 1px solid var(--color-line3);
+    border-radius: var(--radius-sm);
+    color: var(--color-fg2);
+    cursor: pointer;
+    display: flex;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    gap: 5px;
+    height: 30px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+  .mobile-controls > button[aria-pressed="true"] { background: var(--color-accent-soft); border-color: var(--color-accent-line); color: var(--color-accent3); }
+
+  /* The plot goes; the cursor band stays, because it carries the two readings
+     an on-call reader routes on. The plot returns at full size in the chart. */
+  .timeline-preview > .timeline-rail, .timeline-preview .uplot-figure { display: none; }
+  .inspector[data-panel="chart"] { height: 100dvh; max-height: 100dvh; }
+  .inspector[data-panel="chart"] .inspector-body .uplot-figure { height: calc(100dvh - 300px); }
+
+  /* The form folds into the button above; the surface keeps printing how much
+     of the table was loaded, which is not a control. */
+  [data-search-surface] form,
+  [data-search-surface] > div > button[aria-expanded],
+  [data-search-surface] [data-testid="search-chips"] { display: none; }
+  /* With the form gone the surface is one status line, not a control strip. */
+  [data-search-surface] { padding-block: 1px; }
+  [data-search-surface] > div { min-height: 0; }
+  .mobile-panel-head {
+    align-items: center;
+    background: var(--color-s2);
+    border-bottom: 1px solid var(--color-line2);
+    display: flex;
+    gap: 4px;
+    height: 46px;
+    left: 0;
+    position: fixed;
+    right: 0;
+    top: 0;
+    z-index: 121;
+  }
+  .mobile-panel-head > button { align-items: center; background: transparent; border: 0; color: var(--color-fg2); cursor: pointer; display: flex; height: 44px; justify-content: center; width: 44px; }
+  .mobile-panel-head strong { color: var(--color-fg-hi); font-family: var(--font-sans); font-size: var(--text-lg); font-weight: 600; }
+  .mobile-search-open [data-search-surface] {
+    background: var(--color-s1);
+    inset: 0;
+    overflow: auto;
+    padding: 46px 0 env(safe-area-inset-bottom);
+    position: fixed;
+    z-index: 120;
+  }
+  .mobile-search-open [data-search-surface] form { display: flex; }
+  .mobile-search-open [data-search-surface] > div > button[aria-expanded] { display: inline-flex; }
+  .mobile-search-open [data-search-surface] [data-testid="search-chips"] { display: flex; }
+  .mobile-search-open [data-search-surface] input { font-size: var(--text-md); padding-block: 9px; }
+  /* A panel is one task at full width: the field takes the line, the count and
+     the syntax mark sit under it instead of squeezing it to 164px. */
+  .mobile-search-open [data-search-surface] > div { align-items: stretch; flex-direction: column; gap: 8px; min-height: 28px; padding: 8px; }
+  .mobile-search-open [data-search-surface] form { width: 100%; }
+  .mobile-search-open [data-search-surface] [data-testid="table-status"] { margin-left: 0; }
+
   /* Four columns leave a reading 88px for a label, a number and the help dot,
      so labels collapsed to "In …" and the dot sat on the number. The resource
      name takes its own line and each reading stacks its label over its value. */
@@ -735,7 +813,7 @@
   /* The rail's reading truncates at this width, and a clipped health split
      reads as one number. The cursor row below the plot carries it in full. */
   .timeline-preview-reading { display: none; }
-  .timeline-preview { flex-basis: 190px; height: 190px; min-height: 190px; }
+  .timeline-preview { flex-basis: 67px; height: 67px; min-height: 67px; }
   .cursor-row {
     align-items: center;
     border-top: 1px solid var(--color-line2);

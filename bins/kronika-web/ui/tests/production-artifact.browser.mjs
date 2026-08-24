@@ -1102,6 +1102,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
     await settleLayout(cdp)
+    // Below 520px the form lives in a panel; the search itself is unchanged.
+    assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('[data-testid="events-console"] input[type="search"]').closest('form')).display`), "none", "the phone folds the form into a button")
+    await cdp.evaluate(`document.querySelector('[data-testid="mobile-search-open"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="mobile-search-head"]') !== null`, "the phone search panel")
+    await settleLayout(cdp)
     const eventSearch = await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="events-console"] input[type="search"]')
       const label = input.closest('label')
@@ -1140,6 +1145,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "search help closed by Escape")
     assert.equal(await cdp.evaluate(`document.activeElement?.getAttribute("aria-label")`), "Синтаксис и поля поиска")
     await assertSearchControlContained(cdp, "Events search")
+    await cdp.evaluate(`document.querySelector('[data-testid="mobile-search-head"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="mobile-search-head"]') === null`, "the phone search panel closed")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
@@ -3955,7 +3962,7 @@ function networkLaneRecords(hour) {
 }
 
 function previewHeight(width) {
-  return width <= 520 ? 190 : 124
+  return width <= 520 ? 67 : 124
 }
 
 async function settleLayout(cdp) {
@@ -4423,8 +4430,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.match(chartGeometry.preview.selectedAccess, /\S/)
       if (viewport.kind === "phone") {
         assert.equal(chartGeometry.preview.lanesDisplay, "none", JSON.stringify(chartGeometry.preview))
-        assert.equal(chartGeometry.preview.pickerDisplay, "grid", JSON.stringify(chartGeometry.preview))
-        assert.ok(Math.abs(chartGeometry.preview.action.width - 36) <= 1, JSON.stringify(chartGeometry.preview))
+        // The rail folds below 520px: the plot and its lane picker open at full
+        // size from the control bar, which is the only chart affordance there.
+        assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('.timeline-preview .timeline-rail')).display`), "none")
+        assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="mobile-controls"] button').length`), 2)
+        assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('[data-testid="mobile-controls"]')).display`), "flex")
       } else {
         assert.equal(chartGeometry.preview.lanesDisplay, "flex", JSON.stringify(chartGeometry.preview))
         assert.equal(chartGeometry.preview.pickerDisplay, "none", JSON.stringify(chartGeometry.preview))

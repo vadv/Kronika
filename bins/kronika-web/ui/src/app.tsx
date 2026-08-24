@@ -39,6 +39,7 @@ import { mergeObservationTimestamps, observationTimestamps } from "./cursor-time
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate, LabelHelp } from "./help"
+import { MobileControls } from "./mobile-controls"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
 import { HourPicker } from "./hour-picker"
@@ -227,6 +228,7 @@ function App({ locale, onLocale, t }: {
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
   const [inspectorPanel, setInspectorPanel] = useState<InspectorPanel>(opened.current.panel)
+  const [mobileSearch, setMobileSearch] = useState(false)
   const [inspectorDetailRoot, setInspectorDetailRoot] = useState<HTMLElement | null>(null)
   const [inspectorChartRoot, setInspectorChartRoot] = useState<HTMLElement | null>(null)
   const [entityChartAvailable, setEntityChartAvailable] = useState(false)
@@ -899,7 +901,7 @@ function App({ locale, onLocale, t }: {
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
     : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" || pgSection === "vacuum" ? "pg_waiting" : "health"
       : "health"
-  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}`}>
+  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}${mobileSearch ? " mobile-search-open" : ""}`}>
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
     <header className="topbar [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
@@ -943,6 +945,7 @@ function App({ locale, onLocale, t }: {
         {t(`nav.${visibleSource}`)}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
+      {!loading && error === null && hour !== null && <MobileControls filtered={find !== ""} onOpenChart={openChart} onSearch={setMobileSearch} searchOpen={mobileSearch} t={t} />}
       {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}

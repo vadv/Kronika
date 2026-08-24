@@ -403,6 +403,7 @@ table.empty: "На выбранный момент нет данных о про
 table.no_rows: "На выбранный момент нет строк"
 table.loading: "Загружаем строки…"
 filter.label: "Поиск по строкам"
+filter.short: "Поиск"
 filter.placeholder: "Текст или field:value AND size>100MB"
 filter.apply: "Применить поиск"
 filter.kept: "{kept} из {total}"
