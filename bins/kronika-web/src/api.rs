@@ -17,6 +17,7 @@ mod heatmap;
 mod history;
 mod hour;
 mod index;
+mod process_tree;
 mod query;
 mod render;
 mod row_detail;
@@ -101,6 +102,7 @@ pub(crate) enum Prepared {
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
+    ProcessTree(process_tree::PreparedProcessTree),
     Empty(ResponseMeta),
 }
 
@@ -115,6 +117,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
+            Self::ProcessTree(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -153,6 +156,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
+            Self::ProcessTree(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -278,7 +282,17 @@ pub(crate) enum ApiError {
     NoSuchColumn(String),
     BadFilter(String),
     BadCursor,
+    Product(Box<ProductError>),
     Unreadable(Box<dyn Error + Send + Sync>),
+}
+
+#[derive(Debug)]
+pub(crate) struct ProductError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) parameter: Option<&'static str>,
+    pub(crate) retryable: bool,
+    pub(crate) status: StatusCode,
 }
 
 impl ApiError {
@@ -286,6 +300,7 @@ impl ApiError {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
             Self::NoSuchColumn(_) | Self::BadFilter(_) | Self::BadCursor => StatusCode::BAD_REQUEST,
+            Self::Product(error) => error.status,
             Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -297,6 +312,7 @@ impl ApiError {
             Self::NoSuchColumn(_) => "no_such_column",
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
+            Self::Product(error) => error.code,
             Self::Unreadable(_) => "unreadable",
         }
     }
@@ -304,11 +320,15 @@ impl ApiError {
     pub(crate) fn parameter(&self) -> Option<&str> {
         match self {
             Self::NoSuchColumn(column) | Self::BadFilter(column) => Some(column),
+            Self::Product(error) => error.parameter,
             _ => None,
         }
     }
 
     pub(crate) fn source_changed_during_read(&self) -> bool {
+        if let Self::Product(error) = self {
+            return error.retryable;
+        }
         let Self::Unreadable(error) = self else {
             return false;
         };
@@ -333,6 +353,7 @@ impl std::fmt::Display for ApiError {
             Self::NoSuchColumn(column) => write!(f, "no such column {column:?}"),
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
+            Self::Product(error) => f.write_str(&error.message),
             Self::Unreadable(error) => error.fmt(f),
         }
     }
@@ -431,10 +452,16 @@ fn prepare_with_index_access(
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(mut request) => {
-            if request.process.is_some() {
-                surface::resolve_process_surface(&mut request)?;
+            let process_lens = request
+                .process
+                .is_some()
+                .then(|| surface::resolve_process_surface(&mut request))
+                .transpose()?;
+            if process_lens == Some(crate::route::ProcessLens::Tree) {
+                process_tree::prepare(root, *request, if_none_match)
+            } else {
+                snapshot::prepare(root, *request, if_none_match)
             }
-            snapshot::prepare(root, *request, if_none_match)
         }
     }?;
     let meta = prepared.meta();

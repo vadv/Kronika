@@ -1,6 +1,5 @@
 mod discovery;
 mod pagination;
-mod tree;
 
 use std::ops::Bound::Included;
 
@@ -290,67 +289,23 @@ fn processes(
         at,
         process_lens,
     )?;
-    let collected = if lens == "tree" {
-        let Route::Snapshot(request) = route else {
-            return Err(Failure::bounded(
-                "internal_error",
-                "The Process tree did not receive a snapshot request.",
-            ));
-        };
-        let request = tree::prepare(*request)?;
-        let collected = run_route(
-            state,
-            Route::Snapshot(Box::new(request.complete)),
-            super::super::STRUCTURED_CONTENT_BYTES,
-            MAX_TREE_ROWS.saturating_add(20),
-            cancelled,
-        )?;
-        let row_count = records_named(&collected.records, "row").len();
-        if row_count > MAX_TREE_ROWS || collected.stop_reason != ValueStopReason::Complete {
-            return Err(Failure::bounded(
-                "tree_bound_exceeded",
-                "The Process snapshot exceeds the tree admission limit.",
-            ));
-        }
-        let matched = request
-            .matched
-            .map(|request| {
-                run_route(
-                    state,
-                    Route::Snapshot(Box::new(request)),
-                    super::super::STRUCTURED_CONTENT_BYTES,
-                    MAX_TREE_ROWS.saturating_add(20),
-                    cancelled,
-                )
-            })
-            .transpose()?;
-        if matched
-            .as_ref()
-            .is_some_and(|matched| matched.stop_reason != ValueStopReason::Complete)
-        {
-            return Err(Failure::bounded(
-                "tree_bound_exceeded",
-                "The filtered Process snapshot exceeds the tree admission limit.",
-            ));
-        }
-        let transformed = tree::transform(
-            collected.records,
-            matched.as_ref().map(|matched| matched.records.as_slice()),
-        )?;
-        ValueCollection {
-            records: transformed.records,
-            ndjson_bytes: collected.ndjson_bytes,
-            stop_reason: ValueStopReason::Complete,
-        }
-    } else {
-        run_route(
-            state,
-            route,
-            budget,
-            MAX_TREE_ROWS.saturating_add(20),
-            cancelled,
-        )?
-    };
+    let collected = run_route(
+        state,
+        route,
+        if lens == "tree" {
+            super::super::STRUCTURED_CONTENT_BYTES
+        } else {
+            budget
+        },
+        MAX_TREE_ROWS.saturating_add(20),
+        cancelled,
+    )?;
+    if lens == "tree" && collected.stop_reason != ValueStopReason::Complete {
+        return Err(Failure::bounded(
+            "tree_bound_exceeded",
+            "The Process tree exceeds its complete-result bound.",
+        ));
+    }
     let row_count = collected
         .records
         .iter()

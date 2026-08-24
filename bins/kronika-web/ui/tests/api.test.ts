@@ -34,6 +34,49 @@ test("an aborted NDJSON read rejects", async () => {
   await assert.rejects(readNdjson(response, "/api/example", abort.signal), { name: "AbortError" })
 })
 
+test("Process Tree sends the public lens and find and preserves canonical rows", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/segments/77/snapshot")
+    assert.equal(url.searchParams.get("at"), String(START))
+    assert.deepEqual(url.searchParams.getAll("section"), ["os_process"])
+    assert.equal(url.searchParams.get("lens"), "tree")
+    assert.equal(url.searchParams.get("find"), "user:postgres")
+    for (const privateParameter of ["field", "by", "order", "direction", "page_size", "cursor", "search"]) {
+      assert.equal(url.searchParams.has(privateParameter), false, privateParameter)
+    }
+    return ndjson([
+      {
+        record: "layout",
+        layout: {
+          type_id: "1100001", logical_name: "os_process",
+          columns: ["pid", "process_tree_parent_pid", "process_tree_depth", "process_tree_order"].map((name) => ({ name })),
+        },
+      },
+      { record: "row", segment_id: "77", type_id: "1100001", ordinal: "9", timestamp: String(START), values: [10, null, 0, 0] },
+      { record: "row", segment_id: "77", type_id: "1100001", ordinal: "4", timestamp: String(START), values: [22, 10, 1, 1] },
+    ])
+  }
+  try {
+    const hour = await api.loadSnapshot(
+      "77",
+      START,
+      [{ section: "os_process", lens: "tree", find: "user:postgres" }],
+      new AbortController().signal,
+      { column: "pid", descending: false },
+    )
+    assert.deepEqual(hour.processes.map((row) => row.values), [
+      { pid: 10, process_tree_parent_pid: null, process_tree_depth: 0, process_tree_order: 0 },
+      { pid: 22, process_tree_parent_pid: 10, process_tree_depth: 1, process_tree_order: 1 },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("Heatmap requests expose only shared product surface, cut, and group ids", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")

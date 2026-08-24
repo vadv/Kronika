@@ -149,6 +149,51 @@ async fn metric_history_shares_the_envelope_budget_across_identities() {
     assert_eq!(bounded["page"]["stop_reason"], "byte_limit");
 }
 
+#[tokio::test]
+async fn process_tree_dispatch_uses_the_shared_product_fields() {
+    let fixture = Fixture::new();
+    let response = dispatch(
+        &fixture,
+        "kronika_find_processes",
+        json!({
+            "at_us": LAST_PROCESS_AT.to_string(),
+            "lens": "tree",
+            "fields": ["pid"],
+        }),
+    )
+    .await;
+    let records = response["data"]["processes"]
+        .as_array()
+        .expect("Process tree records");
+    let columns = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .and_then(|record| record.pointer("/layout/columns"))
+        .and_then(Value::as_array)
+        .expect("Process tree layout columns");
+    let index = |name| {
+        columns
+            .iter()
+            .position(|column| column["name"] == name)
+            .expect("shared Process tree field")
+    };
+    let values = records
+        .iter()
+        .find(|record| record["record"] == "row")
+        .and_then(|record| record["values"].as_array())
+        .expect("Process tree row values");
+
+    assert_eq!(
+        (
+            values[index("pid")].as_i64(),
+            values[index("process_tree_parent_pid")].as_i64(),
+            values[index("process_tree_depth")].as_u64(),
+            values[index("process_tree_order")].as_u64(),
+        ),
+        (Some(42), None, Some(0), Some(0))
+    );
+}
+
 fn runtime_calls() -> [(&'static str, Value, &'static str, &'static str); 11] {
     [
         (

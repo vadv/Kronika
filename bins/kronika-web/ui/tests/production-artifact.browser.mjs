@@ -4101,6 +4101,8 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
   const [activityLayout, activityTemplate] = activityFixtureSeed()
   const forensicSnapshots = [
     ...snapshotRecords().filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) !== "1001004"),
+    layout("1000001", "instance_metadata", ["clock_ticks_per_sec"]),
+    row("1000001", "metadata", [100], AT),
     activityLayout,
     ...Array.from({ length: 12 }, (_, index) => viewportActivityRow(activityTemplate, 3_000 + index, AT, index)),
     ...progressVacuumRecords(),
@@ -4139,7 +4141,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
       }] : [])
     }
-    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, forensicSnapshots)
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      if (url.searchParams.get("lens") === "tree") return ndjson(response, processTreeSnapshotRecords(url))
+      const sections = url.searchParams.getAll("section")
+      return ndjson(response, sections.includes("os_process")
+        ? forensicSnapshots
+        : forensicSnapshots.filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) !== "1100001"))
+    }
     response.writeHead(404)
     response.end()
   })
@@ -4351,6 +4359,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const row = [...table.querySelectorAll('.entity-row')].find((candidate) => candidate.textContent.includes('2686712'))
       const cells = [...row.querySelectorAll('[role="cell"]')]
       const startValue = cells[names.indexOf('START')].querySelector('span')
+      const timeValue = cells[names.indexOf('TIME')].textContent.trim()
       const tabs = document.querySelector('.process-workspace > .lensbar > .lens-tabs').getBoundingClientRect()
       const summary = document.querySelector('.process-summary-inline')
       const summaryRect = summary.getBoundingClientRect()
@@ -4358,9 +4367,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         divider: getComputedStyle(summary).borderLeftWidth,
         gap: summaryRect.left - tabs.right,
         pidWidth: pid.getBoundingClientRect().width,
+        sortIndicators: headers.flatMap((header, index) => header.querySelector('.entity-sort i') === null ? [] : [names[index]]),
         commandWidth: command.getBoundingClientRect().width,
         stateWidth: state.getBoundingClientRect().width,
         start: { clipped: startValue.scrollWidth > startValue.clientWidth + 1, text: startValue.textContent, width: start.getBoundingClientRect().width },
+        time: timeValue,
         userWidth: user.getBoundingClientRect().width,
       }
     })()`)
@@ -4370,6 +4381,8 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.ok(Math.abs(treeGeometry.stateWidth - 62) <= 1, JSON.stringify(treeGeometry))
     assert.ok(Math.abs(treeGeometry.start.width - 92) <= 1, JSON.stringify(treeGeometry))
     assert.equal(treeGeometry.start.clipped, false, JSON.stringify(treeGeometry))
+    assert.deepEqual(treeGeometry.sortIndicators, [], JSON.stringify(treeGeometry))
+    assert.equal(treeGeometry.time, "0:13", JSON.stringify(treeGeometry))
     // ps prints the clock inside the shown day and the civil date before it.
     assert.match(treeGeometry.start.text, /^(?:\d{2}:\d{2}|\d{2}\.\d{2}\.\d{4})$/)
     assert.equal(treeGeometry.divider, "0px", JSON.stringify(treeGeometry))
@@ -4883,6 +4896,69 @@ function snapshotRecords() {
       ],
     },
   ]
+}
+
+function processTreeSnapshotRecords(url) {
+  const process = snapshotRecords().filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) === "1100001")
+  const [sourceLayout, ...recordedRows] = process
+  const columns = sourceLayout.layout.columns.map(({ name }) => name)
+  const pidAt = columns.indexOf("pid")
+  const ppidAt = columns.indexOf("ppid")
+  const stimeAt = columns.indexOf("stime")
+  const userAt = columns.indexOf("user")
+  const utimeAt = columns.indexOf("utime")
+  const productColumns = [...sourceLayout.layout.columns, { name: "cpu_time_ticks" }]
+  const parentAt = productColumns.length
+  const sourceRows = recordedRows.map((record) => ({
+    ...record,
+    values: [...record.values, record.values[utimeAt] + record.values[stimeAt]],
+  }))
+  const byPid = new Map(sourceRows.map((record) => [record.values[pidAt], record]))
+  const children = new Map()
+  const roots = []
+  for (const [pid, record] of byPid) {
+    const parent = record.values[ppidAt]
+    if (parent !== pid && byPid.has(parent)) {
+      const siblings = children.get(parent)
+      if (siblings === undefined) children.set(parent, [pid])
+      else siblings.push(pid)
+    } else roots.push(pid)
+  }
+  roots.sort((left, right) => left - right)
+  for (const siblings of children.values()) siblings.sort((left, right) => left - right)
+  const canonical = []
+  const walk = (pid, parent, depth) => {
+    const record = byPid.get(pid)
+    if (record === undefined) return
+    canonical.push({ ...record, values: [...record.values, parent, depth, canonical.length] })
+    for (const child of children.get(pid) ?? []) walk(child, pid, depth + 1)
+  }
+  for (const pid of roots) walk(pid, null, 0)
+  if (url.searchParams.get("find") !== "user:postgres") {
+    return [{
+      ...sourceLayout,
+      layout: {
+        ...sourceLayout.layout,
+        columns: [...productColumns, ...["process_tree_parent_pid", "process_tree_depth", "process_tree_order"].map((name) => ({ name }))],
+      },
+    }, ...canonical]
+  }
+  const matched = new Set(canonical.filter((record) => record.values[userAt] === "postgres").map((record) => record.values[pidAt]))
+  for (const record of canonical) {
+    if (!matched.has(record.values[pidAt])) continue
+    let parent = record.values[parentAt]
+    while (parent !== null && !matched.has(parent)) {
+      matched.add(parent)
+      parent = byPid.get(parent)?.values[ppidAt] ?? null
+    }
+  }
+  return [{
+    ...sourceLayout,
+    layout: {
+      ...sourceLayout.layout,
+      columns: [...productColumns, ...["process_tree_parent_pid", "process_tree_depth", "process_tree_order"].map((name) => ({ name }))],
+    },
+  }, ...canonical.filter((record) => matched.has(record.values[pidAt]))]
 }
 
 function progressVacuumRecords() {

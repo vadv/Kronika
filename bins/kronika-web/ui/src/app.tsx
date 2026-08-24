@@ -68,7 +68,7 @@ import { PostgresView, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationOrderAvailable, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
-import { buildProcessForest } from "./process-tree"
+import { decorateProcessTree } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -96,10 +96,11 @@ interface CurrentSnapshot {
   readonly cursor: number | null
   readonly data: HourData
   readonly denseSection: string | null
+  readonly processTree: boolean
   readonly target: string | null
 }
 
-const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, target: null }
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, processTree: false, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
@@ -111,8 +112,8 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   events: TIMELINE_REQUESTS,
 }
 
-function processRequest(lens: Lens): SectionRequest {
-  return { section: "os_process", lens, ...(lens === "tree" ? {} : { pageSize: 200 }) }
+function processRequest(lens: Lens, find?: string): SectionRequest {
+  return { section: "os_process", lens, ...(lens === "tree" ? (find === undefined ? {} : { find }) : { pageSize: 200 }) }
 }
 
 function section(name: string): SectionRequest { return { section: name } }
@@ -245,8 +246,12 @@ function App({ locale, onLocale, t }: {
   const viewKey = pgSection === "statements" && visibleSource === "postgresql"
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
+  const treePattern = visibleSource === "processes" && lens === "tree" ? find.trim() : ""
+  const parsedTreeSearch = treePattern === "" ? null : parseSearch(treePattern, "os_process")
+  const treeSearchValid = parsedTreeSearch === null || parsedTreeSearch.ok
+  const treeFind = parsedTreeSearch?.ok === true ? parsedTreeSearch.query.canonical : undefined
   const viewRequests = useMemo(() => {
-    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
+    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens, treeFind), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
@@ -257,7 +262,7 @@ function App({ locale, onLocale, t }: {
       return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel), ...POSTGRESQL_CONTEXT_REQUESTS]
     }
     return VIEW_REQUESTS[baseViewKey] ?? []
-  }, [activeRelation, activeRelationLens, baseViewKey, lens, pgSection, planLens, relationLevel, statementLens, visibleSource])
+  }, [activeRelation, activeRelationLens, baseViewKey, lens, pgSection, planLens, relationLevel, statementLens, treeFind, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   const denseCandidate = viewRequests.find((request) => request.pageSize !== undefined)
@@ -265,13 +270,18 @@ function App({ locale, onLocale, t }: {
   const denseSearchValid = densePattern === "" || denseSurface === null || parseSearch(densePattern, denseSurface, {
     grouped: denseCandidate !== undefined && "group" in denseCandidate && denseCandidate.group !== undefined && denseCandidate.group !== "object",
   }).ok
-  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health" && (request.pageSize === undefined || denseSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
+  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health"
+    && (request.pageSize === undefined || denseSearchValid)
+    && (request.lens !== "tree" || treeSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
   const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
   const denseLoad = snapshotGroups.flatMap((group) => group.requests
     .filter((request) => request.pageSize !== undefined)
     .map((request) => ({ anchor: group.anchor, request })))[0]
   const denseRequest = denseLoad?.request
+  const treeRequest = requestedSnapshots.find((request) => request.section === "os_process" && request.lens === "tree")
+  const treeSurface = treeRequest === undefined ? null : "os_process" as const
+  const serverSearchSurface = denseSurface ?? treeSurface
   const ordinaryGroups = snapshotGroups
     .map((group) => ({
       anchor: group.anchor,
@@ -282,7 +292,9 @@ function App({ locale, onLocale, t }: {
   const denseOptions = denseRequest === undefined
     ? undefined
     : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
-  const requestOrder = visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
+  const requestOrder = visibleSource === "processes" && lens === "tree"
+    ? null
+    : visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
   const cgroupTargetGroups = visibleSource === "host" && timelineData.availableSections.some((name) => name.startsWith("os_cgroup"))
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
@@ -292,7 +304,10 @@ function App({ locale, onLocale, t }: {
   const retainsDenseRows = denseRequest !== undefined
     && currentSnapshot.cursor === cursor
     && currentSnapshot.denseSection === denseRequest.section
-  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows ? currentSnapshot.data : EMPTY_DATA
+  const retainsTreeRows = treeRequest !== undefined
+    && currentSnapshot.cursor === cursor
+    && currentSnapshot.processTree
+  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows || retainsTreeRows ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
   const drawn = useRef<number | null>(null)
@@ -426,19 +441,24 @@ function App({ locale, onLocale, t }: {
   } | null>(null)
   useEffect(() => {
     const generation = ++snapshotGeneration.current
-    const tracksInitialSearch = denseRequest !== undefined
+    const tracksDenseSearch = denseRequest !== undefined
       && denseSurface !== null
       && denseSearchValid
       && snapshotTarget !== null
       && (densePattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === denseSurface))
+    const tracksTreeSearch = treeRequest !== undefined
+      && treeSearchValid
+      && snapshotTarget !== null
+      && (treePattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === treeSurface))
+    const tracksInitialSearch = tracksDenseSearch || tracksTreeSearch
     const retainedSearchRows = denseRequest !== undefined
-      && retainsDenseRows
-      && (denseRequest.section === "os_process"
+      ? retainsDenseRows && (denseRequest.section === "os_process"
         ? currentSnapshot.data.processes.length !== 0
         : (currentSnapshot.data.sections[denseRequest.section]?.length ?? 0) !== 0)
-    if (tracksInitialSearch && denseSurface !== null) {
-      setSearchRequest(beginSearchRequest(denseSurface, retainedSearchRows))
-    } else if (denseSurface === null || !denseSearchValid) {
+      : retainsTreeRows && currentSnapshot.data.processes.length !== 0
+    if (tracksInitialSearch && serverSearchSurface !== null) {
+      setSearchRequest(beginSearchRequest(serverSearchSurface, retainedSearchRows))
+    } else if (serverSearchSurface === null || !denseSearchValid || !treeSearchValid) {
       setSearchRequest(IDLE_SEARCH_REQUEST)
     }
     cgroupSnapshotKey.current = null
@@ -495,14 +515,18 @@ function App({ locale, onLocale, t }: {
         void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
-          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
+          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, processTree: treeRequest !== undefined, target: snapshotTarget })
           setCursorState("ready")
+          if (tracksInitialSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
           setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
           if (stale()) return
-          setCursorState("missing")
+          setCursorState(tracksInitialSearch ? "ready" : "missing")
+          if (tracksInitialSearch && serverSearchSurface !== null) {
+            setSearchRequest({ phase: "error", retained: retainedSearchRows, surface: serverSearchSurface })
+          }
           if (completesRefresh) finishRefresh(false)
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -544,6 +568,7 @@ function App({ locale, onLocale, t }: {
                 ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
                 : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
               denseSection: pagedRequest.section,
+              processTree: false,
               target: snapshotTarget,
             }))
             setDensePageState("idle")
@@ -605,12 +630,12 @@ function App({ locale, onLocale, t }: {
     () => asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total")),
     [cursor, data.sections.os_meminfo],
   )
-  // The forest ignores entity context, so it must not rebuild when context changes.
-  const processForest = useMemo(
-    () => lens === "tree" ? buildProcessForest(allProcessRows, memTotalKb, ticksPerSecond) : null,
+  // The product tree ignores entity context; only its ps-shaped cells are decorated here.
+  const processTreeRows = useMemo(
+    () => lens === "tree" ? decorateProcessTree(allProcessRows, memTotalKb, ticksPerSecond) : null,
     [allProcessRows, lens, memTotalKb, ticksPerSecond],
   )
-  const processTableRows = processForest ?? processRows
+  const processTableRows = processTreeRows ?? processRows
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))
@@ -686,9 +711,9 @@ function App({ locale, onLocale, t }: {
   const applyFind = useCallback((next: string) => {
     if (next === find) return
     setFind(next)
-    if (activeSearchSurface === null || denseSurface !== activeSearchSurface) return
+    if (activeSearchSurface === null || serverSearchSurface !== activeSearchSurface) return
     setSearchRequest(beginSearchRequest(activeSearchSurface, searchRowsAvailable(data, activeSearchSurface)))
-  }, [activeSearchSurface, data, denseSurface, find])
+  }, [activeSearchSurface, data, find, serverSearchSurface])
   const navigateSearchSurface = useCallback((targetSurface: ReturnType<typeof searchSurfaceForLocation>, targetFind?: string) => {
     const next = findAfterSurfaceNavigation(activeSearchSurface, targetSurface, find, targetFind)
     if (next !== find) setFind(next)

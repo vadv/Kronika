@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch } from "react"
+import { useEffect, useMemo, useState, type Dispatch } from "react"
 
 import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding, type SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
@@ -27,7 +27,6 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
-import { filterProcessForest } from "./process-tree"
 
 export interface Field {
   readonly id: string
@@ -282,8 +281,7 @@ export function ProcessTable({
       width: field.size,
     }
   }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
-  const activeOrder = order ?? processTableDefaultOrder(lens)
-  const filterRows = useCallback((candidates: readonly DataRow[], query: string) => filterProcessForest(candidates, query, ticksPerSecond), [ticksPerSecond])
+  const activeOrder = lens === "tree" ? undefined : order ?? processTableDefaultOrder(lens)
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = densePageState !== "idle" || canLoadMore
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
@@ -303,7 +301,6 @@ export function ProcessTable({
     empty={t("table.empty")}
     finding={finding}
     findingField={findingField}
-    filterRows={lens === "tree" ? filterRows : undefined}
     label={t("table.processes")}
     locale={locale}
     onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined}

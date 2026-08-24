@@ -46,6 +46,7 @@ const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 export interface SectionRequest {
   readonly section: string
   readonly lens?: "generic" | "cpu" | "memory" | "disk" | "tree" | StatementLens | PlanLens | RelationLens
+  readonly find?: string
   readonly fields?: readonly string[]
   readonly typeIds?: readonly string[]
   readonly fieldsByType?: Readonly<Record<string, readonly string[]>>
@@ -1337,6 +1338,8 @@ function projectFixtureRow(row: DataRow, fields: readonly string[]): DataRow {
 
 function batchableSnapshotSection(section: SectionRequest): boolean {
   return section.typeId === undefined
+    && section.lens === undefined
+    && section.find === undefined
     && section.pageSize === undefined
     && section.defaultOrder === undefined
     && section.order === undefined
@@ -1356,11 +1359,14 @@ function snapshotQuery(
   const ordered = section === undefined || section.lens !== undefined || options.rowOrdinal !== undefined
     ? []
     : snapshotOrder(section, order)
-  const requestedOrder = section === undefined || order === undefined ? undefined : requestedSnapshotOrder(section, order)
+  const requestedOrder = section === undefined || section.lens === "tree" || order === undefined
+    ? undefined
+    : requestedSnapshotOrder(section, order)
   return [
     `at=${at}`,
     ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
     ...(section?.lens === undefined ? [] : [`lens=${encodeURIComponent(section.lens)}`]),
+    ...(section?.find === undefined ? [] : [`find=${encodeURIComponent(section.find)}`]),
     ...fields.map((field) => `field=${encodeURIComponent(field)}`),
     ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
     ...(section?.lens === undefined || requestedOrder?.[0] === undefined
