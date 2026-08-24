@@ -5,6 +5,7 @@ mod vacuum;
 
 use std::collections::HashSet;
 
+use kronika_registry::contract;
 use serde_json::{Map, Value, json};
 
 use super::State;
@@ -480,6 +481,7 @@ pub(super) struct PostgresqlFailure {
 struct Anchor {
     segment_id: i64,
     active_wal_position: Option<String>,
+    type_ids: HashSet<u32>,
     warnings: Vec<Value>,
 }
 
@@ -628,8 +630,9 @@ fn direct(
         None
     };
     let lens = lens(args, &spec, group)?;
-    let fields = fields(args, lens.fields)?;
     let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
+    let defaults = defaults_for_layouts(spec.section, lens.fields, &anchor.type_ids);
+    let fields = fields(args, &defaults)?;
     let page_size = if spec.whole_set {
         MAX_ROWS
     } else {
@@ -830,6 +833,26 @@ const fn resolved(fields: &'static [&'static str], default_order: &'static str) 
         default_order,
         low_activity: false,
     }
+}
+
+fn defaults_for_layouts<'a>(
+    section: &str,
+    defaults: &'a [&'a str],
+    type_ids: &HashSet<u32>,
+) -> Vec<&'a str> {
+    if !matches!(section, "pg_stat_statements" | "pg_store_plans") || type_ids.is_empty() {
+        return defaults.to_vec();
+    }
+    defaults
+        .iter()
+        .copied()
+        .filter(|name| {
+            type_ids
+                .iter()
+                .filter_map(|type_id| contract(*type_id))
+                .any(|layout| layout.column(name).is_some())
+        })
+        .collect()
 }
 
 fn activity_visibility(args: &Map<String, Value>) -> Result<ActivityVisibility, PostgresqlFailure> {
@@ -1098,20 +1121,30 @@ fn resolve_anchor(
                     .pointer("/cursor/wal_position")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                let carries = record
+                let type_ids = record
                     .get("sections")
                     .and_then(Value::as_array)
-                    .is_some_and(|stored| {
-                        stored.iter().any(|section| {
-                            section
-                                .get("logical_name")
-                                .and_then(Value::as_str)
-                                .is_some_and(|name| wanted.contains(name))
-                        })
-                    });
-                any.push((id, wal.clone()));
-                if carries {
-                    matching.push((id, wal));
+                    .map(|stored| {
+                        stored
+                            .iter()
+                            .filter(|section| {
+                                section
+                                    .get("logical_name")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|name| wanted.contains(name))
+                            })
+                            .filter_map(|section| {
+                                section
+                                    .get("type_id")
+                                    .and_then(Value::as_str)
+                                    .and_then(|value| value.parse::<u32>().ok())
+                            })
+                            .collect::<HashSet<_>>()
+                    })
+                    .unwrap_or_default();
+                any.push((id, wal.clone(), type_ids.clone()));
+                if !type_ids.is_empty() {
+                    matching.push((id, wal, type_ids));
                 }
             }
             Some("warning") => warnings.push(record),
@@ -1127,8 +1160,8 @@ fn resolve_anchor(
     }
     let selected = matching
         .into_iter()
-        .max_by_key(|(id, _)| *id)
-        .or_else(|| any.into_iter().max_by_key(|(id, _)| *id))
+        .max_by_key(|(id, _, _)| *id)
+        .or_else(|| any.into_iter().max_by_key(|(id, _, _)| *id))
         .ok_or_else(|| {
             failure(
                 "no_recorded_data",
@@ -1139,6 +1172,7 @@ fn resolve_anchor(
     Ok(Anchor {
         segment_id: selected.0,
         active_wal_position: selected.1,
+        type_ids: selected.2,
         warnings,
     })
 }
@@ -1331,3 +1365,7 @@ fn failure(
 #[cfg(test)]
 #[path = "postgresql/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "postgresql/dispatch_tests.rs"]
+mod dispatch_tests;
