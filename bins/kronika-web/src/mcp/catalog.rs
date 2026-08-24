@@ -437,24 +437,23 @@ fn event_history_tools() -> Vec<Tool> {
     vec![
         tool(
             "kronika_find_events",
-            "Events and logs",
-            "Search recorded PostgreSQL and PgBouncer event groups and rows over a bounded interval, preserving accepted fixed tiers and exact source locators.",
+            "Event rows",
+            "Search exact recorded PostgreSQL and PgBouncer Event rows over a bounded interval in global timestamp and physical-locator order.",
             input(
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
                     ("to_us", timestamp("Inclusive UTC interval end.")),
                     ("sources", string_array(16)),
                     ("find", find_expression()),
-                    ("order", short_string("Accepted Event semantic order.")),
+                    ("order", enumeration(&["timestamp"])),
                     ("direction", enumeration(&["asc", "desc"])),
                     ("fields", fields()),
                     ("cursor", cursor()),
                     ("page_size", integer(1, 500, 100)),
                 ])),
-                &["from_us", "to_us"],
+                &["from_us", "to_us", "order", "direction"],
             ),
             output(map([
-                ("groups", array_object()),
                 ("events", array_object()),
                 ("semantics", array_object()),
             ])),

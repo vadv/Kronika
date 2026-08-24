@@ -534,7 +534,7 @@ The v1 catalog has these exact stable names:
 | 14 | `kronika_find_postgresql_databases` | Database work, failures, and transaction-age risk |
 | 15 | `kronika_find_postgresql_tables` | Table access, changes, maintenance, storage, and freeze state |
 | 16 | `kronika_find_postgresql_indexes` | Index usage, inactivity, storage, and state |
-| 17 | `kronika_find_events` | Recorded PostgreSQL and PgBouncer events |
+| 17 | `kronika_find_events` | Recorded PostgreSQL and PgBouncer Event rows |
 | 18 | `kronika_get_metric_history` | Native-cadence samples for selected identities and fields |
 | 19 | `kronika_get_snapshot` | Bounded sample-at-or-before rows from one allowlisted section |
 | 20 | `kronika_get_row_detail` | One exact projected row or bounded text chunk by locator |
@@ -559,6 +559,16 @@ field registry as HTTP. Lenses, semantic ordering, projections, filters, and
 cursors retain their product vocabulary. Exact statement and plan lookup uses
 `find: "query_id:X"` or `find: "plan_id:X"` on the direct Statement or Plan
 tool. MCP has no second query language or point-ID tools.
+
+`kronika_find_events` is deliberately an exact-row surface in v1. It reads an
+inclusive interval no longer than one hour and globally orders rows by the
+exact (`timestamp_us`, `segment_id`, `type_id`, `row_ordinal`) tuple. Every call
+states `order: "timestamp"` and `direction` explicitly. The tool does not
+advertise or return `groups`: reducing after a row page would make group counts
+and cross-row joins false. Every requested field must exist in all selected
+Event sources; none is silently dropped for one source. A continuation may
+change `page_size`, which controls delivery rather than query identity; its
+cursor remains bound to the query and the original active-WAL prefix.
 
 Each result preserves the physical layout and the recorded time of every row
 or sample. Timestamps, cursors, identifiers, and large integers outside JSON's

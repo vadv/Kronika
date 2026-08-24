@@ -43,10 +43,11 @@ pub(super) fn execute(
     let to = super::decimal_i64(args, "to_us")?;
     super::bounded_window(from, to)?;
     validate_order(args)?;
-    validate_direction(args)?;
+    let direction = direction(args)?;
     let requested_fields = super::strings(args, "fields", super::MAX_FIELDS)?;
     reject_long_text(&requested_fields)?;
     let sources = sources(args, &requested_fields)?;
+    let semantics = row_semantics(&sources)?;
     let find = optional_nonempty(args, "find")?;
     let cursor = optional_nonempty(args, "cursor")?;
     let page_size = super::usize_arg(
@@ -63,7 +64,7 @@ pub(super) fn execute(
             to_us: to,
             sources,
             find,
-            direction: super::order(args)?,
+            direction,
             page_size,
             value_bytes: super::data_budget(args)?,
             cursor,
@@ -74,7 +75,6 @@ pub(super) fn execute(
     if cancelled() {
         return Err(cancelled_failure());
     }
-    let semantics = super::event_semantics()?;
     let returned = page.events.len();
     let has_more = page.next_cursor.is_some();
     Ok(ExpertPayload {
@@ -89,7 +89,6 @@ pub(super) fn execute(
             "active_wal_position": page.active_position.map(|value| value.to_string()),
         }),
         data: json!({
-            "groups": [],
             "events": page.events,
             "semantics": semantics,
         }),
@@ -110,7 +109,6 @@ pub(super) fn execute(
 
 fn validate_order(args: &Map<String, Value>) -> Result<(), ExpertFailure> {
     match args.get("order") {
-        None => Ok(()),
         Some(Value::String(order)) if order == "timestamp" => Ok(()),
         Some(_) => Err(super::failure(
             "invalid_parameter",
@@ -118,16 +116,28 @@ fn validate_order(args: &Map<String, Value>) -> Result<(), ExpertFailure> {
             Some("order"),
             false,
         )),
+        None => Err(super::failure(
+            "invalid_parameter",
+            "order is required and must be timestamp",
+            Some("order"),
+            false,
+        )),
     }
 }
 
-fn validate_direction(args: &Map<String, Value>) -> Result<(), ExpertFailure> {
+fn direction(args: &Map<String, Value>) -> Result<crate::route::Order, ExpertFailure> {
     match args.get("direction") {
-        None => Ok(()),
-        Some(Value::String(direction)) if direction == "asc" || direction == "desc" => Ok(()),
+        Some(Value::String(direction)) if direction == "asc" => Ok(crate::route::Order::Asc),
+        Some(Value::String(direction)) if direction == "desc" => Ok(crate::route::Order::Desc),
         Some(_) => Err(super::failure(
             "invalid_parameter",
             "direction must be asc or desc",
+            Some("direction"),
+            false,
+        )),
+        None => Err(super::failure(
+            "invalid_parameter",
+            "direction is required and must be asc or desc",
             Some("direction"),
             false,
         )),
@@ -181,20 +191,42 @@ fn validate_event_fields(
     requested: &[String],
     selected: &HashSet<&str>,
 ) -> Result<(), ExpertFailure> {
-    for field in requested {
-        if !registry().iter().any(|layout| {
-            logical_section_name(layout.type_id.get())
-                .is_some_and(|name| selected.contains(name) && layout.column(field).is_some())
-        }) {
-            return Err(super::failure(
-                "no_such_column",
-                format!("no recorded Event layout has field {field:?}"),
-                Some("fields"),
-                false,
-            ));
+    for source in EVENT_SECTIONS
+        .iter()
+        .copied()
+        .filter(|source| selected.contains(source))
+    {
+        for field in requested {
+            if !registry().iter().any(|layout| {
+                logical_section_name(layout.type_id.get())
+                    .is_some_and(|name| name == source && layout.column(field).is_some())
+            }) {
+                return Err(super::failure(
+                    "no_such_column",
+                    format!("selected Event source {source:?} has no field {field:?}"),
+                    Some("fields"),
+                    false,
+                ));
+            }
         }
     }
     Ok(())
+}
+
+fn row_semantics(sources: &[EventSourceRequest]) -> Result<Vec<Value>, ExpertFailure> {
+    let wanted = sources
+        .iter()
+        .map(|source| format!("event.{}.tier", source.logical_name))
+        .collect::<HashSet<_>>();
+    Ok(super::event_semantics()?
+        .into_iter()
+        .filter(|definition| {
+            definition
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| wanted.contains(id))
+        })
+        .collect())
 }
 
 fn event_fields(section: &str, requested: &[String]) -> Vec<String> {

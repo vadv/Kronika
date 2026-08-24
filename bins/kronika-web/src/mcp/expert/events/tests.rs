@@ -6,6 +6,7 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOw
 use kronika_registry::pg_log::{PgLogErrors, PgLogLifecycle};
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
+use rmcp::model::CallToolRequestParams;
 use serde_json::{Map, Value, json};
 
 use crate::config::SOURCE_POSTGRESQL;
@@ -24,6 +25,22 @@ fn handler_orders_the_exact_interval_and_continues_without_duplicates() {
     let first = execute(&state, arguments("asc", 2, None, None)).expect("first Event page");
     assert_eq!(timestamps(&first.data), [FROM_US + 10, FROM_US + 20]);
     assert_eq!(sections(&first.data), ["pg_log_lifecycle", "pg_log_errors"]);
+    assert!(first.data.get("groups").is_none());
+    let semantics = first.data["semantics"]
+        .as_array()
+        .expect("Event row semantics");
+    assert!(
+        semantics
+            .iter()
+            .all(|definition| definition["id"] != "event.tier_order")
+    );
+    for event in first.data["events"].as_array().expect("Event rows") {
+        assert!(
+            semantics
+                .iter()
+                .any(|definition| definition["id"].as_str() == event["semantic_id"].as_str())
+        );
+    }
     assert_eq!(first.page["stop_reason"], "page_limit");
     let cursor = first.page["next_cursor"]
         .as_str()
@@ -35,6 +52,45 @@ fn handler_orders_the_exact_interval_and_continues_without_duplicates() {
     assert_eq!(timestamps(&second.data), [FROM_US + 30]);
     assert_eq!(second.page["stop_reason"], "complete");
     assert!(second.page["next_cursor"].is_null());
+}
+
+#[test]
+fn continuation_allows_page_size_to_change() {
+    let mut fixture = Fixture::new();
+    fixture.append_initial_events();
+    let state = fixture.state();
+    let first = execute(&state, arguments("asc", 1, None, None)).expect("first Event page");
+    let cursor = first.page["next_cursor"]
+        .as_str()
+        .expect("Event continuation")
+        .to_owned();
+
+    let second = execute(&state, arguments("asc", 10, Some(&cursor), None))
+        .expect("continuation with a different delivery size");
+    assert_eq!(timestamps(&second.data), [FROM_US + 20, FROM_US + 30]);
+    assert_eq!(second.page["stop_reason"], "complete");
+}
+
+#[test]
+fn interval_endpoints_are_inclusive_and_descending_cursor_is_exact() {
+    let mut fixture = Fixture::new();
+    fixture.append_initial_events();
+    let state = fixture.state();
+    let mut first_args = arguments("desc", 2, None, None);
+    first_args.insert("from_us".to_owned(), (FROM_US + 10).to_string().into());
+    first_args.insert("to_us".to_owned(), (FROM_US + 30).to_string().into());
+    let first = execute(&state, first_args).expect("descending Event page");
+    assert_eq!(timestamps(&first.data), [FROM_US + 30, FROM_US + 20]);
+    let cursor = first.page["next_cursor"]
+        .as_str()
+        .expect("descending Event continuation")
+        .to_owned();
+
+    let mut second_args = arguments("desc", 2, Some(&cursor), None);
+    second_args.insert("from_us".to_owned(), (FROM_US + 10).to_string().into());
+    second_args.insert("to_us".to_owned(), (FROM_US + 30).to_string().into());
+    let second = execute(&state, second_args).expect("descending continuation");
+    assert_eq!(timestamps(&second.data), [FROM_US + 10]);
 }
 
 #[test]
@@ -89,6 +145,15 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
         ("no_such_column", Some("fields"))
     );
 
+    let mut mixed_sources = arguments("asc", 10, None, None);
+    mixed_sources.insert("fields".to_owned(), json!(["severity"]));
+    let error = execute(&state, mixed_sources)
+        .expect_err("field must exist in every selected Event source");
+    assert_eq!(
+        (error.code, error.parameter.as_deref()),
+        ("no_such_column", Some("fields"))
+    );
+
     let mut order = arguments("asc", 10, None, None);
     order.insert("order".to_owned(), Value::Null);
     let error = execute(&state, order).expect_err("null order is not omission");
@@ -98,6 +163,58 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
     direction.insert("direction".to_owned(), json!(7));
     let error = execute(&state, direction).expect_err("numeric direction is invalid");
     assert_eq!(error.parameter.as_deref(), Some("direction"));
+
+    let mut missing_order = arguments("asc", 10, None, None);
+    missing_order.remove("order");
+    let error = execute(&state, missing_order).expect_err("order is explicit");
+    assert_eq!(error.parameter.as_deref(), Some("order"));
+
+    let mut missing_direction = arguments("asc", 10, None, None);
+    missing_direction.remove("direction");
+    let error = execute(&state, missing_direction).expect_err("direction is explicit");
+    assert_eq!(error.parameter.as_deref(), Some("direction"));
+}
+
+#[test]
+fn catalog_advertises_only_the_exact_timestamp_row_contract() {
+    let tool = crate::mcp::catalog::find("kronika_find_events").expect("Event tool");
+    let properties = tool.input_schema["properties"]
+        .as_object()
+        .expect("Event input properties");
+    assert_eq!(properties["order"]["enum"], json!(["timestamp"]));
+    assert_eq!(properties["direction"]["enum"], json!(["asc", "desc"]));
+    let required = tool.input_schema["required"]
+        .as_array()
+        .expect("Event required inputs");
+    for name in ["from_us", "to_us", "order", "direction"] {
+        assert!(required.iter().any(|value| value == name), "missing {name}");
+    }
+    let output = tool.output_schema.as_ref().expect("Event output schema");
+    let data = output["properties"]["data"]["properties"]
+        .as_object()
+        .expect("Event data properties");
+    assert!(data.contains_key("events"));
+    assert!(!data.contains_key("groups"));
+}
+
+#[tokio::test]
+async fn real_mcp_dispatch_executes_the_recorded_event_row_surface() {
+    let mut fixture = Fixture::new();
+    fixture.append_initial_events();
+    let mut request = CallToolRequestParams::new("kronika_find_events");
+    request.arguments = Some(arguments("desc", 2, None, Some("kind:critical")));
+
+    let result = crate::mcp::tools::dispatch(fixture.state(), request, || false)
+        .await
+        .expect("Event MCP dispatch");
+    assert_eq!(result.is_error, Some(false));
+    let payload = result
+        .structured_content
+        .as_ref()
+        .expect("Event structured content");
+    assert_eq!(payload["status"], "ok");
+    assert_eq!(timestamps(&payload["data"]), [FROM_US + 30]);
+    assert!(payload["data"].get("groups").is_none());
 }
 
 fn execute(
@@ -118,7 +235,7 @@ fn arguments(
         "to_us": TO_US.to_string(),
         "direction": direction,
         "order": "timestamp",
-        "fields": ["severity", "category", "kind"],
+        "fields": ["ts"],
         "page_size": page_size,
         "data_budget_bytes": STRUCTURED_CONTENT_BYTES,
     })

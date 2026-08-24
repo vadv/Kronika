@@ -377,16 +377,16 @@ fn scan_candidates(
                 continue;
             }
             let policy = tier_policy(&source.logical_name)?;
+            let mut fields = source.fields.clone();
+            if !fields.iter().any(|field| field == "ts") {
+                fields.push("ts".to_owned());
+            }
             let data = DataRequest {
                 segment: SegmentRequest {
                     segment_id: segment.id(),
                     section: source.logical_name.clone(),
                 },
-                fields: if source.fields.is_empty() {
-                    vec!["ts".to_owned()]
-                } else {
-                    source.fields.clone()
-                },
+                fields,
                 filters: Vec::new(),
                 type_id: None,
                 after: None,

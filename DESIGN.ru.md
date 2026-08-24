@@ -563,7 +563,7 @@ MCP получает настроенный корень Kronika от web; ар�
 | 14 | `kronika_find_postgresql_databases` | Работа, ошибки и риск возраста транзакций по databases |
 | 15 | `kronika_find_postgresql_tables` | Access, changes, maintenance, storage и freeze state tables |
 | 16 | `kronika_find_postgresql_indexes` | Usage, inactivity, storage и state indexes |
-| 17 | `kronika_find_events` | Записанные события PostgreSQL и PgBouncer |
+| 17 | `kronika_find_events` | Записанные строки событий PostgreSQL и PgBouncer |
 | 18 | `kronika_get_metric_history` | Samples с исходным интервалом для выбранных identities и fields |
 | 19 | `kronika_get_snapshot` | Ограниченные sample-at-or-before строки одной разрешённой section |
 | 20 | `kronika_get_row_detail` | Точная проекция строки или ограниченная часть текста по locator |
@@ -589,6 +589,17 @@ parent, depth и стабильный tree order. Это не отдельный
 продукта. Точный поиск statement и plan использует `find: "query_id:X"` или
 `find: "plan_id:X"` в прямом инструменте Statement или Plan. У MCP нет второго
 языка запросов и отдельных инструментов для поиска по ID.
+
+`kronika_find_events` в v1 намеренно возвращает точные строки, а не группы. Он
+читает интервал с включёнными границами длительностью не более часа и глобально
+сортирует строки по точному кортежу (`timestamp_us`, `segment_id`, `type_id`,
+`row_ordinal`). Каждый вызов явно задаёт `order: "timestamp"` и `direction`.
+Инструмент не объявляет и не возвращает `groups`: свёртка уже выбранной страницы
+дала бы ложные счётчики групп и связи между строками. Каждое поле из `fields`
+должно существовать во всех выбранных `sources`; для отдельного источника его
+нельзя молча отбросить. При продолжении можно изменить `page_size`: это параметр
+выдачи, а не идентичность запроса; cursor остаётся связан с запросом и исходным
+префиксом активного WAL.
 
 Каждый результат сохраняет physical layout и записанное время каждой строки
 или sample. Временные метки, курсоры, идентификаторы и большие целые числа за
