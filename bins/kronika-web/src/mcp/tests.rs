@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
@@ -197,7 +199,7 @@ async fn dispatch_allowlists_known_tools_without_fabricating_data() {
         data_root: directory.path().to_owned(),
         sources: 3,
         synthetic_demo: false,
-        heavy_scans: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+        heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
     };
     let known = super::tools::dispatch(
         state.clone(),
@@ -228,7 +230,7 @@ async fn dispatch_rejects_arguments_outside_the_advertised_schema() {
         data_root: PathBuf::from("unused-mcp-test-root"),
         sources: 3,
         synthetic_demo: false,
-        heavy_scans: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+        heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
     };
     let mut request = CallToolRequestParams::new("kronika_get_context");
     request.arguments = Some(serde_json::Map::from_iter([(
@@ -251,6 +253,109 @@ async fn dispatch_rejects_arguments_outside_the_advertised_schema() {
             .as_ref()
             .and_then(|value| value.pointer("/error/parameter")),
         Some(&json!("sql"))
+    );
+}
+
+#[tokio::test]
+async fn dispatch_observes_cancellation_while_waiting_for_scan_admission() {
+    let directory = tempfile::tempdir().expect("temporary MCP cancellation data root");
+    let checks = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::clone(&checks);
+    let state = super::State {
+        data_root: directory.path().to_owned(),
+        sources: 3,
+        synthetic_demo: false,
+        heavy_scans: Arc::new(tokio::sync::Semaphore::new(0)),
+    };
+
+    let result = super::tools::dispatch(
+        state,
+        CallToolRequestParams::new("kronika_get_context"),
+        move || cancelled.fetch_add(1, Ordering::Relaxed) >= 1,
+    )
+    .await
+    .expect("cancelled queued tool");
+
+    assert_eq!(
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code")),
+        Some(&json!("cancelled"))
+    );
+    assert!(checks.load(Ordering::Relaxed) >= 2);
+}
+
+#[tokio::test]
+async fn dispatch_cancels_an_active_scan_and_releases_its_permit() {
+    let directory = tempfile::tempdir().expect("temporary MCP cancellation data root");
+    let checks = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::clone(&checks);
+    let gate = Arc::new(tokio::sync::Semaphore::new(2));
+    let state = super::State {
+        data_root: directory.path().to_owned(),
+        sources: 3,
+        synthetic_demo: false,
+        heavy_scans: Arc::clone(&gate),
+    };
+
+    let result = super::tools::dispatch(
+        state,
+        CallToolRequestParams::new("kronika_get_context"),
+        move || cancelled.fetch_add(1, Ordering::Relaxed) >= 3,
+    )
+    .await
+    .expect("cancelled active tool");
+
+    assert_eq!(
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code")),
+        Some(&json!("cancelled"))
+    );
+    assert_eq!(gate.available_permits(), 2);
+}
+
+#[tokio::test]
+async fn dispatch_enforces_the_requested_structured_data_budget() {
+    let directory = tempfile::tempdir().expect("temporary MCP budget data root");
+    let state = super::State {
+        data_root: directory.path().to_owned(),
+        sources: 3,
+        synthetic_demo: false,
+        heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+    };
+    let mut below_minimum = CallToolRequestParams::new("kronika_get_context");
+    below_minimum.arguments = Some(serde_json::Map::from_iter([(
+        "data_budget_bytes".to_owned(),
+        json!(1_023),
+    )]));
+    let invalid = super::tools::dispatch(state.clone(), below_minimum, || false)
+        .await
+        .expect("invalid data budget");
+    assert_eq!(
+        invalid
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/parameter")),
+        Some(&json!("data_budget_bytes"))
+    );
+
+    let mut bounded = CallToolRequestParams::new("kronika_get_context");
+    bounded.arguments = Some(serde_json::Map::from_iter([(
+        "data_budget_bytes".to_owned(),
+        json!(1_024),
+    )]));
+    let oversized = super::tools::dispatch(state, bounded, || false)
+        .await
+        .expect("bounded Context tool");
+    assert_eq!(
+        oversized
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code")),
+        Some(&json!("output_budget_exceeded"))
     );
 }
 

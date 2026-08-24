@@ -317,7 +317,7 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     clippy::too_many_lines,
     reason = "shared fixture setup covers grouped and batched ungrouped output"
 )]
-fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
+fn high_cardinality_multi_pass_reads_keep_the_ranked_active_prefix() {
     use kronika_format::DictLimits;
     use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
     use kronika_registry::os_mountinfo::OsMountinfo;
@@ -359,9 +359,6 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
     journal
         .append(SegmentId::new(ts).expect("segment id"), &part)
         .expect("append");
-    drop(journal);
-    drop(owner);
-
     let heatmap = super::prepare(
         directory.path(),
         crate::route::HeatmapRequest {
@@ -412,17 +409,56 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
         },
     )
     .expect("prepare ungrouped heatmap");
+    assert!(ungrouped_batch_rows(1_440, 1) < 129);
     let mut response = Vec::new();
+    let mut appended = false;
     ungrouped
         .stream(
             &mut |record| {
                 response.push(record);
+                if !appended {
+                    let mut tail_interner = Interner::new(DictLimits::default());
+                    let name = StrId(
+                        tail_interner
+                            .intern(b"/mount-128")
+                            .expect("intern appended mount")
+                            .get(),
+                    );
+                    let mut tail = SectionBuffers::new();
+                    tail.push(OsMountinfo {
+                        ts: Ts(ts),
+                        major: 128,
+                        minor: 0,
+                        mount_point: name,
+                        root: name,
+                        fstype: name,
+                        source: name,
+                        is_k8s_infra: false,
+                        total_bytes: Some(9_999),
+                        free_bytes: None,
+                        total_inodes: None,
+                        available_inodes: None,
+                        scope: 0,
+                    })
+                    .expect("appended mount row");
+                    let dictionary =
+                        dict::encode(tail_interner.window()).expect("appended dictionary");
+                    let part = tail
+                        .flush(&dictionary)
+                        .expect("encode appended row")
+                        .expect("appended part");
+                    journal
+                        .append(SegmentId::new(ts).expect("segment id"), &part)
+                        .expect("append between Heatmap passes");
+                    appended = true;
+                }
                 true
             },
             &|| false,
         )
         .expect("stream ungrouped heatmap");
     let lines = response;
+    assert!(appended);
     assert_eq!(lines.len(), 132, "header, every row, and two bands");
     let header = &lines[0];
     let first = &lines[1];

@@ -13,6 +13,7 @@ use super::{State, catalog, expert, postgresql};
 
 const DEFAULT_DATA_BYTES: usize = 32 * 1_024;
 const QUEUE_WAIT: Duration = Duration::from_secs(1);
+const QUEUE_CANCEL_POLL: Duration = Duration::from_millis(10);
 const CONTEXT_DEADLINE: Duration = Duration::from_secs(5);
 const SCAN_DEADLINE: Duration = Duration::from_secs(45);
 const ROW_VISITS: u64 = 1_000_000;
@@ -79,8 +80,7 @@ impl ScanGuard {
         if self.deadline_hit.load(Ordering::Relaxed) {
             return true;
         }
-        if (self.external)() {
-            self.client_cancelled.store(true, Ordering::Relaxed);
+        if self.externally_cancelled() {
             return true;
         }
         if self.checks.fetch_add(1, Ordering::Relaxed) >= self.check_limit {
@@ -88,6 +88,14 @@ impl ScanGuard {
             return true;
         }
         false
+    }
+
+    fn externally_cancelled(&self) -> bool {
+        if !(self.external)() {
+            return false;
+        }
+        self.client_cancelled.store(true, Ordering::Relaxed);
+        true
     }
 }
 
@@ -139,21 +147,35 @@ pub(super) async fn dispatch(
     }
 }
 
-async fn acquire_permit(state: &State) -> Result<OwnedSemaphorePermit, Failure> {
-    match tokio::time::timeout(QUEUE_WAIT, Arc::clone(&state.heavy_scans).acquire_owned()).await {
-        Ok(Ok(permit)) => Ok(permit),
-        Ok(Err(_closed)) => Err(Failure {
-            code: "unavailable",
-            message: "The historical scan admission gate is unavailable.".to_owned(),
-            parameter: None,
-            retryable: true,
-        }),
-        Err(_elapsed) => Err(Failure {
-            code: "busy",
-            message: "Two historical scans are already running; retry this call.".to_owned(),
-            parameter: None,
-            retryable: true,
-        }),
+async fn acquire_permit(state: &State, guard: &ScanGuard) -> Result<OwnedSemaphorePermit, Failure> {
+    let acquire = Arc::clone(&state.heavy_scans).acquire_owned();
+    tokio::pin!(acquire);
+    let deadline = tokio::time::Instant::now() + QUEUE_WAIT;
+    loop {
+        if guard.externally_cancelled() {
+            return Err(cancelled_failure());
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(Failure {
+                code: "busy",
+                message: "Two historical scans are already running; retry this call.".to_owned(),
+                parameter: None,
+                retryable: true,
+            });
+        }
+        match tokio::time::timeout(remaining.min(QUEUE_CANCEL_POLL), &mut acquire).await {
+            Ok(Ok(permit)) => return Ok(permit),
+            Ok(Err(_closed)) => {
+                return Err(Failure {
+                    code: "unavailable",
+                    message: "The historical scan admission gate is unavailable.".to_owned(),
+                    parameter: None,
+                    retryable: true,
+                });
+            }
+            Err(_elapsed) => {}
+        }
     }
 }
 
@@ -165,7 +187,7 @@ async fn execute_with_deadline(
     guard: &Arc<ScanGuard>,
     deadline: Duration,
 ) -> Result<Payload, Failure> {
-    let permit = acquire_permit(&state).await?;
+    let permit = acquire_permit(&state, guard).await?;
     if guard.cancelled() {
         return Err(cancelled_failure());
     }
