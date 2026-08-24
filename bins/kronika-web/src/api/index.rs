@@ -13,8 +13,7 @@ use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
 use super::render::record;
-use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
-use crate::encoding::etag_matches;
+use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment};
 use crate::route::{SegmentRequest, Window};
 
 pub(crate) struct PreparedIndex {
@@ -24,11 +23,7 @@ pub(crate) struct PreparedIndex {
     resource: ResourceIndex,
 }
 
-pub(super) fn prepare(
-    root: &Path,
-    request: SegmentRequest,
-    if_none_match: Option<&str>,
-) -> Result<Prepared, ApiError> {
+pub(super) fn prepare(root: &Path, request: SegmentRequest) -> Result<PreparedIndex, ApiError> {
     let (reader, segment) = explicit_segment(root, request.segment_id)?;
     if series_keys(&segment, &request.section).is_empty() {
         return Err(ApiError::NoSuchSection);
@@ -46,23 +41,12 @@ pub(super) fn prepare(
         started.elapsed().as_micros(),
     );
     let meta = resource_meta(segment.kind(), resource.index.checksum)?;
-    if meta
-        .etag
-        .as_deref()
-        .zip(if_none_match)
-        .is_some_and(|(current, offered)| etag_matches(offered, current))
-    {
-        return Ok(Prepared::Empty(ResponseMeta {
-            status: StatusCode::NOT_MODIFIED,
-            ..meta
-        }));
-    }
-    Ok(Prepared::Index(PreparedIndex {
+    Ok(PreparedIndex {
         meta,
         segment,
         logical_name: request.section,
         resource,
-    }))
+    })
 }
 
 impl PreparedIndex {
