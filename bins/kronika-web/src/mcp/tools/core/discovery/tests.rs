@@ -108,6 +108,29 @@ fn heatmap_lookup_and_discovery_share_one_registry() {
     assert_eq!(cut.fields, ["n_tup_ins", "n_tup_upd", "n_tup_del"]);
     assert!(super::heatmap_cut("tables", "cpu").is_none());
     assert_eq!(cut.semantic()["origin"], "accepted_presentation");
+    assert_eq!(cut.semantic()["value_unit"], "count");
+    assert_eq!(cut.semantic()["values_scaled"], false);
+
+    let blocks = super::heatmap_cut("statements", "shared_read").expect("block cut");
+    assert_eq!(blocks.semantic()["value_unit"], "blocks");
+    assert_eq!(
+        blocks.semantic()["conversion"],
+        serde_json::json!({
+            "status": "not_applied",
+            "operation": "multiply",
+            "factor": null,
+            "target_unit": "bytes",
+            "origin": "recorded",
+            "locator": "pg_settings.block_size",
+        })
+    );
+
+    let ticks = super::heatmap_cut("processes", "cpu").expect("clock cut");
+    assert_eq!(ticks.semantic()["value_unit"], "clock_ticks");
+    assert_eq!(
+        ticks.semantic()["conversion"]["locator"],
+        "instance_metadata.clock_ticks_per_sec"
+    );
 }
 
 fn surface<'a>(context: &'a Value, name: &str) -> &'a Value {

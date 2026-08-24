@@ -1,9 +1,17 @@
 use serde_json::{Value, json};
 
 use super::{
-    Fold, GroupedFill, Obs, column_of, entity_key_into, interval_end, interval_start,
+    Fold, GroupedFill, Numeric, Obs, column_of, entity_key_into, interval_end, interval_start,
     ungrouped_batch_rows,
 };
+
+fn f(value: f64) -> Numeric {
+    Numeric::Float(value)
+}
+
+fn as_f64(value: Option<Numeric>) -> f64 {
+    value.expect("numeric value").as_f64()
+}
 
 fn entity_key(type_id: u32, identity: &[Value]) -> String {
     let mut key = String::new();
@@ -43,84 +51,90 @@ fn ungrouped_batch_size_is_bounded_at_the_public_column_limit() {
 #[test]
 fn a_counter_cell_is_the_delta_over_the_observed_elapsed_time() {
     let mut observed = Obs::default();
-    observed.observe(HOUR, 100.0);
-    observed.observe(HOUR + 30 * MINUTE, 400.0);
-    let rate = observed.cell(true).unwrap_or_default();
+    observed.observe(HOUR, f(100.0));
+    observed.observe(HOUR + 30 * MINUTE, f(400.0));
+    let rate = as_f64(observed.cell(true));
     assert!((rate - 300.0 / 1_800.0).abs() < 1e-9);
-    assert_eq!(observed.total(true), Some(300.0));
+    assert_eq!(observed.total(true), Some(f(300.0)));
 }
 
 #[test]
 fn counter_null_rules_one_sample_zero_duration_negative_delta() {
     let mut one = Obs::default();
-    one.observe(HOUR, 5.0);
+    one.observe(HOUR, f(5.0));
     assert_eq!(one.cell(true), None);
 
     let mut torn = Obs::default();
-    torn.observe(HOUR, 1.0);
-    torn.observe(HOUR, 2.0);
+    torn.observe(HOUR, f(1.0));
+    torn.observe(HOUR, f(2.0));
     assert_eq!(torn.cell(true), None);
 
     let mut reset = Obs::default();
-    reset.observe(HOUR, 500.0);
-    reset.observe(HOUR + MINUTE, 100.0);
+    reset.observe(HOUR, f(500.0));
+    reset.observe(HOUR + MINUTE, f(100.0));
     assert_eq!(reset.cell(true), None);
     assert_eq!(reset.total(true), None);
 
     let mut idle = Obs::default();
-    idle.observe(HOUR, 500.0);
-    idle.observe(HOUR + MINUTE, 500.0);
-    assert_eq!(idle.cell(true), Some(0.0));
+    idle.observe(HOUR, f(500.0));
+    idle.observe(HOUR + MINUTE, f(500.0));
+    assert_eq!(idle.cell(true), Some(f(0.0)));
 }
 
 #[test]
 fn a_gauge_cell_is_the_last_sample_and_ranks_by_the_maximum() {
     let mut observed = Obs::default();
-    observed.observe(HOUR, 10.0);
-    observed.observe(HOUR + MINUTE, 90.0);
-    observed.observe(HOUR + 2 * MINUTE, 30.0);
-    assert_eq!(observed.cell(false), Some(30.0));
-    assert_eq!(observed.total(false), Some(90.0));
+    observed.observe(HOUR, f(10.0));
+    observed.observe(HOUR + MINUTE, f(90.0));
+    observed.observe(HOUR + 2 * MINUTE, f(30.0));
+    assert_eq!(observed.cell(false), Some(f(30.0)));
+    assert_eq!(observed.total(false), Some(f(90.0)));
 }
 
 #[test]
 fn the_fold_ranks_by_the_whole_window_and_aggregates_the_rest() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
     for (name, per_minute) in [("a", 3_600.0), ("b", 1_800.0), ("c", 900.0)] {
-        fold.observe(1, &identity(name), None, HOUR, Some(0.0));
+        fold.observe(1, &identity(name), None, HOUR, Some(f(0.0)));
         fold.observe(
             1,
             &identity(name),
             None,
             HOUR + 30 * MINUTE,
-            Some(per_minute),
+            Some(f(per_minute)),
         );
     }
     let ranked = fold.finish(2);
     assert_eq!(ranked.entity_count, 3);
     assert_eq!(ranked.rows.len(), 2);
     assert_eq!(ranked.rows[0].identity, identity("a"));
-    assert_eq!(ranked.rows[0].total, Some(3_600.0));
+    assert_eq!(ranked.rows[0].total, Some(f(3_600.0)));
     assert_eq!(ranked.rows[1].identity, identity("b"));
-    assert_eq!(ranked.totals_total, Some(6_300.0));
-    assert_eq!(ranked.others_total, Some(900.0));
-    let totals = ranked.totals[0].value().unwrap_or_default();
+    assert_eq!(ranked.totals_total, Some(f(6_300.0)));
+    assert_eq!(ranked.others_total, Some(f(900.0)));
+    let totals = as_f64(ranked.totals[0].value());
     assert!((totals - 3.5).abs() < 1e-9);
 }
 
 #[test]
 fn the_totals_band_folds_each_finished_column_in_recording_order() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    fold.observe(1, &identity("a"), None, HOUR, Some(0.0));
-    fold.observe(1, &identity("a"), None, HOUR + 15 * MINUTE, Some(900.0));
-    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(900.0));
-    fold.observe(1, &identity("a"), None, HOUR + 55 * MINUTE, Some(1_800.0));
+    fold.observe(1, &identity("a"), None, HOUR, Some(f(0.0)));
+    fold.observe(1, &identity("a"), None, HOUR + 15 * MINUTE, Some(f(900.0)));
+    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(f(900.0)));
+    fold.observe(
+        1,
+        &identity("a"),
+        None,
+        HOUR + 55 * MINUTE,
+        Some(f(1_800.0)),
+    );
     let ranked = fold.finish(1);
     // Minute 40 measures the span back to minute 15, whose middle is minute
     // 27, so its flat 900 lands in the first column and spreads over the 40
     // observed minutes. Only minute 55 reaches the second column.
-    let first = ranked.totals[0].value().unwrap_or_default();
-    let second = ranked.totals[1].value().unwrap_or_default();
+    let first = as_f64(ranked.totals[0].value());
+    let second = as_f64(ranked.totals[1].value());
     assert!((first - 0.375).abs() < 1e-9);
     assert!((second - 1.0).abs() < 1e-9);
     assert_eq!(ranked.out_of_order, 0);
@@ -129,8 +143,8 @@ fn the_totals_band_folds_each_finished_column_in_recording_order() {
 #[test]
 fn a_sample_for_a_finished_column_is_counted_not_folded() {
     let mut fold = Fold::new(HOUR, end(), 2, true);
-    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(100.0));
-    fold.observe(1, &identity("a"), None, HOUR + 5 * MINUTE, Some(1.0));
+    fold.observe(1, &identity("a"), None, HOUR + 40 * MINUTE, Some(f(100.0)));
+    fold.observe(1, &identity("a"), None, HOUR + 5 * MINUTE, Some(f(1.0)));
     let ranked = fold.finish(1);
     assert_eq!(ranked.out_of_order, 1);
 }
@@ -138,22 +152,22 @@ fn a_sample_for_a_finished_column_is_counted_not_folded() {
 #[test]
 fn samples_outside_the_window_and_null_values_are_ignored() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
-    fold.observe(1, &identity("a"), None, HOUR - 1, Some(0.0));
-    fold.observe(1, &identity("a"), None, HOUR, Some(100.0));
+    fold.observe(1, &identity("a"), None, HOUR - 1, Some(f(0.0)));
+    fold.observe(1, &identity("a"), None, HOUR, Some(f(100.0)));
     fold.observe(1, &identity("a"), None, HOUR + MINUTE, None);
-    fold.observe(1, &identity("a"), None, HOUR + 2 * MINUTE, Some(200.0));
-    fold.observe(1, &identity("a"), None, end() + 1, Some(900.0));
+    fold.observe(1, &identity("a"), None, HOUR + 2 * MINUTE, Some(f(200.0)));
+    fold.observe(1, &identity("a"), None, end() + 1, Some(f(900.0)));
     let ranked = fold.finish(1);
-    assert_eq!(ranked.rows[0].total, Some(100.0));
+    assert_eq!(ranked.rows[0].total, Some(f(100.0)));
 }
 
 #[test]
 fn entities_with_a_null_ranking_value_sort_after_real_totals() {
     let mut fold = Fold::new(HOUR, end(), 1, true);
-    fold.observe(1, &identity("reset"), None, HOUR, Some(900.0));
-    fold.observe(1, &identity("reset"), None, HOUR + MINUTE, Some(100.0));
-    fold.observe(1, &identity("steady"), None, HOUR, Some(0.0));
-    fold.observe(1, &identity("steady"), None, HOUR + MINUTE, Some(60.0));
+    fold.observe(1, &identity("reset"), None, HOUR, Some(f(900.0)));
+    fold.observe(1, &identity("reset"), None, HOUR + MINUTE, Some(f(100.0)));
+    fold.observe(1, &identity("steady"), None, HOUR, Some(f(0.0)));
+    fold.observe(1, &identity("steady"), None, HOUR + MINUTE, Some(f(60.0)));
     let ranked = fold.finish(5);
     assert_eq!(ranked.rows[0].identity, identity("steady"));
     assert_eq!(ranked.rows[1].total, None);
@@ -172,12 +186,12 @@ fn a_sparse_cadence_draws_each_span_in_the_column_holding_its_middle() {
             &identity("a"),
             None,
             HOUR + column * 5 * MINUTE,
-            Some(600.0 * column as f64),
+            Some(f(600.0 * column as f64)),
         );
     }
     let ranked = fold.finish(1);
     for column in 0..11 {
-        let cell = ranked.totals[column].value().unwrap_or_default();
+        let cell = as_f64(ranked.totals[column].value());
         assert!((cell - 2.0).abs() < 1e-9, "column {column}: {cell}");
     }
     assert_eq!(ranked.totals[11].value(), None);
@@ -201,12 +215,12 @@ fn a_cadence_as_coarse_as_a_column_survives_collection_drift() {
             &identity("a"),
             None,
             HOUR + at * 1_000_000,
-            Some(at as f64),
+            Some(f(at as f64)),
         );
     }
     let ranked = fold.finish(1);
     for column in 0..12 {
-        let cell = ranked.totals[column].value().unwrap_or_default();
+        let cell = as_f64(ranked.totals[column].value());
         assert!((cell - 1.0).abs() < 1e-9, "column {column}: {cell}");
     }
 }
@@ -235,9 +249,23 @@ fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
     let row = kronika_reader::Row::new(contract, cells);
     assert_eq!(
         super::summed(&row, &["n_tup_ins", "n_tup_upd", "n_tup_del"]),
-        Some(12.0)
+        Some(Numeric::Integer(12))
     );
     assert_eq!(super::summed(&row, &["n_tup_del"]), None);
+}
+
+#[test]
+fn integer_totals_stay_exact_beyond_the_json_safe_range() {
+    let unsafe_integer = 9_007_199_254_740_993_i128;
+    let mut total = super::CellSum::default();
+    total.add(Numeric::Integer(unsafe_integer));
+    total.add(Numeric::Integer(2));
+    assert_eq!(total.value(), Some(Numeric::Integer(unsafe_integer + 2)));
+    assert_eq!(
+        super::number(total.value()),
+        json!((unsafe_integer + 2).to_string())
+    );
+    assert_eq!(super::number(Some(Numeric::Integer(128))), json!(128.0));
 }
 
 #[test]
@@ -258,7 +286,7 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
             &identity(entity),
             Some(vec![json!(group)]),
             ts,
-            Some(value),
+            Some(f(value)),
         );
     }
     let grouped = fold.finish_grouped(1);
@@ -267,19 +295,19 @@ fn a_grouped_ranking_sums_identities_under_one_value_and_counts_members() {
     let top = &grouped.rows[0];
     assert_eq!(top.values, vec![json!("postgres")]);
     assert_eq!(top.members, 2);
-    assert_eq!(top.total, Some(2_100.0));
+    assert_eq!(top.total, Some(f(2_100.0)));
     let mut fill = GroupedFill::new(HOUR, end(), 2, true, &grouped.rows);
     for &(entity, group, ts, value) in &samples {
-        fill.observe(1, &identity(entity), &[json!(group)], ts, Some(value));
+        fill.observe(1, &identity(entity), &[json!(group)], ts, Some(f(value)));
     }
     let filled = fill.finish();
-    let first = filled.rows[0][0].value().unwrap_or_default();
+    let first = as_f64(filled.rows[0][0].value());
     assert!(first > 0.0);
-    assert_eq!(grouped.others_total, Some(240.0));
+    assert_eq!(grouped.others_total, Some(f(240.0)));
     // cron was read twice, at the start of the hour and at minute 40; that one
     // span has its middle at minute 20, so it is drawn in the first column and
     // nothing reaches the second.
-    let others_first = filled.others[0].value().unwrap_or_default();
+    let others_first = as_f64(filled.others[0].value());
     assert!(others_first > 0.0);
     assert_eq!(filled.others[1].value(), None);
 }

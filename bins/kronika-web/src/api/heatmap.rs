@@ -249,7 +249,7 @@ impl PreparedHeatmap {
         let winner_types: HashSet<u32> = rows.iter().map(|row| row.type_id).collect();
         let cumulative = self.cumulative;
         let mut cells = vec![vec![Obs::default(); request.columns]; rows.len()];
-        let mut carries: Vec<Option<(i64, f64)>> = vec![None; rows.len()];
+        let mut carries: Vec<Option<(i64, Numeric)>> = vec![None; rows.len()];
         let mut labels = vec![vec![(i64::MIN, Value::Null); request.labels.len()]; rows.len()];
         if rows.is_empty() {
             return Ok(Some((cells, labels)));
@@ -504,7 +504,7 @@ impl PreparedHeatmap {
             .iter()
             .map(|sum| number(sum.value()))
             .collect();
-        let other_values: Vec<Option<f64>> = ranked
+        let other_values: Vec<Option<Numeric>> = ranked
             .totals
             .iter()
             .zip(&winner_sums)
@@ -523,7 +523,7 @@ impl PreparedHeatmap {
             other_values
                 .iter()
                 .flatten()
-                .fold(None, |current: Option<f64>, value| {
+                .fold(None, |current: Option<Numeric>, value| {
                     Some(current.map_or(*value, |stored| stored.max(*value)))
                 })
         };
@@ -681,7 +681,7 @@ fn ungrouped_batch_rows(columns: usize, labels: usize) -> usize {
         .saturating_add(label_bytes)
         .saturating_add(size_of::<Vec<Obs>>())
         .saturating_add(size_of::<Vec<(i64, Value)>>())
-        .saturating_add(size_of::<Option<(i64, f64)>>())
+        .saturating_add(size_of::<Option<(i64, Numeric)>>())
         .max(1);
     (UNGROUPED_CELL_BUDGET_BYTES / row_bytes).max(1)
 }
@@ -755,36 +755,104 @@ fn cut_columns(plan: &Plan, count: usize) -> Vec<&'static str> {
         .collect()
 }
 
-fn summed(row: &Row, columns: &[&'static str]) -> Option<f64> {
-    let mut sum: Option<f64> = None;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Numeric {
+    Integer(i128),
+    Float(f64),
+}
+
+impl Numeric {
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Integer(left), Self::Integer(right)) => Self::Integer(
+                left.checked_add(right)
+                    .expect("admitted Heatmap integer sum fits i128"),
+            ),
+            (left, right) => Self::Float(left.as_f64() + right.as_f64()),
+        }
+    }
+
+    fn subtract(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Integer(left), Self::Integer(right)) => left
+                .checked_sub(right)
+                .filter(|delta| *delta >= 0)
+                .map(Self::Integer),
+            (left, right) => {
+                let delta = left.as_f64() - right.as_f64();
+                (delta >= 0.0 && delta.is_finite()).then_some(Self::Float(delta))
+            }
+        }
+    }
+
+    fn compare(self, other: Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Integer(left), Self::Integer(right)) => left.cmp(&right),
+            (left, right) => left
+                .as_f64()
+                .partial_cmp(&right.as_f64())
+                .unwrap_or(std::cmp::Ordering::Equal),
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        if self.compare(other).is_lt() {
+            other
+        } else {
+            self
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Heatmap rate and floating gauge output is explicitly approximate"
+    )]
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Integer(value) => value as f64,
+            Self::Float(value) => value,
+        }
+    }
+}
+
+fn summed(row: &Row, columns: &[&'static str]) -> Option<Numeric> {
+    let mut sum: Option<Numeric> = None;
     for column in columns {
         if let Some(value) = row.get(column).and_then(numeric) {
-            sum = Some(sum.unwrap_or(0.0) + value);
+            sum = Some(sum.map_or(value, |stored| stored.add(value)));
         }
     }
     sum
 }
 
-fn numeric(stored: &Cell) -> Option<f64> {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "counters below 2^53 are exact; floating-point division makes rates approximate"
-    )]
+fn numeric(stored: &Cell) -> Option<Numeric> {
     match stored {
-        Cell::I16(value) => Some(f64::from(*value)),
-        Cell::I32(value) => Some(f64::from(*value)),
-        Cell::I64(value) | Cell::Ts(value) => Some(*value as f64),
-        Cell::U32(value) => Some(f64::from(*value)),
-        Cell::U64(value) => Some(*value as f64),
-        Cell::F64(value) => value.is_finite().then_some(*value),
+        Cell::I16(value) => Some(Numeric::Integer(i128::from(*value))),
+        Cell::I32(value) => Some(Numeric::Integer(i128::from(*value))),
+        Cell::I64(value) | Cell::Ts(value) => Some(Numeric::Integer(i128::from(*value))),
+        Cell::U32(value) => Some(Numeric::Integer(i128::from(*value))),
+        Cell::U64(value) => Some(Numeric::Integer(i128::from(*value))),
+        Cell::F64(value) => value.is_finite().then_some(Numeric::Float(*value)),
         Cell::Bool(_) | Cell::StrId(_) | Cell::ListI32(_) | Cell::Null => None,
     }
 }
 
-fn number(stored: Option<f64>) -> Value {
-    stored
-        .and_then(serde_json::Number::from_f64)
-        .map_or(Value::Null, Value::Number)
+fn number(stored: Option<Numeric>) -> Value {
+    match stored {
+        Some(Numeric::Integer(value)) if value.unsigned_abs() <= 9_007_199_254_740_991 => {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the guarded integer range is exactly representable in f64"
+            )]
+            let value = value as f64;
+            serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number)
+        }
+        Some(Numeric::Integer(value)) => Value::String(value.to_string()),
+        Some(Numeric::Float(value)) => {
+            serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number)
+        }
+        None => Value::Null,
+    }
 }
 
 /// Uses distinct separators for identity parts and nulls.
@@ -854,98 +922,98 @@ fn clamped(offset: i128) -> i64 {
 pub(super) struct Obs {
     pub(super) count: u32,
     first_ts: i64,
-    first_value: f64,
+    first_value: Option<Numeric>,
     pub(super) last_ts: i64,
-    pub(super) last_value: f64,
-    max_value: f64,
+    pub(super) last_value: Option<Numeric>,
+    max_value: Option<Numeric>,
 }
 
 impl Obs {
-    pub(super) fn observe(&mut self, ts: i64, value: f64) {
+    pub(super) fn observe(&mut self, ts: i64, value: Numeric) {
         if self.count == 0 {
             *self = Self {
                 count: 1,
                 first_ts: ts,
-                first_value: value,
+                first_value: Some(value),
                 last_ts: ts,
-                last_value: value,
-                max_value: value,
+                last_value: Some(value),
+                max_value: Some(value),
             };
             return;
         }
         self.count = self.count.saturating_add(1);
         if ts < self.first_ts {
             self.first_ts = ts;
-            self.first_value = value;
+            self.first_value = Some(value);
         }
         if ts >= self.last_ts {
             self.last_ts = ts;
-            self.last_value = value;
+            self.last_value = Some(value);
         }
-        if value > self.max_value {
-            self.max_value = value;
-        }
+        self.max_value = Some(self.max_value.map_or(value, |stored| stored.max(value)));
     }
 
     /// Counter cells require two samples and no reset; gauge cells use the
     /// last sample.
-    pub(super) fn cell(&self, cumulative: bool) -> Option<f64> {
+    pub(super) fn cell(&self, cumulative: bool) -> Option<Numeric> {
         if self.count == 0 {
             return None;
         }
         if !cumulative {
-            return Some(self.last_value);
+            return self.last_value;
         }
         if self.count < 2 || self.last_ts <= self.first_ts {
             return None;
         }
-        let delta = self.last_value - self.first_value;
-        if delta < 0.0 {
-            return None;
-        }
+        let delta = self.last_value?.subtract(self.first_value?)?;
         #[expect(
             clippy::cast_precision_loss,
             reason = "an interval of 2^52 microseconds is 142 years"
         )]
         let seconds = (self.last_ts - self.first_ts) as f64 / 1_000_000.0;
-        Some(delta / seconds)
+        let rate = delta.as_f64() / seconds;
+        rate.is_finite().then_some(Numeric::Float(rate))
     }
 
     /// The whole-window ranking value: absolute counter delta or gauge maximum.
-    pub(super) fn total(&self, cumulative: bool) -> Option<f64> {
+    pub(super) fn total(&self, cumulative: bool) -> Option<Numeric> {
         if self.count == 0 {
             return None;
         }
         if !cumulative {
-            return Some(self.max_value);
+            return self.max_value;
         }
         if self.count < 2 || self.last_ts <= self.first_ts {
             return None;
         }
-        let delta = self.last_value - self.first_value;
-        (delta >= 0.0).then_some(delta)
+        self.last_value?.subtract(self.first_value?)
     }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct CellSum {
-    sum: f64,
+    sum: Option<Numeric>,
     contributors: u32,
 }
 
 impl CellSum {
-    pub(super) fn add(&mut self, value: f64) {
-        self.sum += value;
+    pub(super) fn add(&mut self, value: Numeric) {
+        self.sum = Some(self.sum.map_or(value, |stored| stored.add(value)));
         self.contributors = self.contributors.saturating_add(1);
     }
 
-    pub(super) fn value(&self) -> Option<f64> {
-        (self.contributors > 0).then_some(self.sum)
+    pub(super) fn value(&self) -> Option<Numeric> {
+        (self.contributors > 0).then_some(self.sum).flatten()
     }
 
-    pub(super) fn minus(&self, winners: &Self) -> Option<f64> {
+    pub(super) fn minus(&self, winners: &Self) -> Option<Numeric> {
         let contributors = self.contributors.saturating_sub(winners.contributors);
-        (contributors > 0).then_some(self.sum - winners.sum)
+        (contributors > 0)
+            .then(|| {
+                self.sum?
+                    .subtract(winners.sum.unwrap_or(Numeric::Integer(0)))
+            })
+            .flatten()
     }
 }
 
@@ -955,7 +1023,7 @@ struct EntityState {
     window: Obs,
     column: usize,
     current: Obs,
-    carry: Option<(i64, f64)>,
+    carry: Option<(i64, Numeric)>,
     group: Option<usize>,
 }
 
@@ -969,7 +1037,7 @@ struct GroupFillState {
     destination: GroupDestination,
     column: usize,
     current: Obs,
-    carry: Option<(i64, f64)>,
+    carry: Option<(i64, Numeric)>,
 }
 
 impl GroupFillState {
@@ -986,9 +1054,9 @@ impl GroupFillState {
         &mut self,
         column: usize,
         ts: i64,
-        value: f64,
+        value: Numeric,
         cumulative: bool,
-    ) -> Option<(GroupDestination, usize, f64)> {
+    ) -> Option<(GroupDestination, usize, Numeric)> {
         if column < self.column {
             return None;
         }
@@ -997,8 +1065,8 @@ impl GroupFillState {
                 .current
                 .cell(cumulative)
                 .map(|value| (self.destination, self.column, value));
-            if self.current.count > 0 {
-                self.carry = Some((self.current.last_ts, self.current.last_value));
+            if let Some(last_value) = self.current.last_value {
+                self.carry = Some((self.current.last_ts, last_value));
             }
             self.column = column;
             self.current = Obs::default();
@@ -1058,7 +1126,7 @@ impl GroupedFill {
         identity: &[Value],
         group: &[Value],
         ts: i64,
-        value: Option<f64>,
+        value: Option<Numeric>,
     ) {
         if ts < self.from || ts > self.to {
             return;
@@ -1126,7 +1194,7 @@ impl GroupedFill {
         others: &mut [CellSum],
         destination: GroupDestination,
         column: usize,
-        value: f64,
+        value: Numeric,
     ) {
         match destination {
             GroupDestination::Winner(index) => cells[index][column].add(value),
@@ -1144,16 +1212,16 @@ pub(super) struct GroupedRow {
     key: String,
     pub(super) values: Vec<Value>,
     pub(super) members: u32,
-    pub(super) total: Option<f64>,
-    pub(super) cells: Vec<Option<f64>>,
+    pub(super) total: Option<Numeric>,
+    pub(super) cells: Vec<Option<Numeric>>,
 }
 
 pub(super) struct Grouped {
     pub(super) rows: Vec<GroupedRow>,
     pub(super) totals: Vec<CellSum>,
     pub(super) others: Vec<CellSum>,
-    pub(super) totals_total: Option<f64>,
-    pub(super) others_total: Option<f64>,
+    pub(super) totals_total: Option<Numeric>,
+    pub(super) others_total: Option<Numeric>,
     pub(super) group_count: usize,
     pub(super) out_of_order: u64,
 }
@@ -1162,14 +1230,14 @@ pub(super) struct RankedRow {
     pub(super) key: String,
     pub(super) type_id: u32,
     pub(super) identity: Vec<Value>,
-    pub(super) total: Option<f64>,
+    pub(super) total: Option<Numeric>,
 }
 
 pub(super) struct Ranked {
     pub(super) rows: Vec<RankedRow>,
     pub(super) totals: Vec<CellSum>,
-    pub(super) totals_total: Option<f64>,
-    pub(super) others_total: Option<f64>,
+    pub(super) totals_total: Option<Numeric>,
+    pub(super) others_total: Option<Numeric>,
     pub(super) entity_count: usize,
     pub(super) out_of_order: u64,
 }
@@ -1211,7 +1279,7 @@ impl Fold {
         identity: &[Value],
         group: Option<Vec<Value>>,
         ts: i64,
-        value: Option<f64>,
+        value: Option<Numeric>,
     ) {
         if ts < self.from || ts > self.to {
             return;
@@ -1264,8 +1332,8 @@ impl Fold {
             if let Some(finished) = state.current.cell(self.cumulative) {
                 self.totals[state.column].add(finished);
             }
-            if state.current.count > 0 {
-                state.carry = Some((state.current.last_ts, state.current.last_value));
+            if let Some(last_value) = state.current.last_value {
+                state.carry = Some((state.current.last_ts, last_value));
             }
             state.column = column;
             state.current = Obs::default();
@@ -1284,7 +1352,7 @@ impl Fold {
         let cumulative = self.cumulative;
         let mut totals = self.totals;
         let mut rows: Vec<RankedRow> = Vec::with_capacity(self.entities.len());
-        let mut totals_total: Option<f64> = None;
+        let mut totals_total: Option<Numeric> = None;
         for (key, state) in self.entities {
             if let Some(finished) = state.current.cell(cumulative) {
                 totals[state.column].add(finished);
@@ -1293,7 +1361,7 @@ impl Fold {
             if let Some(total) = total {
                 totals_total = Some(match totals_total {
                     Some(current) if !cumulative => current.max(total),
-                    Some(current) => current + total,
+                    Some(current) => current.add(total),
                     None => total,
                 });
             }
@@ -1306,8 +1374,7 @@ impl Fold {
         }
         rows.sort_by(|left, right| match (left.total, right.total) {
             (Some(left_total), Some(right_total)) => right_total
-                .partial_cmp(&left_total)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .compare(left_total)
                 .then_with(|| left.key.cmp(&right.key)),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -1316,10 +1383,10 @@ impl Fold {
         let entity_count = rows.len();
         let others_total = rows.iter().skip(top).filter_map(|row| row.total).fold(
             None,
-            |current: Option<f64>, total| {
+            |current: Option<Numeric>, total| {
                 Some(match current {
                     Some(current) if !cumulative => current.max(total),
-                    Some(current) => current + total,
+                    Some(current) => current.add(total),
                     None => total,
                 })
             },
@@ -1341,22 +1408,21 @@ impl Fold {
         let out_of_order = self.out_of_order;
         let mut totals = self.totals;
         let mut groups = self.groups;
-        let mut group_totals: Vec<Option<f64>> = vec![None; groups.len()];
+        let mut group_totals: Vec<Option<Numeric>> = vec![None; groups.len()];
         for (_key, state) in self.entities {
             if let Some(finished) = state.current.cell(cumulative) {
                 totals[state.column].add(finished);
             }
             if let (Some(index), Some(total)) = (state.group, state.window.total(cumulative)) {
                 group_totals[index] =
-                    Some(group_totals[index].map_or(total, |current| current + total));
+                    Some(group_totals[index].map_or(total, |current| current.add(total)));
             }
         }
         let mut order: Vec<usize> = (0..groups.len()).collect();
         order.sort_by(
             |left, right| match (group_totals[*left], group_totals[*right]) {
                 (Some(left_total), Some(right_total)) => right_total
-                    .partial_cmp(&left_total)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .compare(left_total)
                     .then_with(|| left.cmp(right)),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -1364,18 +1430,18 @@ impl Fold {
             },
         );
         let group_count = groups.len();
-        let mut others_total: Option<f64> = None;
+        let mut others_total: Option<Numeric> = None;
         for index in order.iter().skip(top) {
             if let Some(total) = group_totals[*index] {
-                others_total = Some(others_total.unwrap_or(0.0) + total);
+                others_total = Some(others_total.map_or(total, |current| current.add(total)));
             }
         }
         let totals_total = if cumulative {
             group_totals
                 .iter()
                 .flatten()
-                .fold(None, |current: Option<f64>, total| {
-                    Some(current.unwrap_or(0.0) + total)
+                .fold(None, |current: Option<Numeric>, total| {
+                    Some(current.map_or(*total, |stored| stored.add(*total)))
                 })
         } else {
             band_peak(&totals)
@@ -1412,11 +1478,11 @@ impl Fold {
     }
 }
 
-fn band_peak(cells: &[CellSum]) -> Option<f64> {
+fn band_peak(cells: &[CellSum]) -> Option<Numeric> {
     cells
         .iter()
         .filter_map(CellSum::value)
-        .fold(None, |current: Option<f64>, value| {
+        .fold(None, |current: Option<Numeric>, value| {
             Some(current.map_or(value, |stored| stored.max(value)))
         })
 }

@@ -470,10 +470,18 @@ export async function loadHeatmap(
     ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
   ].join("&")
   const records = await request(`/api/heatmap?${query}`, signal)
+  const heatmapNumber = (stored: unknown): number | null => {
+    const value = typeof stored === "number"
+      ? stored
+      : typeof stored === "string" && /^-?[0-9]+$/.test(stored)
+        ? Number(stored)
+        : Number.NaN
+    return Number.isFinite(value) ? value : null
+  }
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
-    ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
+    ? stored.map(heatmapNumber)
     : []
-  const total = (stored: unknown): number | null => typeof stored === "number" && Number.isFinite(stored) ? stored : null
+  const total = heatmapNumber
   const texts = (stored: unknown): (string | null)[] => Array.isArray(stored)
     ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
     : []

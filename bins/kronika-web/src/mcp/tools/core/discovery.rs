@@ -21,8 +21,54 @@ pub(super) struct HeatmapCut {
     pub(super) section: &'static str,
     pub(super) fields: &'static [&'static str],
     pub(super) labels: &'static [&'static str],
-    unit: &'static str,
-    scale_by: Option<&'static str>,
+    raw_unit: HeatmapUnit,
+    scale: HeatmapScale,
+}
+
+#[derive(Clone, Copy)]
+enum HeatmapUnit {
+    Blocks,
+    Bytes,
+    ClockTicks,
+    Count,
+    Kibibytes,
+    Microseconds,
+    Milliseconds,
+    Nanoseconds,
+    Seconds,
+}
+
+impl HeatmapUnit {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::Bytes => "bytes",
+            Self::ClockTicks => "clock_ticks",
+            Self::Count => "count",
+            Self::Kibibytes => "kibibytes",
+            Self::Microseconds => "microseconds",
+            Self::Milliseconds => "milliseconds",
+            Self::Nanoseconds => "nanoseconds",
+            Self::Seconds => "seconds",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HeatmapScale {
+    Identity,
+    FixedMultiply {
+        factor: u64,
+        target: HeatmapUnit,
+    },
+    RecordedMultiply {
+        locator: &'static str,
+        target: HeatmapUnit,
+    },
+    RecordedDivide {
+        locator: &'static str,
+        target: HeatmapUnit,
+    },
 }
 
 impl HeatmapCut {
@@ -32,8 +78,8 @@ impl HeatmapCut {
         section: &'static str,
         fields: &'static [&'static str],
         labels: &'static [&'static str],
-        unit: &'static str,
-        scale_by: Option<&'static str>,
+        raw_unit: HeatmapUnit,
+        scale: HeatmapScale,
     ) -> Self {
         Self {
             surface,
@@ -41,8 +87,8 @@ impl HeatmapCut {
             section,
             fields,
             labels,
-            unit,
-            scale_by,
+            raw_unit,
+            scale,
         }
     }
 
@@ -51,9 +97,41 @@ impl HeatmapCut {
             "id": format!("heatmap.{}.{}", self.surface, self.cut),
             "origin": "accepted_presentation",
             "fields": self.fields,
-            "unit": self.unit,
-            "scale_by": self.scale_by,
+            "value_unit": self.raw_unit.name(),
+            "values_scaled": false,
+            "conversion": self.scale.semantic(),
         })
+    }
+}
+
+impl HeatmapScale {
+    fn semantic(self) -> Value {
+        match self {
+            Self::Identity => Value::Null,
+            Self::FixedMultiply { factor, target } => json!({
+                "status": "not_applied",
+                "operation": "multiply",
+                "factor": factor.to_string(),
+                "target_unit": target.name(),
+                "origin": "exact_unit_conversion",
+            }),
+            Self::RecordedMultiply { locator, target } => json!({
+                "status": "not_applied",
+                "operation": "multiply",
+                "factor": Value::Null,
+                "target_unit": target.name(),
+                "origin": "recorded",
+                "locator": locator,
+            }),
+            Self::RecordedDivide { locator, target } => json!({
+                "status": "not_applied",
+                "operation": "divide",
+                "factor": Value::Null,
+                "target_unit": target.name(),
+                "origin": "recorded",
+                "locator": locator,
+            }),
+        }
     }
 }
 
@@ -64,8 +142,11 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["utime", "stime"],
         &[],
-        "seconds",
-        Some("clock_ticks"),
+        HeatmapUnit::ClockTicks,
+        HeatmapScale::RecordedDivide {
+            locator: "instance_metadata.clock_ticks_per_sec",
+            target: HeatmapUnit::Seconds,
+        },
     ),
     HeatmapCut::new(
         "processes",
@@ -73,8 +154,11 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["rmem_kb"],
         &[],
-        "bytes",
-        Some("kib"),
+        HeatmapUnit::Kibibytes,
+        HeatmapScale::FixedMultiply {
+            factor: 1_024,
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "processes",
@@ -82,8 +166,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["read_bytes"],
         &[],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "processes",
@@ -91,8 +175,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["write_bytes"],
         &[],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "processes",
@@ -100,8 +184,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["majflt"],
         &[],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "processes",
@@ -109,8 +193,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_process",
         &["rundelay_ns"],
         &[],
-        "nanoseconds",
-        None,
+        HeatmapUnit::Nanoseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "statements",
@@ -118,8 +202,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["total_exec_time"],
         &["datname", "usename"],
-        "milliseconds",
-        None,
+        HeatmapUnit::Milliseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "statements",
@@ -127,8 +211,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["calls"],
         &["datname", "usename"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "statements",
@@ -136,8 +220,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["rows"],
         &["datname", "usename"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "statements",
@@ -145,8 +229,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["shared_blks_read"],
         &["datname", "usename"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "statements",
@@ -154,8 +241,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["shared_blks_dirtied"],
         &["datname", "usename"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "statements",
@@ -163,8 +253,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["temp_blks_written"],
         &["datname", "usename"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "statements",
@@ -172,8 +265,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_statements",
         &["wal_bytes"],
         &["datname", "usename"],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "plans",
@@ -181,8 +274,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_store_plans",
         &["total_time"],
         &["datname", "usename"],
-        "milliseconds",
-        None,
+        HeatmapUnit::Milliseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "plans",
@@ -190,8 +283,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_store_plans",
         &["calls"],
         &["datname", "usename"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "plans",
@@ -199,8 +292,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_store_plans",
         &["rows"],
         &["datname", "usename"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "plans",
@@ -208,8 +301,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_store_plans",
         &["shared_blks_read"],
         &["datname", "usename"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "plans",
@@ -217,8 +313,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_store_plans",
         &["temp_blks_written"],
         &["datname", "usename"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "databases",
@@ -226,8 +325,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_database",
         &["xact_commit"],
         &["datname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "databases",
@@ -235,8 +334,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_database",
         &["xact_rollback"],
         &["datname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "databases",
@@ -244,8 +343,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_database",
         &["blks_read"],
         &["datname"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "databases",
@@ -253,8 +355,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_database",
         &["temp_bytes"],
         &["datname"],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "databases",
@@ -262,8 +364,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_database",
         &["deadlocks"],
         &["datname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "tables",
@@ -271,8 +373,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_tables",
         &["n_tup_ins", "n_tup_upd", "n_tup_del"],
         &["datname", "schemaname", "relname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "tables",
@@ -280,8 +382,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_tables",
         &["seq_tup_read"],
         &["datname", "schemaname", "relname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "tables",
@@ -289,8 +391,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_tables",
         &["heap_blks_read"],
         &["datname", "schemaname", "relname"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "tables",
@@ -298,8 +403,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_tables",
         &["n_dead_tup"],
         &["datname", "schemaname", "relname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "tables",
@@ -307,8 +412,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_tables",
         &["total_autovacuum_time"],
         &["datname", "schemaname", "relname"],
-        "milliseconds",
-        None,
+        HeatmapUnit::Milliseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "indexes",
@@ -316,8 +421,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_indexes",
         &["idx_scan"],
         &["datname", "schemaname", "relname", "indexrelname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "indexes",
@@ -325,8 +430,8 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_indexes",
         &["idx_tup_read"],
         &["datname", "schemaname", "relname", "indexrelname"],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "indexes",
@@ -334,8 +439,11 @@ const CUTS: &[HeatmapCut] = &[
         "pg_stat_user_indexes",
         &["idx_blks_read"],
         &["datname", "schemaname", "relname", "indexrelname"],
-        "bytes",
-        Some("block_size"),
+        HeatmapUnit::Blocks,
+        HeatmapScale::RecordedMultiply {
+            locator: "pg_settings.block_size",
+            target: HeatmapUnit::Bytes,
+        },
     ),
     HeatmapCut::new(
         "cgroups",
@@ -343,8 +451,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_cpu",
         &["usage_usec"],
         &[],
-        "microseconds",
-        None,
+        HeatmapUnit::Microseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "cgroups",
@@ -352,8 +460,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_cpu",
         &["throttled_usec"],
         &[],
-        "microseconds",
-        None,
+        HeatmapUnit::Microseconds,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "cgroups",
@@ -361,8 +469,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_io",
         &["rbytes"],
         &[],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "cgroups",
@@ -370,8 +478,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_io",
         &["wbytes"],
         &[],
-        "bytes",
-        None,
+        HeatmapUnit::Bytes,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "cgroups",
@@ -379,8 +487,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_io",
         &["rios"],
         &[],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
     HeatmapCut::new(
         "cgroups",
@@ -388,8 +496,8 @@ const CUTS: &[HeatmapCut] = &[
         "os_cgroup_io",
         &["wios"],
         &[],
-        "count",
-        None,
+        HeatmapUnit::Count,
+        HeatmapScale::Identity,
     ),
 ];
 
