@@ -65,7 +65,7 @@ fn hours(
     );
     let returned = paged.hours.len();
     Ok(Payload {
-        anchor: anchor(None, None, None),
+        anchor: anchor(None, None, None, None),
         data: json!({"hours": paged.hours, "sources": source_values(state.sources)}),
         page: page_value,
         warnings: Vec::new(),
@@ -146,7 +146,7 @@ fn heatmap(
         .unwrap_or_else(|| json!({}));
     let stop = collected.stop_reason.code();
     Ok(Payload {
-        anchor: anchor(None, Some(from), None),
+        anchor: anchor(None, Some(from), None, None),
         data: json!({
             "intervals": header.and_then(|value| value.get("intervals")).cloned().unwrap_or_else(|| json!([])),
             "rows": rows,
@@ -200,7 +200,7 @@ fn findings(
     );
     let returned = paged.findings.len();
     Ok(Payload {
-        anchor: anchor(None, Some(from), None),
+        anchor: anchor(None, Some(from), None, None),
         data: json!({"findings": paged.findings, "semantics": paged.semantics}),
         page: page_value,
         warnings: paged.warnings,
@@ -238,7 +238,7 @@ fn timeline(
     );
     let returned = paged.lanes.len().saturating_add(paged.markers.len());
     Ok(Payload {
-        anchor: anchor(None, Some(from), None),
+        anchor: anchor(None, Some(from), None, None),
         data: json!({"lanes": paged.lanes, "markers": paged.markers, "semantics": paged.semantics}),
         page: page_value,
         warnings: paged.warnings,
@@ -266,16 +266,29 @@ fn host(
         _ => return Err(Failure::input("lens", "unknown Host lens.")),
     };
     let segment = select_segment_at(state, at)?;
-    let route = snapshot_route(args, segment.id(), at, section, None)?;
+    let route = snapshot_route(
+        args,
+        segment.id(),
+        segment.active_position(),
+        at,
+        section,
+        None,
+    )?;
     let collected = run_route(state, route, budget, 520, cancelled)?;
     let page_value = snapshot_page(&collected.records, collected.stop_reason);
+    let active_position = snapshot_active_position(&collected.records)?;
     Ok(Payload {
         anchor: anchor(
             Some(segment.id()),
             Some(at),
             selected_at(&collected.records),
+            active_position,
         ),
-        data: json!({"rows": collected.records, "health": {}, "semantics": []}),
+        data: json!({
+            "rows": collected.records,
+            "health": {},
+            "semantics": crate::mcp::semantics::health(),
+        }),
         page: page_value,
         warnings: warnings(&collected.records),
         summary: format!("Kronika returned recorded Host {lens} context."),
@@ -292,7 +305,14 @@ fn processes(
     let lens = optional_string(args, "lens")?.unwrap_or("identity");
     let segment = select_segment_at(state, at)?;
     let order = optional_string(args, "order")?.or_else(|| Some(process_order(lens)));
-    let route = snapshot_route(args, segment.id(), at, "os_process", order)?;
+    let route = snapshot_route(
+        args,
+        segment.id(),
+        segment.active_position(),
+        at,
+        "os_process",
+        order,
+    )?;
     let collected = if lens == "tree" {
         let Route::Snapshot(request) = route else {
             return Err(Failure::bounded(
@@ -360,11 +380,13 @@ fn processes(
         .filter(|row| row["record"] == "row")
         .count();
     let page_value = snapshot_page(&collected.records, collected.stop_reason);
+    let active_position = snapshot_active_position(&collected.records)?;
     Ok(Payload {
         anchor: anchor(
             Some(segment.id()),
             Some(at),
             selected_at(&collected.records),
+            active_position,
         ),
         data: json!({"processes": collected.records, "semantics": process_semantics()}),
         page: page_value,
@@ -383,7 +405,7 @@ fn run_route(
     cancelled: &impl Fn() -> bool,
 ) -> Result<ValueCollection, Failure> {
     api::prepare_for_mcp(&state.data_root, state.sources, state.synthetic_demo, route)
-        .map_err(api_failure)?
+        .map_err(|error| api_failure(&error))?
         .collect_values(
             ValueLimits {
                 records,
@@ -391,12 +413,13 @@ fn run_route(
             },
             cancelled,
         )
-        .map_err(api_failure)
+        .map_err(|error| api_failure(&error))
 }
 
 fn snapshot_route(
     args: &Map<String, Value>,
     segment_id: i64,
+    active_position: Option<u64>,
     at: i64,
     section: &str,
     order: Option<&str>,
@@ -413,6 +436,7 @@ fn snapshot_route(
     };
     Ok(Route::Snapshot(Box::new(SnapshotRequest {
         segment_id,
+        active_position,
         at,
         sections: vec![section.to_owned()],
         fields: string_array(args, "fields")?,
@@ -594,8 +618,7 @@ fn filter_values(args: &Map<String, Value>) -> Result<Vec<Filter>, Failure> {
         .map(|(column, value)| {
             let value = value
                 .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| value.to_string());
+                .map_or_else(|| value.to_string(), str::to_owned);
             Ok(Filter {
                 column: column.clone(),
                 value,
@@ -671,14 +694,45 @@ fn page(returned: usize, truncated: bool, next_cursor: Option<&str>, stop_reason
     json!({"returned": returned, "truncated": truncated, "next_cursor": next_cursor, "stop_reason": stop_reason})
 }
 
-fn anchor(segment_id: Option<i64>, requested_at: Option<i64>, selected_at: Option<i64>) -> Value {
+fn anchor(
+    segment_id: Option<i64>,
+    requested_at: Option<i64>,
+    selected_at: Option<i64>,
+    active_position: Option<u64>,
+) -> Value {
     json!({
         "hour_start_us": requested_at.map(|value| value.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string()),
         "requested_at_us": requested_at.map(|value| value.to_string()),
         "selected_at_us": selected_at.map(|value| value.to_string()),
         "segment_id": segment_id.map(|value| value.to_string()),
-        "active_wal_position": Value::Null,
+        "active_wal_position": active_position.map(|value| value.to_string()),
     })
+}
+
+fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, Failure> {
+    let value = records
+        .iter()
+        .find(|record| record.get("record").and_then(Value::as_str) == Some("snapshot"))
+        .and_then(|record| record.pointer("/segment/active_wal_position"))
+        .ok_or_else(|| {
+            Failure::bounded(
+                "source_provenance_unusable",
+                "The recorded snapshot has no physical source prefix.",
+            )
+        })?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .and_then(|position| position.parse().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            Failure::bounded(
+                "source_provenance_unusable",
+                "The recorded snapshot has an invalid physical source prefix.",
+            )
+        })
 }
 
 fn source_values(configured: u32) -> Vec<Value> {
@@ -700,7 +754,7 @@ fn process_semantics() -> Vec<Value> {
     .collect()
 }
 
-fn api_failure(error: ApiError) -> Failure {
+fn api_failure(error: &ApiError) -> Failure {
     Failure {
         code: error.code(),
         message: error.to_string(),
@@ -709,7 +763,7 @@ fn api_failure(error: ApiError) -> Failure {
     }
 }
 
-fn unreadable(message: String) -> Failure {
+const fn unreadable(message: String) -> Failure {
     Failure {
         code: "unreadable",
         message,

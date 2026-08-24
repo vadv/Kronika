@@ -3754,6 +3754,7 @@ mod tests {
     fn low_activity_filter_is_one_fixed_true_indexes_predicate() {
         let mut request = SnapshotRequest {
             segment_id: 1,
+            active_position: None,
             at: 2,
             sections: vec![INDEXES.to_owned()],
             fields: Vec::new(),
@@ -3817,6 +3818,7 @@ mod tests {
     fn tablespace_oid_filter_requires_a_nonzero_u32() {
         let mut request = SnapshotRequest {
             segment_id: 1,
+            active_position: None,
             at: 2,
             sections: vec![TABLES.to_owned()],
             fields: Vec::new(),

@@ -8,12 +8,16 @@ use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
 use super::{
-    ARCHIVER_FAILED_COUNT_FIELD, CHECKSUM_FAILURES_FIELD, CPU_IDLE_FIELD, DATABASE_DEADLOCKS_FIELD,
-    FROZEN_XID_AGE_FIELD, FindingBuilder, LOAD1_FIELD, LOCKS_BLOCKED_BY_FIELD, MEM_AVAILABLE_FIELD,
-    MIN_MXID_AGE_FIELD, MOUNT_FREE_BYTES_FIELD, OOM_KILL_FIELD, OS_CGROUP_MEMORY_V1, OS_CPU,
-    OS_LOADAVG, OS_MEMINFO, OS_MOUNTINFO, OS_VMSTAT, OVERALL_HEALTH_FIELD, PG_LOG_SLOW_QUERIES,
-    PG_STAT_ARCHIVER, SESSIONS_FATAL_FIELD, SESSIONS_KILLED_FIELD, SLOW_QUERY_DURATION_FIELD,
-    WRAPAROUND_AGE_THRESHOLD, activity_layouts, has_checksum, has_sessions, optional_i64,
+    ACTIVE_BACKENDS_PER_CPU, ACTIVITY_STATE_V1_FIELD, ACTIVITY_STATE_V2_FIELD,
+    ARCHIVER_FAILED_COUNT_FIELD, CGROUP_OOM_KILL_V1_FIELD, CGROUP_OOM_KILL_V2_FIELD,
+    CHECKSUM_FAILURES_FIELD, CPU_BUSY_PERCENT, CPU_IDLE_FIELD, DATABASE_DEADLOCKS_FIELD,
+    FROZEN_XID_AGE_FIELD, FindingBuilder, LOAD_PER_CPU, LOAD1_FIELD, LOCKS_BLOCKED_BY_FIELD,
+    MEM_AVAILABLE_FIELD, MEMORY_AVAILABLE_PERCENT, MIN_MXID_AGE_FIELD, MOUNT_FREE_BYTES_FIELD,
+    MOUNT_USED_PERCENT, OOM_KILL_FIELD, OS_CGROUP_MEMORY_V1, OS_CPU, OS_LOADAVG, OS_MEMINFO,
+    OS_MOUNTINFO, OS_VMSTAT, OVERALL_HEALTH_BOUNDARY, OVERALL_HEALTH_FIELD, PERCENT_SCALE,
+    PG_LOG_SLOW_QUERIES, PG_STAT_ARCHIVER, SESSIONS_FATAL_FIELD, SESSIONS_KILLED_FIELD,
+    SLOW_QUERY_DURATION_FIELD, SLOW_QUERY_DURATION_MS, WRAPAROUND_AGE_THRESHOLD, activity_layouts,
+    has_checksum, has_sessions, optional_i64,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -253,7 +257,10 @@ impl FindingBuilder {
                 let online = snapshots
                     .get(timestamp)
                     .map_or(0, |snapshot| snapshot.online);
-                if online != 0 && load1.is_finite() && *load1 >= 2.0 * f64::from(online) {
+                if online != 0
+                    && load1.is_finite()
+                    && *load1 >= f64::from(LOAD_PER_CPU) * f64::from(online)
+                {
                     load_hits.push(known_bad(LOAD1_FIELD, row_ordinal, *timestamp));
                 }
                 true
@@ -296,7 +303,8 @@ impl FindingBuilder {
                 if *total > 0
                     && *available >= 0
                     && available <= total
-                    && i128::from(*available) * 100 <= i128::from(*total) * 10
+                    && i128::from(*available) * i128::from(PERCENT_SCALE)
+                        <= i128::from(*total) * i128::from(MEMORY_AVAILABLE_PERCENT)
                 {
                     memory_hits.push(known_bad(MEM_AVAILABLE_FIELD, row_ordinal, *timestamp));
                 }
@@ -340,7 +348,8 @@ impl FindingBuilder {
                 if *total > 0
                     && *free >= 0
                     && free <= total
-                    && i128::from(*total - *free) * 100 >= i128::from(*total) * 90
+                    && i128::from(*total - *free) * i128::from(PERCENT_SCALE)
+                        >= i128::from(*total) * i128::from(MOUNT_USED_PERCENT)
                 {
                     mount_hits.push(known_bad(MOUNT_FREE_BYTES_FIELD, row_ordinal, *timestamp));
                 }
@@ -367,12 +376,17 @@ impl FindingBuilder {
             0,
             usize::MAX,
             |ordinal, row| {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "the exact millisecond boundary is within the f64 integer range"
+                )]
+                let boundary = SLOW_QUERY_DURATION_MS as f64;
                 if let (Some(Cell::Ts(timestamp)), Some(Cell::F64(duration)), Some(row_ordinal)) = (
                     row.get("ts"),
                     row.get("max_duration_ms"),
                     u32::try_from(ordinal).ok(),
                 ) && duration.is_finite()
-                    && *duration >= 5_000.0
+                    && *duration >= boundary
                 {
                     query_hits.push(known_bad(
                         SLOW_QUERY_DURATION_FIELD,
@@ -694,7 +708,7 @@ impl FindingBuilder {
                     }));
             }
         }
-        let service_slots = cpus.saturating_mul(2);
+        let service_slots = cpus.saturating_mul(ACTIVE_BACKENDS_PER_CPU);
         for (timestamp, sample) in combined {
             if let Some(sample) = sample
                 && sample.count > service_slots
@@ -720,7 +734,9 @@ impl FindingBuilder {
         for block in &index.blocks {
             if let SeriesBlock::OverallHealth(points) = block {
                 for (ordinal, point) in points.iter().enumerate() {
-                    if point.value.is_some_and(|value| value < 50)
+                    if point
+                        .value
+                        .is_some_and(|value| value < OVERALL_HEALTH_BOUNDARY)
                         && let Some(row_ordinal) = u32::try_from(ordinal).ok()
                     {
                         health_hits.push(known_bad(
@@ -776,7 +792,7 @@ pub(super) fn cpu_busy_at_least_80(before: CpuRaw, current: CpuRaw) -> bool {
     }
     let busy = deltas[0] + deltas[1] + deltas[2] + deltas[5] + deltas[6] + deltas[7];
     let total: i128 = deltas.into_iter().sum();
-    total > 0 && busy * 100 >= total * 80
+    total > 0 && busy * i128::from(PERCENT_SCALE) >= total * i128::from(CPU_BUSY_PERCENT)
 }
 
 const fn known_bad(field_ordinal: u16, row_ordinal: u32, timestamp: i64) -> Finding {
@@ -815,14 +831,18 @@ const fn cpu_columns() -> &'static [&'static str] {
 }
 
 const fn activity_state_field(type_id: u32) -> u16 {
-    if type_id == 1_001_001 { 7 } else { 8 }
+    if type_id == 1_001_001 {
+        ACTIVITY_STATE_V1_FIELD
+    } else {
+        ACTIVITY_STATE_V2_FIELD
+    }
 }
 
 /// `1_202_002` inserted `shmem` ahead of `oom_kill`, shifting its ordinal.
 const fn cgroup_oom_kill_field(type_id: u32) -> u16 {
     if type_id == OS_CGROUP_MEMORY_V1 {
-        12
+        CGROUP_OOM_KILL_V1_FIELD
     } else {
-        13
+        CGROUP_OOM_KILL_V2_FIELD
     }
 }

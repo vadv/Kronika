@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound::{Included, Unbounded};
@@ -131,6 +132,14 @@ struct IndexAnchor {
 enum TimelineItem {
     Lane(Value),
     Marker(Value),
+}
+
+impl TimelineItem {
+    const fn record(&self) -> &Value {
+        match self {
+            Self::Lane(record) | Self::Marker(record) => record,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -339,7 +348,7 @@ impl IndexedMetadata {
         Ok(())
     }
 
-    fn attach_lane(&self, record: &mut Value, source: &SourceSnapshot) -> Result<(), Failure> {
+    fn attach_lane(record: &mut Value, source: &SourceSnapshot) -> Result<(), Failure> {
         let segment_id = record
             .get("segment_id")
             .and_then(Value::as_str)
@@ -524,7 +533,7 @@ pub(super) fn findings(
     })?;
     ensure_source_unchanged(&state.data_root, window, source.binding, cancelled)?;
     let accumulated = page.finish()?;
-    let (returned, page) = fit_findings_page(
+    let (returned, semantics, page) = fit_findings_page(
         window,
         Surface::Findings,
         query,
@@ -539,7 +548,7 @@ pub(super) fn findings(
     Ok(FindingsPage {
         page,
         findings: returned,
-        semantics: metadata.semantics,
+        semantics,
         warnings: metadata.warnings,
     })
 }
@@ -582,7 +591,7 @@ pub(super) fn timeline(
                 if !matches_lane(&record, &wanted) {
                     return Ok(());
                 }
-                metadata.attach_lane(&mut record, &source)?;
+                IndexedMetadata::attach_lane(&mut record, &source)?;
                 let position = value_position(Surface::Timeline, &record)?;
                 page.push(TimelineItem::Lane(record), position)
             }
@@ -597,7 +606,7 @@ pub(super) fn timeline(
     })?;
     ensure_source_unchanged(&state.data_root, window, source.binding, cancelled)?;
     let accumulated = page.finish()?;
-    let (items, page) = fit_timeline_page(
+    let (items, semantics, page) = fit_timeline_page(
         window,
         Surface::Timeline,
         query,
@@ -621,7 +630,7 @@ pub(super) fn timeline(
         page,
         lanes: timeline_lanes,
         markers,
-        semantics: metadata.semantics,
+        semantics,
         warnings: metadata.warnings,
     })
 }
@@ -641,7 +650,7 @@ fn fit_findings_page(
     warnings: &[Value],
     source_truncated: bool,
     budget: usize,
-) -> Result<(Vec<Value>, PageInfo), Failure> {
+) -> Result<(Vec<Value>, Vec<Value>, PageInfo), Failure> {
     let (retained, page) = fit_page_count(
         window,
         surface,
@@ -654,24 +663,29 @@ fn fit_findings_page(
         budget,
         "Finding",
         |count| {
-            json!({
+            let definitions = page_semantics(
+                semantics,
+                accumulated.items[..count]
+                    .iter()
+                    .map(|positioned| &positioned.item),
+            )?;
+            Ok(json!({
                 "findings": accumulated.items[..count]
                     .iter()
                     .map(|positioned| positioned.item.clone())
                     .collect::<Vec<_>>(),
-                "semantics": semantics,
-            })
+                "semantics": definitions,
+            }))
         },
     )?;
-    Ok((
-        accumulated
-            .items
-            .into_iter()
-            .take(retained)
-            .map(|positioned| positioned.item)
-            .collect(),
-        page,
-    ))
+    let returned = accumulated
+        .items
+        .into_iter()
+        .take(retained)
+        .map(|positioned| positioned.item)
+        .collect::<Vec<_>>();
+    let definitions = page_semantics(semantics, &returned)?;
+    Ok((returned, definitions, page))
 }
 
 #[allow(
@@ -689,7 +703,7 @@ fn fit_timeline_page(
     warnings: &[Value],
     source_truncated: bool,
     budget: usize,
-) -> Result<(Vec<TimelineItem>, PageInfo), Failure> {
+) -> Result<(Vec<TimelineItem>, Vec<Value>, PageInfo), Failure> {
     let (retained, page) = fit_page_count(
         window,
         surface,
@@ -701,17 +715,24 @@ fn fit_timeline_page(
         source_truncated,
         budget,
         "Timeline item",
-        |count| timeline_data(&accumulated.items[..count], semantics),
+        |count| {
+            let definitions = page_semantics(
+                semantics,
+                accumulated.items[..count]
+                    .iter()
+                    .map(|positioned| positioned.item.record()),
+            )?;
+            Ok(timeline_data(&accumulated.items[..count], &definitions))
+        },
     )?;
-    Ok((
-        accumulated
-            .items
-            .into_iter()
-            .take(retained)
-            .map(|positioned| positioned.item)
-            .collect(),
-        page,
-    ))
+    let returned = accumulated
+        .items
+        .into_iter()
+        .take(retained)
+        .map(|positioned| positioned.item)
+        .collect::<Vec<_>>();
+    let definitions = page_semantics(semantics, returned.iter().map(TimelineItem::record))?;
+    Ok((returned, definitions, page))
 }
 
 #[allow(
@@ -729,11 +750,11 @@ fn fit_page_count<T>(
     source_truncated: bool,
     budget: usize,
     item_name: &'static str,
-    data: impl Fn(usize) -> Value,
+    data: impl Fn(usize) -> Result<Value, Failure>,
 ) -> Result<(usize, PageInfo), Failure> {
-    let anchor = super::anchor(None, window.from, None);
+    let anchor = super::anchor(None, window.from, None, None);
     let metadata_page = page_info(0, false, source_truncated, None);
-    let metadata_data = data(0);
+    let metadata_data = data(0)?;
     if envelope_len(&anchor, &metadata_data, &metadata_page, warnings) > budget {
         return Err(result_too_large(
             "The fixed semantic metadata and warnings exceed data_budget_bytes.",
@@ -753,7 +774,7 @@ fn fit_page_count<T>(
             count,
             source_truncated,
         )?;
-        let encoded = envelope_len(&anchor, &data(count), &page, warnings);
+        let encoded = envelope_len(&anchor, &data(count)?, &page, warnings);
         Ok((page, encoded))
     };
 
@@ -816,6 +837,22 @@ fn timeline_data(items: &[Positioned<TimelineItem>], semantics: &[Value]) -> Val
     json!({"lanes": lanes, "markers": markers, "semantics": semantics})
 }
 
+fn page_semantics<T: Borrow<Value>>(
+    base: &[Value],
+    records: impl IntoIterator<Item = T>,
+) -> Result<Vec<Value>, Failure> {
+    let mut definitions = base.to_vec();
+    definitions.extend(
+        crate::mcp::semantics::referenced(records).map_err(|error| Failure {
+            code: "semantics_unreadable",
+            message: error.to_string(),
+            parameter: None,
+            retryable: false,
+        })?,
+    );
+    Ok(definitions)
+}
+
 fn envelope_len(anchor: &Value, data: &Value, page: &PageInfo, warnings: &[Value]) -> usize {
     let page = super::page(
         page.returned,
@@ -847,10 +884,11 @@ fn stream_hour(
         state.synthetic_demo,
         Route::Hour(HourRequest {
             window,
+            active_segment: None,
             series: None,
         }),
     )
-    .map_err(api_failure)?;
+    .map_err(|error| api_failure(&error))?;
     let saw_cancel = Cell::new(false);
     let tracked_cancel = || {
         let stopped = cancelled();
@@ -869,7 +907,7 @@ fn stream_hour(
             },
             &tracked_cancel,
         )
-        .map_err(api_failure)?;
+        .map_err(|error| api_failure(&error))?;
     if let Some(failure) = callback_failure {
         return Err(failure);
     }
@@ -946,7 +984,7 @@ fn next_cursor(
     ))
 }
 
-fn page_info(
+const fn page_info(
     returned: usize,
     has_more: bool,
     source_truncated: bool,
@@ -1247,7 +1285,7 @@ fn index_provenance_failure() -> Failure {
     )
 }
 
-fn unreadable(message: String) -> Failure {
+const fn unreadable(message: String) -> Failure {
     Failure {
         code: "unreadable",
         message,

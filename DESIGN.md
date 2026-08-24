@@ -560,6 +560,12 @@ cursors retain their product vocabulary. Exact statement and plan lookup uses
 `find: "query_id:X"` or `find: "plan_id:X"` on the direct Statement or Plan
 tool. MCP has no second query language or point-ID tools.
 
+`find` and `cursor` are accepted only when the tool's input schema advertises
+them. In v1, Activity, Locks, Vacuum, and Databases do not accept `find`.
+Locks and Vacuum are whole-set surfaces and do not accept `cursor`; metric
+history uses `sample_limit` instead of a cursor; Heatmap selects its field from
+`cut` instead of accepting `fields`.
+
 `kronika_find_events` is deliberately an exact-row surface in v1. It reads an
 inclusive interval no longer than one hour and globally orders rows by the
 exact (`timestamp_us`, `segment_id`, `type_id`, `row_ordinal`) tuple. Every call

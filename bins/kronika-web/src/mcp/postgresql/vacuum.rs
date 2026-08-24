@@ -15,7 +15,7 @@ use self::reader::{EpisodeKey, Sample};
 use self::reader::{admit_samples, collect_hour, decode_hour};
 use super::{
     HOUR_US, MAX_FIELDS, MAX_ROWS, PostgresqlFailure, PostgresqlPayload, State, failure, fields,
-    input, page_size,
+    input, page_size, resolve_anchor,
 };
 
 const SECTION: &str = "pg_stat_progress_vacuum";
@@ -72,10 +72,11 @@ pub(super) fn execute(
     let projected = projected_fields(args)?;
     let admitted_episodes = page_size(args)?;
     let policies = Policies::load()?;
-    let collected = collect_hour(state, from, to, cancelled)?;
+    let anchor = resolve_anchor(state, to, &[SECTION, "instance_metadata"], cancelled)?;
+    let collected = collect_hour(state, from, to, &anchor, cancelled)?;
     let decoded = decode_hour(collected.records)?;
     admit_samples(&decoded.rows)?;
-    let cadence = recorded_cadence(state, to, cancelled)?;
+    let cadence = recorded_cadence(state, &anchor, to, cancelled)?;
     let adjacency_limit = cadence
         .seconds
         .filter(|seconds| *seconds > 0)
@@ -99,13 +100,14 @@ pub(super) fn execute(
         .map(|episode| episode_value(episode, at_timestamp, &projected, &policies))
         .collect::<Result<Vec<_>, _>>()?;
     let mut semantics = policies.definitions;
-    semantics.extend(decoded.layouts.into_iter().map(|layout| {
-        json!({
-            "origin": "recorded",
-            "source": "kronika_registry",
-            "layout": layout,
-        })
-    }));
+    semantics.extend(
+        decoded
+            .layouts
+            .iter()
+            .map(crate::mcp::semantics::recorded_layout)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| failure("semantics_unreadable", error.to_string(), None))?,
+    );
     if let Some(provenance) = cadence.provenance {
         semantics.push(provenance);
     }
@@ -117,8 +119,8 @@ pub(super) fn execute(
             "hour_start_us": from.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string(),
             "requested_at_us": to.to_string(),
             "selected_at_us": at_timestamp.map(|timestamp| timestamp.to_string()),
-            "segment_id": Value::Null,
-            "active_wal_position": Value::Null,
+            "segment_id": anchor.segment_id.to_string(),
+            "active_wal_position": anchor.active_wal_position.map(|position| position.to_string()),
         }),
         data: json!({
             "episodes": episode_values,

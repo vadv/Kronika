@@ -168,14 +168,8 @@ fn compare_episodes(
         .then_with(|| left.key.cmp(&right.key))
         .then_with(|| {
             left.first()
-                .map(|sample| sample.timestamp)
-                .unwrap_or(i64::MIN)
-                .cmp(
-                    &right
-                        .first()
-                        .map(|sample| sample.timestamp)
-                        .unwrap_or(i64::MIN),
-                )
+                .map_or(i64::MIN, |sample| sample.timestamp)
+                .cmp(&right.first().map_or(i64::MIN, |sample| sample.timestamp))
         }))
 }
 

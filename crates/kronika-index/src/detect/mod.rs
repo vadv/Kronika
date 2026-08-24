@@ -11,6 +11,7 @@ use crate::findings::{
     PG_LOG_ERRORS_TYPE_ID,
 };
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
+use crate::{SemanticBoundary, SemanticDefinition, SemanticOperator, SemanticOrigin, SemanticUnit};
 
 use self::direct::CpuRaw;
 
@@ -51,10 +52,285 @@ const SESSIONS_FATAL_FIELD: u16 = 32;
 const SESSIONS_KILLED_FIELD: u16 = 33;
 const ARCHIVER_FAILED_COUNT_FIELD: u16 = 4;
 const LOG_ERROR_CATEGORY_FIELD: u16 = 4;
+const ACTIVITY_STATE_V1_FIELD: u16 = 7;
+const ACTIVITY_STATE_V2_FIELD: u16 = 8;
+const CGROUP_OOM_KILL_V1_FIELD: u16 = 12;
+const CGROUP_OOM_KILL_V2_FIELD: u16 = 13;
 const DATA_CORRUPTION_CATEGORY: u8 = 5;
+const PERCENT_SCALE: u8 = 100;
+const CPU_BUSY_PERCENT: u8 = 80;
+const LOAD_PER_CPU: u32 = 2;
+const MEMORY_AVAILABLE_PERCENT: u8 = 10;
+const MOUNT_USED_PERCENT: u8 = 90;
+const SLOW_QUERY_DURATION_MS: i64 = 5_000;
+const ACTIVE_BACKENDS_PER_CPU: u32 = 2;
+const OVERALL_HEALTH_BOUNDARY: u8 = 50;
 /// `PostgreSQL`'s own `vacuum_failsafe_age` / `vacuum_multixact_failsafe_age` default.
 const WRAPAROUND_AGE_THRESHOLD: i64 = 1_600_000_000;
 const EVENT_TIMESTAMP_FIELD: u16 = 0;
+
+/// Descriptor for the exact recorded lock boundary evaluated by this module.
+pub const LOCKS_BLOCKED_BY_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_locks.blocked_by_nonempty",
+    logical_name: Some("pg_locks"),
+    field: Some("blocked_by"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: None,
+    formula: None,
+    operands: &["blocked_by"],
+    boundary: Some(SemanticBoundary::Nonempty),
+};
+
+const CPU_BUSY_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_cpu.cpu_busy",
+    logical_name: Some("os_cpu"),
+    field: Some("idle"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Percent),
+    formula: Some("100 * busy_ticks / total_ticks"),
+    operands: &[
+        "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal",
+    ],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: CPU_BUSY_PERCENT as i64,
+        denominator: 1,
+    }),
+};
+
+const LOAD_PER_CPU_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_loadavg.load_per_cpu",
+    logical_name: Some("os_loadavg"),
+    field: Some("load1"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: None,
+    formula: Some("load1 / online_cpu_count"),
+    operands: &["load1", "online_cpu_count"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: LOAD_PER_CPU as i64,
+        denominator: 1,
+    }),
+};
+
+const MEMORY_AVAILABLE_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_meminfo.memory_available",
+    logical_name: Some("os_meminfo"),
+    field: Some("mem_available"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Percent),
+    formula: Some("100 * mem_available / mem_total"),
+    operands: &["mem_available", "mem_total"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Lte,
+        numerator: MEMORY_AVAILABLE_PERCENT as i64,
+        denominator: 1,
+    }),
+};
+
+const MOUNT_USED_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_mountinfo.mount_used",
+    logical_name: Some("os_mountinfo"),
+    field: Some("free_bytes"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Percent),
+    formula: Some("100 * (total_bytes - free_bytes) / total_bytes"),
+    operands: &["total_bytes", "free_bytes"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: MOUNT_USED_PERCENT as i64,
+        denominator: 1,
+    }),
+};
+
+const SLOW_QUERY_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_log_slow_queries.duration",
+    logical_name: Some("pg_log_slow_queries"),
+    field: Some("max_duration_ms"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Milliseconds),
+    formula: None,
+    operands: &["max_duration_ms"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: SLOW_QUERY_DURATION_MS,
+        denominator: 1,
+    }),
+};
+
+const OOM_KILL_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_vmstat.oom_kill_increase",
+    logical_name: Some("os_vmstat"),
+    field: Some("oom_kill"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["oom_kill"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const ARCHIVER_FAILURE_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_archiver.failed_count_increase",
+    logical_name: Some("pg_stat_archiver"),
+    field: Some("failed_count"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["failed_count"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const DATABASE_DEADLOCK_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.deadlocks_increase",
+    logical_name: Some("pg_stat_database"),
+    field: Some("deadlocks"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["deadlocks"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const DATABASE_CHECKSUM_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.checksum_failures_increase",
+    logical_name: Some("pg_stat_database"),
+    field: Some("checksum_failures"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["checksum_failures"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const DATABASE_FATAL_SESSION_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.sessions_fatal_increase",
+    logical_name: Some("pg_stat_database"),
+    field: Some("sessions_fatal"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["sessions_fatal"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const DATABASE_KILLED_SESSION_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.sessions_killed_increase",
+    logical_name: Some("pg_stat_database"),
+    field: Some("sessions_killed"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["sessions_killed"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const DATABASE_XID_AGE_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.frozen_xid_age",
+    logical_name: Some("pg_stat_database"),
+    field: Some("frozen_xid_age"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["frozen_xid_age"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: WRAPAROUND_AGE_THRESHOLD,
+        denominator: 1,
+    }),
+};
+
+const DATABASE_MXID_AGE_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_database.min_mxid_age",
+    logical_name: Some("pg_stat_database"),
+    field: Some("min_mxid_age"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["min_mxid_age"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gte,
+        numerator: WRAPAROUND_AGE_THRESHOLD,
+        denominator: 1,
+    }),
+};
+
+const CGROUP_OOM_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.os_cgroup_memory.oom_kill_increase",
+    logical_name: Some("os_cgroup_memory"),
+    field: Some("oom_kill"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Count),
+    formula: None,
+    operands: &["oom_kill"],
+    boundary: Some(SemanticBoundary::Increase),
+};
+
+const ACTIVE_BACKENDS_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_stat_activity.active_backends_per_cpu",
+    logical_name: Some("pg_stat_activity"),
+    field: Some("state"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: None,
+    formula: Some("active_backends / effective_postgres_cpu"),
+    operands: &["active_backends", "effective_postgres_cpu"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Gt,
+        numerator: ACTIVE_BACKENDS_PER_CPU as i64,
+        denominator: 1,
+    }),
+};
+
+const OVERALL_HEALTH_FINDING_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.health.overall_health",
+    logical_name: Some("health"),
+    field: Some("overall_health"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: Some(SemanticUnit::Percent),
+    formula: None,
+    operands: &["overall_health"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Lt,
+        numerator: OVERALL_HEALTH_BOUNDARY as i64,
+        denominator: 1,
+    }),
+};
+
+const DATA_CORRUPTION_SEMANTIC: SemanticDefinition = SemanticDefinition {
+    id: "finding.pg_log_errors.data_corruption_category",
+    logical_name: Some("pg_log_errors"),
+    field: Some("category"),
+    origin: SemanticOrigin::KronikaDerived,
+    unit: None,
+    formula: None,
+    operands: &["category"],
+    boundary: Some(SemanticBoundary::Compare {
+        operator: SemanticOperator::Eq,
+        numerator: DATA_CORRUPTION_CATEGORY as i64,
+        denominator: 1,
+    }),
+};
+
+/// Every accepted known-bad boundary evaluated by `kronika-index`.
+pub const FINDING_SEMANTICS: &[SemanticDefinition] = &[
+    CPU_BUSY_SEMANTIC,
+    LOAD_PER_CPU_SEMANTIC,
+    MEMORY_AVAILABLE_SEMANTIC,
+    MOUNT_USED_SEMANTIC,
+    SLOW_QUERY_SEMANTIC,
+    OOM_KILL_SEMANTIC,
+    ARCHIVER_FAILURE_SEMANTIC,
+    DATABASE_DEADLOCK_SEMANTIC,
+    DATABASE_CHECKSUM_SEMANTIC,
+    DATABASE_FATAL_SESSION_SEMANTIC,
+    DATABASE_KILLED_SESSION_SEMANTIC,
+    DATABASE_XID_AGE_SEMANTIC,
+    DATABASE_MXID_AGE_SEMANTIC,
+    CGROUP_OOM_SEMANTIC,
+    LOCKS_BLOCKED_BY_SEMANTIC,
+    ACTIVE_BACKENDS_SEMANTIC,
+    OVERALL_HEALTH_FINDING_SEMANTIC,
+    DATA_CORRUPTION_SEMANTIC,
+];
 
 #[derive(Debug)]
 pub(crate) struct FindingBuilder {
@@ -251,6 +527,35 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
                 | 1_001_004
                 | 1_005_001..=1_005_004
         )
+}
+
+/// Accepted known-bad descriptor for one physical finding locator.
+#[must_use]
+pub const fn finding_semantic(type_id: u32, field_ordinal: u16) -> Option<SemanticDefinition> {
+    match (type_id, field_ordinal) {
+        (0, OVERALL_HEALTH_FIELD) => Some(OVERALL_HEALTH_FINDING_SEMANTIC),
+        (OS_CPU, CPU_IDLE_FIELD) => Some(CPU_BUSY_SEMANTIC),
+        (OS_LOADAVG, LOAD1_FIELD) => Some(LOAD_PER_CPU_SEMANTIC),
+        (OS_MEMINFO, MEM_AVAILABLE_FIELD) => Some(MEMORY_AVAILABLE_SEMANTIC),
+        (OS_VMSTAT, OOM_KILL_FIELD) => Some(OOM_KILL_SEMANTIC),
+        (OS_MOUNTINFO, MOUNT_FREE_BYTES_FIELD) => Some(MOUNT_USED_SEMANTIC),
+        (PG_STAT_ARCHIVER, ARCHIVER_FAILED_COUNT_FIELD) => Some(ARCHIVER_FAILURE_SEMANTIC),
+        (PG_LOG_SLOW_QUERIES, SLOW_QUERY_DURATION_FIELD) => Some(SLOW_QUERY_SEMANTIC),
+        (PG_LOG_ERRORS_TYPE_ID, LOG_ERROR_CATEGORY_FIELD) => Some(DATA_CORRUPTION_SEMANTIC),
+        (PG_LOCKS_V1 | PG_LOCKS_V2, LOCKS_BLOCKED_BY_FIELD) => Some(LOCKS_BLOCKED_BY_SEMANTIC),
+        (OS_CGROUP_MEMORY_V1, CGROUP_OOM_KILL_V1_FIELD)
+        | (OS_CGROUP_MEMORY_V2, CGROUP_OOM_KILL_V2_FIELD) => Some(CGROUP_OOM_SEMANTIC),
+        (1_001_001, ACTIVITY_STATE_V1_FIELD) | (1_001_002 | 1_001_004, ACTIVITY_STATE_V2_FIELD) => {
+            Some(ACTIVE_BACKENDS_SEMANTIC)
+        }
+        (1_005_001..=1_005_004, DATABASE_DEADLOCKS_FIELD) => Some(DATABASE_DEADLOCK_SEMANTIC),
+        (1_005_001..=1_005_004, FROZEN_XID_AGE_FIELD) => Some(DATABASE_XID_AGE_SEMANTIC),
+        (1_005_001..=1_005_004, MIN_MXID_AGE_FIELD) => Some(DATABASE_MXID_AGE_SEMANTIC),
+        (1_005_002..=1_005_004, CHECKSUM_FAILURES_FIELD) => Some(DATABASE_CHECKSUM_SEMANTIC),
+        (1_005_003 | 1_005_004, SESSIONS_FATAL_FIELD) => Some(DATABASE_FATAL_SESSION_SEMANTIC),
+        (1_005_003 | 1_005_004, SESSIONS_KILLED_FIELD) => Some(DATABASE_KILLED_SESSION_SEMANTIC),
+        _ => None,
+    }
 }
 
 const fn needs_prior_rows(type_id: u32) -> bool {

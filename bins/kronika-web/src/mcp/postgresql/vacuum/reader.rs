@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
-use super::super::{MAX_ROWS, MAX_SEGMENTS, PostgresqlFailure, State, api_failure, failure};
+use super::super::{
+    Anchor, MAX_ROWS, MAX_SEGMENTS, PostgresqlFailure, State, api_failure, failure,
+};
 use super::SECTION;
 use crate::api::{self, ValueLimits, ValueStopReason};
 use crate::route::{HourRequest, Route, SeriesRequest, Window};
@@ -14,6 +16,7 @@ pub(super) fn collect_hour(
     state: &State,
     from: i64,
     to: i64,
+    anchor: &Anchor,
     cancelled: &impl Fn() -> bool,
 ) -> Result<api::ValueCollection, PostgresqlFailure> {
     let prepared = api::prepare_for_mcp(
@@ -25,6 +28,9 @@ pub(super) fn collect_hour(
                 from: Some(from),
                 to: Some(to),
             },
+            active_segment: anchor
+                .active_wal_position
+                .map(|position| (anchor.segment_id, position)),
             // An empty projection keeps every physical layout exact. The
             // reducer applies the public projection after episode admission.
             series: Some(SeriesRequest {
@@ -36,7 +42,7 @@ pub(super) fn collect_hour(
             }),
         }),
     )
-    .map_err(api_failure)?;
+    .map_err(|error| api_failure(&error))?;
     let collected = prepared
         .collect_values(
             ValueLimits {
@@ -45,7 +51,7 @@ pub(super) fn collect_hour(
             },
             cancelled,
         )
-        .map_err(api_failure)?;
+        .map_err(|error| api_failure(&error))?;
     match collected.stop_reason {
         ValueStopReason::Complete => Ok(collected),
         ValueStopReason::Cancelled => Err(failure(
@@ -105,7 +111,7 @@ pub(super) fn decode_hour(records: Vec<Value>) -> Result<DecodedHour, Postgresql
             Some("row") => {
                 let current_segment =
                     segment_id.ok_or_else(|| malformed("a Vacuum row has no physical segment"))?;
-                rows.push(decode_row(record, current_segment, &layouts)?);
+                rows.push(decode_row(&record, current_segment, &layouts)?);
             }
             Some("warning") => warnings.push(record),
             _ => {}
@@ -164,7 +170,7 @@ pub(super) struct EpisodeKey {
 }
 
 fn decode_row(
-    record: Value,
+    record: &Value,
     segment_id: i64,
     layouts: &BTreeMap<u32, Value>,
 ) -> Result<Sample, PostgresqlFailure> {

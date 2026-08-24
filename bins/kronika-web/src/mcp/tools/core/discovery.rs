@@ -511,7 +511,7 @@ pub(super) fn payload(state: &State, cancelled: &impl Fn() -> bool) -> Result<Pa
     let semantics = crate::product_semantics::all()
         .map_err(|error| Failure::bounded("semantics_unreadable", error.to_string()))?;
     Ok(Payload {
-        anchor: super::anchor(None, None, None),
+        anchor: super::anchor(None, None, None, None),
         data: json!({
             "context": {
                 "historical_only": true,
@@ -541,8 +541,10 @@ fn recorded_context(
     cancelled: &impl Fn() -> bool,
 ) -> Result<RecordedContext, Failure> {
     check_cancelled(cancelled)?;
-    let reader = Reader::open(&state.data_root).map_err(unreadable)?;
-    let discovery = reader.catalog_discovery().map_err(unreadable)?;
+    let reader = Reader::open(&state.data_root).map_err(|error| unreadable(&error))?;
+    let discovery = reader
+        .catalog_discovery()
+        .map_err(|error| unreadable(&error))?;
     check_cancelled(cancelled)?;
     let mut latest = None;
     for (_from, to) in discovery.ranges() {
@@ -550,9 +552,11 @@ fn recorded_context(
         latest = Some(latest.map_or(to, |current: i64| current.max(to)));
     }
     let listing = if let Some(latest) = latest {
-        discovery.segments(latest..=latest).map_err(unreadable)?
+        discovery
+            .segments(latest..=latest)
+            .map_err(|error| unreadable(&error))?
     } else {
-        discovery.segments(..).map_err(unreadable)?
+        discovery.segments(..).map_err(|error| unreadable(&error))?
     };
     check_cancelled(cancelled)?;
     if listing.segments.len() > MAX_SEGMENTS {
@@ -690,7 +694,7 @@ fn check_cancelled(cancelled: &impl Fn() -> bool) -> Result<(), Failure> {
     }
 }
 
-fn unreadable(error: kronika_reader::ReaderError) -> Failure {
+fn unreadable(error: &kronika_reader::ReaderError) -> Failure {
     Failure {
         code: "unreadable",
         message: error.to_string(),

@@ -82,7 +82,6 @@ fn discovery_tools() -> Vec<Tool> {
                     ),
                     ("columns", integer(1, 1_440, 12)),
                     ("top", integer(1, 500, 25)),
-                    ("fields", fields()),
                 ])),
                 &["from_us", "to_us", "surface", "cut"],
             ),
@@ -232,7 +231,6 @@ fn postgresql_state_tools() -> Vec<Tool> {
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
-                    ("find", find_expression()),
                     ("include_idle", boolean(false)),
                     ("include_system", boolean(false)),
                     ("order", short_string("Accepted Activity semantic order.")),
@@ -255,9 +253,7 @@ fn postgresql_state_tools() -> Vec<Tool> {
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
-                    ("find", find_expression()),
                     ("fields", fields()),
-                    ("cursor", cursor()),
                     ("page_size", integer(1, 500, 100)),
                 ])),
                 &["at_us"],
@@ -276,9 +272,7 @@ fn postgresql_state_tools() -> Vec<Tool> {
                 common(map([
                     ("from_us", timestamp("Inclusive UTC interval start.")),
                     ("to_us", timestamp("Inclusive UTC interval end.")),
-                    ("find", find_expression()),
                     ("fields", fields()),
-                    ("cursor", cursor()),
                     ("page_size", integer(1, 500, 100)),
                 ])),
                 &["from_us", "to_us"],
@@ -347,7 +341,6 @@ fn postgresql_query_tools() -> Vec<Tool> {
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),
-                    ("find", find_expression()),
                     ("order", short_string("Accepted Database semantic order.")),
                     ("direction", enumeration(&["asc", "desc"])),
                     ("fields", fields()),
@@ -469,7 +462,6 @@ fn event_history_tools() -> Vec<Tool> {
                     ("section", short_string("Allowlisted logical section.")),
                     ("identities", identity_array()),
                     ("fields", fields()),
-                    ("cursor", cursor()),
                     ("sample_limit", integer(1, 10_000, 2_000)),
                 ])),
                 &["from_us", "to_us", "section", "fields"],

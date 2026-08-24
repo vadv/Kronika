@@ -422,6 +422,7 @@ fn dynamic_timed_context_indices_are_unique_beyond_three_sources() {
 fn request() -> SnapshotRequest {
     SnapshotRequest {
         segment_id: 7,
+        active_position: None,
         at: 11,
         sections: vec!["pg_stat_statements".to_owned()],
         fields: vec!["queryid".to_owned(), "query".to_owned()],

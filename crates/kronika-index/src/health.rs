@@ -1,5 +1,74 @@
 //! Health components and their additive penalties.
 
+use crate::semantic::{SemanticDefinition, SemanticOrigin, SemanticUnit};
+
+const OS_HEALTH_FORMULA: &str = "100 - floor(min(i64_max, 100 * min(max(delta(cpu_stall_us), delta(memory_stall_us), delta(io_stall_us)), elapsed_us) + floor(elapsed_us / 2)) / elapsed_us)";
+
+macro_rules! define_postgres_health_policy {
+    ($service_slots_per_cpu:literal) => {
+        const POSTGRES_SERVICE_SLOTS_PER_CPU: u64 = $service_slots_per_cpu;
+        const POSTGRES_HEALTH_FORMULA: &str = concat!(
+            "if effective_postgres_cpu = 0 then null else if active_backends <= ",
+            stringify!($service_slots_per_cpu),
+            " * effective_postgres_cpu then 100 else 100 - floor((100 * (active_backends - ",
+            stringify!($service_slots_per_cpu),
+            " * effective_postgres_cpu) + floor(active_backends / 2)) / active_backends)"
+        );
+    };
+}
+
+// The macro keeps the executable factor and its lossless descriptor on the
+// same evaluator-owned literal.
+define_postgres_health_policy!(2);
+
+/// Stable descriptors for the three health series evaluated in this module.
+pub const HEALTH_SEMANTICS: &[SemanticDefinition] = &[
+    SemanticDefinition {
+        id: "health.os",
+        logical_name: Some("health"),
+        field: Some("os_health"),
+        origin: SemanticOrigin::KronikaDerived,
+        unit: Some(SemanticUnit::Percent),
+        formula: Some(OS_HEALTH_FORMULA),
+        operands: &[
+            "cpu_stall_us",
+            "memory_stall_us",
+            "io_stall_us",
+            "elapsed_us",
+        ],
+        boundary: None,
+    },
+    SemanticDefinition {
+        id: "health.postgresql",
+        logical_name: Some("health"),
+        field: Some("postgres_health"),
+        origin: SemanticOrigin::KronikaDerived,
+        unit: Some(SemanticUnit::Percent),
+        formula: Some(POSTGRES_HEALTH_FORMULA),
+        operands: &["active_backends", "effective_postgres_cpu"],
+        boundary: None,
+    },
+    SemanticDefinition {
+        id: "health.overall",
+        logical_name: Some("health"),
+        field: Some("overall_health"),
+        origin: SemanticOrigin::KronikaDerived,
+        unit: Some(SemanticUnit::Percent),
+        formula: Some("clamp(100 - os_penalty - postgres_penalty, 0, 100)"),
+        operands: &["os_penalty", "postgres_penalty"],
+        boundary: None,
+    },
+];
+
+/// Descriptor referenced by one emitted health series name.
+#[must_use]
+pub fn health_semantic(series: &str) -> Option<SemanticDefinition> {
+    HEALTH_SEMANTICS
+        .iter()
+        .find(|definition| definition.field == Some(series))
+        .copied()
+}
+
 /// Whether one optional source contributes a known penalty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePenalty {
@@ -53,7 +122,7 @@ pub fn postgres_penalty(active: u32, effective_cpus: u32) -> Option<u8> {
         return None;
     }
     let active = u64::from(active);
-    let service_slots = u64::from(effective_cpus).saturating_mul(2);
+    let service_slots = u64::from(effective_cpus).saturating_mul(POSTGRES_SERVICE_SLOTS_PER_CPU);
     if active <= service_slots {
         return Some(0);
     }

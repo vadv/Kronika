@@ -57,13 +57,15 @@ impl Policies {
             .enumerate()
             .map(|(position, risk)| (risk, position))
             .collect::<BTreeMap<_, _>>();
-        let definitions = [adjacency, no_movement, risk]
-            .into_iter()
-            .map(|definition| {
-                serde_json::to_value(definition)
-                    .map_err(|error| semantics_failure(format!("serialize Vacuum policy: {error}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let definitions = [
+            adjacency.id.as_str(),
+            no_movement.id.as_str(),
+            risk.id.as_str(),
+        ]
+        .into_iter()
+        .map(crate::mcp::semantics::accepted)
+        .map(|definition| definition.map_err(|error| semantics_failure(error.to_string())))
+        .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             adjacency_factor: *adjacency_factor,
             no_movement_samples,

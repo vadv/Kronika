@@ -28,7 +28,7 @@ const AT: i64 = SEGMENT_ID + 30_000_000;
 struct Fixture {
     directory: tempfile::TempDir,
     _writer: WriterOwner,
-    _journal: Journal,
+    journal: Journal,
 }
 
 impl Fixture {
@@ -46,7 +46,7 @@ impl Fixture {
         Self {
             directory,
             _writer: writer,
-            _journal: journal,
+            journal,
         }
     }
 
@@ -62,6 +62,61 @@ impl Fixture {
             heavy_scans: Arc::new(Semaphore::new(2)),
         }
     }
+
+    fn append_generation(&mut self) {
+        let address = SegmentAddress::new(SegmentId::new(SEGMENT_ID).expect("segment id"))
+            .expect("segment address");
+        append_fixture(&mut self.journal, address);
+    }
+}
+
+#[tokio::test]
+async fn continuation_anchor_reports_the_prefix_that_supplied_its_rows() {
+    let mut fixture = Fixture::new();
+    let first = dispatch(
+        &fixture,
+        "kronika_find_postgresql_activity",
+        json!({
+            "at_us": AT.to_string(),
+            "include_idle": true,
+            "include_system": true,
+            "page_size": 1,
+        }),
+    )
+    .await;
+    assert_ok(&first, "first Activity page");
+    let cursor = first
+        .pointer("/page/next_cursor")
+        .and_then(Value::as_str)
+        .expect("Activity continuation cursor")
+        .to_owned();
+    let captured = first
+        .pointer("/anchor/active_wal_position")
+        .and_then(Value::as_str)
+        .expect("first Activity source prefix")
+        .to_owned();
+
+    fixture.append_generation();
+    let second = dispatch(
+        &fixture,
+        "kronika_find_postgresql_activity",
+        json!({
+            "at_us": AT.to_string(),
+            "include_idle": true,
+            "include_system": true,
+            "page_size": 1,
+            "cursor": cursor,
+        }),
+    )
+    .await;
+    assert_ok(&second, "continued Activity page");
+
+    assert_eq!(
+        second
+            .pointer("/anchor/active_wal_position")
+            .and_then(Value::as_str),
+        Some(captured.as_str())
+    );
 }
 
 #[tokio::test]

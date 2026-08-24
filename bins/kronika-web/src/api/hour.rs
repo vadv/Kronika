@@ -60,6 +60,7 @@ pub(super) fn prepare(
 ) -> Result<PreparedHour, ApiError> {
     let started = std::time::Instant::now();
     let requested = request.window;
+    let active_segment = request.active_segment;
     let reader = Reader::open(root)?;
     let discovery = reader.catalog_discovery()?;
     let hours = hours_of_ranges(discovery.ranges());
@@ -78,7 +79,8 @@ pub(super) fn prepare(
             window.to.map_or(Unbounded, Included),
         ))?
     };
-    let listed = stored.segments;
+    let mut listed = stored.segments;
+    pin_active_segment(&mut listed, active_segment)?;
     let mut segments = listed
         .iter()
         .filter(|segment| overlaps_window(segment.min_ts(), segment.max_ts(), window))
@@ -108,6 +110,34 @@ pub(super) fn prepare(
         series: request.series,
         index_access,
     })
+}
+
+fn pin_active_segment(
+    segments: &mut [SegmentRef],
+    expected: Option<(i64, u64)>,
+) -> Result<(), ApiError> {
+    let Some((segment_id, active_position)) = expected else {
+        return Ok(());
+    };
+    let segment = segments
+        .iter_mut()
+        .find(|segment| segment.id() == segment_id)
+        .ok_or_else(source_changed)?;
+    if segment.kind() != SegmentKind::Active {
+        return Err(source_changed());
+    }
+    *segment = segment
+        .at_active_position(active_position)
+        .map_err(|_error| source_changed())?;
+    Ok(())
+}
+
+fn source_changed() -> ApiError {
+    kronika_reader::ReaderError::from(std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "recorded hour source changed between read passes",
+    ))
+    .into()
 }
 
 fn overlaps_window(min_ts: i64, max_ts: i64, window: Window) -> bool {

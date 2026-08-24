@@ -38,6 +38,7 @@ pub(super) fn execute(
         state,
         Route::Snapshot(Box::new(SnapshotRequest {
             segment_id: anchor.segment_id,
+            active_position: anchor.active_wal_position,
             at,
             sections: vec!["pg_locks".to_owned()],
             fields: projected,
@@ -60,8 +61,13 @@ pub(super) fn execute(
     let selected = selected_at(&collected.records);
     let mut decoded = decode_rows(&collected.records, "pg_locks")?;
     admit_complete_graph(&graph_page, decoded.rows.len(), page_ceiling)?;
-    let prepared =
-        prepared_transactions(state, anchor.segment_id, selected.unwrap_or(at), cancelled)?;
+    let prepared = prepared_transactions(
+        state,
+        anchor.segment_id,
+        anchor.active_wal_position,
+        selected.unwrap_or(at),
+        cancelled,
+    )?;
     decoded.warnings.extend(prepared.warnings);
     let (locks, components) = build_graph(decoded.rows, &prepared.rows)?;
     let returned = locks.len();
@@ -74,7 +80,7 @@ pub(super) fn execute(
         data: json!({
             "locks": locks,
             "components": components,
-            "semantics": lock_semantics(decoded.layouts),
+            "semantics": lock_semantics(&decoded.layouts)?,
         }),
         page: json!({
             "returned": returned,
@@ -129,11 +135,13 @@ fn admit_complete_graph(
 fn prepared_transactions(
     state: &State,
     segment_id: i64,
+    active_position: Option<u64>,
     at: i64,
     cancelled: &impl Fn() -> bool,
 ) -> Result<DecodedRows, PostgresqlFailure> {
     let request = SnapshotRequest {
         segment_id,
+        active_position,
         at,
         sections: vec!["pg_prepared_xacts".to_owned()],
         fields: PREPARED_FIELDS
@@ -525,6 +533,7 @@ fn enriched_row(
         row.insert(
             "accepted_finding".to_owned(),
             json!({
+                "semantic_id": kronika_index::LOCKS_BLOCKED_BY_SEMANTIC.id,
                 "origin": "kronika_derived",
                 "source": "kronika_index",
                 "logical_name": "pg_locks",
@@ -636,38 +645,30 @@ fn parse_blockers(value: &Value) -> Result<Vec<i32>, PostgresqlFailure> {
     Ok(blockers)
 }
 
-fn lock_semantics(layouts: Vec<Value>) -> Vec<Value> {
+fn lock_semantics(layouts: &[Value]) -> Result<Vec<Value>, PostgresqlFailure> {
     let mut semantics = layouts
-        .into_iter()
-        .map(|layout| {
-            json!({
-                "origin": "recorded",
-                "source": "kronika_registry",
-                "layout": layout,
-            })
-        })
-        .collect::<Vec<_>>();
+        .iter()
+        .map(crate::mcp::semantics::recorded_layout)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| failure("semantics_unreadable", error.to_string(), None))?;
     semantics.push(json!({
+        "id": "recorded.pg_locks.blocked_by",
         "origin": "recorded",
         "source": "pg_blocking_pids",
         "logical_name": "pg_locks",
         "field": "blocked_by",
         "prepared_transaction_pid": 0,
     }));
+    semantics.push(crate::mcp::semantics::indexed(
+        kronika_index::LOCKS_BLOCKED_BY_SEMANTIC,
+    ));
     semantics.push(json!({
-        "origin": "kronika_derived",
-        "source": "kronika_index",
-        "logical_name": "pg_locks",
-        "kind": "known_bad",
-        "field": "blocked_by",
-        "predicate": "nonempty",
-    }));
-    semantics.push(json!({
+        "id": "lock.graph.mechanical",
         "origin": "kronika_derived",
         "source": "recorded_blocked_by_edges",
         "operation": "mechanical_component_parent_depth_order",
     }));
-    semantics
+    Ok(semantics)
 }
 
 fn malformed(message: &'static str) -> PostgresqlFailure {

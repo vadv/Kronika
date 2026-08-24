@@ -1,4 +1,7 @@
-use super::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
+use super::{
+    HEALTH_SEMANTICS, OS_HEALTH_FORMULA, POSTGRES_HEALTH_FORMULA, POSTGRES_SERVICE_SLOTS_PER_CPU,
+    SourcePenalty, Stall, health, overall_health, postgres_penalty,
+};
 
 /// One second, in the microseconds the counters use.
 const SECOND: i64 = 1_000_000;
@@ -8,6 +11,16 @@ const fn stall(cpu: i64, memory: i64, io: i64) -> Stall {
 }
 
 const ZERO: Stall = stall(0, 0, 0);
+
+#[test]
+fn semantic_formulas_name_the_exact_health_arithmetic() {
+    assert_eq!(HEALTH_SEMANTICS[0].formula, Some(OS_HEALTH_FORMULA));
+    assert!(OS_HEALTH_FORMULA.contains("min(max(delta("));
+    assert!(OS_HEALTH_FORMULA.contains("floor(elapsed_us / 2)"));
+    assert_eq!(POSTGRES_SERVICE_SLOTS_PER_CPU, 2);
+    assert_eq!(HEALTH_SEMANTICS[1].formula, Some(POSTGRES_HEALTH_FORMULA));
+    assert!(POSTGRES_HEALTH_FORMULA.contains("active_backends <= 2 * effective_postgres_cpu"));
+}
 
 #[test]
 fn an_idle_interval_is_a_hundred() {

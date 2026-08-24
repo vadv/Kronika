@@ -22,7 +22,7 @@ fn handler_orders_the_exact_interval_and_continues_without_duplicates() {
     fixture.append_initial_events();
     let state = fixture.state();
 
-    let first = execute(&state, arguments("asc", 2, None, None)).expect("first Event page");
+    let first = execute(&state, &arguments("asc", 2, None, None)).expect("first Event page");
     assert_eq!(timestamps(&first.data), [FROM_US + 10, FROM_US + 20]);
     assert_eq!(sections(&first.data), ["pg_log_lifecycle", "pg_log_errors"]);
     assert!(first.data.get("groups").is_none());
@@ -48,7 +48,7 @@ fn handler_orders_the_exact_interval_and_continues_without_duplicates() {
         .to_owned();
 
     let second =
-        execute(&state, arguments("asc", 2, Some(&cursor), None)).expect("second Event page");
+        execute(&state, &arguments("asc", 2, Some(&cursor), None)).expect("second Event page");
     assert_eq!(timestamps(&second.data), [FROM_US + 30]);
     assert_eq!(second.page["stop_reason"], "complete");
     assert!(second.page["next_cursor"].is_null());
@@ -59,13 +59,13 @@ fn continuation_allows_page_size_to_change() {
     let mut fixture = Fixture::new();
     fixture.append_initial_events();
     let state = fixture.state();
-    let first = execute(&state, arguments("asc", 1, None, None)).expect("first Event page");
+    let first = execute(&state, &arguments("asc", 1, None, None)).expect("first Event page");
     let cursor = first.page["next_cursor"]
         .as_str()
         .expect("Event continuation")
         .to_owned();
 
-    let second = execute(&state, arguments("asc", 10, Some(&cursor), None))
+    let second = execute(&state, &arguments("asc", 10, Some(&cursor), None))
         .expect("continuation with a different delivery size");
     assert_eq!(timestamps(&second.data), [FROM_US + 20, FROM_US + 30]);
     assert_eq!(second.page["stop_reason"], "complete");
@@ -79,7 +79,7 @@ fn interval_endpoints_are_inclusive_and_descending_cursor_is_exact() {
     let mut first_args = arguments("desc", 2, None, None);
     first_args.insert("from_us".to_owned(), (FROM_US + 10).to_string().into());
     first_args.insert("to_us".to_owned(), (FROM_US + 30).to_string().into());
-    let first = execute(&state, first_args).expect("descending Event page");
+    let first = execute(&state, &first_args).expect("descending Event page");
     assert_eq!(timestamps(&first.data), [FROM_US + 30, FROM_US + 20]);
     let cursor = first.page["next_cursor"]
         .as_str()
@@ -89,7 +89,7 @@ fn interval_endpoints_are_inclusive_and_descending_cursor_is_exact() {
     let mut second_args = arguments("desc", 2, Some(&cursor), None);
     second_args.insert("from_us".to_owned(), (FROM_US + 10).to_string().into());
     second_args.insert("to_us".to_owned(), (FROM_US + 30).to_string().into());
-    let second = execute(&state, second_args).expect("descending continuation");
+    let second = execute(&state, &second_args).expect("descending continuation");
     assert_eq!(timestamps(&second.data), [FROM_US + 10]);
 }
 
@@ -98,14 +98,14 @@ fn continuation_pins_the_original_active_prefix() {
     let mut fixture = Fixture::new();
     fixture.append_initial_events();
     let state = fixture.state();
-    let first = execute(&state, arguments("asc", 2, None, None)).expect("first Event page");
+    let first = execute(&state, &arguments("asc", 2, None, None)).expect("first Event page");
     let cursor = first.page["next_cursor"]
         .as_str()
         .expect("Event continuation")
         .to_owned();
 
     fixture.append_error(FROM_US + 25, 0, 4, b"later append");
-    let second = execute(&state, arguments("asc", 10, Some(&cursor), None))
+    let second = execute(&state, &arguments("asc", 10, Some(&cursor), None))
         .expect("continuation over pinned active prefix");
     assert_eq!(timestamps(&second.data), [FROM_US + 30]);
 }
@@ -116,7 +116,7 @@ fn handler_applies_shared_find_and_descending_order() {
     fixture.append_initial_events();
     let state = fixture.state();
 
-    let payload = execute(&state, arguments("desc", 10, None, Some("kind:critical")))
+    let payload = execute(&state, &arguments("desc", 10, None, Some("kind:critical")))
         .expect("filtered Event page");
 
     assert_eq!(timestamps(&payload.data), [FROM_US + 30]);
@@ -126,7 +126,7 @@ fn handler_applies_shared_find_and_descending_order() {
     assert!(events[0]["type_id"].is_string());
     assert!(events[0]["row_ordinal"].is_string());
 
-    let text = execute(&state, arguments("desc", 10, None, Some("recorded error")))
+    let text = execute(&state, &arguments("desc", 10, None, Some("recorded error")))
         .expect("free-text Event search");
     assert_eq!(timestamps(&text.data), [FROM_US + 30, FROM_US + 20]);
 }
@@ -139,7 +139,7 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
     let mut fields = arguments("asc", 10, None, None);
     fields.insert("sources".to_owned(), json!(["pg_log_errors"]));
     fields.insert("fields".to_owned(), json!(["level"]));
-    let error = execute(&state, fields).expect_err("field is absent from selected sources");
+    let error = execute(&state, &fields).expect_err("field is absent from selected sources");
     assert_eq!(
         (error.code, error.parameter.as_deref()),
         ("no_such_column", Some("fields"))
@@ -147,7 +147,7 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
 
     let mut mixed_sources = arguments("asc", 10, None, None);
     mixed_sources.insert("fields".to_owned(), json!(["severity"]));
-    let error = execute(&state, mixed_sources)
+    let error = execute(&state, &mixed_sources)
         .expect_err("field must exist in every selected Event source");
     assert_eq!(
         (error.code, error.parameter.as_deref()),
@@ -156,22 +156,22 @@ fn handler_rejects_mismatched_fields_and_typed_order_inputs() {
 
     let mut order = arguments("asc", 10, None, None);
     order.insert("order".to_owned(), Value::Null);
-    let error = execute(&state, order).expect_err("null order is not omission");
+    let error = execute(&state, &order).expect_err("null order is not omission");
     assert_eq!(error.parameter.as_deref(), Some("order"));
 
     let mut direction = arguments("asc", 10, None, None);
     direction.insert("direction".to_owned(), json!(7));
-    let error = execute(&state, direction).expect_err("numeric direction is invalid");
+    let error = execute(&state, &direction).expect_err("numeric direction is invalid");
     assert_eq!(error.parameter.as_deref(), Some("direction"));
 
     let mut missing_order = arguments("asc", 10, None, None);
     missing_order.remove("order");
-    let error = execute(&state, missing_order).expect_err("order is explicit");
+    let error = execute(&state, &missing_order).expect_err("order is explicit");
     assert_eq!(error.parameter.as_deref(), Some("order"));
 
     let mut missing_direction = arguments("asc", 10, None, None);
     missing_direction.remove("direction");
-    let error = execute(&state, missing_direction).expect_err("direction is explicit");
+    let error = execute(&state, &missing_direction).expect_err("direction is explicit");
     assert_eq!(error.parameter.as_deref(), Some("direction"));
 }
 
@@ -219,9 +219,9 @@ async fn real_mcp_dispatch_executes_the_recorded_event_row_surface() {
 
 fn execute(
     state: &State,
-    args: Map<String, Value>,
+    args: &Map<String, Value>,
 ) -> Result<super::super::ExpertPayload, super::super::ExpertFailure> {
-    super::execute(state, &args, &|| false)
+    super::execute(state, args, &|| false)
 }
 
 fn arguments(

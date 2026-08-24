@@ -52,6 +52,8 @@ pub(crate) struct HeatmapRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SnapshotRequest {
     pub(crate) segment_id: i64,
+    /// Exact active WAL prefix captured by an earlier pass in the same read.
+    pub(crate) active_position: Option<u64>,
     pub(crate) at: i64,
     pub(crate) sections: Vec<String>,
     pub(crate) fields: Vec<String>,
@@ -75,6 +77,8 @@ pub(crate) struct SnapshotRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HourRequest {
     pub(crate) window: Window,
+    /// Exact active segment and WAL prefix captured by an earlier pass.
+    pub(crate) active_segment: Option<(i64, u64)>,
     pub(crate) series: Option<SeriesRequest>,
 }
 
@@ -365,6 +369,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
     Ok(SnapshotRequest {
         segment_id,
+        active_position: None,
         at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
         sections,
         fields,
@@ -568,6 +573,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
         if fields.is_empty() && filters.is_empty() && type_id.is_none() && group.is_none() {
             return Ok(HourRequest {
                 window,
+                active_segment: None,
                 series: None,
             });
         }
@@ -576,6 +582,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     validate_relation_series(&section, &fields, &filters, type_id, group)?;
     Ok(HourRequest {
         window,
+        active_segment: None,
         series: Some(SeriesRequest {
             section,
             fields,

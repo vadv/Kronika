@@ -130,6 +130,31 @@ fn catalog_schemas_are_bounded_surface_specific_and_read_only() {
 }
 
 #[test]
+fn catalog_does_not_advertise_inputs_that_handlers_refuse() {
+    for (name, absent) in [
+        ("kronika_rank_heatmap", &["fields"][..]),
+        ("kronika_find_postgresql_activity", &["find"][..]),
+        ("kronika_find_postgresql_locks", &["find", "cursor"][..]),
+        ("kronika_find_postgresql_vacuum", &["find", "cursor"][..]),
+        ("kronika_find_postgresql_databases", &["find"][..]),
+        ("kronika_get_metric_history", &["cursor"][..]),
+    ] {
+        let tool = super::catalog::find(name).expect("catalog tool");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("input properties");
+        for parameter in absent {
+            assert!(
+                !properties.contains_key(*parameter),
+                "{name} advertises refused input {parameter}"
+            );
+        }
+    }
+}
+
+#[test]
 fn mcp_tool_catalog_cost() {
     let catalog = super::catalog::all();
     let descriptor_bytes = serde_json::to_vec(catalog).expect("catalog JSON").len();
@@ -158,11 +183,11 @@ fn mcp_tool_catalog_cost() {
         output_schema_bytes,
         estimated_tokens
     );
-    assert!((18..=22).contains(&catalog.len()));
-    assert!(
-        descriptor_bytes <= 60 * 1_024,
-        "catalog is {descriptor_bytes} bytes"
-    );
+    assert_eq!(catalog.len(), 20);
+    assert_eq!(descriptor_bytes, 44_980);
+    assert_eq!(input_schema_bytes, 16_975);
+    assert_eq!(output_schema_bytes, 20_207);
+    assert_eq!(estimated_tokens, 11_245);
 }
 
 #[tokio::test]

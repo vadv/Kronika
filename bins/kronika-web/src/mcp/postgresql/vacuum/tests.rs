@@ -10,6 +10,9 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 
+use super::super::resolve_anchor;
+use super::cadence::recorded_cadence;
+use super::reader::{collect_hour, decode_hour};
 use super::{
     EpisodeKey, Policies, Sample, adjacency_limit, admit_samples, build_episodes, episode_value,
     execute, sort_episodes,
@@ -50,6 +53,10 @@ impl Fixture {
     }
 
     fn append_history(&mut self) {
+        self.append_history_with_cadence(10);
+    }
+
+    fn append_history_with_cadence(&mut self, cadence_seconds: u64) {
         let mut interner = Interner::new(DictLimits::default());
         let hostname = label(&mut interner, "db-01");
         let kernel = label(&mut interner, "6.12");
@@ -72,7 +79,7 @@ impl Fixture {
                 boot_id: boot,
                 btime: Ts(FROM - 1_000_000),
                 postgresql_enabled: true,
-                postgresql_interval_seconds: 10,
+                postgresql_interval_seconds: cadence_seconds,
                 postgresql_effective_cpus: Some(4),
             })
             .expect("metadata row fits");
@@ -110,6 +117,31 @@ impl Fixture {
             heavy_scans: Arc::new(Semaphore::new(2)),
         }
     }
+}
+
+#[test]
+fn active_vacuum_passes_reuse_one_captured_prefix() {
+    let mut fixture = Fixture::new();
+    fixture.append_history_with_cadence(10);
+    let state = fixture.state();
+    let anchor = resolve_anchor(&state, TO, &[super::SECTION, "instance_metadata"], &|| {
+        false
+    })
+    .expect("capture one Vacuum source prefix");
+    let captured = anchor
+        .active_wal_position
+        .expect("active Vacuum source prefix");
+
+    fixture.append_history_with_cadence(20);
+    let collected = collect_hour(&state, FROM, TO, &anchor, &|| false)
+        .expect("read Vacuum rows from captured prefix");
+    let decoded = decode_hour(collected.records).expect("decode captured Vacuum rows");
+    let cadence = recorded_cadence(&state, &anchor, TO, &|| false)
+        .expect("read cadence from captured prefix");
+
+    assert_eq!(decoded.rows.len(), 4);
+    assert_eq!(cadence.seconds, Some(10));
+    assert_eq!(anchor.active_wal_position, Some(captured));
 }
 
 #[test]

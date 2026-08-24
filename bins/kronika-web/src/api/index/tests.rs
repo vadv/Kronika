@@ -122,6 +122,35 @@ fn event_stream_contains_only_sparse_locator_facts() {
 }
 
 #[test]
+fn known_bad_locator_references_the_index_evaluator_descriptor() {
+    let block = FindingBlock {
+        type_id: 1_102_001,
+        total_hits: 1,
+        truncated: false,
+        findings: vec![Finding {
+            kind: FindingKind::KnownBad,
+            category: None,
+            field_ordinal: 5,
+            row_ordinal: 42,
+            timestamp: 1_700_000_000_000_000,
+        }],
+    };
+    let mut rows = Vec::new();
+
+    assert!(stream_findings(
+        "os_cpu",
+        block,
+        None,
+        &mut |value| {
+            rows.push(value);
+            true
+        },
+        &|| false,
+    ));
+    assert_eq!(rows[1]["semantic_id"], "finding.os_cpu.cpu_busy");
+}
+
+#[test]
 fn error_event_stream_exposes_only_the_stored_category_and_locator() {
     let block = FindingBlock {
         type_id: 2_001_001,

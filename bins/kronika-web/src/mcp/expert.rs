@@ -66,6 +66,10 @@ pub(super) fn execute(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded history handler keeps validation, shared-reader execution, and response assembly together"
+)]
 fn history(
     state: &State,
     args: &Map<String, Value>,
@@ -129,6 +133,7 @@ fn history(
                 from: Some(from),
                 to: Some(to),
             },
+            active_segment: None,
             series: Some(SeriesRequest {
                 section: section.to_owned(),
                 fields: fields.clone(),
@@ -221,6 +226,7 @@ fn snapshot(
     };
     let request = SnapshotRequest {
         segment_id: segment.id,
+        active_position: segment.active_position,
         at,
         sections: vec![section.to_owned()],
         fields,
@@ -246,7 +252,7 @@ fn snapshot(
         },
         cancelled,
     )?;
-    snapshot_payload(at, segment, collected, catalog_warnings(&catalog.records))
+    snapshot_payload(at, segment, &collected, catalog_warnings(&catalog.records))
 }
 
 fn row_detail(
@@ -486,10 +492,9 @@ fn api_failure(error: ApiError) -> ExpertFailure {
         error.code()
     };
     let parameter = error.parameter().map(ToOwned::to_owned);
-    let message = if matches!(error, ApiError::Unreadable(_)) {
-        "recorded data could not be read".to_owned()
-    } else {
-        error.to_string()
+    let message = match error {
+        ApiError::Unreadable(_) => "recorded data could not be read".to_owned(),
+        error => error.to_string(),
     };
     failure(code, message, parameter.as_deref(), retryable)
 }
@@ -959,6 +964,7 @@ fn anchor_for_window(from: i64, _to: i64, records: &[Value]) -> Value {
 }
 
 fn page(returned: usize, truncated: bool, next_cursor: Option<String>, reason: &str) -> Value {
+    let next_cursor = next_cursor.map_or(Value::Null, Value::String);
     json!({
         "returned": returned,
         "truncated": truncated,
@@ -993,8 +999,8 @@ fn empty_snapshot(at: i64, section: &str, mut warnings: Vec<Value>) -> ExpertPay
 
 fn snapshot_payload(
     at: i64,
-    segment: SegmentInfo,
-    collected: ValueCollection,
+    mut segment: SegmentInfo,
+    collected: &ValueCollection,
     warnings: Vec<Value>,
 ) -> Result<ExpertPayload, ExpertFailure> {
     match collected.stop_reason {
@@ -1012,6 +1018,13 @@ fn snapshot_payload(
         }
     }
     let rows = records_named(&collected.records, "row");
+    segment.active_position = collected
+        .records
+        .iter()
+        .find(|record| record.get("record").and_then(Value::as_str) == Some("snapshot"))
+        .and_then(|record| record.pointer("/segment/active_wal_position"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse().ok());
     let layouts = records_named(&collected.records, "layout")
         .into_iter()
         .filter_map(|record| record.get("layout").cloned())

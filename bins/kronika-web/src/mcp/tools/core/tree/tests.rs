@@ -3,15 +3,17 @@ use std::sync::Arc;
 
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_reader::Reader;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 use serde_json::{Value, json};
 
 use super::{prepare, transform};
+use crate::api::{self, ValueLimits};
 use crate::config::SOURCE_OS;
 use crate::mcp::{STRUCTURED_CONTENT_BYTES, State};
-use crate::route::{Order, SnapshotRequest};
+use crate::route::{Order, Route, SnapshotRequest};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SAMPLE_AT: i64 = SEGMENT_ID + 100;
@@ -162,6 +164,136 @@ fn process_handler_reads_and_transforms_one_complete_recorded_snapshot() {
 }
 
 #[test]
+fn snapshot_read_keeps_the_active_prefix_captured_by_the_tree_pass() {
+    let mut fixture = Fixture::new();
+    fixture.append_processes(&[(1, 0)]);
+    let reader = Reader::open(fixture.root()).expect("open Process reader");
+    let listing = reader
+        .catalog_segment(SEGMENT_ID)
+        .expect("capture first Process prefix");
+    let position = listing.segments[0]
+        .active_position()
+        .expect("active Process prefix");
+    fixture.append_processes(&[(2, 1)]);
+
+    let mut request = prepare(request(None, None)).expect("tree request").complete;
+    request.active_position = Some(position);
+    let collected = api::prepare_for_mcp(
+        fixture.root(),
+        SOURCE_OS,
+        false,
+        Route::Snapshot(Box::new(request)),
+    )
+    .expect("prepare pinned snapshot")
+    .collect_values(
+        ValueLimits {
+            records: 32,
+            ndjson_bytes: STRUCTURED_CONTENT_BYTES,
+        },
+        &|| false,
+    )
+    .expect("read pinned snapshot");
+
+    assert_eq!(
+        (
+            collected
+                .records
+                .iter()
+                .filter(|record| record.get("record").and_then(Value::as_str) == Some("row"))
+                .count(),
+            collected.records[0]
+                .pointer("/segment/active_wal_position")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<u64>().ok()),
+        ),
+        (1, Some(position))
+    );
+}
+
+#[test]
+fn process_continuation_anchor_reports_the_prefix_that_supplied_its_rows() {
+    let mut fixture = Fixture::new();
+    fixture.append_processes(&[(1, 0), (2, 0), (3, 0)]);
+    let state = State {
+        data_root: fixture.root().to_owned(),
+        sources: SOURCE_OS,
+        synthetic_demo: false,
+        heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+    };
+    let first_args = json!({
+        "at_us": SAMPLE_AT.to_string(),
+        "lens": "identity",
+        "page_size": 1,
+        "data_budget_bytes": STRUCTURED_CONTENT_BYTES,
+    });
+    let first = super::super::execute(
+        &state,
+        "kronika_find_processes",
+        first_args.as_object().expect("first Process arguments"),
+        STRUCTURED_CONTENT_BYTES,
+        &|| false,
+    )
+    .expect("first Process page");
+    let cursor = first.page["next_cursor"]
+        .as_str()
+        .expect("Process continuation cursor")
+        .to_owned();
+    let captured = first.anchor["active_wal_position"]
+        .as_str()
+        .expect("first Process source prefix")
+        .to_owned();
+
+    fixture.append_processes(&[(4, 0)]);
+    let next_args = json!({
+        "at_us": SAMPLE_AT.to_string(),
+        "lens": "identity",
+        "page_size": 1,
+        "cursor": cursor,
+        "data_budget_bytes": STRUCTURED_CONTENT_BYTES,
+    });
+    let next = super::super::execute(
+        &state,
+        "kronika_find_processes",
+        next_args.as_object().expect("continued Process arguments"),
+        STRUCTURED_CONTENT_BYTES,
+        &|| false,
+    )
+    .expect("continued Process page");
+
+    assert_eq!(
+        next.anchor["active_wal_position"].as_str(),
+        Some(captured.as_str())
+    );
+}
+
+#[test]
+fn snapshot_read_reports_a_retryable_source_change_for_an_unusable_prefix() {
+    let mut fixture = Fixture::new();
+    fixture.append_processes(&[(1, 0)]);
+    let reader = Reader::open(fixture.root()).expect("open Process reader");
+    let listing = reader
+        .catalog_segment(SEGMENT_ID)
+        .expect("capture Process prefix");
+    let position = listing.segments[0]
+        .active_position()
+        .expect("active Process prefix");
+    let mut request = prepare(request(None, None)).expect("tree request").complete;
+    request.active_position = Some(position.saturating_add(1));
+
+    let error = match api::prepare_for_mcp(
+        fixture.root(),
+        SOURCE_OS,
+        false,
+        Route::Snapshot(Box::new(request)),
+    ) {
+        Ok(_prepared) => panic!("an unusable active prefix was accepted"),
+        Err(error) => error,
+    };
+
+    assert!(error.source_changed_during_read());
+}
+
+#[test]
 fn process_handler_rejects_an_over_bound_snapshot_instead_of_returning_a_partial_tree() {
     let mut fixture = Fixture::new();
     let processes = (1_i32..=501).map(|pid| (pid, 0)).collect::<Vec<_>>();
@@ -198,6 +330,7 @@ fn process_handler_rejects_an_over_bound_snapshot_instead_of_returning_a_partial
 fn request(search: Option<&str>, cursor: Option<&str>) -> SnapshotRequest {
     SnapshotRequest {
         segment_id: SEGMENT_ID,
+        active_position: None,
         at: SAMPLE_AT,
         sections: vec!["os_process".to_owned()],
         fields: vec!["comm".to_owned(), "tree_order".to_owned()],
@@ -246,6 +379,10 @@ fn layout() -> Value {
     })
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "pid and ppid are the canonical distinct process identifier fields under test"
+)]
 fn row(pid: i64, ppid: i64, ordinal: usize) -> Value {
     json!({
         "record": "row",
@@ -292,6 +429,10 @@ fn tree_values(records: &[Value]) -> Vec<(i64, Option<i64>, u64, u64)> {
         .collect()
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "pid and ppid are the canonical distinct process identifier fields under test"
+)]
 fn physical_values(records: &[Value]) -> Vec<(i64, i64, String)> {
     let columns = records
         .iter()
@@ -383,6 +524,10 @@ impl Fixture {
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "pid and ppid are the canonical distinct process identifier fields under test"
+)]
 fn process(pid: i32, ppid: i32, command: StrId) -> OsProcess {
     OsProcess {
         ts: Ts(SAMPLE_AT),

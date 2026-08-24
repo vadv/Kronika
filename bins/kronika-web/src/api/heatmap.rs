@@ -807,7 +807,7 @@ impl Numeric {
         clippy::cast_precision_loss,
         reason = "Heatmap rate and floating gauge output is explicitly approximate"
     )]
-    fn as_f64(self) -> f64 {
+    const fn as_f64(self) -> f64 {
         match self {
             Self::Integer(value) => value as f64,
             Self::Float(value) => value,

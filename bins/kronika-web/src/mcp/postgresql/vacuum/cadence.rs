@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use super::super::{PostgresqlFailure, State, collect, resolve_anchor};
+use super::super::{Anchor, PostgresqlFailure, State, collect};
 use super::reader::{decimal_u32, decimal_u64, malformed};
 use crate::route::{Order, Route, SnapshotRequest};
 
@@ -14,16 +14,13 @@ pub(super) struct Cadence {
 
 pub(super) fn recorded_cadence(
     state: &State,
+    anchor: &Anchor,
     at: i64,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Cadence, PostgresqlFailure> {
-    let anchor = match resolve_anchor(state, at, &["instance_metadata"], cancelled) {
-        Ok(anchor) => anchor,
-        Err(error) if error.code == "no_recorded_data" => return Ok(missing_cadence()),
-        Err(error) => return Err(error),
-    };
     let request = SnapshotRequest {
         segment_id: anchor.segment_id,
+        active_position: anchor.active_wal_position,
         at,
         sections: vec!["instance_metadata".to_owned()],
         fields: vec!["postgresql_interval_seconds".to_owned()],
@@ -47,7 +44,7 @@ pub(super) fn recorded_cadence(
         }
         Err(error) => return Err(error),
     };
-    let mut warnings = anchor.warnings;
+    let mut warnings = anchor.warnings.clone();
     warnings.extend(
         collected
             .records

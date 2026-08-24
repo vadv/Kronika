@@ -480,7 +480,7 @@ pub(super) struct PostgresqlFailure {
 
 struct Anchor {
     segment_id: i64,
-    active_wal_position: Option<String>,
+    active_wal_position: Option<u64>,
     type_ids: HashSet<u32>,
     warnings: Vec<Value>,
 }
@@ -630,7 +630,7 @@ fn direct(
         None
     };
     let lens = lens(args, &spec, group)?;
-    let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
+    let mut anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
     let defaults = defaults_for_layouts(spec.section, lens.fields, &anchor.type_ids);
     let fields = fields(args, &defaults)?;
     let page_size = if spec.whole_set {
@@ -655,6 +655,7 @@ fn direct(
     };
     let request = SnapshotRequest {
         segment_id: anchor.segment_id,
+        active_position: anchor.active_wal_position,
         at,
         sections: vec![spec.section.to_owned()],
         fields,
@@ -683,6 +684,7 @@ fn direct(
         row_ordinal: None,
     };
     let collected = collect(state, Route::Snapshot(Box::new(request)), cancelled)?;
+    anchor.active_wal_position = snapshot_active_position(&collected.records)?;
     let page = page(&collected.records, collected.stop_reason);
     if spec.whole_set && page.get("truncated").and_then(Value::as_bool) == Some(true) {
         return Err(failure(
@@ -914,8 +916,9 @@ fn direct_order_tokens(section: &str, requested: &str) -> Option<Vec<String>> {
         }
         ("pg_store_plans", "execution_ms_per_second") => Some(fixed(&["total_time"])),
         ("pg_stat_statements" | "pg_store_plans", "rows_per_second") => Some(fixed(&["rows"])),
-        ("pg_stat_statements", "planning_ms_per_second") => Some(fixed(&["total_plan_time"])),
-        ("pg_store_plans", "planning_ms_per_second") => Some(fixed(&["total_plan_time"])),
+        ("pg_stat_statements" | "pg_store_plans", "planning_ms_per_second") => {
+            Some(fixed(&["total_plan_time"]))
+        }
         ("pg_stat_statements" | "pg_store_plans", "shared_blk_read_ms_per_second") => {
             Some(fixed(&["blk_read_time", "shared_blk_read_time"]))
         }
@@ -994,9 +997,10 @@ fn overview(
 ) -> Result<PostgresqlPayload, PostgresqlFailure> {
     let at = timestamp(args, "at_us")?;
     let fields = fields(args, &[])?;
-    let anchor = resolve_anchor(state, at, OVERVIEW_SECTIONS, cancelled)?;
+    let mut anchor = resolve_anchor(state, at, OVERVIEW_SECTIONS, cancelled)?;
     let request = SnapshotRequest {
         segment_id: anchor.segment_id,
+        active_position: anchor.active_wal_position,
         at,
         sections: OVERVIEW_SECTIONS
             .iter()
@@ -1017,6 +1021,7 @@ fn overview(
         row_ordinal: None,
     };
     let collected = collect(state, Route::Snapshot(Box::new(request)), cancelled)?;
+    anchor.active_wal_position = snapshot_active_position(&collected.records)?;
     let selected = selected_at(&collected.records);
     let layouts = collected
         .records
@@ -1028,7 +1033,12 @@ fn overview(
     let returned = record_rows(&records);
     Ok(PostgresqlPayload {
         anchor: anchor_value(at, selected, Some(&anchor)),
-        data: json!({"overview": {"records": records}, "layouts": layouts, "health": {}, "semantics": []}),
+        data: json!({
+            "overview": {"records": records},
+            "layouts": layouts,
+            "health": {},
+            "semantics": crate::mcp::semantics::health(),
+        }),
         page: json!({"returned": returned, "truncated": false, "next_cursor": null, "stop_reason": collected.stop_reason.code()}),
         warnings: anchor.warnings,
         summary: format!("Returned {returned} recorded PostgreSQL overview rows."),
@@ -1042,7 +1052,7 @@ fn collect(
 ) -> Result<api::ValueCollection, PostgresqlFailure> {
     let prepared =
         api::prepare_for_mcp(&state.data_root, state.sources, state.synthetic_demo, route)
-            .map_err(api_failure)?;
+            .map_err(|error| api_failure(&error))?;
     let collected = prepared
         .collect_values(
             ValueLimits {
@@ -1051,7 +1061,7 @@ fn collect(
             },
             cancelled,
         )
-        .map_err(api_failure)?;
+        .map_err(|error| api_failure(&error))?;
     match collected.stop_reason {
         ValueStopReason::Complete => Ok(collected),
         ValueStopReason::Cancelled => Err(failure(
@@ -1067,6 +1077,10 @@ fn collect(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "anchor selection keeps its bounded catalog validation and deterministic fallback together"
+)]
 fn resolve_anchor(
     state: &State,
     at: i64,
@@ -1090,7 +1104,7 @@ fn resolve_anchor(
             to: Some(at),
         }),
     )
-    .map_err(api_failure)?;
+    .map_err(|error| api_failure(&error))?;
     let catalog = prepared
         .collect_values(
             ValueLimits {
@@ -1099,7 +1113,7 @@ fn resolve_anchor(
             },
             cancelled,
         )
-        .map_err(api_failure)?;
+        .map_err(|error| api_failure(&error))?;
     if catalog.stop_reason != ValueStopReason::Complete {
         return Err(failure(
             "segment_bound_exceeded",
@@ -1120,7 +1134,7 @@ fn resolve_anchor(
                 let wal = record
                     .pointer("/cursor/wal_position")
                     .and_then(Value::as_str)
-                    .map(str::to_owned);
+                    .and_then(|value| value.parse::<u64>().ok());
                 let type_ids = record
                     .get("sections")
                     .and_then(Value::as_array)
@@ -1142,7 +1156,7 @@ fn resolve_anchor(
                             .collect::<HashSet<_>>()
                     })
                     .unwrap_or_default();
-                any.push((id, wal.clone(), type_ids.clone()));
+                any.push((id, wal, type_ids.clone()));
                 if !type_ids.is_empty() {
                     matching.push((id, wal, type_ids));
                 }
@@ -1324,11 +1338,39 @@ fn anchor_value(at: i64, selected: Option<i64>, anchor: Option<&Anchor>) -> Valu
         "requested_at_us": at.to_string(),
         "selected_at_us": selected.map(|value| value.to_string()),
         "segment_id": anchor.map(|value| value.segment_id.to_string()),
-        "active_wal_position": anchor.and_then(|value| value.active_wal_position.clone()),
+        "active_wal_position": anchor.and_then(|value| value.active_wal_position).map(|value| value.to_string()),
     })
 }
 
-fn api_failure(error: ApiError) -> PostgresqlFailure {
+fn snapshot_active_position(records: &[Value]) -> Result<Option<u64>, PostgresqlFailure> {
+    let value = records
+        .iter()
+        .find(|record| record.get("record").and_then(Value::as_str) == Some("snapshot"))
+        .and_then(|record| record.pointer("/segment/active_wal_position"))
+        .ok_or_else(|| {
+            failure(
+                "source_provenance_unusable",
+                "the recorded snapshot has no physical source prefix",
+                None,
+            )
+        })?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .and_then(|position| position.parse().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            failure(
+                "source_provenance_unusable",
+                "the recorded snapshot has an invalid physical source prefix",
+                None,
+            )
+        })
+}
+
+fn api_failure(error: &ApiError) -> PostgresqlFailure {
     let retryable = error.source_changed_during_read();
     let parameter = error.parameter().map(|parameter| {
         if parameter == "search" {

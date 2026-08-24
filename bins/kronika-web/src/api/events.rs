@@ -87,22 +87,18 @@ pub(crate) enum EventPageError {
 }
 
 impl std::fmt::Display for EventPageError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Api(error) => error.fmt(formatter),
-            Self::Cancelled => formatter.write_str("Event read was cancelled"),
-            Self::ScanLimit => formatter.write_str("Event scan exceeded its row or cell limit"),
-            Self::SegmentLimit => {
-                formatter.write_str("Event scan intersects more than 64 segments")
-            }
-            Self::WarningLimit => {
-                formatter.write_str("Event scan encountered more than 64 store warnings")
-            }
+            Self::Api(error) => error.fmt(f),
+            Self::Cancelled => f.write_str("Event read was cancelled"),
+            Self::ScanLimit => f.write_str("Event scan exceeded its row or cell limit"),
+            Self::SegmentLimit => f.write_str("Event scan intersects more than 64 segments"),
+            Self::WarningLimit => f.write_str("Event scan encountered more than 64 store warnings"),
             Self::FirstRowTooLarge => {
-                formatter.write_str("the first Event row exceeds the value-byte limit")
+                f.write_str("the first Event row exceeds the value-byte limit")
             }
-            Self::Semantics(error) => error.fmt(formatter),
-            Self::InvalidSemantics(error) => formatter.write_str(error),
+            Self::Semantics(error) => error.fmt(f),
+            Self::InvalidSemantics(error) => f.write_str(error),
         }
     }
 }
@@ -182,7 +178,7 @@ enum Retained {
 }
 
 impl Retained {
-    fn new(direction: Order) -> Self {
+    const fn new(direction: Order) -> Self {
         match direction {
             Order::Asc => Self::Asc(BinaryHeap::new()),
             Order::Desc => Self::Desc(BinaryHeap::new()),
@@ -351,10 +347,14 @@ fn pin_sources(
                 .map_err(|_error| source_changed())?;
             Ok(sources)
         }
-        (None, Some(_)) | (Some(_), None) | (Some(_), Some(_)) => Err(source_changed().into()),
+        (None | Some(_), Some(_)) | (Some(_), None) => Err(source_changed().into()),
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded scan keeps its cancellation, row, cell, and segment admission checks in one linear loop"
+)]
 fn scan_candidates(
     reader: &Reader,
     references: &[SegmentRef],
@@ -675,7 +675,7 @@ impl TierPolicy {
     }
 }
 
-fn tier_code(tier: EventTier) -> &'static str {
+const fn tier_code(tier: EventTier) -> &'static str {
     match tier {
         EventTier::Critical => "critical",
         EventTier::Notable => "notable",

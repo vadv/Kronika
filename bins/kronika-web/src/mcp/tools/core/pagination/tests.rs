@@ -252,12 +252,12 @@ fn timeline_byte_fitting_keeps_the_interleaved_scan_prefix() {
     )
     .expect("two-item continuation page");
     let budget = super::envelope_len(
-        &super::super::anchor(None, window.from, None),
+        &super::super::anchor(None, window.from, None, None),
         &super::timeline_data(&accumulated.items[..2], &[]),
         &page,
         &[],
     );
-    let (items, fitted_page) = super::fit_timeline_page(
+    let (items, semantics, fitted_page) = super::fit_timeline_page(
         window,
         super::Surface::Timeline,
         query,
@@ -273,8 +273,76 @@ fn timeline_byte_fitting_keeps_the_interleaved_scan_prefix() {
 
     assert_eq!(fitted_page.returned, 2);
     assert!(fitted_page.next_cursor.is_some());
+    assert!(semantics.is_empty());
     assert!(matches!(&items[0], super::TimelineItem::Lane(_)));
     assert!(matches!(&items[1], super::TimelineItem::Marker(_)));
+}
+
+#[test]
+fn finding_dictionary_resolves_only_the_retained_page_records() {
+    let query = super::Fingerprint([9; super::DIGEST_BYTES]);
+    let source = super::Fingerprint([10; super::DIGEST_BYTES]);
+    let window = crate::route::Window {
+        from: Some(WINDOW_FROM),
+        to: Some(WINDOW_TO),
+    };
+    let accumulated = super::Accumulated {
+        items: vec![
+            super::Positioned {
+                item: json!({"semantic_id": "finding.os_cpu.cpu_busy"}),
+                position: super::PositionKey(super::Fingerprint([11; super::DIGEST_BYTES])),
+            },
+            super::Positioned {
+                item: json!({
+                    "semantic_id": "finding.pg_locks.blocked_by_nonempty",
+                    "large": "x".repeat(4_096),
+                }),
+                position: super::PositionKey(super::Fingerprint([12; super::DIGEST_BYTES])),
+            },
+        ],
+        has_more: false,
+    };
+    let page = super::candidate_page_info(
+        super::Surface::Findings,
+        query,
+        source,
+        0,
+        &accumulated,
+        1,
+        false,
+    )
+    .expect("one-item continuation page");
+    let semantics = super::page_semantics(&[], [&accumulated.items[0].item])
+        .expect("one referenced descriptor");
+    let budget = super::envelope_len(
+        &super::super::anchor(None, window.from, None, None),
+        &json!({
+            "findings": [accumulated.items[0].item.clone()],
+            "semantics": semantics,
+        }),
+        &page,
+        &[],
+    );
+
+    let (items, semantics, fitted_page) = super::fit_findings_page(
+        window,
+        super::Surface::Findings,
+        query,
+        source,
+        0,
+        accumulated,
+        &[],
+        &[],
+        false,
+        budget,
+    )
+    .expect("one byte-bounded Finding and its dictionary");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(fitted_page.returned, 1);
+    assert!(fitted_page.next_cursor.is_some());
+    assert_eq!(semantics.len(), 1);
+    assert_eq!(semantics[0]["id"], "finding.os_cpu.cpu_busy");
 }
 
 #[test]

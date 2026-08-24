@@ -6,6 +6,7 @@ mod detect;
 mod file;
 mod findings;
 mod health;
+mod semantic;
 mod series;
 mod store;
 
@@ -13,9 +14,17 @@ pub use build::{
     BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
     OS_PSI_TYPE_ID, build, build_from_reader, build_selected, keys, visit_health_points,
 };
+pub use detect::{FINDING_SEMANTICS, LOCKS_BLOCKED_BY_SEMANTIC, finding_semantic};
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use findings::{Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK};
-pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
+pub use health::{
+    HEALTH_SEMANTICS, SourcePenalty, Stall, health, health_semantic, overall_health,
+    postgres_penalty,
+};
+pub use semantic::{
+    SemanticBoundary, SemanticDefinition, SemanticOperator, SemanticOrigin, SemanticUnit,
+    semantic_definition,
+};
 pub use series::{
     ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
 };

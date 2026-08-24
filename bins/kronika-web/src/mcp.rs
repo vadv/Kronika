@@ -3,6 +3,7 @@
 mod catalog;
 mod expert;
 mod postgresql;
+mod semantics;
 mod tools;
 
 use std::fmt::Display;
@@ -145,3 +146,6 @@ impl ServerHandler for KronikaMcp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod runtime_tests;

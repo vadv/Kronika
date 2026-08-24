@@ -134,6 +134,8 @@ pub(super) fn stream_series(
                             || !emit(json!({
                                 "record": "point",
                                 "series": series,
+                                "semantic_id": kronika_index::health_semantic(series)
+                                    .map(|definition| definition.id),
                                 "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
                                 "ts": point.timestamp.to_string(),
                                 "identity": {},
@@ -232,6 +234,12 @@ fn stream_findings(
         });
         if let Some(category) = finding.category {
             value["category"] = category.into();
+        }
+        if finding.kind == FindingKind::KnownBad
+            && let Some(definition) =
+                kronika_index::finding_semantic(block.type_id, finding.field_ordinal)
+        {
+            value["semantic_id"] = definition.id.into();
         }
         if !emit(value) {
             return false;

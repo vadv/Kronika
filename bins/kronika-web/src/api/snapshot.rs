@@ -600,7 +600,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         return Err(ApiError::BadCursor);
     }
     let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
-    let segment_ref = pin(current, parsed)?;
+    let segment_ref = pin(current, parsed, request.active_position)?;
     let segment = reader.open_segment(&segment_ref)?;
     let active_position = segment_ref.active_position().unwrap_or(0);
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
@@ -1147,7 +1147,10 @@ impl PreparedSnapshot {
         if cancelled()
             || !emit(json!({
                 "record": "snapshot",
-                "segment": { "id": self.anchor.id().to_string() },
+                "segment": {
+                    "id": self.anchor.id().to_string(),
+                    "active_wal_position": self.anchor.active_position().map(|position| position.to_string()),
+                },
                 "at": self.at.to_string(),
             }))
         {
@@ -4113,17 +4116,37 @@ const fn timed_context_index(
     layout_index * source_count + source_index
 }
 
-fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef, ApiError> {
-    let Some(cursor) = cursor else {
+fn pin(
+    current: SegmentRef,
+    cursor: Option<SnapshotCursor>,
+    active_position: Option<u64>,
+) -> Result<SegmentRef, ApiError> {
+    if let Some(cursor) = cursor {
+        return match current.kind() {
+            SegmentKind::Finished if cursor.active_position == 0 => Ok(current),
+            SegmentKind::Active => current
+                .at_active_position(cursor.active_position)
+                .map_err(|_error| ApiError::BadCursor),
+            SegmentKind::Finished => Err(ApiError::BadCursor),
+        };
+    }
+    let Some(active_position) = active_position else {
         return Ok(current);
     };
     match current.kind() {
-        SegmentKind::Finished if cursor.active_position == 0 => Ok(current),
         SegmentKind::Active => current
-            .at_active_position(cursor.active_position)
-            .map_err(|_error| ApiError::BadCursor),
-        SegmentKind::Finished => Err(ApiError::BadCursor),
+            .at_active_position(active_position)
+            .map_err(|_error| source_changed()),
+        SegmentKind::Finished => Err(source_changed()),
     }
+}
+
+fn source_changed() -> ApiError {
+    kronika_reader::ReaderError::from(std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "recorded snapshot source changed between read passes",
+    ))
+    .into()
 }
 
 fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>) -> u64 {
