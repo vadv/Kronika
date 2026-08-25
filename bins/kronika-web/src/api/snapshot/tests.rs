@@ -69,10 +69,6 @@ fn statement_row(ts: i64, query_id: i64, query: StrId) -> PgStatStatementsV2 {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the registry fixture exposes the complete physical table layout"
-)]
 fn table_row(
     ts: i64,
     relid: u32,

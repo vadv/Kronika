@@ -405,6 +405,10 @@ fn fields_class(
 }
 
 impl PreparedHeatmap {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the two ranking shapes share one final typed result and cancellation boundary"
+    )]
     fn collect(
         &self,
         conversion: ConversionContext,

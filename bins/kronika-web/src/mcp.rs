@@ -512,7 +512,7 @@ mod tests {
         assert!(!response.headers.contains_key("mcp-session-id"));
     }
 
-    fn tool_call(name: &str, arguments: Value, version: &str) -> Value {
+    fn tool_call(name: &str, arguments: &Value, version: &str) -> Value {
         json!({
             "jsonrpc": "2.0",
             "id": format!("call-{name}"),
@@ -696,7 +696,7 @@ mod tests {
             key.clone(),
             tool_call(
                 "kronika_find_top_activity",
-                json!({
+                &json!({
                     "hour": HOUR_START.to_string(),
                     "surface": "cgroup_cpu",
                     "metric": "cg_cpu",
@@ -719,7 +719,7 @@ mod tests {
             key,
             tool_call(
                 "kronika_read_postgresql_activity",
-                json!({
+                &json!({
                     "at": ACTIVITY_AT.to_string(),
                     "sort": "pid",
                     "direction": "asc"
@@ -750,7 +750,7 @@ mod tests {
             key.clone(),
             tool_call(
                 "kronika_find_top_activity",
-                json!({
+                &json!({
                     "hour": HOUR_START.to_string(),
                     "surface": "cgroup_cpu"
                 }),
@@ -770,7 +770,7 @@ mod tests {
             key,
             tool_call(
                 "kronika_read_postgresql_activity",
-                json!({"at": ACTIVITY_AT.to_string()}),
+                &json!({"at": ACTIVITY_AT.to_string()}),
                 VERSION,
             ),
             &[
@@ -830,7 +830,7 @@ mod tests {
             key.clone(),
             tool_call(
                 "kronika_find_top_activity",
-                json!({
+                &json!({
                     "hour": HOUR_START.to_string(),
                     "surface": "cgroup_cpu",
                     "metric": "cg_cpu",
@@ -872,7 +872,7 @@ mod tests {
             key,
             tool_call(
                 "kronika_read_postgresql_activity",
-                json!({
+                &json!({
                     "at": ACTIVITY_AT.to_string(),
                     "sort": "pid",
                     "direction": "asc",
@@ -896,7 +896,7 @@ mod tests {
         let top = post(
             tool_call(
                 "kronika_find_top_activity",
-                json!({
+                &json!({
                     "hour": HOUR_START.to_string(),
                     "surface": "processes",
                     "metric": "cg_cpu"
@@ -915,7 +915,7 @@ mod tests {
         let activity = post(
             tool_call(
                 "kronika_read_postgresql_activity",
-                json!({"at": "00"}),
+                &json!({"at": "00"}),
                 VERSION,
             ),
             &[
@@ -947,7 +947,7 @@ mod tests {
                 .disable_allowed_origins(),
         );
         let bytes =
-            serde_json::to_vec(&tool_call("probe", json!({}), VERSION)).expect("probe request");
+            serde_json::to_vec(&tool_call("probe", &json!({}), VERSION)).expect("probe request");
         let request = Request::builder()
             .method(Method::POST)
             .uri("http://kronika.test/mcp")

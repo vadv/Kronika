@@ -19,17 +19,20 @@ const CURSOR_PREFIX: &str = "pc1_";
 const CURSOR_DOMAIN: &[u8] = b"kronika product page cursor v1\0";
 const CURSOR_SIGNATURE_BYTES: usize = 32;
 
+type CursorFactory<'a> = dyn FnMut(usize) -> Result<String, PageError> + 'a;
+type PageMeasure<'a, Row> = dyn FnMut(&[Row], Option<&str>) -> Result<usize, PageError> + 'a;
+
 /// Dense product surfaces which use the concrete shared pager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PageSurface {
-    /// PostgreSQL Activity.
+    /// `PostgreSQL` Activity.
     Activity,
-    /// PostgreSQL Statements.
+    /// `PostgreSQL` Statements.
     Statements,
-    /// PostgreSQL Tables.
+    /// `PostgreSQL` Tables.
     Tables,
-    /// PostgreSQL Indexes.
+    /// `PostgreSQL` Indexes.
     Indexes,
 }
 
@@ -66,8 +69,8 @@ pub(crate) struct Page<Row> {
 pub(crate) struct PageKey([u8; CURSOR_SIGNATURE_BYTES]);
 
 impl fmt::Debug for PageKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("PageKey([redacted])")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PageKey([redacted])")
     }
 }
 
@@ -208,8 +211,8 @@ pub(crate) enum PageError {
 }
 
 impl fmt::Display for PageError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::InvalidCursor => "invalid page cursor",
             Self::ResultTooLarge => "the next whole row does not fit in a minimum page",
             Self::ResultEncoding => "the typed page could not be encoded",
@@ -426,8 +429,8 @@ pub(crate) fn fit_page<Row: Clone>(
         });
     }
     let fits = |count: usize,
-                cursor_at: &mut dyn FnMut(usize) -> Result<String, PageError>,
-                measure: &mut dyn FnMut(&[Row], Option<&str>) -> Result<usize, PageError>|
+                cursor_at: &mut CursorFactory<'_>,
+                measure: &mut PageMeasure<'_, Row>|
      -> Result<Option<String>, PageError> {
         let end = first_unreturned + count;
         let cursor = match cursor_at(end) {

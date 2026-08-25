@@ -162,8 +162,8 @@ impl Surface {
 }
 
 impl fmt::Display for Surface {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -292,8 +292,8 @@ impl Metric {
 }
 
 impl fmt::Display for Metric {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -361,7 +361,7 @@ impl Top {
         }
     }
 
-    fn parse(value: i64) -> Option<Self> {
+    const fn parse(value: i64) -> Option<Self> {
         match value {
             10 => Some(Self::Ten),
             25 => Some(Self::TwentyFive),
@@ -422,8 +422,8 @@ impl NormalizeError {
 }
 
 impl fmt::Display for NormalizeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
@@ -431,16 +431,22 @@ impl std::error::Error for NormalizeError {}
 
 /// Normalize transport arguments into the sole product query form.
 pub(crate) fn normalize(raw: RawQuery) -> Result<Query, NormalizeError> {
-    let hour = parse_hour(&raw.hour)?;
-    let Some(surface) = Surface::parse(&raw.surface) else {
+    let RawQuery {
+        hour,
+        surface: surface_name,
+        metric,
+        level,
+        top,
+    } = raw;
+    let hour = parse_hour(&hour)?;
+    let Some(surface) = Surface::parse(&surface_name) else {
         return Err(invalid(
             "surface",
-            format!("unknown surface {}", raw.surface),
+            format!("unknown surface {surface_name}"),
         ));
     };
     let surface_definition = registry::surface_definition(surface);
-    let metric_name = raw
-        .metric
+    let metric_name = metric
         .as_deref()
         .unwrap_or(surface_definition.default_metric.as_str());
     let Some(metric_definition) = registry::metric_definition(surface, metric_name) else {
@@ -449,8 +455,8 @@ pub(crate) fn normalize(raw: RawQuery) -> Result<Query, NormalizeError> {
             format!("metric {metric_name} is not valid for surface {surface}"),
         ));
     };
-    let level = normalize_level(surface, raw.level.as_deref())?;
-    let top_value = raw.top.unwrap_or(25);
+    let level = normalize_level(surface, level.as_deref())?;
+    let top_value = top.unwrap_or(25);
     let Some(top) = Top::parse(top_value) else {
         return Err(invalid(
             "top",

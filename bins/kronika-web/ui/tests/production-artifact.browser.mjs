@@ -1221,7 +1221,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       search: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-label") ?? "",
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
     }))()`)
-    assert.match(preview.chip, /Query 9007199254740991 · operators · reporterShow all/)
+    assert.match(preview.chip, /Query ID 9007199254740991 · operators · reporterShow all/)
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
     assert.match(preview.search, /Search rows/)
@@ -1594,19 +1594,29 @@ test("the production artifact preserves wire keys and exact finding page state",
     await settleLayout(cdp)
     const ledger = await cdp.evaluate(`(() => {
       const cells = [...document.querySelectorAll('.use-cell')].flatMap((cell) => {
-        const label = cell.querySelector(':scope > span > span')
+        const labels = [...cell.querySelectorAll(':scope > .use-lane > .label-help > span')]
+        const help = [...cell.querySelectorAll(':scope > .use-lane > .label-help > .help-dot')]
         const value = cell.querySelector('strong')
-        const dot = cell.querySelector('.label-help')
-        if (label === null || value === null) return []
+        if (labels.length === 0 || value === null) return []
+        const valueBox = value.getBoundingClientRect()
         return [{
-          clipped: label.scrollWidth > label.clientWidth || value.scrollWidth > value.clientWidth,
-          label: label.textContent,
-          under: dot === null ? false : dot.getBoundingClientRect().left < value.getBoundingClientRect().right - .5,
+          clipped: labels.some((label) => label.scrollWidth > label.clientWidth) || value.scrollWidth > value.clientWidth,
+          label: labels.map((label) => label.textContent).join(" · "),
+          under: help.some((button) => {
+            const buttonBox = button.getBoundingClientRect()
+            return buttonBox.right > valueBox.left + .5
+              && buttonBox.left < valueBox.right - .5
+              && buttonBox.bottom > valueBox.top + .5
+              && buttonBox.top < valueBox.bottom - .5
+          }),
           value: value.textContent,
         }]
       })
-      const network = document.querySelector('[data-testid="use-row-network"] .use-cell > span > span')
-      return { cells, network: network?.textContent ?? null, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
+      const network = document.querySelector('[data-testid="use-row-network"] .use-cell')
+      const networkLabels = network === null
+        ? null
+        : [...network.querySelectorAll(':scope > .use-lane > .label-help > span')].map((label) => label.textContent).join(" · ")
+      return { cells, network: networkLabels, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
     })()`)
     // A cell that prints two readings must name both: labelled "RX" over
     // "884 B/s · 888 B/s", the second number has no name.
@@ -2257,13 +2267,16 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
 
     await assertSearchControlContained(cdp, "Indexes comparison search", '[data-search-surface="pg_stat_user_indexes"]')
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the RU grouped-search locale")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 640, mobile: false, width: 360 })
     await settleLayout(cdp)
     const narrowComparison = await cdp.evaluate(`(() => ({
       chip: document.querySelector('[data-testid="search-chips"]')?.textContent ?? "",
+      lang: document.documentElement.lang,
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     }))()`)
-    assert.match(narrowComparison.chip, /Размер · > 100 MB/)
+    assert.equal(narrowComparison.lang, "ru")
+    assert.match(narrowComparison.chip, /Size · > 100 MB/)
     assert.match(narrowComparison.chip, /OR/)
     assert.equal(narrowComparison.overflow, false)
     await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
@@ -3073,6 +3086,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
 test("structured search pending state and snapshot targets preserve exact newest results", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
+  let activityAttempts = 0
   let statementAttempts = 0
   let relationAttempts = 0
   let pendingSystemFailure = null
@@ -3096,7 +3110,11 @@ test("structured search pending state and snapshot targets preserve exact newest
     }
     if (url.pathname === "/api/postgresql/activity") {
       const at = Number(url.searchParams.get("at") ?? AT)
-      if (at === BEFORE_AT) { pendingActivityFailure = response; return }
+      if (at === BEFORE_AT) {
+        activityAttempts += 1
+        if (activityAttempts === 1) { pendingActivityFailure = response; return }
+        return answerPostgresqlActivity(url, response, targetedActivityRecords("activity_target_B", at))
+      }
       return answerPostgresqlActivity(url, response, targetedActivityRecords("activity_target_A", at))
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -3193,12 +3211,25 @@ test("structured search pending state and snapshot targets preserve exact newest
     })()`), true)
     brokenNdjson(pendingActivityFailure)
     pendingActivityFailure = null
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary PostgreSQL target B error", 15_000)
-    assert.equal(await cdp.evaluate(`(() => {
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "dense PostgreSQL target B error", 15_000)
+    const failedActivity = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-activity-table"]')
-      return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null
-    })()`), true)
+      return {
+        cursorReady: document.querySelector('[data-testid="cursor-behind"]') === null,
+        retry: document.querySelector('[data-testid="table-paging"] button')?.textContent ?? "",
+        rows: table?.querySelectorAll('.entity-row').length ?? -1,
+        status: table?.querySelector('[data-testid="table-status"]')?.textContent ?? "",
+        text: table?.textContent ?? "",
+      }
+    })()`)
+    assert.equal(failedActivity.cursorReady, true)
+    assert.equal(failedActivity.retry, "↻")
+    assert.equal(failedActivity.rows, 0)
+    assert.doesNotMatch(failedActivity.text, /activity_target_A/)
+    assert.equal(failedActivity.status, "")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]')?.textContent.includes("activity_target_B") === true`, "dense PostgreSQL target B retry", 15_000)
 
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_A") === true`, "dense statement target A", 15_000)
@@ -3302,7 +3333,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_B") === true`, "dense statement target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 222/)
 
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&find=cpu_cores%3E1` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=cpu&find=cpu_cores%3E1` })
     await waitForRequests(() => pendingProcessSearch !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="process-table"] [data-testid="table-status"] [role="status"]') !== null`, "initial Process search pending", 15_000)
     const emptyPendingProcess = await cdp.evaluate(`(() => {
@@ -3383,6 +3414,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"]')?.textContent.includes("relation_target_B") === true`, "relation target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 444/)
 
+    assert.equal(activityAttempts, 2)
     assert.equal(statementAttempts, 2)
     assert.equal(relationAttempts, 2)
     assert.deepEqual(page.errors.filter((message) => !message.includes("kronika: snapshot at the cursor failed") && !message.includes("kronika: snapshot page failed")), [])
@@ -5933,10 +5965,10 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
     trackPage(socket, origin, page)
     await enablePage(cdp)
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
-    const waitAt = async (timestamp, label) => {
+    const waitAt = async (timestamp, label, navigationCount = 7) => {
       await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${timestamp}"`, label, 15_000)
       await cdp.waitFor(
-        `document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="hour-timeline"]')?.dataset.navigationCount === "8"`,
+        `document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="hour-timeline"]')?.dataset.navigationCount === "${navigationCount}"`,
         `${label} snapshot`,
         15_000,
       )
@@ -5969,7 +6001,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
           tabsTop: tabsBox.top,
         }
       })()`)
-      assert.equal(geometry.count, 8, `${width}:${JSON.stringify(geometry)}`)
+      assert.equal(geometry.count, 7, `${width}:${JSON.stringify(geometry)}`)
       assert.ok(geometry.figureBottom <= geometry.tabsTop + 0.75, `${width}:${JSON.stringify(geometry)}`)
       assert.ok(geometry.plotLeft >= geometry.figureLeft && geometry.plotRight <= geometry.figureRight && geometry.plotBottom <= geometry.figureBottom, `${width}:${JSON.stringify(geometry)}`)
 
@@ -5978,12 +6010,15 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
       await waitAt(activityTwo, `${width}px exact second Activity cursor`)
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
-      await waitAt(activityOne, `${width}px exact first Activity cursor`)
+      // The product returns one latest observation at/before the cursor. The
+      // older physical Activity observation is therefore not a navigation
+      // point, and the selected observation drops out once the cursor is base.
+      await waitAt(base, `${width}px exact base cursor`, 6)
 
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').focus()`)
       await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyDown", windowsVirtualKeyCode: 39 })
       await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyUp", windowsVirtualKeyCode: 39 })
-      await waitAt(activityTwo, `${width}px chart keyboard cursor`)
+      await waitAt(five, `${width}px chart keyboard cursor`, 7)
 
       const point = await cdp.evaluate(`(() => {
         const figure = document.querySelector('[data-testid="hour-timeline"]')

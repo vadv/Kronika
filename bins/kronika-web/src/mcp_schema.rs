@@ -182,6 +182,10 @@ fn activity_sort_choices() -> Vec<Value> {
     .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the frozen Activity v6 schema stays together as one reviewable contract"
+)]
 fn activity_input_definitions() -> JsonObject {
     object(json!({
         "Pattern": {
@@ -225,7 +229,7 @@ fn activity_input_definitions() -> JsonObject {
                     "items": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 2147483647
+                        "maximum": 2_147_483_647
                     },
                     "description": "Recorded PID must equal one listed positive i32."
                 }
@@ -384,6 +388,10 @@ fn activity_output_definitions() -> JsonObject {
     definitions
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the frozen Activity v6 row schema stays together as one reviewable contract"
+)]
 fn activity_row_schema() -> Value {
     json!({
         "type": "object",
@@ -397,19 +405,19 @@ fn activity_row_schema() -> Value {
             "pid": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 2147483647,
+                "maximum": 2_147_483_647,
                 "description": "PostgreSQL backend PID and identity within the selected observation."
             },
             "leader_pid": {
                 "type": ["integer", "null"],
                 "minimum": 1,
-                "maximum": 2147483647,
+                "maximum": 2_147_483_647,
                 "description": "Leader PID for a parallel query worker; on PostgreSQL 16–18, also the leader apply-worker PID for a parallel apply worker. Null for a leader or nonparticipant, PostgreSQL null, or Kronika stored layout `1_001_001` (PG10–12). It is not a parent or blocker PID."
             },
             "datid": {
                 "type": ["integer", "null"],
                 "minimum": 0,
-                "maximum": 4294967295_u64,
+                "maximum": 4_294_967_295_u64,
                 "description": "Recorded database OID; null when PostgreSQL returned null or because Kronika stored layouts `1_001_001`/`1_001_002` (PG10–13) omit the field."
             },
             "datname": {
@@ -816,10 +824,10 @@ fn top_output_condition(branch: &TopBranch, level: Option<&str>) -> Value {
     let layout = if grouped {
         json!({ "const": null })
     } else {
-        json!({ "type": "integer", "minimum": 1, "maximum": 4294967295_u64 })
+        json!({ "type": "integer", "minimum": 1, "maximum": 4_294_967_295_u64 })
     };
     let members = if grouped {
-        json!({ "type": "integer", "minimum": 1, "maximum": 4294967295_u64 })
+        json!({ "type": "integer", "minimum": 1, "maximum": 4_294_967_295_u64 })
     } else {
         json!({ "const": null })
     };
@@ -834,10 +842,10 @@ fn top_output_condition(branch: &TopBranch, level: Option<&str>) -> Value {
                     "type": "string",
                     "enum": branch.metrics.iter().map(|metric| metric.name).collect::<Vec<_>>()
                 },
-                "level": match level {
-                    Some(level) => json!({ "const": level }),
-                    None => json!({ "const": null }),
-                },
+                "level": level.map_or_else(
+                    || json!({ "const": null }),
+                    |level| json!({ "const": level }),
+                ),
                 "intervals": {
                     "minItems": branch.intervals,
                     "maxItems": branch.intervals
@@ -848,11 +856,11 @@ fn top_output_condition(branch: &TopBranch, level: Option<&str>) -> Value {
                             "recorded_layout": layout,
                             "entity": { "$ref": format!("#/$defs/{entity_definition}") },
                             "members": members,
-                            "cells": exact_cells.clone()
+                            "cells": exact_cells
                         }
                     }
                 },
-                "totals": { "properties": { "cells": exact_cells.clone() } },
+                "totals": { "properties": { "cells": exact_cells } },
                 "others": { "properties": { "cells": exact_cells } }
             }
         }
@@ -1126,7 +1134,7 @@ fn top_row_schema() -> Value {
             "recorded_layout": {
                 "type": ["integer", "null"],
                 "minimum": 1,
-                "maximum": 4294967295_u64,
+                "maximum": 4_294_967_295_u64,
                 "description": "Recorded registry type ID for an ungrouped identity; null for a semantic group that may combine layouts."
             },
             "entity": {
@@ -1136,7 +1144,7 @@ fn top_row_schema() -> Value {
             "members": {
                 "type": ["integer", "null"],
                 "minimum": 1,
-                "maximum": 4294967295_u64,
+                "maximum": 4_294_967_295_u64,
                 "description": "Distinct contributing stored identities for a grouped row; null for an ungrouped row."
             },
             "total": {
@@ -1155,6 +1163,10 @@ fn top_row_schema() -> Value {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the closed entity schemas mirror the typed entity variants in one definition"
+)]
 fn entity_schemas() -> JsonObject {
     object(json!({
         "StatementEntity": {
@@ -1173,13 +1185,13 @@ fn entity_schemas() -> JsonObject {
                 "role_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL role OID."
                 },
                 "database_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL database OID."
                 },
                 "top_level": {
@@ -1212,13 +1224,13 @@ fn entity_schemas() -> JsonObject {
                 "role_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL role OID."
                 },
                 "database_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL database OID."
                 },
                 "entry_query_id": {
@@ -1255,13 +1267,13 @@ fn entity_schemas() -> JsonObject {
                 "database_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL database OID."
                 },
                 "relation_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded table OID within database_oid."
                 },
                 "database_name": {
@@ -1294,13 +1306,13 @@ fn entity_schemas() -> JsonObject {
                 "database_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL database OID."
                 },
                 "index_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded index OID within database_oid."
                 },
                 "database_name": {
@@ -1353,7 +1365,7 @@ fn entity_schemas() -> JsonObject {
                 "database_oid": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded PostgreSQL database OID."
                 },
                 "database_name": {
@@ -1395,13 +1407,13 @@ fn entity_schemas() -> JsonObject {
                 "major": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded Linux block-device major number."
                 },
                 "minor": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 4294967295_u64,
+                    "maximum": 4_294_967_295_u64,
                     "description": "Recorded Linux block-device minor number."
                 }
             },
@@ -1846,10 +1858,8 @@ mod tests {
         assert_required_properties(&output, &serde_json::to_value(result).expect("top result"));
     }
 
-    #[test]
-    fn top_entity_schemas_match_every_typed_entity_variant() {
-        let definitions = top_output_definitions(&top_branches());
-        let entities = [
+    fn entity_schema_fixtures() -> [(&'static str, Entity); 11] {
+        [
             (
                 "StatementEntity",
                 Entity::PostgreSqlStatement {
@@ -1939,8 +1949,13 @@ mod tests {
                     tablespace_name: None,
                 },
             ),
-        ];
-        for (definition, entity) in entities {
+        ]
+    }
+
+    #[test]
+    fn top_entity_schemas_match_every_typed_entity_variant() {
+        let definitions = top_output_definitions(&top_branches());
+        for (definition, entity) in entity_schema_fixtures() {
             let value = serde_json::to_value(entity).expect("entity serialization");
             let schema = definitions.get(definition).expect("entity definition");
             assert_required_properties(schema, &value);
@@ -2105,7 +2120,6 @@ mod tests {
     }
 
     fn assert_local_refs_resolve(schema: &Value) {
-        let definitions = schema["$defs"].as_object().expect("schema definitions");
         fn visit(value: &Value, definitions: &JsonObject) {
             match value {
                 Value::Object(object) => {
@@ -2127,6 +2141,8 @@ mod tests {
                 Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
             }
         }
+
+        let definitions = schema["$defs"].as_object().expect("schema definitions");
         visit(schema, definitions);
     }
 }

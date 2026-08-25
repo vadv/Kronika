@@ -12,9 +12,8 @@ pub(crate) struct Execution {
 }
 
 impl fmt::Debug for Execution {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Execution")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Execution")
             .field("cancelled", &"[callback]")
             .field("deadline", &self.deadline)
             .finish()
@@ -53,8 +52,8 @@ pub(crate) enum ExecutionStop {
 }
 
 impl fmt::Display for ExecutionStop {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::Cancelled => "execution was cancelled",
             Self::DeadlineExceeded => "execution deadline elapsed",
         })
@@ -71,10 +70,15 @@ mod tests {
 
     #[test]
     fn cancellation_precedes_deadline_and_both_are_stable() {
-        let cancelled = Execution::new(|| true, Instant::now() - Duration::from_secs(1));
+        let past = || {
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("one second before now is representable")
+        };
+        let cancelled = Execution::new(|| true, past());
         assert_eq!(cancelled.checkpoint(), Err(ExecutionStop::Cancelled));
 
-        let expired = Execution::new(|| false, Instant::now() - Duration::from_secs(1));
+        let expired = Execution::new(|| false, past());
         assert_eq!(expired.checkpoint(), Err(ExecutionStop::DeadlineExceeded));
     }
 }

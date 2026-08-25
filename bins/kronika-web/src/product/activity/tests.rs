@@ -466,18 +466,19 @@ fn text_matcher_handles_cross_field_all_unicode_and_line_terminators() {
     assert!(predicate.matches_fields(&fields));
     assert!(!predicate.matches_fields(&[Some("😀xy"), Some("appdb")]));
 
-    let combining = GlobPattern::new("e?".to_owned()).expect("combining matcher");
+    let combining = GlobPattern::new("e?").expect("combining matcher");
     assert!(combining.matches("e\u{301}"));
     assert!(!combining.matches("e"));
-    let punctuation = GlobPattern::new("a.b[1]".to_owned()).expect("literal punctuation");
+    let punctuation = GlobPattern::new("a.b[1]").expect("literal punctuation");
     assert!(punctuation.matches("prefix A.B[1] suffix"));
 }
 
 #[test]
 fn query_preview_and_duration_null_gates_are_exact() {
     let exact = "x".repeat(160);
-    assert_eq!(shorten_query(exact.clone()), exact);
-    let shortened = shorten_query(format!("{}y", "x".repeat(160)));
+    assert_eq!(shorten_query(&exact), exact);
+    let long = format!("{}y", "x".repeat(160));
+    let shortened = shorten_query(&long);
     assert_eq!(shortened.chars().count(), 161);
     assert!(shortened.ends_with('…'));
 
@@ -486,7 +487,7 @@ fn query_preview_and_duration_null_gates_are_exact() {
     assert_eq!(duration_ms(10_000, Some(0)), None);
     assert_eq!(
         duration_ms(i64::MAX, Some(1)),
-        Some(9_223_372_036_854_775.0)
+        Some(9_223_372_036_854_776.0)
     );
 
     let mut row = sample_row(1);
@@ -773,7 +774,7 @@ fn cursor_pins_active_prefix_and_rejects_changed_query_or_authentication() {
         },
         ActivityArgs {
             page_size: Some(2),
-            cursor: Some(cursor.clone()),
+            cursor: Some(cursor),
             ..args()
         },
     ];
@@ -820,7 +821,12 @@ fn executor_reports_cancellation_and_deadline() {
         .code(),
         "cancelled"
     );
-    let expired = Execution::new(|| false, Instant::now() - Duration::from_secs(1));
+    let expired = Execution::new(
+        || false,
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("one second before now is representable"),
+    );
     assert_eq!(
         execute_activity(
             fixture.root(),

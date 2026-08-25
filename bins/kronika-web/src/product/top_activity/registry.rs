@@ -45,6 +45,10 @@ pub(crate) enum MetricUnit {
 }
 
 /// Fixed descending whole-hour ranking formula.
+#[expect(
+    clippy::enum_variant_names,
+    reason = "variant names are the exact serialized ranking vocabulary"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Ranking {
@@ -62,7 +66,7 @@ pub(crate) struct ConversionContext {
 }
 
 impl ConversionContext {
-    /// Latest usable PostgreSQL block size at or before the selected hour end.
+    /// Latest usable `PostgreSQL` block size at or before the selected hour end.
     #[must_use]
     #[cfg(test)]
     pub(crate) const fn block_size(self) -> Option<u128> {
@@ -96,7 +100,7 @@ impl ConversionContextBuilder {
         }
     }
 
-    /// Consider one recorded PostgreSQL block-size value.
+    /// Consider one recorded `PostgreSQL` block-size value.
     pub(crate) fn observe_block_size(&mut self, at: i64, value: Option<u128>) {
         let Some(value) = value.filter(|value| *value > 0) else {
             return;
@@ -264,34 +268,38 @@ impl ExecutionRecipe {
                 self.total_unit,
                 ResolvedConversion::Kibibytes,
             ),
-            Conversion::BlockSize => match context.block_size {
-                Some(block_size) => (
-                    Scale::multiply(block_size),
-                    self.cell_unit,
-                    self.total_unit,
-                    ResolvedConversion::BlockSize,
-                ),
-                None => (
+            Conversion::BlockSize => context.block_size.map_or(
+                (
                     Scale::IDENTITY,
                     MetricUnit::CountPerSecond,
                     MetricUnit::Count,
                     ResolvedConversion::RawBlocks,
                 ),
-            },
-            Conversion::ClockTicks => match context.clock_ticks_per_sec {
-                Some(clock_ticks) => (
-                    Scale::divide(clock_ticks as u64),
-                    self.cell_unit,
-                    self.total_unit,
-                    ResolvedConversion::ClockTicks,
-                ),
-                None => (
+                |block_size| {
+                    (
+                        Scale::multiply(block_size),
+                        self.cell_unit,
+                        self.total_unit,
+                        ResolvedConversion::BlockSize,
+                    )
+                },
+            ),
+            Conversion::ClockTicks => context.clock_ticks_per_sec.map_or(
+                (
                     Scale::IDENTITY,
                     MetricUnit::CountPerSecond,
                     MetricUnit::Count,
                     ResolvedConversion::RawTicks,
                 ),
-            },
+                |clock_ticks| {
+                    (
+                        Scale::divide(clock_ticks.cast_unsigned()),
+                        self.cell_unit,
+                        self.total_unit,
+                        ResolvedConversion::ClockTicks,
+                    )
+                },
+            ),
         };
         ResolvedMetric {
             scale,
@@ -347,8 +355,8 @@ pub(crate) struct ResolvedMetric {
 pub(crate) struct NonFiniteValue;
 
 impl fmt::Display for NonFiniteValue {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("top-activity numeric value is not finite")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("top-activity numeric value is not finite")
     }
 }
 
@@ -446,16 +454,20 @@ fn cell_formula(class: MetricClass, grouped: bool, conversion: ResolvedConversio
             "Sum of usable member raw nonnegative endpoint tick deltas, each divided by that member's positive observed seconds; null when no member contributes a usable rate."
         }
         (MetricClass::Cumulative, _, ResolvedConversion::Kibibytes)
-        | (MetricClass::Gauge, _, ResolvedConversion::BlockSize)
-        | (MetricClass::Gauge, _, ResolvedConversion::RawBlocks)
-        | (MetricClass::Gauge, _, ResolvedConversion::ClockTicks)
-        | (MetricClass::Gauge, _, ResolvedConversion::RawTicks) => {
+        | (
+            MetricClass::Gauge,
+            _,
+            ResolvedConversion::BlockSize
+            | ResolvedConversion::RawBlocks
+            | ResolvedConversion::ClockTicks
+            | ResolvedConversion::RawTicks,
+        ) => {
             unreachable!("metric registry pairs class and conversion")
         }
     }
 }
 
-fn ranking(class: MetricClass, grouped: bool) -> Ranking {
+const fn ranking(class: MetricClass, grouped: bool) -> Ranking {
     match (class, grouped) {
         (MetricClass::Cumulative, false) => Ranking::WholeWindowDeltaDesc,
         (MetricClass::Gauge, false) => Ranking::WholeWindowMaxDesc,
@@ -464,7 +476,7 @@ fn ranking(class: MetricClass, grouped: bool) -> Ranking {
     }
 }
 
-fn total_formula(
+const fn total_formula(
     class: MetricClass,
     grouped: bool,
     conversion: ResolvedConversion,
@@ -512,8 +524,14 @@ fn total_formula(
         (MetricClass::Gauge, true, ResolvedConversion::Native) => {
             "The sum of each member's maximum usable reading in the hour; band totals are peaks of their summed interval strips."
         }
-        (MetricClass::Gauge, _, ResolvedConversion::BlockSize | ResolvedConversion::RawBlocks)
-        | (MetricClass::Gauge, _, ResolvedConversion::ClockTicks | ResolvedConversion::RawTicks)
+        (
+            MetricClass::Gauge,
+            _,
+            ResolvedConversion::BlockSize
+            | ResolvedConversion::RawBlocks
+            | ResolvedConversion::ClockTicks
+            | ResolvedConversion::RawTicks,
+        )
         | (MetricClass::Cumulative, _, ResolvedConversion::Kibibytes) => {
             "The whole-hour value after applying the selected metric conversion."
         }
@@ -548,7 +566,7 @@ pub(crate) const fn surface_definitions() -> &'static [SurfaceDefinition] {
     &SURFACES
 }
 
-pub(super) fn surface_definition(surface: Surface) -> &'static SurfaceDefinition {
+pub(super) const fn surface_definition(surface: Surface) -> &'static SurfaceDefinition {
     match surface {
         Surface::PostgreSqlStatements => &SURFACES[0],
         Surface::PostgreSqlPlans => &SURFACES[1],

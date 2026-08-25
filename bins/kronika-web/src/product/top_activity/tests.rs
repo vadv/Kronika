@@ -157,7 +157,7 @@ fn top_choices_are_closed() {
     for surface in Surface::ALL {
         for top in Top::ALL {
             let mut input = raw(surface, None, None);
-            input.top = Some(top.get() as i64);
+            input.top = Some(i64::try_from(top.get()).expect("shipped top fits i64"));
             assert_eq!(normalize(input).expect("shipped top").top(), top);
             accepted += 1;
         }

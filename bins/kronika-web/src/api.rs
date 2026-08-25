@@ -82,7 +82,7 @@ pub(crate) enum Prepared {
     History(history::PreparedHistory),
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
-    Snapshot(snapshot::PreparedSnapshot),
+    Snapshot(Box<snapshot::PreparedSnapshot>),
     Empty(ResponseMeta),
 }
 

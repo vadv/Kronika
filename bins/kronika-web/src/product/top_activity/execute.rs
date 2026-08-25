@@ -51,8 +51,8 @@ impl TopActivityError {
 }
 
 impl fmt::Display for TopActivityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.message())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
     }
 }
 

@@ -1,4 +1,4 @@
-//! Typed PostgreSQL Activity query, executor, and structured result.
+//! Typed `PostgreSQL` Activity query, executor, and structured result.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -398,8 +398,8 @@ impl ActivityError {
 }
 
 impl fmt::Display for ActivityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.message())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
     }
 }
 
@@ -814,7 +814,9 @@ fn normalize_row(
     let state = optional_text(stored, "state", dictionary)?;
     let wait_event_type = optional_text(stored, "wait_event_type", dictionary)?;
     let wait_event = optional_text(stored, "wait_event", dictionary)?;
-    let query_preview = optional_text(stored, "query", dictionary)?.map(shorten_query);
+    let query_preview = optional_text(stored, "query", dictionary)?
+        .as_deref()
+        .map(shorten_query);
     let query_id = optional_i64(stored, "query_id")?;
     let backend_xid_age = optional_i64(stored, "backend_xid_age")?;
     let backend_xmin_age = optional_i64(stored, "backend_xmin_age")?;
@@ -947,7 +949,7 @@ fn resolved_text(dictionary: &Dictionary, id: u64) -> Result<String, ActivityErr
         .map_err(|_error| read_failed())
 }
 
-fn shorten_query(query: String) -> String {
+fn shorten_query(query: &str) -> String {
     let mut characters = query.chars();
     let mut preview = characters.by_ref().take(160).collect::<String>();
     if characters.next().is_some() {
@@ -1009,19 +1011,19 @@ fn compare_primary(
             left.datname.as_deref(),
             right.datname.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::Role => compare_nullable(
             left.usename.as_deref(),
             right.usename.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::QueryPreview => compare_nullable(
             left.query_preview.as_deref(),
             right.query_preview.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::QueryDurationMs => compare_nullable(
             left.query_duration_ms,
@@ -1044,19 +1046,19 @@ fn compare_primary(
             left.state.as_deref(),
             right.state.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::WaitType => compare_nullable(
             left.wait_event_type.as_deref(),
             right.wait_event_type.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::WaitEvent => compare_nullable(
             left.wait_event.as_deref(),
             right.wait_event.as_deref(),
             direction,
-            |left, right| left.cmp(right),
+            Ord::cmp,
         ),
         ActivitySort::BackendType => {
             directed(left.backend_type.cmp(&right.backend_type), direction)
@@ -1194,7 +1196,7 @@ fn normalize_patterns(raw: Option<Vec<String>>) -> Result<Vec<GlobPattern>, Acti
             "each pattern list must contain between 1 and 8 values",
         ));
     }
-    raw.into_iter().map(GlobPattern::new).collect()
+    raw.into_iter().map(|raw| GlobPattern::new(&raw)).collect()
 }
 
 fn normalize_pids(raw: PidMatchArgs) -> Result<Vec<i32>, ActivityError> {
@@ -1228,8 +1230,13 @@ fn normalize_query_ids(raw: QueryIdMatchArgs) -> Result<Vec<i64>, ActivityError>
     }
     let values = raw
         .any_of
-        .iter()
-        .map(|value| canonical_i64(value, "Query IDs must be canonical signed i64 decimal text"))
+        .into_iter()
+        .map(|value| {
+            canonical_i64(
+                &value,
+                "Query IDs must be canonical signed i64 decimal text",
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if has_duplicates(&values) {
         return Err(ActivityError::InvalidArguments(
@@ -1258,7 +1265,7 @@ fn canonical_i64(raw: &str, message: &'static str) -> Result<i64, ActivityError>
 }
 
 impl GlobPattern {
-    fn new(raw: String) -> Result<Self, ActivityError> {
+    fn new(raw: &str) -> Result<Self, ActivityError> {
         if raw.chars().count() > MAX_PATTERN_SCALARS {
             return Err(ActivityError::InvalidArguments(
                 "patterns accept at most 256 Unicode scalar values",

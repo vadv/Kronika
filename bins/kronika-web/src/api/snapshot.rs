@@ -521,6 +521,10 @@ pub(super) fn stream_relation_history(
 #[cfg(test)]
 pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "snapshot preparation pins all sources and validates their shared cursor binding atomically"
+)]
 pub(super) fn prepare(
     root: &Path,
     request: SnapshotRequest,
@@ -659,7 +663,7 @@ pub(super) fn prepare(
         })
         .transpose()?;
     drop(segment);
-    Ok(Prepared::Snapshot(PreparedSnapshot {
+    Ok(Prepared::Snapshot(Box::new(PreparedSnapshot {
         reader,
         anchor: segment_ref,
         prior_sources,
@@ -681,7 +685,7 @@ pub(super) fn prepare(
         text: request.text,
         row_ordinal: request.row_ordinal,
         meta,
-    }))
+    })))
 }
 
 fn snapshot_meta(
@@ -1552,6 +1556,10 @@ impl PreparedSnapshot {
         Ok(true)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the bounded K+1 scan and byte-fit must share one cursor and metadata calculation"
+    )]
     fn emit_shared_page(
         &self,
         header: Vec<u8>,
@@ -4263,10 +4271,6 @@ fn byte_len(records: &[Vec<u8>]) -> Result<usize, PageError> {
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the authenticated binding and exact wire components define one shared page fit"
-)]
 fn fit_wire_offset_page(
     ordered: &[Vec<u8>],
     first_unreturned: usize,
