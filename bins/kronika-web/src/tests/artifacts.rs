@@ -3760,6 +3760,8 @@ fn postgres_summary_uses_only_the_adjacent_physical_segment_as_predecessor() {
     fixture.append_diskstats(&[(150, 0, 1)]);
     fixture.finish_and_continue(SEGMENT_ID + 2_000);
     fixture.append_statement_snapshots(&[(200, 1, 20, 300.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_000);
+    fixture.append_statement_snapshots(&[(300, 1, 30, 500.0)]);
     fixture.finish();
 
     let records =
@@ -3780,6 +3782,15 @@ fn postgres_summary_uses_only_the_adjacent_physical_segment_as_predecessor() {
         .find(|record| record["record"] == "row" && record["values"][0] == 1)
         .expect("statement summary row");
     assert_eq!(statement["values"][mean], Value::Null);
+
+    let adjacent =
+        stream(fixture.prepare("/api/hour?from=300&to=300&section=postgresql_summary", None))
+            .expect("PostgreSQL summary with an adjacent PostgreSQL segment");
+    let statement = adjacent
+        .iter()
+        .find(|record| record["record"] == "row" && record["values"][0] == 1)
+        .expect("statement summary row with predecessor");
+    assert_eq!(statement["values"][mean], 20.0);
 }
 
 #[test]

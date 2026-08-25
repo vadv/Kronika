@@ -204,7 +204,7 @@ impl PreparedHour {
         if let Some(series) = series {
             if series.section == postgres_summary::SECTION {
                 postgres_summary::validate(&series)?;
-                let segments = postgres_summary::with_predecessors(&listed, segments);
+                let segments = postgres_summary::with_previous(&listed, segments);
                 return postgres_summary::stream(&reader, &segments, window, emit, cancelled);
             }
             if series.group.is_some() {

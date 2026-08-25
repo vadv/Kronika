@@ -38,10 +38,7 @@ pub(super) fn validate(request: &SeriesRequest) -> Result<(), ApiError> {
     )
 }
 
-pub(super) fn with_predecessors(
-    all: &[SegmentRef],
-    mut selected: Vec<SegmentRef>,
-) -> Vec<SegmentRef> {
+pub(super) fn with_previous(all: &[SegmentRef], mut selected: Vec<SegmentRef>) -> Vec<SegmentRef> {
     let selected_len = selected.len();
     selected.sort_by_key(SegmentRef::id);
     for source in SOURCES {
@@ -59,6 +56,7 @@ pub(super) fn with_predecessors(
             selected.push(previous.clone());
         }
     }
+    selected.sort_by_key(SegmentRef::id);
     selected.dedup_by_key(|segment| segment.id());
     selected
 }
@@ -67,7 +65,7 @@ fn has_section(segment: &SegmentRef, name: &str) -> bool {
     segment
         .sections()
         .iter()
-        .any(|s| logical_section_name(s.type_id) == Some(name))
+        .any(|section| logical_section_name(section.type_id) == Some(name))
 }
 
 pub(super) fn stream(
