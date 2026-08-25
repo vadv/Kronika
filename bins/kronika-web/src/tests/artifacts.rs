@@ -836,7 +836,7 @@ impl Fixture {
         let mut buffers = SectionBuffers::new();
         for (ts, commits, rollbacks) in [(100, 100, 10), (200, 180, 30)] {
             buffers
-                .push(postgres_database(ts, commits, rollbacks))
+                .push(postgres_database(ts, commits, rollbacks, 0))
                 .expect("PostgreSQL database summary row fits");
         }
         for (ts, seq_scan, idx_scan) in [(100, 10, 10), (200, 30, 40)] {
@@ -852,6 +852,19 @@ impl Fixture {
                     .push(user_index_v1(ts, 73, indexrelid, scans))
                     .expect("PostgreSQL index summary row fits");
             }
+        }
+        self.append(buffers);
+    }
+
+    /// `rows` is `(ts, xact_commit, xact_rollback, deadlocks)`, one
+    /// `pg_stat_database` row per timestamp for the same database (`datid`
+    /// 73) — the predecessor/current pair a cumulative-counter rate needs.
+    fn append_postgres_database_rows(&mut self, rows: &[(i64, i64, i64, i64)]) {
+        let mut buffers = SectionBuffers::new();
+        for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
+            buffers
+                .push(postgres_database(ts, xact_commit, xact_rollback, deadlocks))
+                .expect("PostgreSQL database row fits");
         }
         self.append(buffers);
     }
@@ -1407,7 +1420,12 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
     }
 }
 
-fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDatabaseV1 {
+fn postgres_database(
+    ts: i64,
+    xact_commit: i64,
+    xact_rollback: i64,
+    deadlocks: i64,
+) -> PgStatDatabaseV1 {
     PgStatDatabaseV1 {
         ts: Ts(ts),
         datid: 73,
@@ -1425,7 +1443,7 @@ fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDat
         conflicts: 0,
         temp_files: 0,
         temp_bytes: 0,
-        deadlocks: 0,
+        deadlocks,
         blk_read_time: 0.0,
         blk_write_time: 0.0,
         stats_reset: None,
@@ -5458,6 +5476,129 @@ fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_vi
     );
     assert_eq!(by_pid[&9].fields["cpu_time_ticks"], serde_json::json!("10"));
     assert_eq!(by_pid[&3].fields["cpu_time_ticks"], serde_json::json!("0"));
+}
+
+#[test]
+fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fields() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(3);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&field=pid&field=state&field=datname&field=backend_xid_age&by=pid&direction=asc&page_size=10"
+    );
+    let via_http = stream(fixture.prepare(&base, None)).expect("streamed activity page");
+    let http_rows = row_records(&via_http);
+    assert_eq!(http_rows.len(), 4);
+    let page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("activity page trailer");
+    assert_eq!(page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_activity".to_owned()],
+        fields: vec![
+            "pid".to_owned(),
+            "state".to_owned(),
+            "datname".to_owned(),
+            "backend_xid_age".to_owned(),
+        ],
+        by: vec!["pid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let (rows, has_more) = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    assert!(!has_more);
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(direct.fields["pid"], http["values"][0]);
+        assert_eq!(direct.fields["state"], http["values"][1]);
+        assert_eq!(direct.fields["datname"], http["values"][2]);
+        assert_eq!(direct.fields["backend_xid_age"], http["values"][3]);
+        assert_eq!(direct.segment_id.to_string(), http["segment_id"]);
+        assert_eq!(direct.type_id.to_string(), http["type_id"]);
+        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
+        assert_eq!(direct.at.to_string(), http["timestamp"]);
+    }
+}
+
+#[test]
+fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_database_rows(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
+    fixture.finish();
+
+    let base = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_database".to_owned()],
+        fields: vec!["datid".to_owned(), "deadlocks".to_owned()],
+        by: vec!["datid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+
+    let matching = crate::route::SnapshotRequest {
+        search: Some("deadlocks>0".to_owned()),
+        ..base.clone()
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), matching, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let (rows, has_more) = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    assert!(!has_more);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the database whose deadlocks rate is above zero matches"
+    );
+    assert_eq!(rows[0].fields["datid"], serde_json::json!(73));
+
+    let below_threshold = crate::route::SnapshotRequest {
+        search: Some("deadlocks>100".to_owned()),
+        ..base
+    };
+    let prepared =
+        crate::api::snapshot::prepare(fixture.root(), below_threshold, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let (rows, _has_more) = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    assert!(
+        rows.is_empty(),
+        "a threshold above the observed rate matches nothing"
+    );
 }
 
 #[test]

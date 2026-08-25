@@ -1044,6 +1044,26 @@ pub(crate) struct ProcessRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
+/// `ProcessRowOut` without the `pid`/`ppid` identity: the shape
+/// `compute_plain_rows` returns for the four `PostgreSQL` sections that carry
+/// no process-tree identity of their own (`pg_stat_activity`, `pg_locks`,
+/// `pg_stat_progress_vacuum`, `pg_stat_database`). Every projected field is
+/// named in `fields`; `segment_id`/`type_id`/`row_ordinal`/`at` are the same
+/// `kronika_get_row_detail` locator `ProcessRowOut` carries.
+pub(crate) struct PlainRowOut {
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
+    pub(crate) at: i64,
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
+/// One ranked row rendered through `row_record`, still paired with the
+/// `Plan` that produced it: `ranked_records`/`render_ranked_rows`'s shared
+/// output, before `compute_process_rows`/`compute_plain_rows` reshape it
+/// into their own typed row.
+type RankedRecord<'a> = (&'a Plan, Value);
+
 impl PreparedSnapshot {
     pub(super) fn meta(&self) -> ResponseMeta {
         self.meta.clone()
@@ -1526,6 +1546,59 @@ impl PreparedSnapshot {
         if section.logical_name != "os_process" {
             return Err(ApiError::NoSuchSection);
         }
+        let (records, has_more) = self.ranked_records(limit, cancelled)?;
+        let rows = records
+            .into_iter()
+            .map(|(plan, record)| process_row_out(plan, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((rows, has_more))
+    }
+
+    /// Same bounded top-N scan as `compute_process_rows`, for the four
+    /// `PostgreSQL` sections that are plain gauge/counter rows: no `pid`/
+    /// `ppid` identity, no virtual fields, just whatever `row_record`
+    /// projects, keyed by field name. Shared computation for MCP
+    /// `pg_stat_activity`/`pg_locks`/`pg_stat_progress_vacuum`/
+    /// `pg_stat_database` retrieval.
+    pub(crate) fn compute_plain_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Vec<PlainRowOut>, bool), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        if !matches!(
+            section.logical_name.as_str(),
+            "pg_stat_activity" | "pg_locks" | "pg_stat_progress_vacuum" | "pg_stat_database"
+        ) {
+            return Err(ApiError::NoSuchSection);
+        }
+        let (records, has_more) = self.ranked_records(limit, cancelled)?;
+        let rows = records
+            .into_iter()
+            .map(|(plan, record)| plain_row_out(plan, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((rows, has_more))
+    }
+
+    /// The section-agnostic half of `compute_process_rows`/
+    /// `compute_plain_rows`: ranks the single requested section's rows the
+    /// same way `emit_page` does, top-N instead of cursor-relative, and
+    /// renders each survivor through the same `row_record` HTTP uses.
+    /// Leaves the reshape into a typed row (`process_row_out`/
+    /// `plain_row_out`) to the caller, since that is the one part that
+    /// actually differs per section. Does not check `logical_name` itself —
+    /// each public caller validates the section names it supports before
+    /// calling in.
+    fn ranked_records(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Vec<RankedRecord<'_>>, bool), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
         let contexts = self.page_contexts(section, cancelled)?;
         if cancelled() {
             return Ok((Vec::new(), false));
@@ -1558,19 +1631,19 @@ impl PreparedSnapshot {
         let mut ranked = page.finish();
         let has_more = ranked.len() > limit;
         ranked.truncate(limit);
-        let rows = self.process_rows_out(&contexts, &process_users, ranked)?;
-        Ok((rows, has_more))
+        let records = self.render_ranked_rows(&contexts, &process_users, ranked)?;
+        Ok((records, has_more))
     }
 
     /// Renders each ranked candidate through the same `row_record` HTTP
-    /// uses, then reshapes its positional `values` into `ProcessRowOut`'s
-    /// keyed `fields` — one render path, two output shapes.
-    fn process_rows_out(
+    /// uses, paired with the `Plan` that produced it so a caller can reshape
+    /// the positional `values` into its own keyed row type.
+    fn render_ranked_rows<'a>(
         &self,
-        contexts: &[PageContext<'_>],
+        contexts: &[PageContext<'a>],
         process_users: &HashMap<usize, ProcessUsers>,
         ranked: Vec<PageRankedRow>,
-    ) -> Result<Vec<ProcessRowOut>, ApiError> {
+    ) -> Result<Vec<RankedRecord<'a>>, ApiError> {
         let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
         for ranked in &ranked {
             for (_name, value) in ranked.staged.row.iter() {
@@ -1594,7 +1667,7 @@ impl PreparedSnapshot {
                     .map(|dictionary| (context.context_index, dictionary))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
-        let mut rows = Vec::with_capacity(ranked.len());
+        let mut records = Vec::with_capacity(ranked.len());
         for ranked in ranked {
             let context = contexts
                 .iter()
@@ -1619,9 +1692,9 @@ impl PreparedSnapshot {
                     .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
-            rows.push(process_row_out(context.plan, record)?);
+            records.push((context.plan, record));
         }
-        Ok(rows)
+        Ok(records)
     }
 
     /// Fetches the single physical row `row_ordinal` addresses on the
@@ -2891,47 +2964,72 @@ impl PreparedSnapshot {
     }
 }
 
-/// Pulls `row_record`'s positional `values` back apart into `ProcessRowOut`'s
-/// keyed shape, using `plan.fields`'s names for the zip. `pid` is required —
-/// `compute_process_rows`'s callers request the default (empty) field list,
-/// so it is always part of `os_process`'s full projection; a plan built with
-/// an explicit field list that dropped `pid` would be a caller bug, not a
-/// recoverable read failure, so it surfaces as `ApiError::Unreadable`
-/// alongside this function's other internal-shape checks. `segment_id`,
-/// `ordinal` and `timestamp` are pulled back out the same way, off
-/// `row_record`'s own decimal-string rendering of `RowCoordinate` and the
-/// row's timestamp; `type_id` comes straight from `plan` instead, since it
-/// is already typed there and `row_record` only stringifies it for the wire.
-fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiError> {
-    let invalid = |message: &str| {
-        ApiError::Unreadable(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            message.to_owned(),
-        )))
-    };
+/// The locator and positional `values` `row_record` puts on the wire,
+/// pulled back apart so `process_row_out`/`plain_row_out` only have to build
+/// their own keyed shape from `values`. `segment_id`, `ordinal` and
+/// `timestamp` come off `row_record`'s own decimal-string rendering of
+/// `RowCoordinate` and the row's timestamp; `type_id` is left to the caller,
+/// since it comes straight from `plan` instead of this record.
+struct RowLocator {
+    segment_id: i64,
+    row_ordinal: u64,
+    at: i64,
+    values: Vec<Value>,
+}
+
+fn row_locator_invalid(message: &str) -> ApiError {
+    ApiError::Unreadable(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.to_owned(),
+    )))
+}
+
+fn row_locator(plan: &Plan, mut record: Value) -> Result<RowLocator, ApiError> {
     let object = record
         .as_object_mut()
-        .ok_or_else(|| invalid("process row record is not an object"))?;
+        .ok_or_else(|| row_locator_invalid("row record is not an object"))?;
     let Some(Value::Array(values)) = object.remove("values") else {
-        return Err(invalid("process row record has no values array"));
+        return Err(row_locator_invalid("row record has no values array"));
     };
     if values.len() != plan.fields.len() {
-        return Err(invalid(
-            "process row field count does not match its rendered values",
+        return Err(row_locator_invalid(
+            "row field count does not match its rendered values",
         ));
     }
     let segment_id = object
         .remove("segment_id")
         .and_then(|value| value.as_str()?.parse::<i64>().ok())
-        .ok_or_else(|| invalid("process row record has no segment_id"))?;
+        .ok_or_else(|| row_locator_invalid("row record has no segment_id"))?;
     let row_ordinal = object
         .remove("ordinal")
         .and_then(|value| value.as_str()?.parse::<u64>().ok())
-        .ok_or_else(|| invalid("process row record has no ordinal"))?;
+        .ok_or_else(|| row_locator_invalid("row record has no ordinal"))?;
     let at = object
         .remove("timestamp")
         .and_then(|value| value.as_str()?.parse::<i64>().ok())
-        .ok_or_else(|| invalid("process row record has no timestamp"))?;
+        .ok_or_else(|| row_locator_invalid("row record has no timestamp"))?;
+    Ok(RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    })
+}
+
+/// Reshapes `row_locator`'s output into `ProcessRowOut`'s keyed shape,
+/// using `plan.fields`'s names for the zip. `pid` is required —
+/// `compute_process_rows`'s callers request the default (empty) field list,
+/// so it is always part of `os_process`'s full projection; a plan built with
+/// an explicit field list that dropped `pid` would be a caller bug, not a
+/// recoverable read failure, so it surfaces as `ApiError::Unreadable`
+/// alongside `row_locator`'s own internal-shape checks.
+fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError> {
+    let RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    } = row_locator(plan, record)?;
     let mut fields = BTreeMap::new();
     let mut pid = None;
     let mut parent = None;
@@ -2943,10 +3041,34 @@ fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiE
         }
         fields.insert(field.name.clone(), value);
     }
-    let pid = pid.ok_or_else(|| invalid("process row has no pid"))?;
+    let pid = pid.ok_or_else(|| row_locator_invalid("process row has no pid"))?;
     Ok(ProcessRowOut {
         pid,
         ppid: parent,
+        segment_id,
+        type_id: plan.type_id,
+        row_ordinal,
+        at,
+        fields,
+    })
+}
+
+/// Reshapes `row_locator`'s output into `PlainRowOut`'s keyed shape: every
+/// projected field named in `fields`, no identity column singled out —
+/// unlike `os_process`, none of the four sections `compute_plain_rows`
+/// covers has a column every row is guaranteed to carry.
+fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
+    let RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    } = row_locator(plan, record)?;
+    let mut fields = BTreeMap::new();
+    for (field, value) in plan.fields.iter().zip(values) {
+        fields.insert(field.name.clone(), value);
+    }
+    Ok(PlainRowOut {
         segment_id,
         type_id: plan.type_id,
         row_ordinal,
@@ -3573,6 +3695,55 @@ fn search_metric(
         "pg_stat_statements" | "pg_store_plans" => {
             postgres_search_metric(context, row, identity, metric)
         }
+        "pg_stat_activity" => activity_search_metric(row, metric),
+        "pg_stat_progress_vacuum" => vacuum_search_metric(row, metric),
+        "pg_stat_database" => database_search_metric(context, row, identity, metric),
+        _ => None,
+    }
+}
+
+/// `pg_stat_activity`'s two quantity fields are `#[column(g)]` gauges (xid/
+/// xmin age, read straight off the backend), same as `process_search_metric`'s
+/// `rss`/`vsz`/`threads` — no predecessor, no rate.
+fn activity_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
+    match metric {
+        "backend_xid_age" => gauge_metric(row, "backend_xid_age", 1, 1),
+        "backend_xmin_age" => gauge_metric(row, "backend_xmin_age", 1, 1),
+        _ => None,
+    }
+}
+
+/// `pg_stat_progress_vacuum`'s three quantity fields are `#[column(g)]`
+/// gauges (heap block counts for the vacuum in progress) — no predecessor,
+/// no rate, same reasoning as `activity_search_metric`.
+fn vacuum_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
+    match metric {
+        "heap_blks_total" => gauge_metric(row, "heap_blks_total", 1, 1),
+        "heap_blks_scanned" => gauge_metric(row, "heap_blks_scanned", 1, 1),
+        "heap_blks_vacuumed" => gauge_metric(row, "heap_blks_vacuumed", 1, 1),
+        _ => None,
+    }
+}
+
+/// `pg_stat_database`'s `numbackends` is a `#[column(g)]` gauge; its other
+/// four quantity fields (`xact_commit`/`xact_rollback`/`deadlocks`/
+/// `temp_bytes`) are `#[column(c)]` cumulative counters, rendered as a
+/// per-second rate by `row_record` the same way `pg_stat_statements`'
+/// cumulative columns are — so their search value is the same
+/// `rate_metric` computation `postgres_search_metric` already runs for
+/// `call_rate` and friends, not the raw counter.
+fn database_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match metric {
+        "numbackends" => gauge_metric(row, "numbackends", 1, 1),
+        "xact_commit" => rate_metric(context, row, identity, &["xact_commit"], 1, 1),
+        "xact_rollback" => rate_metric(context, row, identity, &["xact_rollback"], 1, 1),
+        "deadlocks" => rate_metric(context, row, identity, &["deadlocks"], 1, 1),
+        "temp_bytes" => rate_metric(context, row, identity, &["temp_bytes"], 1, 1),
         _ => None,
     }
 }
