@@ -1,6 +1,7 @@
 //! Stateless Model Context Protocol transport: `kronika_overview`,
-//! `kronika_get_context`, `kronika_find_postgresql_tables`, and
-//! `kronika_find_postgresql_indexes` served over Streamable HTTP.
+//! `kronika_get_context`, `kronika_find_postgresql_tables`,
+//! `kronika_find_postgresql_indexes`, and `kronika_find_processes` served
+//! over Streamable HTTP.
 
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ mod dispatch;
 mod filter;
 mod overview;
 mod postgresql;
+mod processes;
 mod semantics;
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ pub(crate) const OVERVIEW_TOOL: &str = "kronika_overview";
 pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
 pub(crate) const FIND_POSTGRESQL_TABLES_TOOL: &str = "kronika_find_postgresql_tables";
 pub(crate) const FIND_POSTGRESQL_INDEXES_TOOL: &str = "kronika_find_postgresql_indexes";
+pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
 
 /// Input for `kronika_overview`: rank one recorded section's identities by
 /// a chosen numeric field, over an explicit window.
@@ -125,6 +126,22 @@ pub(crate) struct IndexesInput {
     pub(crate) limit: u32,
 }
 
+/// Input for `kronika_find_processes`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ProcessesInput {
+    /// Flat AND-only list of typed predicates over `os_process` fields,
+    /// e.g. `pid` equals a number, or `command` contains "postgres". Empty
+    /// or omitted matches every process.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`rmem_kb`", "`vmem_kb`", "`num_threads`".
+    /// Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -162,6 +179,14 @@ pub(crate) fn tools() -> Vec<Tool> {
              `limit` rows plus `has_more` when more rows matched than were \
              returned.",
             schema_object::<IndexesInput>(),
+        ),
+        Tool::new(
+            FIND_PROCESSES_TOOL,
+            "Reads the current os_process snapshot: one row per running \
+             process, with optional typed filters and a sort field. \
+             Returns up to `limit` rows plus `has_more` when more rows \
+             matched than were returned.",
+            schema_object::<ProcessesInput>(),
         ),
     ]
 }

@@ -33,7 +33,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_four_tool_catalog() {
+async fn tools_list_returns_the_five_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -73,6 +73,7 @@ async fn tools_list_returns_the_four_tool_catalog() {
             "kronika_get_context",
             "kronika_find_postgresql_tables",
             "kronika_find_postgresql_indexes",
+            "kronika_find_processes",
         ]
     );
 }
@@ -329,4 +330,54 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
     assert_eq!(rows[0]["indexrelname"], "alpha_pkey");
     assert_eq!(rows[0]["relname"], "alpha");
     assert_eq!(structured["has_more"], false);
+}
+
+#[test]
+fn find_processes_ranks_and_filters() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "sort": {"field": "rmem_kb", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::processes::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    // Rows are keyed, not positional — pid is directly addressable, and
+    // the process with the higher rmem_kb (alpha: 50) ranks first.
+    assert_eq!(rows[0]["pid"], 101);
+    assert_eq!(rows[1]["pid"], 102);
+    assert_eq!(structured["has_more"], false);
+
+    let filtered_arguments = serde_json::json!({
+        "filters": [{"field": "pid", "op": "eq", "value": 102}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let filtered = crate::mcp::processes::call(&config, filtered_arguments);
+    assert_eq!(filtered.is_error, Some(false));
+    let filtered_structured = filtered.structured_content.expect("structured content");
+    let filtered_rows = filtered_structured["rows"].as_array().expect("rows array");
+    assert_eq!(filtered_rows.len(), 1);
+    assert_eq!(filtered_rows[0]["pid"], 102);
+}
+
+#[test]
+fn find_processes_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::processes::call(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
 }

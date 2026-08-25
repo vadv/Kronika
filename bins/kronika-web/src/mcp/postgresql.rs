@@ -117,8 +117,10 @@ fn call(
 /// The most recently started segment, and the latest timestamp it carries.
 /// A `find_*` tool reads the live state, not an explicit archived segment,
 /// so it resolves "current" itself instead of taking a `segment_id`/`at`
-/// argument the way the HTTP snapshot endpoint does.
-fn current_segment(root: &std::path::Path) -> Result<(i64, i64), ApiError> {
+/// argument the way the HTTP snapshot endpoint does. Shared with
+/// `processes.rs`, which reads the same "current" notion for `os_process` —
+/// one resolution of "current segment", not a second copy of it.
+pub(crate) fn current_segment(root: &std::path::Path) -> Result<(i64, i64), ApiError> {
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(..)?;
     let segment = listing
