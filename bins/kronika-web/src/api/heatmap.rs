@@ -30,7 +30,7 @@ pub(crate) struct PreparedHeatmap {
     etag: Option<String>,
 }
 
-pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
+pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
     let cumulative = fields_class(&request.section, &request.fields, request.type_id)?
         == ColumnClass::Cumulative;
     let started = std::time::Instant::now();
@@ -155,6 +155,94 @@ impl PreparedHeatmap {
             started.elapsed().as_micros(),
         );
         Ok(())
+    }
+
+    /// Ranks entities over the full requested window, without the per-column
+    /// cell grid `stream` renders for the HTTP grid view. Shared computation
+    /// for `kronika_overview`.
+    ///
+    /// For a gauge cut, a band total is not the sum of each entity's own
+    /// window maximum: `stream` corrects `totals_total` with `band_peak`
+    /// over the per-column sums already folded during ranking, and corrects
+    /// `others_total` from the winners-only cells `fill`/`fill_grouped`
+    /// compute (a band cell holds each entity's *last* value in the column,
+    /// not its maximum, so the "everyone else" band cannot be recovered
+    /// from the per-entity maxima ranking already has). This mirrors that
+    /// correction without building the rest of the per-column grid.
+    pub(crate) fn rank_only(
+        &self,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<HeatmapRanking>, ApiError> {
+        let Some((fold, seen_rows)) = self.rank(cancelled)? else {
+            return Ok(None);
+        };
+        if self.request.group.is_empty() {
+            let ranked = fold.finish(self.request.top);
+            let totals_total = if self.cumulative {
+                ranked.totals_total
+            } else {
+                band_peak(&ranked.totals)
+            };
+            let others_total = if self.cumulative {
+                ranked.others_total
+            } else {
+                let Some((cells, _labels)) = self.fill(&ranked.rows, &seen_rows, cancelled)? else {
+                    return Ok(None);
+                };
+                let mut winner_sums = vec![CellSum::default(); self.request.columns];
+                for row_cells in &cells {
+                    for (column, observed) in row_cells.iter().enumerate() {
+                        if let Some(value) = observed.cell(self.cumulative) {
+                            winner_sums[column].add(value);
+                        }
+                    }
+                }
+                ranked
+                    .totals
+                    .iter()
+                    .zip(&winner_sums)
+                    .filter_map(|(total, winner)| total.minus(winner))
+                    .fold(None, |current: Option<f64>, value| {
+                        Some(current.map_or(value, |stored| stored.max(value)))
+                    })
+            };
+            Ok(Some(HeatmapRanking {
+                entities: ranked
+                    .rows
+                    .into_iter()
+                    .map(|row| RankedEntity {
+                        key: row.key,
+                        total: row.total,
+                    })
+                    .collect(),
+                totals_total,
+                others_total,
+                entity_count: ranked.entity_count,
+            }))
+        } else {
+            let grouped = fold.finish_grouped(self.request.top);
+            let others_total = if self.cumulative {
+                grouped.others_total
+            } else {
+                let Some(filled) = self.fill_grouped(&grouped, &seen_rows, cancelled)? else {
+                    return Ok(None);
+                };
+                band_peak(&filled.others)
+            };
+            Ok(Some(HeatmapRanking {
+                entities: grouped
+                    .rows
+                    .into_iter()
+                    .map(|row| RankedEntity {
+                        key: row.key,
+                        total: row.total,
+                    })
+                    .collect(),
+                totals_total: grouped.totals_total,
+                others_total,
+                entity_count: grouped.group_count,
+            }))
+        }
     }
 
     /// Ranks entities and folds totals over a fixed row prefix per plan.
@@ -1187,6 +1275,23 @@ pub(super) struct Ranked {
     pub(super) others_total: Option<f64>,
     pub(super) entity_count: usize,
     pub(super) out_of_order: u64,
+}
+
+/// One ranked entity's total over the requested window — the shape
+/// `kronika_overview` needs, independent of the HTTP heatmap's NDJSON wire
+/// format.
+pub(crate) struct RankedEntity {
+    pub(crate) key: String,
+    pub(crate) total: Option<f64>,
+}
+
+/// Whole-window ranking result, shared by the HTTP heatmap stream and the
+/// kronika_overview MCP tool.
+pub(crate) struct HeatmapRanking {
+    pub(crate) entities: Vec<RankedEntity>,
+    pub(crate) totals_total: Option<f64>,
+    pub(crate) others_total: Option<f64>,
+    pub(crate) entity_count: usize,
 }
 
 /// One ranking accumulator per entity. Finished columns fold into totals when

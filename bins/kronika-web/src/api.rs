@@ -11,7 +11,7 @@ use crate::encoding::etag_matches;
 use crate::route::{ActiveCursor, Route};
 
 mod catalog;
-mod heatmap;
+pub(crate) mod heatmap;
 mod history;
 mod hour;
 mod index;
