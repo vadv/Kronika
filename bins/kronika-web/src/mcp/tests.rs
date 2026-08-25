@@ -229,10 +229,10 @@ fn mcp_tool_catalog_cost() {
         estimated_tokens
     );
     assert_eq!(catalog.len(), 20);
-    assert_eq!(descriptor_bytes, 23_671);
-    assert_eq!(input_schema_bytes, 16_939);
+    assert_eq!(descriptor_bytes, 23_751);
+    assert_eq!(input_schema_bytes, 17_000);
     assert_eq!(output_schema_bytes, 0);
-    assert_eq!(estimated_tokens, 5_918);
+    assert_eq!(estimated_tokens, 5_938);
 }
 
 #[tokio::test]

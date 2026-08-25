@@ -592,6 +592,15 @@ pub(super) fn prepare(
     request: SnapshotRequest,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
+    if request
+        .cursor
+        .as_deref()
+        .map(SnapshotCursor::parse)
+        .transpose()?
+        .is_some_and(|cursor| cursor.segment_id != request.segment_id)
+    {
+        return Err(ApiError::BadCursor);
+    }
     let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
     prepare_selected(
         reader,
