@@ -18,6 +18,7 @@ use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
 
 mod lanes;
+mod postgres_summary;
 pub(crate) mod process_summary;
 
 #[cfg(test)]
@@ -201,6 +202,11 @@ impl PreparedHour {
             ..
         } = self;
         if let Some(series) = series {
+            if series.section == postgres_summary::SECTION {
+                postgres_summary::validate(&series)?;
+                let segments = postgres_summary::with_predecessors(&listed, segments);
+                return postgres_summary::stream(&reader, &segments, window, emit, cancelled);
+            }
             if series.group.is_some() {
                 return super::snapshot::stream_relation_history(
                     &reader, &listed, window, &series, emit, cancelled,

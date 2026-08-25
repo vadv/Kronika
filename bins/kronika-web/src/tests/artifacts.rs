@@ -19,6 +19,7 @@ use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_stat_database::PgStatDatabaseV1;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
@@ -796,6 +797,30 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    fn append_postgres_summary_relations(&mut self) {
+        let mut buffers = SectionBuffers::new();
+        for (ts, commits, rollbacks) in [(100, 100, 10), (200, 180, 30)] {
+            buffers
+                .push(postgres_database(ts, commits, rollbacks))
+                .expect("PostgreSQL database summary row fits");
+        }
+        for (ts, seq_scan, idx_scan) in [(100, 10, 10), (200, 30, 40)] {
+            let mut row = user_table(ts, 73, 81, seq_scan);
+            row.idx_scan = Some(idx_scan);
+            buffers
+                .push(row)
+                .expect("PostgreSQL table summary row fits");
+        }
+        for (indexrelid, current_scans) in [(91, 4), (92, 0)] {
+            for (ts, scans) in [(100, 0), (200, current_scans)] {
+                buffers
+                    .push(user_index_v1(ts, 73, indexrelid, scans))
+                    .expect("PostgreSQL index summary row fits");
+            }
+        }
+        self.append(buffers);
+    }
+
     fn append_postgres_block_size(&mut self, block_size: u128) {
         let mut interner = Interner::new(DictLimits::default());
         let intern = |interner: &mut Interner, value: &str| {
@@ -1337,6 +1362,36 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
         toast_blks_hit: None,
         tidx_blks_read: None,
         tidx_blks_hit: None,
+    }
+}
+
+fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDatabaseV1 {
+    PgStatDatabaseV1 {
+        ts: Ts(ts),
+        datid: 73,
+        datname: Some(StrId(901)),
+        numbackends: Some(5),
+        xact_commit,
+        xact_rollback,
+        blks_read: 0,
+        blks_hit: 0,
+        tup_returned: 0,
+        tup_fetched: 0,
+        tup_inserted: 0,
+        tup_updated: 0,
+        tup_deleted: 0,
+        conflicts: 0,
+        temp_files: 0,
+        temp_bytes: 0,
+        deadlocks: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        stats_reset: None,
+        frozen_xid_age: Some(1),
+        min_mxid_age: Some(1),
+        datconnlimit: Some(-1),
+        datallowconn: Some(true),
+        datistemplate: Some(false),
     }
 }
 
@@ -3640,6 +3695,77 @@ fn postgres_summary_covers_the_selection_instead_of_the_page() {
             .expect("second PostgreSQL page trailer");
         assert_eq!(page["summary"], *summary, "{section}");
     }
+}
+
+#[test]
+fn postgres_summary_is_one_hour_series_for_all_surfaces() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[
+        (100, 1, 10, 100.0),
+        (100, 2, 20, 300.0),
+        (200, 1, 14, 160.0),
+        (200, 2, 20, 300.0),
+    ]);
+    fixture.append_plan_snapshots(&[
+        (100, 1, 2, 20.0),
+        (100, 2, 4, 60.0),
+        (200, 1, 5, 50.0),
+        (200, 2, 4, 60.0),
+    ]);
+    fixture.append_postgres_summary_relations();
+    fixture.finish();
+
+    let prepared = fixture.prepare(
+        "/api/hour?from=0&to=3599999999&section=postgresql_summary",
+        None,
+    );
+    let mut bytes = Vec::new();
+    prepared
+        .stream(
+            &mut |record| {
+                bytes.extend(record);
+                true
+            },
+            &|| false,
+        )
+        .expect("PostgreSQL summary stream");
+    let body = String::from_utf8(bytes).expect("UTF-8 PostgreSQL summary");
+    assert!(body.contains(r#""logical_name":"postgresql_summary""#));
+    assert!(body.contains(r#""name":"surface""#));
+    for surface in 1..=5 {
+        assert!(body.contains(&format!(r#""values":[{surface},"#)));
+    }
+
+    let records = body
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("PostgreSQL summary NDJSON"))
+        .collect::<Vec<_>>();
+    let columns = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .and_then(|record| record["layout"]["columns"].as_array())
+        .expect("PostgreSQL summary columns");
+    let column = |name: &str| {
+        columns
+            .iter()
+            .position(|column| column["name"] == name)
+            .expect("PostgreSQL summary fact")
+    };
+    let row = |surface: u64| {
+        records
+            .iter()
+            .find(|record| {
+                record["record"] == "row"
+                    && record["timestamp"] == "200"
+                    && record["values"][0] == surface
+            })
+            .expect("PostgreSQL summary surface row")
+    };
+    assert_eq!(row(1)["values"][column("active_pct")], 50.0);
+    assert_eq!(row(1)["values"][column("mean_exec_ms")], 15.0);
+    assert_eq!(row(3)["values"][column("rollback_pct")], 20.0);
+    assert_eq!(row(4)["values"][column("seq_scan_pct")], 40.0);
+    assert_eq!(row(5)["values"][column("scanned_pct")], 50.0);
 }
 
 #[test]
