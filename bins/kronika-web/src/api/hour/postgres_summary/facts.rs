@@ -12,7 +12,7 @@ heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read toast_blks_hit tidx_blk
 tidx_blks_hit xid_age indisvalid indisready";
 const DENSE_PREVIOUS: &str = "calls total_exec_time total_time shared_blks_read shared_blks_hit \
 local_blks_read local_blks_hit wal_bytes";
-const DATABASE_PREVIOUS: &str = "xact_commit xact_rollback temp_bytes blks_read blks_hit";
+const DB_PREVIOUS: &str = "xact_commit xact_rollback temp_bytes blks_read blks_hit";
 const TABLE_PREVIOUS: &str = "seq_scan idx_scan n_tup_upd n_tup_hot_upd vacuum_count \
 autovacuum_count heap_blks_read heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read \
 toast_blks_hit tidx_blks_read tidx_blks_hit";
@@ -32,9 +32,7 @@ impl Previous {
         let cell = |fields: &str, at| row.get(fields.split_ascii_whitespace().nth(at)?).cloned();
         match surface {
             1 | 2 => Self::Dense(Box::new(std::array::from_fn(|at| cell(DENSE_PREVIOUS, at)))),
-            3 => Self::Database(Box::new(std::array::from_fn(|at| {
-                cell(DATABASE_PREVIOUS, at)
-            }))),
+            3 => Self::Database(Box::new(std::array::from_fn(|at| cell(DB_PREVIOUS, at)))),
             4 => Self::Table(Box::new(std::array::from_fn(|at| cell(TABLE_PREVIOUS, at)))),
             5 => Self::Index(Box::new(std::array::from_fn(|at| cell(INDEX_PREVIOUS, at)))),
             _ => unreachable!("fixed PostgreSQL summary surface"),
@@ -44,7 +42,7 @@ impl Previous {
     fn get(&self, name: &str) -> Option<&Cell> {
         let (fields, values): (&str, &[Option<Cell>]) = match self {
             Self::Dense(values) => (DENSE_PREVIOUS, values.as_slice()),
-            Self::Database(values) => (DATABASE_PREVIOUS, values.as_slice()),
+            Self::Database(values) => (DB_PREVIOUS, values.as_slice()),
             Self::Table(values) => (TABLE_PREVIOUS, values.as_slice()),
             Self::Index(values) => (INDEX_PREVIOUS, values.as_slice()),
         };
@@ -98,8 +96,8 @@ impl Summary {
     pub(super) fn add(&mut self, row: &Row, before: Option<&Previous>) {
         match self {
             Self::Dense(total, sums) => {
-                *total += 1.0;
                 let calls = delta(row, before, "calls");
+                *total += flag(calls.is_some());
                 sums.add(0, calls.map(|value| flag(value > 0.0)));
                 sums.add(1, calls);
                 let execution = row
@@ -119,7 +117,6 @@ impl Summary {
                 sums.add(4, deltas(row, before, "blks_read blks_hit"));
             }
             Self::Table(total, xid_total, sums) => {
-                *total += 1.0;
                 sums.add(0, delta(row, before, "seq_scan"));
                 sums.add(1, optional_delta(row, before, "idx_scan"));
                 sums.add(2, delta(row, before, "n_tup_upd"));
@@ -127,6 +124,7 @@ impl Summary {
                 sums.add(4, number(row, "n_live_tup"));
                 sums.add(5, number(row, "n_dead_tup"));
                 let vacuumed = deltas(row, before, "vacuum_count autovacuum_count");
+                *total += flag(vacuumed.is_some());
                 sums.add(6, vacuumed.map(|value| flag(value > 0.0)));
                 sums.add(7, number(row, "main_fork_bytes"));
                 sums.add(8, number(row, "toast_bytes").or(Some(0.0)));
@@ -140,15 +138,18 @@ impl Summary {
                 }
             }
             Self::Index(total, sums) => {
-                *total += 1.0;
                 let scans = delta(row, before, "idx_scan");
+                *total += flag(scans.is_some());
                 sums.add(0, scans.map(|value| flag(value > 0.0)));
                 sums.add(1, scans.map(|value| flag(value == 0.0)));
                 sums.add(2, delta(row, before, "idx_blks_read"));
                 sums.add(3, deltas(row, before, "idx_blks_read idx_blks_hit"));
-                let usable = matches!(row.get("indisvalid"), Some(Cell::Bool(true)))
-                    && matches!(row.get("indisready"), Some(Cell::Bool(true)));
-                sums.add(4, Some(flag(usable)));
+                let usable = match (row.get("indisvalid"), row.get("indisready")) {
+                    (Some(Cell::Bool(valid)), Some(Cell::Bool(ready))) => Some(*valid && *ready),
+                    _ => None,
+                };
+                sums.add(4, usable.map(flag));
+                sums.add(5, usable.map(|_| 1.0));
             }
         }
     }
@@ -201,7 +202,7 @@ impl Summary {
                 out[14] = pct(sums.get(0), Some(*total));
                 out[15] = pct(sums.get(1), Some(*total));
                 out[3] = pct(sums.get(2), sums.get(3));
-                out[16] = pct(sums.get(4), Some(*total));
+                out[16] = pct(sums.get(4), sums.get(5));
             }
         }
         out

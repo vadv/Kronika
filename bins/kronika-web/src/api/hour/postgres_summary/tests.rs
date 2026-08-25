@@ -49,7 +49,47 @@ fn unavailable_identity_does_not_blank_available_population_values() {
     summary.add(&new, None);
     let values = summary.values(1);
     assert_eq!(values[0], Some(1.0));
+    assert_eq!(values[1], Some(100.0));
     assert_eq!(values[2], Some(5.0));
+}
+
+#[test]
+fn relation_shares_count_only_rows_with_their_required_inputs() {
+    let table_before = row(
+        1_013_008,
+        &[
+            ("vacuum_count", Cell::I64(0)),
+            ("autovacuum_count", Cell::I64(0)),
+        ],
+    );
+    let table_current = row(
+        1_013_008,
+        &[
+            ("vacuum_count", Cell::I64(1)),
+            ("autovacuum_count", Cell::I64(0)),
+        ],
+    );
+    let mut tables = Summary::new(4);
+    tables.add(&table_current, Some(&Previous::new(4, &table_before)));
+    tables.add(&row(1_013_008, &[]), None);
+    assert_eq!(tables.values(4)[11], Some(100.0));
+
+    let index_before = row(1_014_004, &[("idx_scan", Cell::I64(0))]);
+    let index_current = row(
+        1_014_004,
+        &[
+            ("idx_scan", Cell::I64(1)),
+            ("indisvalid", Cell::Bool(true)),
+            ("indisready", Cell::Bool(true)),
+        ],
+    );
+    let mut indexes = Summary::new(5);
+    indexes.add(&index_current, Some(&Previous::new(5, &index_before)));
+    indexes.add(&row(1_014_004, &[]), None);
+    let values = indexes.values(5);
+    assert_eq!(values[14], Some(100.0));
+    assert_eq!(values[15], Some(0.0));
+    assert_eq!(values[16], Some(100.0));
 }
 
 #[test]
