@@ -688,7 +688,7 @@
     z-index: 90;
   }
   .inspector-splitter { display: none; }
-  .process-summary-inline { order: 3; }
+  .process-workspace > .lensbar > .process-summary-inline { order: 3; }
 }
 
 @media (max-width: 760px) {
@@ -697,8 +697,8 @@
   /* Full-bleed rows leave no room for the segmented field. */
   .process-workspace > .lensbar > .lens-tabs,
   .pg-table-workspace > .lensbar:has(> .process-summary-inline) > .lens-tabs { background: transparent; border: 0; border-radius: 0; padding: 2px 4px; }
-  .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
-  @media (max-width: 520px) { .process-summary-inline { border-top: 0; flex-basis: auto; } }
+  .process-workspace > .lensbar > .process-summary-inline { border-left: 0; border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); padding-left: 0; }
+  @media (max-width: 520px) { .process-workspace > .lensbar > .process-summary-inline { border-top: 0; flex-basis: auto; } }
   .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
 }
@@ -797,7 +797,7 @@
   .use-cell strong { white-space: normal; }
   /* Wrapped, these four facts cost four lines of the table. One scrolling row
      keeps every one of them and returns the height to rows. */
-  .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }
+  .process-workspace > .lensbar > .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }
   /* The cursor band above prints this instant already, and beside it the
      lensbar copy reads as a second, different time. */
   .lensbar > .snapshot-time { display: none; }

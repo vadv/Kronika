@@ -111,6 +111,21 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     heldPostgresSummary = null
     await waitForRequests(() => postgresSummaryRequests().length === 1)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="active_statements"] strong')?.textContent === "3 · 60%"`, "the PostgreSQL statement context")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 720, mobile: false, width: 320 })
+    await settleLayout(cdp)
+    const mobileSummary = await cdp.evaluate(`(() => {
+      const bar = document.querySelector('.pg-table-workspace > .lensbar')
+      const summary = bar.querySelector(':scope > .process-summary-inline').getBoundingClientRect()
+      const legend = bar.querySelector(':scope > .process-summary-inline').nextElementSibling.getBoundingClientRect()
+      return {
+        documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        verticalOverlap: Math.min(summary.bottom, legend.bottom) - Math.max(summary.top, legend.top),
+      }
+    })()`)
+    assert.equal(mobileSummary.documentOverflow, false, JSON.stringify(mobileSummary))
+    assert.ok(mobileSummary.verticalOverlap > 0, JSON.stringify(mobileSummary))
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await settleLayout(cdp)
     await cdp.evaluate(`document.querySelector('[data-testid="statement-lens-per_call"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="execution_per_call"]') !== null`, "the local statement lens context")
     assert.equal(postgresSummaryRequests().length, 1)
