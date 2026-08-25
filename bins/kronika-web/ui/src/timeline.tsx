@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
 import { buildMetricSamples } from "./chart"
+import { CursorRow } from "./cursor-row"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { useDisplayTime } from "./display-time-context"
 import { findingOrder, findingSummary } from "./finding-presentation"
@@ -184,7 +185,7 @@ export function Timeline({
           />)}
         </div><div className="timeline-preview-picker min-w-0 flex-1 items-center gap-1 px-1">
           <select aria-label={t("inspector.timeline")} data-testid="timeline-preview-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select>
-          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-sm tabular-nums text-fg" data-testid="timeline-preview-reading" title={selectedReading}>{selectedReading}</span>
+          <span className="timeline-preview-reading min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-sm tabular-nums text-fg" data-testid="timeline-preview-reading" title={selectedReading}>{selectedReading}</span>
         </div></>}
       {presentation === "preview" && onOpenChart !== undefined && <button aria-label={t("inspector.open_chart")} className="timeline-open-chart" onClick={onOpenChart} title={t("inspector.open_chart")} type="button"><span aria-hidden="true">↗</span><span>{t("inspector.chart")}</span></button>}
     </div>
@@ -207,6 +208,7 @@ export function Timeline({
       threshold={threshold}
       variant={presentation}
     />
+    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} t={t} time={time.timestamp} />}
   </section>
 }
 

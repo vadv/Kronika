@@ -19,6 +19,7 @@ use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_stat_database::PgStatDatabaseV1;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
@@ -796,6 +797,30 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    fn append_postgres_summary_relations(&mut self) {
+        let mut buffers = SectionBuffers::new();
+        for (ts, commits, rollbacks) in [(100, 100, 10), (200, 180, 30)] {
+            buffers
+                .push(postgres_database(ts, commits, rollbacks))
+                .expect("PostgreSQL database summary row fits");
+        }
+        for (ts, seq_scan, idx_scan) in [(100, 10, 10), (200, 30, 40)] {
+            let mut row = user_table(ts, 73, 81, seq_scan);
+            row.idx_scan = Some(idx_scan);
+            buffers
+                .push(row)
+                .expect("PostgreSQL table summary row fits");
+        }
+        for (indexrelid, current_scans) in [(91, 4), (92, 0)] {
+            for (ts, scans) in [(100, 0), (200, current_scans)] {
+                buffers
+                    .push(user_index_v1(ts, 73, indexrelid, scans))
+                    .expect("PostgreSQL index summary row fits");
+            }
+        }
+        self.append(buffers);
+    }
+
     fn append_postgres_block_size(&mut self, block_size: u128) {
         let mut interner = Interner::new(DictLimits::default());
         let intern = |interner: &mut Interner, value: &str| {
@@ -1260,6 +1285,10 @@ impl Fixture {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
     }
 
+    fn add_foreign_entry(&self) {
+        std::fs::write(self.root().join("foreign"), b"fixture").expect("write foreign entry");
+    }
+
     fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
         self.prepare_with_sources(target, if_none_match, SOURCES)
     }
@@ -1337,6 +1366,36 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
         toast_blks_hit: None,
         tidx_blks_read: None,
         tidx_blks_hit: None,
+    }
+}
+
+fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDatabaseV1 {
+    PgStatDatabaseV1 {
+        ts: Ts(ts),
+        datid: 73,
+        datname: Some(StrId(901)),
+        numbackends: Some(5),
+        xact_commit,
+        xact_rollback,
+        blks_read: 0,
+        blks_hit: 0,
+        tup_returned: 0,
+        tup_fetched: 0,
+        tup_inserted: 0,
+        tup_updated: 0,
+        tup_deleted: 0,
+        conflicts: 0,
+        temp_files: 0,
+        temp_bytes: 0,
+        deadlocks: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        stats_reset: None,
+        frozen_xid_age: Some(1),
+        min_mxid_age: Some(1),
+        datconnlimit: Some(-1),
+        datallowconn: Some(true),
+        datistemplate: Some(false),
     }
 }
 
@@ -1925,7 +1984,9 @@ async fn an_active_snapshot_restarts_from_the_finished_segment_after_rollover() 
     assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert_eq!(
         response.headers().get(hyper::header::CACHE_CONTROL),
-        Some(&HeaderValue::from_static("private,no-cache")),
+        Some(&HeaderValue::from_static(
+            "private,max-age=31536000,immutable"
+        )),
         "the finished retry controls the response cache policy"
     );
     let body = response
@@ -2553,7 +2614,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 
     let prepared = fixture.prepare("/api/hour?from=0&to=1000", None);
     assert_eq!(prepared.meta().status, StatusCode::OK);
-    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(prepared.meta().cache, CachePolicy::Immutable);
     let records = stream(prepared).expect("hour body");
     let kinds = records
         .iter()
@@ -2577,7 +2638,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
-fn finished_browser_resources_revalidate_without_streaming_a_body() {
+fn finished_browser_resources_are_immutable_and_revalidate_without_a_body() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
     fixture.finish();
@@ -2586,20 +2647,34 @@ fn finished_browser_resources_revalidate_without_streaming_a_body() {
         let initial = fixture.prepare(&target, None);
         let meta = initial.meta();
         assert_eq!(meta.status, StatusCode::OK, "{target}");
-        assert_eq!(meta.cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(meta.cache, CachePolicy::Immutable, "{target}");
         let etag = meta.etag.expect("finished browser resource ETag");
         assert!(etag.starts_with("W/\""), "{target}");
         assert!(!stream(initial).expect("finished response body").is_empty());
 
         let matching = fixture.prepare(&target, Some(&etag));
         assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED, "{target}");
-        assert_eq!(matching.meta().cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(matching.meta().cache, CachePolicy::Immutable, "{target}");
         assert_eq!(
             matching.meta().etag.as_deref(),
             Some(etag.as_str()),
             "{target}"
         );
         assert!(matches!(matching, Prepared::Empty(_)), "{target}");
+    }
+}
+
+#[test]
+fn aggregate_reads_with_catalog_warnings_are_not_immutable() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    for target in browser_resource_targets() {
+        let prepared = fixture.prepare(&target, None);
+        assert_eq!(prepared.meta().cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(prepared.meta().etag, None, "{target}");
     }
 }
 
@@ -2702,6 +2777,20 @@ fn empty_finished_hour_series_has_no_validator() {
 
     let prepared = fixture.prepare(
         "/api/hour?from=300&to=400&section=os_diskstats&field=reads",
+        None,
+    );
+    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(prepared.meta().etag, None);
+}
+
+#[test]
+fn empty_finished_heatmap_has_no_validator() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+
+    let prepared = fixture.prepare(
+        "/api/heatmap?from=300&to=400&section=os_diskstats&field=reads&columns=1&top=1",
         None,
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
@@ -3103,7 +3192,7 @@ fn snapshot_cache_policy_tracks_active_and_finished_inputs() {
 
     fixture.finish();
     let finished = fixture.prepare(&resource, None);
-    assert_eq!(finished.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(finished.meta().cache, CachePolicy::Immutable);
 }
 
 #[test]
@@ -3590,6 +3679,118 @@ fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_rea
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
     assert_eq!(page_operations(), (1, 0, 0));
+}
+
+#[test]
+fn postgres_summary_is_one_hour_series_for_all_surfaces() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[
+        (100, 1, 10, 100.0),
+        (100, 2, 20, 300.0),
+        (200, 1, 14, 160.0),
+        (200, 2, 20, 300.0),
+    ]);
+    fixture.append_plan_snapshots(&[
+        (100, 1, 2, 20.0),
+        (100, 2, 4, 60.0),
+        (200, 1, 5, 50.0),
+        (200, 2, 4, 60.0),
+    ]);
+    fixture.append_postgres_summary_relations();
+    fixture.finish();
+
+    let prepared = fixture.prepare(
+        "/api/hour?from=0&to=3599999999&section=postgresql_summary",
+        None,
+    );
+    let mut bytes = Vec::new();
+    prepared
+        .stream(
+            &mut |record| {
+                bytes.extend(record);
+                true
+            },
+            &|| false,
+        )
+        .expect("PostgreSQL summary stream");
+    let body = String::from_utf8(bytes).expect("UTF-8 PostgreSQL summary");
+    assert!(body.contains(r#""logical_name":"postgresql_summary""#));
+    assert!(body.contains(r#""name":"surface""#));
+    for surface in 1..=5 {
+        assert!(body.contains(&format!(r#""values":[{surface},"#)));
+    }
+
+    let records = body
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("PostgreSQL summary NDJSON"))
+        .collect::<Vec<_>>();
+    let columns = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .and_then(|record| record["layout"]["columns"].as_array())
+        .expect("PostgreSQL summary columns");
+    let column = |name: &str| {
+        columns
+            .iter()
+            .position(|column| column["name"] == name)
+            .expect("PostgreSQL summary fact")
+    };
+    let row = |surface: u64| {
+        records
+            .iter()
+            .find(|record| {
+                record["record"] == "row"
+                    && record["timestamp"] == "200"
+                    && record["values"][0] == surface
+            })
+            .expect("PostgreSQL summary surface row")
+    };
+    assert_eq!(row(1)["values"][column("active_pct")], 50.0);
+    assert_eq!(row(1)["values"][column("mean_exec_ms")], 15.0);
+    assert_eq!(row(3)["values"][column("rollback_pct")], 20.0);
+    assert_eq!(row(4)["values"][column("seq_scan_pct")], 40.0);
+    assert_eq!(row(5)["values"][column("scanned_pct")], 50.0);
+}
+
+#[test]
+fn postgres_summary_uses_only_the_adjacent_physical_segment_as_predecessor() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 1, 10, 100.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_diskstats(&[(150, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_statement_snapshots(&[(200, 1, 20, 300.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_000);
+    fixture.append_statement_snapshots(&[(300, 1, 30, 500.0)]);
+    fixture.finish();
+
+    let records =
+        stream(fixture.prepare("/api/hour?from=150&to=200&section=postgresql_summary", None))
+            .expect("PostgreSQL summary with an adjacent non-PostgreSQL segment");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("PostgreSQL summary layout");
+    let mean = layout["layout"]["columns"]
+        .as_array()
+        .expect("PostgreSQL summary columns")
+        .iter()
+        .position(|column| column["name"] == "mean_exec_ms")
+        .expect("mean execution column");
+    let statement = records
+        .iter()
+        .find(|record| record["record"] == "row" && record["values"][0] == 1)
+        .expect("statement summary row");
+    assert_eq!(statement["values"][mean], Value::Null);
+
+    let adjacent =
+        stream(fixture.prepare("/api/hour?from=300&to=300&section=postgresql_summary", None))
+            .expect("PostgreSQL summary with an adjacent PostgreSQL segment");
+    let statement = adjacent
+        .iter()
+        .find(|record| record["record"] == "row" && record["values"][0] == 1)
+        .expect("statement summary row with predecessor");
+    assert_eq!(statement["values"][mean], 20.0);
 }
 
 #[test]

@@ -42,6 +42,9 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: true }
+  let heldPostgresSummary = null
+  let postgresSummaryRequested
+  const postgresSummaryRequest = new Promise((resolve) => { postgresSummaryRequested = resolve })
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     requests.push(requestRecord(request, url))
@@ -56,6 +59,11 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
+      if (url.searchParams.get("section") === "postgresql_summary") {
+        heldPostgresSummary = { hour, response }
+        postgresSummaryRequested()
+        return
+      }
       const records = timelineRecords(hour).map((record) => record.record === "point" && record.series === "os_health" && record.ts === String(AT)
         ? { ...record, value: 41.729068244136855 }
         : record)
@@ -94,6 +102,54 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
     await settleLayout(cdp)
+
+    const postgresSummaryRequests = () => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "postgresql_summary")
+    await postgresSummaryRequest
+    assert.notEqual(heldPostgresSummary, null)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`), true)
+    ndjson(heldPostgresSummary.response, postgresSummaryRecords(heldPostgresSummary.hour))
+    heldPostgresSummary = null
+    await waitForRequests(() => postgresSummaryRequests().length === 1)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="active_statements"] strong')?.textContent === "3 · 60%"`, "the PostgreSQL statement context")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 720, mobile: false, width: 320 })
+    await settleLayout(cdp)
+    const mobileSummary = await cdp.evaluate(`(() => {
+      const bar = document.querySelector('.pg-table-workspace > .lensbar')
+      const summary = bar.querySelector(':scope > .process-summary-inline').getBoundingClientRect()
+      const legend = bar.querySelector(':scope > .process-summary-inline').nextElementSibling.getBoundingClientRect()
+      return {
+        documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        verticalOverlap: Math.min(summary.bottom, legend.bottom) - Math.max(summary.top, legend.top),
+      }
+    })()`)
+    assert.equal(mobileSummary.documentOverflow, false, JSON.stringify(mobileSummary))
+    assert.ok(mobileSummary.verticalOverlap > 0, JSON.stringify(mobileSummary))
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await settleLayout(cdp)
+    await cdp.evaluate(`document.querySelector('[data-testid="statement-lens-per_call"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="execution_per_call"]') !== null`, "the local statement lens context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Tables")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="scan_methods"]') !== null`, "the table context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Databases")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "20%"`, "the database context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`(() => {
+      const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "2")
+      navigator.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}" && document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "10%"`, "the local PostgreSQL cursor context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the restored PostgreSQL cursor")
+    await cdp.waitFor(`document.querySelector('button[title="Refresh"]')?.disabled === false`, "the refresh action")
+    await cdp.evaluate(`document.querySelector('button[title="Refresh"]').click()`)
+    await waitForRequests(() => postgresSummaryRequests().length === 2)
+    assert.equal(postgresSummaryRequests().length, 2)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Statements")).click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the restored Statements path")
 
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
@@ -472,7 +528,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       return
     }
     if (url.pathname === "/api/hour") {
-      ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
+      const from = Number(url.searchParams.get("from") ?? HOUR)
+      ndjson(response, [...timelineRecords(from), ...networkLaneRecords(from)])
       return
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -1084,13 +1141,16 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const size = await cdp.evaluate(`(() => {
         const clientWidth = document.documentElement.clientWidth
+        const updated = document.querySelector('[data-testid="updated-help"]').getBoundingClientRect()
+        const spinner = document.querySelector('[data-testid="cursor-behind"] .loading-ring').getBoundingClientRect()
         const overflow = [...document.querySelectorAll("body *")].flatMap((node) => {
           const rect = node.getBoundingClientRect()
           return rect.right > clientWidth + 0.5 ? [{ className: node.className, right: rect.right, tag: node.tagName }] : []
         }).slice(0, 8)
-        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth }
+        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth, statusGap: spinner.left - updated.right }
       })()`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px document overflow: ${JSON.stringify(size)}`)
+      assert.ok(size.statusGap >= 15, `${width}px cursor status grouping: ${JSON.stringify(size)}`)
     }
     ndjson(heldSystemPage, systemSnapshotRecords())
     heldSystemPage = null
@@ -1100,6 +1160,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="event-mark"] button') !== null`, "the statement finding")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
+    await settleLayout(cdp)
+    // Below 520px the form lives in a panel; the search itself is unchanged.
+    assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('[data-testid="events-console"] input[type="search"]').closest('form')).display`), "none", "the phone folds the form into a button")
+    await cdp.evaluate(`document.querySelector('[data-testid="mobile-search-open"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="mobile-search-head"]') !== null`, "the phone search panel")
     await settleLayout(cdp)
     const eventSearch = await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="events-console"] input[type="search"]')
@@ -1139,6 +1204,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "search help closed by Escape")
     assert.equal(await cdp.evaluate(`document.activeElement?.getAttribute("aria-label")`), "Синтаксис и поля поиска")
     await assertSearchControlContained(cdp, "Events search")
+    await cdp.evaluate(`document.querySelector('[data-testid="mobile-search-head"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="mobile-search-head"]') === null`, "the phone search panel closed")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[data-testid="event-mark"] > button').click()`)
@@ -1522,6 +1589,30 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 420 })
     await settleLayout(cdp)
     await assertHoverGeometryStable(cdp, '[data-testid="system-cpu-composition"]', "420px System dock")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 667, mobile: true, width: 375 })
+    await settleLayout(cdp)
+    const ledger = await cdp.evaluate(`(() => {
+      const cells = [...document.querySelectorAll('.use-cell')].flatMap((cell) => {
+        const label = cell.querySelector(':scope > span > span')
+        const value = cell.querySelector('strong')
+        const dot = cell.querySelector('.label-help')
+        if (label === null || value === null) return []
+        return [{
+          clipped: label.scrollWidth > label.clientWidth || value.scrollWidth > value.clientWidth,
+          label: label.textContent,
+          under: dot === null ? false : dot.getBoundingClientRect().left < value.getBoundingClientRect().right - .5,
+          value: value.textContent,
+        }]
+      })
+      const network = document.querySelector('[data-testid="use-row-network"] .use-cell > span > span')
+      return { cells, network: network?.textContent ?? null, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
+    })()`)
+    // A cell that prints two readings must name both: labelled "RX" over
+    // "884 B/s · 888 B/s", the second number has no name.
+    assert.equal(ledger.network, "RX · TX", JSON.stringify(ledger))
+    assert.deepEqual(ledger.cells.filter((cell) => cell.clipped), [], `phone ledger clips: ${JSON.stringify(ledger.cells)}`)
+    assert.deepEqual(ledger.cells.filter((cell) => cell.under), [], `phone help dot sits on the value: ${JSON.stringify(ledger.cells)}`)
+    assert.equal(ledger.sideways, false, JSON.stringify(ledger))
     for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => { try {
@@ -1929,7 +2020,9 @@ test("the minified artifact restores and clears its opaque browser session", { t
     await cdp.waitFor(`document.querySelector('[data-testid="login-message"]')?.textContent.includes("session ended") === true`, "one expired-session transition")
     await delay(300)
     const expiryRequests = requests.slice(started)
-    assert.equal(expiryRequests.filter(({ path }) => path.startsWith("/api/")).length, 1)
+    const expiryApi = expiryRequests.filter(({ path }) => path.startsWith("/api/"))
+    assert.equal(expiryApi.length, 2)
+    assert.equal(expiryApi.filter(({ path, query }) => path === "/api/hour" && query.includes("section=postgresql_summary")).length, 1)
     assert.equal(expiryRequests.filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, 1)
     assert.equal(requests.filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, deletesBeforeExpiry + 1)
     assert.equal(requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length, postsBeforeExpiry)
@@ -3917,6 +4010,22 @@ function expansionGeometryExpression() {
   })()`
 }
 
+// At or below 520 px the preview grows by the 44 px cursor row, which is the
+// only way to step the cursor without a keyboard.
+// The network row is the only ledger cell that prints two readings, so it is
+// the only one that can name one series and show two.
+function networkLaneRecords(hour) {
+  const at = hour + (AT - HOUR)
+  return [
+    { record: "lane", segment_id: SEGMENT, lane: "net_rx", ts: String(at), value: 884 },
+    { record: "lane", segment_id: SEGMENT, lane: "net_tx", ts: String(at), value: 888 },
+  ]
+}
+
+function previewHeight(width) {
+  return width <= 520 ? 67 : 124
+}
+
 async function settleLayout(cdp) {
   await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
 }
@@ -4195,7 +4304,93 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(closed.inspector, false, viewport.kind)
       assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
-      assert.ok(Math.abs(closed.preview.height - 124) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+      assert.ok(Math.abs(closed.preview.height - previewHeight(viewport.width)) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+
+      const cursorRow = await cdp.evaluate(`(() => {
+        const row = document.querySelector('[data-testid="cursor-row"]')
+        if (row === null || getComputedStyle(row).display === 'none') return { shown: false }
+        const reading = row.querySelector('[data-testid="cursor-row-reading"]')
+        const stamp = row.querySelector('[data-testid="cursor-row-time"]')
+        const buttons = [...row.querySelectorAll('button')].map((button) => {
+          const box = button.getBoundingClientRect()
+          return { disabled: button.disabled, height: box.height, label: button.getAttribute('aria-label'), width: box.width }
+        })
+        const fits = (node) => node.scrollWidth <= node.clientWidth
+        return {
+          buttons,
+          height: row.getBoundingClientRect().height,
+          readingFits: fits(reading), readingText: reading.textContent,
+          shown: true,
+          stampFits: fits(stamp), stampText: stamp.textContent,
+        }
+      })()`)
+      if (viewport.width > 520) {
+        assert.equal(cursorRow.shown, false, `${viewport.kind} has the plot and the arrow keys: ${JSON.stringify(cursorRow)}`)
+      } else {
+        assert.equal(cursorRow.shown, true, `${viewport.kind}: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.buttons.length, 2, JSON.stringify(cursorRow))
+        assert.equal(cursorRow.height, 66, JSON.stringify(cursorRow))
+        assert.ok(cursorRow.buttons.every((button) => button.height >= 44 && button.width >= 44), `${viewport.kind} cursor steps stay tappable: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.readingFits, true, `${viewport.kind} lane reading must not clip: ${JSON.stringify(cursorRow)}`)
+        assert.equal(cursorRow.stampFits, true, `${viewport.kind} cursor instant must not clip: ${JSON.stringify(cursorRow)}`)
+        assert.match(cursorRow.stampText, /Cursor/)
+        assert.match(cursorRow.stampText, /Recorded/)
+        assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timeline-preview-reading"]') === null || getComputedStyle(document.querySelector('[data-testid="timeline-preview-reading"]')).display === 'none'`), true, `${viewport.kind} keeps one reading, not a clipped copy`)
+        const before = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
+        await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:first-of-type').click()`)
+        await cdp.waitFor(`new URL(location.href).searchParams.get('at') !== ${JSON.stringify(before)}`, `${viewport.kind} cursor stepped back`)
+        const stepped = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
+        assert.ok(Number(stepped) < Number(before), `${viewport.kind} stepped to ${stepped} from ${before}`)
+        await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:last-of-type').click()`)
+        await cdp.waitFor(`new URL(location.href).searchParams.get('at') === ${JSON.stringify(before)}`, `${viewport.kind} cursor stepped forward`)
+
+        // The health split is the reading both roles route on, and the widest
+        // one the formatter can produce. RU spaces its percent sign, so its
+        // saturated form is the worst case at any width.
+        await cdp.evaluate(`(() => {
+          const select = document.querySelector('[data-testid="timeline-preview-metric-select"]')
+          select.value = 'health'
+          select.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        await cdp.waitFor(`document.querySelector('[data-testid="cursor-row-reading"]')?.textContent.includes('Overall')`, `${viewport.kind} health split`)
+        await settleLayout(cdp)
+        const health = await cdp.evaluate(`(() => {
+          const reading = document.querySelector('[data-testid="cursor-row-reading"]')
+          const style = getComputedStyle(reading)
+          const context = document.createElement('canvas').getContext('2d')
+          context.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily
+          return {
+            clipped: reading.scrollWidth > reading.clientWidth,
+            room: reading.clientWidth,
+            saturated: context.measureText('Overall 100 % · OS 100 % · PostgreSQL 100 %').width,
+            text: reading.textContent,
+          }
+        })()`)
+        // Wrapped, the four summary facts cost four lines; scrolled, they cost
+        // one and every fact is still reachable.
+        const summary = await cdp.evaluate(`(() => {
+          const summary = document.querySelector('.process-summary-inline')
+          const stamp = document.querySelector('.lensbar > .snapshot-time')
+          const facts = [...summary.children]
+          return {
+            duplicateStamp: stamp !== null && getComputedStyle(stamp).display !== 'none',
+            facts: facts.length,
+            head: document.querySelector('[data-testid="process-table"] .entity-head').getBoundingClientRect().top,
+            height: summary.getBoundingClientRect().height,
+            lensbar: document.querySelector('.lensbar').getBoundingClientRect().height,
+            reachable: summary.scrollWidth <= summary.clientWidth || summary.scrollWidth <= summary.clientWidth + summary.scrollLeftMax || getComputedStyle(summary).overflowX === 'auto',
+          }
+        })()`)
+        assert.ok(summary.facts >= 4, `${viewport.kind} keeps every summary fact: ${JSON.stringify(summary)}`)
+        assert.ok(summary.height <= 32, `${viewport.kind} summary must stay one row: ${JSON.stringify(summary)}`)
+        assert.equal(summary.reachable, true, `${viewport.kind} summary must scroll, not clip: ${JSON.stringify(summary)}`)
+        assert.equal(summary.duplicateStamp, false, `${viewport.kind} prints the cursor instant once: ${JSON.stringify(summary)}`)
+        assert.ok(summary.head <= 400, `${viewport.kind} table head sits at ${summary.head}`)
+
+        assert.match(health.text, /Overall .* OS .* PostgreSQL/, JSON.stringify(health))
+        assert.equal(health.clipped, false, `${viewport.kind} health split clips: ${JSON.stringify(health)}`)
+        assert.ok(health.saturated <= health.room, `${viewport.kind} saturated health split needs ${health.saturated} of ${health.room}`)
+      }
 
       await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, `${viewport.kind} Detail Inspector`)
@@ -4230,7 +4425,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] .inspector-chart-slot [data-testid="process-history"]') !== null`, `${viewport.kind} entity Chart Inspector`)
       await settleLayout(cdp)
       assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true, `${viewport.kind} entity chart replaces the shared timeline`)
-      assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5, `${viewport.kind} preview keeps its figure beside the entity chart`)
+      assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - previewHeight(viewport.width)) <= .5, `${viewport.kind} preview keeps its figure beside the entity chart`)
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null`, `${viewport.kind} Inspector closed`)
       await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
@@ -4296,8 +4491,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.match(chartGeometry.preview.selectedAccess, /\S/)
       if (viewport.kind === "phone") {
         assert.equal(chartGeometry.preview.lanesDisplay, "none", JSON.stringify(chartGeometry.preview))
-        assert.equal(chartGeometry.preview.pickerDisplay, "grid", JSON.stringify(chartGeometry.preview))
-        assert.ok(Math.abs(chartGeometry.preview.action.width - 36) <= 1, JSON.stringify(chartGeometry.preview))
+        // The rail folds below 520px: the plot and its lane picker open at full
+        // size from the control bar, which is the only chart affordance there.
+        assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('.timeline-preview .timeline-rail')).display`), "none")
+        assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="mobile-controls"] button').length`), 2)
+        assert.equal(await cdp.evaluate(`getComputedStyle(document.querySelector('[data-testid="mobile-controls"]')).display`), "flex")
       } else {
         assert.equal(chartGeometry.preview.lanesDisplay, "flex", JSON.stringify(chartGeometry.preview))
         assert.equal(chartGeometry.preview.pickerDisplay, "none", JSON.stringify(chartGeometry.preview))
@@ -4570,6 +4768,9 @@ function timelineRecords(hour = HOUR, cgroups = false) {
         logical_name: "pg_store_plans", physical_name: "pg_store_plans", type_id: "1004001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
       }, {
+        logical_name: "pg_stat_database", physical_name: "pg_stat_database", type_id: "1005001",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
+      }, {
         logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
         implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }, {
@@ -4618,6 +4819,36 @@ function timelineRecords(hour = HOUR, cgroups = false) {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
       field_ordinal: 11, row_ordinal: "91", ts: shifted(AT),
     },
+  ]
+}
+
+const POSTGRES_SUMMARY_FIELDS = [
+  "surface", "active_count", "active_pct", "mean_exec_ms", "buffer_read_pct", "rollback_pct", "temp_bytes_per_transaction", "seq_scan_pct",
+]
+
+function postgresSummaryRecords(hour) {
+  const shift = hour - HOUR
+  const records = [
+    [BEFORE_AT, 1, { active_count: 1, active_pct: 20, mean_exec_ms: 5, buffer_read_pct: 40 }],
+    [BEFORE_AT, 2, { active_count: 1, active_pct: 20, mean_exec_ms: 5, buffer_read_pct: 40 }],
+    [BEFORE_AT, 3, { rollback_pct: 10, temp_bytes_per_transaction: 1_024, buffer_read_pct: 40 }],
+    [BEFORE_AT, 4, { seq_scan_pct: 25, buffer_read_pct: 40 }],
+    [BEFORE_AT, 5, { buffer_read_pct: 40 }],
+    [AT, 1, { active_count: 3, active_pct: 60, mean_exec_ms: 15, buffer_read_pct: 20 }],
+    [AT, 2, { active_count: 3, active_pct: 60, mean_exec_ms: 15, buffer_read_pct: 20 }],
+    [AT, 3, { rollback_pct: 20, temp_bytes_per_transaction: 2_048, buffer_read_pct: 20 }],
+    [AT, 4, { seq_scan_pct: 40, buffer_read_pct: 20 }],
+    [AT, 5, { buffer_read_pct: 20 }],
+  ]
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("postgresql-summary", "postgresql_summary", POSTGRES_SUMMARY_FIELDS),
+    ...records.map(([timestamp, surface, facts]) => row(
+      "postgresql-summary",
+      `${timestamp}-${surface}`,
+      POSTGRES_SUMMARY_FIELDS.map((field) => field === "surface" ? surface : facts[field] ?? null),
+      timestamp + shift,
+    )),
   ]
 }
 
@@ -5778,13 +6009,24 @@ test("phone width keeps narrow rules winning and nothing reserving height", { ti
     const resolved = await cdp.evaluate(`(() => {
       const row = document.querySelector('[data-testid="use-table"] .use-row')
       const tracks = getComputedStyle(row).gridTemplateColumns.split(" ")
-      return { client: document.documentElement.clientWidth, first: tracks[0], tracks: tracks.length }
+      const name = row.querySelector('.use-resource')
+      const cell = row.querySelector('.use-cell')
+      return {
+        client: document.documentElement.clientWidth,
+        first: tracks[0], tracks: tracks.length,
+        nameSpans: name === null ? null : Math.round(name.getBoundingClientRect().width),
+        nameBottom: name === null ? null : Math.round(name.getBoundingClientRect().bottom),
+        cellTop: cell === null ? null : Math.round(cell.getBoundingClientRect().top),
+        rowWidth: Math.round(row.getBoundingClientRect().width),
+      }
     })()`)
-    // The <=760px rule pins the first track to 80px; the base value is a
-    // minmax(96px, 130px) that resolves to 96px or more when it wrongly wins.
+    // At or below 520px four columns left a reading 88px for a label, a number
+    // and its help mark. The resource name takes the whole row and the three
+    // readings share the width under it.
     assert.equal(resolved.client, 412, JSON.stringify(resolved))
-    assert.equal(resolved.tracks, 4, JSON.stringify(resolved))
-    assert.equal(resolved.first, "80px", JSON.stringify(resolved))
+    assert.equal(resolved.tracks, 3, JSON.stringify(resolved))
+    assert.equal(resolved.nameSpans, resolved.rowWidth, JSON.stringify(resolved))
+    assert.ok(resolved.cellTop >= resolved.nameBottom - .5, JSON.stringify(resolved))
 
     // A phone has no room for a reserved list height or a strip that stacks
     // its readings; both pushed real rows below the fold.

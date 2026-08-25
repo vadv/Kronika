@@ -76,6 +76,34 @@ test("a Linux process state carries its own top-style tones, distinct from Postg
   assert.equal(semanticValueTone("state", "S"), null)
 })
 
+test("the ps STAT string tones by its state letter, whatever flags trail it", () => {
+  assert.equal(semanticValueTone("process_stat", "R"), "good")
+  assert.equal(semanticValueTone("process_stat", "Rl"), "good")
+  assert.equal(semanticValueTone("process_stat", "D<l"), "warning")
+  assert.equal(semanticValueTone("process_stat", "ZN"), "critical")
+  assert.equal(semanticValueTone("process_stat", "Il"), "inactive")
+  assert.equal(semanticValueTone("process_stat", "S<l"), null)
+  assert.equal(semanticValueTone("process_stat", null), null)
+})
+
+test("the row is shaded for running and blocked states, and left alone for sleeping ones", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  const rowTone = (tone: string) => new RegExp(
+    String.raw`\.process-table \.entity-row:has\(:is\(\[data-field="state"\], \[data-field="process_stat"\]\)\[data-value-tone="${tone}"\]\)`,
+  )
+  for (const tone of ["good", "warning", "critical"]) assert.match(styles, rowTone(tone), tone)
+  // Sleeping has no tone at all, so no rule can reach it.
+  assert.equal(semanticValueTone("process_stat", "S"), null)
+  assert.equal(semanticValueTone("process_stat", "Ss"), null)
+  assert.equal(semanticValueTone("process_stat", "D"), "warning")
+  assert.equal(semanticValueTone("process_stat", "R"), "good")
+  // Load is decided later in the sheet, so a hot row wins over a calm state.
+  const stateWarning = styles.indexOf('[data-field="process_stat"])[data-value-tone="good"]')
+  const loadWarning = styles.indexOf('[data-field="cpu_percent"][data-value-tone="warning"]')
+  const loadCritical = styles.indexOf('[data-field="cpu_percent"][data-value-tone="critical"]')
+  assert.ok(stateWarning < loadWarning && loadWarning < loadCritical, "load rules must follow the state rules")
+})
+
 test("a Linux process state still tones correctly when the cell arrives as its raw ASCII code, not the character", () => {
   assert.equal(semanticValueTone("state", "R".charCodeAt(0)), "good")
   assert.equal(semanticValueTone("state", "D".charCodeAt(0)), "warning")

@@ -115,8 +115,9 @@ export function UseTable({
             const primary = seriesReading(points, cursor, locale, cell.kind, t("unit.per_second"))
             const secondary = second === undefined ? null : seriesReading(second, cursor, locale, cell.kind, t("unit.per_second"))
             return <span className="use-cell relative min-w-0 px-2 py-1.5 max-[760px]:px-[5px]" key={column}>
-              <span className="use-lane flex items-baseline justify-between gap-[7px] [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2">
+              <span className="use-lane flex items-baseline justify-start gap-[7px] [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:ml-auto [&_strong]:tabular-nums [&_strong]:text-fg2">
                 <LabelHelp helpKey={useLaneHelp(cell.lane)} labelKey={`use.lane.${cell.lane}`} t={t} />
+                {cell.second !== undefined && <LabelHelp helpKey={useLaneHelp(cell.second)} labelKey={`use.lane.${cell.second}`} t={t} />}
                 <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
               </span>
               <SparkCell cursor={cursor} end={end} hour={hour} max={sparkScaleMax(cell.kind, [points, ...(second === undefined ? [] : [second])])} points={points} second={second} />

@@ -57,11 +57,11 @@ test("process lenses share the measured identity width contract", () => {
   assert.equal(LENS_FIELDS.tree.find(({ id }) => id === "starttime").size, 92)
 })
 
-test("process lens tabs read as one control, and only on the Processes bar, without a fake splitter", async () => {
+test("process and summarized PostgreSQL lens tabs read as one control without a fake splitter", async () => {
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
-  assert.match(styles, /\.process-workspace > \.lensbar > \.lens-tabs \{[^}]*background: var\(--color-s1\)[^}]*border: 1px solid/)
+  assert.match(styles, /\.process-workspace > \.lensbar > \.lens-tabs,\s*\.pg-table-workspace > \.lensbar:has\(> \.process-summary-inline\) > \.lens-tabs \{[^}]*background: var\(--color-s1\)[^}]*border: 1px solid/)
   assert.doesNotMatch(styles, /^\.lensbar > \.lens-tabs \{[^}]*border: 1px/m)
-  assert.doesNotMatch(styles, /\.lensbar > \.process-summary-inline \{[^}]*border-left/)
+  assert.doesNotMatch(styles, /^\s*\.lensbar > \.process-summary-inline \{[^}]*border-left/m)
 })
 
 test("Tree row accessibility names the parent and depth without reading connector glyphs", () => {
