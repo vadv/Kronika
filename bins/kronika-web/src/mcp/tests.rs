@@ -34,7 +34,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_twelve_tool_catalog() {
+async fn tools_list_returns_the_thirteen_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -82,6 +82,7 @@ async fn tools_list_returns_the_twelve_tool_catalog() {
             "kronika_find_postgresql_plans",
             "kronika_find_processes",
             "kronika_get_row_detail",
+            "kronika_find_events",
         ]
     );
 }
@@ -1143,4 +1144,198 @@ fn get_row_detail_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::row_detail::call(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_events_returns_rows_with_source_and_locator_fields() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_log_error(200);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(structured["has_more"], false);
+    for row in rows {
+        assert_eq!(row["source"], "pg_log_errors");
+        assert!(
+            row["segment_id"].is_string(),
+            "segment_id is a decimal string"
+        );
+        assert!(row["type_id"].is_string(), "type_id is a decimal string");
+        assert!(
+            row["row_ordinal"].is_string(),
+            "row_ordinal is a decimal string"
+        );
+        assert!(row["at"].is_string(), "at is a decimal string");
+        assert_eq!(row["category"], 8);
+    }
+}
+
+#[test]
+fn find_events_merges_multiple_sources_by_timestamp() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_pgbouncer_event(150);
+    fixture.append_log_error(300);
+    fixture.append_pgbouncer_event(250);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors", "pgbouncer_events"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 3,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 3, "4 rows exist in the window but limit is 3");
+    assert_eq!(structured["has_more"], true);
+    let ordered_ats: Vec<i64> = rows
+        .iter()
+        .map(|row| {
+            row["at"]
+                .as_str()
+                .expect("at is a decimal string")
+                .parse()
+                .expect("at parses")
+        })
+        .collect();
+    assert_eq!(
+        ordered_ats,
+        vec![100, 150, 250],
+        "merged rows stay in ascending timestamp order across both sources"
+    );
+    let sources: Vec<&str> = rows
+        .iter()
+        .map(|row| row["source"].as_str().expect("source"))
+        .collect();
+    assert_eq!(
+        sources,
+        vec!["pg_log_errors", "pgbouncer_events", "pgbouncer_events"]
+    );
+}
+
+#[test]
+fn find_events_rejects_a_window_wider_than_one_hour() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 3_600_000_000_i64,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("3599999999") || message.contains("one hour"),
+        "error should name the window limit: {message}"
+    );
+}
+
+#[test]
+fn find_events_rejects_an_unknown_source_name() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_made_up"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments);
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_events_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::events::call(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn get_row_detail_chains_directly_from_a_find_events_locator() {
+    // Same chaining guarantee as
+    // get_row_detail_chains_directly_from_a_find_processes_locator: a
+    // find_events row's own locator fields go straight into
+    // get_row_detail's arguments, unchanged.
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let listing_arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let listing = crate::mcp::events::call(&config, listing_arguments);
+    assert_eq!(listing.is_error, Some(false));
+    let listing_rows = listing.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(listing_rows.len(), 1);
+    let listing_row = listing_rows[0].clone();
+
+    let detail_arguments = serde_json::json!({
+        "section": "pg_log_errors",
+        "segment_id": listing_row["segment_id"],
+        "at": listing_row["at"],
+        "type_id": listing_row["type_id"],
+        "row_ordinal": listing_row["row_ordinal"],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+
+    assert_eq!(detail.is_error, Some(false));
+    let detail_row = detail.structured_content.expect("structured content");
+    assert_eq!(detail_row["category"], listing_row["category"]);
+    assert_eq!(detail_row["segment_id"], listing_row["segment_id"]);
+    assert_eq!(detail_row["type_id"], listing_row["type_id"]);
+    assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
+    assert_eq!(detail_row["at"], listing_row["at"]);
 }

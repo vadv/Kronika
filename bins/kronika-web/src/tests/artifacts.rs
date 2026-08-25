@@ -27,6 +27,7 @@ use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+use kronika_registry::pgbouncer_events::PgBouncerEvents;
 use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -1409,7 +1410,7 @@ impl Fixture {
             .expect("append placed indexes");
     }
 
-    fn append_log_error(&mut self, at: i64) {
+    pub(crate) fn append_log_error(&mut self, at: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
         let dictionary = dict::encode(interner.window()).expect("log dictionary");
@@ -1440,6 +1441,31 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append log row");
+    }
+
+    pub(crate) fn append_pgbouncer_event(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+        let dictionary = dict::encode(interner.window()).expect("pgbouncer dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgBouncerEvents {
+                ts: Ts(at),
+                source_file: label,
+                level: 2,
+                database: None,
+                username: None,
+                host: None,
+                text: label,
+            })
+            .expect("pgbouncer row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode pgbouncer row")
+            .expect("nonempty pgbouncer row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append pgbouncer row");
     }
 
     fn append_log_temp_file(&mut self, at: i64) {

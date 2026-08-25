@@ -22,6 +22,7 @@ pub(crate) const FIND_POSTGRESQL_STATEMENTS_TOOL: &str = "kronika_find_postgresq
 pub(crate) const FIND_POSTGRESQL_PLANS_TOOL: &str = "kronika_find_postgresql_plans";
 pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
 pub(crate) const GET_ROW_DETAIL_TOOL: &str = "kronika_get_row_detail";
+pub(crate) const FIND_EVENTS_TOOL: &str = "kronika_find_events";
 
 /// Input for `kronika_overview`: rank one recorded section's identities by
 /// a chosen numeric field, over an explicit window.
@@ -305,6 +306,27 @@ pub(crate) struct RowDetailInput {
     pub(crate) row_ordinal: serde_json::Value,
 }
 
+/// Input for `kronika_find_events`. Narrows by which recorded event
+/// sections to read and by an explicit time window only — no field-level
+/// predicates in v1; a caller that needs more filters the returned rows
+/// itself.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct EventsInput {
+    /// Which recorded event sections to read: any of "`pg_log_errors`",
+    /// "`pg_log_checkpoints`", "`pg_log_autovacuum`",
+    /// "`pg_log_slow_queries`", "`pg_log_lock_waits`",
+    /// "`pg_log_lifecycle`", "`pgbouncer_events`". Omit to read all seven.
+    #[serde(default)]
+    pub(crate) sources: Option<Vec<String>>,
+    /// Inclusive start of the window, Unix microseconds.
+    pub(crate) from: i64,
+    /// Inclusive end of the window, Unix microseconds. `to` minus `from`
+    /// cannot exceed one hour.
+    pub(crate) to: i64,
+    /// Maximum rows to return in total, across every requested source.
+    pub(crate) limit: u32,
+}
+
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -372,6 +394,23 @@ pub(crate) fn tools() -> Vec<Tool> {
              grouped by (datid, relid) rather than a single physical row \
              ordinal.",
             schema_object::<RowDetailInput>(),
+        ),
+        Tool::new(
+            FIND_EVENTS_TOOL,
+            "Reads recorded event rows from one or more of the seven \
+             event-shaped log sections (PostgreSQL log errors, \
+             checkpoints, autovacuum, slow queries, lock waits, lifecycle \
+             events, and PgBouncer log events), narrowed by source and by \
+             an explicit time window of at most one hour. No field-level \
+             filtering in v1: a caller that needs to narrow further does \
+             so over the returned rows itself. Merges every requested \
+             source into one list ordered by timestamp, truncated to \
+             `limit`, with `has_more` set when more rows matched than \
+             were returned. Each row carries its own source plus \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<EventsInput>(),
         ),
     ])
     .collect()
