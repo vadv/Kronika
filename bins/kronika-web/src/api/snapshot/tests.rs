@@ -370,6 +370,40 @@ fn relation_search_fields_are_public_and_do_not_expose_oids() {
 }
 
 #[test]
+fn activity_search_fields_include_pid_and_state() {
+    let fields = super::search_fields("pg_stat_activity");
+    assert!(fields.iter().any(|field| field.key == "pid"));
+    assert!(fields.iter().any(|field| field.key == "state"));
+}
+
+#[test]
+fn locks_search_fields_include_lock_mode() {
+    assert!(
+        super::search_fields("pg_locks")
+            .iter()
+            .any(|field| field.key == "lock_mode")
+    );
+}
+
+#[test]
+fn vacuum_search_fields_include_phase() {
+    assert!(
+        super::search_fields("pg_stat_progress_vacuum")
+            .iter()
+            .any(|field| field.key == "phase")
+    );
+}
+
+#[test]
+fn database_search_fields_include_deadlocks() {
+    assert!(
+        super::search_fields("pg_stat_database")
+            .iter()
+            .any(|field| field.key == "deadlocks")
+    );
+}
+
+#[test]
 fn cursor_round_trips_and_rejects_malformed_values() {
     let cursor = SnapshotCursor {
         segment_id: -4,

@@ -647,6 +647,10 @@ pub(crate) fn search_fields(logical_name: &str) -> &'static [SearchField] {
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
         "pg_stat_user_indexes" => INDEX_SEARCH_FIELDS,
+        "pg_stat_activity" => ACTIVITY_SEARCH_FIELDS,
+        "pg_locks" => LOCKS_SEARCH_FIELDS,
+        "pg_stat_progress_vacuum" => VACUUM_SEARCH_FIELDS,
+        "pg_stat_database" => DATABASE_SEARCH_FIELDS,
         _ => &[],
     }
 }
@@ -1836,5 +1840,120 @@ const PROCESS_SEARCH_FIELDS: &[SearchField] = &[
         QuantityKind::DurationRate,
         "block_io_delay",
         &["blkdelay_ticks", "starttime"],
+    ),
+];
+const ACTIVITY_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &[
+            "query",
+            "application_name",
+            "client_addr",
+            "datname",
+            "usename",
+        ],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+    search_string("application", &["app"], &["application_name"]),
+    search_string("client_addr", &["client"], &["client_addr"]),
+    search_string("backend_type", &[], &["backend_type"]),
+    search_string("state", &[], &["state"]),
+    search_string("wait_event_type", &[], &["wait_event_type"]),
+    search_string("wait_event", &[], &["wait_event"]),
+    search_id("pid", &[], &["pid"], false),
+    search_id("query_id", &[], &["query_id"], true),
+    search_quantity(
+        "backend_xid_age",
+        QuantityKind::Count,
+        "backend_xid_age",
+        &["backend_xid_age"],
+    ),
+    search_quantity(
+        "backend_xmin_age",
+        QuantityKind::Count,
+        "backend_xmin_age",
+        &["backend_xmin_age"],
+    ),
+];
+const LOCKS_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &["query", "datname", "usename", "lock_relname"],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+    search_string("state", &[], &["state"]),
+    search_string("lock_type", &["locktype"], &["lock_locktype"]),
+    search_string("lock_mode", &["mode"], &["lock_mode"]),
+    search_string("table_name", &["table"], &["lock_relname"]),
+    search_id("pid", &[], &["pid"], false),
+];
+const VACUUM_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &["datname", "relname", "schemaname", "phase"],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("schema", &[], &["schemaname"]),
+    search_string("table_name", &["table"], &["relname"]),
+    search_string("phase", &[], &["phase"]),
+    search_string("is_autovacuum", &["autovacuum"], &["is_autovacuum"]),
+    search_id("pid", &[], &["pid"], false),
+    search_quantity(
+        "heap_blks_total",
+        QuantityKind::Count,
+        "heap_blks_total",
+        &["heap_blks_total"],
+    ),
+    search_quantity(
+        "heap_blks_scanned",
+        QuantityKind::Count,
+        "heap_blks_scanned",
+        &["heap_blks_scanned"],
+    ),
+    search_quantity(
+        "heap_blks_vacuumed",
+        QuantityKind::Count,
+        "heap_blks_vacuumed",
+        &["heap_blks_vacuumed"],
+    ),
+];
+const DATABASE_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["datname"]),
+    search_string("database", &["db"], &["datname"]),
+    search_id("datid", &[], &["datid"], false),
+    search_quantity(
+        "numbackends",
+        QuantityKind::Count,
+        "numbackends",
+        &["numbackends"],
+    ),
+    search_quantity(
+        "xact_commit",
+        QuantityKind::Count,
+        "xact_commit",
+        &["xact_commit"],
+    ),
+    search_quantity(
+        "xact_rollback",
+        QuantityKind::Count,
+        "xact_rollback",
+        &["xact_rollback"],
+    ),
+    search_quantity(
+        "deadlocks",
+        QuantityKind::Count,
+        "deadlocks",
+        &["deadlocks"],
+    ),
+    search_quantity(
+        "temp_bytes",
+        QuantityKind::Bytes,
+        "temp_bytes",
+        &["temp_bytes"],
     ),
 ];
