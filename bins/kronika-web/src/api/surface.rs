@@ -106,8 +106,6 @@ fn process_order_tokens(lens: ProcessLens, requested: &str) -> Option<Vec<String
     })
 }
 
-pub(crate) const LOCK_GRAPH_FIELDS: &[&str] = &["pid", "blocked_by", "datname", "lock_target"];
-
 const ACTIVITY_DEFAULT_FIELDS: &[&str] = &[
     "pid",
     "datid",
@@ -634,6 +632,7 @@ pub(crate) fn postgresql_surface(
             "state_severity",
         ),
         PostgresqlSurface::Activity => spec(&[], "query_duration_ms"),
+        PostgresqlSurface::Locks => spec(LOCK_DEFAULT_FIELDS, "pid"),
         PostgresqlSurface::Databases => spec(DATABASE_FIELDS, "xact_commit"),
     }
 }
@@ -645,7 +644,10 @@ pub(crate) fn postgresql_fields_for_layouts<'a>(
 ) -> Vec<&'a str> {
     if matches!(
         surface,
-        PostgresqlSurface::Activity | PostgresqlSurface::Tables(_) | PostgresqlSurface::Indexes(_)
+        PostgresqlSurface::Activity
+            | PostgresqlSurface::Locks
+            | PostgresqlSurface::Tables(_)
+            | PostgresqlSurface::Indexes(_)
     ) || type_ids.is_empty()
     {
         return defaults.to_vec();

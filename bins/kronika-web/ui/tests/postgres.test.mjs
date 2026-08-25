@@ -394,7 +394,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
   assert.match(source, /tableState\([^)]*displayedRows\.length/)
-  assert.match(source, /serverSorted=\{dense\}/)
+  assert.match(source, /serverSorted=\{dense \|\| graph\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
   assert.match(source, /await loadSeries\(hour, section, filters, request\.fields, signal, row\.typeId\)/)
@@ -592,7 +592,7 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /const stale = \(\) => controller\.signal\.aborted \|\| generation !== snapshotGeneration\.current/)
   assert.match(source, /const requestOrder = visibleSource === "processes"[\s\S]*const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, requestOrder, denseOptions\)/)
   assert.match(source, /const retainsDenseRows = denseRequest !== undefined[\s\S]*currentSnapshot\.cursor === cursor[\s\S]*currentSnapshot\.denseSection === denseRequest\.section/)
-  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| retainsDenseRows \? currentSnapshot\.data : EMPTY_DATA/)
+  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| retainsDenseRows \|\| retainsTreeRows \|\| retainsGraphRows \? currentSnapshot\.data : EMPTY_DATA/)
   assert.match(source, /let inFlight = false/)
   assert.match(source, /if \(inFlight \|\| stale\(\)\)/)
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)
@@ -607,6 +607,13 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /Object\.fromEntries\(context\.identity\)/)
   assert.match(source, /denseMetadata\?\.hasMore === true \? denseMetadata\.nextCursor/)
   assert.match(source, /action\.load\(action\.failed\)/)
+})
+
+test("Locks search keeps retained status and never loads an invalid graph query", async () => {
+  const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(app, /request\.lens !== "graph" \|\| lockSearchValid/)
+  assert.match(postgres, /section === "locks"[\s\S]*?searchRequest=\{searchRequest\}[\s\S]*?section="pg_locks"/)
 })
 
 test("an exact finding never opens PostgreSQL detail without an explicit row selection", () => {

@@ -57,7 +57,7 @@ pub(crate) struct SnapshotRequest {
     pub(crate) by: Vec<String>,
     pub(crate) direction: Order,
     pub(crate) group: Option<RelationGroup>,
-    /// A typed PostgreSQL product surface resolved by the shared Rust registry.
+    /// A typed `PostgreSQL` product surface resolved by the shared Rust registry.
     pub(crate) postgresql: Option<PostgresqlSurfaceRequest>,
     /// A typed Process product surface resolved by the shared Rust registry.
     pub(crate) process: Option<ProcessSurfaceRequest>,
@@ -113,6 +113,7 @@ pub(crate) struct PostgresqlSurfaceRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostgresqlSurface {
     Activity,
+    Locks,
     Statements(StatementLens),
     Plans(PlanLens),
     Databases,
@@ -158,6 +159,7 @@ impl PostgresqlSurface {
     pub(crate) fn parse(section: &str, lens: Option<&str>) -> Option<Self> {
         match (section, lens) {
             ("pg_stat_activity", None) => Some(Self::Activity),
+            ("pg_locks", None | Some("graph")) => Some(Self::Locks),
             ("pg_stat_statements", None | Some("load")) => {
                 Some(Self::Statements(StatementLens::Load))
             }
@@ -200,6 +202,7 @@ impl PostgresqlSurface {
     pub(crate) const fn section(self) -> &'static str {
         match self {
             Self::Activity => "pg_stat_activity",
+            Self::Locks => "pg_locks",
             Self::Statements(_) => "pg_stat_statements",
             Self::Plans(_) => "pg_store_plans",
             Self::Databases => "pg_stat_database",
@@ -210,6 +213,7 @@ impl PostgresqlSurface {
 
     pub(crate) const fn lens_error(section: &str) -> &'static str {
         match section.as_bytes() {
+            b"pg_locks" => "lens must be graph",
             b"pg_stat_statements" => "lens must be load, per_call, io, resources, or stability",
             b"pg_store_plans" => "lens must be load, timing, io, or identity",
             b"pg_stat_user_tables" => {
@@ -591,7 +595,11 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || direction.is_some()
         || group.is_some();
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
-    let resolved_page_size = if process.is_some() {
+    let whole_product = process.is_some()
+        || postgresql
+            .as_ref()
+            .is_some_and(|product| product.surface == PostgresqlSurface::Locks);
+    let resolved_page_size = if whole_product {
         page_size
     } else {
         paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE))

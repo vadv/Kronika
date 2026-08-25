@@ -45,7 +45,7 @@ const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 
 export interface SectionRequest {
   readonly section: string
-  readonly lens?: "generic" | "cpu" | "memory" | "disk" | "tree" | StatementLens | PlanLens | RelationLens
+  readonly lens?: "generic" | "cpu" | "memory" | "disk" | "tree" | "graph" | StatementLens | PlanLens | RelationLens
   readonly find?: string
   readonly fields?: readonly string[]
   readonly typeIds?: readonly string[]
@@ -768,7 +768,7 @@ export function snapshotRequestGroups(
       .filter((section) => section.logicalName === request.section && requestAcceptsLayout(request, section.typeId))
       .map((section) => ({ segment, typeId: section.typeId })))
     if (matching.length === 0) continue
-    if (request.pageSize !== undefined || request.group !== undefined) {
+    if (request.pageSize !== undefined || request.group !== undefined || request.lens === "graph") {
       const anchor = newestSegment(matching.map(({ segment }) => segment))
       if (anchor !== null) add(anchor, requestsForSegment([request], anchor))
       continue
@@ -1359,7 +1359,7 @@ function snapshotQuery(
   const ordered = section === undefined || section.lens !== undefined || options.rowOrdinal !== undefined
     ? []
     : snapshotOrder(section, order)
-  const requestedOrder = section === undefined || section.lens === "tree" || order === undefined
+  const requestedOrder = section === undefined || section.lens === "tree" || section.lens === "graph" || order === undefined
     ? undefined
     : requestedSnapshotOrder(section, order)
   return [

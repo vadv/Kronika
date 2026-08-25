@@ -321,6 +321,30 @@ fn snapshot_postgresql_vocabulary_is_one_typed_surface_request() {
         panic!("snapshot route");
     };
     assert_eq!(objects.group, Some(super::RelationGroup::Object));
+
+    let Route::Snapshot(locks) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_locks&lens=graph&find=pid%3A20"),
+    )
+    .expect("typed PostgreSQL Locks graph") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(
+        locks.postgresql.expect("PostgreSQL Locks surface").surface,
+        PostgresqlSurface::Locks
+    );
+    assert_eq!(locks.search.as_deref(), Some("pid:20"));
+    assert_eq!(locks.page_size, None);
+
+    let Route::Snapshot(ordinary_locks) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_locks&field=pid"),
+    )
+    .expect("ordinary PostgreSQL Locks projection") else {
+        panic!("snapshot route");
+    };
+    assert!(ordinary_locks.postgresql.is_none());
+    assert_eq!(ordinary_locks.fields, ["pid"]);
 }
 
 #[test]

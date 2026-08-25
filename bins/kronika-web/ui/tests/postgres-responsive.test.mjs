@@ -37,7 +37,7 @@ test("only long PostgreSQL table views own the viewport flex chain", () => {
   // remaining row and hands that height through to its scroll port.
   assert.match(stylesheet, /@utility pg-stretch \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-entity-fill \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/s)
-  assert.match(postgres, /filterTableRows\(rows, visibleColumns, pattern \?\? "", dense, section\)/)
+  assert.match(postgres, /filterTableRows\(rows, visibleColumns, pattern \?\? "", dense \|\| graph, section\)/)
   assert.match(postgres, /const contentSized = displayedRows\.length < 10 && !canLoadMore/)
   assert.match(postgres, /contentSized \? "" : " pg-entity-fill"/)
   assert.match(postgres, /data-content-sized=\{contentSized \|\| undefined\}/)

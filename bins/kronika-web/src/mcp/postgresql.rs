@@ -1,6 +1,5 @@
 //! Direct `PostgreSQL` MCP surfaces over the typed web API readers.
 
-mod locks;
 mod vacuum;
 
 use std::collections::HashSet;
@@ -88,7 +87,19 @@ pub(super) fn execute(
             budget,
             cancelled,
         ),
-        "kronika_find_postgresql_locks" => locks::execute(state, args, cancelled),
+        "kronika_find_postgresql_locks" => direct(
+            state,
+            args,
+            DirectSpec {
+                section: "pg_locks",
+                key: "locks",
+                search: false,
+                relation: false,
+                whole_set: true,
+            },
+            budget,
+            cancelled,
+        ),
         "kronika_find_postgresql_vacuum" => vacuum::execute(state, args, cancelled),
         "kronika_find_postgresql_statements" => direct(
             state,
@@ -191,11 +202,7 @@ fn direct(
     let surface = surface(args, &spec)?;
     let anchor = resolve_anchor(state, at, &[spec.section], cancelled)?;
     let fields = fields(args, &[])?;
-    let page_size = if spec.whole_set {
-        MAX_ROWS
-    } else {
-        page_size(args)?
-    };
+    let page_size = page_size(args)?;
     let direction = direction(args)?;
     let order = args
         .get("order")
@@ -256,6 +263,9 @@ fn fit_direct_page(
     budget: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<PostgresqlPayload, PostgresqlFailure> {
+    if spec.whole_set {
+        return direct_page(state, at, anchor, spec, request, cancelled);
+    }
     let page_size = request.page_size.unwrap_or(1);
     let first = direct_page(state, at, anchor, spec, request.clone(), cancelled);
     match first {
@@ -306,28 +316,22 @@ fn direct_page(
     let mut response_anchor = anchor.clone();
     response_anchor.active_wal_position = snapshot_active_position(&collected.records)?;
     let page = page(&collected.records, collected.stop_reason);
-    if spec.whole_set && page.get("truncated").and_then(Value::as_bool) == Some(true) {
-        return Err(failure(
-            "whole_set_bound_exceeded",
-            "the lock set exceeds the 500-row bound",
-            Some("page_size"),
-        ));
-    }
     let selected = selected_at(&collected.records);
     let records = content_records(collected.records);
     let returned = record_rows(&records);
     let mut data = Map::new();
     data.insert(spec.key.to_owned(), Value::Array(records));
-    if spec.key == "locks" {
-        data.insert("components".to_owned(), Value::Array(Vec::new()));
-    }
     data.insert("semantics".to_owned(), Value::Array(Vec::new()));
     Ok(PostgresqlPayload {
         anchor: anchor_value(at, selected, Some(&response_anchor)),
         data: Value::Object(data),
         page,
         warnings: anchor.warnings.clone(),
-        summary: format!("Returned {returned} PostgreSQL {} rows.", spec.key),
+        summary: if spec.key == "locks" {
+            format!("Returned {returned} PostgreSQL lock rows.")
+        } else {
+            format!("Returned {returned} PostgreSQL {} rows.", spec.key)
+        },
     })
 }
 
@@ -468,10 +472,6 @@ fn collect(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "anchor selection keeps its bounded catalog validation and deterministic fallback together"
-)]
 fn resolve_anchor(
     state: &State,
     at: i64,

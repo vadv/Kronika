@@ -609,6 +609,8 @@ pub(crate) fn prepare_for_mcp(
     mut request: SnapshotRequest,
     cancelled: &impl Fn() -> bool,
 ) -> Result<McpSnapshotPreparation, ApiError> {
+    let requested_segment_id = request.segment_id;
+    let requested_active_position = request.active_position;
     let (reader, selected, warnings) =
         select_mcp_snapshot_sources(root, request.at, &request.sections, cancelled)?;
     let Some((current, segments, layout_sources)) = selected else {
@@ -620,9 +622,13 @@ pub(crate) fn prepare_for_mcp(
         });
     };
     request.segment_id = current.id();
-    request.active_position = current.active_position();
+    request.active_position = if requested_segment_id == current.id() {
+        requested_active_position.or_else(|| current.active_position())
+    } else {
+        current.active_position()
+    };
     let segment_id = current.id();
-    let active_position = current.active_position();
+    let active_position = request.active_position;
     let prepared = prepare_selected(
         reader,
         current,

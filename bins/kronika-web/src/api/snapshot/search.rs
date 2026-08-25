@@ -582,6 +582,7 @@ pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
         "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
+        "pg_locks" => LOCK_SEARCH_FIELDS,
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
         "pg_stat_user_indexes" => INDEX_SEARCH_FIELDS,
         _ => &[],
@@ -1124,6 +1125,32 @@ const EVENT_SEARCH_FIELDS: &[SearchField] = &[
     search_string("kind", &[], &["kind"]),
     search_string("source", &[], &["source", "logical_name"]),
     search_string("category", &[], &["category"]),
+];
+
+const LOCK_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &[
+            "query",
+            "datname",
+            "usename",
+            "application_name",
+            "state",
+            "wait_event_type",
+            "wait_event",
+            "lock_target",
+            "lock_relname",
+            "lock_mode",
+        ],
+    ),
+    search_id("pid", &[], &["pid"], false),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+    search_string("state", &[], &["state"]),
+    search_string("wait_type", &[], &["wait_event_type"]),
+    search_string("wait_event", &[], &["wait_event"]),
+    search_string("lock", &[], &["lock_target", "lock_relname", "lock_mode"]),
 ];
 
 const STATEMENT_SEARCH_FIELDS: &[SearchField] = &[

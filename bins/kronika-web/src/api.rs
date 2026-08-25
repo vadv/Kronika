@@ -17,6 +17,7 @@ mod heatmap;
 mod history;
 mod hour;
 mod index;
+mod lock_graph;
 mod process_tree;
 mod query;
 mod render;
@@ -34,7 +35,7 @@ pub(crate) use events::{
 };
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 pub(crate) use snapshot::prepare_for_mcp as prepare_snapshot_for_mcp;
-pub(crate) use surface::{LOCK_GRAPH_FIELDS, postgresql_order_tokens};
+pub(crate) use surface::postgresql_order_tokens;
 
 #[cfg(test)]
 mod tests;
@@ -102,6 +103,7 @@ pub(crate) enum Prepared {
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
+    LockGraph(lock_graph::PreparedLockGraph),
     ProcessTree(process_tree::PreparedProcessTree),
     Empty(ResponseMeta),
 }
@@ -117,6 +119,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
+            Self::LockGraph(prepared) => prepared.meta(),
             Self::ProcessTree(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
@@ -156,6 +159,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
+            Self::LockGraph(prepared) => prepared.stream(emit, cancelled),
             Self::ProcessTree(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
@@ -452,15 +456,23 @@ fn prepare_with_index_access(
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(mut request) => {
-            let process_lens = request
-                .process
-                .is_some()
-                .then(|| surface::resolve_process_surface(&mut request))
-                .transpose()?;
-            if process_lens == Some(crate::route::ProcessLens::Tree) {
-                process_tree::prepare(root, *request, if_none_match)
+            let lock_graph = request
+                .postgresql
+                .as_ref()
+                .is_some_and(|product| product.surface == crate::route::PostgresqlSurface::Locks);
+            if lock_graph {
+                lock_graph::prepare(root, *request, if_none_match)
             } else {
-                snapshot::prepare(root, *request, if_none_match)
+                let process_lens = request
+                    .process
+                    .is_some()
+                    .then(|| surface::resolve_process_surface(&mut request))
+                    .transpose()?;
+                if process_lens == Some(crate::route::ProcessLens::Tree) {
+                    process_tree::prepare(root, *request, if_none_match)
+                } else {
+                    snapshot::prepare(root, *request, if_none_match)
+                }
             }
         }
     }?;

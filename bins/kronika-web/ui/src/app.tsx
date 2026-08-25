@@ -97,23 +97,27 @@ interface CurrentSnapshot {
   readonly data: HourData
   readonly denseSection: string | null
   readonly processTree: boolean
+  readonly lockGraph: boolean
   readonly target: string | null
 }
 
-const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, processTree: false, target: null }
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, processTree: false, lockGraph: false, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:vacuum": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlVacuum.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
-  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   events: TIMELINE_REQUESTS,
 }
 
 function processRequest(lens: Lens, find?: string): SectionRequest {
   return { section: "os_process", lens, ...(lens === "tree" ? (find === undefined ? {} : { find }) : { pageSize: 200 }) }
+}
+
+function lockRequest(find?: string): SectionRequest {
+  return { section: "pg_locks", lens: "graph", ...(find === undefined ? {} : { find }) }
 }
 
 function section(name: string): SectionRequest { return { section: name } }
@@ -250,8 +254,13 @@ function App({ locale, onLocale, t }: {
   const parsedTreeSearch = treePattern === "" ? null : parseSearch(treePattern, "os_process")
   const treeSearchValid = parsedTreeSearch === null || parsedTreeSearch.ok
   const treeFind = parsedTreeSearch?.ok === true ? parsedTreeSearch.query.canonical : undefined
+  const lockPattern = visibleSource === "postgresql" && pgSection === "locks" ? find.trim() : ""
+  const parsedLockSearch = lockPattern === "" ? null : parseSearch(lockPattern, "pg_locks")
+  const lockSearchValid = parsedLockSearch === null || parsedLockSearch.ok
+  const lockFind = parsedLockSearch?.ok === true ? parsedLockSearch.query.canonical : undefined
   const viewRequests = useMemo(() => {
     if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens, treeFind), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
+    if (visibleSource === "postgresql" && pgSection === "locks") return [...TIMELINE_REQUESTS, lockRequest(lockFind), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
@@ -262,7 +271,7 @@ function App({ locale, onLocale, t }: {
       return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel), ...POSTGRESQL_CONTEXT_REQUESTS]
     }
     return VIEW_REQUESTS[baseViewKey] ?? []
-  }, [activeRelation, activeRelationLens, baseViewKey, lens, pgSection, planLens, relationLevel, statementLens, treeFind, visibleSource])
+  }, [activeRelation, activeRelationLens, baseViewKey, lens, lockFind, pgSection, planLens, relationLevel, statementLens, treeFind, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   const denseCandidate = viewRequests.find((request) => request.pageSize !== undefined)
@@ -272,7 +281,8 @@ function App({ locale, onLocale, t }: {
   }).ok
   const requestedSnapshots = viewRequests.filter((request) => request.section !== "health"
     && (request.pageSize === undefined || denseSearchValid)
-    && (request.lens !== "tree" || treeSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
+    && (request.lens !== "tree" || treeSearchValid)
+    && (request.lens !== "graph" || lockSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
   const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
   const denseLoad = snapshotGroups.flatMap((group) => group.requests
@@ -281,7 +291,9 @@ function App({ locale, onLocale, t }: {
   const denseRequest = denseLoad?.request
   const treeRequest = requestedSnapshots.find((request) => request.section === "os_process" && request.lens === "tree")
   const treeSurface = treeRequest === undefined ? null : "os_process" as const
-  const serverSearchSurface = denseSurface ?? treeSurface
+  const graphRequest = requestedSnapshots.find((request) => request.section === "pg_locks" && request.lens === "graph")
+  const graphSurface = graphRequest === undefined ? null : "pg_locks" as const
+  const serverSearchSurface = denseSurface ?? treeSurface ?? graphSurface
   const ordinaryGroups = snapshotGroups
     .map((group) => ({
       anchor: group.anchor,
@@ -307,7 +319,10 @@ function App({ locale, onLocale, t }: {
   const retainsTreeRows = treeRequest !== undefined
     && currentSnapshot.cursor === cursor
     && currentSnapshot.processTree
-  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows || retainsTreeRows ? currentSnapshot.data : EMPTY_DATA
+  const retainsGraphRows = graphRequest !== undefined
+    && currentSnapshot.cursor === cursor
+    && currentSnapshot.lockGraph
+  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows || retainsTreeRows || retainsGraphRows ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
   const drawn = useRef<number | null>(null)
@@ -450,15 +465,21 @@ function App({ locale, onLocale, t }: {
       && treeSearchValid
       && snapshotTarget !== null
       && (treePattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === treeSurface))
-    const tracksInitialSearch = tracksDenseSearch || tracksTreeSearch
+    const tracksGraphSearch = graphRequest !== undefined
+      && lockSearchValid
+      && snapshotTarget !== null
+      && (lockPattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === graphSurface))
+    const tracksInitialSearch = tracksDenseSearch || tracksTreeSearch || tracksGraphSearch
     const retainedSearchRows = denseRequest !== undefined
       ? retainsDenseRows && (denseRequest.section === "os_process"
         ? currentSnapshot.data.processes.length !== 0
         : (currentSnapshot.data.sections[denseRequest.section]?.length ?? 0) !== 0)
-      : retainsTreeRows && currentSnapshot.data.processes.length !== 0
+      : treeRequest !== undefined
+        ? retainsTreeRows && currentSnapshot.data.processes.length !== 0
+        : retainsGraphRows && (currentSnapshot.data.sections.pg_locks?.length ?? 0) !== 0
     if (tracksInitialSearch && serverSearchSurface !== null) {
       setSearchRequest(beginSearchRequest(serverSearchSurface, retainedSearchRows))
-    } else if (serverSearchSurface === null || !denseSearchValid || !treeSearchValid) {
+    } else if (serverSearchSurface === null || !denseSearchValid || !treeSearchValid || !lockSearchValid) {
       setSearchRequest(IDLE_SEARCH_REQUEST)
     }
     cgroupSnapshotKey.current = null
@@ -515,7 +536,7 @@ function App({ locale, onLocale, t }: {
         void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
-          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, processTree: treeRequest !== undefined, target: snapshotTarget })
+          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, processTree: treeRequest !== undefined, lockGraph: graphRequest !== undefined, target: snapshotTarget })
           setCursorState("ready")
           if (tracksInitialSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
           setLastUpdated(Date.now() * 1_000)
@@ -569,6 +590,7 @@ function App({ locale, onLocale, t }: {
                 : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
               denseSection: pagedRequest.section,
               processTree: false,
+              lockGraph: false,
               target: snapshotTarget,
             }))
             setDensePageState("idle")
@@ -712,6 +734,10 @@ function App({ locale, onLocale, t }: {
     if (next === find) return
     setFind(next)
     if (activeSearchSurface === null || serverSearchSurface !== activeSearchSurface) return
+    if (activeSearchSurface === "pg_locks" && next.trim() !== "" && !parseSearch(next, "pg_locks").ok) {
+      setSearchRequest(IDLE_SEARCH_REQUEST)
+      return
+    }
     setSearchRequest(beginSearchRequest(activeSearchSurface, searchRowsAvailable(data, activeSearchSurface)))
   }, [activeSearchSurface, data, find, serverSearchSurface])
   const navigateSearchSurface = useCallback((targetSurface: ReturnType<typeof searchSurfaceForLocation>, targetFind?: string) => {

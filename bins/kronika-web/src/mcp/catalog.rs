@@ -216,7 +216,7 @@ fn postgresql_state_tools() -> Vec<Tool> {
         tool(
             "kronika_find_postgresql_locks",
             "PostgreSQL Locks",
-            "Return a bounded PostgreSQL lock graph at one sample with blocked_by edges, parents, depth, and prepared transactions.",
+            "Return a bounded PostgreSQL lock graph at one sample with recorded blocked_by edges, parents, depth, stable order, and prepared-transaction waits.",
             input(
                 common(map([
                     ("at_us", timestamp("Requested sample-at-or-before time.")),

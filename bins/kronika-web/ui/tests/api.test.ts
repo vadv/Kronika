@@ -77,6 +77,58 @@ test("Process Tree sends the public lens and find and preserves canonical rows",
   }
 })
 
+test("PostgreSQL Locks sends one graph query and preserves canonical graph rows", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/segments/77/snapshot")
+    assert.equal(url.searchParams.get("at"), String(START))
+    assert.deepEqual(url.searchParams.getAll("section"), ["pg_locks"])
+    assert.equal(url.searchParams.get("lens"), "graph")
+    assert.equal(url.searchParams.get("find"), "pid:20")
+    for (const privateParameter of ["field", "by", "order", "direction", "page_size", "cursor", "search", "type_id"]) {
+      assert.equal(url.searchParams.has(privateParameter), false, privateParameter)
+    }
+    return ndjson([
+      {
+        record: "layout",
+        layout: {
+          type_id: "1011002", logical_name: "pg_locks",
+          columns: [
+            "pid", "blocked_by", "lock_tree_parent_pid", "lock_tree_depth", "lock_tree_order",
+            "lock_tree_extra_blockers", "lock_tree_waits_on_prepared",
+          ].map((name) => ({ name })),
+        },
+      },
+      { record: "row", segment_id: "77", type_id: "1011002", ordinal: "1", timestamp: String(START), values: [10, [], null, 1, 0, [], false] },
+      { record: "row", segment_id: "77", type_id: "1011002", ordinal: "2", timestamp: String(START), values: [20, [0, 10], 10, 2, 1, [], true] },
+      {
+        record: "snapshot_page", logical_name: "pg_locks", eligible: "2", returned: "2",
+        has_more: false, truncated: false, next_cursor: null, page_size: 500,
+        order_by: ["lock_tree_order"], order_direction: "asc", from: String(START), to: String(START),
+      },
+    ])
+  }
+  try {
+    const hour = await api.loadSnapshot(
+      "77",
+      START,
+      [{ section: "pg_locks", lens: "graph", find: "pid:20" }],
+      new AbortController().signal,
+      { column: "pid", descending: true },
+    )
+    assert.deepEqual(hour.sections.pg_locks?.map((row) => row.values), [
+      { pid: 10, blocked_by: [], lock_tree_parent_pid: null, lock_tree_depth: 1, lock_tree_order: 0, lock_tree_extra_blockers: [], lock_tree_waits_on_prepared: false },
+      { pid: 20, blocked_by: [0, 10], lock_tree_parent_pid: 10, lock_tree_depth: 2, lock_tree_order: 1, lock_tree_extra_blockers: [], lock_tree_waits_on_prepared: true },
+    ])
+    assert.deepEqual(hour.snapshotRows[0]?.orderBy, ["lock_tree_order"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("Heatmap requests expose only shared product surface, cut, and group ids", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
@@ -138,6 +190,16 @@ const TEST_REGISTRY = [
     typeId: "1005001",
     logicalName: "pg_stat_database",
     columns: ["ts", "datid", "datname", "xact_commit"],
+  },
+  {
+    typeId: "1011001",
+    logicalName: "pg_locks",
+    columns: ["ts", "pid", "blocked_by", "datname", "query", "lock_target"],
+  },
+  {
+    typeId: "1011002",
+    logicalName: "pg_locks",
+    columns: ["ts", "pid", "blocked_by", "datname", "query", "lock_target", "waitstart"],
   },
   {
     typeId: "2001001",
@@ -1138,6 +1200,25 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
     section: "pg_stat_activity", typeId: "1001001", fields: ["pid"],
   }])
   assert.deepEqual(exactOldLayout.map((group) => group.anchor.id), ["100"])
+})
+
+test("a Locks graph stays one product request across recorded layout families", async () => {
+  const api = await bundledApi()
+  const graph = { section: "pg_locks", lens: "graph" as const, find: "pid:20" }
+  const groups = api.snapshotRequestGroups([
+    {
+      id: "100", minTs: START - 20, maxTs: START,
+      sections: [{ logicalName: "pg_locks", typeId: "1011001" }],
+    },
+    {
+      id: "200", minTs: START - 10, maxTs: START,
+      sections: [{ logicalName: "pg_locks", typeId: "1011002" }],
+    },
+  ], START, [graph])
+
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0]?.anchor.id, "200")
+  assert.deepEqual(groups[0]?.requests, [graph])
 })
 
 test("related plan query text uses one bounded query-ID-only first match", async () => {
