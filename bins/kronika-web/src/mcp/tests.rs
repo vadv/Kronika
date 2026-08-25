@@ -34,7 +34,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_six_tool_catalog() {
+async fn tools_list_returns_the_ten_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -74,6 +74,10 @@ async fn tools_list_returns_the_six_tool_catalog() {
             "kronika_get_context",
             "kronika_find_postgresql_tables",
             "kronika_find_postgresql_indexes",
+            "kronika_find_postgresql_activity",
+            "kronika_find_postgresql_locks",
+            "kronika_find_postgresql_vacuum",
+            "kronika_find_postgresql_databases",
             "kronika_find_processes",
             "kronika_get_row_detail",
         ]
@@ -332,6 +336,252 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
     assert_eq!(rows[0]["indexrelname"], "alpha_pkey");
     assert_eq!(rows[0]["relname"], "alpha");
     assert_eq!(structured["has_more"], false);
+}
+
+#[test]
+fn find_postgresql_activity_ranks_and_filters() {
+    // Two active backends (pid 0, pid 1) and one idle backend (pid 10_000),
+    // per append_postgres_health's own fixture shape.
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(2);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "sort": {"field": "pid", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_activity(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 3);
+    // Sorted by pid descending: the idle backend (pid 10_000) ranks first.
+    assert_eq!(rows[0]["pid"], 10_000);
+    assert_eq!(rows[0]["state"], "idle");
+    assert!(rows[0]["segment_id"].is_string());
+    assert!(rows[0]["type_id"].is_string());
+    assert!(rows[0]["row_ordinal"].is_string());
+    assert!(rows[0]["at"].is_string());
+    assert_eq!(structured["has_more"], false);
+
+    let filtered_arguments = serde_json::json!({
+        "filters": [{"field": "state", "op": "eq", "value": "idle"}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let filtered = crate::mcp::postgresql::call_activity(&config, filtered_arguments);
+    assert_eq!(filtered.is_error, Some(false));
+    let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(filtered_rows.len(), 1);
+    assert_eq!(filtered_rows[0]["pid"], 10_000);
+}
+
+#[test]
+fn find_postgresql_activity_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_activity(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_locks_ranks_and_filters() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_lock_rows(&[
+        (100, 701, "active", "RowExclusiveLock"),
+        (100, 702, "active", "AccessShareLock"),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "sort": {"field": "pid", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_locks(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["pid"], 702);
+    assert_eq!(rows[1]["pid"], 701);
+    assert!(rows[0]["segment_id"].is_string());
+    assert!(rows[0]["type_id"].is_string());
+    assert!(rows[0]["row_ordinal"].is_string());
+    assert!(rows[0]["at"].is_string());
+    assert_eq!(structured["has_more"], false);
+
+    let filtered_arguments = serde_json::json!({
+        "filters": [{"field": "lock_mode", "op": "eq", "value": "AccessShareLock"}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let filtered = crate::mcp::postgresql::call_locks(&config, filtered_arguments);
+    assert_eq!(filtered.is_error, Some(false));
+    let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(filtered_rows.len(), 1);
+    assert_eq!(filtered_rows[0]["pid"], 702);
+}
+
+#[test]
+fn find_postgresql_locks_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_locks(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_vacuum_ranks_and_filters() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_vacuum_rows(&[
+        (100, 501, "scanning heap", 1_000, 500, 400),
+        (100, 502, "vacuuming indexes", 2_000, 2_000, 1_800),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "sort": {"field": "heap_blks_scanned", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_vacuum(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["pid"], 502);
+    assert_eq!(rows[1]["pid"], 501);
+    assert!(rows[0]["segment_id"].is_string());
+    assert!(rows[0]["type_id"].is_string());
+    assert!(rows[0]["row_ordinal"].is_string());
+    assert!(rows[0]["at"].is_string());
+    assert_eq!(structured["has_more"], false);
+
+    let filtered_arguments = serde_json::json!({
+        "filters": [{"field": "phase", "op": "eq", "value": "scanning heap"}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let filtered = crate::mcp::postgresql::call_vacuum(&config, filtered_arguments);
+    assert_eq!(filtered.is_error, Some(false));
+    let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(filtered_rows.len(), 1);
+    assert_eq!(filtered_rows[0]["pid"], 501);
+}
+
+#[test]
+fn find_postgresql_vacuum_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_vacuum(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_databases_ranks_and_filters() {
+    // Same numbers as
+    // compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter
+    // (bins/kronika-web/src/tests/artifacts.rs): one database, sampled
+    // twice, so its deadlocks rate over the window is above zero.
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_database_snapshots(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "sort": {"field": "datid", "direction": "asc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_databases(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["datid"], 73);
+    assert_eq!(rows[0]["datname"], "db");
+    assert!(rows[0]["segment_id"].is_string());
+    assert!(rows[0]["type_id"].is_string());
+    assert!(rows[0]["row_ordinal"].is_string());
+    assert!(rows[0]["at"].is_string());
+    assert_eq!(structured["has_more"], false);
+
+    let matching_arguments = serde_json::json!({
+        "filters": [{"field": "deadlocks", "op": "gt", "value": 0}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let matching = crate::mcp::postgresql::call_databases(&config, matching_arguments);
+    assert_eq!(matching.is_error, Some(false));
+    let matching_rows = matching.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(matching_rows.len(), 1);
+
+    let below_threshold_arguments = serde_json::json!({
+        "filters": [{"field": "deadlocks", "op": "gt", "value": 100}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let below_threshold =
+        crate::mcp::postgresql::call_databases(&config, below_threshold_arguments);
+    assert_eq!(below_threshold.is_error, Some(false));
+    let below_threshold_rows = below_threshold
+        .structured_content
+        .expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert!(below_threshold_rows.is_empty());
+}
+
+#[test]
+fn find_postgresql_databases_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_databases(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]

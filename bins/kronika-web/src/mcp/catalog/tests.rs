@@ -1,10 +1,11 @@
 use super::{
-    FIND_POSTGRESQL_INDEXES_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_PROCESSES_TOOL,
-    GET_CONTEXT_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL, tools,
+    FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL, FIND_POSTGRESQL_INDEXES_TOOL,
+    FIND_POSTGRESQL_LOCKS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
+    FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL, tools,
 };
 
 #[test]
-fn the_catalog_has_exactly_these_six_tools_so_far() {
+fn the_catalog_has_exactly_these_ten_tools_so_far() {
     let catalog = tools();
     let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_ref()).collect();
     assert_eq!(
@@ -14,6 +15,10 @@ fn the_catalog_has_exactly_these_six_tools_so_far() {
             GET_CONTEXT_TOOL,
             FIND_POSTGRESQL_TABLES_TOOL,
             FIND_POSTGRESQL_INDEXES_TOOL,
+            FIND_POSTGRESQL_ACTIVITY_TOOL,
+            FIND_POSTGRESQL_LOCKS_TOOL,
+            FIND_POSTGRESQL_VACUUM_TOOL,
+            FIND_POSTGRESQL_DATABASES_TOOL,
             FIND_PROCESSES_TOOL,
             GET_ROW_DETAIL_TOOL,
         ]

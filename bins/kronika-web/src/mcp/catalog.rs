@@ -14,6 +14,10 @@ pub(crate) const OVERVIEW_TOOL: &str = "kronika_overview";
 pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
 pub(crate) const FIND_POSTGRESQL_TABLES_TOOL: &str = "kronika_find_postgresql_tables";
 pub(crate) const FIND_POSTGRESQL_INDEXES_TOOL: &str = "kronika_find_postgresql_indexes";
+pub(crate) const FIND_POSTGRESQL_ACTIVITY_TOOL: &str = "kronika_find_postgresql_activity";
+pub(crate) const FIND_POSTGRESQL_LOCKS_TOOL: &str = "kronika_find_postgresql_locks";
+pub(crate) const FIND_POSTGRESQL_VACUUM_TOOL: &str = "kronika_find_postgresql_vacuum";
+pub(crate) const FIND_POSTGRESQL_DATABASES_TOOL: &str = "kronika_find_postgresql_databases";
 pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
 pub(crate) const GET_ROW_DETAIL_TOOL: &str = "kronika_get_row_detail";
 
@@ -127,6 +131,78 @@ pub(crate) struct IndexesInput {
     pub(crate) limit: u32,
 }
 
+/// Input for `kronika_find_postgresql_activity`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ActivityInput {
+    /// Flat AND-only list of typed predicates over `pg_stat_activity`
+    /// fields: `pid`, `database`, `role`, `application`, `client_addr`,
+    /// `backend_type`, `state`, `wait_event_type`, `wait_event`,
+    /// `query_id`, `backend_xid_age`, `backend_xmin_age`, or `text` (a
+    /// combined search over the query, application name, client address,
+    /// database and role). Empty or omitted matches every backend.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`backend_xid_age`", "`backend_xmin_age`".
+    /// Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
+/// Input for `kronika_find_postgresql_locks`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct LocksInput {
+    /// Flat AND-only list of typed predicates over `pg_locks` fields:
+    /// `pid`, `database`, `role`, `state`, `lock_type`, `lock_mode`,
+    /// `table_name`, or `text` (a combined search over the query, database,
+    /// role and locked table name). Empty or omitted matches every backend
+    /// in the wait graph.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by. Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
+/// Input for `kronika_find_postgresql_vacuum`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct VacuumInput {
+    /// Flat AND-only list of typed predicates over `pg_stat_progress_vacuum`
+    /// fields: `pid`, `database`, `schema`, `table_name`, `phase`,
+    /// `is_autovacuum`, `heap_blks_total`, `heap_blks_scanned`,
+    /// `heap_blks_vacuumed`, or `text` (a combined search over database,
+    /// table, schema and phase). Empty or omitted matches every backend
+    /// currently running `VACUUM`.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`heap_blks_scanned`", "`heap_blks_vacuumed`".
+    /// Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
+/// Input for `kronika_find_postgresql_databases`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct DatabasesInput {
+    /// Flat AND-only list of typed predicates over `pg_stat_database`
+    /// fields: `datid`, `database`, `numbackends`, `xact_commit`,
+    /// `xact_rollback`, `deadlocks`, `temp_bytes`, or `text` (a database
+    /// name search). Empty or omitted matches every database.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`numbackends`", "`deadlocks`", "`xact_commit`".
+    /// Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
 /// Input for `kronika_find_processes`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ProcessesInput {
@@ -212,6 +288,10 @@ pub(crate) fn tools() -> Vec<Tool> {
              returned.",
             schema_object::<IndexesInput>(),
         ),
+    ]
+    .into_iter()
+    .chain(postgresql_plain_tools())
+    .chain([
         Tool::new(
             FIND_PROCESSES_TOOL,
             "Reads the current os_process snapshot: one row per running \
@@ -237,6 +317,61 @@ pub(crate) fn tools() -> Vec<Tool> {
              grouped by (datid, relid) rather than a single physical row \
              ordinal.",
             schema_object::<RowDetailInput>(),
+        ),
+    ])
+    .collect()
+}
+
+/// The four `find_*` tools over plain (non-relation-grouped) `PostgreSQL`
+/// sections: split out of `tools()` to keep that function under Clippy's
+/// line-count lint, not because these four are architecturally distinct
+/// from the tools around them.
+fn postgresql_plain_tools() -> [Tool; 4] {
+    [
+        Tool::new(
+            FIND_POSTGRESQL_ACTIVITY_TOOL,
+            "Reads the current pg_stat_activity snapshot: one row per \
+             backend connection, with optional typed filters and a sort \
+             field. Returns up to `limit` rows plus `has_more` when more \
+             rows matched than were returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<ActivityInput>(),
+        ),
+        Tool::new(
+            FIND_POSTGRESQL_LOCKS_TOOL,
+            "Reads the current pg_locks snapshot: one row per backend \
+             involved in the lock wait graph (root or waiter), with \
+             optional typed filters and a sort field. Returns up to \
+             `limit` rows plus `has_more` when more rows matched than were \
+             returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<LocksInput>(),
+        ),
+        Tool::new(
+            FIND_POSTGRESQL_VACUUM_TOOL,
+            "Reads the current pg_stat_progress_vacuum snapshot: one row \
+             per backend actively running VACUUM, with optional typed \
+             filters and a sort field. Returns up to `limit` rows plus \
+             `has_more` when more rows matched than were returned. Each \
+             row carries its own segment_id/type_id/row_ordinal/at as \
+             decimal strings — pass them straight into \
+             kronika_get_row_detail to re-fetch that exact row later.",
+            schema_object::<VacuumInput>(),
+        ),
+        Tool::new(
+            FIND_POSTGRESQL_DATABASES_TOOL,
+            "Reads the current pg_stat_database snapshot: one row per \
+             database, with optional typed filters and a sort field. \
+             Returns up to `limit` rows plus `has_more` when more rows \
+             matched than were returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<DatabasesInput>(),
         ),
     ]
 }

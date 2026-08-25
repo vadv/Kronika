@@ -16,10 +16,12 @@ use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_user::OsUser;
+use kronika_registry::pg_locks::PgLocksV2;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_database::PgStatDatabaseV1;
+use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuumV1;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
@@ -283,7 +285,7 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_postgres_health(&mut self, active: u32) {
+    pub(crate) fn append_postgres_health(&mut self, active: u32) {
         self.append_postgres_health_at(100, active);
     }
 
@@ -867,6 +869,162 @@ impl Fixture {
                 .expect("PostgreSQL database row fits");
         }
         self.append(buffers);
+    }
+
+    /// Same row shape as `append_postgres_database_rows`, but with a real
+    /// interned `datname` instead of `postgres_database`'s unresolvable
+    /// `StrId(901)` placeholder: `append_postgres_database_rows` flushes
+    /// with an empty dictionary, which is fine for the tests that only ever
+    /// project `datid`/numeric columns, but a full-field projection (every
+    /// `kronika_find_postgresql_databases` call) also asks for `datname`
+    /// and needs it to actually resolve.
+    pub(crate) fn append_postgres_database_snapshots(&mut self, rows: &[(i64, i64, i64, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
+            let mut row = postgres_database(ts, xact_commit, xact_rollback, deadlocks);
+            row.datname = Some(datname);
+            buffers.push(row).expect("PostgreSQL database row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode database dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode database fixture")
+            .expect("nonempty database fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append database fixture");
+    }
+
+    /// `rows` is `(ts, pid, state, lock_mode)`: one backend row per entry,
+    /// each holding a lock in `lock_mode` on the same fixed relation. `state`
+    /// doubles for `application_name`/`client_addr`/`backend_type` too (same
+    /// trick `activity()` uses below), since nothing in `LOCKS_SEARCH_FIELDS`
+    /// needs those distinct from `state` for this fixture's tests.
+    pub(crate) fn append_postgres_lock_rows(&mut self, rows: &[(i64, i32, &str, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let usename = StrId(interner.intern(b"dba").expect("intern usename").get());
+        let query = StrId(interner.intern(b"SELECT 1").expect("intern query").get());
+        let lock_locktype = StrId(
+            interner
+                .intern(b"relation")
+                .expect("intern lock_locktype")
+                .get(),
+        );
+        let lock_relname = StrId(
+            interner
+                .intern(b"alpha")
+                .expect("intern lock_relname")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, pid, state, lock_mode) in rows {
+            let state_id = StrId(
+                interner
+                    .intern(state.as_bytes())
+                    .expect("intern lock state")
+                    .get(),
+            );
+            let lock_mode_id = StrId(
+                interner
+                    .intern(lock_mode.as_bytes())
+                    .expect("intern lock_mode")
+                    .get(),
+            );
+            buffers
+                .push(PgLocksV2 {
+                    ts: Ts(ts),
+                    pid,
+                    blocked_by: vec![],
+                    datid: 16_384,
+                    datname,
+                    usename: Some(usename),
+                    application_name: state_id,
+                    client_addr: state_id,
+                    backend_type: state_id,
+                    state: Some(state_id),
+                    wait_event_type: None,
+                    wait_event: None,
+                    query,
+                    backend_xid_age: None,
+                    backend_xmin_age: None,
+                    backend_start: Some(Ts(ts)),
+                    xact_start: None,
+                    query_start: None,
+                    state_change: None,
+                    lock_locktype: Some(lock_locktype),
+                    lock_mode: Some(lock_mode_id),
+                    lock_database: Some(16_384),
+                    lock_relation: Some(12_345),
+                    lock_relname: Some(lock_relname),
+                    lock_page: None,
+                    lock_tuple: None,
+                    lock_virtualxid: None,
+                    lock_transactionid: None,
+                    lock_classid: None,
+                    lock_objid: None,
+                    lock_objsubid: None,
+                    lock_target: None,
+                    waitstart: None,
+                })
+                .expect("lock row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode lock dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode lock fixture")
+            .expect("nonempty lock fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append lock fixture");
+    }
+
+    /// `rows` is `(ts, pid, phase, heap_blks_total, heap_blks_scanned,
+    /// heap_blks_vacuumed)`: one backend running `VACUUM` per entry, all on
+    /// the same fixed relation.
+    pub(crate) fn append_postgres_vacuum_rows(&mut self, rows: &[(i64, i32, &str, i64, i64, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let schemaname = StrId(interner.intern(b"public").expect("intern schemaname").get());
+        let relname = StrId(interner.intern(b"alpha").expect("intern relname").get());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, pid, phase, heap_blks_total, heap_blks_scanned, heap_blks_vacuumed) in rows {
+            let phase_id = StrId(
+                interner
+                    .intern(phase.as_bytes())
+                    .expect("intern phase")
+                    .get(),
+            );
+            buffers
+                .push(PgStatProgressVacuumV1 {
+                    ts: Ts(ts),
+                    pid,
+                    datid: 16_385,
+                    datname,
+                    relid: 16_384,
+                    schemaname: Some(schemaname),
+                    relname: Some(relname),
+                    is_autovacuum: false,
+                    phase: phase_id,
+                    heap_blks_total,
+                    heap_blks_scanned,
+                    heap_blks_vacuumed,
+                    index_vacuum_count: 0,
+                    max_dead_tuples: 0,
+                    num_dead_tuples: 0,
+                })
+                .expect("vacuum row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode vacuum dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode vacuum fixture")
+            .expect("nonempty vacuum fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append vacuum fixture");
     }
 
     fn append_postgres_block_size(&mut self, block_size: u128) {
