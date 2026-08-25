@@ -15,6 +15,7 @@ pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
 pub(crate) const FIND_POSTGRESQL_TABLES_TOOL: &str = "kronika_find_postgresql_tables";
 pub(crate) const FIND_POSTGRESQL_INDEXES_TOOL: &str = "kronika_find_postgresql_indexes";
 pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
+pub(crate) const GET_ROW_DETAIL_TOOL: &str = "kronika_get_row_detail";
 
 /// Input for `kronika_overview`: rank one recorded section's identities by
 /// a chosen numeric field, over an explicit window.
@@ -142,6 +143,34 @@ pub(crate) struct ProcessesInput {
     pub(crate) limit: u32,
 }
 
+/// Input for `kronika_get_row_detail`. `segment_id` and `row_ordinal`
+/// accept a JSON number or a decimal string: both are `i64`/`u64` values
+/// that can exceed JSON's safe-integer range (2^53), so a caller already
+/// holding one as a string (the same convention MCP output already uses
+/// for such values) can pass it through unchanged instead of re-encoding
+/// it as a number that may lose precision.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RowDetailInput {
+    /// Recorded logical section the row belongs to, e.g. "`os_process`",
+    /// "`pg_stat_statements`", "`pg_store_plans`". Must be a plain,
+    /// single-section, timestamped section — not "`pg_stat_user_tables`" or
+    /// "`pg_stat_user_indexes`", which this tool does not address (use
+    /// `kronika_find_postgresql_tables`/`_indexes` for those).
+    pub(crate) section: String,
+    /// The segment this row was recorded in, as a JSON number or a decimal
+    /// string.
+    pub(crate) segment_id: serde_json::Value,
+    /// The row's own timestamp, Unix microseconds, exactly as recorded.
+    pub(crate) at: i64,
+    /// The physical layout id for `section` in this segment: pins the
+    /// locator to one exact schema version, since a logical section's
+    /// physical layout can change over time.
+    pub(crate) type_id: u32,
+    /// The row's physical position within `section`'s data in this
+    /// segment, as a JSON number or a decimal string.
+    pub(crate) row_ordinal: serde_json::Value,
+}
+
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -187,6 +216,21 @@ pub(crate) fn tools() -> Vec<Tool> {
              Returns up to `limit` rows plus `has_more` when more rows \
              matched than were returned.",
             schema_object::<ProcessesInput>(),
+        ),
+        Tool::new(
+            GET_ROW_DETAIL_TOOL,
+            "Fetches one exact row by its physical locator — `section`, \
+             `segment_id`, `at`, `type_id`, `row_ordinal` — rather than a \
+             ranked or filtered search. Unlike kronika_find_*, which only \
+             reads the current live snapshot, this can read a row from \
+             any recorded segment once its locator is already known. \
+             Covers plain, single-section, timestamped sections only \
+             (os_process, pg_stat_statements, pg_store_plans, and \
+             similar); it does not address \
+             kronika_find_postgresql_tables/_indexes rows, which are \
+             grouped by (datid, relid) rather than a single physical row \
+             ordinal.",
+            schema_object::<RowDetailInput>(),
         ),
     ]
 }

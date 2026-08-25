@@ -4,6 +4,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{ACCEPT, CONTENT_TYPE, HOST};
 use hyper::{Method, Request};
+use kronika_registry::Section as _;
 use serde_json::json;
 
 use super::response;
@@ -33,7 +34,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_five_tool_catalog() {
+async fn tools_list_returns_the_six_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -74,6 +75,7 @@ async fn tools_list_returns_the_five_tool_catalog() {
             "kronika_find_postgresql_tables",
             "kronika_find_postgresql_indexes",
             "kronika_find_processes",
+            "kronika_get_row_detail",
         ]
     );
 }
@@ -379,5 +381,127 @@ fn find_processes_ranks_and_filters() {
 fn find_processes_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::processes::call(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+
+    let listing_arguments = serde_json::json!({
+        "filters": [{"field": "pid", "op": "eq", "value": 101}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let listing = crate::mcp::processes::call(&config, listing_arguments);
+    assert_eq!(listing.is_error, Some(false));
+    let listing_rows = listing.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(listing_rows.len(), 1);
+    let listing_row = listing_rows[0].clone();
+
+    // Row 0 in the fixture's insertion order is pid 101, the row the
+    // listing above narrowed down to.
+    let (segment_id, at) =
+        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+    let type_id = kronika_registry::os_process::OsProcess::CONTRACT
+        .type_id
+        .get();
+    let detail_arguments = serde_json::json!({
+        "section": "os_process",
+        "segment_id": segment_id,
+        "at": at,
+        "type_id": type_id,
+        "row_ordinal": 0,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+
+    assert_eq!(detail.is_error, Some(false));
+    let detail_row = detail.structured_content.expect("structured content");
+    // The exact-locator path and the listing path must agree on content
+    // for the same physical row.
+    assert_eq!(detail_row["pid"], listing_row["pid"]);
+    assert_eq!(detail_row["rmem_kb"], listing_row["rmem_kb"]);
+    assert_eq!(detail_row["segment_id"], segment_id.to_string());
+    assert_eq!(detail_row["type_id"], type_id.to_string());
+    assert_eq!(detail_row["row_ordinal"], "0");
+    assert_eq!(detail_row["at"], at.to_string());
+}
+
+#[test]
+fn get_row_detail_rejects_a_relation_grouped_section() {
+    // pg_stat_user_tables is grouped by (datid, relid) at the find_* layer,
+    // not addressed by a single physical row ordinal — out of scope for
+    // this tool, per its own description.
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(100, 1, 11, 0, "db", "public", "alpha")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let (segment_id, at) =
+        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+    let type_id = kronika_registry::pg_stat_user_tables::PgStatUserTablesV1::CONTRACT
+        .type_id
+        .get();
+    let arguments = serde_json::json!({
+        "section": "pg_stat_user_tables",
+        "segment_id": segment_id,
+        "at": at,
+        "type_id": type_id,
+        "row_ordinal": 0,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::row_detail::call(&config, arguments);
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let (segment_id, at) =
+        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+    let type_id = kronika_registry::os_process::OsProcess::CONTRACT
+        .type_id
+        .get();
+    let arguments = serde_json::json!({
+        "section": "os_process",
+        "segment_id": segment_id.to_string(),
+        "at": at,
+        "type_id": type_id,
+        "row_ordinal": "0",
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::row_detail::call(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["pid"], 101);
+}
+
+#[test]
+fn get_row_detail_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::row_detail::call(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
 }

@@ -1614,6 +1614,74 @@ impl PreparedSnapshot {
         Ok(rows)
     }
 
+    /// Fetches the single physical row `row_ordinal` addresses on the
+    /// anchor segment, through the same `row_record` rendering HTTP's timed
+    /// path uses, reshaped into one flat keyed object: every projected
+    /// field under its own name, plus the coordinate that addressed it
+    /// (`segment_id`, `type_id`, `row_ordinal`, `at`) so the caller can
+    /// confirm what it got. `prepare` already ran `validate_exact_locator`
+    /// before a `PreparedSnapshot` with `row_ordinal` set exists, so a
+    /// `None` here is not observed in practice; it stays typed rather than
+    /// assumed away.
+    ///
+    /// Scoped to the plain, single-section timed path (`timed_contexts`/
+    /// `emit_context_rows`): a relation-grouped section
+    /// (`pg_stat_user_tables`/`pg_stat_user_indexes`) is windowed
+    /// differently (`partitioned_contexts`, keyed by `datid`), which this
+    /// does not replicate, so it is rejected rather than silently
+    /// mis-rendered.
+    pub(crate) fn fetch_exact_row(
+        &self,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Value>, ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
+            return Err(ApiError::NoSuchSection);
+        }
+        let [plan] = section.plans.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let Some(timestamp) = plan.timestamp else {
+            return Err(ApiError::BadCursor);
+        };
+        let Some(ordinal) = self.row_ordinal else {
+            return Err(ApiError::BadCursor);
+        };
+        let mut facts = HashMap::new();
+        let contexts = self.timed_contexts(section, 0, plan, timestamp, cancelled, &mut facts)?;
+        let Some(context) = contexts
+            .iter()
+            .find(|context| context.source.id() == self.anchor.id())
+        else {
+            return Ok(None);
+        };
+        let mut values = None;
+        let mut emit = |bytes: Vec<u8>| {
+            values = row_values(&bytes);
+            true
+        };
+        self.emit_context_rows(context, &mut emit, cancelled)?;
+        let Some(values) = values else {
+            return Ok(None);
+        };
+        if values.len() != plan.fields.len() {
+            return Ok(None);
+        }
+        let mut object: serde_json::Map<String, Value> = plan
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .zip(values)
+            .collect();
+        object.insert("segment_id".to_owned(), json!(self.anchor.id().to_string()));
+        object.insert("type_id".to_owned(), json!(plan.type_id.to_string()));
+        object.insert("row_ordinal".to_owned(), json!(ordinal.to_string()));
+        object.insert("at".to_owned(), json!(self.at.to_string()));
+        Ok(Some(Value::Object(object)))
+    }
+
     fn emit_first_match(
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -2855,6 +2923,23 @@ fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiE
         ppid: parent,
         fields,
     })
+}
+
+/// Pulls `row_record`'s positional `values` array back out of its `record()`
+/// framing (`serde_json::to_vec` plus a trailing newline) so `fetch_exact_row`
+/// can re-key it by field name. `record()` bytes come only from a `Value`
+/// this crate built, so any parse failure here would be an internal
+/// invariant break, not a caller mistake; either way `None` collapses into
+/// `fetch_exact_row`'s existing "row not found" return, one path instead of
+/// a second one for a case that should not happen.
+fn row_values(bytes: &[u8]) -> Option<Vec<Value>> {
+    let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else {
+        return None;
+    };
+    match object.remove("values") {
+        Some(Value::Array(values)) => Some(values),
+        _ => None,
+    }
 }
 
 impl PageRows {
