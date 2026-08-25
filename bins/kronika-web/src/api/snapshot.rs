@@ -1,7 +1,7 @@
 //! Reads one snapshot and derives counter rates.
 
 mod relation;
-mod search;
+pub(crate) mod search;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -312,7 +312,7 @@ impl CachedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GlobPattern(Vec<GlobToken>);
+pub(crate) struct GlobPattern(Vec<GlobToken>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GlobToken {

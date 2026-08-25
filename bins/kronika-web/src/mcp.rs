@@ -23,6 +23,7 @@ use crate::config::Config;
 mod catalog;
 mod context;
 mod dispatch;
+mod filter;
 mod overview;
 mod semantics;
 

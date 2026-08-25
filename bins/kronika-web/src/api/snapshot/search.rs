@@ -9,14 +9,14 @@ const SEARCH_MAX_SIGNIFICANT_DIGITS: usize = 38;
 const SEARCH_MAX_FRACTIONAL_DIGITS: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct StructuredSearch {
-    pub(super) expr: Expr,
-    pub(super) clauses: Vec<SearchClause>,
+pub(crate) struct StructuredSearch {
+    pub(crate) expr: Expr,
+    pub(crate) clauses: Vec<SearchClause>,
     canonical: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Expr {
+pub(crate) enum Expr {
     Predicate(SearchClause),
     And(Box<Self>, Box<Self>),
     Or {
@@ -27,33 +27,81 @@ pub(super) enum Expr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SearchClause {
+pub(crate) struct SearchClause {
     canonical: String,
-    pub(super) key: &'static str,
-    pub(super) columns: &'static [&'static str],
-    pub(super) operator: SearchOperator,
-    pub(super) value: SearchValue,
+    pub(crate) key: &'static str,
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) operator: SearchOperator,
+    pub(crate) value: SearchValue,
+}
+
+impl SearchClause {
+    /// Build a clause directly from typed parts, bypassing the text
+    /// parser — the MCP filter path (`mcp::filter`). `canonical` is left
+    /// empty for the same reason `StructuredSearch::from_expr` leaves its
+    /// own `canonical` empty: nothing that reads this clause runs the
+    /// cursor-binding hash that is `canonical`'s only consumer.
+    pub(crate) const fn from_parts(
+        key: &'static str,
+        columns: &'static [&'static str],
+        operator: SearchOperator,
+        value: SearchValue,
+    ) -> Self {
+        Self {
+            canonical: String::new(),
+            key,
+            columns,
+            operator,
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SearchOperator {
+pub(crate) enum SearchOperator {
     Colon,
     Greater,
     Less,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SearchValue {
+pub(crate) enum SearchValue {
     Identifier(String),
     Pattern(GlobPattern),
     Quantity(Quantity),
 }
 
+impl SearchValue {
+    /// Wrap raw text in a `GlobPattern`, matching what the text parser
+    /// builds for a `SearchFieldKind::String` field: `GlobPattern::new`
+    /// always brackets the pattern in leading/trailing `*`, so this is
+    /// always a case-insensitive substring match, never an anchored one —
+    /// the text DSL has no anchored-equality form for string fields.
+    pub(crate) fn pattern(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::new(raw))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Quantity {
-    pub(super) numerator: u128,
-    pub(super) denominator: u128,
+pub(crate) struct Quantity {
+    pub(crate) numerator: u128,
+    pub(crate) denominator: u128,
     canonical: String,
+}
+
+impl Quantity {
+    /// Build a `Quantity` from a plain non-negative integer count already
+    /// in the field's base unit (raw bytes, milliseconds, a count, or a
+    /// 0-100 percentage number) rather than parsed unit text — the MCP
+    /// filter path receives typed JSON numbers, not `"100MB"` strings, so
+    /// there is no unit suffix to interpret.
+    pub(crate) fn from_integer(value: u128) -> Self {
+        Self {
+            numerator: value,
+            denominator: 1,
+            canonical: value.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,22 +117,22 @@ pub(super) enum QuantityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ResultField {
+pub(crate) struct ResultField {
     pub(super) metric: &'static str,
     pub(super) kind: QuantityKind,
     pub(super) dependencies: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct SearchField {
-    pub(super) key: &'static str,
+pub(crate) struct SearchField {
+    pub(crate) key: &'static str,
     aliases: &'static [&'static str],
-    pub(super) columns: &'static [&'static str],
-    kind: SearchFieldKind,
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) kind: SearchFieldKind,
 }
 
 #[derive(Clone, Copy)]
-enum SearchFieldKind {
+pub(crate) enum SearchFieldKind {
     Identifier { signed: bool },
     String,
     Quantity(ResultField),
@@ -163,6 +211,22 @@ impl StructuredSearch {
         &self.canonical
     }
 
+    /// Build a search directly from an already-assembled expression tree,
+    /// bypassing `parse`'s text grammar. This is the MCP filter path: it
+    /// builds `Expr`/`SearchClause` from typed JSON input instead of a
+    /// query string, so there is no source text to derive `canonical`
+    /// from. Leaving it empty is safe: the only reader of `canonical()`
+    /// outside this module is the HTTP snapshot cursor's binding hash
+    /// (`snapshot_binding` in `snapshot.rs`), which never runs on a search
+    /// built this way.
+    pub(crate) const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
+        Self {
+            expr,
+            clauses,
+            canonical: String::new(),
+        }
+    }
+
     pub(super) fn member_clauses(&self) -> impl Iterator<Item = &SearchClause> {
         self.clauses
             .iter()
@@ -185,7 +249,7 @@ impl StructuredSearch {
         })
     }
 
-    pub(super) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+    pub(crate) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
         evaluate(&self.expr, &mut predicate)
     }
 
@@ -576,7 +640,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
+pub(crate) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
         "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
@@ -587,7 +651,7 @@ pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     }
 }
 
-pub(super) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
+pub(crate) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
     let field = search_fields(logical_name)
         .iter()
         .find(|field| field.key == key)?;
@@ -926,7 +990,7 @@ fn canonical_value(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn valid_identifier(value: &str, signed: bool) -> bool {
+pub(crate) fn valid_identifier(value: &str, signed: bool) -> bool {
     if signed {
         if value == "-0" {
             return false;

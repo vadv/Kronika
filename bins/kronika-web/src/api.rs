@@ -18,7 +18,7 @@ mod index;
 mod query;
 mod render;
 mod rows;
-mod snapshot;
+pub(crate) mod snapshot;
 
 #[cfg(test)]
 pub(crate) use hour::process_summary::{
