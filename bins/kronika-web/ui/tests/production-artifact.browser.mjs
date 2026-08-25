@@ -56,6 +56,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
+      if (url.searchParams.get("section") === "postgresql_summary") return ndjson(response, postgresSummaryRecords(hour))
       const records = timelineRecords(hour).map((record) => record.record === "point" && record.series === "os_health" && record.ts === String(AT)
         ? { ...record, value: 41.729068244136855 }
         : record)
@@ -94,6 +95,34 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
     await settleLayout(cdp)
+
+    const postgresSummaryRequests = () => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "postgresql_summary")
+    await waitForRequests(() => postgresSummaryRequests().length === 1)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="active_statements"] strong')?.textContent === "3 · 60%"`, "the PostgreSQL statement context")
+    await cdp.evaluate(`document.querySelector('[data-testid="statement-lens-per_call"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="execution_per_call"]') !== null`, "the local statement lens context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Tables")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="scan_methods"]') !== null`, "the table context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Databases")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "20%"`, "the database context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`(() => {
+      const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "2")
+      navigator.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}" && document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "10%"`, "the local PostgreSQL cursor context")
+    assert.equal(postgresSummaryRequests().length, 1)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the restored PostgreSQL cursor")
+    await cdp.waitFor(`document.querySelector('button[title="Refresh"]')?.disabled === false`, "the refresh action")
+    await cdp.evaluate(`document.querySelector('button[title="Refresh"]').click()`)
+    await waitForRequests(() => postgresSummaryRequests().length === 2)
+    assert.equal(postgresSummaryRequests().length, 2)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Statements")).click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the restored Statements path")
 
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
@@ -4710,6 +4739,9 @@ function timelineRecords(hour = HOUR, cgroups = false) {
         logical_name: "pg_store_plans", physical_name: "pg_store_plans", type_id: "1004001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
       }, {
+        logical_name: "pg_stat_database", physical_name: "pg_stat_database", type_id: "1005001",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
+      }, {
         logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
         implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }, {
@@ -4758,6 +4790,36 @@ function timelineRecords(hour = HOUR, cgroups = false) {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
       field_ordinal: 11, row_ordinal: "91", ts: shifted(AT),
     },
+  ]
+}
+
+const POSTGRES_SUMMARY_FIELDS = [
+  "surface", "active_count", "active_pct", "mean_exec_ms", "buffer_read_pct", "rollback_pct", "temp_bytes_per_transaction", "seq_scan_pct",
+]
+
+function postgresSummaryRecords(hour) {
+  const shift = hour - HOUR
+  const records = [
+    [BEFORE_AT, 1, { active_count: 1, active_pct: 20, mean_exec_ms: 5, buffer_read_pct: 40 }],
+    [BEFORE_AT, 2, { active_count: 1, active_pct: 20, mean_exec_ms: 5, buffer_read_pct: 40 }],
+    [BEFORE_AT, 3, { rollback_pct: 10, temp_bytes_per_transaction: 1_024, buffer_read_pct: 40 }],
+    [BEFORE_AT, 4, { seq_scan_pct: 25, buffer_read_pct: 40 }],
+    [BEFORE_AT, 5, { buffer_read_pct: 40 }],
+    [AT, 1, { active_count: 3, active_pct: 60, mean_exec_ms: 15, buffer_read_pct: 20 }],
+    [AT, 2, { active_count: 3, active_pct: 60, mean_exec_ms: 15, buffer_read_pct: 20 }],
+    [AT, 3, { rollback_pct: 20, temp_bytes_per_transaction: 2_048, buffer_read_pct: 20 }],
+    [AT, 4, { seq_scan_pct: 40, buffer_read_pct: 20 }],
+    [AT, 5, { buffer_read_pct: 20 }],
+  ]
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("postgresql-summary", "postgresql_summary", POSTGRES_SUMMARY_FIELDS),
+    ...records.map(([timestamp, surface, facts]) => row(
+      "postgresql-summary",
+      `${timestamp}-${surface}`,
+      POSTGRES_SUMMARY_FIELDS.map((field) => field === "surface" ? surface : facts[field] ?? null),
+      timestamp + shift,
+    )),
   ]
 }
 

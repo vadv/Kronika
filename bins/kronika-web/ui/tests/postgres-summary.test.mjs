@@ -1,5 +1,4 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -97,14 +96,4 @@ test("recorded zero stays zero and null stays unavailable", () => {
   })
   assert.match(output, />0%</)
   assert.equal((output.match(/>—</g) ?? []).length, 2)
-})
-
-test("the mounted request depends only on hour and refresh revision", async () => {
-  const [summarySource, viewSource] = await Promise.all([
-    readFile(new URL("../src/postgres-summary.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
-  ])
-  assert.match(summarySource, /useHistoryRequest\(String\(hour\), historyRevision,[\s\S]*loadSeries\(hour, "postgresql_summary", \{\}, \[\], signal\)/)
-  assert.equal((summarySource.match(/loadSeries\(hour, "postgresql_summary", \{\}, \[\], signal\)/g) ?? []).length, 1)
-  assert.equal((viewSource.match(/usePostgresSummary\(hour, historyRevision\)/g) ?? []).length, 1)
 })
