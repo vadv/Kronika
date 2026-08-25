@@ -15,9 +15,10 @@ use super::search::{
 };
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
-    RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
-    resolved_dictionary, search_matches, stored_bytes,
+    RelationGroup, SectionPlans, SnapshotCursor, StructuredSearch, add_ordered,
+    compare_page_order_values, compare_products, compare_u128_ratios, counter_delta, identity_of,
+    plans, rate_columns, record, resolved_dictionary, search_matches, stored_bytes,
+    validate_search_projection,
 };
 use crate::api::query;
 use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
@@ -352,7 +353,7 @@ impl RelationKind {
         }
     }
 
-    const fn logical_name(self) -> &'static str {
+    pub(crate) const fn logical_name(self) -> &'static str {
         match self {
             Self::Tables => TABLES,
             Self::Indexes => INDEXES,
@@ -467,7 +468,7 @@ pub(super) fn snapshot_physical_fields(
     group: RelationGroup,
     fields: &[String],
     by: &[String],
-    search: Option<&super::StructuredSearch>,
+    search: Option<&StructuredSearch>,
 ) -> Result<Vec<String>, ApiError> {
     let kind = RelationKind::from_name(logical_name)?;
     let mut semantic = fields.to_vec();
@@ -1400,7 +1401,7 @@ impl Aggregate {
         &self,
         kind: RelationKind,
         group: RelationGroup,
-        search: Option<&super::StructuredSearch>,
+        search: Option<&StructuredSearch>,
     ) -> bool {
         search.is_none_or(|search| {
             if group == RelationGroup::Object {
@@ -3396,6 +3397,34 @@ impl PreparedSnapshot {
             .collect();
         Ok((rows, has_more))
     }
+
+    /// Applies an already-built expression tree as this snapshot's search,
+    /// bypassing the HTTP text parser (`StructuredSearch::parse`). This is
+    /// the MCP filter path (`mcp::filter::build_search`): it builds the same
+    /// `Expr`/`SearchClause` tree straight from typed JSON, so there is no
+    /// query text to parse or to round-trip through. Runs the same
+    /// grouped-phase and field-projection checks `prepare` applies to a
+    /// text search, so MCP and HTTP filters are validated identically.
+    /// A no-op when `search` is `None`.
+    pub(crate) fn with_search(
+        mut self,
+        search: Option<StructuredSearch>,
+    ) -> Result<Self, ApiError> {
+        let Some(search) = search else {
+            return Ok(self);
+        };
+        if self
+            .group
+            .is_some_and(|group| group != RelationGroup::Object)
+        {
+            search
+                .validate_grouped_phase()
+                .map_err(|_diagnostic| ApiError::BadFilter("search".to_owned()))?;
+        }
+        validate_search_projection(Some(&search), &self.sections)?;
+        self.search = Some(Box::new(search));
+        Ok(self)
+    }
 }
 
 #[expect(
@@ -4259,8 +4288,7 @@ mod tests {
     #[test]
     fn strict_size_comparisons_use_the_authoritative_reducer_and_exact_boundaries() {
         let search = |expression: &str, surface: &str| {
-            super::super::StructuredSearch::parse(expression, surface)
-                .expect("valid size comparison")
+            StructuredSearch::parse(expression, surface).expect("valid size comparison")
         };
         let mut table = aggregate();
         table.gauges.insert(
@@ -4326,7 +4354,7 @@ mod tests {
 
     #[test]
     fn grouped_comparisons_run_after_sum_and_ratio_reducers() {
-        let parsed = super::super::StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
+        let parsed = StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
             .expect("valid grouped comparison");
         let mut group = aggregate();
         group.gauges.insert(
@@ -4357,23 +4385,22 @@ mod tests {
             RelationGroup::Schema,
             Some(&parsed),
         ));
-        let rejected = super::super::StructuredSearch::parse("size>121MB", TABLES)
-            .expect("valid grouped comparison");
+        let rejected =
+            StructuredSearch::parse("size>121MB", TABLES).expect("valid grouped comparison");
         assert!(!group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
             Some(&rejected),
         ));
-        let post_or = super::super::StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
+        let post_or = StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
             .expect("valid post-reducer OR");
         assert!(group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
             Some(&post_or),
         ));
-        let rejected_or =
-            super::super::StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
-                .expect("valid post-reducer OR");
+        let rejected_or = StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
+            .expect("valid post-reducer OR");
         assert!(!group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
@@ -4395,8 +4422,8 @@ mod tests {
             ("schema:private OR size>121MB", false),
             ("schema:public AND size>100MB", true),
         ] {
-            let parsed = super::super::StructuredSearch::parse(expression, TABLES)
-                .expect("valid object boolean search");
+            let parsed =
+                StructuredSearch::parse(expression, TABLES).expect("valid object boolean search");
             assert_eq!(
                 object.matches_result_search(
                     RelationKind::Tables,
@@ -4411,9 +4438,8 @@ mod tests {
 
     #[test]
     fn hidden_search_dependencies_are_exact_and_surface_scoped() {
-        let search =
-            super::super::StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
-                .expect("valid hidden comparison fields");
+        let search = StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
+            .expect("valid hidden comparison fields");
         let physical = snapshot_physical_fields(
             TABLES,
             RelationGroup::Tablespace,

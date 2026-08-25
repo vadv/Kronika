@@ -39,7 +39,7 @@ use crate::encoding::AcceptedEncodings;
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
 
-type NamedIndexSnapshot<'a> = (
+pub(crate) type NamedIndexSnapshot<'a> = (
     i64,
     u32,
     u32,
@@ -947,7 +947,10 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_named_table_snapshots(&mut self, rows: &[(i64, u32, u32, i64, &str, &str, &str)]) {
+    pub(crate) fn append_named_table_snapshots(
+        &mut self,
+        rows: &[(i64, u32, u32, i64, &str, &str, &str)],
+    ) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
             interner
@@ -1126,7 +1129,7 @@ impl Fixture {
             .expect("append buffered table snapshots");
     }
 
-    fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
+    pub(crate) fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
             interner

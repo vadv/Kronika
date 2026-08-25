@@ -33,7 +33,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_two_tool_catalog() {
+async fn tools_list_returns_the_four_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -66,7 +66,15 @@ async fn tools_list_returns_the_two_tool_catalog() {
         .iter()
         .map(|tool| tool["name"].as_str().expect("name"))
         .collect();
-    assert_eq!(names, vec!["kronika_overview", "kronika_get_context"]);
+    assert_eq!(
+        names,
+        vec![
+            "kronika_overview",
+            "kronika_get_context",
+            "kronika_find_postgresql_tables",
+            "kronika_find_postgresql_indexes",
+        ]
+    );
 }
 
 #[test]
@@ -212,4 +220,113 @@ async fn overview_end_to_end_through_the_real_transport() {
     );
     assert_eq!(decoded["result"]["structuredContent"]["others_total"], 63.0);
     assert_eq!(decoded["result"]["structuredContent"]["entity_count"], "5");
+}
+
+#[test]
+fn find_postgresql_tables_ranks_and_filters() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 0, "db", "public", "alpha"),
+        (200, 1, 11, 30, "db", "public", "alpha"),
+        (100, 1, 12, 0, "db", "public", "beta"),
+        (200, 1, 12, 15, "db", "public", "beta"),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "group": "object",
+        "filters": [],
+        "sort": {"field": "seq_scan", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_tables(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    // Rows are keyed, not positional — a real field name is directly
+    // addressable, and the higher seq_scan rate (alpha: 30 over 100 units)
+    // ranks first.
+    assert_eq!(rows[0]["relname"], "alpha");
+    assert_eq!(rows[0]["datname"], "db");
+    assert_eq!(rows[1]["relname"], "beta");
+    assert_eq!(structured["has_more"], false);
+
+    let filtered_arguments = serde_json::json!({
+        "group": "object",
+        "filters": [{"field": "table_name", "op": "eq", "value": "alpha"}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let filtered = crate::mcp::postgresql::call_tables(&config, filtered_arguments);
+    assert_eq!(filtered.is_error, Some(false));
+    let filtered_structured = filtered.structured_content.expect("structured content");
+    let filtered_rows = filtered_structured["rows"].as_array().expect("rows array");
+    assert_eq!(filtered_rows.len(), 1);
+    assert_eq!(filtered_rows[0]["relname"], "alpha");
+}
+
+#[test]
+fn find_postgresql_tables_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_tables(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_index_snapshots(&[
+        (
+            100,
+            1,
+            21,
+            0,
+            "db",
+            "public",
+            "alpha",
+            "alpha_pkey",
+            "CREATE UNIQUE INDEX alpha_pkey ON alpha USING btree (id)",
+        ),
+        (
+            200,
+            1,
+            21,
+            20,
+            "db",
+            "public",
+            "alpha",
+            "alpha_pkey",
+            "CREATE UNIQUE INDEX alpha_pkey ON alpha USING btree (id)",
+        ),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "group": "object",
+        "filters": [],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_indexes(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["indexrelname"], "alpha_pkey");
+    assert_eq!(rows[0]["relname"], "alpha");
+    assert_eq!(structured["has_more"], false);
 }
