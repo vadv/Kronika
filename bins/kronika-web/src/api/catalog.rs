@@ -1,9 +1,12 @@
 //! Actual segment and physical-section inventory.
 
+use std::collections::BTreeMap;
 use std::ops::Bound::{Included, Unbounded};
 use std::path::Path;
 
-use kronika_reader::{Listing, Reader, SegmentKind, SegmentRef, StoreObject, StoreWarning};
+use kronika_reader::{
+    Listing, Reader, SegmentKind, SegmentRef, SegmentSection, StoreObject, StoreWarning,
+};
 use kronika_registry::{logical_section_name, section_implementation, section_name};
 use serde_json::{Value, json};
 
@@ -21,7 +24,7 @@ pub(crate) struct PreparedCatalog {
     metric_sources: Option<u32>,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     root: &Path,
     window: Window,
     configured_sources: u32,
@@ -128,6 +131,26 @@ impl PreparedCatalog {
         }
         Ok(())
     }
+
+    /// Distinct logical sections recorded across every segment in this
+    /// window, rows and bytes summed. Same per-segment field composition
+    /// `/api/catalog` reports (`section_values`), collapsed to one entry per
+    /// section for `kronika_get_context`.
+    pub(crate) fn recorded_sections(&self) -> Vec<Value> {
+        let mut totals: BTreeMap<u32, SegmentSection> = BTreeMap::new();
+        for segment in &self.listing.segments {
+            for section in segment.sections() {
+                totals
+                    .entry(section.type_id)
+                    .and_modify(|total| {
+                        total.rows += section.rows;
+                        total.bytes += section.bytes;
+                    })
+                    .or_insert(*section);
+            }
+        }
+        section_values(&totals.into_values().collect::<Vec<_>>())
+    }
 }
 
 pub(super) fn log_open(
@@ -181,7 +204,7 @@ fn sections(segment: &SegmentRef) -> Vec<Value> {
     section_values(segment.sections())
 }
 
-fn section_values(sections: &[kronika_reader::SegmentSection]) -> Vec<Value> {
+fn section_values(sections: &[SegmentSection]) -> Vec<Value> {
     sections
         .iter()
         .map(|section| {

@@ -15,7 +15,7 @@ use crate::body::StreamHead;
 use crate::config::Account;
 use crate::encoding::{AcceptedEncodings, ContentCoding};
 
-mod artifacts;
+pub(crate) mod artifacts;
 mod multi_layout;
 
 const AUTHORIZATION: &str = "Basic ZGJhOnNlY3JldA==";

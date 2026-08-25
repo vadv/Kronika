@@ -10,7 +10,7 @@ use sha2::{Digest as _, Sha256};
 use crate::encoding::etag_matches;
 use crate::route::{ActiveCursor, Route};
 
-mod catalog;
+pub(crate) mod catalog;
 pub(crate) mod heatmap;
 mod history;
 mod hour;

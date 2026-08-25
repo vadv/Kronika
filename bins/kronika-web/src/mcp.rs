@@ -21,7 +21,9 @@ use crate::body::BodyError;
 use crate::config::Config;
 
 mod catalog;
+mod context;
 mod dispatch;
+mod overview;
 mod semantics;
 
 #[cfg(test)]

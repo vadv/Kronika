@@ -81,7 +81,7 @@ type PlacedIndexSnapshot<'a> = (
     i64,
 );
 
-struct Fixture {
+pub(crate) struct Fixture {
     directory: tempfile::TempDir,
     writer: WriterOwner,
     journal: Journal,
@@ -89,7 +89,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let directory = tempfile::tempdir().expect("temporary data root");
         let root = DataRoot::open(directory.path()).expect("open data root");
         let writer = root
@@ -106,7 +106,7 @@ impl Fixture {
         }
     }
 
-    fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         self.directory.path()
     }
 
@@ -378,7 +378,7 @@ impl Fixture {
     /// timestamps so its last observed value and its window maximum can
     /// differ, which is what a ranked gauge band's totals/others correction
     /// depends on. `comm` doubles as the grouping column for grouped tests.
-    fn append_process_gauge_rows(&mut self, rows: &[(i64, i32, i64, &str)]) {
+    pub(crate) fn append_process_gauge_rows(&mut self, rows: &[(i64, i32, i64, &str)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(ts, pid, rmem_kb, comm) in rows {
@@ -1311,7 +1311,7 @@ impl Fixture {
             .expect("append fixture part");
     }
 
-    fn finish(&self) {
+    pub(crate) fn finish(&self) {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
     }
 
