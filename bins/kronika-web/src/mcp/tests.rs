@@ -397,6 +397,58 @@ fn find_postgresql_activity_rejects_malformed_arguments_without_panicking() {
     assert_eq!(result.is_error, Some(true));
 }
 
+#[tokio::test]
+async fn find_postgresql_activity_end_to_end_through_the_real_transport() {
+    // Same fixture and assertions as `find_postgresql_activity_ranks_and_filters`,
+    // driven through `mcp::response` instead of calling `postgresql::call_activity`
+    // directly.
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(2);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "kronika_find_postgresql_activity",
+            "arguments": {
+                "filters": [],
+                "sort": {"field": "pid", "direction": "desc"},
+                "limit": 10,
+            }
+        }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("http://kronika.test/mcp")
+        .header(HOST, "kronika.test")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&body).expect("json"),
+        )))
+        .expect("request");
+
+    let response = response(config, request).await;
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    let rows = decoded["result"]["structuredContent"]["rows"]
+        .as_array()
+        .expect("rows array");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["pid"], 10_000);
+    assert_eq!(rows[0]["state"], "idle");
+    assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+}
+
 #[test]
 fn find_postgresql_locks_ranks_and_filters() {
     let mut fixture = Fixture::new();
