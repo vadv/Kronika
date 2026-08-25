@@ -143,12 +143,13 @@ pub(crate) struct ProcessesInput {
     pub(crate) limit: u32,
 }
 
-/// Input for `kronika_get_row_detail`. `segment_id` and `row_ordinal`
-/// accept a JSON number or a decimal string: both are `i64`/`u64` values
-/// that can exceed JSON's safe-integer range (2^53), so a caller already
-/// holding one as a string (the same convention MCP output already uses
-/// for such values) can pass it through unchanged instead of re-encoding
-/// it as a number that may lose precision.
+/// Input for `kronika_get_row_detail`. Every locator field accepts a JSON
+/// number or a decimal string: `segment_id`, `at` and `row_ordinal` are
+/// `i64`/`u64` values that can exceed JSON's safe-integer range (2^53), and
+/// `type_id` is accepted the same way for a different reason — a
+/// `kronika_find_*` row renders all four locator fields as decimal strings,
+/// so any of them can be copied straight from there into this tool's
+/// arguments without reformatting.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct RowDetailInput {
     /// Recorded logical section the row belongs to, e.g. "`os_process`",
@@ -160,12 +161,14 @@ pub(crate) struct RowDetailInput {
     /// The segment this row was recorded in, as a JSON number or a decimal
     /// string.
     pub(crate) segment_id: serde_json::Value,
-    /// The row's own timestamp, Unix microseconds, exactly as recorded.
-    pub(crate) at: i64,
-    /// The physical layout id for `section` in this segment: pins the
-    /// locator to one exact schema version, since a logical section's
-    /// physical layout can change over time.
-    pub(crate) type_id: u32,
+    /// The row's own timestamp, Unix microseconds, exactly as recorded, as
+    /// a JSON number or a decimal string.
+    pub(crate) at: serde_json::Value,
+    /// The physical layout id for `section` in this segment, as a JSON
+    /// number or a decimal string: pins the locator to one exact schema
+    /// version, since a logical section's physical layout can change over
+    /// time.
+    pub(crate) type_id: serde_json::Value,
     /// The row's physical position within `section`'s data in this
     /// segment, as a JSON number or a decimal string.
     pub(crate) row_ordinal: serde_json::Value,
@@ -214,7 +217,10 @@ pub(crate) fn tools() -> Vec<Tool> {
             "Reads the current os_process snapshot: one row per running \
              process, with optional typed filters and a sort field. \
              Returns up to `limit` rows plus `has_more` when more rows \
-             matched than were returned.",
+             matched than were returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
             schema_object::<ProcessesInput>(),
         ),
         Tool::new(

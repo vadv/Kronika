@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::{decimal_i64, decimal_u64};
+use super::{decimal_i64, decimal_u32, decimal_u64};
 
 #[test]
 fn decimal_i64_accepts_a_plain_number() {
@@ -46,4 +46,24 @@ fn decimal_u64_rejects_a_negative_number() {
 #[test]
 fn decimal_u64_rejects_a_negative_string() {
     assert!(decimal_u64("row_ordinal", &json!("-1")).is_err());
+}
+
+#[test]
+fn decimal_u32_accepts_a_plain_number() {
+    assert_eq!(decimal_u32("type_id", &json!(1_100_001)), Ok(1_100_001));
+}
+
+#[test]
+fn decimal_u32_accepts_a_decimal_string() {
+    assert_eq!(decimal_u32("type_id", &json!("1100001")), Ok(1_100_001));
+}
+
+#[test]
+fn decimal_u32_rejects_a_number_beyond_32_bits() {
+    assert!(decimal_u32("type_id", &json!(u64::from(u32::MAX) + 1)).is_err());
+}
+
+#[test]
+fn decimal_u32_rejects_a_negative_string() {
+    assert!(decimal_u32("type_id", &json!("-1")).is_err());
 }

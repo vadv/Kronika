@@ -25,10 +25,18 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Ok(row_ordinal) => row_ordinal,
         Err(error) => return mcp_error(error),
     };
+    let at = match decimal_i64("at", &input.at) {
+        Ok(at) => at,
+        Err(error) => return mcp_error(error),
+    };
+    let type_id = match decimal_u32("type_id", &input.type_id) {
+        Ok(type_id) => type_id,
+        Err(error) => return mcp_error(error),
+    };
 
     let request = SnapshotRequest {
         segment_id,
-        at: input.at,
+        at,
         sections: vec![input.section.clone()],
         fields: Vec::new(),
         by: Vec::new(),
@@ -40,7 +48,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         first_match: false,
         text: None,
         filters: Vec::new(),
-        type_id: Some(input.type_id),
+        type_id: Some(type_id),
         row_ordinal: Some(row_ordinal),
     };
     let prepared = match snapshot::prepare(&config.data_root, request, None) {
@@ -56,8 +64,8 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
     };
     let Some(row) = row else {
         return mcp_error(format!(
-            "no row at segment {segment_id}, section {:?}, at {}, ordinal {row_ordinal}",
-            input.section, input.at
+            "no row at segment {segment_id}, section {:?}, at {at}, ordinal {row_ordinal}",
+            input.section
         ));
     };
     mcp_structured(row, format!("row from {}", input.section))
@@ -88,6 +96,28 @@ fn decimal_u64(field: &str, value: &Value) -> Result<u64, String> {
         Value::Number(number) => number
             .as_u64()
             .ok_or_else(|| format!("{field} does not fit in a 64-bit unsigned integer")),
+        other => Err(format!(
+            "{field} must be a JSON integer or a decimal string, got {other}"
+        )),
+    }
+}
+
+/// Same acceptance as [`decimal_i64`], for the unsigned `type_id`. `type_id`
+/// fits comfortably inside JSON's safe-integer range on its own, but a
+/// `kronika_find_*` row renders it as a decimal string alongside
+/// `segment_id`/`row_ordinal`/`at`, so it takes the same string-or-number
+/// input here too — otherwise a caller copying a row's locator fields
+/// straight into this tool's arguments would hit a type mismatch on this
+/// one field alone.
+fn decimal_u32(field: &str, value: &Value) -> Result<u32, String> {
+    match value {
+        Value::String(text) => text.parse().map_err(|error| {
+            format!("{field} is not a valid non-negative integer: {text:?} ({error})")
+        }),
+        Value::Number(number) => number
+            .as_u64()
+            .and_then(|number| u32::try_from(number).ok())
+            .ok_or_else(|| format!("{field} does not fit in a 32-bit unsigned integer")),
         other => Err(format!(
             "{field} must be a JSON integer or a decimal string, got {other}"
         )),

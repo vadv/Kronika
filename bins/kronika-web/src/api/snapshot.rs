@@ -1028,9 +1028,19 @@ fn validate_exact_locator(
 /// already knows how to render — is named in `fields`. `pid`/`ppid` are also
 /// present in `fields` under their own names; keeping both is simpler than
 /// special-casing their removal, and a duplicate is harmless.
+///
+/// `segment_id`/`type_id`/`row_ordinal`/`at` are `row_record`'s own
+/// `segment_id`/`type_id`/`ordinal`/`timestamp` coordinate, carried through
+/// under `kronika_get_row_detail`'s field names: this is the locator that
+/// tool needs, so a row this type describes is addressable by
+/// `kronika_get_row_detail` without the caller reconstructing it.
 pub(crate) struct ProcessRowOut {
     pub(crate) pid: i64,
     pub(crate) ppid: Option<i64>,
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
+    pub(crate) at: i64,
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
@@ -2887,7 +2897,11 @@ impl PreparedSnapshot {
 /// so it is always part of `os_process`'s full projection; a plan built with
 /// an explicit field list that dropped `pid` would be a caller bug, not a
 /// recoverable read failure, so it surfaces as `ApiError::Unreadable`
-/// alongside this function's other internal-shape checks.
+/// alongside this function's other internal-shape checks. `segment_id`,
+/// `ordinal` and `timestamp` are pulled back out the same way, off
+/// `row_record`'s own decimal-string rendering of `RowCoordinate` and the
+/// row's timestamp; `type_id` comes straight from `plan` instead, since it
+/// is already typed there and `row_record` only stringifies it for the wire.
 fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiError> {
     let invalid = |message: &str| {
         ApiError::Unreadable(Box::new(std::io::Error::new(
@@ -2895,10 +2909,10 @@ fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiE
             message.to_owned(),
         )))
     };
-    let Some(Value::Array(values)) = record
+    let object = record
         .as_object_mut()
-        .and_then(|object| object.remove("values"))
-    else {
+        .ok_or_else(|| invalid("process row record is not an object"))?;
+    let Some(Value::Array(values)) = object.remove("values") else {
         return Err(invalid("process row record has no values array"));
     };
     if values.len() != plan.fields.len() {
@@ -2906,6 +2920,18 @@ fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiE
             "process row field count does not match its rendered values",
         ));
     }
+    let segment_id = object
+        .remove("segment_id")
+        .and_then(|value| value.as_str()?.parse::<i64>().ok())
+        .ok_or_else(|| invalid("process row record has no segment_id"))?;
+    let row_ordinal = object
+        .remove("ordinal")
+        .and_then(|value| value.as_str()?.parse::<u64>().ok())
+        .ok_or_else(|| invalid("process row record has no ordinal"))?;
+    let at = object
+        .remove("timestamp")
+        .and_then(|value| value.as_str()?.parse::<i64>().ok())
+        .ok_or_else(|| invalid("process row record has no timestamp"))?;
     let mut fields = BTreeMap::new();
     let mut pid = None;
     let mut parent = None;
@@ -2921,6 +2947,10 @@ fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiE
     Ok(ProcessRowOut {
         pid,
         ppid: parent,
+        segment_id,
+        type_id: plan.type_id,
+        row_ordinal,
+        at,
         fields,
     })
 }

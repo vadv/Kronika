@@ -441,6 +441,56 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
 }
 
 #[test]
+fn get_row_detail_chains_directly_from_a_find_processes_locator() {
+    // The whole point of carrying segment_id/type_id/row_ordinal/at on a
+    // find_processes row: a caller can copy them straight into
+    // get_row_detail's arguments, with no side channel (no current_segment
+    // call, no manual row_ordinal bookkeeping) and no reformatting.
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+
+    let listing_arguments = serde_json::json!({
+        "filters": [{"field": "pid", "op": "eq", "value": 102}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let listing = crate::mcp::processes::call(&config, listing_arguments);
+    assert_eq!(listing.is_error, Some(false));
+    let listing_rows = listing.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(listing_rows.len(), 1);
+    let listing_row = listing_rows[0].clone();
+
+    let detail_arguments = serde_json::json!({
+        "section": "os_process",
+        "segment_id": listing_row["segment_id"],
+        "at": listing_row["at"],
+        "type_id": listing_row["type_id"],
+        "row_ordinal": listing_row["row_ordinal"],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+
+    assert_eq!(detail.is_error, Some(false));
+    let detail_row = detail.structured_content.expect("structured content");
+    assert_eq!(detail_row["pid"], listing_row["pid"]);
+    assert_eq!(detail_row["rmem_kb"], listing_row["rmem_kb"]);
+    assert_eq!(detail_row["segment_id"], listing_row["segment_id"]);
+    assert_eq!(detail_row["type_id"], listing_row["type_id"]);
+    assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
+    assert_eq!(detail_row["at"], listing_row["at"]);
+}
+
+#[test]
 fn get_row_detail_rejects_a_relation_grouped_section() {
     // pg_stat_user_tables is grouped by (datid, relid) at the find_* layer,
     // not addressed by a single physical row ordinal — out of scope for

@@ -93,7 +93,10 @@ fn call_with(
 /// again from `ProcessRowOut`'s own typed copies so they stay present
 /// even if a future field-list change ever narrowed `fields` — same
 /// "identity wins on collision" flattening `postgresql.rs`'s `row_to_json`
-/// uses for `RelationRow`.
+/// uses for `RelationRow`. `segment_id`/`type_id`/`row_ordinal`/`at` are
+/// written out as decimal strings, the same convention
+/// `kronika_get_row_detail` (`mcp/row_detail.rs`) uses for these same four
+/// fields, so a caller can copy them straight into that tool's arguments.
 fn row_to_json(row: ProcessRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("pid".to_owned(), json!(row.pid));
@@ -101,5 +104,9 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
+    object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
+    object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
+    object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));
+    object.insert("at".to_owned(), json!(row.at.to_string()));
     Value::Object(object)
 }
