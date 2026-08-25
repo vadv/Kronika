@@ -42,6 +42,9 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: true }
+  let heldPostgresSummary = null
+  let postgresSummaryRequested
+  const postgresSummaryRequest = new Promise((resolve) => { postgresSummaryRequested = resolve })
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     requests.push(requestRecord(request, url))
@@ -56,7 +59,11 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
-      if (url.searchParams.get("section") === "postgresql_summary") return ndjson(response, postgresSummaryRecords(hour))
+      if (url.searchParams.get("section") === "postgresql_summary") {
+        heldPostgresSummary = { hour, response }
+        postgresSummaryRequested()
+        return
+      }
       const records = timelineRecords(hour).map((record) => record.record === "point" && record.series === "os_health" && record.ts === String(AT)
         ? { ...record, value: 41.729068244136855 }
         : record)
@@ -97,6 +104,11 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await settleLayout(cdp)
 
     const postgresSummaryRequests = () => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "postgresql_summary")
+    await postgresSummaryRequest
+    assert.notEqual(heldPostgresSummary, null)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`), true)
+    ndjson(heldPostgresSummary.response, postgresSummaryRecords(heldPostgresSummary.hour))
+    heldPostgresSummary = null
     await waitForRequests(() => postgresSummaryRequests().length === 1)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="active_statements"] strong')?.textContent === "3 · 60%"`, "the PostgreSQL statement context")
     await cdp.evaluate(`document.querySelector('[data-testid="statement-lens-per_call"]').click()`)
