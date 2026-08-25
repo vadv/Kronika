@@ -498,9 +498,10 @@ pub(super) fn prepare(
     if request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
     }
-    let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    let (reader, current, segments, clean) =
+        explicit_segment_with_listing(root, request.segment_id)?;
     let segment_ref = pin(current, parsed)?;
-    let meta = snapshot_meta(&request, &segment_ref, &segments);
+    let meta = snapshot_meta(&request, &segment_ref, &segments, clean);
     let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
     if let Some(not_modified) = super::conditional_not_modified(meta.clone(), concrete_validator) {
         return Ok(not_modified);
@@ -586,13 +587,16 @@ fn snapshot_meta(
     request: &SnapshotRequest,
     anchor: &SegmentRef,
     segments: &[SegmentRef],
+    clean: bool,
 ) -> ResponseMeta {
     let candidates = std::iter::once(anchor).chain(
         segments
             .iter()
             .filter(|candidate| candidate.id() < anchor.id() && candidate.min_ts() <= request.at),
     );
-    let etag = super::weak_etag("snapshot", &format!("{request:?}"), candidates);
+    let etag = clean
+        .then(|| super::weak_etag("snapshot", &format!("{request:?}"), candidates))
+        .flatten();
     ResponseMeta::ok_with_etag(
         match anchor.kind() {
             SegmentKind::Finished if etag.is_some() => CachePolicy::Immutable,

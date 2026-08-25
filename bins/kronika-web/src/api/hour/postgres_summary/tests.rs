@@ -54,6 +54,53 @@ fn unavailable_identity_does_not_blank_available_population_values() {
 }
 
 #[test]
+fn ratios_ignore_identity_rows_missing_one_side() {
+    let before = row(
+        1_002_002,
+        &[
+            ("calls", Cell::I64(0)),
+            ("shared_blks_read", Cell::I64(0)),
+            ("local_blks_read", Cell::I64(0)),
+        ],
+    );
+    let current = row(
+        1_002_002,
+        &[
+            ("calls", Cell::I64(10)),
+            ("shared_blks_read", Cell::I64(10)),
+            ("local_blks_read", Cell::I64(0)),
+        ],
+    );
+    let other_before = row(
+        1_002_002,
+        &[
+            ("shared_blks_read", Cell::I64(0)),
+            ("shared_blks_hit", Cell::I64(0)),
+            ("local_blks_read", Cell::I64(0)),
+            ("local_blks_hit", Cell::I64(0)),
+        ],
+    );
+    let other = row(
+        1_002_002,
+        &[
+            ("shared_blks_read", Cell::I64(1)),
+            ("shared_blks_hit", Cell::I64(9)),
+            ("local_blks_read", Cell::I64(0)),
+            ("local_blks_hit", Cell::I64(0)),
+            ("total_exec_time", Cell::F64(20.0)),
+            ("wal_bytes", Cell::I64(30)),
+        ],
+    );
+    let mut summary = Summary::new(1);
+    summary.add(&current, Some(&Previous::new(1, &before)));
+    summary.add(&other, Some(&Previous::new(1, &other_before)));
+    let values = summary.values(1);
+    assert_eq!(values[2], None);
+    assert_eq!(values[3], Some(10.0));
+    assert_eq!(values[4], None);
+}
+
+#[test]
 fn relation_shares_count_only_rows_with_their_required_inputs() {
     let table_before = row(
         1_013_008,
@@ -100,7 +147,7 @@ fn relation_population_folds_in_datid_order() {
         ((100, 3), (1, table_summary(1, 1))),
     ]);
     let point = fold_moments(4, moments).pop().expect("table point");
-    assert_eq!(point.3[12], Some(200.0 / 10_000_000_000_000_002.0));
+    assert_eq!(point.3[12], Some(1.999_999_999_999_999_4e-14));
 }
 
 fn table_summary(main_bytes: i64, toast_bytes: i64) -> Summary {

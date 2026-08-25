@@ -87,7 +87,7 @@ pub(super) fn prepare(
     );
     let etag = if segments.is_empty() {
         None
-    } else if request.series.is_some() {
+    } else if request.series.is_some() && stored.warnings.is_empty() {
         super::weak_etag(
             "hour",
             &shape,

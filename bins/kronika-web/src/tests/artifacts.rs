@@ -1285,6 +1285,10 @@ impl Fixture {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
     }
 
+    fn add_foreign_entry(&self) {
+        std::fs::write(self.root().join("foreign"), b"fixture").expect("write foreign entry");
+    }
+
     fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
         self.prepare_with_sources(target, if_none_match, SOURCES)
     }
@@ -2661,6 +2665,20 @@ fn finished_browser_resources_are_immutable_and_revalidate_without_a_body() {
 }
 
 #[test]
+fn aggregate_reads_with_catalog_warnings_are_not_immutable() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    for target in browser_resource_targets() {
+        let prepared = fixture.prepare(&target, None);
+        assert_eq!(prepared.meta().cache, CachePolicy::Revalidate, "{target}");
+        assert_eq!(prepared.meta().etag, None, "{target}");
+    }
+}
+
+#[test]
 fn a_validator_identifies_the_request_it_was_issued_for() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
@@ -3732,6 +3750,36 @@ fn postgres_summary_is_one_hour_series_for_all_surfaces() {
     assert_eq!(row(3)["values"][column("rollback_pct")], 20.0);
     assert_eq!(row(4)["values"][column("seq_scan_pct")], 40.0);
     assert_eq!(row(5)["values"][column("scanned_pct")], 50.0);
+}
+
+#[test]
+fn postgres_summary_uses_only_the_adjacent_physical_segment_as_predecessor() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 1, 10, 100.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_diskstats(&[(150, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_statement_snapshots(&[(200, 1, 20, 300.0)]);
+    fixture.finish();
+
+    let records =
+        stream(fixture.prepare("/api/hour?from=150&to=200&section=postgresql_summary", None))
+            .expect("PostgreSQL summary with an adjacent non-PostgreSQL segment");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("PostgreSQL summary layout");
+    let mean = layout["layout"]["columns"]
+        .as_array()
+        .expect("PostgreSQL summary columns")
+        .iter()
+        .position(|column| column["name"] == "mean_exec_ms")
+        .expect("mean execution column");
+    let statement = records
+        .iter()
+        .find(|record| record["record"] == "row" && record["values"][0] == 1)
+        .expect("statement summary row");
+    assert_eq!(statement["values"][mean], Value::Null);
 }
 
 #[test]

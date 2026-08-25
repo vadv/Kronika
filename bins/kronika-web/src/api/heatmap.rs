@@ -43,7 +43,11 @@ pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
         .collect();
     segments.sort_by_key(SegmentRef::min_ts);
     super::catalog::log_open(segments.len(), &stored.warnings, started);
-    let etag = super::weak_etag("heatmap", &format!("{request:?}"), &segments);
+    let etag = stored
+        .warnings
+        .is_empty()
+        .then(|| super::weak_etag("heatmap", &format!("{request:?}"), &segments))
+        .flatten();
     Ok(PreparedHeatmap {
         reader,
         segments,

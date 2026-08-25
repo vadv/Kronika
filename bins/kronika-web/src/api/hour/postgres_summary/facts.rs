@@ -1,21 +1,11 @@
 use kronika_reader::{Cell, Row};
 
-pub(super) const FIELDS: &str = "active_count active_pct mean_exec_ms buffer_read_pct \
-wal_bytes_per_call calls_per_active rollback_pct temp_bytes_per_transaction seq_scan_pct \
-hot_update_pct dead_tuple_pct vacuumed_pct toast_pct xid_boundary_pct scanned_pct no_scan_pct usable_pct";
+pub(super) const FIELDS: &str = "active_count active_pct mean_exec_ms buffer_read_pct wal_bytes_per_call calls_per_active rollback_pct temp_bytes_per_transaction seq_scan_pct hot_update_pct dead_tuple_pct vacuumed_pct toast_pct xid_boundary_pct scanned_pct no_scan_pct usable_pct";
 
-pub(super) const WANTED: &str = "calls total_exec_time total_time shared_blks_read \
-shared_blks_hit local_blks_read local_blks_hit wal_bytes datid xact_commit xact_rollback \
-temp_bytes blks_read blks_hit seq_scan idx_scan n_tup_upd n_tup_hot_upd n_live_tup \
-n_dead_tup vacuum_count autovacuum_count main_fork_bytes toast_bytes heap_blks_read \
-heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read toast_blks_hit tidx_blks_read \
-tidx_blks_hit xid_age indisvalid indisready";
-const DENSE_PREVIOUS: &str = "calls total_exec_time total_time shared_blks_read shared_blks_hit \
-local_blks_read local_blks_hit wal_bytes";
+pub(super) const WANTED: &str = "calls total_exec_time total_time shared_blks_read shared_blks_hit local_blks_read local_blks_hit wal_bytes datid xact_commit xact_rollback temp_bytes blks_read blks_hit seq_scan idx_scan n_tup_upd n_tup_hot_upd n_live_tup n_dead_tup vacuum_count autovacuum_count main_fork_bytes toast_bytes heap_blks_read heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read toast_blks_hit tidx_blks_read tidx_blks_hit xid_age indisvalid indisready";
+const DENSE_PREVIOUS: &str = "calls total_exec_time total_time shared_blks_read shared_blks_hit local_blks_read local_blks_hit wal_bytes";
 const DB_PREVIOUS: &str = "xact_commit xact_rollback temp_bytes blks_read blks_hit";
-const TABLE_PREVIOUS: &str = "seq_scan idx_scan n_tup_upd n_tup_hot_upd vacuum_count \
-autovacuum_count heap_blks_read heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read \
-toast_blks_hit tidx_blks_read tidx_blks_hit";
+const TABLE_PREVIOUS: &str = "seq_scan idx_scan n_tup_upd n_tup_hot_upd vacuum_count autovacuum_count heap_blks_read heap_blks_hit idx_blks_read idx_blks_hit toast_blks_read toast_blks_hit tidx_blks_read tidx_blks_hit";
 const INDEX_PREVIOUS: &str = "idx_scan idx_blks_read idx_blks_hit";
 const TABLE_READS: &str = "heap_blks_read idx_blks_read toast_blks_read tidx_blks_read";
 const TABLE_HITS: &str = "heap_blks_hit idx_blks_hit toast_blks_hit tidx_blks_hit";
@@ -53,7 +43,7 @@ impl Previous {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(super) struct Totals([Option<f64>; 12]);
 
 impl Totals {
@@ -67,6 +57,13 @@ impl Totals {
         self.0[at].filter(|value| value.is_finite())
     }
 
+    fn pair(&mut self, at: usize, values: Option<(f64, f64)>) {
+        if let Some((left, right)) = values {
+            self.add(at, Some(left));
+            self.add(at + 1, Some(right));
+        }
+    }
+
     fn merge(&mut self, other: &Self) {
         for (at, value) in other.0.iter().copied().enumerate() {
             self.add(at, value);
@@ -74,7 +71,6 @@ impl Totals {
     }
 }
 
-#[derive(Clone)]
 pub(super) enum Summary {
     Dense(f64, Totals),
     Database(Totals),
@@ -94,6 +90,7 @@ impl Summary {
     }
 
     pub(super) fn add(&mut self, row: &Row, before: Option<&Previous>) {
+        let flag = |value| f64::from(u8::from(value));
         match self {
             Self::Dense(total, sums) => {
                 let calls = delta(row, before, "calls");
@@ -103,35 +100,40 @@ impl Summary {
                 let execution = row
                     .get("total_exec_time")
                     .map_or("total_time", |_| "total_exec_time");
-                sums.add(2, delta(row, before, execution));
-                sums.add(3, deltas(row, before, "shared_blks_read local_blks_read"));
+                sums.pair(2, delta(row, before, execution).zip(calls));
+                let reads = deltas(row, before, "shared_blks_read local_blks_read");
                 let buffers = "shared_blks_read shared_blks_hit local_blks_read local_blks_hit";
-                sums.add(4, deltas(row, before, buffers));
-                sums.add(5, delta(row, before, "wal_bytes"));
+                sums.pair(4, reads.zip(deltas(row, before, buffers)));
+                sums.pair(6, delta(row, before, "wal_bytes").zip(calls));
             }
             Self::Database(sums) => {
-                sums.add(0, delta(row, before, "xact_commit"));
-                sums.add(1, delta(row, before, "xact_rollback"));
-                sums.add(2, delta(row, before, "temp_bytes"));
-                sums.add(3, delta(row, before, "blks_read"));
-                sums.add(4, deltas(row, before, "blks_read blks_hit"));
+                let tx = deltas(row, before, "xact_commit xact_rollback");
+                sums.pair(0, delta(row, before, "xact_rollback").zip(tx));
+                sums.pair(2, delta(row, before, "temp_bytes").zip(tx));
+                sums.pair(
+                    4,
+                    delta(row, before, "blks_read").zip(deltas(row, before, "blks_read blks_hit")),
+                );
             }
             Self::Table(total, xid_total, sums) => {
-                sums.add(0, delta(row, before, "seq_scan"));
-                sums.add(1, optional_delta(row, before, "idx_scan"));
-                sums.add(2, delta(row, before, "n_tup_upd"));
-                sums.add(3, delta(row, before, "n_tup_hot_upd"));
-                sums.add(4, number(row, "n_live_tup"));
-                sums.add(5, number(row, "n_dead_tup"));
+                let scans =
+                    delta(row, before, "seq_scan").zip(optional_delta(row, before, "idx_scan"));
+                sums.pair(0, scans.map(|(seq, idx)| (seq, seq + idx)));
+                sums.pair(
+                    2,
+                    delta(row, before, "n_tup_hot_upd").zip(delta(row, before, "n_tup_upd")),
+                );
+                let tuples = number(row, "n_live_tup").zip(number(row, "n_dead_tup"));
+                sums.pair(4, tuples.map(|(live, dead)| (dead, live + dead)));
                 let vacuumed = deltas(row, before, "vacuum_count autovacuum_count");
                 *total += flag(vacuumed.is_some());
                 sums.add(6, vacuumed.map(|value| flag(value > 0.0)));
-                sums.add(7, number(row, "main_fork_bytes"));
-                sums.add(8, number(row, "toast_bytes").or(Some(0.0)));
+                let main = number(row, "main_fork_bytes");
+                let toast = number(row, "toast_bytes").or(Some(0.0));
+                sums.pair(7, toast.zip(main.zip(toast).map(|(a, b)| a + b)));
                 let reads = optional_deltas(row, before, TABLE_READS);
                 let hits = optional_deltas(row, before, TABLE_HITS);
-                sums.add(9, reads);
-                sums.add(10, reads.zip(hits).map(|(reads, hits)| reads + hits));
+                sums.pair(9, reads.zip(reads.zip(hits).map(|(a, b)| a + b)));
                 if let Some(age) = number(row, "xid_age") {
                     *xid_total += 1.0;
                     sums.add(11, Some(flag(age >= 1_600_000_000.0)));
@@ -142,8 +144,14 @@ impl Summary {
                 *total += flag(scans.is_some());
                 sums.add(0, scans.map(|value| flag(value > 0.0)));
                 sums.add(1, scans.map(|value| flag(value == 0.0)));
-                sums.add(2, delta(row, before, "idx_blks_read"));
-                sums.add(3, deltas(row, before, "idx_blks_read idx_blks_hit"));
+                sums.pair(
+                    2,
+                    delta(row, before, "idx_blks_read").zip(deltas(
+                        row,
+                        before,
+                        "idx_blks_read idx_blks_hit",
+                    )),
+                );
                 let usable = match (row.get("indisvalid"), row.get("indisready")) {
                     (Some(Cell::Bool(valid)), Some(Cell::Bool(ready))) => Some(*valid && *ready),
                     _ => None,
@@ -175,26 +183,25 @@ impl Summary {
             Self::Dense(total, sums) => {
                 out[0] = sums.get(0);
                 out[1] = pct(sums.get(0), Some(*total));
-                out[2] = ratio(sums.get(2), sums.get(1));
-                out[3] = pct(sums.get(3), sums.get(4));
+                out[2] = ratio(sums.get(2), sums.get(3));
+                out[3] = pct(sums.get(4), sums.get(5));
                 if surface == 1 {
-                    out[4] = ratio(sums.get(5), sums.get(1));
+                    out[4] = ratio(sums.get(6), sums.get(7));
                 } else {
                     out[5] = ratio(sums.get(1), sums.get(0));
                 }
             }
             Self::Database(sums) => {
-                let tx = plus(sums, 0, 1);
-                out[6] = pct(sums.get(1), tx);
-                out[7] = ratio(sums.get(2), tx);
-                out[3] = pct(sums.get(3), sums.get(4));
+                out[6] = pct(sums.get(0), sums.get(1));
+                out[7] = ratio(sums.get(2), sums.get(3));
+                out[3] = pct(sums.get(4), sums.get(5));
             }
             Self::Table(total, xid_total, sums) => {
-                out[8] = pct(sums.get(0), plus(sums, 0, 1));
-                out[9] = pct(sums.get(3), sums.get(2));
-                out[10] = pct(sums.get(5), plus(sums, 4, 5));
+                out[8] = pct(sums.get(0), sums.get(1));
+                out[9] = pct(sums.get(2), sums.get(3));
+                out[10] = pct(sums.get(4), sums.get(5));
                 out[11] = pct(sums.get(6), Some(*total));
-                out[12] = pct(sums.get(8), plus(sums, 7, 8));
+                out[12] = pct(sums.get(7), sums.get(8));
                 out[3] = pct(sums.get(9), sums.get(10));
                 out[13] = pct(sums.get(11), Some(*xid_total));
             }
@@ -209,18 +216,9 @@ impl Summary {
     }
 }
 
-fn flag(value: bool) -> f64 {
-    f64::from(u8::from(value))
-}
-
-fn plus(sums: &Totals, left: usize, right: usize) -> Option<f64> {
-    sums.get(left).zip(sums.get(right)).map(|(a, b)| a + b)
-}
-
 fn ratio(part: Option<f64>, total: Option<f64>) -> Option<f64> {
-    total
-        .filter(|total| *total > 0.0)
-        .and_then(|total| part.map(|part| part / total))
+    let total = total.filter(|total| *total > 0.0)?;
+    part.map(|part| part / total)
 }
 
 fn pct(part: Option<f64>, total: Option<f64>) -> Option<f64> {

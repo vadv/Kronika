@@ -42,22 +42,23 @@ pub(super) fn with_predecessors(
     all: &[SegmentRef],
     mut selected: Vec<SegmentRef>,
 ) -> Vec<SegmentRef> {
+    let selected_len = selected.len();
+    selected.sort_by_key(SegmentRef::id);
     for source in SOURCES {
-        let first = selected
+        let first = selected[..selected_len]
             .iter()
-            .filter(|segment| has_section(segment, source))
-            .map(SegmentRef::id)
-            .min();
+            .find(|segment| has_section(segment, source))
+            .map(SegmentRef::id);
         if let Some(first) = first
             && let Some(previous) = all
                 .iter()
-                .filter(|segment| segment.id() < first && has_section(segment, source))
+                .filter(|segment| segment.id() < first)
                 .max_by_key(|segment| segment.id())
+            && has_section(previous, source)
         {
             selected.push(previous.clone());
         }
     }
-    selected.sort_by_key(SegmentRef::id);
     selected.dedup_by_key(|segment| segment.id());
     selected
 }
@@ -66,7 +67,7 @@ fn has_section(segment: &SegmentRef, name: &str) -> bool {
     segment
         .sections()
         .iter()
-        .any(|section| logical_section_name(section.type_id) == Some(name))
+        .any(|s| logical_section_name(s.type_id) == Some(name))
 }
 
 pub(super) fn stream(

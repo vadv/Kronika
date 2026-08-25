@@ -314,10 +314,11 @@ fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiErr
 fn explicit_segment_with_listing(
     root: &Path,
     id: i64,
-) -> Result<(Reader, SegmentRef, Vec<SegmentRef>), ApiError> {
+) -> Result<(Reader, SegmentRef, Vec<SegmentRef>, bool), ApiError> {
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(..)?;
+    let clean = listing.warnings.is_empty();
     log_warnings(&listing.warnings);
     let mut segments = listing.segments;
     let index = segments
@@ -326,7 +327,7 @@ fn explicit_segment_with_listing(
         .ok_or(ApiError::NoSuchSegment)?;
     let segment = segments.remove(index);
     log_segment_open(&segment, started.elapsed());
-    Ok((reader, segment, segments))
+    Ok((reader, segment, segments, clean))
 }
 
 fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
