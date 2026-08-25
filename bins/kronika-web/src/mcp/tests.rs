@@ -1339,3 +1339,63 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
     assert_eq!(detail_row["at"], listing_row["at"]);
 }
+
+#[tokio::test]
+async fn find_events_end_to_end_through_the_real_transport() {
+    // Same fixture and assertions as
+    // `find_events_returns_rows_with_source_and_locator_fields`, driven
+    // through `mcp::response` instead of calling `events::call` directly.
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_log_error(200);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "kronika_find_events",
+            "arguments": {
+                "sources": ["pg_log_errors"],
+                "from": 0,
+                "to": 1_000,
+                "limit": 10,
+            }
+        }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("http://kronika.test/mcp")
+        .header(HOST, "kronika.test")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&body).expect("json"),
+        )))
+        .expect("request");
+
+    let response = response(config, request).await;
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    let rows = decoded["result"]["structuredContent"]["rows"]
+        .as_array()
+        .expect("rows array");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["source"], "pg_log_errors");
+        assert_eq!(row["category"], 8);
+        assert!(
+            row["segment_id"].is_string(),
+            "segment_id is a decimal string"
+        );
+    }
+    assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+}
