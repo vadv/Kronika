@@ -616,7 +616,7 @@ impl Fixture {
             .expect("append statements");
     }
 
-    fn append_statement_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+    pub(crate) fn append_statement_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(ts, queryid, calls, total_exec_time) in rows {
@@ -708,7 +708,7 @@ impl Fixture {
             .expect("append plans");
     }
 
-    fn append_plan_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+    pub(crate) fn append_plan_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(ts, queryid, calls, total_time) in rows {
@@ -734,7 +734,12 @@ impl Fixture {
             .expect("append boundary plans");
     }
 
-    fn append_ranked_statements(&mut self) {
+    /// Three statements at ts=100 (all zero, an unconditioned predecessor)
+    /// and ts=200 (real readings), so any rate/ratio derived from the
+    /// ts=200 -> ts=100 delta is non-null and hand-computable from the
+    /// `readings` tuple below. Shared by the sort-token tests and the MCP
+    /// `kronika_find_postgresql_statements` ratio-materialization tests.
+    pub(crate) fn append_ranked_statements(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         let readings = [
@@ -795,7 +800,10 @@ impl Fixture {
             .expect("append ranked statements");
     }
 
-    fn append_ranked_plans(&mut self) {
+    /// `pg_store_plans` counterpart of `append_ranked_statements`: three
+    /// plans at ts=100 (zero, an unconditioned predecessor) and ts=200
+    /// (real readings).
+    pub(crate) fn append_ranked_plans(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         let readings = [

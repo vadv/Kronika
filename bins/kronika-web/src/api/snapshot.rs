@@ -1045,10 +1045,11 @@ pub(crate) struct ProcessRowOut {
 }
 
 /// `ProcessRowOut` without the `pid`/`ppid` identity: the shape
-/// `compute_plain_rows` returns for the four `PostgreSQL` sections that carry
+/// `compute_plain_rows` returns for the six `PostgreSQL` sections that carry
 /// no process-tree identity of their own (`pg_stat_activity`, `pg_locks`,
-/// `pg_stat_progress_vacuum`, `pg_stat_database`). Every projected field is
-/// named in `fields`; `segment_id`/`type_id`/`row_ordinal`/`at` are the same
+/// `pg_stat_progress_vacuum`, `pg_stat_database`, `pg_stat_statements`,
+/// `pg_store_plans`). Every projected field is named in `fields`;
+/// `segment_id`/`type_id`/`row_ordinal`/`at` are the same
 /// `kronika_get_row_detail` locator `ProcessRowOut` carries.
 pub(crate) struct PlainRowOut {
     pub(crate) segment_id: i64,
@@ -1554,12 +1555,14 @@ impl PreparedSnapshot {
         Ok((rows, has_more))
     }
 
-    /// Same bounded top-N scan as `compute_process_rows`, for the four
-    /// `PostgreSQL` sections that are plain gauge/counter rows: no `pid`/
-    /// `ppid` identity, no virtual fields, just whatever `row_record`
+    /// Same bounded top-N scan as `compute_process_rows`, for the six
+    /// `PostgreSQL` sections that are plain (non-relation-grouped) rows: no
+    /// `pid`/`ppid` identity, no virtual fields, just whatever `row_record`
     /// projects, keyed by field name. Shared computation for MCP
     /// `pg_stat_activity`/`pg_locks`/`pg_stat_progress_vacuum`/
-    /// `pg_stat_database` retrieval.
+    /// `pg_stat_database` retrieval, and the physical read half of
+    /// `pg_stat_statements`/`pg_store_plans` retrieval — the MCP handler
+    /// layers per-row ratio math on top of these fields for the latter two.
     pub(crate) fn compute_plain_rows(
         &self,
         limit: usize,
@@ -1570,7 +1573,12 @@ impl PreparedSnapshot {
         };
         if !matches!(
             section.logical_name.as_str(),
-            "pg_stat_activity" | "pg_locks" | "pg_stat_progress_vacuum" | "pg_stat_database"
+            "pg_stat_activity"
+                | "pg_locks"
+                | "pg_stat_progress_vacuum"
+                | "pg_stat_database"
+                | "pg_stat_statements"
+                | "pg_store_plans"
         ) {
             return Err(ApiError::NoSuchSection);
         }
@@ -3055,8 +3063,8 @@ fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError
 
 /// Reshapes `row_locator`'s output into `PlainRowOut`'s keyed shape: every
 /// projected field named in `fields`, no identity column singled out —
-/// unlike `os_process`, none of the four sections `compute_plain_rows`
-/// covers has a column every row is guaranteed to carry.
+/// unlike `os_process`, none of the sections `compute_plain_rows` covers
+/// has a column every row is guaranteed to carry.
 fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
     let RowLocator {
         segment_id,

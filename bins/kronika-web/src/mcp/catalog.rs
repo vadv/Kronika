@@ -18,6 +18,8 @@ pub(crate) const FIND_POSTGRESQL_ACTIVITY_TOOL: &str = "kronika_find_postgresql_
 pub(crate) const FIND_POSTGRESQL_LOCKS_TOOL: &str = "kronika_find_postgresql_locks";
 pub(crate) const FIND_POSTGRESQL_VACUUM_TOOL: &str = "kronika_find_postgresql_vacuum";
 pub(crate) const FIND_POSTGRESQL_DATABASES_TOOL: &str = "kronika_find_postgresql_databases";
+pub(crate) const FIND_POSTGRESQL_STATEMENTS_TOOL: &str = "kronika_find_postgresql_statements";
+pub(crate) const FIND_POSTGRESQL_PLANS_TOOL: &str = "kronika_find_postgresql_plans";
 pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
 pub(crate) const GET_ROW_DETAIL_TOOL: &str = "kronika_get_row_detail";
 
@@ -203,6 +205,59 @@ pub(crate) struct DatabasesInput {
     pub(crate) limit: u32,
 }
 
+/// Input for `kronika_find_postgresql_statements`. Rows carry seven
+/// `derived_*` fields alongside the raw `pg_stat_statements` columns —
+/// `derived_mean_exec_ms_per_call`, `derived_rows_per_call`,
+/// `derived_blocks_per_call`, `derived_hit_pct`, `derived_wal_per_call`,
+/// `derived_plan_time_pct`, `derived_cv` — computed from the same row's
+/// already-rate-converted fields, never from a filter or a second lookup.
+/// `derived_hit_pct` and `derived_plan_time_pct` are a `0.0`-`1.0`
+/// fraction, not a percentage. Any `derived_*` field is `null` when its
+/// reading has no predecessor snapshot yet (a rate needs two samples) or
+/// when the underlying column does not exist on this extension version
+/// (e.g. `derived_wal_per_call` before extension 1.8, which predates WAL
+/// tracking).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct StatementsInput {
+    /// Flat AND-only list of typed predicates over `pg_stat_statements`
+    /// fields: `query_id`, `database`, `role`, `call_rate`,
+    /// `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, or
+    /// `text` (a combined search over the query text, database and role).
+    /// Empty or omitted matches every statement.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`calls`", "`total_exec_time`", or a
+    /// `derived_*` field name. Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
+/// Input for `kronika_find_postgresql_plans`. Rows carry the same seven
+/// `derived_*` fields `kronika_find_postgresql_statements` does, computed
+/// the same way from `pg_store_plans`'s own already-rate-converted
+/// fields — `derived_wal_per_call` is always `null` here, since no
+/// `pg_store_plans` physical layout carries a WAL byte count;
+/// `derived_plan_time_pct` is `null` except on the one layout that tracks
+/// planning time separately from execution time.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PlansInput {
+    /// Flat AND-only list of typed predicates over `pg_store_plans`
+    /// fields: `query_id`, `plan_id`, `database`, `role`, `calls`,
+    /// `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`,
+    /// `rows_per_call`, or `text` (a combined search over the plan text,
+    /// database and role). Empty or omitted matches every plan.
+    #[serde(default)]
+    pub(crate) filters: Vec<FilterInput>,
+    /// Field to rank by, e.g. "`calls`", "`total_time`", or a `derived_*`
+    /// field name. Omit for identity order.
+    #[serde(default)]
+    pub(crate) sort: Option<SortInput>,
+    /// Maximum rows to return.
+    pub(crate) limit: u32,
+}
+
 /// Input for `kronika_find_processes`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ProcessesInput {
@@ -322,11 +377,11 @@ pub(crate) fn tools() -> Vec<Tool> {
     .collect()
 }
 
-/// The four `find_*` tools over plain (non-relation-grouped) `PostgreSQL`
+/// The six `find_*` tools over plain (non-relation-grouped) `PostgreSQL`
 /// sections: split out of `tools()` to keep that function under Clippy's
-/// line-count lint, not because these four are architecturally distinct
+/// line-count lint, not because these six are architecturally distinct
 /// from the tools around them.
-fn postgresql_plain_tools() -> [Tool; 4] {
+fn postgresql_plain_tools() -> [Tool; 6] {
     [
         Tool::new(
             FIND_POSTGRESQL_ACTIVITY_TOOL,
@@ -372,6 +427,42 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              them straight into kronika_get_row_detail to re-fetch that \
              exact row later.",
             schema_object::<DatabasesInput>(),
+        ),
+        Tool::new(
+            FIND_POSTGRESQL_STATEMENTS_TOOL,
+            "Reads the current pg_stat_statements snapshot: one row per \
+             tracked statement, with optional typed filters and a sort \
+             field. Each row carries derived_mean_exec_ms_per_call, \
+             derived_rows_per_call, derived_blocks_per_call, \
+             derived_hit_pct, derived_wal_per_call, \
+             derived_plan_time_pct and derived_cv alongside the raw \
+             columns; derived_hit_pct and derived_plan_time_pct are a \
+             0.0-1.0 fraction, not a percentage. Any derived_* field is \
+             null when its reading has no prior snapshot to compute a \
+             rate from, or when the column is absent on this extension \
+             version. Returns up to limit rows plus has_more when more \
+             rows matched than were returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<StatementsInput>(),
+        ),
+        Tool::new(
+            FIND_POSTGRESQL_PLANS_TOOL,
+            "Reads the current pg_store_plans snapshot: one row per \
+             tracked plan, with optional typed filters and a sort field. \
+             Rows carry the same seven derived_* fields \
+             kronika_find_postgresql_statements does, computed the same \
+             way; derived_wal_per_call is always null here (no \
+             pg_store_plans layout tracks WAL bytes), and \
+             derived_plan_time_pct is null except where the installed \
+             extension tracks planning time separately from execution \
+             time. Returns up to limit rows plus has_more when more rows \
+             matched than were returned. Each row carries its own \
+             segment_id/type_id/row_ordinal/at as decimal strings — pass \
+             them straight into kronika_get_row_detail to re-fetch that \
+             exact row later.",
+            schema_object::<PlansInput>(),
         ),
     ]
 }

@@ -34,7 +34,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_ten_tool_catalog() {
+async fn tools_list_returns_the_twelve_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -78,6 +78,8 @@ async fn tools_list_returns_the_ten_tool_catalog() {
             "kronika_find_postgresql_locks",
             "kronika_find_postgresql_vacuum",
             "kronika_find_postgresql_databases",
+            "kronika_find_postgresql_statements",
+            "kronika_find_postgresql_plans",
             "kronika_find_processes",
             "kronika_get_row_detail",
         ]
@@ -581,6 +583,239 @@ fn find_postgresql_databases_ranks_and_filters() {
 fn find_postgresql_databases_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::postgresql::call_databases(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+/// Asserts a JSON value is a number within `1e-9` of `expected` — the
+/// derived fields divide two rates that were each already rounded once
+/// (`delta / elapsed_seconds`), so exact `f64` equality on the composed
+/// ratio is not guaranteed bit-for-bit even though the numbers are "nice"
+/// by construction.
+fn assert_close(actual: &serde_json::Value, expected: f64) {
+    let actual = actual
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected a number, got {actual:?}"));
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "expected {expected}, got {actual}"
+    );
+}
+
+#[test]
+fn find_postgresql_statements_computes_derived_ratio_fields() {
+    // append_ranked_statements: ts=100 all-zero predecessor, ts=200 real
+    // readings, three queryids. Expected numbers hand-computed from its
+    // own `readings` tuple (bins/kronika-web/src/tests/artifacts.rs):
+    // queryid 1: calls=10, total_exec_time=100.0, rows=100,
+    //   shared_blks_hit=80, shared_blks_read=20, wal_bytes=100,
+    //   total_plan_time=100, mean/stddev_exec_time=10.0/9.0.
+    // queryid 2: calls=2, total_exec_time=30.0, rows=60, hit=9, read=1,
+    //   local_hit=40, wal_bytes=60, total_plan_time=40.0,
+    //   mean/stddev=1.0/2.0.
+    // queryid 3: calls=1, total_exec_time=5.0, rows=1, hit=1, read=2,
+    //   wal_bytes=5, total_plan_time=1.0, mean/stddev=5.0/1.0.
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_statements(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array").clone();
+    assert_eq!(rows.len(), 3);
+
+    let row = |queryid: &str| {
+        rows.iter()
+            .find(|row| row["queryid"] == queryid)
+            .unwrap_or_else(|| panic!("no row for queryid {queryid}"))
+    };
+
+    let one = row("1");
+    assert_close(&one["derived_mean_exec_ms_per_call"], 10.0);
+    assert_close(&one["derived_rows_per_call"], 10.0);
+    assert_close(&one["derived_blocks_per_call"], 10.0);
+    assert_close(&one["derived_hit_pct"], 0.8);
+    assert_close(&one["derived_wal_per_call"], 10.0);
+    assert_close(&one["derived_plan_time_pct"], 0.5);
+    assert_close(&one["derived_cv"], 0.9);
+    assert!(one["segment_id"].is_string());
+    assert!(one["type_id"].is_string());
+    assert!(one["row_ordinal"].is_string());
+    assert!(one["at"].is_string());
+
+    let two = row("2");
+    assert_close(&two["derived_mean_exec_ms_per_call"], 15.0);
+    assert_close(&two["derived_rows_per_call"], 30.0);
+    assert_close(&two["derived_blocks_per_call"], 25.0);
+    assert_close(&two["derived_hit_pct"], 0.9);
+    assert_close(&two["derived_wal_per_call"], 30.0);
+    assert_close(&two["derived_plan_time_pct"], 40.0 / 70.0);
+    assert_close(&two["derived_cv"], 2.0);
+
+    let three = row("3");
+    assert_close(&three["derived_mean_exec_ms_per_call"], 5.0);
+    assert_close(&three["derived_rows_per_call"], 1.0);
+    assert_close(&three["derived_blocks_per_call"], 3.0);
+    assert_close(&three["derived_hit_pct"], 1.0 / 3.0);
+    assert_close(&three["derived_wal_per_call"], 5.0);
+    assert_close(&three["derived_plan_time_pct"], 1.0 / 6.0);
+    assert_close(&three["derived_cv"], 0.2);
+}
+
+#[test]
+fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 1, 10, 100.0)]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "filters": [], "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::postgresql::call_statements(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    for field in [
+        "derived_mean_exec_ms_per_call",
+        "derived_rows_per_call",
+        "derived_blocks_per_call",
+        "derived_hit_pct",
+        "derived_wal_per_call",
+        "derived_plan_time_pct",
+        "derived_cv",
+    ] {
+        assert_eq!(
+            row[field],
+            serde_json::Value::Null,
+            "{field} should be null with no predecessor snapshot"
+        );
+    }
+}
+
+#[test]
+fn find_postgresql_statements_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_statements(&config, serde_json::Map::new());
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_plans_computes_derived_ratio_fields() {
+    // append_ranked_plans mirrors append_ranked_statements' readings for
+    // the fields pg_store_plans (ossc layout) also carries; it has no
+    // wal_bytes/total_plan_time column at all, so derived_wal_per_call and
+    // derived_plan_time_pct must be null on every row regardless of
+    // predecessor — not because this section is hardcoded to null them,
+    // but because the underlying columns do not exist for this physical
+    // layout. mean_time/stddev_time (2.2/24.9, store_plan()'s fixed
+    // defaults) are gauges, so derived_cv is the same non-null value on
+    // every row, predecessor or not.
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "filters": [], "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array").clone();
+    assert_eq!(rows.len(), 3);
+
+    let row = |queryid: &str| {
+        rows.iter()
+            .find(|row| row["queryid"] == queryid)
+            .unwrap_or_else(|| panic!("no row for queryid {queryid}"))
+    };
+
+    let one = row("1");
+    assert_close(&one["derived_mean_exec_ms_per_call"], 10.0);
+    assert_close(&one["derived_rows_per_call"], 10.0);
+    assert_close(&one["derived_blocks_per_call"], 10.0);
+    assert_close(&one["derived_hit_pct"], 0.8);
+    assert_eq!(one["derived_wal_per_call"], serde_json::Value::Null);
+    assert_eq!(one["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_close(&one["derived_cv"], 2.2 / 24.9);
+
+    let two = row("2");
+    assert_close(&two["derived_mean_exec_ms_per_call"], 15.0);
+    assert_close(&two["derived_rows_per_call"], 30.0);
+    assert_close(&two["derived_blocks_per_call"], 25.0);
+    assert_close(&two["derived_hit_pct"], 0.9);
+    assert_eq!(two["derived_wal_per_call"], serde_json::Value::Null);
+    assert_eq!(two["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_close(&two["derived_cv"], 2.2 / 24.9);
+
+    let three = row("3");
+    assert_close(&three["derived_mean_exec_ms_per_call"], 5.0);
+    assert_close(&three["derived_rows_per_call"], 1.0);
+    assert_close(&three["derived_blocks_per_call"], 3.0);
+    assert_close(&three["derived_hit_pct"], 1.0 / 3.0);
+    assert_eq!(three["derived_wal_per_call"], serde_json::Value::Null);
+    assert_eq!(three["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_close(&three["derived_cv"], 2.2 / 24.9);
+}
+
+#[test]
+fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
+    let mut fixture = Fixture::new();
+    fixture.append_plan_snapshots(&[(100, 1, 10, 100.0)]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "filters": [], "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    // Rate-dependent fields need a predecessor.
+    for field in [
+        "derived_mean_exec_ms_per_call",
+        "derived_rows_per_call",
+        "derived_blocks_per_call",
+        "derived_hit_pct",
+    ] {
+        assert_eq!(
+            row[field],
+            serde_json::Value::Null,
+            "{field} should be null with no predecessor snapshot"
+        );
+    }
+    // Absent on this layout regardless of predecessor.
+    assert_eq!(row["derived_wal_per_call"], serde_json::Value::Null);
+    assert_eq!(row["derived_plan_time_pct"], serde_json::Value::Null);
+    // Gauge-only: computable even without a predecessor.
+    assert_close(&row["derived_cv"], 2.2 / 24.9);
+}
+
+#[test]
+fn find_postgresql_plans_rejects_malformed_arguments_without_panicking() {
+    let config = test_config(std::env::temp_dir());
+    let result = crate::mcp::postgresql::call_plans(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
 }
 
