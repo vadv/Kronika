@@ -192,7 +192,7 @@ fn five_thousand_statement_and_plan_candidates_keep_only_one_bounded_page() {
         });
         expected.truncate(RETAINED);
 
-        let mut page = PageRows::with_summary(RETAINED, None);
+        let mut page = PageRows::new(RETAINED);
         for (ordinal, value) in values.into_iter().enumerate() {
             page.push(ranked_for(
                 type_id,
@@ -220,7 +220,7 @@ fn five_thousand_statement_and_plan_candidates_keep_only_one_bounded_page() {
 
 #[test]
 fn page_heap_is_bounded_and_ties_use_layout_then_ordinal() {
-    let mut page = PageRows::with_summary(3, None);
+    let mut page = PageRows::new(3);
     for (layout, ordinal, value) in [(1, 1, 9), (0, 2, 9), (0, 1, 9), (0, 0, 8), (1, 0, 10)] {
         page.push(ranked(
             layout,

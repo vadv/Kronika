@@ -147,7 +147,6 @@ export interface SnapshotRows {
   readonly from: number | null
   readonly to: number | null
   readonly group?: RelationGroup
-  readonly summary?: Readonly<Record<string, Cell>>
 }
 
 export function snapshotRowKey(row: DataRow): string {
@@ -1092,8 +1091,7 @@ export async function loadSnapshot(
         || typeof record.has_more !== "boolean"
         || typeof record["truncated"] !== "boolean"
         || !Array.isArray(record.order_by)
-        || (record.next_cursor !== null && typeof record.next_cursor !== "string")
-        || (record.summary !== undefined && (record.summary === null || typeof record.summary !== "object" || Array.isArray(record.summary)))) {
+        || (record.next_cursor !== null && typeof record.next_cursor !== "string")) {
         throw new Error(`snapshot page for ${logicalName} is invalid`)
       }
       snapshotRows.push({
@@ -1109,7 +1107,6 @@ export async function loadSnapshot(
         from: record.from === null ? null : integer(record.from, "snapshot interval start"),
         to: record.to === null ? null : integer(record.to, "snapshot interval end"),
         ...(record.group === undefined ? {} : { group: relationGroup(record.group) }),
-        ...(record.summary === undefined ? {} : { summary: record.summary as Readonly<Record<string, Cell>> }),
       })
     }
   }

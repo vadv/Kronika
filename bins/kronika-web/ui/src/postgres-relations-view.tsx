@@ -1,6 +1,6 @@
 import { registry } from "kronika:registry"
 import { Copy } from "lucide-react"
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
 import { DetailList, DetailRow } from "./detail-list"
@@ -37,7 +37,6 @@ import { emptyHourStatusKey } from "./refresh"
 import { SeriesChart } from "./series-chart"
 import type { SearchRequestState } from "./search-request"
 import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
-import { PostgresSummary } from "./postgres-summary"
 
 export interface PostgresRelationsViewProps {
   readonly blockSize: number | null
@@ -94,7 +93,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}<span>{t("system.history")}</span></>
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
-    <RelationLenses active={lens} onLens={onLens} section={section} summary={<PostgresSummary locale={locale} section={section} summary={metadata?.summary} t={t} />} t={t} />
+    <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
     <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden" data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
@@ -154,9 +153,9 @@ function RelationLevels({ filters, level, onNavigate, section, t }: { readonly f
   </nav>
 }
 
-function RelationLenses({ active, onLens, section, summary, t }: { readonly active: RelationLens; readonly onLens: (lens: RelationLens) => void; readonly section: RelationSection; readonly summary: ReactNode; readonly t: Translate }) {
+function RelationLenses({ active, onLens, section, t }: { readonly active: RelationLens; readonly onLens: (lens: RelationLens) => void; readonly section: RelationSection; readonly t: Translate }) {
   const lenses: readonly RelationLens[] = section === "pg_stat_user_tables" ? TABLE_LENSES : INDEX_LENSES
-  return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div>{summary}</div>
+  return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
 function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {

@@ -24,18 +24,6 @@ use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotR
 
 const TABLES: &str = "pg_stat_user_tables";
 const INDEXES: &str = "pg_stat_user_indexes";
-const TABLE_SUMMARY: &[&str] = &[
-    "tuple_throughput",
-    "dml_total",
-    "displayed_storage_bytes",
-    "buffer_hit_pct",
-];
-const INDEX_SUMMARY: &[&str] = &[
-    "idx_scan",
-    "no_scan_count",
-    "main_fork_bytes",
-    "buffer_hit_pct",
-];
 
 #[cfg(test)]
 thread_local! {
@@ -371,13 +359,6 @@ impl RelationKind {
         }
     }
 
-    const fn summary_fields(self) -> &'static [&'static str] {
-        match self {
-            Self::Tables => TABLE_SUMMARY,
-            Self::Indexes => INDEX_SUMMARY,
-        }
-    }
-
     fn fields(self, group: RelationGroup) -> Vec<FieldSpec> {
         let base = match (self, group) {
             (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
@@ -491,7 +472,6 @@ pub(super) fn snapshot_physical_fields(
     let kind = RelationKind::from_name(logical_name)?;
     let mut semantic = fields.to_vec();
     semantic.extend(by.iter().map(|name| sort_name(name).to_owned()));
-    semantic.extend(kind.summary_fields().iter().map(|name| (*name).to_owned()));
     let mut names = history_physical_fields(kind, group, &semantic)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
@@ -1274,16 +1254,6 @@ impl Aggregate {
         {
             self.update_tablespace_label(timestamp, label.clone());
         }
-    }
-
-    fn merge_summary(&mut self, other: &Self) {
-        for (&name, rate) in &other.rates {
-            self.rates.entry(name).or_default().merge(*rate);
-        }
-        for (&name, gauge) in &other.gauges {
-            self.gauges.entry(name).or_default().merge(*gauge);
-        }
-        self.no_scans.merge(other.no_scans);
     }
 
     fn update_tablespace_label(&mut self, timestamp: i64, label: String) {
@@ -3250,15 +3220,8 @@ impl PreparedSnapshot {
                 return Ok(());
             }
         }
-        let mut summary = None::<Aggregate>;
         aggregates.retain(|_key, aggregate| {
-            let retained = aggregate.matches_result_search(kind, group, self.search.as_deref());
-            if retained {
-                let total = summary
-                    .get_or_insert_with(|| Aggregate::new(aggregate.key.clone(), aggregate.source));
-                total.merge_summary(aggregate);
-            }
-            retained
+            aggregate.matches_result_search(kind, group, self.search.as_deref())
         });
         let eligible = u64::try_from(aggregates.len()).unwrap_or(u64::MAX);
         let order_by = self.by.first().map(|name| sort_name(name));
@@ -3340,7 +3303,7 @@ impl PreparedSnapshot {
                 return Ok(());
             }
         }
-        let trailer = json!({
+        let _connected = emit(record(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "group": group_name(group),
@@ -3354,22 +3317,9 @@ impl PreparedSnapshot {
             "order_direction": order_name(self.direction),
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
-            "summary": relation_summary(kind, group, summary.as_ref()),
-        });
-        let _connected = emit(record(trailer)?);
+        }))?);
         Ok(())
     }
-}
-
-fn relation_summary(kind: RelationKind, group: RelationGroup, total: Option<&Aggregate>) -> Value {
-    let mut summary = Map::new();
-    for &name in kind.summary_fields() {
-        let value = total
-            .and_then(|aggregate| aggregate.metric(kind, group, name))
-            .map_or(Value::Null, |metric| metric.json());
-        summary.insert(name.to_owned(), value);
-    }
-    Value::Object(summary)
 }
 
 #[expect(

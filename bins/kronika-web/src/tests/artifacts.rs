@@ -3664,40 +3664,6 @@ fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_rea
 }
 
 #[test]
-fn postgres_summary_covers_the_selection_instead_of_the_page() {
-    let mut fixture = Fixture::new();
-    fixture.append_ranked_statements();
-    fixture.append_ranked_plans();
-    fixture.finish();
-
-    for section in ["pg_stat_statements", "pg_store_plans"] {
-        let target = format!(
-            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid&page_size=1"
-        );
-        let first = stream(fixture.prepare(&target, None)).expect("first PostgreSQL page");
-        let page = first
-            .iter()
-            .find(|record| record["record"] == "snapshot_page")
-            .expect("first PostgreSQL page trailer");
-        let summary = &page["summary"];
-        assert_eq!(summary["call_rate"], 130_000.0, "{section}");
-        assert_eq!(summary["exec_time_rate"], 1_350_000.0, "{section}");
-        assert_eq!(summary["row_rate"], 1_610_000.0, "{section}");
-        let mean = summary["mean_exec"].as_f64().expect("weighted mean");
-        assert!((mean - 135.0 / 13.0).abs() < 1e-12, "{section}");
-
-        let cursor = page["next_cursor"].as_str().expect("next PostgreSQL page");
-        let second = stream(fixture.prepare(&format!("{target}&cursor={cursor}"), None))
-            .expect("second PostgreSQL page");
-        let page = second
-            .iter()
-            .find(|record| record["record"] == "snapshot_page")
-            .expect("second PostgreSQL page trailer");
-        assert_eq!(page["summary"], *summary, "{section}");
-    }
-}
-
-#[test]
 fn postgres_summary_is_one_hour_series_for_all_surfaces() {
     let mut fixture = Fixture::new();
     fixture.append_statement_snapshots(&[
@@ -3766,31 +3732,6 @@ fn postgres_summary_is_one_hour_series_for_all_surfaces() {
     assert_eq!(row(3)["values"][column("rollback_pct")], 20.0);
     assert_eq!(row(4)["values"][column("seq_scan_pct")], 40.0);
     assert_eq!(row(5)["values"][column("scanned_pct")], 50.0);
-}
-
-#[test]
-fn postgres_summary_uses_the_server_search() {
-    let mut fixture = Fixture::new();
-    fixture.append_ranked_statements();
-    fixture.finish();
-
-    let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=queryid&page_size=1&search=query_id%3A1"
-    );
-    let records = stream(fixture.prepare(&target, None)).expect("searched PostgreSQL page");
-    let page = records
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("searched PostgreSQL page trailer");
-    assert_eq!(
-        page["summary"],
-        serde_json::json!({
-            "call_rate": 100_000.0,
-            "exec_time_rate": 1_000_000.0,
-            "mean_exec": 10.0,
-            "row_rate": 1_000_000.0,
-        })
-    );
 }
 
 #[test]
@@ -5843,15 +5784,6 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
         .expect("derived page trailer");
     assert_eq!(page["eligible"], "3");
     assert_eq!(page["has_more"], true);
-    assert_eq!(
-        page["summary"],
-        serde_json::json!({
-            "tuple_throughput": 0.0,
-            "dml_total": 1_010_000.0,
-            "displayed_storage_bytes": "0",
-            "buffer_hit_pct": null,
-        })
-    );
 
     let databases = stream(fixture.prepare(&format!("{base}&group=database"), None))
         .expect("derived database group");
@@ -6172,28 +6104,6 @@ fn low_activity_filters_exact_object_deltas_before_grouping_and_paging() {
         ),
     ]);
     fixture.finish();
-
-    let all = stream(fixture.prepare(
-        &format!(
-            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&group=object&field=index_count&page_size=1"
-        ),
-        None,
-    ))
-    .expect("all indexes");
-    let page = all
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("all-index page");
-    assert_eq!(page["eligible"], "2");
-    assert_eq!(
-        page["summary"],
-        serde_json::json!({
-            "idx_scan": 80_000.0,
-            "no_scan_count": "1",
-            "main_fork_bytes": "0",
-            "buffer_hit_pct": null,
-        })
-    );
 
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&field=index_count&field=idx_scan&where.no_scans=true&page_size=1"
