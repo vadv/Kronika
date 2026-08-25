@@ -155,3 +155,61 @@ fn overview_rejects_malformed_arguments_without_panicking() {
     let result = crate::mcp::overview::call(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn overview_end_to_end_through_the_real_transport() {
+    // Same fixture as `overview_ranks_the_top_entities_and_reports_the_others_total`,
+    // driven through `mcp::response` instead of calling `overview::call` directly.
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "kronika_overview",
+            "arguments": {
+                "section": "os_process",
+                "fields": ["rmem_kb"],
+                "from": 100,
+                "to": 400,
+                "top": 2,
+            }
+        }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("http://kronika.test/mcp")
+        .header(HOST, "kronika.test")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&body).expect("json"),
+        )))
+        .expect("request");
+
+    let response = response(config, request).await;
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    let entities = decoded["result"]["structuredContent"]["entities"]
+        .as_array()
+        .expect("entities array");
+    assert_eq!(entities.len(), 2);
+    assert_eq!(entities[0]["total"], 50.0);
+    assert_eq!(entities[1]["total"], 45.0);
+    assert_eq!(
+        decoded["result"]["structuredContent"]["totals_total"],
+        118.0
+    );
+    assert_eq!(decoded["result"]["structuredContent"]["others_total"], 63.0);
+    assert_eq!(decoded["result"]["structuredContent"]["entity_count"], "5");
+}
