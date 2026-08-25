@@ -13,6 +13,7 @@ mod auth;
 mod body;
 mod config;
 mod encoding;
+mod mcp;
 mod route;
 mod ui;
 
