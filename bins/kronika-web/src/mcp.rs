@@ -5,11 +5,16 @@ use std::sync::Arc;
 
 use http_body_util::BodyExt as _;
 use hyper::body::Body;
+use hyper::header::{CACHE_CONTROL, HeaderValue, VARY};
 use hyper::{Request, Response};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CacheScope, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerInfo,
+    CacheScope, CompleteRequestMethod, CompleteRequestParams, CompleteResult,
+    GetPromptRequestMethod, GetPromptRequestParams, GetPromptResponse, Implementation,
+    ListPromptsRequestMethod, ListPromptsResult, ListResourceTemplatesRequestMethod,
+    ListResourceTemplatesResult, ListResourcesRequestMethod, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ReadResourceRequestMethod, ReadResourceRequestParams,
+    ReadResourceResponse, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -37,6 +42,67 @@ impl ServerHandler for KronikaMcp {
             .with_ttl_ms(0)
             .with_cache_scope(CacheScope::Private)))
     }
+
+    fn complete(
+        &self,
+        _request: CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CompleteResult, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            CompleteRequestMethod,
+        >()))
+    }
+
+    fn get_prompt(
+        &self,
+        _request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<GetPromptResponse, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            GetPromptRequestMethod,
+        >()))
+    }
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            ListPromptsRequestMethod,
+        >()))
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            ListResourcesRequestMethod,
+        >()))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, rmcp::ErrorData>> + Send + '_
+    {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            ListResourceTemplatesRequestMethod,
+        >()))
+    }
+
+    fn read_resource(
+        &self,
+        _request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            ReadResourceRequestMethod,
+        >()))
+    }
 }
 
 /// Serve one authenticated request through the stateless Streamable HTTP transport.
@@ -57,7 +123,20 @@ where
     );
     let response = service.handle(request).await;
     let (parts, body) = response.into_parts();
-    Response::from_parts(parts, body.map_err(infallible_to_body_error).boxed_unsync())
+    let response =
+        Response::from_parts(parts, body.map_err(infallible_to_body_error).boxed_unsync());
+    with_private_headers(response)
+}
+
+/// Apply the transport's authentication-sensitive cache policy to any `/mcp` response.
+pub(crate) fn with_private_headers(mut response: Response<WebBody>) -> Response<WebBody> {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("private,no-store"));
+    response
+        .headers_mut()
+        .insert(VARY, HeaderValue::from_static("Authorization, Cookie"));
+    response
 }
 
 fn infallible_to_body_error(never: Infallible) -> BodyError {
@@ -68,13 +147,19 @@ fn infallible_to_body_error(never: Infallible) -> BodyError {
 mod tests {
     use http_body_util::{BodyExt as _, Full};
     use hyper::body::Bytes;
-    use hyper::header::{ACCEPT, CONTENT_TYPE, HOST};
+    use hyper::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderMap, VARY};
     use hyper::{Method, Request, StatusCode};
     use serde_json::{Value, json};
 
     use super::response;
 
-    async fn post(body: Value, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+    struct McpResponse {
+        status: StatusCode,
+        headers: HeaderMap,
+        body: Value,
+    }
+
+    async fn post(body: Value, headers: &[(&str, &str)]) -> McpResponse {
         let bytes = serde_json::to_vec(&body).expect("JSON-RPC request");
         let mut builder = Request::builder()
             .method(Method::POST)
@@ -90,6 +175,7 @@ mod tests {
             .expect("MCP request");
         let response = response(request).await;
         let status = response.status();
+        let headers = response.headers().clone();
         let body = response
             .into_body()
             .collect()
@@ -97,56 +183,166 @@ mod tests {
             .expect("MCP response body")
             .to_bytes();
         let value = serde_json::from_slice(&body).expect("JSON-RPC response");
-        (status, value)
+        McpResponse {
+            status,
+            headers,
+            body: value,
+        }
+    }
+
+    fn request_meta(version: &str) -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": version,
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "kronika-web-test",
+                "version": "1"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    }
+
+    fn assert_private_stateless(response: &McpResponse) {
+        assert_eq!(
+            response.headers.get(CACHE_CONTROL),
+            Some(&hyper::header::HeaderValue::from_static("private,no-store"))
+        );
+        assert_eq!(
+            response.headers.get(VARY),
+            Some(&hyper::header::HeaderValue::from_static(
+                "Authorization, Cookie"
+            ))
+        );
+        assert!(!response.headers.contains_key("mcp-session-id"));
     }
 
     #[tokio::test]
-    async fn initialize_advertises_tools_only_without_global_instructions() {
-        let (status, body) = post(
+    async fn legacy_initialize_is_tools_only_and_stateless() {
+        for version in ["2025-06-18", "2025-11-25"] {
+            let response = post(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("initialize-{version}"),
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": version,
+                        "capabilities": {},
+                        "clientInfo": { "name": "kronika-web-test", "version": "1" }
+                    }
+                }),
+                &[("MCP-Protocol-Version", version)],
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::OK, "{version}");
+            assert_eq!(response.body["result"]["protocolVersion"], version);
+            assert_eq!(
+                response.body["result"]["capabilities"],
+                json!({ "tools": {} })
+            );
+            assert!(response.body["result"].get("resultType").is_none());
+            assert!(response.body["result"].get("instructions").is_none());
+            assert!(
+                response.body["result"]["capabilities"]
+                    .get("prompts")
+                    .is_none()
+            );
+            assert!(
+                response.body["result"]["capabilities"]
+                    .get("resources")
+                    .is_none()
+            );
+            assert_private_stateless(&response);
+        }
+    }
+
+    #[tokio::test]
+    async fn current_discovery_then_tools_list_is_self_contained_and_stateless() {
+        const VERSION: &str = "2026-07-28";
+        let discovery = post(
             json!({
                 "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2026-07-28",
-                    "capabilities": {},
-                    "clientInfo": { "name": "test-client", "version": "1" }
-                }
+                "id": "discover",
+                "method": "server/discover",
+                "params": { "_meta": request_meta(VERSION) }
             }),
-            &[("MCP-Protocol-Version", "2026-07-28")],
+            &[
+                ("MCP-Protocol-Version", VERSION),
+                ("Mcp-Method", "server/discover"),
+            ],
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["result"]["protocolVersion"], "2026-07-28");
-        assert_eq!(body["result"]["capabilities"], json!({ "tools": {} }));
-        assert!(body["result"].get("instructions").is_none());
-        assert!(body["result"]["capabilities"].get("prompts").is_none());
-        assert!(body["result"]["capabilities"].get("resources").is_none());
-    }
+        assert_eq!(discovery.status, StatusCode::OK);
+        assert_eq!(discovery.body["result"]["resultType"], "complete");
+        assert_eq!(
+            discovery.body["result"]["capabilities"],
+            json!({ "tools": {} })
+        );
+        assert!(
+            discovery.body["result"]["supportedVersions"]
+                .as_array()
+                .is_some_and(|versions| versions.iter().any(|item| item == VERSION))
+        );
+        assert_eq!(discovery.body["result"]["ttlMs"], 0);
+        assert_eq!(discovery.body["result"]["cacheScope"], "private");
+        assert_eq!(
+            discovery.body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "kronika"
+        );
+        assert!(discovery.body["result"].get("instructions").is_none());
+        assert_private_stateless(&discovery);
 
-    #[tokio::test]
-    async fn current_tools_list_is_private_and_not_cacheable() {
-        let (status, body) = post(
+        let tools = post(
             json!({
                 "jsonrpc": "2.0",
                 "id": "tools",
                 "method": "tools/list",
-                "params": {
-                    "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                        "io.modelcontextprotocol/clientCapabilities": {}
-                    }
-                }
+                "params": { "_meta": request_meta(VERSION) }
             }),
             &[
-                ("MCP-Protocol-Version", "2026-07-28"),
+                ("MCP-Protocol-Version", VERSION),
                 ("Mcp-Method", "tools/list"),
             ],
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["result"]["tools"], json!([]));
-        assert_eq!(body["result"]["ttlMs"], 0);
-        assert_eq!(body["result"]["cacheScope"], "private");
+        assert_eq!(tools.status, StatusCode::OK);
+        assert_eq!(tools.body["result"]["resultType"], "complete");
+        assert_eq!(tools.body["result"]["tools"], json!([]));
+        assert_eq!(tools.body["result"]["ttlMs"], 0);
+        assert_eq!(tools.body["result"]["cacheScope"], "private");
+        assert_private_stateless(&tools);
+    }
+
+    #[tokio::test]
+    async fn non_tool_product_methods_are_not_published_as_empty_collections() {
+        let requests = [
+            (
+                "completion/complete",
+                json!({
+                    "ref": { "type": "ref/prompt", "name": "unused" },
+                    "argument": { "name": "unused", "value": "" }
+                }),
+            ),
+            ("prompts/list", json!({})),
+            ("prompts/get", json!({ "name": "unused" })),
+            ("resources/list", json!({})),
+            ("resources/templates/list", json!({})),
+            ("resources/read", json!({ "uri": "kronika://unused" })),
+        ];
+
+        for (index, (method, params)) in requests.into_iter().enumerate() {
+            let response = post(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": index,
+                    "method": method,
+                    "params": params
+                }),
+                &[("MCP-Protocol-Version", "2025-06-18")],
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::OK, "{method}");
+            assert_eq!(response.body["error"]["code"], -32601, "{method}");
+            assert_eq!(response.body["error"]["message"], method, "{method}");
+            assert_private_stateless(&response);
+        }
     }
 }

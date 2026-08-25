@@ -73,6 +73,7 @@ async fn answer(
     config: Arc<Config>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<WebBody>, Infallible> {
+    let is_mcp = request.uri().path() == "/mcp" && request.uri().query().is_none();
     let routed = if config.authentication_required {
         route_request(&config.account, &request)
     } else {
@@ -80,7 +81,14 @@ async fn answer(
     };
     let target = match routed {
         Ok(target) => target,
-        Err(error) => return Ok(error.response()),
+        Err(error) => {
+            let response = error.response();
+            return Ok(if is_mcp {
+                mcp::with_private_headers(response)
+            } else {
+                response
+            });
+        }
     };
     let if_none_match = if_none_match_values(request.headers());
     Ok(match target {
@@ -253,19 +261,11 @@ fn validate_mcp_origin(headers: &HeaderMap) -> Result<(), RequestError> {
     if !matches!(origin.scheme_str(), Some("http" | "https"))
         || origin.path() != "/"
         || origin.query().is_some()
+        || origin.authority().is_none()
     {
         return Err(RequestError::InvalidOrigin);
     }
-    let authority = origin
-        .authority()
-        .ok_or(RequestError::InvalidOrigin)?
-        .as_str();
-    let host = unique_header(headers.get_all(hyper::header::HOST).iter());
-    match host {
-        SingleHeader::Value(host) if authority.eq_ignore_ascii_case(host) => Ok(()),
-        SingleHeader::Absent | SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
-        SingleHeader::Value(_) => Err(RequestError::OriginNotAllowed),
-    }
+    Err(RequestError::OriginNotAllowed)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

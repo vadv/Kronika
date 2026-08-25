@@ -142,16 +142,50 @@ fn mcp_shares_api_auth_and_checks_origin_first() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
 
-    let mut admitted = request(Method::POST, "/mcp");
-    admitted.headers_mut().insert(
+    let mut same_origin = request(Method::POST, "/mcp");
+    same_origin.headers_mut().insert(
         hyper::header::HOST,
         hyper::header::HeaderValue::from_static("kronika.test"),
     );
-    admitted.headers_mut().insert(
+    same_origin.headers_mut().insert(
         hyper::header::ORIGIN,
         hyper::header::HeaderValue::from_static("https://kronika.test"),
     );
-    assert_eq!(route_request(&account(), &admitted), Ok(RequestTarget::Mcp));
+    let response = route_request(&account(), &same_origin)
+        .expect_err("even a same-origin browser request is refused")
+        .response();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let mut duplicate = public_request(Method::POST, "/mcp");
+    duplicate.headers_mut().append(
+        hyper::header::ORIGIN,
+        hyper::header::HeaderValue::from_static("https://kronika.test"),
+    );
+    duplicate.headers_mut().append(
+        hyper::header::ORIGIN,
+        hyper::header::HeaderValue::from_static("https://kronika.test"),
+    );
+    let response = route_request(&account(), &duplicate)
+        .expect_err("duplicate origins are rejected before credentials")
+        .response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+
+    let mut malformed = public_request(Method::POST, "/mcp");
+    malformed.headers_mut().insert(
+        hyper::header::ORIGIN,
+        hyper::header::HeaderValue::from_static("not an origin"),
+    );
+    let response = route_request(&account(), &malformed)
+        .expect_err("malformed origins are rejected before credentials")
+        .response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+
+    assert_eq!(
+        route_request(&account(), &request(Method::POST, "/mcp")),
+        Ok(RequestTarget::Mcp)
+    );
 }
 
 #[test]
