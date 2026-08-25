@@ -152,11 +152,11 @@ test("Overview multirow histories keep complete fixed identities", () => {
 test("activity keeps a compact operator table and uses relative detail durations", async () => {
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS[0],
-    { field: "pid", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
+    { field: "pid", kind: "id", label: "pg.field.pid.label", sortable: true, sticky: true, width: 78 },
   )
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS.map(({ field }) => field),
-    ["pid", "datname", "usename", "query", "query_duration_ms", "transaction_duration_ms", "application_name", "client_addr", "state", "wait_event_type", "wait_event"],
+    ["pid", "datname", "usename", "query_preview", "query_duration_ms", "transaction_duration_ms", "application_name", "client_addr", "state", "wait_event_type", "wait_event"],
   )
   for (const field of ["backend_type", "leader_pid", "query_id", "backend_xid_age", "backend_xmin_age"]) {
     assert.equal(helpers.ACTIVITY_COLUMNS.some((column) => column.field === field), false)
@@ -175,14 +175,14 @@ test("activity keeps a compact operator table and uses relative detail durations
   assert.match(viewSource, /column\.field !== "backend_age_ms"/)
 })
 
-test("activity hides only ordinary idle and derives elapsed time from the selected observation", () => {
-  const active = activityRow("1", { backend_start: "500000", backend_type: "client backend", state: "active", state_change: "7000000", query_start: "4000000", xact_start: "1000000" })
-  const idle = activityRow("2", { backend_type: "client backend", state: "idle", query_start: "1000000", xact_start: null })
-  const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000", xact_start: "2000000" })
-  const aborted = activityRow("6", { backend_type: "client backend", state: "idle in transaction (aborted)", query_start: "3000000", xact_start: "3000000" })
-  const system = activityRow("4", { backend_type: "checkpointer", state: null, query_start: null })
-  const walsender = activityRow("7", { backend_type: "walsender", state: null, query_start: null })
-  const legacy = activityRow("5", { backend_type: null, state: "active", query_start: "9000000", xact_start: "8000000" })
+test("activity applies idle and system visibility after the typed server page without reordering it", () => {
+  const active = activityRow("1", { backend_start: "500000", backend_type: "client backend", state: "active", state_change: "7000000", query_start: "4000000", xact_start: "1000000", backend_age_ms: 9_500, query_duration_ms: 6_000, transaction_duration_ms: 9_000, state_duration_ms: 3_000 })
+  const idle = activityRow("2", { backend_type: "client backend", state: "idle", query_start: "1000000", xact_start: null, query_duration_ms: null, transaction_duration_ms: null, state_duration_ms: null })
+  const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000", xact_start: "2000000", query_duration_ms: null, transaction_duration_ms: 8_000, state_duration_ms: 5_000 })
+  const aborted = activityRow("6", { backend_type: "client backend", state: "idle in transaction (aborted)", query_start: "3000000", xact_start: "3000000", query_duration_ms: null, transaction_duration_ms: 7_000, state_duration_ms: 4_000 })
+  const system = activityRow("4", { backend_type: "checkpointer", state: null, query_start: null, query_duration_ms: null })
+  const walsender = activityRow("7", { backend_type: "walsender", state: null, query_start: null, query_duration_ms: null })
+  const legacy = activityRow("5", { backend_type: null, state: "active", query_start: "9000000", xact_start: "8000000", query_duration_ms: 1_000, transaction_duration_ms: 2_000 })
 
   assert.equal(helpers.isSystemActivity(active), false)
   assert.equal(helpers.isSystemActivity(system), true)
@@ -204,25 +204,29 @@ test("activity hides only ordinary idle and derives elapsed time from the select
 
   const rows = [active, idle, idleTransaction, aborted, system, walsender, legacy]
   const defaults = helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false })
-  assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "5", "3", "6"])
+  assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "3", "6", "5"])
   assert.equal(defaults[0].values.query_duration_ms, 6_000)
   assert.equal(defaults[0].values.transaction_duration_ms, 9_000)
   assert.equal(defaults[0].values.backend_age_ms, 9_500)
   assert.equal(defaults[0].values.state_duration_ms, 3_000)
-  assert.equal(defaults[1].values.query_duration_ms, 1_000)
-  assert.equal(defaults[2].values.query_duration_ms, null)
-  assert.equal(defaults[2].values.transaction_duration_ms, 8_000)
+  assert.equal(defaults[1].values.query_duration_ms, null)
+  assert.equal(defaults[1].values.transaction_duration_ms, 8_000)
+  assert.equal(defaults[3].values.query_duration_ms, 1_000)
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: true, showSystem: false }).map(({ ordinal }) => ordinal),
-    ["1", "5", "3", "6", "2"],
+    ["1", "2", "3", "6", "5"],
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: true }).map(({ ordinal }) => ordinal),
-    ["1", "5", "3", "6", "4", "7"],
+    ["1", "3", "6", "4", "7", "5"],
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false }, system).map(({ ordinal }) => ordinal),
-    ["1", "5", "3", "6", "4"],
+    ["1", "3", "6", "4", "5"],
+  )
+  assert.deepEqual(
+    helpers.visibleActivityRows(rows, { showIdle: true, showSystem: true }).map(({ ordinal }) => ordinal),
+    rows.map(({ ordinal }) => ordinal),
   )
 })
 
@@ -390,11 +394,11 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /id: "plans"[\s\S]*sections: \["pg_store_plans", "pg_store_plans_info"\]/)
   assert.match(source, /tab\.id === "plans"/)
   assert.match(source, /pg-plans-empty/)
-  assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
+  assert.match(source, /columns\.some\(\(column\) => column\.field === order\.column && column\.sortable === true\)/)
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /allRows\.map\(decoratePostgresIntervalRow\)/)
   assert.match(source, /tableState\([^)]*displayedRows\.length/)
-  assert.match(source, /serverSorted=\{dense\}/)
+  assert.match(source, /serverSorted=\{productPaged\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
   assert.match(source, /await loadSeries\(hour, section, filters, request\.fields, signal, row\.typeId\)/)

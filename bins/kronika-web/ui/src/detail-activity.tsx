@@ -42,7 +42,7 @@ export function ActivityFacts({ activity, activityTime, locale, onRelated, t }: 
     <DetailList>
       <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
       {ACTIVITY_DURATIONS.flatMap(([field, duration]) => {
-        const elapsed = duration(activity)
+        const elapsed = Object.hasOwn(activity.values, field) ? asNumber(value(activity, field)) : duration(activity)
         return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
       })}
       {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && related !== null
@@ -51,7 +51,7 @@ export function ActivityFacts({ activity, activityTime, locale, onRelated, t }: 
     </DetailList>
     <section className="query-block">
       <span className="flex items-center justify-between text-xs font-medium text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
-      <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
+      <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query_preview")) ?? rawText(value(activity, "query")) ?? "—"}</pre>
     </section>
   </section>
 }

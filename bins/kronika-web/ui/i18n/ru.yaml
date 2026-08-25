@@ -1058,6 +1058,7 @@ pg.table.order_default: "Сортировка на сервере: не зада
 pg.table.desc: "по убыванию"
 pg.table.asc: "по возрастанию"
 pg.table.shown: "Загружено {returned} из {eligible}"
+pg.table.loaded: "Загружено {returned}"
 pg.table.focus_loading: "Точный результат в фокусе; отфильтрованная страница загружается"
 pg.table.focus_outside: "Точный результат в фокусе вне текущей страницы"
 pg.table.focus_exact: "Точный результат в фокусе"

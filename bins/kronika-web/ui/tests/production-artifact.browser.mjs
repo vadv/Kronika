@@ -532,6 +532,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       ndjson(response, [...timelineRecords(from), ...networkLaneRecords(from)])
       return
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, snapshotRecords())
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const sections = url.searchParams.getAll("section")
       if (sections.includes("pg_store_plans")) {
@@ -664,7 +665,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(rendered.missing, null)
     await assertCompactTimelineContained(cdp, ".workspace > .pg-tabs", "PostgreSQL")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
+    assert.ok(requests.some(({ path }) => path === "/api/postgresql/activity"))
     const firstApi = requests.findIndex(({ path }) => path.startsWith("/api/"))
     const login = requests.findIndex(({ method, path }) => method === "POST" && path === "/auth/session")
     assert.ok(login > requests.findIndex(({ method, path }) => method === "GET" && path === "/auth/session"))
@@ -1905,6 +1906,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
       ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
       return
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, snapshotRecords())
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : [])
       return
@@ -2367,6 +2369,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
   let holdCgroups = false
   const historyRequests = (section) => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === section)
   const snapshotRequests = (section) => requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).getAll("section").includes(section))
+  const activityRequests = () => requests.filter(({ path }) => path === "/api/postgresql/activity")
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     requests.push(requestRecord(request, url))
@@ -2402,6 +2405,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
       }
       return ndjson(response, section === null ? timelineRecords(hour, true) : [])
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, snapshotRecords())
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const sections = url.searchParams.getAll("section")
       if (sections.length === 1 && ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].includes(sections[0])) {
@@ -2720,7 +2724,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
         workspace: bounds('.workspace'),
       }
     })()`)
-    const activitySnapshotsBeforeHiddenDetail = snapshotRequests("pg_stat_activity").length
+    const activitySnapshotsBeforeHiddenDetail = activityRequests().length
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.timeline-shell') === null`, "activity charts hidden")
     await settleLayout(cdp)
@@ -2741,7 +2745,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
       row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))
     })()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null && document.querySelector('[data-testid="pg-detail"] .pg-metric-history') === null`, "Activity detail with charts hidden")
-    await waitForRequests(() => snapshotRequests("pg_stat_activity").length > activitySnapshotsBeforeHiddenDetail)
+    await waitForRequests(() => activityRequests().length > activitySnapshotsBeforeHiddenDetail)
     await delay(100)
     assert.equal(historyRequests("pg_stat_activity").length, visibleActivityHistoryCount)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-exact-query"]')?.textContent`), "select artifact_wire_contract")
@@ -2838,6 +2842,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, sourceTimelineRecords(historical))
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, snapshotRecords())
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const sections = url.searchParams.getAll("section")
       return ndjson(response, sections.includes("pg_stat_activity") ? snapshotRecords() : systemSnapshotRecords())
@@ -2946,6 +2951,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
         ? viewportActivityHistory(url)
         : viewportActivityTimeline())
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, viewportActivityRows(url))
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, viewportActivityRows(url))
     response.writeHead(404)
     response.end()
@@ -2975,7 +2981,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
     })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]') !== null`, "the viewport activity table", 15_000)
-    await waitForRequests(() => requests.some((value) => value.startsWith(`/api/segments/${SEGMENT}/snapshot?`)))
+    await waitForRequests(() => requests.some((value) => value.startsWith("/api/postgresql/activity?")))
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "the viewport activity rows", 15_000)
 
     for (const [width, height] of [[1280, 882], [1366, 768], [960, 882], [390, 480]]) {
@@ -3088,6 +3094,11 @@ test("structured search pending state and snapshot targets preserve exact newest
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.has("section") ? [] : snapshotTargetTimelineRecords())
     }
+    if (url.pathname === "/api/postgresql/activity") {
+      const at = Number(url.searchParams.get("at") ?? AT)
+      if (at === BEFORE_AT) { pendingActivityFailure = response; return }
+      return answerPostgresqlActivity(url, response, targetedActivityRecords("activity_target_A", at))
+    }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const at = Number(url.searchParams.get("at") ?? AT)
       const sections = url.searchParams.getAll("section")
@@ -3098,10 +3109,6 @@ test("structured search pending state and snapshot targets preserve exact newest
       if (sections.includes("os_process")) {
         if (url.searchParams.get("search") === "cpu_cores>1") { pendingProcessSearch = response; return }
         return ndjson(response, snapshotRecords())
-      }
-      if (sections.includes("pg_stat_activity")) {
-        if (at === BEFORE_AT) { pendingActivityFailure = response; return }
-        return ndjson(response, targetedActivityRecords("activity_target_A", at))
       }
       if (sections.includes("pg_stat_statements")) {
         if (url.searchParams.get("search") === "target-b") {
@@ -4246,6 +4253,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
       }] : [])
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, forensicSnapshots)
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, forensicSnapshots)
     response.writeHead(404)
     response.end()
@@ -5267,29 +5275,304 @@ function targetedRelationRecords(url, label, eligible) {
   })
 }
 
+function answerPostgresqlActivity(url, response, physicalRecords) {
+  const requestedAt = url.searchParams.get("at") ?? String(AT)
+  const activity = postgresqlActivityRows(requestedAt, physicalRecords)
+  const rows = activity.rows
+    .filter((row) => postgresqlActivityMatches(row, url.searchParams.get("filter")))
+  const sort = url.searchParams.get("sort") ?? "query_duration_ms"
+  const direction = url.searchParams.get("direction") === "asc" ? "asc" : "desc"
+  rows.sort((left, right) => comparePostgresqlActivityRows(left, right, sort, direction))
+
+  const pageSize = Math.max(1, Math.min(5_000, Number(url.searchParams.get("page_size") ?? "200")))
+  const cursor = url.searchParams.get("cursor")
+  const offset = cursor?.startsWith("browser-activity:") ? Number(cursor.slice("browser-activity:".length)) : 0
+  const start = Number.isInteger(offset) && offset >= 0 ? offset : 0
+  const pageRows = rows.slice(start, start + pageSize)
+  const nextOffset = start + pageRows.length
+  const result = {
+    requested_at: requestedAt,
+    observed_at: activity.observedAt,
+    rows: pageRows,
+    next_cursor: nextOffset < rows.length ? `browser-activity:${nextOffset}` : null,
+  }
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+  })
+  response.end(JSON.stringify(result))
+}
+
+function postgresqlActivityRows(requestedAt, physicalRecords) {
+  const requested = BigInt(requestedAt)
+  const hour = 3_600_000_000n
+  const hourStart = requested >= 0n || requested % hour === 0n
+    ? requested - requested % hour
+    : requested - requested % hour - hour
+  const layouts = new Map()
+  for (const record of physicalRecords) {
+    if (record.record === "layout" && record.layout?.logical_name === "pg_stat_activity") {
+      layouts.set(String(record.layout.type_id), record.layout.columns.map(({ name }) => name))
+    }
+  }
+  const candidates = []
+  let selected = null
+  for (const record of physicalRecords) {
+    if (record.record !== "row") continue
+    const columns = layouts.get(String(record.type_id))
+    if (columns === undefined) continue
+    const values = Object.fromEntries(columns.map((name, index) => [name, record.values[index]]))
+    const storedAt = activityI64(values.ts ?? record.timestamp)
+    if (storedAt === null || storedAt < hourStart || storedAt > requested) continue
+    if (selected === null || storedAt > selected) selected = storedAt
+    candidates.push({ storedAt, values })
+  }
+  if (selected === null) return { observedAt: null, rows: [] }
+  return {
+    observedAt: selected.toString(),
+    rows: candidates
+      .filter(({ storedAt }) => storedAt === selected)
+      .map(({ values }) => postgresqlActivityRow(selected, values)),
+  }
+}
+
+function postgresqlActivityRow(observedAt, values) {
+  const observed = observedAt.toString()
+  const state = activityNullableText(values.state)
+  const query = activityNullableText(values.query)
+  const preview = query === null ? null : [...query].length <= 160 ? query : `${[...query].slice(0, 160).join("")}…`
+  const backendStart = activityTimestamp(values.backend_start) ?? "0"
+  const xactStart = activityTimestamp(values.xact_start)
+  const queryStart = activityTimestamp(values.query_start)
+  const stateChange = activityTimestamp(values.state_change)
+  return {
+    observed_at: observed,
+    pid: activityNumber(values.pid),
+    leader_pid: activityNullableNumber(values.leader_pid),
+    datid: activityNullableNumber(values.datid),
+    datname: activityNullableText(values.datname),
+    usename: activityNullableText(values.usename),
+    application_name: activityText(values.application_name),
+    client_addr: activityText(values.client_addr),
+    backend_type: activityText(values.backend_type),
+    state,
+    wait_event_type: activityNullableText(values.wait_event_type),
+    wait_event: activityNullableText(values.wait_event),
+    query_preview: preview,
+    query_id: activityTimestamp(values.query_id),
+    backend_xid_age: activityTimestamp(values.backend_xid_age),
+    backend_xmin_age: activityTimestamp(values.backend_xmin_age),
+    backend_start: backendStart,
+    xact_start: xactStart,
+    query_start: queryStart,
+    state_change: stateChange,
+    backend_age_ms: activityDuration(observedAt, backendStart),
+    query_duration_ms: state === "active" ? activityDuration(observedAt, queryStart) : null,
+    transaction_duration_ms: activityDuration(observedAt, xactStart),
+    state_duration_ms: state === null || state === "idle" ? null : activityDuration(observedAt, stateChange),
+  }
+}
+
+function activityI64(stored) {
+  if (typeof stored !== "string" && typeof stored !== "number" && typeof stored !== "bigint") return null
+  try {
+    return BigInt(stored)
+  } catch {
+    return null
+  }
+}
+
+function activityTimestamp(stored) {
+  const parsed = activityI64(stored)
+  return parsed === null ? null : parsed.toString()
+}
+
+function activityDuration(observedAt, start) {
+  const parsed = activityI64(start)
+  if (parsed === null || parsed <= 0n || parsed > observedAt) return null
+  return Number(observedAt - parsed) / 1_000
+}
+
+function activityNumber(stored) {
+  return typeof stored === "number" ? stored : Number(stored)
+}
+
+function activityNullableNumber(stored) {
+  return stored === null || stored === undefined ? null : activityNumber(stored)
+}
+
+function activityText(stored) {
+  return stored === null || stored === undefined ? "" : String(stored)
+}
+
+function activityNullableText(stored) {
+  return stored === null || stored === undefined ? null : String(stored)
+}
+
+function postgresqlActivityMatches(row, encodedFilter) {
+  if (encodedFilter === null) return true
+  const filter = JSON.parse(encodedFilter)
+  if (!Array.isArray(filter) || filter.length === 0) return false
+  return filter.some((clause) => postgresqlActivityClauseMatches(row, clause))
+}
+
+function postgresqlActivityClauseMatches(row, clause) {
+  const textFields = [
+    row.query_preview, row.datname, row.usename, row.application_name, row.client_addr,
+    row.backend_type, row.state, row.wait_event_type, row.wait_event,
+  ]
+  if (clause.text !== undefined && !activityTextMatches(textFields, clause.text)) return false
+  if (clause.pid !== undefined && !clause.pid.any_of.includes(row.pid)) return false
+  if (clause.query_id !== undefined && !clause.query_id.any_of.includes(row.query_id)) return false
+  const scoped = {
+    database: row.datname,
+    role: row.usename,
+    application: row.application_name,
+    client: row.client_addr,
+    backend_type: row.backend_type,
+    state: row.state,
+    wait_type: row.wait_event_type,
+    wait_event: row.wait_event,
+  }
+  return Object.entries(scoped).every(([field, value]) => (
+    clause[field] === undefined || activityTextMatches([value], clause[field])
+  ))
+}
+
+function activityTextMatches(stored, matcher) {
+  const values = stored.filter((value) => value !== null)
+  if (Object.hasOwn(matcher, "any_of") && !matcher.any_of.some((pattern) => values.some((value) => activityPatternMatches(value, pattern)))) {
+    return false
+  }
+  return !Object.hasOwn(matcher, "all_of")
+    || matcher.all_of.every((pattern) => values.some((value) => activityPatternMatches(value, pattern)))
+}
+
+function activityPatternMatches(value, pattern) {
+  const source = [...pattern].map((character) => {
+    if (character === "*") return "[^]*"
+    if (character === "?") return "[^]"
+    return character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
+  }).join("")
+  return new RegExp(source, "iu").test(value)
+}
+
+function comparePostgresqlActivityRows(left, right, sort, direction) {
+  const field = {
+    pid: "pid",
+    database: "datname",
+    role: "usename",
+    query_preview: "query_preview",
+    query_duration_ms: "query_duration_ms",
+    transaction_duration_ms: "transaction_duration_ms",
+    application: "application_name",
+    client: "client_addr",
+    state: "state",
+    wait_type: "wait_event_type",
+    wait_event: "wait_event",
+    backend_type: "backend_type",
+  }[sort] ?? "query_duration_ms"
+  const primary = comparePostgresqlActivityValues(left[field], right[field], direction)
+  if (primary !== 0) return primary
+  if (sort === "query_duration_ms" && direction === "desc") {
+    const transaction = comparePostgresqlActivityValues(left.transaction_duration_ms, right.transaction_duration_ms, "desc")
+    if (transaction !== 0) return transaction
+  }
+  return left.pid - right.pid
+}
+
+function comparePostgresqlActivityValues(left, right, direction) {
+  if (left === null && right === null) return 0
+  if (left === null) return 1
+  if (right === null) return -1
+  const compared = left < right ? -1 : left > right ? 1 : 0
+  return direction === "asc" ? compared : -compared
+}
+
 
 function answerHeatmap(url, response) {
-  const from = Number(url.searchParams.get("from") ?? "0")
-  const to = Number(url.searchParams.get("to") ?? "0")
-  const columns = Number(url.searchParams.get("columns") ?? "60")
-  const labels = url.searchParams.getAll("label")
-  const span = to - from + 1
+  const hour = Number(url.searchParams.get("hour") ?? "0")
+  const surface = url.searchParams.get("surface") ?? "postgresql_statements"
+  const metric = url.searchParams.get("metric") ?? "exec_time"
+  const level = surface === "postgresql_tables" || surface === "postgresql_indexes"
+    ? url.searchParams.get("level") ?? "object"
+    : null
+  const columns = surface === "postgresql_tables" || surface === "postgresql_indexes" ? 12 : 60
   const intervals = Array.from({ length: columns }, (_at, index) => ({
-    start: String(from + Math.floor((index * span) / columns)),
-    end: String(from + Math.floor(((index + 1) * span) / columns) - 1),
+    start: String(hour + Math.floor((index * 3_600_000_000) / columns)),
+    end: String(hour + Math.floor(((index + 1) * 3_600_000_000) / columns) - 1),
   }))
   const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
-  return ndjson(response, [
-    {
-      record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
-      fields: url.searchParams.getAll("field"), class: "cumulative", labels,
-      top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
+  const grouped = surface === "processes" || level !== null && level !== "object"
+  const gauge = metric === "rss" || metric === "dead_tuples"
+  const unit = ["shared_read", "shared_dirtied", "temp_written", "wal_bytes", "heap_read", "idx_blks_read", "rss", "io_read", "io_write", "db_read", "temp_bytes", "cg_read", "cg_write"].includes(metric)
+    ? "bytes"
+    : ["exec_time", "autovacuum_time"].includes(metric) ? "milliseconds"
+      : metric === "cpu" ? "seconds"
+        : ["cg_cpu", "cg_throttled"].includes(metric) ? "microseconds"
+          : metric === "run_delay" ? "nanoseconds" : "count"
+  const entity = (index) => {
+    if (surface === "postgresql_statements") return {
+      kind: "postgresql_statement", query_id: String(101 + index), role_oid: 10, database_oid: 5,
+      top_level: true, database_name: "demo", role_name: "demo",
+    }
+    if (surface === "postgresql_plans") return {
+      kind: "postgresql_plan", role_oid: 10, database_oid: 5, entry_query_id: String(101 + index),
+      plan_id: String(201 + index), database_name: "demo", role_name: "demo",
+    }
+    if (surface === "postgresql_tables" && level === "object") return {
+      kind: "postgresql_table", database_oid: 5, relation_oid: 100 + index,
+      database_name: "demo", schema_name: "public", relation_name: `table_${index}`,
+    }
+    if (surface === "postgresql_indexes" && level === "object") return {
+      kind: "postgresql_index", database_oid: 5, index_oid: 200 + index,
+      database_name: "demo", schema_name: "public", table_name: `table_${index}`, index_name: `index_${index}`,
+    }
+    if (level === "schema") return { kind: "postgresql_relation_schema", database_name: "demo", schema_name: `schema_${index}` }
+    if (level === "database") return { kind: "postgresql_relation_database", database_name: `database_${index}` }
+    if (level === "tablespace") return { kind: "postgresql_tablespace", tablespace_name: `tablespace_${index}` }
+    if (surface === "processes") return { kind: "process_command", command: `process_${index}` }
+    if (surface === "postgresql_databases") return { kind: "postgresql_database", database_oid: 5 + index, database_name: `database_${index}` }
+    if (surface === "cgroup_cpu") return { kind: "cgroup_cpu", path: `/demo/${index}` }
+    return { kind: "cgroup_io_device", path: `/demo/${index}`, major: 8, minor: index }
+  }
+  const result = {
+    hour_start: String(hour),
+    hour_end: String(hour + 3_600_000_000 - 1),
+    surface,
+    metric,
+    level,
+    definition: {
+      class: gauge ? "gauge" : "cumulative",
+      cell_unit: gauge ? unit : `${unit}_per_second`,
+      total_unit: unit,
+      ranking: grouped
+        ? gauge ? "sum_member_window_max_desc" : "sum_member_window_delta_desc"
+        : gauge ? "whole_window_max_desc" : "whole_window_delta_desc",
+      metric_description: "Recorded metric.",
+      cell_formula: "Interval value.",
+      total_formula: "Whole-hour value.",
     },
-    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },
-    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labels.map(() => "demo"), total: 60, cells },
-    { record: "heatmap_band", band: "totals", total: 200, cells },
-    { record: "heatmap_band", band: "others", total: 20, cells },
-  ])
+    intervals,
+    rows: [0, 1].map((index) => ({
+      recorded_layout: grouped ? null : 1_002_006,
+      entity: entity(index),
+      members: grouped ? 2 : null,
+      total: index === 0 ? 120 : 60,
+      cells,
+    })),
+    totals: { total: 200, cells },
+    others: { total: 20, cells },
+    entity_count: 3,
+    others_count: 1,
+    top: 2,
+    out_of_order: "0",
+  }
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+  })
+  response.end(JSON.stringify(result))
 }
 
 function ndjson(response, records) {
@@ -5628,6 +5911,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("section") ? [] : timeline)
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, activityRecords)
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, activityRecords)
     response.writeHead(404)
     response.end()
@@ -5748,6 +6032,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
         { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 42 },
       ])
     }
+    if (url.pathname === "/api/postgresql/activity") return answerPostgresqlActivity(url, response, snapshotRecords())
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       return ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : systemSnapshotRecords())
     }

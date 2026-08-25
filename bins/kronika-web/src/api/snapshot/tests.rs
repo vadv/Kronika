@@ -1,20 +1,222 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
+use kronika_format::DictLimits;
+use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Cell, Row};
-use kronika_registry::contract;
+use kronika_registry::{PgStatStatementsV2, PgStatUserTablesV1, StrId, Ts, contract};
+use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
-    compare_products, ordered_cell, plan_statement_query_id_columns, prepared_search, rate,
-    record_contributing_moment, scheduled_ticks, snapshot_binding, timed_context_index,
+    compare_products, fit_wire_offset_page, fit_wire_snapshot_page, ordered_cell,
+    plan_statement_query_id_columns, prepared_search, rate, record_contributing_moment,
+    relation_page_encoded_rows, reset_relation_page_encoded_rows,
+    reset_shared_page_window_operations, scheduled_ticks, shared_first_unreturned,
+    shared_page_surface, shared_page_window_operations, shared_snapshot_query_binding,
+    snapshot_binding, timed_context_index, validate_shared_cursor_shape,
 };
 use crate::api::query::OutputField;
+use crate::product::page::{
+    CursorBinding, PageKey, PageSurface, SnapshotPosition, SourcePin, decode_cursor, encode_cursor,
+    encode_snapshot_cursor,
+};
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
 
 const COLUMN: &str = "counter";
+const SHARED_PAGE_SEGMENT_ID: i64 = 1_709_164_800_000_000;
+
+fn statement_row(ts: i64, query_id: i64, query: StrId) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(ts),
+        queryid: Some(query_id),
+        userid: 72,
+        dbid: 73,
+        datname: None,
+        usename: None,
+        query: Some(query),
+        calls: 1,
+        rows: 0,
+        plans: 0,
+        total_exec_time: 1.0,
+        total_plan_time: 0.0,
+        min_exec_time: 0.0,
+        max_exec_time: 0.0,
+        mean_exec_time: 0.0,
+        stddev_exec_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+        stddev_plan_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the registry fixture exposes the complete physical table layout"
+)]
+fn table_row(
+    ts: i64,
+    relid: u32,
+    datname: StrId,
+    schema: StrId,
+    relname: StrId,
+    tablespace: StrId,
+) -> PgStatUserTablesV1 {
+    PgStatUserTablesV1 {
+        ts: Ts(ts),
+        datid: 1,
+        datname,
+        relid,
+        schemaname: schema,
+        relname,
+        tablespace_oid: Some(1_663),
+        tablespace: Some(tablespace),
+        seq_scan: 0,
+        seq_tup_read: 0,
+        idx_scan: None,
+        idx_tup_fetch: None,
+        n_tup_ins: 0,
+        n_tup_upd: 0,
+        n_tup_del: 0,
+        n_tup_hot_upd: 0,
+        n_live_tup: 0,
+        n_dead_tup: 0,
+        n_mod_since_analyze: 0,
+        vacuum_count: 0,
+        autovacuum_count: 0,
+        analyze_count: 0,
+        autoanalyze_count: 0,
+        last_vacuum: None,
+        last_autovacuum: None,
+        last_analyze: None,
+        last_autoanalyze: None,
+        main_fork_bytes: i64::from(relid),
+        toast_bytes: None,
+        toast_n_live_tup: None,
+        toast_n_dead_tup: None,
+        toast_last_autovacuum: None,
+        xid_age: None,
+        mxid_age: None,
+        reltuples: 0,
+        heap_blks_read: 0,
+        heap_blks_hit: 0,
+        idx_blks_read: None,
+        idx_blks_hit: None,
+        toast_blks_read: None,
+        toast_blks_hit: None,
+        tidx_blks_read: None,
+        tidx_blks_hit: None,
+    }
+}
+
+fn finished_page_fixture(statement_rows: usize, relation_rows: usize) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary shared-page data root");
+    let root = DataRoot::open(directory.path()).expect("open shared-page data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire shared-page writer");
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open shared-page journal");
+    let address = SegmentAddress::new(
+        SegmentId::new(SHARED_PAGE_SEGMENT_ID).expect("shared-page segment id"),
+    )
+    .expect("shared-page segment address");
+    let mut interner = Interner::new(DictLimits::default());
+    let mut buffers = SectionBuffers::new();
+    for query_id in 0..statement_rows {
+        let query = format!("{}-{query_id}", "q".repeat(560_000));
+        let query = StrId(
+            interner
+                .intern(query.as_bytes())
+                .expect("intern large statement")
+                .get(),
+        );
+        buffers
+            .push(statement_row(
+                100,
+                i64::try_from(query_id).expect("query id fits"),
+                query,
+            ))
+            .expect("statement fixture row fits");
+    }
+    let datname = StrId(interner.intern(b"postgres").expect("intern database").get());
+    let schema = StrId(interner.intern(b"public").expect("intern schema").get());
+    let tablespace = StrId(
+        interner
+            .intern(b"pg_default")
+            .expect("intern tablespace")
+            .get(),
+    );
+    for index in 0..relation_rows {
+        let name = format!("table-{index}");
+        let relname = StrId(
+            interner
+                .intern(name.as_bytes())
+                .expect("intern relation name")
+                .get(),
+        );
+        buffers
+            .push(table_row(
+                200,
+                u32::try_from(index + 10).expect("relation id fits"),
+                datname,
+                schema,
+                relname,
+                tablespace,
+            ))
+            .expect("table fixture row fits");
+    }
+    let dictionary = dict::encode(interner.window()).expect("encode shared-page dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode shared-page fixture")
+        .expect("nonempty shared-page fixture");
+    journal
+        .append(address.id, &part)
+        .expect("append shared-page fixture");
+    write_segment(&journal, &writer, address).expect("publish shared-page fixture");
+    directory
+}
+
+fn stream_fixture(root: &Path, target: &str) -> (Vec<Value>, usize) {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    let route = crate::route::parse(path, query).expect("valid shared-page route");
+    let prepared = crate::api::prepare(root, 0b10, route, None).expect("prepare shared page");
+    let mut values = Vec::new();
+    let mut bytes = 0_usize;
+    prepared
+        .stream(
+            &mut |record| {
+                bytes = bytes.saturating_add(record.len());
+                values.push(serde_json::from_slice(&record).expect("shared-page JSON record"));
+                true
+            },
+            &|| false,
+        )
+        .expect("stream shared page");
+    (values, bytes)
+}
 
 #[test]
 fn plan_statement_query_id_mapping_is_fork_transparent() {
@@ -450,6 +652,340 @@ fn request_binding(request: &SnapshotRequest) -> u64 {
         StructuredSearch::parse(raw, logical_name).ok()
     });
     snapshot_binding(request, search.as_ref())
+}
+
+fn shared_request_binding(request: &SnapshotRequest, surface: PageSurface) -> String {
+    let search = request.search.as_deref().and_then(|raw| {
+        let [logical_name] = request.sections.as_slice() else {
+            return None;
+        };
+        StructuredSearch::parse(raw, logical_name).ok()
+    });
+    shared_snapshot_query_binding(request, search.as_ref(), surface, &[], &[])
+}
+
+#[test]
+fn only_the_three_signed_off_snapshot_products_use_shared_paging() {
+    for (section, surface) in [
+        ("pg_stat_statements", PageSurface::Statements),
+        ("pg_stat_user_tables", PageSurface::Tables),
+        ("pg_stat_user_indexes", PageSurface::Indexes),
+    ] {
+        let mut candidate = request();
+        candidate.sections = vec![section.to_owned()];
+        assert_eq!(shared_page_surface(&candidate), Some(surface));
+    }
+
+    for section in ["pg_store_plans", "os_process", "pg_stat_activity"] {
+        let mut candidate = request();
+        candidate.sections = vec![section.to_owned()];
+        assert_eq!(shared_page_surface(&candidate), None);
+    }
+    let mut first_match = request();
+    first_match.first_match = true;
+    assert_eq!(shared_page_surface(&first_match), None);
+}
+
+#[test]
+fn shared_query_binding_is_normalized_and_binds_effective_request_shape() {
+    let baseline = request();
+    let expected = shared_request_binding(&baseline, PageSurface::Statements);
+
+    let mut reordered_filters = baseline.clone();
+    reordered_filters.filters.push(Filter {
+        column: "userid".to_owned(),
+        value: "7".to_owned(),
+    });
+    let mut canonical_filters = reordered_filters.clone();
+    canonical_filters.filters.reverse();
+    assert_eq!(
+        shared_request_binding(&reordered_filters, PageSurface::Statements),
+        shared_request_binding(&canonical_filters, PageSurface::Statements)
+    );
+
+    let mut transport_only = baseline.clone();
+    transport_only.cursor = Some("opaque".to_owned());
+    transport_only.page_size = Some(5_000);
+    assert_eq!(
+        shared_request_binding(&transport_only, PageSurface::Statements),
+        expected
+    );
+
+    let mut changed_order = baseline.clone();
+    changed_order.by = vec!["queryid".to_owned()];
+    assert_ne!(
+        shared_request_binding(&changed_order, PageSurface::Statements),
+        expected
+    );
+    let mut changed_direction = baseline;
+    changed_direction.direction = Order::Asc;
+    assert_ne!(
+        shared_request_binding(&changed_direction, PageSurface::Statements),
+        expected
+    );
+
+    let mut changed_layout = request();
+    changed_layout.type_id = Some(1_002_001);
+    assert_ne!(
+        shared_request_binding(&changed_layout, PageSurface::Statements),
+        expected
+    );
+}
+
+#[test]
+fn shared_cursor_authenticates_page_size_query_and_active_prefix() {
+    let key = PageKey::derive(b"snapshot account");
+    let binding = CursorBinding {
+        surface: PageSurface::Statements,
+        query_binding: "normalized".to_owned(),
+        selected_at: Some(11),
+        source_pins: vec![SourcePin::fixture(7, Some(80))],
+        page_size: 200,
+    };
+    let encoded = encode_snapshot_cursor(
+        &binding,
+        3,
+        SnapshotPosition {
+            context_index: 2,
+            ordinal: 9,
+        },
+        &key,
+    )
+    .expect("cursor encodes");
+    let decoded = decode_cursor(&encoded, &key).expect("cursor decodes");
+    assert_eq!(
+        shared_first_unreturned(Some(&decoded), &binding).expect("binding matches"),
+        3
+    );
+
+    let mut statement = request();
+    statement.page_size = Some(200);
+    assert!(validate_shared_cursor_shape(&statement, PageSurface::Statements, &decoded).is_ok());
+    let offset_only = decode_cursor(
+        &encode_cursor(&binding, 3, &key).expect("offset cursor encodes"),
+        &key,
+    )
+    .expect("offset cursor decodes");
+    assert!(
+        validate_shared_cursor_shape(&statement, PageSurface::Statements, &offset_only).is_err()
+    );
+    statement.page_size = Some(201);
+    assert!(validate_shared_cursor_shape(&statement, PageSurface::Statements, &decoded).is_err());
+
+    let mut changed_query = binding.clone();
+    changed_query.query_binding = "other".to_owned();
+    assert!(shared_first_unreturned(Some(&decoded), &changed_query).is_err());
+    let mut grown_source = binding;
+    grown_source.source_pins = vec![SourcePin::fixture(7, Some(81))];
+    assert!(shared_first_unreturned(Some(&decoded), &grown_source).is_err());
+
+    let mut changed = encoded.into_bytes();
+    let index = changed.len() / 2;
+    changed[index] = if changed[index] == b'a' { b'b' } else { b'a' };
+    let changed = String::from_utf8(changed).expect("ASCII cursor");
+    assert!(decode_cursor(&changed, &key).is_err());
+}
+
+#[test]
+fn physical_wire_page_resumes_at_the_typed_first_unreturned_row() {
+    let key = PageKey::derive(b"physical wire account");
+    let binding = CursorBinding {
+        surface: PageSurface::Statements,
+        query_binding: "statement query".to_owned(),
+        selected_at: Some(9),
+        source_pins: vec![SourcePin::fixture(7, None)],
+        page_size: 3,
+    };
+    let rows = vec![vec![b'a'; 600_000], vec![b'b'; 600_000], vec![b'c'; 8]];
+    let positions = vec![
+        SnapshotPosition {
+            context_index: 0,
+            ordinal: 7,
+        },
+        SnapshotPosition {
+            context_index: 1,
+            ordinal: 11,
+        },
+        SnapshotPosition {
+            context_index: 1,
+            ordinal: 13,
+        },
+    ];
+    let first = fit_wire_snapshot_page(
+        &rows,
+        &positions,
+        0,
+        3,
+        &binding,
+        &key,
+        100,
+        |_returned, _cursor| Ok(100),
+    )
+    .expect("first whole physical row fits");
+    assert_eq!(first.rows.len(), 1);
+    let cursor = decode_cursor(first.next_cursor.as_deref().expect("remaining rows"), &key)
+        .expect("physical continuation decodes");
+    assert_eq!(cursor.first_unreturned, 1);
+    assert_eq!(cursor.snapshot_position, Some(positions[1]));
+
+    let second = fit_wire_snapshot_page(
+        &rows[1..],
+        &positions[1..],
+        cursor.first_unreturned,
+        3,
+        &binding,
+        &key,
+        100,
+        |_returned, _cursor| Ok(100),
+    )
+    .expect("remaining physical rows fit");
+    assert_eq!(second.rows, rows[1..]);
+    assert!(second.next_cursor.is_none());
+}
+
+#[test]
+fn shared_snapshot_emitter_bounds_retention_and_traverses_byte_short_pages() {
+    let fixture = finished_page_fixture(5, 0);
+    let base = format!(
+        "/api/segments/{SHARED_PAGE_SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&direction=desc&page_size=3"
+    );
+    let key = PageKey::derive(b"kronika-web-test-cursor-key");
+    let mut cursor = None;
+    let mut query_ids = Vec::new();
+    let mut page_number = 0_usize;
+    loop {
+        reset_shared_page_window_operations();
+        let target = cursor
+            .as_ref()
+            .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+        let (records, bytes) = stream_fixture(fixture.path(), &target);
+        let (retained, encoded) = shared_page_window_operations();
+        assert!(retained <= 4, "the K+1 heap retained {retained} rows");
+        assert_eq!(encoded, retained, "only retained rows were serialized");
+        if page_number == 0 {
+            assert_eq!((retained, encoded), (4, 4));
+        }
+        assert!(bytes <= super::SHARED_RESULT_MAX_BYTES);
+
+        let rows = records
+            .iter()
+            .filter(|record| record["record"] == "row")
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "byte fitting keeps one whole large row");
+        query_ids.push(
+            rows[0]["values"][0]
+                .as_str()
+                .expect("query id is exact text")
+                .parse::<i64>()
+                .expect("query id parses"),
+        );
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("snapshot page trailer");
+        assert_eq!(page["eligible"], "5");
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+        if let Some(raw) = cursor.as_deref() {
+            let decoded = decode_cursor(raw, &key).expect("physical cursor decodes");
+            assert!(decoded.snapshot_position.is_some());
+            assert_eq!(decoded.first_unreturned, query_ids.len());
+        } else {
+            break;
+        }
+        page_number += 1;
+    }
+    assert_eq!(query_ids, [4, 3, 2, 1, 0]);
+}
+
+#[test]
+fn shared_relation_emitter_serializes_only_the_offset_window() {
+    let fixture = finished_page_fixture(0, 6);
+    let base = format!(
+        "/api/segments/{SHARED_PAGE_SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=main_fork_bytes&by=relid&direction=asc&page_size=2"
+    );
+    reset_relation_page_encoded_rows();
+    let (first, _bytes) = stream_fixture(fixture.path(), &base);
+    assert_eq!(relation_page_encoded_rows(), 3, "only K+1 rows encode");
+    assert_eq!(
+        first
+            .iter()
+            .filter(|record| record["record"] == "relation")
+            .count(),
+        2
+    );
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .and_then(|record| record["next_cursor"].as_str())
+        .expect("relation continuation");
+    let decoded = decode_cursor(cursor, &PageKey::derive(b"kronika-web-test-cursor-key"))
+        .expect("relation cursor decodes");
+    assert_eq!(decoded.first_unreturned, 2);
+    assert_eq!(decoded.snapshot_position, None);
+
+    reset_relation_page_encoded_rows();
+    let (second, _bytes) = stream_fixture(fixture.path(), &format!("{base}&cursor={cursor}"));
+    assert_eq!(
+        relation_page_encoded_rows(),
+        3,
+        "the next K+1 window encodes"
+    );
+    assert_eq!(
+        second
+            .iter()
+            .filter(|record| record["record"] == "relation")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn shared_wire_budget_keeps_rows_whole_and_uses_first_unreturned_offset() {
+    let key = PageKey::derive(b"wire account");
+    let binding = CursorBinding {
+        surface: PageSurface::Tables,
+        query_binding: "table query".to_owned(),
+        selected_at: Some(9),
+        source_pins: vec![SourcePin::fixture(7, None)],
+        page_size: 3,
+    };
+    let rows = vec![vec![b'a'; 600_000], vec![b'b'; 600_000], vec![b'c'; 8]];
+    let first = fit_wire_offset_page(&rows, 0, 3, &binding, &key, 100, |_returned, _cursor| {
+        Ok(100)
+    })
+    .expect("first whole row fits");
+    assert_eq!(first.rows.len(), 1);
+    let cursor = first.next_cursor.expect("remaining rows");
+    let offset = decode_cursor(&cursor, &key)
+        .expect("continuation decodes")
+        .first_unreturned;
+    assert_eq!(offset, 1);
+    let second = fit_wire_offset_page(
+        &rows[offset..],
+        offset,
+        3,
+        &binding,
+        &key,
+        100,
+        |_returned, _cursor| Ok(100),
+    )
+    .expect("second whole row fits");
+    assert_eq!(second.rows.len(), 2);
+    assert!(second.next_cursor.is_none());
+
+    let oversized = vec![vec![0_u8; super::SHARED_RESULT_MAX_BYTES]];
+    assert!(
+        fit_wire_offset_page(
+            &oversized,
+            0,
+            1,
+            &binding,
+            &key,
+            1,
+            |_returned, _cursor| Ok(1),
+        )
+        .is_err()
+    );
 }
 
 #[test]

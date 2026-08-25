@@ -5,7 +5,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const activity = await importModule(
-  'export { cursorColumnOf, intervalInstant, rowPeakColumn } from "../src/activity.tsx"',
+  'export { cursorColumnOf, formatTopActivityValue, intervalInstant, rowPeakColumn } from "../src/activity.tsx"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -33,6 +33,37 @@ test("a row's peak is its first strictly positive maximum, and a silent row has 
   assert.equal(activity.rowPeakColumn([null, null]), null)
   assert.equal(activity.rowPeakColumn([0, 0, 0]), null)
   assert.equal(activity.rowPeakColumn([]), null)
+})
+
+test("top activity values use the returned unit without local metadata", () => {
+  assert.equal(activity.formatTopActivityValue(1024, "bytes", "en"), "1 KiB")
+  assert.equal(activity.formatTopActivityValue(2, "count_per_second", "en", "/s"), "2/s")
+  assert.equal(activity.formatTopActivityValue(2, "count", "en", "/s"), "2")
+})
+
+test("top activity formatting is independent of result load order", () => {
+  const converted = { cell_unit: "bytes_per_second", total_unit: "bytes" }
+  const raw = { cell_unit: "count_per_second", total_unit: "count" }
+  const rendered = (definition) => ({
+    cell: activity.formatTopActivityValue(2, definition.cell_unit, "en", "/s"),
+    total: activity.formatTopActivityValue(2, definition.total_unit, "en", "/s"),
+  })
+
+  const convertedFirst = [rendered(converted), rendered(raw)]
+  const rawFirst = [rendered(raw), rendered(converted)]
+  assert.deepEqual(convertedFirst[0], rawFirst[1])
+  assert.deepEqual(convertedFirst[1], rawFirst[0])
+  assert.deepEqual(convertedFirst, [
+    { cell: "2 B/s", total: "2 B" },
+    { cell: "2/s", total: "2" },
+  ])
+})
+
+test("the ledger reads units from the shared result instead of cursor-loaded metadata", async () => {
+  const source = await readFile(new URL("../src/activity.tsx", import.meta.url), "utf8")
+  assert.match(source, /view\.definition\.cell_unit/)
+  assert.match(source, /view\.definition\.total_unit/)
+  assert.doesNotMatch(source, /cutScale|ActivityScales|scales=/)
 })
 
 test("a drill moves the cursor only when the drilled row is silent at it", async () => {

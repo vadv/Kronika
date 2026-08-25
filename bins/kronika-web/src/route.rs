@@ -1,5 +1,11 @@
 //! Strict parsing of the four resource families.
 
+use crate::product::activity::{
+    ActivityArgs, ActivityClauseArgs, ActivityQuery, ActivitySort, normalize_activity,
+};
+use crate::product::page::Direction;
+use crate::product::top_activity::{Query as TopActivityQuery, RawQuery, normalize};
+
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
@@ -9,13 +15,6 @@ const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
 const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
-const DEFAULT_HEATMAP_COLUMNS: usize = 60;
-const MAX_HEATMAP_COLUMNS: usize = 1_440;
-const DEFAULT_HEATMAP_TOP: usize = 25;
-const MAX_HEATMAP_TOP: usize = 500;
-const MAX_HEATMAP_LABELS: usize = 8;
-const MAX_HEATMAP_FIELDS: usize = 4;
-const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
 
@@ -32,21 +31,6 @@ pub(crate) enum Route {
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
     Snapshot(Box<SnapshotRequest>),
-    /// The ranked top view of one section over one window.
-    Heatmap(HeatmapRequest),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HeatmapRequest {
-    pub(crate) from: i64,
-    pub(crate) to: i64,
-    pub(crate) section: String,
-    pub(crate) fields: Vec<String>,
-    pub(crate) columns: usize,
-    pub(crate) top: usize,
-    pub(crate) labels: Vec<String>,
-    pub(crate) group: Vec<String>,
-    pub(crate) type_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,9 +173,6 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     if path == "/api/hour" {
         return parse_hour(query).map(Route::Hour);
     }
-    if path == "/api/heatmap" {
-        return parse_heatmap(query).map(Route::Heatmap);
-    }
     let tail = path
         .strip_prefix("/api/segments/")
         .ok_or(RouteError::NoSuchPath)?;
@@ -220,6 +201,108 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         "rows" => parse_rows(segment, query).map(Route::Rows),
         _ => Err(RouteError::NoSuchPath),
     }
+}
+
+/// Parse the semantic top-activity HTTP query through the shared product normalizer.
+pub(crate) fn parse_top_activity(query: Option<&str>) -> Result<TopActivityQuery, RouteError> {
+    let query = query.unwrap_or("");
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(RouteError::BadParameter("query".to_owned()));
+    }
+    let mut hour = None;
+    let mut surface = None;
+    let mut metric = None;
+    let mut level = None;
+    let mut top = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "hour" if hour.is_none() => hour = Some(value),
+            "surface" if surface.is_none() => surface = Some(value),
+            "metric" if metric.is_none() => metric = Some(value),
+            "level" if level.is_none() => level = Some(value),
+            "top" if top.is_none() => top = Some(number("top", &value)?),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    let raw = RawQuery {
+        hour: hour.ok_or_else(|| RouteError::BadParameter("hour".to_owned()))?,
+        surface: surface.ok_or_else(|| RouteError::BadParameter("surface".to_owned()))?,
+        metric,
+        level,
+        top,
+    };
+    normalize(raw).map_err(|error| RouteError::BadParameter(error.parameter().to_owned()))
+}
+
+/// Parse the semantic Activity HTTP query through the shared v6 normalizer.
+pub(crate) fn parse_activity(query: Option<&str>) -> Result<ActivityQuery, RouteError> {
+    let query = query.unwrap_or("");
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(RouteError::BadParameter("query".to_owned()));
+    }
+    let mut at = None;
+    let mut filter = None;
+    let mut sort = None;
+    let mut direction = None;
+    let mut page_size = None;
+    let mut cursor = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "at" if at.is_none() => at = Some(value),
+            "filter" if filter.is_none() => {
+                filter = Some(
+                    serde_json::from_str::<Vec<ActivityClauseArgs>>(&value)
+                        .map_err(|_error| RouteError::BadParameter("filter".to_owned()))?,
+                );
+            }
+            "sort" if sort.is_none() => {
+                sort = Some(
+                    serde_json::from_value::<ActivitySort>(serde_json::Value::String(value))
+                        .map_err(|_error| RouteError::BadParameter("sort".to_owned()))?,
+                );
+            }
+            "direction" if direction.is_none() => {
+                direction = Some(
+                    serde_json::from_value::<Direction>(serde_json::Value::String(value))
+                        .map_err(|_error| RouteError::BadParameter("direction".to_owned()))?,
+                );
+            }
+            "page_size" if page_size.is_none() => {
+                page_size = Some(
+                    value
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|size| (1..=5_000).contains(size))
+                        .ok_or_else(|| RouteError::BadParameter("page_size".to_owned()))?,
+                );
+            }
+            "cursor" if cursor.is_none() && !value.is_empty() && value.len() <= 4_096 => {
+                cursor = Some(value);
+            }
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    let args = ActivityArgs {
+        at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
+        filter,
+        sort,
+        direction,
+        page_size,
+        cursor,
+    };
+    normalize_activity(args).map_err(|error| {
+        let parameter = match error.message() {
+            message if message.starts_with("at ") => "at",
+            message if message.starts_with("page_size ") => "page_size",
+            message if message.starts_with("cursor ") => "cursor",
+            _ => "filter",
+        };
+        RouteError::BadParameter(parameter.to_owned())
+    })
 }
 
 #[expect(
@@ -414,81 +497,6 @@ fn validate_snapshot_shape(
         return Err(RouteError::BadParameter("group".to_owned()));
     }
     Ok(())
-}
-
-fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
-    let mut from = None;
-    let mut to = None;
-    let mut section = None;
-    let mut fields: Vec<String> = Vec::new();
-    let mut columns = None;
-    let mut top = None;
-    let mut labels: Vec<String> = Vec::new();
-    let mut group: Vec<String> = Vec::new();
-    let mut type_id = None;
-    for (raw_name, raw_value) in pairs(query)? {
-        let name = decoded("parameter", raw_name, true)?;
-        let value = decoded(&name, raw_value, true)?;
-        match name.as_str() {
-            "from" if from.is_none() => from = Some(number("from", &value)?),
-            "to" if to.is_none() => to = Some(number("to", &value)?),
-            "section" if section.is_none() => {
-                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
-                    return Err(RouteError::BadParameter("section".to_owned()));
-                }
-                section = Some(value);
-            }
-            "field" => {
-                if value.is_empty() || fields.contains(&value) || fields.len() >= MAX_HEATMAP_FIELDS
-                {
-                    return Err(RouteError::BadParameter("field".to_owned()));
-                }
-                fields.push(value);
-            }
-            "columns" if columns.is_none() => {
-                columns = Some(bounded("columns", &value, MAX_HEATMAP_COLUMNS)?);
-            }
-            "top" if top.is_none() => top = Some(bounded("top", &value, MAX_HEATMAP_TOP)?),
-            "label" => {
-                if value.is_empty() || labels.contains(&value) || labels.len() >= MAX_HEATMAP_LABELS
-                {
-                    return Err(RouteError::BadParameter("label".to_owned()));
-                }
-                labels.push(value);
-            }
-            "group" => {
-                if value.is_empty() || group.contains(&value) || group.len() >= MAX_HEATMAP_GROUP {
-                    return Err(RouteError::BadParameter("group".to_owned()));
-                }
-                group.push(value);
-            }
-            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
-            _ => return Err(RouteError::BadParameter(name)),
-        }
-    }
-    let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
-    let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
-    if from > to {
-        return Err(RouteError::BadParameter("from".to_owned()));
-    }
-    if fields.is_empty() {
-        return Err(RouteError::BadParameter("field".to_owned()));
-    }
-    // Group rows cannot carry per-identity labels.
-    if !group.is_empty() && !labels.is_empty() {
-        return Err(RouteError::BadParameter("label".to_owned()));
-    }
-    Ok(HeatmapRequest {
-        from,
-        to,
-        section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
-        fields,
-        columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
-        top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
-        labels,
-        group,
-        type_id,
-    })
 }
 
 fn bounded(name: &str, value: &str, cap: usize) -> Result<usize, RouteError> {

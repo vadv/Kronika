@@ -10,16 +10,19 @@ use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Map, Value, json};
 
+#[cfg(test)]
+use super::SnapshotCursor;
 use super::search::{
     Quantity, SearchClause, SearchOperator, SearchValue, result_field, search_fields,
 };
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
-    RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    RelationGroup, SectionPlans, add_ordered, compare_page_order_values, compare_products,
+    compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
     resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
+use crate::product::page::{PageError, SHARED_RESULT_MAX_BYTES};
 use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
 
 const TABLES: &str = "pg_stat_user_tables";
@@ -3181,8 +3184,9 @@ impl PreparedSnapshot {
         clippy::too_many_lines,
         reason = "one streaming routine preserves the exact aggregate-sort-page-cursor pipeline"
     )]
-    pub(super) fn emit_relation_page(
+    pub(super) fn emit_shared_relation_page(
         &self,
+        header: Vec<u8>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
@@ -3199,16 +3203,10 @@ impl PreparedSnapshot {
                 return Err(ApiError::NoSuchColumn(name.clone()));
             }
         }
-        if cancelled()
-            || !emit(relation_layout(
-                section,
-                kind,
-                group,
-                &self.relation_fields,
-            )?)
-        {
-            return Ok(());
-        }
+        let prefix = vec![
+            header,
+            relation_layout(section, kind, group, &self.relation_fields)?,
+        ];
         let contexts = self.partitioned_contexts(section, cancelled)?;
         if cancelled() {
             return Ok(());
@@ -3245,40 +3243,20 @@ impl PreparedSnapshot {
                 self.direction,
             )
         });
-        let start = match self.cursor {
-            Some(cursor) => ranked
-                .iter()
-                .position(|(aggregate, _sort)| {
-                    aggregate.source.context_index == cursor.context_index
-                        && aggregate.source.ordinal == cursor.ordinal
-                })
-                .ok_or(ApiError::BadCursor)?,
-            None => 0,
-        };
-        let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
-        let end = start.saturating_add(page_size).min(ranked.len());
-        let has_more = end < ranked.len();
-        let next_cursor = has_more.then(|| {
-            let source = ranked[end].0.source;
-            SnapshotCursor {
-                segment_id: self.anchor.id(),
-                active_position: self.anchor.active_position().unwrap_or(0),
-                context_index: source.context_index,
-                ordinal: source.ordinal,
-                binding: self.binding,
-            }
-            .encode()
-        });
-        let returned = end.saturating_sub(start);
         let from = ranked.iter().filter_map(|(row, _sort)| row.from).min();
         let to = ranked.iter().filter_map(|(row, _sort)| row.to).max();
-        for (aggregate, _sort) in ranked.drain(start..end) {
-            #[cfg(test)]
-            super::RELATION_PROJECTED_METRICS.set(
-                super::RELATION_PROJECTED_METRICS
-                    .get()
-                    .saturating_add(self.relation_fields.len()),
-            );
+        let selected_at = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
+        let (binding, first_unreturned, page_size) = self.shared_cursor_binding(selected_at)?;
+        if first_unreturned > ranked.len() {
+            return Err(ApiError::BadCursor);
+        }
+        let retained = usize::from(page_size).saturating_add(1);
+        let retained_end = first_unreturned.saturating_add(retained).min(ranked.len());
+        let mut ordered = Vec::with_capacity(retained_end - first_unreturned);
+        for (aggregate, _sort) in ranked.into_iter().skip(first_unreturned).take(retained) {
             let metrics = self
                 .relation_fields
                 .iter()
@@ -3291,35 +3269,112 @@ impl PreparedSnapshot {
                 from: aggregate.from,
                 to: aggregate.to,
             };
-            if cancelled()
-                || !emit(relation_record(
+            ordered.push(relation_record(
+                section,
+                kind,
+                group,
+                &row,
+                group == RelationGroup::Object,
+            )?);
+        }
+        #[cfg(test)]
+        super::RELATION_PAGE_ENCODED_ROWS.set(ordered.len());
+        let key = &self.shared_page_ref()?.key;
+        let prefix_bytes = super::byte_len(&prefix).map_err(super::map_page_error)?;
+        let page = super::fit_wire_offset_page(
+            &ordered,
+            first_unreturned,
+            page_size,
+            &binding,
+            key,
+            prefix_bytes,
+            |returned, cursor| {
+                let trailer = relation_page_record(
                     section,
-                    kind,
                     group,
-                    &row,
-                    group == RelationGroup::Object,
-                )?)
-            {
+                    eligible,
+                    returned,
+                    cursor,
+                    page_size,
+                    order_by,
+                    self.direction,
+                    from,
+                    to,
+                )
+                .map_err(|_error| PageError::ResultEncoding)?;
+                Ok(trailer.len())
+            },
+        )?;
+        let returned = page.rows.len();
+        let trailer = relation_page_record(
+            section,
+            group,
+            eligible,
+            returned,
+            page.next_cursor.as_deref(),
+            page_size,
+            order_by,
+            self.direction,
+            from,
+            to,
+        )?;
+        let output_bytes = prefix_bytes
+            .checked_add(super::byte_len(&page.rows).map_err(super::map_page_error)?)
+            .and_then(|bytes| bytes.checked_add(trailer.len()))
+            .ok_or_else(super::result_encoding_error)?;
+        if output_bytes > SHARED_RESULT_MAX_BYTES {
+            return Err(super::result_too_large_error());
+        }
+        #[cfg(test)]
+        super::RELATION_PROJECTED_METRICS.set(
+            super::RELATION_PROJECTED_METRICS
+                .get()
+                .saturating_add(returned.saturating_mul(self.relation_fields.len())),
+        );
+        for value in prefix
+            .into_iter()
+            .chain(page.rows)
+            .chain(std::iter::once(trailer))
+        {
+            if cancelled() || !emit(value) {
                 return Ok(());
             }
         }
-        let _connected = emit(record(json!({
-            "record": "snapshot_page",
-            "logical_name": section.logical_name,
-            "group": group_name(group),
-            "eligible": eligible.to_string(),
-            "returned": returned.to_string(),
-            "has_more": has_more,
-            "truncated": eligible > returned as u64,
-            "next_cursor": next_cursor,
-            "page_size": page_size,
-            "order_by": order_by.into_iter().collect::<Vec<_>>(),
-            "order_direction": order_name(self.direction),
-            "from": from.map(|value| value.to_string()),
-            "to": to.map(|value| value.to_string()),
-        }))?);
         Ok(())
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the existing wire summary fields are explicit inputs to its one encoder"
+)]
+fn relation_page_record(
+    section: &SectionPlans,
+    group: RelationGroup,
+    eligible: u64,
+    returned: usize,
+    next_cursor: Option<&str>,
+    page_size: u16,
+    order_by: Option<&str>,
+    direction: Order,
+    from: Option<i64>,
+    to: Option<i64>,
+) -> Result<Vec<u8>, ApiError> {
+    record(json!({
+        "record": "snapshot_page",
+        "logical_name": section.logical_name,
+        "group": group_name(group),
+        "eligible": eligible.to_string(),
+        "returned": returned.to_string(),
+        "has_more": next_cursor.is_some(),
+        "truncated": eligible > returned as u64,
+        "next_cursor": next_cursor,
+        "page_size": page_size,
+        "order_by": order_by.into_iter().collect::<Vec<_>>(),
+        "order_direction": order_name(direction),
+        "from": from.map(|value| value.to_string()),
+        "to": to.map(|value| value.to_string()),
+    }))
 }
 
 #[expect(

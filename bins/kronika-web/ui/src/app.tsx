@@ -66,6 +66,7 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
+import { loadPostgresqlActivity } from "./postgres-activity-product"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
@@ -105,7 +106,7 @@ const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
-  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:activity": [...TIMELINE_REQUESTS, activityRequest(), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:vacuum": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlVacuum.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
@@ -122,6 +123,29 @@ function processRequest(lens: Lens): SectionRequest {
     defaultOrder: [selected],
     fallbackOrder: ["pid"],
     order: Object.fromEntries(LENS_FIELDS[lens].map((field) => [field.id, field.id === "command" ? ["cmdline", "comm"] : [field.field ?? field.id]])),
+  }
+}
+
+function activityRequest(): SectionRequest {
+  return {
+    section: "pg_stat_activity",
+    pageSize: 200,
+    defaultOrder: ["query_duration_ms"],
+    fallbackOrder: ["pid"],
+    order: {
+      pid: ["pid"],
+      datname: ["database"],
+      usename: ["role"],
+      query_preview: ["query_preview"],
+      query_duration_ms: ["query_duration_ms"],
+      transaction_duration_ms: ["transaction_duration_ms"],
+      application_name: ["application"],
+      client_addr: ["client"],
+      state: ["state"],
+      wait_event_type: ["wait_type"],
+      wait_event: ["wait_event"],
+      backend_type: ["backend_type"],
+    },
   }
 }
 
@@ -546,7 +570,9 @@ function App({ locale, onLocale, t }: {
           }
           void Promise.all([
             pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options),
+            pagedRequest.section === "pg_stat_activity"
+              ? loadPostgresqlActivity(cursor, options.search ?? "", controller.signal, requestOrder ?? undefined, pageCursor)
+              : loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options),
           ]).then(([companion, incoming]) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
@@ -958,7 +984,7 @@ function App({ locale, onLocale, t }: {
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
-        <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
+        <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
           <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>

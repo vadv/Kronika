@@ -2,9 +2,9 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
+import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, type ActivityCut } from "./activity-cuts"
 import { loadHeatmap, loadRelatedStatementTextRow, type DataRow, type HourData, type SegmentBound } from "./api"
-import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow, type TopActivityRelationLevel, type TopActivitySurface, type TopActivityUnit } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
 import { canonicalSearch } from "./search"
@@ -25,35 +25,31 @@ interface HeatmapState {
   readonly loading: boolean
   readonly error: boolean
   readonly view: HeatmapView | null
-  // Keep the displayed units aligned with the loaded data during a reload.
-  readonly viewCut: ActivityCut | null
 }
 
 function useHeatmapView(
-  section: string,
-  columns: number,
-  labels: readonly string[],
-  group: readonly string[] | undefined,
+  surface: TopActivitySurface,
+  level: TopActivityRelationLevel | undefined,
   hour: number,
   cut: ActivityCut,
   top: number,
   revision: number,
   enabled: boolean,
 ): HeatmapState {
-  const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null, viewCut: null })
+  const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null })
   useEffect(() => {
     if (!enabled) return
     const controller = new AbortController()
-    setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
-    loadHeatmap(hour, section, cut.fields, labels, columns, top, controller.signal, group)
-      .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
+    setState((current) => ({ loading: true, error: false, view: current.view }))
+    loadHeatmap(hour, surface, cut.id, top, controller.signal, level)
+      .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view }) })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setState((current) => ({ loading: false, error: true, view: current.view, viewCut: current.viewCut }))
+          setState((current) => ({ loading: false, error: true, view: current.view }))
         }
       })
     return () => controller.abort()
-  }, [columns, cut, enabled, group, hour, labels, revision, section, top])
+  }, [cut, enabled, hour, level, revision, surface, top])
   return state
 }
 
@@ -76,23 +72,22 @@ interface RowLabel {
   readonly prefix: string | null
 }
 
-function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour, keys, label, labels, locale, onCursor, onView, scales, section, storageKey, t }: {
+function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, hour, keys, label, level, locale, onCursor, onView, section, storageKey, surface, t }: {
   readonly columns: number
   readonly cursor: number
   readonly cuts: readonly ActivityCut[]
   readonly defaultCut: string
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
-  readonly group?: readonly string[] | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
-  readonly labels: readonly string[]
+  readonly level?: TopActivityRelationLevel | undefined
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onView?: ((view: HeatmapView) => void) | undefined
-  readonly scales: ActivityScales
   readonly section: string
   readonly storageKey: string
+  readonly surface: TopActivitySurface
   readonly t: Translate
 }) {
   const [open, setOpen] = useState(() => loadActivityOpen(storageKey))
@@ -103,7 +98,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   const [chosen, setChosen] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, labels, group, hour, cut, top, revision, open)
+  const state = useHeatmapView(surface, level, hour, cut, top, revision, open)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -112,7 +107,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
   useEffect(() => {
     if (state.view !== null) seen?.(state.view)
   }, [seen, state.view])
-  useEffect(() => setChosen(null), [hour, section])
+  useEffect(() => setChosen(null), [hour, surface])
 
   // A drill filters the table below the ledger, which a full-screen ledger
   // covers; it steps back so the filtered rows are the next thing seen.
@@ -184,7 +179,6 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     cursor={cursor}
     cut={cut}
     cuts={cuts}
-    loadedCut={state.viewCut ?? cut}
     loading={state.loading}
     chosen={chosen}
     drill={choose}
@@ -200,7 +194,6 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     onScale={setScale}
     onTop={setTop}
     scale={scale}
-    scales={scales}
     section={section}
     t={t}
     top={top}
@@ -215,7 +208,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
 
 // One ledger row across renders: its layout and recorded identity.
 function rowKey(row: HeatmapViewRow): string {
-  return `${row.typeId}:${row.identity.join(":")}`
+  return JSON.stringify([row.recorded_layout, row.entity])
 }
 
 // The last moment of a column: what clicking that cell on the strip sets.
@@ -247,8 +240,7 @@ const PLAN_KEYS: LedgerKeys = { title: "activity.plans", bands: "activity.plans"
 const TABLE_KEYS: LedgerKeys = { title: "activity.tables", bands: "activity.tables" }
 const INDEX_KEYS: LedgerKeys = { title: "activity.indexes", bands: "activity.indexes" }
 
-export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
-  readonly blockSize: number | null
+export function StatementsActivity({ cursor, data, hour, locale, onCursor, onRelated, segments, t }: {
   readonly cursor: number
   readonly data: HourData
   readonly hour: number
@@ -264,7 +256,7 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
   const textAt = useMemo(() => {
     const totals = view?.totals.cells ?? []
     for (let index = totals.length - 1; index >= 0; index -= 1) {
-      if (totals[index] !== null) return view?.intervals[index]?.end ?? cursor
+      if (totals[index] !== null) return Number(view?.intervals[index]?.end ?? cursor)
     }
     return cursor
   }, [cursor, view])
@@ -273,7 +265,8 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
   const drill = (row: HeatmapViewRow) => {
     const queryId = rowQueryId(row)
     if (queryId === null) return
-    const [database, role] = row.labels
+    if (row.entity.kind !== "postgresql_statement") return
+    const { database_name: database, role_name: role } = row.entity
     const clauses = [
       ...(database == null ? [] : [{ key: "database", value: database }]),
       ...(role == null ? [] : [{ key: "role", value: role }]),
@@ -286,18 +279,21 @@ export function StatementsActivity({ blockSize, cursor, data, hour, locale, onCu
   const label = (row: HeatmapViewRow): RowLabel => {
     const queryId = rowQueryId(row)
     const text = queryId === null ? undefined : tableTexts.get(queryId) ?? fetchedTexts.get(queryId)
+    const entity = row.entity.kind === "postgresql_statement" ? row.entity : null
     return {
       text: text === undefined ? `Query ID ${queryId ?? "—"}` : activityPreview(text),
       // Query identity includes role, database, and top-level status.
-      prefix: identityPrefix(row.labels, row.identity[3] === "false" ? t("activity.nested") : null),
+      prefix: identityPrefix(
+        [entity?.database_name ?? null, entity?.role_name ?? null],
+        entity?.top_level === false ? t("activity.nested") : null,
+      ),
     }
   }
 
-  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} onView={setView} scales={{ blockSize, clockTicks: null }} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} locale={locale} onCursor={onCursor} onView={setView} section="pg_stat_statements" storageKey="kronika.activity-open" surface="postgresql_statements" t={t} />
 }
 
-export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor, onRelated, t }: {
-  readonly blockSize: number | null
+export function PlansActivity({ cursor, data, hour, locale, onCursor, onRelated, t }: {
   readonly cursor: number
   readonly data: HourData
   readonly hour: number
@@ -308,32 +304,26 @@ export function PlansActivity({ blockSize, cursor, data, hour, locale, onCursor,
 }) {
   const planTexts = useMemo(() => planTextsByPlanId(data.sections.pg_store_plans ?? []), [data.sections.pg_store_plans])
   const drill = (row: HeatmapViewRow) => {
-    const planId = row.identity[3]
+    const planId = row.entity.kind === "postgresql_plan" ? row.entity.plan_id : null
     if (planId == null || planId === "0") return
     const expression = canonicalSearch([{ key: "plan_id", value: planId }], "pg_store_plans")
     if (expression !== null) onRelated({ expression, planId, section: "plans" })
   }
   const label = (row: HeatmapViewRow): RowLabel => {
-    const planId = row.identity[3]
+    const entity = row.entity.kind === "postgresql_plan" ? row.entity : null
+    const planId = entity?.plan_id ?? null
     const text = planId == null ? undefined : planTexts.get(planId)
     return {
       text: text === undefined ? `Plan ID ${planId ?? "—"}` : activityPreview(text),
-      prefix: identityPrefix(row.labels, null),
+      prefix: identityPrefix([entity?.database_name ?? null, entity?.role_name ?? null], null),
     }
   }
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} labels={STATEMENT_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_store_plans" storageKey="kronika.activity-open.plans" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PLAN_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={PLAN_KEYS} label={label} locale={locale} onCursor={onCursor} section="pg_store_plans" storageKey="kronika.activity-open.plans" surface="postgresql_plans" t={t} />
 }
 
 export type RelationActivityLevel = "object" | "schema" | "database" | "tablespace"
 
-const RELATION_GROUPS: Readonly<Record<Exclude<RelationActivityLevel, "object">, readonly string[]>> = {
-  schema: ["datname", "schemaname"],
-  database: ["datname"],
-  tablespace: ["tablespace"],
-}
-
-export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCursor, onPattern, section, t }: {
-  readonly blockSize: number | null
+export function RelationsActivity({ cursor, hour, level, locale, onCursor, onPattern, section, t }: {
   readonly cursor: number
   readonly hour: number
   readonly level: RelationActivityLevel
@@ -344,56 +334,61 @@ export function RelationsActivity({ blockSize, cursor, hour, level, locale, onCu
   readonly t: Translate
 }) {
   const indexes = section === "pg_stat_user_indexes"
-  // Match the grouping selected for the relation table.
-  const group = level === "object" ? undefined : RELATION_GROUPS[level]
   const drill = (row: HeatmapViewRow) => {
-    const name = level === "object" ? row.labels[indexes ? 3 : 2] : row.identity[row.identity.length - 1]
+    const entity = row.entity
+    const name = entity.kind === "postgresql_table" ? entity.relation_name
+      : entity.kind === "postgresql_index" ? entity.index_name
+        : entity.kind === "postgresql_relation_schema" ? entity.schema_name
+          : entity.kind === "postgresql_relation_database" ? entity.database_name
+            : entity.kind === "postgresql_tablespace" ? entity.tablespace_name : null
     if (name != null && name !== "") onPattern(name)
   }
   const label = (row: HeatmapViewRow): RowLabel => {
-    if (level !== "object") {
-      const parts = row.identity.filter((part): part is string => part != null)
+    const entity = row.entity
+    if (entity.kind === "postgresql_relation_schema" || entity.kind === "postgresql_relation_database" || entity.kind === "postgresql_tablespace") {
+      const parts = entity.kind === "postgresql_relation_schema"
+        ? [entity.database_name, entity.schema_name]
+        : entity.kind === "postgresql_relation_database" ? [entity.database_name] : [entity.tablespace_name]
       return {
-        text: parts.length === 0 ? "—" : parts.join("."),
+        text: parts.filter((part): part is string => part !== null).join(".") || "—",
         prefix: row.members === null || row.members < 2
           ? null
           : t(indexes ? "activity.indexes.members" : "activity.tables.members", { count: row.members }),
       }
     }
-    const [datname, schemaname, relname, indexrelname] = row.labels
-    const object = [schemaname, indexes ? indexrelname ?? relname : relname]
-      .filter((part): part is string => part != null)
-      .join(".")
+    const datname = entity.kind === "postgresql_table" || entity.kind === "postgresql_index" ? entity.database_name : null
+    const schemaname = entity.kind === "postgresql_table" || entity.kind === "postgresql_index" ? entity.schema_name : null
+    const objectName = entity.kind === "postgresql_table" ? entity.relation_name
+      : entity.kind === "postgresql_index" ? entity.index_name || entity.table_name : null
+    const object = [schemaname, objectName].filter((part): part is string => part !== null).join(".")
     return {
       text: object === "" ? "—" : object,
       prefix: datname ?? null,
     }
   }
-  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} group={group} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} labels={level === "object" ? (indexes ? INDEX_LABELS : TABLE_LABELS) : NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} t={t} />
+  return <ActivityLedger columns={12} cursor={cursor} cuts={indexes ? INDEX_CUTS : TABLE_CUTS} defaultCut={indexes ? "idx_scan" : "writes"} drill={drill} hour={hour} keys={indexes ? INDEX_KEYS : TABLE_KEYS} label={label} level={level} locale={locale} onCursor={onCursor} section={section} storageKey={`kronika.activity-open.${indexes ? "indexes" : "tables"}`} surface={indexes ? "postgresql_indexes" : "postgresql_tables"} t={t} />
 }
 
-export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t, ticksPerSecond }: {
+export function ProcessesActivity({ cursor, hour, locale, onCursor, onPattern, t }: {
   readonly cursor: number
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onPattern: (pattern: string) => void
   readonly t: Translate
-  readonly ticksPerSecond: number | null
 }) {
   const drill = (row: HeatmapViewRow) => {
-    const comm = row.identity[0]
+    const comm = row.entity.kind === "process_command" ? row.entity.command : null
     if (comm != null && comm !== "") onPattern(comm)
   }
   const label = (row: HeatmapViewRow): RowLabel => ({
-    text: row.identity[0] ?? "—",
+    text: row.entity.kind === "process_command" ? row.entity.command : "—",
     prefix: row.members === null || row.members < 2 ? null : t("activity.members", { count: row.members }),
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} group={PROCESS_GROUP} hour={hour} keys={PROCESS_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: ticksPerSecond }} section="os_process" storageKey="kronika.activity-open.processes" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={PROCESS_CUTS} defaultCut="cpu" drill={drill} hour={hour} keys={PROCESS_KEYS} label={label} locale={locale} onCursor={onCursor} section="os_process" storageKey="kronika.activity-open.processes" surface="processes" t={t} />
 }
 
-export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, onPattern, t }: {
-  readonly blockSize: number | null
+export function DatabasesActivity({ cursor, hour, locale, onCursor, onPattern, t }: {
   readonly cursor: number
   readonly hour: number
   readonly locale: Locale
@@ -402,14 +397,14 @@ export function DatabasesActivity({ blockSize, cursor, hour, locale, onCursor, o
   readonly t: Translate
 }) {
   const drill = (row: HeatmapViewRow) => {
-    const datname = row.labels[0]
+    const datname = row.entity.kind === "postgresql_database" ? row.entity.database_name : null
     if (datname != null && datname !== "") onPattern(datname)
   }
   const label = (row: HeatmapViewRow): RowLabel => ({
-    text: row.labels[0] ?? row.identity[0] ?? "—",
+    text: row.entity.kind === "postgresql_database" ? row.entity.database_name ?? String(row.entity.database_oid) : "—",
     prefix: null,
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={DATABASE_CUTS} defaultCut="commits" drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} labels={DATABASE_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_database" storageKey="kronika.activity-open.databases" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={DATABASE_CUTS} defaultCut="commits" drill={drill} hour={hour} keys={DATABASE_KEYS} label={label} locale={locale} onCursor={onCursor} section="pg_stat_database" storageKey="kronika.activity-open.databases" surface="postgresql_databases" t={t} />
 }
 
 export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
@@ -421,25 +416,17 @@ export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
   readonly t: Translate
 }) {
   const label = (row: HeatmapViewRow): RowLabel => ({
-    text: row.identity[0] ?? "—",
-    prefix: io && row.identity[1] != null ? `${row.identity[1]}:${row.identity[2] ?? ""}` : null,
+    text: row.entity.kind === "cgroup_cpu" || row.entity.kind === "cgroup_io_device" ? row.entity.path : "—",
+    prefix: io && row.entity.kind === "cgroup_io_device" ? `${row.entity.major}:${row.entity.minor}` : null,
   })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} labels={NO_LABELS} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} locale={locale} onCursor={onCursor} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} surface={io ? "cgroup_io" : "cgroup_cpu"} t={t} />
 }
 
 const DATABASE_KEYS: LedgerKeys = { title: "activity.databases", bands: "activity.databases" }
 const CGROUP_CPU_KEYS: LedgerKeys = { title: "activity.cgroup_cpu", bands: "activity.cgroups" }
 const CGROUP_IO_KEYS: LedgerKeys = { title: "activity.cgroup_io", bands: "activity.cgroups" }
 
-const DATABASE_LABELS = ["datname"] as const
-
 const PROCESS_KEYS: LedgerKeys = { title: "activity.processes", bands: "activity.processes" }
-
-const NO_LABELS = [] as const
-const PROCESS_GROUP = ["comm"] as const
-const STATEMENT_LABELS = ["datname", "usename"] as const
-const TABLE_LABELS = ["datname", "schemaname", "relname"] as const
-const INDEX_LABELS = ["datname", "schemaname", "relname", "indexrelname"] as const
 
 function identityPrefix(labels: readonly (string | null)[], marker: string | null): string | null {
   const parts = [
@@ -451,7 +438,7 @@ function identityPrefix(labels: readonly (string | null)[], marker: string | nul
 }
 
 function rowQueryId(row: HeatmapViewRow): string | null {
-  const stored = row.identity[0]
+  const stored = row.entity.kind === "postgresql_statement" ? row.entity.query_id : null
   return stored == null || stored === "0" ? null : stored
 }
 
@@ -518,12 +505,11 @@ function useStatementTexts(
   return texts
 }
 
-function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
+function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, label, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, section, t, top, view }: {
   readonly columns: number
   readonly cursor: number
   readonly cut: ActivityCut
   readonly cuts: readonly ActivityCut[]
-  readonly loadedCut: ActivityCut
   readonly loading: boolean
   readonly chosen: string | null
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
@@ -539,14 +525,11 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
   readonly onScale: (scale: ScaleMode) => void
   readonly onTop: (top: number) => void
   readonly scale: ScaleMode
-  readonly scales: ActivityScales
   readonly section: string
   readonly t: Translate
   readonly top: number
   readonly view: HeatmapView
 }) {
-  const { kind, scale: valueScale } = cutScale(loadedCut, scales)
-  const suffix = view.cumulative ? t("unit.per_second") : ""
   const cursorColumn = cursorColumnOf(cursor, hour, columns)
   const globalMax = heatmapViewMax(view)
   const totalsMax = view.totals.cells.reduce<number>((current, cell) => cell !== null && cell > current ? cell : current, 0)
@@ -555,9 +538,9 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
     : globalMax
   const atCursor = (cells: readonly (number | null)[]) => {
     const cell = cursorColumn === null ? null : cells[cursorColumn] ?? null
-    return cell === null ? "—" : formatValue(cell * valueScale, kind, locale, suffix)
+    return cell === null ? "—" : formatTopActivityValue(cell, view.definition.cell_unit, locale, t("unit.per_second"))
   }
-  const total = (stored: number | null) => stored === null ? "—" : formatValue(stored * valueScale, kind, locale)
+  const total = (stored: number | null) => stored === null ? "—" : formatTopActivityValue(stored, view.definition.total_unit, locale, t("unit.per_second"))
 
   return <section aria-label={t(`${keys.title}.title`)} className={`activity-block${maximized ? " activity-max" : ""}`} data-testid={`activity-${section}`}>
     <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3 py-[6px]">
@@ -570,7 +553,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
         {cuts.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
       </div>
       <LabelHelp helpKey={`activity.cut.${cut.id}.help`} iconOnly labelKey={`activity.cut.${cut.id}`} t={t} />
-      <span className="font-sans text-xs text-fg4" data-testid="activity-top-count">{loading ? t("activity.loading") : t("activity.top", { top: String(view.rows.length), total: String(view.entityCount) })}</span>
+      <span className="font-sans text-xs text-fg4" data-testid="activity-top-count">{loading ? t("activity.loading") : t("activity.top", { top: String(view.rows.length), total: String(view.entity_count) })}</span>
       <div className="ml-auto flex items-center gap-2">
         {maximized && <div aria-label={t("activity.top_label")} className="lens-tabs" role="group">
           {TOP_CHOICES.map((choice) => <button aria-pressed={top === choice} data-testid={`activity-top-${choice}`} key={choice} onClick={() => onTop(choice)} type="button">{choice}</button>)}
@@ -583,14 +566,14 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
         <button aria-label={t(maximized ? "activity.restore" : "activity.maximize")} aria-pressed={maximized} className="inspector-maximize" data-testid="activity-maximize" onClick={() => onMaximized(!maximized)} type="button">{maximized ? <Minimize2 aria-hidden="true" size={13} /> : <Maximize2 aria-hidden="true" size={13} />}</button>
       </div>
     </header>
-    {view.entityCount === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
-    {view.entityCount > 0 && <div className={`${maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}${loading ? " animate-pulse opacity-55 transition-opacity" : ""}`} data-loading={loading || undefined}>
+    {view.entity_count === 0 && <div className="px-3 py-2 font-sans text-sm text-fg4">{t("activity.empty")}</div>}
+    {view.entity_count > 0 && <div className={`${maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}${loading ? " animate-pulse opacity-55 transition-opacity" : ""}`} data-loading={loading || undefined}>
       <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.totals.help`} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
         return <ActivityRow active={chosen === rowKey(row)} cells={row.cells} cursor={cursor} hour={hour} key={rowKey(row)} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
-      {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.othersCount) })} total={total(view.others.total)} />}
+      {view.others_count > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.others_count) })} total={total(view.others.total)} />}
     </div>}
   </section>
 }
@@ -650,11 +633,13 @@ function ActivityStrip({ cells, cursor, hour, max, onCursor }: {
   </svg>
 }
 
-function formatValue(stored: number, kind: ActivityCut["kind"], locale: Locale, suffix = ""): string {
-  if (kind === "bytes") return humanBytes(stored, locale, suffix)
-  if (kind === "milliseconds") return humanDuration(stored, locale, "milliseconds", suffix)
-  if (kind === "seconds") return humanDuration(stored, locale, "seconds", suffix)
-  if (kind === "microseconds") return humanDuration(stored, locale, "microseconds", suffix)
-  if (kind === "nanoseconds") return humanDuration(stored, locale, "nanoseconds", suffix)
+export function formatTopActivityValue(stored: number, unit: TopActivityUnit, locale: Locale, perSecond = "/s"): string {
+  const suffix = unit.endsWith("_per_second") ? perSecond : ""
+  const base = unit.replace(/_per_second$/, "")
+  if (base === "bytes") return humanBytes(stored, locale, suffix)
+  if (base === "milliseconds") return humanDuration(stored, locale, "milliseconds", suffix)
+  if (base === "seconds") return humanDuration(stored, locale, "seconds", suffix)
+  if (base === "microseconds") return humanDuration(stored, locale, "microseconds", suffix)
+  if (base === "nanoseconds") return humanDuration(stored, locale, "nanoseconds", suffix)
   return measure(stored, locale, suffix)
 }

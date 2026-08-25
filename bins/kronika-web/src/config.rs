@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
+use crate::product::page::PageKey;
+
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
 pub(crate) const SOURCE_OS: u32 = 1 << 0;
@@ -38,6 +40,8 @@ pub(crate) struct Config {
     pub(crate) listen: SocketAddr,
     /// Required account used by centralized authentication.
     pub(crate) account: Account,
+    /// Deployment-bound authentication key for opaque product continuations.
+    pub(crate) page_key: PageKey,
     /// Whether API and browser session authentication is enforced.
     pub(crate) authentication_required: bool,
     /// Whether browser session cookies are restricted to TLS connections.
@@ -83,6 +87,7 @@ impl Config {
             std::env::var("KRONIKA_WEB_USER").ok(),
             std::env::var("KRONIKA_WEB_PASSWORD").ok(),
         )?;
+        let page_key = page_key(&account)?;
         let authentication_required =
             authentication_required(std::env::var("KRONIKA_WEB_AUTH").ok().as_deref())?;
         let raw_cookie_secure = std::env::var("KRONIKA_WEB_COOKIE_SECURE").ok();
@@ -93,12 +98,30 @@ impl Config {
             data_root,
             listen,
             account,
+            page_key,
             authentication_required,
             cookie_secure,
             sources,
             synthetic_demo,
         })
     }
+}
+
+fn page_key(account: &Account) -> Result<PageKey> {
+    let mut secret = [0_u8; 32];
+    getrandom::fill(&mut secret)
+        .map_err(|_error| anyhow::anyhow!("could not generate the product cursor key"))?;
+    let mut material =
+        Vec::with_capacity(secret.len() + account.user.len() + account.password.len() + 2);
+    material.extend_from_slice(&secret);
+    material.push(0);
+    material.extend_from_slice(account.user.as_bytes());
+    material.push(0);
+    material.extend_from_slice(account.password.as_bytes());
+    let key = PageKey::derive(&material);
+    secret.fill(0);
+    material.fill(0);
+    Ok(key)
 }
 
 fn synthetic_demo(raw: Option<&str>) -> Result<bool> {

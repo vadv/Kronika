@@ -7,30 +7,164 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, logical_section_name, registry};
-use serde_json::{Value, json};
+use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentRef};
+#[cfg(test)]
+use kronika_registry::registry;
+use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
+use super::ApiError;
 use super::query::{Plan, plans, resolved_dictionary};
-use super::render::{cell, record};
-use super::{ApiError, CachePolicy, ResponseMeta};
-use crate::route::{DataRequest, HeatmapRequest, SegmentRequest};
+use super::render::cell;
+#[cfg(test)]
+use super::render::record;
+use crate::product::execution::{Execution, ExecutionStop};
+use crate::product::top_activity::{
+    ConversionContext, ConversionContextBuilder, MetricClass, Query,
+};
+use crate::route::{DataRequest, SegmentRequest};
 
 #[cfg(test)]
 mod tests;
 
 const ROW_CHUNK_ROWS: usize = 64;
+#[cfg(test)]
 const UNGROUPED_CELL_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeatmapRequest {
+    from: i64,
+    to: i64,
+    section: String,
+    fields: Vec<String>,
+    columns: usize,
+    top: usize,
+    labels: Vec<String>,
+    group: Vec<String>,
+    type_id: Option<u32>,
+}
+
+/// Storage-level result immediately normalized into semantic entities by the product executor.
+pub(crate) struct RawTopActivity {
+    pub(crate) conversion: ConversionContext,
+    pub(crate) intervals: Vec<(i64, i64)>,
+    pub(crate) rows: Vec<RawTopRow>,
+    pub(crate) totals: RawBand,
+    pub(crate) others: RawBand,
+    pub(crate) entity_count: usize,
+    pub(crate) out_of_order: u64,
+}
+
+pub(crate) struct RawTopRow {
+    pub(crate) identity: RawTopIdentity,
+    pub(crate) total: Option<f64>,
+    pub(crate) cells: Vec<Option<f64>>,
+}
+
+pub(crate) enum RawTopIdentity {
+    Ungrouped {
+        type_id: u32,
+        identity: Vec<Value>,
+        labels: Vec<Value>,
+    },
+    Group {
+        values: Vec<Value>,
+        members: u32,
+    },
+}
+
+pub(crate) struct RawBand {
+    pub(crate) total: Option<f64>,
+    pub(crate) cells: Vec<Option<f64>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum RawTopError {
+    Read(ApiError),
+    Stopped(ExecutionStop),
+}
+
+impl From<ApiError> for RawTopError {
+    fn from(error: ApiError) -> Self {
+        Self::Read(error)
+    }
+}
+
+impl From<ExecutionStop> for RawTopError {
+    fn from(stop: ExecutionStop) -> Self {
+        Self::Stopped(stop)
+    }
+}
+
+/// Read one pinned source view and construct the complete raw ranked result.
+pub(crate) fn collect_top_activity(
+    root: &Path,
+    query: Query,
+    execution: &Execution,
+) -> Result<RawTopActivity, RawTopError> {
+    execution.checkpoint()?;
+    let recipe = query.recipe().ok_or(ApiError::NoSuchSection)?;
+    let started = std::time::Instant::now();
+    let reader = Reader::open(root).map_err(ApiError::from)?;
+    // One listing pins the active WAL prefix for both conversion metadata and
+    // every rank/fill pass. No later scan can mix source views into the result.
+    let stored = reader
+        .catalog_segments(..=query.hour().end())
+        .map_err(ApiError::from)?;
+    let conversion = conversion_context(&reader, &stored.segments, query, execution)?;
+    let mut segments = stored
+        .segments
+        .iter()
+        .filter(|segment| {
+            segment.max_ts() >= query.hour().start() && segment.min_ts() <= query.hour().end()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    segments.sort_by_key(SegmentRef::min_ts);
+    super::catalog::log_open(segments.len(), &stored.warnings, started);
+    let request = HeatmapRequest {
+        from: query.hour().start(),
+        to: query.hour().end(),
+        section: recipe.section.to_owned(),
+        fields: recipe
+            .fields
+            .iter()
+            .map(|field| (*field).to_owned())
+            .collect(),
+        columns: recipe.intervals,
+        top: query.top().get(),
+        labels: recipe
+            .labels
+            .iter()
+            .map(|label| (*label).to_owned())
+            .collect(),
+        group: recipe
+            .groups
+            .iter()
+            .map(|group| (*group).to_owned())
+            .collect(),
+        type_id: None,
+    };
+    let prepared = PreparedHeatmap {
+        reader,
+        segments,
+        request,
+        cumulative: recipe.class == MetricClass::Cumulative,
+    };
+    prepared.collect(conversion, execution)
+}
 
 pub(crate) struct PreparedHeatmap {
     reader: Reader,
     segments: Vec<SegmentRef>,
     request: HeatmapRequest,
     cumulative: bool,
-    etag: Option<String>,
 }
 
-pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
+#[cfg(test)]
+fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
     let cumulative = fields_class(&request.section, &request.fields, request.type_id)?
         == ColumnClass::Cumulative;
     let started = std::time::Instant::now();
@@ -43,21 +177,195 @@ pub(super) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
         .collect();
     segments.sort_by_key(SegmentRef::min_ts);
     super::catalog::log_open(segments.len(), &stored.warnings, started);
-    let etag = stored
-        .warnings
-        .is_empty()
-        .then(|| super::weak_etag("heatmap", &format!("{request:?}"), &segments))
-        .flatten();
     Ok(PreparedHeatmap {
         reader,
         segments,
         request,
         cumulative,
-        etag,
     })
 }
 
+fn conversion_context(
+    reader: &Reader,
+    sources: &[SegmentRef],
+    query: Query,
+    execution: &Execution,
+) -> Result<ConversionContext, RawTopError> {
+    let mut builder = ConversionContextBuilder::new(query.hour());
+    let hour_end = query.hour().end();
+    let mut block_size_resolved = false;
+    let mut clock_ticks_resolved = false;
+    for source in sources.iter().rev() {
+        execution.checkpoint()?;
+        let segment = reader.open_segment(source).map_err(ApiError::from)?;
+        let mut source_block_size_resolved = false;
+        let mut source_clock_ticks_resolved = false;
+        for (type_id, _rows) in segment.sections() {
+            execution.checkpoint()?;
+            match logical_section_name(type_id) {
+                Some("instance_metadata") if !clock_ticks_resolved => {
+                    source_clock_ticks_resolved |=
+                        observe_clock_ticks(&segment, type_id, hour_end, &mut builder, execution)?;
+                }
+                Some("pg_settings") if !block_size_resolved => {
+                    source_block_size_resolved |=
+                        observe_block_size(&segment, type_id, hour_end, &mut builder, execution)?;
+                }
+                _ => {}
+            }
+        }
+        block_size_resolved |= source_block_size_resolved;
+        clock_ticks_resolved |= source_clock_ticks_resolved;
+        if block_size_resolved && clock_ticks_resolved {
+            break;
+        }
+    }
+    Ok(builder.finish())
+}
+
+fn observe_clock_ticks(
+    segment: &Segment,
+    type_id: u32,
+    hour_end: i64,
+    builder: &mut ConversionContextBuilder,
+    execution: &Execution,
+) -> Result<bool, RawTopError> {
+    let Some(layout) = contract(type_id) else {
+        return Ok(false);
+    };
+    let Some(timestamp) = layout
+        .columns
+        .iter()
+        .find(|column| column.class == ColumnClass::Timestamp)
+    else {
+        return Ok(false);
+    };
+    let Some(ticks) = layout.column("clock_ticks_per_sec") else {
+        return Ok(false);
+    };
+    let mut found_usable = false;
+    let mut stopped_early = false;
+    segment
+        .visit_rows(
+            type_id,
+            &[timestamp.name, ticks.name],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if execution.checkpoint().is_err() {
+                    stopped_early = true;
+                    return false;
+                }
+                let at = match row.get(timestamp.name) {
+                    Some(Cell::Ts(value)) => *value,
+                    _ => return true,
+                };
+                let value = positive_i64(row.get(ticks.name));
+                if at <= hour_end && value.is_some() {
+                    found_usable = true;
+                }
+                builder.observe_clock_ticks_per_sec(at, value);
+                true
+            },
+        )
+        .map_err(ApiError::from)?;
+    if stopped_early {
+        return Err(stopped(execution));
+    }
+    Ok(found_usable)
+}
+
+fn observe_block_size(
+    segment: &Segment,
+    type_id: u32,
+    hour_end: i64,
+    builder: &mut ConversionContextBuilder,
+    execution: &Execution,
+) -> Result<bool, RawTopError> {
+    let Some(layout) = contract(type_id) else {
+        return Ok(false);
+    };
+    let Some(timestamp) = layout
+        .columns
+        .iter()
+        .find(|column| column.class == ColumnClass::Timestamp)
+    else {
+        return Ok(false);
+    };
+    let (Some(name), Some(setting)) = (layout.column("name"), layout.column("setting")) else {
+        return Ok(false);
+    };
+    let mut candidates = Vec::new();
+    let mut ids = HashSet::new();
+    let mut stopped_early = false;
+    segment
+        .visit_rows(
+            type_id,
+            &[timestamp.name, name.name, setting.name],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if execution.checkpoint().is_err() {
+                    stopped_early = true;
+                    return false;
+                }
+                let (Some(Cell::Ts(at)), Some(Cell::StrId(name_id)), Some(Cell::StrId(setting_id))) = (
+                    row.get(timestamp.name),
+                    row.get(name.name),
+                    row.get(setting.name),
+                ) else {
+                    return true;
+                };
+                ids.insert(*name_id);
+                ids.insert(*setting_id);
+                candidates.push((*at, *name_id, *setting_id));
+                true
+            },
+        )
+        .map_err(ApiError::from)?;
+    if stopped_early {
+        return Err(stopped(execution));
+    }
+    let dictionary = resolved_dictionary(segment, &ids)?;
+    let mut found_usable = false;
+    for (at, name_id, setting_id) in candidates {
+        execution.checkpoint()?;
+        let Some(Resolved::Str(name)) = dictionary.resolve(name_id) else {
+            continue;
+        };
+        if name != b"block_size" {
+            continue;
+        }
+        let value = dictionary
+            .resolve(setting_id)
+            .and_then(|resolved| match resolved {
+                Resolved::Str(bytes) => std::str::from_utf8(bytes).ok(),
+                Resolved::Blob(_blob) => None,
+            })
+            .and_then(|text| text.parse::<u128>().ok());
+        if at <= hour_end && value.is_some_and(|value| value > 0) {
+            found_usable = true;
+        }
+        builder.observe_block_size(at, value);
+    }
+    Ok(found_usable)
+}
+
+fn positive_i64(cell: Option<&Cell>) -> Option<i64> {
+    match cell {
+        Some(Cell::I16(value)) => Some(i64::from(*value)),
+        Some(Cell::I32(value)) => Some(i64::from(*value)),
+        Some(Cell::I64(value) | Cell::Ts(value)) => Some(*value),
+        Some(Cell::U32(value)) => Some(i64::from(*value)),
+        Some(Cell::U64(value)) => i64::try_from(*value).ok(),
+        Some(Cell::Bool(_) | Cell::StrId(_) | Cell::ListI32(_) | Cell::Null | Cell::F64(_))
+        | None => None,
+    }
+    .filter(|value| *value > 0)
+}
+
 /// Validates that every cut field exists and has one shared numeric class.
+#[cfg(test)]
 fn fields_class(
     section: &str,
     fields: &[String],
@@ -97,23 +405,159 @@ fn fields_class(
 }
 
 impl PreparedHeatmap {
-    pub(super) fn meta(&self) -> ResponseMeta {
-        let settled = self
-            .segments
-            .iter()
-            .all(|segment| segment.kind() == SegmentKind::Finished);
-        ResponseMeta::ok_with_etag(
-            if self.etag.is_some() {
-                CachePolicy::Immutable
-            } else if settled {
-                CachePolicy::Revalidate
+    fn collect(
+        &self,
+        conversion: ConversionContext,
+        execution: &Execution,
+    ) -> Result<RawTopActivity, RawTopError> {
+        let cancelled = || execution.checkpoint().is_err();
+        let (fold, seen_rows) = self.rank(&cancelled)?.ok_or_else(|| stopped(execution))?;
+        let (rows, totals, others, entity_count, out_of_order) = if self.request.group.is_empty() {
+            let ranked = fold.finish(self.request.top);
+            let (cells, labels) = self
+                .fill(&ranked.rows, &seen_rows, &cancelled)?
+                .ok_or_else(|| stopped(execution))?;
+            let mut winner_sums = vec![CellSum::default(); self.request.columns];
+            let mut rows = Vec::with_capacity(ranked.rows.len());
+            for ((ranked_row, row_cells), row_labels) in ranked.rows.iter().zip(cells).zip(labels) {
+                execution.checkpoint()?;
+                let cells = row_cells
+                    .iter()
+                    .enumerate()
+                    .map(|(index, observed)| {
+                        let value = observed.cell(self.cumulative);
+                        if let Some(value) = value {
+                            winner_sums[index].add(value);
+                        }
+                        value
+                    })
+                    .collect();
+                rows.push(RawTopRow {
+                    identity: RawTopIdentity::Ungrouped {
+                        type_id: ranked_row.type_id,
+                        identity: ranked_row.identity.clone(),
+                        labels: row_labels
+                            .into_iter()
+                            .map(|(_timestamp, value)| value)
+                            .collect(),
+                    },
+                    total: ranked_row.total,
+                    cells,
+                });
+            }
+            let total_cells = ranked
+                .totals
+                .iter()
+                .map(CellSum::checked_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            let other_cells = ranked
+                .totals
+                .iter()
+                .zip(&winner_sums)
+                .map(|(total, winner)| total.checked_minus(winner))
+                .collect::<Result<Vec<_>, _>>()?;
+            let totals_total = if self.cumulative {
+                ranked.totals_total
             } else {
-                CachePolicy::NoStore
-            },
-            self.etag.clone(),
-        )
+                checked_band_peak(&ranked.totals)?
+            };
+            let others_total = if self.cumulative {
+                ranked.others_total
+            } else {
+                finite_peak(other_cells.iter().copied())
+            };
+            (
+                rows,
+                RawBand {
+                    total: totals_total,
+                    cells: total_cells,
+                },
+                RawBand {
+                    total: others_total,
+                    cells: other_cells,
+                },
+                ranked.entity_count,
+                ranked.out_of_order,
+            )
+        } else {
+            let mut grouped = fold.finish_grouped(self.request.top);
+            let filled = self
+                .fill_grouped(&grouped, &seen_rows, &cancelled)?
+                .ok_or_else(|| stopped(execution))?;
+            for (row, cells) in grouped.rows.iter_mut().zip(filled.rows) {
+                row.cells = cells
+                    .iter()
+                    .map(CellSum::checked_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            grouped.others = filled.others;
+            if !self.cumulative {
+                grouped.others_total = checked_band_peak(&grouped.others)?;
+            }
+            let rows = grouped
+                .rows
+                .into_iter()
+                .map(|row| RawTopRow {
+                    identity: RawTopIdentity::Group {
+                        values: row.values,
+                        members: row.members,
+                    },
+                    total: row.total,
+                    cells: row.cells,
+                })
+                .collect();
+            (
+                rows,
+                RawBand {
+                    total: grouped.totals_total,
+                    cells: grouped
+                        .totals
+                        .iter()
+                        .map(CellSum::checked_value)
+                        .collect::<Result<Vec<_>, _>>()?,
+                },
+                RawBand {
+                    total: grouped.others_total,
+                    cells: grouped
+                        .others
+                        .iter()
+                        .map(CellSum::checked_value)
+                        .collect::<Result<Vec<_>, _>>()?,
+                },
+                grouped.group_count,
+                grouped.out_of_order,
+            )
+        };
+        execution.checkpoint()?;
+        Ok(RawTopActivity {
+            conversion,
+            intervals: (0..self.request.columns)
+                .map(|index| {
+                    (
+                        interval_start(
+                            self.request.from,
+                            self.request.to,
+                            self.request.columns,
+                            index,
+                        ),
+                        interval_end(
+                            self.request.from,
+                            self.request.to,
+                            self.request.columns,
+                            index,
+                        ),
+                    )
+                })
+                .collect(),
+            rows,
+            totals,
+            others,
+            entity_count,
+            out_of_order,
+        })
     }
 
+    #[cfg(test)]
     pub(super) fn stream(
         self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -227,7 +671,7 @@ impl PreparedHeatmap {
                             }
                             Some(values)
                         };
-                        let value = summed(&row, &cut);
+                        let value = summed(&row, &cut)?;
                         fold.observe(plan.type_id, &identity, group, ts, value);
                     }
                     Ok(true)
@@ -325,7 +769,7 @@ impl PreparedHeatmap {
                         let Some(index) = winners.get(key.as_str()).copied() else {
                             continue;
                         };
-                        if let Some(value) = summed(&row, &cut) {
+                        if let Some(value) = summed(&row, &cut)? {
                             let previous_ts = carries[index].map(|(carry_ts, _value)| carry_ts);
                             let column = column_of_span(previous_ts, ts, from, to, columns);
                             if cumulative
@@ -439,7 +883,7 @@ impl PreparedHeatmap {
                                 None => Value::Null,
                             });
                         }
-                        fold.observe(plan.type_id, &identity, &group, *ts, summed(&row, &cut));
+                        fold.observe(plan.type_id, &identity, &group, *ts, summed(&row, &cut)?);
                     }
                     Ok(true)
                 })?;
@@ -451,6 +895,7 @@ impl PreparedHeatmap {
         Ok(Some(fold.finish()))
     }
 
+    #[cfg(test)]
     fn emit_ungrouped(
         &self,
         ranked: &Ranked,
@@ -558,6 +1003,7 @@ impl PreparedHeatmap {
         Ok(())
     }
 
+    #[cfg(test)]
     fn emit_grouped(
         &self,
         grouped: &Grouped,
@@ -689,6 +1135,7 @@ fn pump_rows(
 
 /// Caps each ungrouped batch by observation and label storage. Larger results
 /// use additional passes over the fixed row prefix.
+#[cfg(test)]
 fn ungrouped_batch_rows(columns: usize, labels: usize) -> usize {
     let cell_bytes = columns.saturating_mul(size_of::<Obs>());
     let label_bytes = labels.saturating_mul(size_of::<(i64, Value)>());
@@ -770,14 +1217,20 @@ fn cut_columns(plan: &Plan, count: usize) -> Vec<&'static str> {
         .collect()
 }
 
-fn summed(row: &Row, columns: &[&'static str]) -> Option<f64> {
+fn summed(row: &Row, columns: &[&'static str]) -> Result<Option<f64>, ApiError> {
     let mut sum: Option<f64> = None;
     for column in columns {
         if let Some(value) = row.get(column).and_then(numeric) {
-            sum = Some(sum.unwrap_or(0.0) + value);
+            let next = sum.unwrap_or(0.0) + value;
+            if !next.is_finite() {
+                return Err(invalid_numeric_data(
+                    "stored metric component sum is not finite",
+                ));
+            }
+            sum = Some(next);
         }
     }
-    sum
+    Ok(sum)
 }
 
 fn numeric(stored: &Cell) -> Option<f64> {
@@ -796,6 +1249,7 @@ fn numeric(stored: &Cell) -> Option<f64> {
     }
 }
 
+#[cfg(test)]
 fn number(stored: Option<f64>) -> Value {
     stored
         .and_then(serde_json::Number::from_f64)
@@ -923,7 +1377,8 @@ impl Obs {
             reason = "an interval of 2^52 microseconds is 142 years"
         )]
         let seconds = (self.last_ts - self.first_ts) as f64 / 1_000_000.0;
-        Some(delta / seconds)
+        let value = delta / seconds;
+        value.is_finite().then_some(value)
     }
 
     /// The whole-window ranking value: absolute counter delta or gauge maximum.
@@ -938,7 +1393,7 @@ impl Obs {
             return None;
         }
         let delta = self.last_value - self.first_value;
-        (delta >= 0.0).then_some(delta)
+        (delta >= 0.0 && delta.is_finite()).then_some(delta)
     }
 }
 
@@ -946,21 +1401,57 @@ impl Obs {
 pub(super) struct CellSum {
     sum: f64,
     contributors: u32,
+    invalid: bool,
 }
 
 impl CellSum {
     pub(super) fn add(&mut self, value: f64) {
-        self.sum += value;
+        if self.invalid || !value.is_finite() {
+            self.invalid = true;
+            return;
+        }
+        let sum = self.sum + value;
+        if !sum.is_finite() {
+            self.invalid = true;
+            return;
+        }
+        self.sum = sum;
         self.contributors = self.contributors.saturating_add(1);
     }
 
     pub(super) fn value(&self) -> Option<f64> {
-        (self.contributors > 0).then_some(self.sum)
+        (self.contributors > 0 && !self.invalid).then_some(self.sum)
     }
 
+    fn checked_value(&self) -> Result<Option<f64>, ApiError> {
+        if self.invalid {
+            return Err(invalid_numeric_data("derived metric sum is not finite"));
+        }
+        Ok((self.contributors > 0).then_some(self.sum))
+    }
+
+    #[cfg(test)]
     pub(super) fn minus(&self, winners: &Self) -> Option<f64> {
+        if self.invalid || winners.invalid {
+            return None;
+        }
         let contributors = self.contributors.saturating_sub(winners.contributors);
-        (contributors > 0).then_some(self.sum - winners.sum)
+        let value = self.sum - winners.sum;
+        (contributors > 0 && value.is_finite()).then_some(value)
+    }
+
+    fn checked_minus(&self, winners: &Self) -> Result<Option<f64>, ApiError> {
+        if self.invalid || winners.invalid {
+            return Err(invalid_numeric_data("derived metric sum is not finite"));
+        }
+        let contributors = self.contributors.saturating_sub(winners.contributors);
+        let value = self.sum - winners.sum;
+        if !value.is_finite() {
+            return Err(invalid_numeric_data(
+                "derived metric difference is not finite",
+            ));
+        }
+        Ok((contributors > 0).then_some(value))
     }
 }
 
@@ -1428,10 +1919,38 @@ impl Fold {
 }
 
 fn band_peak(cells: &[CellSum]) -> Option<f64> {
+    finite_peak(cells.iter().filter_map(CellSum::value).map(Some))
+}
+
+fn checked_band_peak(cells: &[CellSum]) -> Result<Option<f64>, ApiError> {
     cells
         .iter()
-        .filter_map(CellSum::value)
+        .map(CellSum::checked_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map(finite_peak)
+}
+
+fn finite_peak(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
+    values
+        .into_iter()
+        .flatten()
+        .filter(|value| value.is_finite())
         .fold(None, |current: Option<f64>, value| {
             Some(current.map_or(value, |stored| stored.max(value)))
         })
+}
+
+fn invalid_numeric_data(message: &'static str) -> ApiError {
+    ApiError::Unreadable(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    )))
+}
+
+fn stopped(execution: &Execution) -> RawTopError {
+    RawTopError::Stopped(
+        execution
+            .checkpoint()
+            .expect_err("a storage pass stops only after an execution checkpoint"),
+    )
 }

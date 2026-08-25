@@ -1,7 +1,8 @@
 import { registry } from "kronika:registry"
 
+import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, type ActivityCut } from "./activity-cuts"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
-import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { HOUR_MICROS, heatmap, heatmapEntityKey, type HeatmapSample, type HeatmapView, type HeatmapViewRow, type TopActivityDefinition, type TopActivityEntity, type TopActivityMetric, type TopActivityRelationLevel, type TopActivitySurface, type TopActivityUnit } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -136,7 +137,7 @@ export interface HourData {
 
 export interface SnapshotRows {
   readonly logicalName: string
-  readonly eligible: number
+  readonly eligible: number | null
   readonly returned: number
   readonly hasMore: boolean
   readonly truncated: boolean
@@ -447,182 +448,629 @@ export async function loadSeries(
 
 export async function loadHeatmap(
   selectedHour: number,
-  section: string,
-  fields: readonly string[],
-  labels: readonly string[],
-  columns: number,
+  surface: TopActivitySurface,
+  metric: TopActivityMetric,
   top: number,
   signal: AbortSignal,
-  group?: readonly string[],
+  level?: TopActivityRelationLevel,
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
-  const from = floorHour(selectedHour)
-  const to = from + 3_600_000_000 - 1
-  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top, group)
+  const hour = floorHour(selectedHour)
+  const effectiveLevel = surface === "postgresql_tables" || surface === "postgresql_indexes"
+    ? level ?? "object"
+    : undefined
+  if (bundledFixtureRange() !== null) return fixtureHeatmap(hour, surface, metric, top, effectiveLevel)
   const query = [
-    `from=${from}`,
-    `to=${to}`,
-    `section=${encodeURIComponent(section)}`,
-    ...fields.map((name) => `field=${encodeURIComponent(name)}`),
-    `columns=${columns}`,
+    `hour=${hour}`,
+    `surface=${surface}`,
+    `metric=${metric}`,
+    ...(effectiveLevel === undefined ? [] : [`level=${effectiveLevel}`]),
     `top=${top}`,
-    ...labels.map((name) => `label=${encodeURIComponent(name)}`),
-    ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
   ].join("&")
-  const records = await request(`/api/heatmap?${query}`, signal)
-  const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
-    ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
-    : []
-  const total = (stored: unknown): number | null => typeof stored === "number" && Number.isFinite(stored) ? stored : null
-  const texts = (stored: unknown): (string | null)[] => Array.isArray(stored)
-    ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
-    : []
-  let cumulative = true
-  let intervals: { start: number; end: number }[] = []
-  let entityCount = 0
-  let othersCount = 0
-  const rows: HeatmapViewRow[] = []
-  let totalsBand: HeatmapBand = { total: null, cells: [] }
-  let othersBand: HeatmapBand = { total: null, cells: [] }
-  for (const record of records) {
-    if (record.record === "heatmap") {
-      cumulative = record["class"] === "cumulative"
-      entityCount = Number(record["entity_count"] ?? 0)
-      othersCount = Number(record["others_count"] ?? 0)
-      intervals = Array.isArray(record["intervals"])
-        ? record["intervals"].map((interval) => ({
-          start: integer((interval as { readonly start: unknown }).start, "heatmap interval start"),
-          end: integer((interval as { readonly end: unknown }).end, "heatmap interval end"),
-        }))
-        : []
-    } else if (record.record === "heatmap_row") {
-      rows.push({
-        typeId: requiredText(record.type_id, "heatmap row type_id"),
-        identity: texts(record["identity"]),
-        labels: texts(record["labels"]),
-        members: typeof record["members"] === "number" ? record["members"] : null,
-        total: total(record["total"]),
-        cells: cells(record["cells"]),
-      })
-    } else if (record.record === "heatmap_band") {
-      const band = { total: total(record["total"]), cells: cells(record["cells"]) }
-      if (record["band"] === "totals") totalsBand = band
-      else othersBand = band
-    }
-  }
-  return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
+  const stored = await requestJson(`/api/heatmap?${query}`, signal)
+  return parseTopActivityResult(stored, { hour, surface, metric, level: effectiveLevel ?? null })
 }
 
 function fixtureHeatmap(
-  from: number,
-  section: string,
-  fields: readonly string[],
-  labels: readonly string[],
-  columns: number,
+  hour: number,
+  surface: TopActivitySurface,
+  metric: TopActivityMetric,
   top: number,
-  group?: readonly string[],
+  level?: TopActivityRelationLevel,
 ): HeatmapView {
-  const fixture = bundledFixtureHour(from)
-  const rows = fixture === null ? [] : fixture.sections[section] ?? []
-  const cumulative = registry.some((layout) => layout.logicalName === section
-    && (layout.columnMetadata ?? []).some((column) => fields.includes(column.name) && column.class === "cumulative"))
+  const plan = fixtureTopActivityPlan(surface, level)
+  const cut = plan.cuts.find((candidate) => candidate.id === metric)
+  if (cut === undefined) throw new Error(`metric ${metric} is invalid for ${surface}`)
+  const fixture = bundledFixtureHour(hour)
+  const rows = fixture === null ? [] : fixture.sections[plan.section] ?? []
+  const conversion = fixtureConversion(cut, fixture, hour + HOUR_MICROS - 1)
   const samples: HeatmapSample[] = []
-  const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
-  const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
+  const firstRow = new Map<string, DataRow>()
+  const lastValues = new Map<string, Map<string, { readonly timestamp: number; readonly value: Cell }>>()
   const groupOf = new Map<string, readonly (string | null)[]>()
   for (const row of rows) {
     const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
-    if (layout === undefined || layout.logicalName !== section) continue
-    const identity = layout.identity.map((name) => {
-      const stored = row.values[name]
-      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-    })
+    if (layout === undefined || layout.logicalName !== plan.section) continue
+    const identity = (layout.identity ?? []).map((name) => fixtureText(row.values[name]))
     const entity = heatmapEntityKey([row.typeId, ...identity])
-    if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
-    if (group !== undefined && group.length > 0 && !groupOf.has(entity)) {
-      groupOf.set(entity, group.map((name) => {
-        const stored = row.values[name]
-        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-      }))
+    if (!firstRow.has(entity)) firstRow.set(entity, row)
+    const labels = lastValues.get(entity) ?? new Map()
+    for (const [name, value] of Object.entries(row.values)) {
+      if (value === null || value === undefined || typeof value === "object") continue
+      const stored = labels.get(name)
+      if (stored === undefined || row.timestamp >= stored.timestamp) labels.set(name, { timestamp: row.timestamp, value })
     }
+    lastValues.set(entity, labels)
     let numeric: number | null = null
-    for (const field of fields) {
+    for (const field of cut.fields) {
       const raw = row.values[field]
       const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
       if (parsed !== null && Number.isFinite(parsed)) numeric = (numeric ?? 0) + parsed
     }
-    samples.push({ entity, timestamp: row.timestamp, value: numeric })
-    const seen = lastLabels.get(entity)
-    if (seen === undefined || row.timestamp >= seen.ts) {
-      lastLabels.set(entity, {
-        ts: row.timestamp,
-        values: labels.map((name, index) => {
-          const stored = row.values[name]
-          if (stored !== null && stored !== undefined && typeof stored !== "object") return String(stored)
-          return seen?.values[index] ?? null
-        }),
-      })
+    if (numeric !== null && plan.group.length > 0 && !groupOf.has(entity)) {
+      groupOf.set(entity, plan.group.map((name) => fixtureText(row.values[name])))
     }
+    const scaled = numeric === null ? null : numeric * conversion.scale
+    samples.push({ entity, timestamp: row.timestamp, value: scaled !== null && Number.isFinite(scaled) ? scaled : null })
   }
-  if (group === undefined || group.length === 0) {
-    const derived = heatmap(samples, cumulative, from, columns, top)
-    return {
-      cumulative,
-      intervals: [...derived.intervals],
-      rows: derived.rows.map((row) => ({
-        typeId: firstRow.get(row.entity)?.typeId ?? "",
-        identity: firstRow.get(row.entity)?.identity ?? [],
-        labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
+  const cumulative = cut.class === "cumulative"
+  const all = heatmap(samples, cumulative, hour, plan.intervals, Number.MAX_SAFE_INTEGER)
+  let ranked: HeatmapViewRow[]
+  if (plan.group.length === 0) {
+    ranked = all.rows.map((row) => {
+      const first = firstRow.get(row.entity)
+      const source = first === undefined ? undefined : {
+        ...first,
+        values: {
+          ...first.values,
+          ...Object.fromEntries([...(lastValues.get(row.entity)?.entries() ?? [])].map(([name, stored]) => [name, stored.value])),
+        },
+      }
+      return {
+        recorded_layout: fixtureLayout(source?.typeId),
+        entity: fixtureTopActivityEntity(surface, source),
         members: null,
-        total: row.total,
-        cells: row.cells,
-      })),
-      totals: { total: derived.totalsTotal, cells: [...derived.totals] },
-      others: { total: derived.othersTotal, cells: [...derived.others] },
-      othersCount: derived.othersCount,
-      entityCount: derived.entityCount,
+        total: finiteOrNull(row.total),
+        cells: row.cells.map(finiteOrNull),
+      }
+    })
+  } else {
+    const grouped = new Map<string, { values: readonly (string | null)[]; members: number; total: number | null; cells: (number | null)[] }>()
+    for (const row of all.rows) {
+      const values = groupOf.get(row.entity) ?? plan.group.map(() => null)
+      const key = heatmapEntityKey(values)
+      const slot = grouped.get(key) ?? { values, members: 0, total: null, cells: new Array<number | null>(plan.intervals).fill(null) }
+      slot.members += 1
+      if (row.total !== null) slot.total = finiteSum(slot.total, row.total)
+      for (const [index, cell] of row.cells.entries()) {
+        if (cell !== null) slot.cells[index] = finiteSum(slot.cells[index] ?? null, cell)
+      }
+      grouped.set(key, slot)
     }
+    ranked = [...grouped.entries()]
+      .sort((left, right) => compareFixtureTotals(left[1].total, right[1].total))
+      .map(([, slot]) => ({
+        recorded_layout: null,
+        entity: fixtureGroupEntity(level ?? (surface === "processes" ? null : "object"), slot.values),
+        members: slot.members,
+        total: finiteOrNull(slot.total),
+        cells: slot.cells.map(finiteOrNull),
+      }))
   }
-  const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
-  const grouped = new Map<string, { values: readonly (string | null)[]; members: number; total: number | null; cells: (number | null)[] }>()
-  for (const row of derived.rows) {
-    const values = groupOf.get(row.entity) ?? group.map(() => null)
-    const key = heatmapEntityKey(values)
-    const slot = grouped.get(key) ?? { values, members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
-    slot.members += 1
-    if (row.total !== null) slot.total = (slot.total ?? 0) + row.total
-    for (const [index, cell] of row.cells.entries()) {
-      if (cell !== null) slot.cells[index] = (slot.cells[index] ?? 0) + cell
-    }
-    grouped.set(key, slot)
-  }
-  const ranked = [...grouped.entries()].sort((left, right) => (right[1].total ?? -1) - (left[1].total ?? -1))
   const kept = ranked.slice(0, top)
   const rest = ranked.slice(top)
-  const othersCells = new Array<number | null>(columns).fill(null)
+  const othersCells = new Array<number | null>(plan.intervals).fill(null)
   let othersTotal: number | null = null
-  for (const [, slot] of rest) {
-    if (slot.total !== null) othersTotal = (othersTotal ?? 0) + slot.total
-    for (const [index, cell] of slot.cells.entries()) {
-      if (cell !== null) othersCells[index] = (othersCells[index] ?? 0) + cell
+  for (const row of rest) {
+    if (cumulative && row.total !== null) othersTotal = finiteSum(othersTotal, row.total)
+    for (const [index, cell] of row.cells.entries()) {
+      if (cell !== null) othersCells[index] = finiteSum(othersCells[index] ?? null, cell)
     }
   }
+  if (!cumulative) othersTotal = finiteMaximum(othersCells)
+  const intervals = heatmapIntervalsAsStrings(hour, plan.intervals)
   return {
-    cumulative,
-    intervals: [...derived.intervals],
-    rows: kept.map(([, slot]) => ({
-      typeId: "0",
-      identity: slot.values,
-      labels: [],
-      members: slot.members,
-      total: slot.total,
-      cells: slot.cells,
-    })),
-    totals: { total: derived.totalsTotal, cells: [...derived.totals] },
-    others: { total: othersTotal, cells: othersCells },
-    othersCount: rest.length,
-    entityCount: grouped.size,
+    hour_start: String(hour),
+    hour_end: String(hour + HOUR_MICROS - 1),
+    surface,
+    metric,
+    level: surface === "postgresql_tables" || surface === "postgresql_indexes" ? level ?? "object" : null,
+    definition: fixtureDefinition(cut, conversion.unit, plan.group.length > 0),
+    intervals,
+    rows: kept,
+    totals: {
+      total: cumulative ? finiteOrNull(all.totalsTotal) : finiteMaximum(all.totals),
+      cells: all.totals.map(finiteOrNull),
+    },
+    others: { total: finiteOrNull(othersTotal), cells: othersCells.map(finiteOrNull) },
+    others_count: rest.length,
+    entity_count: ranked.length,
+    top: kept.length,
+    out_of_order: "0",
   }
+}
+
+interface FixtureTopActivityPlan {
+  readonly section: string
+  readonly cuts: readonly ActivityCut[]
+  readonly intervals: number
+  readonly group: readonly string[]
+}
+
+function fixtureTopActivityPlan(surface: TopActivitySurface, level?: TopActivityRelationLevel): FixtureTopActivityPlan {
+  if (surface === "postgresql_statements") return { section: "pg_stat_statements", cuts: STATEMENT_CUTS, intervals: 60, group: [] }
+  if (surface === "postgresql_plans") return { section: "pg_store_plans", cuts: PLAN_CUTS, intervals: 60, group: [] }
+  if (surface === "processes") return { section: "os_process", cuts: PROCESS_CUTS, intervals: 60, group: ["comm"] }
+  if (surface === "postgresql_databases") return { section: "pg_stat_database", cuts: DATABASE_CUTS, intervals: 60, group: [] }
+  if (surface === "cgroup_cpu") return { section: "os_cgroup_cpu", cuts: CGROUP_CPU_CUTS, intervals: 60, group: [] }
+  if (surface === "cgroup_io") return { section: "os_cgroup_io", cuts: CGROUP_IO_CUTS, intervals: 60, group: [] }
+  const group = level === "schema"
+    ? ["datname", "schemaname"]
+    : level === "database" ? ["datname"] : level === "tablespace" ? ["tablespace"] : []
+  return surface === "postgresql_tables"
+    ? { section: "pg_stat_user_tables", cuts: TABLE_CUTS, intervals: 12, group }
+    : { section: "pg_stat_user_indexes", cuts: INDEX_CUTS, intervals: 12, group }
+}
+
+function fixtureConversion(
+  cut: ActivityCut,
+  fixture: HourData | null,
+  hourEnd: number,
+): { readonly scale: number; readonly unit: ActivityCut["kind"] | "count" } {
+  if (cut.scaleBy === "kib") return { scale: 1_024, unit: cut.kind }
+  if (cut.scaleBy === undefined) return { scale: 1, unit: cut.kind }
+  const candidates = cut.scaleBy === "block_size"
+    ? (fixture?.sections.pg_settings ?? []).flatMap((row) => fixtureText(row.values.name) === "block_size"
+      ? [{ at: row.timestamp, value: fixturePositive(row.values.setting) }]
+      : [])
+    : (fixture?.sections.instance_metadata ?? []).map((row) => ({
+      at: row.timestamp,
+      value: fixturePositive(row.values.clock_ticks_per_sec),
+    }))
+  const latest = candidates
+    .filter(({ at, value }) => at <= hourEnd && value !== null)
+    .sort((left, right) => right.at - left.at)[0]?.value ?? null
+  if (latest === null) return { scale: 1, unit: "count" }
+  return cut.scaleBy === "block_size"
+    ? { scale: latest, unit: cut.kind }
+    : { scale: 1 / latest, unit: cut.kind }
+}
+
+function fixtureDefinition(
+  cut: ActivityCut,
+  unit: ActivityCut["kind"] | "count",
+  grouped: boolean,
+): TopActivityDefinition {
+  const totalUnit = unit as TopActivityUnit
+  const cellUnit = (cut.class === "cumulative" ? `${unit}_per_second` : unit) as TopActivityUnit
+  const ranking = cut.class === "cumulative"
+    ? grouped ? "sum_member_window_delta_desc" : "whole_window_delta_desc"
+    : grouped ? "sum_member_window_max_desc" : "whole_window_max_desc"
+  return {
+    class: cut.class,
+    cell_unit: cellUnit,
+    total_unit: totalUnit,
+    ranking,
+    metric_description: `Recorded ${cut.id.replaceAll("_", " ")}.`,
+    cell_formula: cut.class === "cumulative"
+      ? "Nonnegative endpoint delta divided by positive observed seconds; null without two usable endpoints."
+      : "The last usable reading assigned to the interval; null without a usable reading.",
+    total_formula: cut.class === "cumulative"
+      ? "Nonnegative whole-hour endpoint delta."
+      : "Maximum usable reading in the hour.",
+  }
+}
+
+function fixtureTopActivityEntity(surface: TopActivitySurface, row: DataRow | undefined): TopActivityEntity {
+  const values = row?.values ?? {}
+  if (surface === "postgresql_statements") return {
+    kind: "postgresql_statement",
+    query_id: fixtureI64(values.queryid, true),
+    role_oid: fixtureU32(values.userid),
+    database_oid: fixtureU32(values.dbid),
+    top_level: typeof values.toplevel === "boolean" ? values.toplevel : null,
+    database_name: fixtureText(values.datname),
+    role_name: fixtureText(values.usename),
+  }
+  if (surface === "postgresql_plans") return {
+    kind: "postgresql_plan",
+    role_oid: fixtureU32(values.userid),
+    database_oid: fixtureU32(values.dbid),
+    entry_query_id: fixtureI64(values.queryid) ?? "0",
+    plan_id: fixtureI64(values.planid) ?? "0",
+    database_name: fixtureText(values.datname),
+    role_name: fixtureText(values.usename),
+  }
+  if (surface === "postgresql_tables") return {
+    kind: "postgresql_table",
+    database_oid: fixtureU32(values.datid),
+    relation_oid: fixtureU32(values.relid),
+    database_name: fixtureText(values.datname) ?? "",
+    schema_name: fixtureText(values.schemaname) ?? "",
+    relation_name: fixtureText(values.relname) ?? "",
+  }
+  if (surface === "postgresql_indexes") return {
+    kind: "postgresql_index",
+    database_oid: fixtureU32(values.datid),
+    index_oid: fixtureU32(values.indexrelid),
+    database_name: fixtureText(values.datname) ?? "",
+    schema_name: fixtureText(values.schemaname) ?? "",
+    table_name: fixtureText(values.relname) ?? "",
+    index_name: fixtureText(values.indexrelname) ?? "",
+  }
+  if (surface === "postgresql_databases") return {
+    kind: "postgresql_database",
+    database_oid: fixtureU32(values.datid),
+    database_name: fixtureText(values.datname),
+  }
+  if (surface === "cgroup_cpu") return { kind: "cgroup_cpu", path: fixtureText(values.cgroup_path) ?? "" }
+  if (surface === "cgroup_io") return {
+    kind: "cgroup_io_device",
+    path: fixtureText(values.cgroup_path) ?? "",
+    major: fixtureU32(values.major),
+    minor: fixtureU32(values.minor),
+  }
+  return { kind: "process_command", command: fixtureText(values.comm) ?? "" }
+}
+
+function fixtureGroupEntity(
+  level: TopActivityRelationLevel | null,
+  values: readonly (string | null)[],
+): TopActivityEntity {
+  if (level === "schema") return {
+    kind: "postgresql_relation_schema",
+    database_name: values[0] ?? "",
+    schema_name: values[1] ?? "",
+  }
+  if (level === "database") return { kind: "postgresql_relation_database", database_name: values[0] ?? "" }
+  if (level === "tablespace") return { kind: "postgresql_tablespace", tablespace_name: values[0] ?? null }
+  return { kind: "process_command", command: values[0] ?? "" }
+}
+
+function heatmapIntervalsAsStrings(hour: number, columns: number): readonly { readonly start: string; readonly end: string }[] {
+  return Array.from({ length: columns }, (_, index) => ({
+    start: String(hour + Math.floor((index * HOUR_MICROS) / columns)),
+    end: String(hour + Math.floor(((index + 1) * HOUR_MICROS) / columns) - 1),
+  }))
+}
+
+function fixturePositive(stored: Cell | undefined): number | null {
+  const value = typeof stored === "number" ? stored : typeof stored === "string" ? Number(stored) : Number.NaN
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+function fixtureU32(stored: Cell | undefined): number {
+  const value = typeof stored === "number" ? stored : typeof stored === "string" ? Number(stored) : 0
+  return Number.isInteger(value) && value >= 0 && value <= 4_294_967_295 ? value : 0
+}
+
+function fixtureI64(stored: Cell | undefined, nullable = false): string | null {
+  const value = fixtureText(stored)
+  return value !== null && /^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(value) ? value : nullable ? null : "0"
+}
+
+function fixtureLayout(typeId: string | undefined): number | null {
+  const parsed = typeId === undefined ? Number.NaN : Number(typeId)
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 4_294_967_295 ? parsed : null
+}
+
+function finiteSum(left: number | null, right: number): number | null {
+  const sum = (left ?? 0) + right
+  return Number.isFinite(sum) ? sum : null
+}
+
+function finiteOrNull(value: number | null): number | null {
+  return value !== null && Number.isFinite(value) ? value : null
+}
+
+function finiteMaximum(values: readonly (number | null)[]): number | null {
+  let maximum: number | null = null
+  for (const value of values) if (value !== null && Number.isFinite(value)) maximum = Math.max(maximum ?? value, value)
+  return maximum
+}
+
+function compareFixtureTotals(left: number | null, right: number | null): number {
+  if (left === null && right === null) return 0
+  if (left === null) return 1
+  if (right === null) return -1
+  return right - left
+}
+
+const TOP_ACTIVITY_SURFACES = new Set<TopActivitySurface>([
+  "postgresql_statements", "postgresql_plans", "postgresql_tables", "postgresql_indexes",
+  "processes", "postgresql_databases", "cgroup_cpu", "cgroup_io",
+])
+const TOP_ACTIVITY_METRICS = new Set<TopActivityMetric>([
+  "exec_time", "calls", "rows", "shared_read", "shared_dirtied", "temp_written", "wal_bytes",
+  "writes", "seq_read", "heap_read", "dead_tuples", "autovacuum_time",
+  "idx_scan", "idx_tup_read", "idx_blks_read", "cpu", "rss", "io_read", "io_write", "majflt", "run_delay",
+  "commits", "rollbacks", "db_read", "temp_bytes", "deadlocks",
+  "cg_cpu", "cg_throttled", "cg_read", "cg_write", "cg_rios", "cg_wios",
+])
+const TOP_ACTIVITY_UNITS = new Set<TopActivityUnit>([
+  "count", "count_per_second", "bytes", "bytes_per_second",
+  "milliseconds", "milliseconds_per_second", "seconds", "seconds_per_second",
+  "microseconds", "microseconds_per_second", "nanoseconds", "nanoseconds_per_second",
+])
+const TOP_ACTIVITY_RANKINGS = new Set([
+  "whole_window_delta_desc", "whole_window_max_desc",
+  "sum_member_window_delta_desc", "sum_member_window_max_desc",
+] as const)
+
+export function parseTopActivityResult(
+  stored: unknown,
+  expected?: {
+    readonly hour: number
+    readonly surface: TopActivitySurface
+    readonly metric: TopActivityMetric
+    readonly level: TopActivityRelationLevel | null
+  },
+): HeatmapView {
+  const value = topObject(stored, "top activity result")
+  const hourStart = topI64(value.hour_start, "top activity hour_start")
+  const hourEnd = topI64(value.hour_end, "top activity hour_end")
+  if (BigInt(hourEnd) !== BigInt(hourStart) + BigInt(HOUR_MICROS - 1)) throw new Error("top activity hour bounds are invalid")
+  const surface = topEnum(value.surface, TOP_ACTIVITY_SURFACES, "top activity surface")
+  const metric = topEnum(value.metric, TOP_ACTIVITY_METRICS, "top activity metric")
+  const level = value.level === null
+    ? null
+    : topEnum(value.level, new Set<TopActivityRelationLevel>(["object", "schema", "database", "tablespace"]), "top activity level")
+  if ((surface === "postgresql_tables" || surface === "postgresql_indexes") !== (level !== null)) {
+    throw new Error("top activity level is invalid for its surface")
+  }
+  if (expected !== undefined && (
+    hourStart !== String(expected.hour)
+    || surface !== expected.surface
+    || metric !== expected.metric
+    || level !== expected.level
+  )) throw new Error("top activity response does not match its request")
+
+  const definitionValue = topObject(value.definition, "top activity definition")
+  const metricClass = topEnum(definitionValue.class, new Set(["cumulative", "gauge"] as const), "top activity class")
+  const definition: TopActivityDefinition = {
+    class: metricClass,
+    cell_unit: topEnum(definitionValue.cell_unit, TOP_ACTIVITY_UNITS, "top activity cell unit"),
+    total_unit: topEnum(definitionValue.total_unit, TOP_ACTIVITY_UNITS, "top activity total unit"),
+    ranking: topEnum(definitionValue.ranking, TOP_ACTIVITY_RANKINGS, "top activity ranking"),
+    metric_description: topNonemptyText(definitionValue.metric_description, "top activity metric description"),
+    cell_formula: topNonemptyText(definitionValue.cell_formula, "top activity cell formula"),
+    total_formula: topNonemptyText(definitionValue.total_formula, "top activity total formula"),
+  }
+  const expectedIntervals = surface === "postgresql_tables" || surface === "postgresql_indexes" ? 12 : 60
+  const intervals = topArray(value.intervals, "top activity intervals").map((interval, index) => {
+    const item = topObject(interval, `top activity interval ${index}`)
+    return {
+      start: topI64(item.start, `top activity interval ${index} start`),
+      end: topI64(item.end, `top activity interval ${index} end`),
+    }
+  })
+  if (intervals.length !== expectedIntervals) throw new Error("top activity interval count is invalid")
+  for (let index = 0; index < intervals.length; index += 1) {
+    const interval = intervals[index]!
+    const expectedStart = BigInt(hourStart) + (BigInt(HOUR_MICROS) * BigInt(index)) / BigInt(expectedIntervals)
+    const expectedEnd = BigInt(hourStart) + (BigInt(HOUR_MICROS) * BigInt(index + 1)) / BigInt(expectedIntervals) - 1n
+    if (BigInt(interval.start) !== expectedStart || BigInt(interval.end) !== expectedEnd) {
+      throw new Error(`top activity interval ${index} bounds are invalid`)
+    }
+  }
+  const rows = topArray(value.rows, "top activity rows").map((row, index) => parseTopActivityRow(row, index, expectedIntervals))
+  if (rows.some((row) => !topActivityRowMatches(surface, level, row))) {
+    throw new Error("top activity row is invalid for its surface")
+  }
+  const totals = parseTopActivityBand(value.totals, "top activity totals", expectedIntervals)
+  const others = parseTopActivityBand(value.others, "top activity others", expectedIntervals)
+  const entityCount = topNonNegativeInteger(value.entity_count, "top activity entity_count")
+  const othersCount = topNonNegativeInteger(value.others_count, "top activity others_count")
+  const top = topNonNegativeInteger(value.top, "top activity top")
+  if (top !== rows.length || entityCount < rows.length || othersCount !== entityCount - rows.length) {
+    throw new Error("top activity result counts are inconsistent")
+  }
+  return {
+    hour_start: hourStart,
+    hour_end: hourEnd,
+    surface,
+    metric,
+    level,
+    definition,
+    intervals,
+    rows,
+    totals,
+    others,
+    entity_count: entityCount,
+    others_count: othersCount,
+    top,
+    out_of_order: topU64(value.out_of_order, "top activity out_of_order"),
+  }
+}
+
+function topActivityRowMatches(
+  surface: TopActivitySurface,
+  level: TopActivityRelationLevel | null,
+  row: HeatmapViewRow,
+): boolean {
+  if (surface === "postgresql_statements") return row.entity.kind === "postgresql_statement" && row.recorded_layout !== null && row.members === null
+  if (surface === "postgresql_plans") return row.entity.kind === "postgresql_plan" && row.recorded_layout !== null && row.members === null
+  if (surface === "postgresql_databases") return row.entity.kind === "postgresql_database" && row.recorded_layout !== null && row.members === null
+  if (surface === "cgroup_cpu") return row.entity.kind === "cgroup_cpu" && row.recorded_layout !== null && row.members === null
+  if (surface === "cgroup_io") return row.entity.kind === "cgroup_io_device" && row.recorded_layout !== null && row.members === null
+  if (surface === "processes") return row.entity.kind === "process_command" && row.recorded_layout === null && row.members !== null
+  if (level === "object") {
+    const kind = surface === "postgresql_tables" ? "postgresql_table" : "postgresql_index"
+    return row.entity.kind === kind && row.recorded_layout !== null && row.members === null
+  }
+  const kind = level === "schema" ? "postgresql_relation_schema"
+    : level === "database" ? "postgresql_relation_database" : "postgresql_tablespace"
+  return row.entity.kind === kind && row.recorded_layout === null && row.members !== null
+}
+
+function parseTopActivityRow(stored: unknown, index: number, intervals: number): HeatmapViewRow {
+  const value = topObject(stored, `top activity row ${index}`)
+  const recordedLayout = value.recorded_layout === null
+    ? null
+    : topPositiveU32(value.recorded_layout, `top activity row ${index} recorded_layout`)
+  const members = value.members === null
+    ? null
+    : topPositiveU32(value.members, `top activity row ${index} members`)
+  return {
+    recorded_layout: recordedLayout,
+    entity: parseTopActivityEntity(value.entity, index),
+    members,
+    total: topNullableFinite(value.total, `top activity row ${index} total`),
+    cells: topCells(value.cells, `top activity row ${index} cells`, intervals),
+  }
+}
+
+function parseTopActivityBand(stored: unknown, name: string, intervals: number) {
+  const value = topObject(stored, name)
+  return {
+    total: topNullableFinite(value.total, `${name} total`),
+    cells: topCells(value.cells, `${name} cells`, intervals),
+  }
+}
+
+function parseTopActivityEntity(stored: unknown, index: number): TopActivityEntity {
+  const value = topObject(stored, `top activity row ${index} entity`)
+  const name = `top activity row ${index} entity`
+  const kind = topNonemptyText(value.kind, `${name} kind`)
+  if (kind === "postgresql_statement") return {
+    kind,
+    query_id: value.query_id === null ? null : topI64(value.query_id, `${name} query_id`),
+    role_oid: topU32(value.role_oid, `${name} role_oid`),
+    database_oid: topU32(value.database_oid, `${name} database_oid`),
+    top_level: value.top_level === null ? null : topBoolean(value.top_level, `${name} top_level`),
+    database_name: topNullableText(value.database_name, `${name} database_name`),
+    role_name: topNullableText(value.role_name, `${name} role_name`),
+  }
+  if (kind === "postgresql_plan") return {
+    kind,
+    role_oid: topU32(value.role_oid, `${name} role_oid`),
+    database_oid: topU32(value.database_oid, `${name} database_oid`),
+    entry_query_id: topI64(value.entry_query_id, `${name} entry_query_id`),
+    plan_id: topI64(value.plan_id, `${name} plan_id`),
+    database_name: topNullableText(value.database_name, `${name} database_name`),
+    role_name: topNullableText(value.role_name, `${name} role_name`),
+  }
+  if (kind === "postgresql_table") return {
+    kind,
+    database_oid: topU32(value.database_oid, `${name} database_oid`),
+    relation_oid: topU32(value.relation_oid, `${name} relation_oid`),
+    database_name: topText(value.database_name, `${name} database_name`),
+    schema_name: topText(value.schema_name, `${name} schema_name`),
+    relation_name: topText(value.relation_name, `${name} relation_name`),
+  }
+  if (kind === "postgresql_index") return {
+    kind,
+    database_oid: topU32(value.database_oid, `${name} database_oid`),
+    index_oid: topU32(value.index_oid, `${name} index_oid`),
+    database_name: topText(value.database_name, `${name} database_name`),
+    schema_name: topText(value.schema_name, `${name} schema_name`),
+    table_name: topText(value.table_name, `${name} table_name`),
+    index_name: topText(value.index_name, `${name} index_name`),
+  }
+  if (kind === "process_command") return { kind, command: topText(value.command, `${name} command`) }
+  if (kind === "postgresql_database") return {
+    kind,
+    database_oid: topU32(value.database_oid, `${name} database_oid`),
+    database_name: topNullableText(value.database_name, `${name} database_name`),
+  }
+  if (kind === "cgroup_cpu") return { kind, path: topText(value.path, `${name} path`) }
+  if (kind === "cgroup_io_device") return {
+    kind,
+    path: topText(value.path, `${name} path`),
+    major: topU32(value.major, `${name} major`),
+    minor: topU32(value.minor, `${name} minor`),
+  }
+  if (kind === "postgresql_relation_database") return {
+    kind,
+    database_name: topText(value.database_name, `${name} database_name`),
+  }
+  if (kind === "postgresql_relation_schema") return {
+    kind,
+    database_name: topText(value.database_name, `${name} database_name`),
+    schema_name: topText(value.schema_name, `${name} schema_name`),
+  }
+  if (kind === "postgresql_tablespace") return {
+    kind,
+    tablespace_name: topNullableText(value.tablespace_name, `${name} tablespace_name`),
+  }
+  throw new Error(`${name} kind is invalid`)
+}
+
+function topCells(stored: unknown, name: string, length: number): readonly (number | null)[] {
+  const cells = topArray(stored, name).map((cell, index) => topNullableFinite(cell, `${name} ${index}`))
+  if (cells.length !== length) throw new Error(`${name} length is invalid`)
+  return cells
+}
+
+function topObject(stored: unknown, name: string): Record<string, unknown> {
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) throw new Error(`${name} is invalid`)
+  return stored as Record<string, unknown>
+}
+
+function topArray(stored: unknown, name: string): readonly unknown[] {
+  if (!Array.isArray(stored)) throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topEnum<T extends string>(stored: unknown, values: ReadonlySet<T>, name: string): T {
+  if (typeof stored !== "string" || !values.has(stored as T)) throw new Error(`${name} is invalid`)
+  return stored as T
+}
+
+function topText(stored: unknown, name: string): string {
+  if (typeof stored !== "string") throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topNonemptyText(stored: unknown, name: string): string {
+  const text = topText(stored, name)
+  if (text.length === 0) throw new Error(`${name} is invalid`)
+  return text
+}
+
+function topNullableText(stored: unknown, name: string): string | null {
+  return stored === null ? null : topText(stored, name)
+}
+
+function topBoolean(stored: unknown, name: string): boolean {
+  if (typeof stored !== "boolean") throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topNullableFinite(stored: unknown, name: string): number | null {
+  if (stored === null) return null
+  if (typeof stored !== "number" || !Number.isFinite(stored)) throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topNonNegativeInteger(stored: unknown, name: string): number {
+  if (typeof stored !== "number" || !Number.isSafeInteger(stored) || stored < 0) throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topU32(stored: unknown, name: string): number {
+  const value = topNonNegativeInteger(stored, name)
+  if (value > 4_294_967_295) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function topPositiveU32(stored: unknown, name: string): number {
+  const value = topU32(stored, name)
+  if (value === 0) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function topI64(stored: unknown, name: string): string {
+  if (typeof stored !== "string" || !/^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(stored)) throw new Error(`${name} is invalid`)
+  const value = BigInt(stored)
+  if (value < -(1n << 63n) || value > (1n << 63n) - 1n) throw new Error(`${name} is invalid`)
+  return stored
+}
+
+function topU64(stored: unknown, name: string): string {
+  if (typeof stored !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(stored)) throw new Error(`${name} is invalid`)
+  if (BigInt(stored) > (1n << 64n) - 1n) throw new Error(`${name} is invalid`)
+  return stored
 }
 
 export function acceptResponse<T>(promise: Promise<T>, signal: AbortSignal, apply: (value: T) => void, reject?: () => void): void {
@@ -1477,6 +1925,28 @@ async function request(path: string, signal: AbortSignal, onBytes?: (received: n
     }
     try {
       return await readNdjson(response, path, signal, onBytes)
+    } catch (error) {
+      signal.throwIfAborted()
+      if (attempt === 0 && error instanceof TypeError) continue
+      throw error
+    }
+  }
+  throw new Error(`HTTP read failed for ${path}`)
+}
+
+async function requestJson(path: string, signal: AbortSignal): Promise<unknown> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response
+    try {
+      response = await apiFetch(path, { headers: { Accept: "application/json" }, signal })
+    } catch (error) {
+      signal.throwIfAborted()
+      if (attempt === 0 && error instanceof TypeError) continue
+      throw error
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${path}`)
+    try {
+      return await response.json()
     } catch (error) {
       signal.throwIfAborted()
       if (attempt === 0 && error instanceof TypeError) continue

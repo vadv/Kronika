@@ -8,10 +8,11 @@ use kronika_reader::{Reader, ReaderError, SegmentRef};
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
+use crate::product::page::PageKey;
 use crate::route::{ActiveCursor, Route};
 
 mod catalog;
-mod heatmap;
+pub(crate) mod heatmap;
 mod history;
 mod hour;
 mod index;
@@ -79,7 +80,6 @@ pub(crate) enum Prepared {
     Catalog(catalog::PreparedCatalog),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
-    Heatmap(heatmap::PreparedHeatmap),
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
@@ -93,7 +93,6 @@ impl Prepared {
             Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
-            Self::Heatmap(prepared) => prepared.meta(),
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
@@ -111,7 +110,6 @@ impl Prepared {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
-            Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
@@ -223,7 +221,14 @@ pub(crate) fn prepare(
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
-    prepare_with_demo(root, sources, false, route, if_none_match)
+    prepare_with_demo(
+        root,
+        sources,
+        false,
+        route,
+        if_none_match,
+        &PageKey::derive(b"kronika-web-test-cursor-key"),
+    )
 }
 
 /// Prepare a response with the deployment identity exposed in its catalog.
@@ -233,6 +238,7 @@ pub(crate) fn prepare_with_demo(
     synthetic_demo: bool,
     route: Route,
     if_none_match: Option<&str>,
+    page_key: &PageKey,
 ) -> Result<Prepared, ApiError> {
     let prepared = match route {
         Route::Catalog(window) => {
@@ -240,12 +246,11 @@ pub(crate) fn prepare_with_demo(
         }
         Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
-        Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match, page_key),
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {

@@ -1,5 +1,127 @@
 export const HOUR_MICROS = 3_600_000_000
 
+export type TopActivitySurface =
+  | "postgresql_statements"
+  | "postgresql_plans"
+  | "postgresql_tables"
+  | "postgresql_indexes"
+  | "processes"
+  | "postgresql_databases"
+  | "cgroup_cpu"
+  | "cgroup_io"
+
+export type TopActivityRelationLevel = "object" | "schema" | "database" | "tablespace"
+
+export type TopActivityMetric =
+  | "exec_time" | "calls" | "rows" | "shared_read" | "shared_dirtied" | "temp_written" | "wal_bytes"
+  | "writes" | "seq_read" | "heap_read" | "dead_tuples" | "autovacuum_time"
+  | "idx_scan" | "idx_tup_read" | "idx_blks_read"
+  | "cpu" | "rss" | "io_read" | "io_write" | "majflt" | "run_delay"
+  | "commits" | "rollbacks" | "db_read" | "temp_bytes" | "deadlocks"
+  | "cg_cpu" | "cg_throttled" | "cg_read" | "cg_write" | "cg_rios" | "cg_wios"
+
+export type TopActivityUnit =
+  | "count" | "count_per_second"
+  | "bytes" | "bytes_per_second"
+  | "milliseconds" | "milliseconds_per_second"
+  | "seconds" | "seconds_per_second"
+  | "microseconds" | "microseconds_per_second"
+  | "nanoseconds" | "nanoseconds_per_second"
+
+export type TopActivityRanking =
+  | "whole_window_delta_desc"
+  | "whole_window_max_desc"
+  | "sum_member_window_delta_desc"
+  | "sum_member_window_max_desc"
+
+export interface TopActivityDefinition {
+  readonly class: "cumulative" | "gauge"
+  readonly cell_unit: TopActivityUnit
+  readonly total_unit: TopActivityUnit
+  readonly ranking: TopActivityRanking
+  readonly metric_description: string
+  readonly cell_formula: string
+  readonly total_formula: string
+}
+
+export type TopActivityEntity =
+  | {
+      readonly kind: "postgresql_statement"
+      readonly query_id: string | null
+      readonly role_oid: number
+      readonly database_oid: number
+      readonly top_level: boolean | null
+      readonly database_name: string | null
+      readonly role_name: string | null
+    }
+  | {
+      readonly kind: "postgresql_plan"
+      readonly role_oid: number
+      readonly database_oid: number
+      readonly entry_query_id: string
+      readonly plan_id: string
+      readonly database_name: string | null
+      readonly role_name: string | null
+    }
+  | {
+      readonly kind: "postgresql_table"
+      readonly database_oid: number
+      readonly relation_oid: number
+      readonly database_name: string
+      readonly schema_name: string
+      readonly relation_name: string
+    }
+  | {
+      readonly kind: "postgresql_index"
+      readonly database_oid: number
+      readonly index_oid: number
+      readonly database_name: string
+      readonly schema_name: string
+      readonly table_name: string
+      readonly index_name: string
+    }
+  | { readonly kind: "process_command"; readonly command: string }
+  | {
+      readonly kind: "postgresql_database"
+      readonly database_oid: number
+      readonly database_name: string | null
+    }
+  | { readonly kind: "cgroup_cpu"; readonly path: string }
+  | { readonly kind: "cgroup_io_device"; readonly path: string; readonly major: number; readonly minor: number }
+  | { readonly kind: "postgresql_relation_database"; readonly database_name: string }
+  | { readonly kind: "postgresql_relation_schema"; readonly database_name: string; readonly schema_name: string }
+  | { readonly kind: "postgresql_tablespace"; readonly tablespace_name: string | null }
+
+export interface TopActivityRow {
+  readonly recorded_layout: number | null
+  readonly entity: TopActivityEntity
+  readonly members: number | null
+  readonly total: number | null
+  readonly cells: readonly (number | null)[]
+}
+
+export interface TopActivityBand {
+  readonly total: number | null
+  readonly cells: readonly (number | null)[]
+}
+
+export interface TopActivityResult {
+  readonly hour_start: string
+  readonly hour_end: string
+  readonly surface: TopActivitySurface
+  readonly metric: TopActivityMetric
+  readonly level: TopActivityRelationLevel | null
+  readonly definition: TopActivityDefinition
+  readonly intervals: readonly { readonly start: string; readonly end: string }[]
+  readonly rows: readonly TopActivityRow[]
+  readonly totals: TopActivityBand
+  readonly others: TopActivityBand
+  readonly entity_count: number
+  readonly others_count: number
+  readonly top: number
+  readonly out_of_order: string
+}
+
 export interface HeatmapSample {
   readonly entity: string
   readonly timestamp: number
@@ -41,6 +163,7 @@ interface EntityState {
   readonly columns: (ColumnState | undefined)[]
   window: ColumnState | undefined
   gaugeMax: number | undefined
+  previousUsableTs: number | undefined
 }
 
 export function heatmapIntervals(hour: number, columns: number): readonly HeatmapInterval[] {
@@ -64,10 +187,19 @@ export function heatmap(
     if (sample.value === null || !Number.isFinite(sample.value) || sample.timestamp < hour || sample.timestamp >= end) continue
     let state = entities.get(sample.entity)
     if (state === undefined) {
-      state = { columns: new Array<ColumnState | undefined>(columns), window: undefined, gaugeMax: undefined }
+      state = {
+        columns: new Array<ColumnState | undefined>(columns),
+        window: undefined,
+        gaugeMax: undefined,
+        previousUsableTs: undefined,
+      }
       entities.set(sample.entity, state)
     }
-    const column = Math.min(columns - 1, Math.floor(((sample.timestamp - hour) * columns) / HOUR_MICROS))
+    const assigned = state.previousUsableTs === undefined || sample.timestamp <= state.previousUsableTs
+      ? sample.timestamp
+      : state.previousUsableTs + Math.floor((sample.timestamp - state.previousUsableTs) / 2)
+    state.previousUsableTs = sample.timestamp
+    const column = Math.min(columns - 1, Math.floor(((assigned - hour) * columns) / HOUR_MICROS))
     state.columns[column] = observe(state.columns[column], sample.timestamp, sample.value)
     state.window = observe(state.window, sample.timestamp, sample.value)
     if (state.gaugeMax === undefined || sample.value > state.gaugeMax) state.gaugeMax = sample.value
@@ -114,7 +246,7 @@ function observe(state: ColumnState | undefined, timestamp: number, value: numbe
 // Carry the latest earlier sample across empty counter intervals.
 function carriedCells(columns: readonly (ColumnState | undefined)[], cumulative: boolean): (number | null)[] {
   let carry: { readonly ts: number; readonly value: number } | null = null
-  return columns.map((state) => {
+  return Array.from(columns, (state) => {
     if (state === undefined) return null
     if (!cumulative) return state.lastValue
     const base = carry !== null && carry.ts < state.firstTs
@@ -173,30 +305,9 @@ export function heatmapEntityKey(values: readonly (string | null)[]): string {
   return JSON.stringify(values)
 }
 
-export interface HeatmapBand {
-  readonly total: number | null
-  readonly cells: readonly (number | null)[]
-}
-
-export interface HeatmapViewRow {
-  readonly typeId: string
-  readonly identity: readonly (string | null)[]
-  readonly labels: readonly (string | null)[]
-  // Distinct identities represented by a grouped row; otherwise null.
-  readonly members: number | null
-  readonly total: number | null
-  readonly cells: readonly (number | null)[]
-}
-
-export interface HeatmapView {
-  readonly cumulative: boolean
-  readonly intervals: readonly HeatmapInterval[]
-  readonly rows: readonly HeatmapViewRow[]
-  readonly totals: HeatmapBand
-  readonly others: HeatmapBand
-  readonly othersCount: number
-  readonly entityCount: number
-}
+export type HeatmapBand = TopActivityBand
+export type HeatmapViewRow = TopActivityRow
+export type HeatmapView = TopActivityResult
 
 // Fold rows hidden by the compact view into the Others band.
 export function collapseHeatmapView(view: HeatmapView, top: number): HeatmapView {
@@ -210,12 +321,15 @@ export function collapseHeatmapView(view: HeatmapView, top: number): HeatmapView
   const totals = [view.others.total, ...folded.map((row) => row.total)].filter((stored): stored is number => stored !== null)
   const total = totals.length === 0
     ? null
-    : view.cumulative ? totals.reduce((sum, stored) => sum + stored, 0) : Math.max(...totals)
+    : view.definition.class === "cumulative"
+      ? totals.reduce((sum, stored) => sum + stored, 0)
+      : cells.reduce<number | null>((maximum, stored) => stored === null ? maximum : Math.max(maximum ?? stored, stored), null)
   return {
     ...view,
     rows: kept,
     others: { cells, total },
-    othersCount: view.othersCount + folded.length,
+    others_count: view.others_count + folded.length,
+    top: kept.length,
   }
 }
 

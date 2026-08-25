@@ -42,6 +42,11 @@ test("a gauge cell is the last sample in the interval and null samples are skipp
   assert.deepEqual(result.rows[0]?.cells, [30, 7])
 })
 
+test("fixture assignment uses the midpoint from the previous usable observation", () => {
+  const result = heatmap(counterSamples("a", [[1, 10], [40, 7]]), false, HOUR, 2, 5)
+  assert.deepEqual(result.rows[0]?.cells, [7, null])
+})
+
 test("ranking does not change with the number of columns", () => {
   const samples = [
     ...counterSamples("small", [[0, 0], [59, 600]]),
@@ -111,35 +116,41 @@ test("entity keys distinguish null from the string null", () => {
 
 test("collapsing a view folds the tail rows into the others band", () => {
   const view = {
-    cumulative: true,
-    intervals: [{ start: HOUR, end: HOUR + 3_600_000_000 - 1 }],
+    hour_start: String(HOUR),
+    hour_end: String(HOUR + 3_600_000_000 - 1),
+    surface: "postgresql_statements" as const,
+    metric: "calls" as const,
+    level: null,
+    definition: {
+      class: "cumulative" as const,
+      cell_unit: "count_per_second" as const,
+      total_unit: "count" as const,
+      ranking: "whole_window_delta_desc" as const,
+      metric_description: "Calls.",
+      cell_formula: "Rate.",
+      total_formula: "Delta.",
+    },
+    intervals: [{ start: String(HOUR), end: String(HOUR + 3_600_000_000 - 1) }],
     rows: [
-      { typeId: "1", identity: ["a"], labels: [], total: 100, cells: [2] },
-      { typeId: "1", identity: ["b"], labels: [], total: 50, cells: [1] },
-      { typeId: "1", identity: ["c"], labels: [], total: 25, cells: [null] },
+      { recorded_layout: 1, entity: statement("1"), members: null, total: 100, cells: [2] },
+      { recorded_layout: 1, entity: statement("2"), members: null, total: 50, cells: [1] },
+      { recorded_layout: 1, entity: statement("3"), members: null, total: 25, cells: [null] },
     ],
     totals: { total: 200, cells: [4] },
     others: { total: 25, cells: [1] },
-    othersCount: 1,
-    entityCount: 4,
+    others_count: 1,
+    entity_count: 4,
+    top: 3,
+    out_of_order: "0",
   }
   const collapsed = collapseHeatmapView(view, 1)
   assert.equal(heatmapViewMax(view), 2)
   assert.equal(collapsed.rows.length, 1)
-  assert.equal(collapsed.othersCount, 3)
+  assert.equal(collapsed.others_count, 3)
+  assert.equal(collapsed.top, 1)
   assert.equal(collapsed.others.total, 100)
   assert.deepEqual(collapsed.others.cells, [2])
   assert.equal(collapseHeatmapView(view, 3), view)
-})
-
-test("cut scales fall back to raw counts without scale metadata", async () => {
-  const { cutScale } = await import("../src/activity-cuts.ts")
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: 8192, clockTicks: null }), { scale: 8192, kind: "bytes" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "block_size" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: 100 }), { scale: 0.01, kind: "seconds" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "seconds", scaleBy: "clock_ticks" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "bytes", scaleBy: "kib" }, { blockSize: null, clockTicks: null }), { scale: 1024, kind: "bytes" })
-  assert.deepEqual(cutScale({ id: "x", fields: ["f"], kind: "count" }, { blockSize: null, clockTicks: null }), { scale: 1, kind: "count" })
 })
 
 test("a sparse cadence fills every later column through the boundary carry", () => {
@@ -149,8 +160,20 @@ test("a sparse cadence fills every later column through the boundary carry", () 
     value: 600 * column,
   }))
   const result = heatmap(samples, true, HOUR, 12, 1)
-  assert.equal(result.rows[0]?.cells[0], null)
-  for (let column = 1; column < 12; column += 1) {
+  for (let column = 0; column < 11; column += 1) {
     assert.equal(result.rows[0]?.cells[column], 2)
   }
+  assert.equal(result.rows[0]?.cells[11], null)
 })
+
+function statement(queryId: string) {
+  return {
+    kind: "postgresql_statement" as const,
+    query_id: queryId,
+    role_oid: 10,
+    database_oid: 5,
+    top_level: true,
+    database_name: "app",
+    role_name: "role",
+  }
+}

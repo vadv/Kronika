@@ -2783,34 +2783,18 @@ fn empty_finished_hour_series_has_no_validator() {
     assert_eq!(prepared.meta().etag, None);
 }
 
-#[test]
-fn empty_finished_heatmap_has_no_validator() {
-    let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
-    fixture.finish();
-
-    let prepared = fixture.prepare(
-        "/api/heatmap?from=300&to=400&section=os_diskstats&field=reads&columns=1&top=1",
-        None,
-    );
-    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
-    assert_eq!(prepared.meta().etag, None);
-}
-
 // Each entry differs from its browser_resource_targets peer in one parameter.
-fn neighbouring_resource_targets() -> [String; 3] {
+fn neighbouring_resource_targets() -> [String; 2] {
     [
         "/api/hour?from=100&to=150".to_owned(),
         format!("/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=reads"),
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1".to_owned(),
     ]
 }
 
-fn browser_resource_targets() -> [String; 3] {
+fn browser_resource_targets() -> [String; 2] {
     [
         "/api/hour?from=100&to=200".to_owned(),
         format!("/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=reads"),
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=1&top=1".to_owned(),
     ]
 }
 
@@ -3526,6 +3510,50 @@ fn active_snapshot_cursor_pins_the_original_wal_prefix() {
         crate::api::prepare(fixture.root(), SOURCES, route, None),
         Err(ApiError::BadCursor)
     ));
+}
+
+#[test]
+fn active_statement_cursor_excludes_rows_appended_after_the_first_page() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(3);
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&by=queryid&page_size=2"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first active Statement page");
+    assert_eq!(
+        row_records(&first)
+            .iter()
+            .map(|row| row["values"][0].clone())
+            .collect::<Vec<_>>(),
+        vec![serde_json::json!("2"), serde_json::json!("1")]
+    );
+    let first_page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first Statement trailer");
+    let cursor = first_page["next_cursor"]
+        .as_str()
+        .expect("Statement continuation")
+        .to_owned();
+    assert!(cursor.starts_with("pc1_"));
+
+    fixture.append_statement_snapshots(&[(100, 3, 1, 1.0), (100, 4, 1, 1.0)]);
+    let continued = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("pinned Statement continuation");
+    assert_eq!(row_records(&continued)[0]["values"][0], "0");
+    let continued_page = continued
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("continued Statement trailer");
+    assert_eq!(continued_page["eligible"], "3");
+    assert_eq!(continued_page["has_more"], false);
+
+    let fresh = stream(fixture.prepare(&base, None)).expect("fresh active Statement page");
+    let fresh_page = fresh
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("fresh Statement trailer");
+    assert_eq!(fresh_page["eligible"], "5");
 }
 
 #[test]
@@ -4446,18 +4474,7 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
             SEGMENT_ID,
             shape.replacen("where.dbid=73", "where.dbid=74", 1),
         ),
-        (
-            SEGMENT_ID,
-            shape.replacen(
-                "where.dbid=73&where.userid=72",
-                "where.userid=72&where.dbid=73",
-                1,
-            ),
-        ),
-        (
-            SEGMENT_ID,
-            shape.replacen("type_id=1002002", "type_id=1002001", 1),
-        ),
+        (SEGMENT_ID, shape.replacen("page_size=1", "page_size=4", 1)),
     ];
     for (segment_id, query) in mismatches {
         let path = format!("/api/segments/{segment_id}/snapshot");
@@ -4467,8 +4484,12 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         assert!(matches!(result, Err(ApiError::BadCursor)), "{query}");
     }
 
-    let compatible_size = shape.replacen("page_size=1", "page_size=4", 1);
-    let query = format!("{compatible_size}&cursor={cursor}");
+    let compatible_filters = shape.replacen(
+        "where.dbid=73&where.userid=72",
+        "where.userid=72&where.dbid=73",
+        1,
+    );
+    let query = format!("{compatible_filters}&cursor={cursor}");
     let route = crate::route::parse(&path, Some(&query)).expect("compatible route");
     assert!(crate::api::prepare(fixture.root(), SOURCES, route, None).is_ok());
 }
@@ -5107,6 +5128,35 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(index_rates["1"], serde_json::json!(0.3));
     assert_eq!(index_rates["2"], serde_json::json!(0.2));
+}
+
+#[test]
+fn index_snapshot_cursor_starts_at_the_first_unreturned_object() {
+    let (fixture, current_segment) = four_segment_relation_fixture();
+    let base = format!(
+        "/api/segments/{current_segment}/snapshot?at=200000000&section=pg_stat_user_indexes&group=object&field=idx_scan&by=idx_scan&direction=desc&page_size=1"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first Index page");
+    assert_eq!(relation_records(&first)[0]["key"]["datid"], "1");
+    let first_page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first Index trailer");
+    assert_eq!(first_page["eligible"], "2");
+    let cursor = first_page["next_cursor"]
+        .as_str()
+        .expect("Index continuation");
+    assert!(cursor.starts_with("pc1_"));
+
+    let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("second Index page");
+    assert_eq!(relation_records(&second)[0]["key"]["datid"], "2");
+    let second_page = second
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("second Index trailer");
+    assert_eq!(second_page["eligible"], "2");
+    assert_eq!(second_page["has_more"], false);
 }
 
 #[test]

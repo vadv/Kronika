@@ -1086,6 +1086,36 @@ Long ranges use segment-grain `.idx` for fields in the summary allowlist.
 Other fields, sub-segment resolution and partial boundary segments use
 projected raw samples.
 
+### Typed products and MCP
+
+Web exposes two recorded-data products through authenticated HTTP and a
+stateless, tools-only MCP endpoint: `kronika_find_top_activity` and
+`kronika_read_postgresql_activity`. MCP publishes no other tools, prompts,
+resources or server instructions. Both transports normalize into the same
+typed query, call the same blocking executor against one pinned source view and
+serialize the same typed result. Only the HTTP and MCP envelopes differ; MCP
+does not call back through HTTP or define a second reducer, filter or paging
+path.
+
+PostgreSQL Activity chooses the latest recorded observation at or before the
+requested instant inside its UTC hour and unions every compatible PostgreSQL
+10--18 physical layout. It applies the exact semantic filter, a deterministic
+12-key order and whole-row paging in that order. An authenticated opaque cursor
+binds the normalized query, selected observation and pinned source view. The
+shared page builder also serves Statements, Tables and Indexes and retains only
+the bounded candidate window needed for the next response. A response may stop
+before its requested row count to stay within 1 MiB; failure is reserved for a
+next whole row that cannot fit as a one-row response.
+
+Top activity is selected from one typed Rust registry covering the eight web
+surfaces and their valid surface, metric and relation-level combinations. Its
+counter, gauge, interval-midpoint, ranking, Total and Other rules are shared by
+HTTP, MCP and the browser. Block size and clock ticks per second are each
+resolved once per result from the newest positive usable recorded value at or
+before `hour_end` in the pinned source view, skipping unusable newer values.
+When either value is absent, the corresponding raw counts and count rates are
+returned instead of inventing a converted value.
+
 ### Representations
 
 Potentially large textual section responses are streamable, for example as

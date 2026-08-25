@@ -1,8 +1,14 @@
 use super::{
-    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
-    MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
-    Window, parse,
+    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, MAX_SEARCH_EXPRESSION_CHARS,
+    MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest, Window, parse,
+    parse_activity, parse_top_activity,
 };
+use crate::product::activity::{ActivityArgs, ActivitySort, normalize_activity};
+use crate::product::page::Direction;
+use crate::product::top_activity::{
+    Metric, RelationLevel, Surface, metric_definitions, surface_definitions,
+};
+use serde_json::json;
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {
@@ -553,96 +559,158 @@ fn a_section_is_one_strict_percent_decoded_path_component() {
 }
 
 #[test]
-fn a_grouped_heatmap_rejects_labels() {
-    match parse(
-        "/api/heatmap",
-        Some("from=0&to=1&section=os_process&field=utime&group=comm"),
-    ) {
-        Ok(Route::Heatmap(request)) => assert_eq!(request.group, vec!["comm".to_owned()]),
-        other => panic!("expected a heatmap request, got {other:?}"),
-    }
+fn top_activity_http_uses_semantic_defaults_and_rejects_physical_grammar() {
+    let query = parse_top_activity(Some("hour=0&surface=postgresql_tables"))
+        .expect("semantic top-activity query");
+    assert_eq!(query.hour().start(), 0);
+    assert_eq!(query.selection().surface(), Surface::PostgreSqlTables);
+    assert_eq!(query.selection().metric(), Metric::Writes);
+    assert_eq!(query.selection().level(), Some(RelationLevel::Object));
+    assert_eq!(query.top().get(), 25);
+
     assert_eq!(
-        parse(
-            "/api/heatmap",
-            Some("from=0&to=1&section=os_process&field=utime&group=comm&label=cmdline"),
-        ),
-        Err(RouteError::BadParameter("label".to_owned()))
+        parse_top_activity(Some(
+            "hour=0&surface=processes&section=os_process&field=utime&group=comm"
+        )),
+        Err(RouteError::BadParameter("section".to_owned()))
+    );
+    assert_eq!(
+        parse_top_activity(Some("hour=1&surface=processes")),
+        Err(RouteError::BadParameter("hour".to_owned()))
+    );
+    assert_eq!(
+        parse_top_activity(Some("hour=0&surface=processes&level=object")),
+        Err(RouteError::BadParameter("level".to_owned()))
     );
 }
 
 #[test]
-fn a_heatmap_cut_may_sum_several_fields() {
-    let parsed = parse(
-        "/api/heatmap",
-        Some(
-            "from=0&to=1&section=pg_stat_user_tables&field=n_tup_ins&field=n_tup_upd&field=n_tup_del",
-        ),
-    );
-    match parsed {
-        Ok(Route::Heatmap(request)) => assert_eq!(
-            request.fields,
-            vec![
-                "n_tup_ins".to_owned(),
-                "n_tup_upd".to_owned(),
-                "n_tup_del".to_owned()
-            ]
-        ),
-        other => panic!("expected a heatmap request, got {other:?}"),
+fn top_activity_http_accepts_all_61_shipped_selections_and_rejects_every_cross_pair() {
+    let mut accepted = 0;
+    for definition in metric_definitions() {
+        let levels: &[&str] = if matches!(
+            definition.surface,
+            Surface::PostgreSqlTables | Surface::PostgreSqlIndexes
+        ) {
+            &["object", "schema", "database", "tablespace"]
+        } else {
+            &[""]
+        };
+        for level in levels {
+            let level = if level.is_empty() {
+                String::new()
+            } else {
+                format!("&level={level}")
+            };
+            let raw = format!(
+                "hour=0&surface={}&metric={}{}&top=100",
+                definition.surface.as_str(),
+                definition.metric.as_str(),
+                level
+            );
+            let query = parse_top_activity(Some(&raw)).expect("valid shipped selection");
+            assert_eq!(query.selection().surface(), definition.surface);
+            assert_eq!(query.selection().metric(), definition.metric);
+            accepted += 1;
+        }
     }
-    assert_eq!(
-        parse(
-            "/api/heatmap",
-            Some("from=0&to=1&section=s&field=a&field=a"),
-        ),
-        Err(RouteError::BadParameter("field".to_owned()))
-    );
-    assert_eq!(
-        parse(
-            "/api/heatmap",
-            Some("from=0&to=1&section=s&field=a&field=b&field=c&field=d&field=e"),
-        ),
-        Err(RouteError::BadParameter("field".to_owned()))
-    );
+    assert_eq!(accepted, 61);
+
+    let mut rejected = 0;
+    for surface in surface_definitions() {
+        for metric in Metric::ALL {
+            if metric_definitions().iter().any(|definition| {
+                definition.surface == surface.surface && definition.metric == metric
+            }) {
+                continue;
+            }
+            let raw = format!(
+                "hour=0&surface={}&metric={}",
+                surface.surface.as_str(),
+                metric.as_str()
+            );
+            assert_eq!(
+                parse_top_activity(Some(&raw)),
+                Err(RouteError::BadParameter("metric".to_owned()))
+            );
+            rejected += 1;
+        }
+    }
+    assert_eq!(rejected, 219);
 }
 
 #[test]
-fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
+fn activity_http_and_typed_arguments_share_one_normalized_query() {
+    let parsed = parse_activity(Some(concat!(
+        "at=3600000001&",
+        "filter=%5B%7B%22database%22%3A%7B%22any_of%22%3A%5B%22prod%2A%22%5D%7D%7D%5D&",
+        "sort=database&direction=asc&page_size=50&cursor=pc1_test"
+    )))
+    .expect("semantic Activity query");
+    let arguments = ActivityArgs::from_value(json!({
+        "at": "3600000001",
+        "filter": [{"database": {"any_of": ["prod*"]}}],
+        "sort": "database",
+        "direction": "asc",
+        "page_size": 50,
+        "cursor": "pc1_test"
+    }))
+    .expect("typed Activity arguments");
+    let normalized = normalize_activity(arguments).expect("normalized Activity query");
+    assert_eq!(parsed, normalized);
+}
+
+#[test]
+fn activity_http_has_v6_defaults_and_all_semantic_sort_directions() {
+    let defaults = parse_activity(Some("at=0")).expect("default Activity query");
+    assert_eq!(defaults.at, 0);
+    assert_eq!(defaults.sort, ActivitySort::QueryDurationMs);
+    assert_eq!(defaults.direction, Direction::Desc);
+    assert_eq!(defaults.page.page_size, 200);
+    assert!(defaults.page.cursor.is_none());
+
+    let sorts = [
+        "pid",
+        "database",
+        "role",
+        "query_preview",
+        "query_duration_ms",
+        "transaction_duration_ms",
+        "application",
+        "client",
+        "state",
+        "wait_type",
+        "wait_event",
+        "backend_type",
+    ];
+    for sort in sorts {
+        for direction in ["asc", "desc"] {
+            parse_activity(Some(&format!("at=0&sort={sort}&direction={direction}")))
+                .unwrap_or_else(|error| panic!("{sort}/{direction} rejected: {error}"));
+        }
+    }
+}
+
+#[test]
+fn activity_http_rejects_missing_duplicate_and_invalid_product_arguments() {
     assert_eq!(
-        parse(
-            "/api/heatmap",
-            Some(
-                "from=0&to=3599999999&section=pg_stat_statements&field=wal_bytes&label=datname&label=usename&columns=60&top=25"
-            ),
-        ),
-        Ok(Route::Heatmap(HeatmapRequest {
-            from: 0,
-            to: 3_599_999_999,
-            section: "pg_stat_statements".to_owned(),
-            fields: vec!["wal_bytes".to_owned()],
-            columns: 60,
-            top: 25,
-            labels: vec!["datname".to_owned(), "usename".to_owned()],
-            group: Vec::new(),
-            type_id: None,
-        }))
+        parse_activity(None),
+        Err(RouteError::BadParameter("at".to_owned()))
     );
     assert_eq!(
-        parse("/api/heatmap", Some("from=0&to=1&section=s")),
-        Err(RouteError::BadParameter("field".to_owned()))
+        parse_activity(Some("at=0&at=0")),
+        Err(RouteError::BadParameter("at".to_owned()))
     );
     assert_eq!(
-        parse("/api/heatmap", Some("from=0&to=1&section=s&field=f&top=0")),
-        Err(RouteError::BadParameter("top".to_owned()))
+        parse_activity(Some("at=0&page_size=0")),
+        Err(RouteError::BadParameter("page_size".to_owned()))
     );
     assert_eq!(
-        parse(
-            "/api/heatmap",
-            Some("from=0&to=1&section=s&field=f&columns=0")
-        ),
-        Err(RouteError::BadParameter("columns".to_owned()))
+        parse_activity(Some("at=0&filter=null")),
+        Err(RouteError::BadParameter("filter".to_owned()))
     );
     assert_eq!(
-        parse("/api/heatmap", Some("from=2&to=1&section=s&field=f")),
-        Err(RouteError::BadParameter("from".to_owned()))
+        parse_activity(Some("at=0&section=pg_stat_activity")),
+        Err(RouteError::BadParameter("section".to_owned()))
     );
 }

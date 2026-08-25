@@ -601,6 +601,106 @@ async function bundledApi() {
   return api
 }
 
+test("top activity uses the semantic URL and parses one typed JSON result", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (input, init) => {
+    calls += 1
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/heatmap")
+    assert.equal(url.searchParams.get("hour"), String(START))
+    assert.equal(url.searchParams.get("surface"), "postgresql_statements")
+    assert.equal(url.searchParams.get("metric"), "shared_read")
+    assert.equal(url.searchParams.get("top"), "25")
+    assert.equal(url.searchParams.has("level"), false)
+    assert.equal(url.searchParams.has("section"), false)
+    assert.equal(url.searchParams.has("field"), false)
+    assert.equal(new Headers(init?.headers).get("Accept"), "application/json")
+    return new Response(JSON.stringify(topActivityResponse("postgresql_statements", "shared_read", null, 60)), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    })
+  }
+  try {
+    const result = await api.loadHeatmap(
+      START,
+      "postgresql_statements",
+      "shared_read",
+      25,
+      new AbortController().signal,
+    )
+    assert.equal(calls, 1)
+    assert.equal(result.definition.cell_unit, "bytes_per_second")
+    assert.equal(result.definition.total_unit, "bytes")
+    assert.equal(result.rows[0]?.entity.kind, "postgresql_statement")
+    assert.equal(result.rows[0]?.entity.query_id, "101")
+    assert.equal(result.top, 1)
+    assert.equal(result.others_count, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("top activity parser rejects a result whose cell shape contradicts its surface", async () => {
+  const api = await bundledApi()
+  const stored = topActivityResponse("postgresql_tables", "writes", "schema", 12)
+  const broken = {
+    ...stored,
+    rows: [{ ...stored.rows[0], cells: stored.rows[0]!.cells.slice(1) }],
+  }
+  assert.throws(() => api.parseTopActivityResult(broken), /cells length is invalid/)
+})
+
+test("top activity parser rejects noncanonical signed decimal negative zero", async () => {
+  const api = await bundledApi()
+  const stored = topActivityResponse("postgresql_statements", "shared_read", null, 60)
+  const broken = {
+    ...stored,
+    rows: [{ ...stored.rows[0], entity: { ...stored.rows[0]!.entity, query_id: "-0" } }],
+  }
+  assert.throws(() => api.parseTopActivityResult(broken), /query_id is invalid/)
+})
+
+function topActivityResponse(surface, metric, level, columns) {
+  const intervals = Array.from({ length: columns }, (_entry, index) => ({
+    start: String(START + Math.floor((index * 3_600_000_000) / columns)),
+    end: String(START + Math.floor(((index + 1) * 3_600_000_000) / columns) - 1),
+  }))
+  const entity = surface === "postgresql_tables"
+    ? { kind: "postgresql_relation_schema", database_name: "app", schema_name: "public" }
+    : {
+        kind: "postgresql_statement", query_id: "101", role_oid: 10, database_oid: 5,
+        top_level: true, database_name: "app", role_name: "reader",
+      }
+  const cells = intervals.map((_entry, index) => index === 0 ? 2 : null)
+  return {
+    hour_start: String(START),
+    hour_end: String(START + 3_600_000_000 - 1),
+    surface,
+    metric,
+    level,
+    definition: {
+      class: "cumulative",
+      cell_unit: metric === "shared_read" ? "bytes_per_second" : "count_per_second",
+      total_unit: metric === "shared_read" ? "bytes" : "count",
+      ranking: level === null ? "whole_window_delta_desc" : "sum_member_window_delta_desc",
+      metric_description: "Recorded metric.",
+      cell_formula: "Interval rate.",
+      total_formula: "Whole-hour delta.",
+    },
+    intervals,
+    rows: [{ recorded_layout: level === null ? 1_002_006 : null, entity, members: level === null ? null : 2, total: 120, cells }],
+    totals: { total: 200, cells },
+    others: { total: 80, cells },
+    entity_count: 2,
+    others_count: 1,
+    top: 1,
+    out_of_order: "0",
+  }
+}
+
 async function activityWireApi() {
   const api = await importModule(
     'export { loadSeries } from "../src/api.ts"; export { ACTIVITY_COLUMNS, postgresMetricHistoryRequest, postgresMetricHistorySamples } from "../src/postgres-view.tsx"; export { signInBasic } from "../src/session.ts"',

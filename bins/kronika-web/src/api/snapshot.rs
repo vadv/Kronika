@@ -26,6 +26,11 @@ use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
+use crate::product::page::{
+    CursorBinding, DecodedCursor, Page, PageError, PageKey, PageSurface, QueryBinding,
+    SHARED_RESULT_MAX_BYTES, SnapshotPosition, SourcePin, decode_cursor, encode_cursor,
+    encode_snapshot_cursor, fit_page, reopen_sources,
+};
 use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
 use crate::route::{SeriesRequest, Window};
 
@@ -44,6 +49,7 @@ pub(crate) struct PreparedSnapshot {
     relation_fields: Vec<String>,
     page_size: Option<usize>,
     cursor: Option<SnapshotCursor>,
+    shared_page: Option<SharedPageState>,
     binding: u64,
     search: Option<Box<StructuredSearch>>,
     first_match_query_id: Option<i64>,
@@ -89,6 +95,14 @@ struct SnapshotCursor {
     context_index: usize,
     ordinal: u64,
     binding: u64,
+}
+
+struct SharedPageState {
+    surface: PageSurface,
+    key: PageKey,
+    query_binding: String,
+    source_pins: Vec<SourcePin>,
+    decoded: Option<DecodedCursor>,
 }
 
 struct PageRows {
@@ -406,6 +420,9 @@ thread_local! {
     static RELATION_MOMENT_VISITS: Counter<usize> = const { Counter::new(0) };
     static PARTITION_PREDECESSOR_VISITS: Counter<usize> = const { Counter::new(0) };
     static RELATION_PROJECTED_METRICS: Counter<usize> = const { Counter::new(0) };
+    static SHARED_PAGE_RETAINED_ROWS: Counter<usize> = const { Counter::new(0) };
+    static SHARED_PAGE_ENCODED_ROWS: Counter<usize> = const { Counter::new(0) };
+    static RELATION_PAGE_ENCODED_ROWS: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
@@ -422,6 +439,30 @@ pub(crate) fn page_operations() -> (usize, usize, usize) {
         PAGE_CANDIDATE_DICTIONARIES.get(),
         PAGE_CHUNK_ROWS.get(),
     )
+}
+
+#[cfg(test)]
+fn reset_shared_page_window_operations() {
+    SHARED_PAGE_RETAINED_ROWS.set(0);
+    SHARED_PAGE_ENCODED_ROWS.set(0);
+}
+
+#[cfg(test)]
+fn shared_page_window_operations() -> (usize, usize) {
+    (
+        SHARED_PAGE_RETAINED_ROWS.get(),
+        SHARED_PAGE_ENCODED_ROWS.get(),
+    )
+}
+
+#[cfg(test)]
+fn reset_relation_page_encoded_rows() {
+    RELATION_PAGE_ENCODED_ROWS.set(0);
+}
+
+#[cfg(test)]
+fn relation_page_encoded_rows() -> usize {
+    RELATION_PAGE_ENCODED_ROWS.get()
 }
 
 #[cfg(test)]
@@ -484,23 +525,56 @@ pub(super) fn prepare(
     root: &Path,
     request: SnapshotRequest,
     if_none_match: Option<&str>,
+    page_key: &PageKey,
 ) -> Result<Prepared, ApiError> {
-    let cursor = request
-        .cursor
-        .as_deref()
-        .map(SnapshotCursor::parse)
-        .transpose()?;
-    let search = prepared_search(&request, cursor.is_some())?;
+    let shared_surface = shared_page_surface(&request);
+    let shared_decoded = match (shared_surface, request.cursor.as_deref()) {
+        (Some(surface), Some(raw)) => {
+            let decoded = decode_cursor(raw, page_key).map_err(map_page_error)?;
+            validate_shared_cursor_shape(&request, surface, &decoded)?;
+            Some(decoded)
+        }
+        _ => None,
+    };
+    let cursor = if shared_surface.is_none() {
+        request
+            .cursor
+            .as_deref()
+            .map(SnapshotCursor::parse)
+            .transpose()?
+    } else {
+        None
+    };
+    let search = prepared_search(&request, request.cursor.is_some())?;
     let first_match_query_id = prepared_first_match(&request, search.as_deref())?;
     let binding = snapshot_binding(&request, search.as_deref());
     let parsed = cursor
         .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
-    if request.cursor.is_some() && parsed.is_none() {
+    if shared_surface.is_none() && request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
     }
-    let (reader, current, segments, clean) =
+    let (reader, current, mut segments, clean) =
         explicit_segment_with_listing(root, request.segment_id)?;
-    let segment_ref = pin(current, parsed)?;
+    let segment_ref = if let Some(decoded) = shared_decoded.as_ref() {
+        let mut pinned = reopen_sources(&reader, &decoded.binding.source_pins)
+            .map_err(|_error| ApiError::BadCursor)?;
+        let anchors = pinned
+            .iter()
+            .filter(|source| source.id() == request.segment_id)
+            .count();
+        if anchors != 1 {
+            return Err(ApiError::BadCursor);
+        }
+        let index = pinned
+            .iter()
+            .position(|source| source.id() == request.segment_id)
+            .ok_or(ApiError::BadCursor)?;
+        let anchor = pinned.remove(index);
+        segments = pinned;
+        anchor
+    } else {
+        pin(current, parsed)?
+    };
     let meta = snapshot_meta(&request, &segment_ref, &segments, clean);
     let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
     if let Some(not_modified) = super::conditional_not_modified(meta.clone(), concrete_validator) {
@@ -558,6 +632,32 @@ pub(super) fn prepare(
     };
     validate_search_projection(search.as_deref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
+    let shared_page = shared_surface
+        .map(|surface| {
+            let query_binding = shared_snapshot_query_binding(
+                &request,
+                search.as_deref(),
+                surface,
+                &sections,
+                &relation_fields,
+            );
+            let source_pins =
+                shared_source_pins(&segment_ref, &prior_sources, &relation_predecessors);
+            if shared_decoded.as_ref().is_some_and(|decoded| {
+                decoded.binding.query_binding != query_binding
+                    || decoded.binding.source_pins != source_pins
+            }) {
+                return Err(ApiError::BadCursor);
+            }
+            Ok(SharedPageState {
+                surface,
+                key: page_key.clone(),
+                query_binding,
+                source_pins,
+                decoded: shared_decoded,
+            })
+        })
+        .transpose()?;
     drop(segment);
     Ok(Prepared::Snapshot(PreparedSnapshot {
         reader,
@@ -574,6 +674,7 @@ pub(super) fn prepare(
         relation_fields,
         page_size: request.page_size,
         cursor: parsed,
+        shared_page,
         binding,
         search,
         first_match_query_id,
@@ -778,6 +879,42 @@ impl PageOrder {
                 denominator,
                 ..
             } => numerator.iter().chain(denominator).copied().collect(),
+        }
+    }
+
+    fn bind(&self, binding: &mut QueryBinding) {
+        binding.part("order-name", self.name.as_bytes());
+        match &self.kind {
+            PageOrderKind::Column(column) => {
+                binding.part("order-kind", b"column");
+                binding.part("order-column", column.as_bytes());
+            }
+            PageOrderKind::CounterRatio {
+                numerator,
+                denominator,
+                neutral_nulls,
+            } => {
+                binding.part("order-kind", b"counter-ratio");
+                for column in numerator {
+                    binding.part("order-numerator", column.as_bytes());
+                }
+                for column in denominator {
+                    binding.part("order-denominator", column.as_bytes());
+                }
+                binding.part("order-neutral-nulls", &[u8::from(*neutral_nulls)]);
+            }
+            PageOrderKind::ValueRatio {
+                numerator,
+                denominator,
+            } => {
+                binding.part("order-kind", b"value-ratio");
+                for column in numerator {
+                    binding.part("order-numerator", column.as_bytes());
+                }
+                for column in denominator {
+                    binding.part("order-denominator", column.as_bytes());
+                }
+            }
         }
     }
 
@@ -1030,13 +1167,19 @@ impl PreparedSnapshot {
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
-                "record": "snapshot",
-                "segment": { "id": self.anchor.id().to_string() },
-                "at": self.at.to_string(),
-            }))?)
-        {
+        let header = record(json!({
+            "record": "snapshot",
+            "segment": { "id": self.anchor.id().to_string() },
+            "at": self.at.to_string(),
+        }))?;
+        if self.shared_page.is_some() {
+            return if self.group.is_some() {
+                self.emit_shared_relation_page(header, emit, cancelled)
+            } else {
+                self.emit_shared_page(header, emit, cancelled)
+            };
+        }
+        if cancelled() || !emit(header) {
             return Ok(());
         }
         if self.first_match_query_id.is_some() {
@@ -1044,7 +1187,7 @@ impl PreparedSnapshot {
         }
         if self.page_size.is_some() {
             if self.group.is_some() {
-                return self.emit_relation_page(emit, cancelled);
+                return Err(ApiError::BadCursor);
             }
             return self.emit_page(emit, cancelled);
         }
@@ -1263,6 +1406,10 @@ impl PreparedSnapshot {
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
     ) -> Result<bool, ApiError> {
+        Ok(emit(Self::layout_record(section, plan)?))
+    }
+
+    fn layout_record(section: &SectionPlans, plan: &Plan) -> Result<Vec<u8>, ApiError> {
         let fields = plan
             .fields
             .iter()
@@ -1302,11 +1449,11 @@ impl PreparedSnapshot {
                 }
             }
         }
-        Ok(emit(record(json!({
+        record(json!({
             "record": "layout",
             "layout": layout,
             "rates": output_rate_fields(plan),
-        }))?))
+        }))
     }
 
     fn emit_untimed(
@@ -1403,6 +1550,166 @@ impl PreparedSnapshot {
             }
         }
         Ok(true)
+    }
+
+    fn emit_shared_page(
+        &self,
+        header: Vec<u8>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let mut prefix = Vec::with_capacity(section.plans.len().saturating_add(1));
+        prefix.push(header);
+        for plan in &section.plans {
+            prefix.push(Self::layout_record(section, plan)?);
+        }
+        let contexts = self.page_contexts(section, cancelled)?;
+        if cancelled() {
+            return Ok(());
+        }
+        let process_users = contexts
+            .iter()
+            .map(|context| {
+                let source = self.reader.open_segment(context.source)?;
+                ProcessUsers::load(&source, context.plan)
+                    .map(|users| (context.context_index, users))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let selected_at = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
+        let (binding, first_unreturned, page_size) = self.shared_cursor_binding(selected_at)?;
+        let anchor = self.shared_cursor_anchor(&contexts, &process_users)?;
+        let retained = usize::from(page_size).saturating_add(1);
+        let mut rows = PageRows::new(retained);
+        let mut eligible = 0_u64;
+        for context in &contexts {
+            self.scan_page(
+                context,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
+                anchor.as_ref(),
+                &mut rows,
+                &mut eligible,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+        }
+        let ranked = rows.finish();
+        #[cfg(test)]
+        SHARED_PAGE_RETAINED_ROWS.set(ranked.len());
+        let positions = ranked
+            .iter()
+            .map(|ranked| SnapshotPosition {
+                context_index: ranked.staged.context_index,
+                ordinal: ranked.staged.ordinal,
+            })
+            .collect::<Vec<_>>();
+        let ordered = self.page_row_records(&contexts, &process_users, ranked)?;
+        #[cfg(test)]
+        SHARED_PAGE_ENCODED_ROWS.set(ordered.len());
+        let key = &self.shared_page_ref()?.key;
+        let prefix_bytes = byte_len(&prefix).map_err(map_page_error)?;
+        let page = fit_wire_snapshot_page(
+            &ordered,
+            &positions,
+            first_unreturned,
+            page_size,
+            &binding,
+            key,
+            prefix_bytes,
+            |returned, cursor| {
+                let metadata = PageMetadata {
+                    eligible,
+                    returned,
+                    has_more: cursor.is_some(),
+                    next_cursor: cursor.map(str::to_owned),
+                    page_size: usize::from(page_size),
+                };
+                let trailer =
+                    Self::page_trailer_record(section, &contexts, &metadata, self.direction)
+                        .map_err(|_error| PageError::ResultEncoding)?;
+                Ok(trailer.len())
+            },
+        )?;
+        let metadata = PageMetadata {
+            eligible,
+            returned: page.rows.len(),
+            has_more: page.next_cursor.is_some(),
+            next_cursor: page.next_cursor,
+            page_size: usize::from(page_size),
+        };
+        let trailer = Self::page_trailer_record(section, &contexts, &metadata, self.direction)?;
+        let output_bytes = prefix_bytes
+            .checked_add(byte_len(&page.rows).map_err(map_page_error)?)
+            .and_then(|bytes| bytes.checked_add(trailer.len()))
+            .ok_or_else(result_encoding_error)?;
+        if output_bytes > SHARED_RESULT_MAX_BYTES {
+            return Err(result_too_large_error());
+        }
+        for value in prefix
+            .into_iter()
+            .chain(page.rows)
+            .chain(std::iter::once(trailer))
+        {
+            if cancelled() || !emit(value) {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn shared_cursor_anchor(
+        &self,
+        contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
+    ) -> Result<Option<PageRankedRow>, ApiError> {
+        let Some(position) = self
+            .shared_page_ref()?
+            .decoded
+            .as_ref()
+            .and_then(|cursor| cursor.snapshot_position)
+        else {
+            return Ok(None);
+        };
+        self.page_anchor(
+            contexts,
+            process_users,
+            position.context_index,
+            position.ordinal,
+        )
+        .map(Some)
+    }
+
+    fn shared_cursor_binding(
+        &self,
+        selected_at: Option<i64>,
+    ) -> Result<(CursorBinding, usize, u16), ApiError> {
+        let state = self.shared_page_ref()?;
+        let page_size = self
+            .page_size
+            .and_then(|size| u16::try_from(size).ok())
+            .ok_or(ApiError::BadCursor)?;
+        let binding = CursorBinding {
+            surface: state.surface,
+            query_binding: state.query_binding.clone(),
+            selected_at,
+            source_pins: state.source_pins.clone(),
+            page_size,
+        };
+        let first_unreturned = shared_first_unreturned(state.decoded.as_ref(), &binding)?;
+        Ok((binding, first_unreturned, page_size))
+    }
+
+    fn shared_page_ref(&self) -> Result<&SharedPageState, ApiError> {
+        self.shared_page.as_ref().ok_or(ApiError::BadCursor)
     }
 
     fn emit_page(
@@ -1621,6 +1928,20 @@ impl PreparedSnapshot {
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
+        for value in self.page_row_records(contexts, process_users, ranked)? {
+            if cancelled() || !emit(value) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn page_row_records(
+        &self,
+        contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
+        ranked: Vec<PageRankedRow>,
+    ) -> Result<Vec<Vec<u8>>, ApiError> {
         let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
         for ranked in &ranked {
             for (_name, value) in ranked.staged.row.iter() {
@@ -1644,6 +1965,7 @@ impl PreparedSnapshot {
                     .map(|dictionary| (context.context_index, dictionary))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut records = Vec::with_capacity(ranked.len());
         for ranked in ranked {
             let context = contexts
                 .iter()
@@ -1668,11 +1990,9 @@ impl PreparedSnapshot {
                     .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
-            if cancelled() || !emit(record(&value)?) {
-                return Ok(false);
-            }
+            records.push(record(&value)?);
         }
-        Ok(true)
+        Ok(records)
     }
 
     fn emit_page_trailer(
@@ -1682,6 +2002,18 @@ impl PreparedSnapshot {
         direction: Order,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
     ) -> Result<(), ApiError> {
+        let _connected = emit(Self::page_trailer_record(
+            section, contexts, metadata, direction,
+        )?);
+        Ok(())
+    }
+
+    fn page_trailer_record(
+        section: &SectionPlans,
+        contexts: &[PageContext<'_>],
+        metadata: &PageMetadata,
+        direction: Order,
+    ) -> Result<Vec<u8>, ApiError> {
         let mut order_by = Vec::new();
         for context in contexts {
             if let Some(order) = &context.order
@@ -1698,7 +2030,7 @@ impl PreparedSnapshot {
             .iter()
             .filter_map(|context| context.sample_to)
             .max();
-        let _connected = emit(record(json!({
+        record(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "eligible": metadata.eligible.to_string(),
@@ -1714,8 +2046,7 @@ impl PreparedSnapshot {
             },
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
-        }))?);
-        Ok(())
+        }))
     }
 
     fn page_contexts<'a>(
@@ -2296,11 +2627,26 @@ impl PreparedSnapshot {
         process_users: &HashMap<usize, ProcessUsers>,
         cursor: SnapshotCursor,
     ) -> Result<PageRankedRow, ApiError> {
+        self.page_anchor(
+            contexts,
+            process_users,
+            cursor.context_index,
+            cursor.ordinal,
+        )
+    }
+
+    fn page_anchor(
+        &self,
+        contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
+        context_index: usize,
+        ordinal: u64,
+    ) -> Result<PageRankedRow, ApiError> {
         let context = contexts
             .iter()
-            .find(|context| context.context_index == cursor.context_index)
+            .find(|context| context.context_index == context_index)
             .ok_or(ApiError::BadCursor)?;
-        if cursor.ordinal >= context.rows {
+        if ordinal >= context.rows {
             return Err(ApiError::BadCursor);
         }
         let source = self.reader.open_segment(context.source)?;
@@ -2308,7 +2654,7 @@ impl PreparedSnapshot {
         source.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
-            cursor.ordinal,
+            ordinal,
             1,
             |ordinal, row| {
                 stored = Some((ordinal, row));
@@ -3909,6 +4255,111 @@ impl SnapshotCursor {
     }
 }
 
+fn byte_len(records: &[Vec<u8>]) -> Result<usize, PageError> {
+    records.iter().try_fold(0_usize, |total, record| {
+        total
+            .checked_add(record.len())
+            .ok_or(PageError::ResultEncoding)
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the authenticated binding and exact wire components define one shared page fit"
+)]
+fn fit_wire_offset_page(
+    ordered: &[Vec<u8>],
+    first_unreturned: usize,
+    page_size: u16,
+    binding: &CursorBinding,
+    key: &PageKey,
+    prefix_bytes: usize,
+    mut trailer_len: impl FnMut(usize, Option<&str>) -> Result<usize, PageError>,
+) -> Result<Page<Vec<u8>>, ApiError> {
+    if ordered.len() > usize::from(page_size).saturating_add(1) {
+        return Err(result_encoding_error());
+    }
+    fit_page(
+        ordered,
+        0,
+        page_size,
+        |offset| {
+            let absolute = first_unreturned
+                .checked_add(offset)
+                .ok_or(PageError::ResultEncoding)?;
+            encode_cursor(binding, absolute, key)
+        },
+        |selected, cursor| {
+            let rows = prefix_bytes
+                .checked_add(byte_len(selected)?)
+                .ok_or(PageError::ResultEncoding)?;
+            rows.checked_add(trailer_len(selected.len(), cursor)?)
+                .ok_or(PageError::ResultEncoding)
+        },
+    )
+    .map_err(map_page_error)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the authenticated binding and exact wire components define one shared page fit"
+)]
+fn fit_wire_snapshot_page(
+    ordered: &[Vec<u8>],
+    positions: &[SnapshotPosition],
+    first_unreturned: usize,
+    page_size: u16,
+    binding: &CursorBinding,
+    key: &PageKey,
+    prefix_bytes: usize,
+    mut trailer_len: impl FnMut(usize, Option<&str>) -> Result<usize, PageError>,
+) -> Result<Page<Vec<u8>>, ApiError> {
+    if ordered.len() != positions.len() || ordered.len() > usize::from(page_size).saturating_add(1)
+    {
+        return Err(result_encoding_error());
+    }
+    fit_page(
+        ordered,
+        0,
+        page_size,
+        |offset| {
+            let position = positions
+                .get(offset)
+                .copied()
+                .ok_or(PageError::ResultTooLarge)?;
+            let absolute = first_unreturned
+                .checked_add(offset)
+                .ok_or(PageError::ResultEncoding)?;
+            encode_snapshot_cursor(binding, absolute, position, key)
+        },
+        |selected, cursor| {
+            let rows = prefix_bytes
+                .checked_add(byte_len(selected)?)
+                .ok_or(PageError::ResultEncoding)?;
+            rows.checked_add(trailer_len(selected.len(), cursor)?)
+                .ok_or(PageError::ResultEncoding)
+        },
+    )
+    .map_err(map_page_error)
+}
+
+fn map_page_error(error: PageError) -> ApiError {
+    match error {
+        PageError::InvalidCursor => ApiError::BadCursor,
+        PageError::ResultTooLarge | PageError::ResultEncoding => {
+            ApiError::Unreadable(Box::new(error))
+        }
+    }
+}
+
+fn result_encoding_error() -> ApiError {
+    map_page_error(PageError::ResultEncoding)
+}
+
+fn result_too_large_error() -> ApiError {
+    map_page_error(PageError::ResultTooLarge)
+}
+
 const fn partition_context_index(
     layout_index: usize,
     source: PartitionSource,
@@ -3940,6 +4391,164 @@ fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef
             .map_err(|_error| ApiError::BadCursor),
         SegmentKind::Finished => Err(ApiError::BadCursor),
     }
+}
+
+fn shared_page_surface(request: &SnapshotRequest) -> Option<PageSurface> {
+    if request.page_size.is_none() || request.first_match {
+        return None;
+    }
+    match request.sections.as_slice() {
+        [section] if section == "pg_stat_statements" => Some(PageSurface::Statements),
+        [section] if section == "pg_stat_user_tables" => Some(PageSurface::Tables),
+        [section] if section == "pg_stat_user_indexes" => Some(PageSurface::Indexes),
+        _ => None,
+    }
+}
+
+fn shared_source_pins(
+    anchor: &SegmentRef,
+    prior_sources: &[SegmentRef],
+    relation_predecessors: &[SegmentRef],
+) -> Vec<SourcePin> {
+    let mut seen = HashSet::new();
+    std::iter::once(anchor)
+        .chain(prior_sources)
+        .chain(relation_predecessors)
+        .filter(|source| seen.insert(source.id()))
+        .map(SourcePin::capture)
+        .collect()
+}
+
+fn validate_shared_cursor_shape(
+    request: &SnapshotRequest,
+    surface: PageSurface,
+    cursor: &DecodedCursor,
+) -> Result<(), ApiError> {
+    let page_size = request
+        .page_size
+        .and_then(|size| u16::try_from(size).ok())
+        .ok_or(ApiError::BadCursor)?;
+    if cursor.binding.surface != surface
+        || cursor.binding.page_size != page_size
+        || cursor.binding.selected_at.is_none()
+        || cursor.binding.source_pins.is_empty()
+        || cursor.snapshot_position.is_some() != request.group.is_none()
+        || cursor
+            .binding
+            .source_pins
+            .iter()
+            .filter(|pin| pin.segment_id() == request.segment_id)
+            .count()
+            != 1
+    {
+        return Err(ApiError::BadCursor);
+    }
+    Ok(())
+}
+
+fn shared_first_unreturned(
+    decoded: Option<&DecodedCursor>,
+    binding: &CursorBinding,
+) -> Result<usize, ApiError> {
+    let Some(decoded) = decoded else {
+        return Ok(0);
+    };
+    if decoded.binding != *binding {
+        return Err(ApiError::BadCursor);
+    }
+    Ok(decoded.first_unreturned)
+}
+
+fn shared_snapshot_query_binding(
+    request: &SnapshotRequest,
+    search: Option<&StructuredSearch>,
+    surface: PageSurface,
+    sections: &[SectionPlans],
+    relation_fields: &[String],
+) -> String {
+    let mut binding = QueryBinding::new(surface);
+    binding.part("segment", &request.segment_id.to_le_bytes());
+    binding.part("at", &request.at.to_le_bytes());
+    for section in &request.sections {
+        binding.part("section", section.as_bytes());
+    }
+    match request.type_id {
+        Some(type_id) => binding.part("type", &type_id.to_le_bytes()),
+        None => binding.part("type", b"all"),
+    }
+    for field in &request.fields {
+        binding.part("field", field.as_bytes());
+    }
+    match request.text {
+        Some(text) => binding.part("text", &text.to_le_bytes()),
+        None => binding.part("text", b"full"),
+    }
+    let mut filters = request.filters.iter().collect::<Vec<_>>();
+    filters.sort_unstable_by(|left, right| {
+        left.column
+            .cmp(&right.column)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    for filter in filters {
+        binding.part("filter-column", filter.column.as_bytes());
+        binding.part("filter-value", filter.value.as_bytes());
+    }
+    if let Some(search) = search {
+        binding.part("search-present", b"yes");
+        binding.part("search", search.canonical().as_bytes());
+    } else {
+        binding.part("search-present", b"no");
+    }
+    for order in &request.by {
+        binding.part("semantic-order", order.as_bytes());
+    }
+    binding.part(
+        "direction",
+        match request.direction {
+            Order::Asc => b"asc",
+            Order::Desc => b"desc",
+        },
+    );
+    binding.part(
+        "group",
+        match request.group {
+            Some(RelationGroup::Database) => b"database",
+            Some(RelationGroup::Schema) => b"schema",
+            Some(RelationGroup::Tablespace) => b"tablespace",
+            Some(RelationGroup::Object) => b"object",
+            None => b"none",
+        },
+    );
+    for field in relation_fields {
+        binding.part("relation-field", field.as_bytes());
+    }
+    for section in sections {
+        binding.part("planned-section", section.logical_name.as_bytes());
+        for plan in &section.plans {
+            binding.part("layout", &plan.type_id.to_le_bytes());
+            for identity in plan.contract.identity {
+                binding.part("identity", identity.as_bytes());
+            }
+            for field in &plan.fields {
+                binding.part("output", field.name.as_bytes());
+                if let Some(column) = field.column {
+                    binding.part("output-available", b"yes");
+                    binding.part("output-column", column.as_bytes());
+                } else {
+                    binding.part("output-available", b"no");
+                }
+            }
+            for column in &plan.projection {
+                binding.part("projection", column.as_bytes());
+            }
+            if let Some(order) = page_order(&section.logical_name, plan, &request.by) {
+                order.bind(&mut binding);
+            } else {
+                binding.part("order-kind", b"coordinate");
+            }
+        }
+    }
+    binding.finish()
 }
 
 fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>) -> u64 {

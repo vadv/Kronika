@@ -14,15 +14,21 @@ mod body;
 mod config;
 mod encoding;
 mod mcp;
+mod mcp_schema;
+mod product;
 mod route;
 mod ui;
 
 use std::convert::Infallible;
 use std::fmt;
+use std::io::Write as _;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
@@ -42,6 +48,9 @@ use api::{ApiError, CachePolicy};
 use body::{BodyError, BodyItem, BodyProducer, ChannelBody, StreamHead};
 use config::Config;
 use encoding::{AcceptedEncodings, ContentCoding};
+use product::activity::{ActivityError, ActivityQuery, execute_activity};
+use product::execution::Execution;
+use product::top_activity::{Query as TopActivityQuery, TopActivityError, execute_top_activity};
 use route::RouteError;
 
 type WebBody = UnsyncBoxBody<Bytes, BodyError>;
@@ -103,7 +112,15 @@ async fn answer(
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
         }
-        RequestTarget::Mcp => mcp::response(request).await,
+        RequestTarget::TopActivity { query, accepted } => {
+            top_activity_response(config, query, accepted).await
+        }
+        RequestTarget::Activity { query, accepted } => {
+            activity_response(config, query, accepted).await
+        }
+        RequestTarget::Mcp => {
+            mcp::response(request, config.data_root.clone(), config.page_key.clone()).await
+        }
     })
 }
 
@@ -186,6 +203,25 @@ fn route_request_with_authentication<B>(
             challenge: !is_ui_request(request.headers()),
         });
     }
+    if path == "/api/heatmap" {
+        let query =
+            route::parse_top_activity(request.uri().query()).map_err(RequestError::Route)?;
+        if request.method() != Method::GET {
+            return Err(RequestError::MethodNotAllowed("GET"));
+        }
+        let accepted = AcceptedEncodings::from_headers(request.headers())
+            .ok_or(RequestError::ApiEncodingNotAcceptable)?;
+        return Ok(RequestTarget::TopActivity { query, accepted });
+    }
+    if path == "/api/postgresql/activity" {
+        let query = route::parse_activity(request.uri().query()).map_err(RequestError::Route)?;
+        if request.method() != Method::GET {
+            return Err(RequestError::MethodNotAllowed("GET"));
+        }
+        let accepted = AcceptedEncodings::from_headers(request.headers())
+            .ok_or(RequestError::ApiEncodingNotAcceptable)?;
+        return Ok(RequestTarget::Activity { query, accepted });
+    }
     let route = route::parse(path, request.uri().query()).map_err(RequestError::Route)?;
     if request.method() != Method::GET {
         return Err(RequestError::MethodNotAllowed("GET"));
@@ -204,6 +240,14 @@ enum RequestTarget {
     Session(SessionTarget),
     Api {
         route: route::Route,
+        accepted: AcceptedEncodings,
+    },
+    TopActivity {
+        query: TopActivityQuery,
+        accepted: AcceptedEncodings,
+    },
+    Activity {
+        query: ActivityQuery,
         accepted: AcceptedEncodings,
     },
     Mcp,
@@ -345,6 +389,149 @@ fn if_none_match_values(headers: &HeaderMap) -> Option<String> {
     (!combined.is_empty()).then_some(combined)
 }
 
+pub(crate) const PRODUCT_DEADLINE: Duration = Duration::from_secs(30);
+
+struct CancelBlockingRead(Arc<AtomicBool>);
+
+impl Drop for CancelBlockingRead {
+    fn drop(&mut self) {
+        self.0.store(true, AtomicOrdering::Release);
+    }
+}
+
+async fn top_activity_response(
+    config: Arc<Config>,
+    query: TopActivityQuery,
+    accepted: AcceptedEncodings,
+) -> Response<WebBody> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_on_drop = CancelBlockingRead(Arc::clone(&cancelled));
+    let coding = accepted.for_large();
+    let data_root = config.data_root.clone();
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let result = tokio::task::spawn_blocking(move || {
+        let observed_cancel = Arc::clone(&cancelled);
+        let execution = Execution::new(
+            move || observed_cancel.load(AtomicOrdering::Acquire),
+            deadline,
+        );
+        let result = execute_top_activity(&data_root, query, &execution)?;
+        let bytes = serde_json::to_vec(&result)
+            .map_err(|error| TopActivityError::Read(ApiError::from(error)))?;
+        encode_json(bytes, coding)
+            .map_err(|error| TopActivityError::Read(ApiError::Unreadable(Box::new(error))))
+    })
+    .await;
+    match result {
+        Ok(Ok(bytes)) => product_json_response(bytes, coding),
+        Ok(Err(error)) => top_activity_failure(&error),
+        Err(error) => {
+            eprintln!("kronika-web: top-activity worker failed: {error}");
+            failed()
+        }
+    }
+}
+
+async fn activity_response(
+    config: Arc<Config>,
+    query: ActivityQuery,
+    accepted: AcceptedEncodings,
+) -> Response<WebBody> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_on_drop = CancelBlockingRead(Arc::clone(&cancelled));
+    let coding = accepted.for_large();
+    let data_root = config.data_root.clone();
+    let page_key = config.page_key.clone();
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let result = tokio::task::spawn_blocking(move || {
+        let observed_cancel = Arc::clone(&cancelled);
+        let execution = Execution::new(
+            move || observed_cancel.load(AtomicOrdering::Acquire),
+            deadline,
+        );
+        let result = execute_activity(&data_root, &query, &page_key, &execution)?;
+        let bytes = serde_json::to_vec(&result).map_err(|_error| {
+            ActivityError::ReadFailed("the recorded Activity result could not be encoded")
+        })?;
+        encode_json(bytes, coding).map_err(|_error| {
+            ActivityError::ReadFailed("the recorded Activity result could not be encoded")
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(bytes)) => product_json_response(bytes, coding),
+        Ok(Err(error)) => activity_failure(error),
+        Err(error) => {
+            eprintln!("kronika-web: Activity worker failed: {error}");
+            failed()
+        }
+    }
+}
+
+fn encode_json(bytes: Vec<u8>, coding: ContentCoding) -> std::io::Result<Vec<u8>> {
+    match coding {
+        ContentCoding::Identity => Ok(bytes),
+        ContentCoding::Gzip => {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&bytes)?;
+            encoder.finish()
+        }
+    }
+}
+
+fn product_json_response(bytes: Vec<u8>, coding: ContentCoding) -> Response<WebBody> {
+    let mut response = Response::new(
+        Full::new(Bytes::from(bytes))
+            .map_err(BodyError::from)
+            .boxed_unsync(),
+    );
+    common_headers(&mut response, CachePolicy::NoStore);
+    response.headers_mut().insert(
+        VARY,
+        HeaderValue::from_static("Authorization, Cookie, Accept-Encoding"),
+    );
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(coding) = coding.header() {
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static(coding));
+    }
+    response
+}
+
+fn top_activity_failure(error: &TopActivityError) -> Response<WebBody> {
+    let status = match error {
+        TopActivityError::Read(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        TopActivityError::ResultTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        TopActivityError::Cancelled => StatusCode::REQUEST_TIMEOUT,
+        TopActivityError::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
+    };
+    let mut response = refused(status, error.code(), None);
+    response.headers_mut().insert(
+        VARY,
+        HeaderValue::from_static("Authorization, Cookie, Accept-Encoding"),
+    );
+    response
+}
+
+fn activity_failure(error: ActivityError) -> Response<WebBody> {
+    let status = match error {
+        ActivityError::InvalidArguments(_) => StatusCode::BAD_REQUEST,
+        ActivityError::ReadFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ActivityError::ResultTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        ActivityError::Cancelled => StatusCode::REQUEST_TIMEOUT,
+        ActivityError::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
+    };
+    let mut response = refused(status, error.code(), None);
+    response.headers_mut().insert(
+        VARY,
+        HeaderValue::from_static("Authorization, Cookie, Accept-Encoding"),
+    );
+    response
+}
+
 async fn streamed(
     config: Arc<Config>,
     route: route::Route,
@@ -359,6 +546,7 @@ async fn streamed(
                 config.synthetic_demo,
                 route.clone(),
                 if_none_match.as_deref(),
+                &config.page_key,
             )
         },
         accepted,

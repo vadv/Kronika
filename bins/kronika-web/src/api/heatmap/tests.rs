@@ -1,9 +1,21 @@
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use kronika_format::DictLimits;
+use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_reader::Reader;
+use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::pg_settings::PgSettings;
+use kronika_registry::{StrId, Ts};
+use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
 use super::{
     Fold, GroupedFill, Obs, column_of, entity_key_into, interval_end, interval_start,
     ungrouped_batch_rows,
 };
+use crate::product::execution::Execution;
+use crate::product::top_activity::{Metric, MetricUnit, RawQuery, Surface, normalize};
 
 fn entity_key(type_id: u32, identity: &[Value]) -> String {
     let mut key = String::new();
@@ -14,6 +26,142 @@ fn entity_key(type_id: u32, identity: &[Value]) -> String {
 const HOUR: i64 = 1_000_000_000_000;
 const SPAN: i64 = 3_600_000_000;
 const MINUTE: i64 = 60_000_000;
+const CONVERSION_HOUR: i64 = 1_709_164_800_000_000;
+
+struct ConversionFixture {
+    directory: tempfile::TempDir,
+    writer: WriterOwner,
+    journal: Journal,
+    address: SegmentAddress,
+}
+
+impl ConversionFixture {
+    fn new(segment_id: i64) -> Self {
+        let directory = tempfile::tempdir().expect("conversion fixture directory");
+        let root = DataRoot::open(directory.path()).expect("conversion fixture data root");
+        let writer = root
+            .acquire_writer(LayoutLimits::default())
+            .expect("conversion fixture writer");
+        let journal =
+            Journal::open(&writer, JournalConfig::default()).expect("conversion fixture journal");
+        let address = SegmentAddress::new(SegmentId::new(segment_id).expect("segment id"))
+            .expect("segment address");
+        Self {
+            directory,
+            writer,
+            journal,
+            address,
+        }
+    }
+
+    fn root(&self) -> &Path {
+        self.directory.path()
+    }
+
+    fn append_metadata(&mut self, at: i64, ticks: i64, block_size: Option<&str>) {
+        let mut interner = Interner::new(DictLimits::default());
+        let intern = |interner: &mut Interner, value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern conversion metadata")
+                    .get(),
+            )
+        };
+        let hostname = intern(&mut interner, "db.example");
+        let kernel_version = intern(&mut interner, "6.12");
+        let boot_id = intern(&mut interner, "fixture-boot");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(at),
+                hostname,
+                kernel_version,
+                environment: 0,
+                clock_ticks_per_sec: ticks,
+                page_size_bytes: 4_096,
+                boot_id,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("instance metadata row fits");
+        if let Some(block_size) = block_size {
+            let database = intern(&mut interner, "postgres");
+            let role = intern(&mut interner, "collector");
+            let name = intern(&mut interner, "block_size");
+            let setting = intern(&mut interner, block_size);
+            let source = intern(&mut interner, "default");
+            let context = intern(&mut interner, "internal");
+            let vartype = intern(&mut interner, "integer");
+            buffers
+                .push(PgSettings {
+                    ts: Ts(at),
+                    datid: 1,
+                    datname: database,
+                    usesysid: 2,
+                    usename: role,
+                    name,
+                    setting,
+                    unit: None,
+                    source,
+                    sourcefile: None,
+                    sourceline: None,
+                    pending_restart: false,
+                    context,
+                    vartype,
+                    boot_val: Some(setting),
+                    reset_val: Some(setting),
+                })
+                .expect("block-size setting row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("conversion metadata dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode conversion metadata")
+            .expect("nonempty conversion metadata");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append conversion metadata");
+    }
+
+    fn finish_and_continue(&mut self, segment_id: i64) {
+        write_segment(&self.journal, &self.writer, self.address)
+            .expect("finish conversion metadata segment");
+        self.journal.reset().expect("reset conversion journal");
+        self.address = SegmentAddress::new(SegmentId::new(segment_id).expect("segment id"))
+            .expect("segment address");
+    }
+}
+
+fn conversion_query(surface: Surface, metric: Metric) -> crate::product::top_activity::Query {
+    normalize(RawQuery {
+        hour: CONVERSION_HOUR.to_string(),
+        surface: surface.as_str().to_owned(),
+        metric: Some(metric.as_str().to_owned()),
+        level: None,
+        top: None,
+    })
+    .expect("conversion fixture query")
+}
+
+fn execution() -> Execution {
+    Execution::new(|| false, Instant::now() + Duration::from_secs(30))
+}
+
+fn read_conversion(
+    reader: &Reader,
+    sources: &[kronika_reader::SegmentRef],
+) -> crate::product::top_activity::ConversionContext {
+    super::conversion_context(
+        reader,
+        sources,
+        conversion_query(Surface::Processes, Metric::Cpu),
+        &execution(),
+    )
+    .expect("read conversion context")
+}
 
 fn end() -> i64 {
     HOUR + SPAN - 1
@@ -21,6 +169,122 @@ fn end() -> i64 {
 
 fn identity(name: &str) -> Vec<Value> {
     vec![json!(name)]
+}
+
+#[test]
+fn production_conversion_uses_latest_usable_recorded_metadata() {
+    let hour_end = CONVERSION_HOUR + SPAN - 1;
+    let mut fixture = ConversionFixture::new(CONVERSION_HOUR - 2 * SPAN);
+    fixture.append_metadata(hour_end - 20, 100, Some("4096"));
+    fixture.finish_and_continue(CONVERSION_HOUR - SPAN);
+    fixture.append_metadata(hour_end - 10, 250, Some("8192"));
+
+    let reader = Reader::open(fixture.root()).expect("conversion reader");
+    let listing = reader
+        .catalog_segments(..=hour_end)
+        .expect("pinned conversion listing");
+    let context = read_conversion(&reader, &listing.segments);
+    assert_eq!(context.block_size(), Some(8_192));
+    assert_eq!(context.clock_ticks_per_sec(), Some(250));
+}
+
+#[test]
+fn production_conversion_skips_invalid_newer_metadata_and_continues_backward() {
+    let hour_end = CONVERSION_HOUR + SPAN - 1;
+    let mut fixture = ConversionFixture::new(CONVERSION_HOUR - 2 * SPAN);
+    fixture.append_metadata(hour_end - 20, 100, Some("4096"));
+    fixture.finish_and_continue(CONVERSION_HOUR - SPAN);
+    fixture.append_metadata(hour_end - 10, 0, Some("0"));
+
+    let reader = Reader::open(fixture.root()).expect("conversion reader");
+    let listing = reader
+        .catalog_segments(..=hour_end)
+        .expect("pinned conversion listing");
+    let context = read_conversion(&reader, &listing.segments);
+    assert_eq!(context.block_size(), Some(4_096));
+    assert_eq!(context.clock_ticks_per_sec(), Some(100));
+}
+
+#[test]
+fn production_conversion_without_usable_metadata_keeps_raw_values_and_units() {
+    let hour_end = CONVERSION_HOUR + SPAN - 1;
+    let mut fixture = ConversionFixture::new(CONVERSION_HOUR - SPAN);
+    fixture.append_metadata(hour_end - 10, 0, Some("not-an-integer"));
+
+    let reader = Reader::open(fixture.root()).expect("conversion reader");
+    let listing = reader
+        .catalog_segments(..=hour_end)
+        .expect("pinned conversion listing");
+    let context = read_conversion(&reader, &listing.segments);
+    assert_eq!(context.block_size(), None);
+    assert_eq!(context.clock_ticks_per_sec(), None);
+
+    let blocks = conversion_query(Surface::PostgreSqlStatements, Metric::SharedRead)
+        .recipe()
+        .expect("block recipe")
+        .resolve(context);
+    assert_eq!(blocks.scale(42.0), Ok(42.0));
+    assert_eq!(blocks.definition.cell_unit, MetricUnit::CountPerSecond);
+    assert_eq!(blocks.definition.total_unit, MetricUnit::Count);
+
+    let ticks = conversion_query(Surface::Processes, Metric::Cpu)
+        .recipe()
+        .expect("CPU recipe")
+        .resolve(context);
+    assert_eq!(ticks.scale(250.0), Ok(250.0));
+    assert_eq!(ticks.definition.cell_unit, MetricUnit::CountPerSecond);
+    assert_eq!(ticks.definition.total_unit, MetricUnit::Count);
+}
+
+#[test]
+fn production_conversion_never_uses_metadata_after_hour_end() {
+    let hour_end = CONVERSION_HOUR + SPAN - 1;
+    let mut fixture = ConversionFixture::new(CONVERSION_HOUR - SPAN);
+    fixture.append_metadata(hour_end - 10, 100, Some("4096"));
+    fixture.append_metadata(hour_end + 1, 1_000, Some("16384"));
+
+    let reader = Reader::open(fixture.root()).expect("conversion reader");
+    let listing = reader
+        .catalog_segments(..=hour_end)
+        .expect("pinned conversion listing");
+    let context = read_conversion(&reader, &listing.segments);
+    assert_eq!(context.block_size(), Some(4_096));
+    assert_eq!(context.clock_ticks_per_sec(), Some(100));
+}
+
+#[test]
+fn production_conversion_keeps_one_active_prefix_pinned_during_mutation() {
+    let hour_end = CONVERSION_HOUR + SPAN - 1;
+    let mut fixture = ConversionFixture::new(CONVERSION_HOUR - SPAN);
+    fixture.append_metadata(hour_end - 20, 100, Some("4096"));
+    let reader = Reader::open(fixture.root()).expect("conversion reader");
+    let pinned = reader
+        .catalog_segments(..=hour_end)
+        .expect("first pinned conversion listing");
+    let pinned_position = pinned
+        .segments
+        .last()
+        .and_then(kronika_reader::SegmentRef::active_position)
+        .expect("active conversion prefix");
+
+    fixture.append_metadata(hour_end - 10, 250, Some("8192"));
+
+    let context = read_conversion(&reader, &pinned.segments);
+    assert_eq!(context.block_size(), Some(4_096));
+    assert_eq!(context.clock_ticks_per_sec(), Some(100));
+
+    let refreshed = reader
+        .catalog_segments(..=hour_end)
+        .expect("refreshed conversion listing");
+    let refreshed_position = refreshed
+        .segments
+        .last()
+        .and_then(kronika_reader::SegmentRef::active_position)
+        .expect("refreshed active conversion prefix");
+    assert!(refreshed_position > pinned_position);
+    let context = read_conversion(&reader, &refreshed.segments);
+    assert_eq!(context.block_size(), Some(8_192));
+    assert_eq!(context.clock_ticks_per_sec(), Some(250));
 }
 
 #[test]
@@ -234,10 +498,29 @@ fn a_summed_cut_adds_the_present_fields_and_stays_null_without_any() {
         .collect();
     let row = kronika_reader::Row::new(contract, cells);
     assert_eq!(
-        super::summed(&row, &["n_tup_ins", "n_tup_upd", "n_tup_del"]),
+        super::summed(&row, &["n_tup_ins", "n_tup_upd", "n_tup_del"])
+            .expect("finite component sum"),
         Some(12.0)
     );
-    assert_eq!(super::summed(&row, &["n_tup_del"]), None);
+    assert_eq!(
+        super::summed(&row, &["n_tup_del"]).expect("missing component sum"),
+        None
+    );
+}
+
+#[test]
+fn a_non_finite_component_sum_is_a_read_failure_not_a_missing_value() {
+    let contract = kronika_registry::contract(1_013_008).expect("tables contract");
+    let cells = contract
+        .columns
+        .iter()
+        .map(|column| match column.name {
+            "n_tup_ins" | "n_tup_upd" => kronika_reader::Cell::F64(f64::MAX),
+            _ => kronika_reader::Cell::Null,
+        })
+        .collect();
+    let row = kronika_reader::Row::new(contract, cells);
+    assert!(super::summed(&row, &["n_tup_ins", "n_tup_upd"]).is_err());
 }
 
 #[test]
@@ -336,7 +619,7 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
 
     let heatmap = super::prepare(
         directory.path(),
-        crate::route::HeatmapRequest {
+        super::HeatmapRequest {
             from: ts,
             to: ts,
             section: "os_mountinfo".to_owned(),
@@ -375,7 +658,7 @@ fn a_high_cardinality_dictionary_is_resolved_for_the_whole_plan() {
 
     let ungrouped = super::prepare(
         directory.path(),
-        crate::route::HeatmapRequest {
+        super::HeatmapRequest {
             from: ts,
             to: ts,
             section: "os_mountinfo".to_owned(),
