@@ -13,6 +13,7 @@ mod auth;
 mod body;
 mod config;
 mod encoding;
+mod mcp;
 mod route;
 mod ui;
 
@@ -94,6 +95,7 @@ async fn answer(
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
         }
+        RequestTarget::Mcp => mcp::response(request).await,
     })
 }
 
@@ -161,6 +163,13 @@ fn route_request_with_authentication<B>(
         }
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
+    if path == "/mcp" && request.uri().query().is_none() {
+        validate_mcp_origin(request.headers())?;
+        if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
+            return Err(RequestError::Unauthorized { challenge: true });
+        }
+        return Ok(RequestTarget::Mcp);
+    }
     if path != "/api" && !path.starts_with("/api/") {
         return Err(RequestError::Route(RouteError::NoSuchPath));
     }
@@ -189,6 +198,7 @@ enum RequestTarget {
         route: route::Route,
         accepted: AcceptedEncodings,
     },
+    Mcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +216,8 @@ enum RequestError {
     MethodNotAllowed(&'static str),
     UiEncodingNotAcceptable,
     ApiEncodingNotAcceptable,
+    InvalidOrigin,
+    OriginNotAllowed,
 }
 
 impl RequestError {
@@ -221,7 +233,38 @@ impl RequestError {
             Self::MethodNotAllowed(allow) => method_not_allowed(allow),
             Self::UiEncodingNotAcceptable => encoding_not_acceptable(false),
             Self::ApiEncodingNotAcceptable => encoding_not_acceptable(true),
+            Self::InvalidOrigin => refused(StatusCode::BAD_REQUEST, "invalid_origin", None),
+            Self::OriginNotAllowed => refused(StatusCode::FORBIDDEN, "origin_not_allowed", None),
         }
+    }
+}
+
+fn validate_mcp_origin(headers: &HeaderMap) -> Result<(), RequestError> {
+    let origin = unique_header(headers.get_all(hyper::header::ORIGIN).iter());
+    let SingleHeader::Value(origin) = origin else {
+        return match origin {
+            SingleHeader::Absent => Ok(()),
+            SingleHeader::Invalid | SingleHeader::Value(_) => Err(RequestError::InvalidOrigin),
+        };
+    };
+    let origin: hyper::Uri = origin
+        .parse()
+        .map_err(|_error| RequestError::InvalidOrigin)?;
+    if !matches!(origin.scheme_str(), Some("http" | "https"))
+        || origin.path() != "/"
+        || origin.query().is_some()
+    {
+        return Err(RequestError::InvalidOrigin);
+    }
+    let authority = origin
+        .authority()
+        .ok_or(RequestError::InvalidOrigin)?
+        .as_str();
+    let host = unique_header(headers.get_all(hyper::header::HOST).iter());
+    match host {
+        SingleHeader::Value(host) if authority.eq_ignore_ascii_case(host) => Ok(()),
+        SingleHeader::Absent | SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
+        SingleHeader::Value(_) => Err(RequestError::OriginNotAllowed),
     }
 }
 

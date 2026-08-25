@@ -115,6 +115,46 @@ fn authentication_is_mandatory_and_central() {
 }
 
 #[test]
+fn mcp_shares_api_auth_and_checks_origin_first() {
+    let response = route_request(&account(), &public_request(Method::POST, "/mcp"))
+        .expect_err("missing credentials")
+        .response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(WWW_AUTHENTICATE),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Basic realm=\"kronika\""
+        ))
+    );
+
+    let mut disallowed = public_request(Method::POST, "/mcp");
+    disallowed.headers_mut().insert(
+        hyper::header::HOST,
+        hyper::header::HeaderValue::from_static("kronika.test"),
+    );
+    disallowed.headers_mut().insert(
+        hyper::header::ORIGIN,
+        hyper::header::HeaderValue::from_static("https://other.test"),
+    );
+    let response = route_request(&account(), &disallowed)
+        .expect_err("origin is checked before credentials")
+        .response();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+
+    let mut admitted = request(Method::POST, "/mcp");
+    admitted.headers_mut().insert(
+        hyper::header::HOST,
+        hyper::header::HeaderValue::from_static("kronika.test"),
+    );
+    admitted.headers_mut().insert(
+        hyper::header::ORIGIN,
+        hyper::header::HeaderValue::from_static("https://kronika.test"),
+    );
+    assert_eq!(route_request(&account(), &admitted), Ok(RequestTarget::Mcp));
+}
+
+#[test]
 fn the_shell_is_public_even_with_invalid_authorization() {
     let root = public_request(Method::GET, "/");
     assert_eq!(
