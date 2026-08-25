@@ -9,6 +9,7 @@ use hyper::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, ETAG, Heade
 use hyper::{HeaderMap, StatusCode};
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_reader::Reader;
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
@@ -37,6 +38,7 @@ use crate::api::{
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
+use crate::route::Window;
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
@@ -5703,6 +5705,76 @@ fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fie
         assert_eq!(direct.type_id.to_string(), http["type_id"]);
         assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
         assert_eq!(direct.at.to_string(), http["timestamp"]);
+    }
+}
+
+#[test]
+fn fetch_bounded_events_agrees_with_the_streamed_hour_section_on_the_first_rows_in_order() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to = SEGMENT_ID + 14;
+    fixture.append_log_error(from - 1);
+    for at in from..=to {
+        fixture.append_log_error(at);
+    }
+    fixture.append_log_error(to + 1);
+    fixture.finish();
+
+    let via_http = stream(fixture.prepare(
+        &format!("/api/hour?section=pg_log_errors&from={from}&to={to}"),
+        None,
+    ))
+    .expect("streamed pg_log_errors section");
+    let http_rows = row_records(&via_http);
+    assert_eq!(
+        http_rows.len(),
+        5,
+        "window keeps only the 5 rows inside [from, to]"
+    );
+    let layout = via_http
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("pg_log_errors layout");
+    let field_names = layout["layout"]["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| column["name"].as_str().expect("column name").to_owned())
+        .collect::<Vec<_>>();
+
+    let reader = Reader::open(fixture.root()).expect("open fixture reader");
+    let segments = reader.segments(..).expect("list fixture segments").segments;
+    let window = Window {
+        from: Some(from),
+        to: Some(to),
+    };
+    let (rows, has_more) = crate::api::history::fetch_bounded_events(
+        &reader,
+        &segments,
+        "pg_log_errors",
+        window,
+        3,
+        &|| false,
+    )
+    .expect("fetch_bounded_events");
+
+    assert!(has_more, "5 rows exist in the window but limit is 3");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows.iter().map(|row| row.at).collect::<Vec<_>>(),
+        (from..from + 3).collect::<Vec<_>>(),
+        "bounded fetch keeps the first 3 rows in ascending timestamp order"
+    );
+
+    for (direct, http) in rows.iter().zip(http_rows.iter().take(3)) {
+        assert_eq!(direct.segment_id, SEGMENT_ID);
+        assert_eq!(direct.type_id.to_string(), http["type_id"]);
+        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
+        assert_eq!(direct.at.to_string(), http["timestamp"]);
+        let http_values = http["values"].as_array().expect("values array");
+        for (name, value) in field_names.iter().zip(http_values.iter()) {
+            assert_eq!(&direct.fields[name], value, "field {name} mismatch");
+        }
     }
 }
 

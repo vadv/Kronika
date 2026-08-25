@@ -12,7 +12,7 @@ use crate::route::{ActiveCursor, Route};
 
 pub(crate) mod catalog;
 pub(crate) mod heatmap;
-mod history;
+pub(crate) mod history;
 mod hour;
 mod index;
 mod query;

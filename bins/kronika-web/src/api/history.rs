@@ -1,16 +1,16 @@
 //! Projected full-resolution history, streamed per physical layout and identity.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
-use kronika_reader::{Cell, Row, Segment, SegmentKind};
-use serde_json::json;
+use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
+use serde_json::{Value, json};
 
 use super::query::{Plan, apply_tail, plans, streaming_chunk_dictionary, validate_row_dictionary};
 use super::render::{cell, projected_layout, record};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
-use crate::route::{ActiveCursor, DataRequest, Window};
+use crate::route::{ActiveCursor, DataRequest, SegmentRequest, Window};
 
 const ROW_CHUNK_ROWS: usize = 512;
 
@@ -153,9 +153,7 @@ impl PreparedHistory {
                 {
                     return true;
                 }
-                let value = point
-                    .value
-                    .map_or(serde_json::Value::Null, |value| json!(value));
+                let value = point.value.map_or(Value::Null, |value| json!(value));
                 let values = vec![value; plan.field_count];
                 match record(json!({
                     "record": "row",
@@ -181,10 +179,7 @@ impl PreparedHistory {
     }
 }
 
-fn health_plan(
-    request: &DataRequest,
-    tail: Option<&kronika_reader::SegmentRef>,
-) -> Result<HealthPlan, ApiError> {
+fn health_plan(request: &DataRequest, tail: Option<&SegmentRef>) -> Result<HealthPlan, ApiError> {
     for field in &request.fields {
         if field != "health" {
             return Err(ApiError::NoSuchColumn(field.clone()));
@@ -231,17 +226,14 @@ fn emit_chunk(
             .identity
             .iter()
             .map(|name| {
-                row.get(name).map_or(Ok(serde_json::Value::Null), |value| {
-                    cell(value, &dictionary)
-                })
+                row.get(name)
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let timestamp = plan
             .timestamp
             .and_then(|name| row.get(name))
-            .map_or(Ok(serde_json::Value::Null), |value| {
-                cell(value, &dictionary)
-            })?;
+            .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?;
         let values = plan
             .fields
             .iter()
@@ -249,9 +241,7 @@ fn emit_chunk(
                 field
                     .column
                     .and_then(|name| row.get(name))
-                    .map_or(Ok(serde_json::Value::Null), |value| {
-                        cell(value, &dictionary)
-                    })
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
         if !emit(record(json!({
@@ -345,4 +335,190 @@ pub(super) fn stream_plans(
         }
     }
     Ok(true)
+}
+
+/// One event-log row bounded by [`fetch_bounded_events`], keyed by column
+/// name instead of `stream_plans`'s positional `values` array.
+/// `segment_id`/`type_id`/`row_ordinal`/`at` are the same
+/// `kronika_get_row_detail` locator `ProcessRowOut`/`PlainRowOut`
+/// (`api/snapshot.rs`) carry, so a caller can chain straight into that tool.
+pub(crate) struct EventRowOut {
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
+    pub(crate) at: i64,
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
+/// Bounded top-N read of one logical section across `segments`, keyed by
+/// field name for MCP consumers instead of `stream_plans`'s positional wire
+/// format.
+///
+/// Physical row order within a segment is append order, which for a
+/// log-derived event section is already chronological, and `segments` is
+/// scanned in the order given (callers pass them sorted by `min_ts`, the
+/// same order `PreparedHour` streams). That makes "collect the first
+/// `limit` matching rows and stop" a correct timestamp-ascending bound on
+/// its own — unlike `PreparedSnapshot`'s `PageRows`, nothing here ranks by
+/// an arbitrary sort column, so no heap is needed.
+pub(crate) fn fetch_bounded_events(
+    reader: &Reader,
+    segments: &[SegmentRef],
+    section: &str,
+    window: Window,
+    limit: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(Vec<EventRowOut>, bool), ApiError> {
+    let bound = limit.saturating_add(1);
+    let mut rows: Vec<EventRowOut> = Vec::new();
+    for segment_ref in segments {
+        if cancelled() || rows.len() >= bound {
+            break;
+        }
+        let segment = reader.open_segment(segment_ref)?;
+        let request = DataRequest {
+            segment: SegmentRequest {
+                segment_id: segment_ref.id(),
+                section: section.to_owned(),
+            },
+            fields: Vec::new(),
+            filters: Vec::new(),
+            type_id: None,
+            after: None,
+        };
+        let section_plans = match plans(&segment, &request, true) {
+            Ok(section_plans) => section_plans,
+            Err(ApiError::NoSuchSection) => continue,
+            Err(error) => return Err(error),
+        };
+        for plan in &section_plans {
+            if cancelled() || rows.len() >= bound {
+                break;
+            }
+            if !plan.applies() {
+                continue;
+            }
+            collect_bounded_rows(
+                &segment,
+                segment_ref.id(),
+                plan,
+                window,
+                bound,
+                &mut rows,
+                cancelled,
+            )?;
+        }
+    }
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    Ok((rows, has_more))
+}
+
+/// Scans one plan's rows for [`fetch_bounded_events`], stopping as soon as
+/// `rows` reaches `bound` (`limit + 1`, so the caller can tell `has_more`
+/// apart from "exactly `limit` rows exist"). Flushes the pending chunk
+/// early, before `ROW_CHUNK_ROWS`, once it alone would satisfy `bound` —
+/// `emit_chunk`'s streaming caller always wants every row, so it only ever
+/// flushes at the full batch size, but a bounded fetch must not decode
+/// hundreds of rows it is about to throw away just to fill one batch.
+fn collect_bounded_rows(
+    segment: &Segment,
+    segment_id: i64,
+    plan: &Plan,
+    window: Window,
+    bound: usize,
+    rows: &mut Vec<EventRowOut>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    let Some(timestamp_column) = plan.timestamp else {
+        return Ok(());
+    };
+    let mut failure = None;
+    let mut chunk: Vec<(u64, Row)> = Vec::with_capacity(ROW_CHUNK_ROWS);
+    segment.visit_rows(
+        plan.type_id,
+        &plan.projection,
+        plan.start_row,
+        usize::MAX,
+        |ordinal, row| {
+            if cancelled() || rows.len() >= bound {
+                return false;
+            }
+            if !matches!(row.get(timestamp_column), Some(Cell::Ts(at)) if window.contains(*at)) {
+                return true;
+            }
+            chunk.push((ordinal, row));
+            if chunk.len() < ROW_CHUNK_ROWS && rows.len() + chunk.len() < bound {
+                return true;
+            }
+            if let Err(error) = append_chunk(
+                segment,
+                segment_id,
+                plan,
+                timestamp_column,
+                &mut chunk,
+                rows,
+                bound,
+            ) {
+                failure = Some(error);
+                return false;
+            }
+            rows.len() < bound
+        },
+    )?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if !chunk.is_empty() && rows.len() < bound {
+        append_chunk(
+            segment,
+            segment_id,
+            plan,
+            timestamp_column,
+            &mut chunk,
+            rows,
+            bound,
+        )?;
+    }
+    Ok(())
+}
+
+/// Renders one drained chunk into [`EventRowOut`]s, the same
+/// dictionary-per-chunk resolution `emit_chunk` uses, reshaped to a keyed
+/// map through the same [`cell`] renderer instead of a positional array.
+fn append_chunk(
+    segment: &Segment,
+    segment_id: i64,
+    plan: &Plan,
+    timestamp_column: &str,
+    chunk: &mut Vec<(u64, Row)>,
+    rows: &mut Vec<EventRowOut>,
+    bound: usize,
+) -> Result<(), ApiError> {
+    let dictionary = streaming_chunk_dictionary(segment, chunk)?;
+    for (ordinal, row) in chunk.drain(..) {
+        validate_row_dictionary(&row, &dictionary)?;
+        if rows.len() >= bound {
+            break;
+        }
+        let Some(Cell::Ts(at)) = row.get(timestamp_column) else {
+            continue;
+        };
+        let mut fields = BTreeMap::new();
+        for field in &plan.fields {
+            let value = field
+                .column
+                .and_then(|name| row.get(name))
+                .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?;
+            fields.insert(field.name.clone(), value);
+        }
+        rows.push(EventRowOut {
+            segment_id,
+            type_id: plan.type_id,
+            row_ordinal: ordinal,
+            at: *at,
+            fields,
+        });
+    }
+    Ok(())
 }
