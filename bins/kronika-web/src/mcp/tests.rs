@@ -229,10 +229,10 @@ fn mcp_tool_catalog_cost() {
         estimated_tokens
     );
     assert_eq!(catalog.len(), 20);
-    assert_eq!(descriptor_bytes, 23_751);
+    assert_eq!(descriptor_bytes, 23_733);
     assert_eq!(input_schema_bytes, 17_000);
     assert_eq!(output_schema_bytes, 0);
-    assert_eq!(estimated_tokens, 5_938);
+    assert_eq!(estimated_tokens, 5_934);
 }
 
 #[tokio::test]
@@ -256,8 +256,15 @@ async fn dispatch_allowlists_known_tools_without_fabricating_data() {
         known
             .structured_content
             .as_ref()
-            .and_then(|value| value.pointer("/data/context/historical_only")),
-        Some(&Value::Bool(true))
+            .and_then(|value| value.pointer("/data/catalog/0/record")),
+        Some(&json!("catalog"))
+    );
+    assert_eq!(
+        known
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("page")),
+        Some(&Value::Null)
     );
 
     let unknown = super::tools::dispatch(state, CallToolRequestParams::new("run_sql"), || false)
@@ -561,8 +568,8 @@ async fn legacy_initialize_and_tools_list_are_stateless() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(headers.get("mcp-session-id").is_none());
     assert_eq!(
-        body.pointer("/result/structuredContent/data/context/historical_only"),
-        Some(&json!(true))
+        body.pointer("/result/structuredContent/data/catalog/0/record"),
+        Some(&json!("catalog"))
     );
 }
 

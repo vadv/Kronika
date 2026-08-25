@@ -106,15 +106,29 @@ pub(crate) enum ProcessLens {
 }
 
 impl ProcessLens {
-    pub(crate) fn parse(lens: Option<&str>) -> Option<Self> {
-        match lens {
-            None | Some("tree") => Some(Self::Tree),
-            Some("generic") => Some(Self::Generic),
-            Some("cpu") => Some(Self::Cpu),
-            Some("memory") => Some(Self::Memory),
-            Some("disk") => Some(Self::Disk),
-            Some(_) => None,
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Generic,
+        Self::Cpu,
+        Self::Memory,
+        Self::Disk,
+        Self::Tree,
+    ];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Tree => "tree",
         }
+    }
+
+    pub(crate) fn parse(lens: Option<&str>) -> Option<Self> {
+        let lens = lens.unwrap_or("tree");
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.name() == lens)
     }
 }
 
@@ -169,46 +183,75 @@ pub(crate) enum IndexLens {
     State,
 }
 
+macro_rules! named_lenses {
+    ($type:ty, [$($variant:ident => $name:literal),+ $(,)?]) => {
+        impl $type {
+            pub(crate) const ALL: [Self; named_lenses!(@count $($variant),+)] = [
+                $(Self::$variant),+
+            ];
+
+            pub(crate) const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+
+            pub(crate) fn parse(name: &str) -> Option<Self> {
+                Self::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.name() == name)
+            }
+        }
+    };
+    (@count $head:ident $(, $tail:ident)*) => {
+        1_usize $(+ named_lenses!(@one $tail))*
+    };
+    (@one $variant:ident) => { 1_usize };
+}
+
+named_lenses!(StatementLens, [
+    Load => "load",
+    PerCall => "per_call",
+    Io => "io",
+    Resources => "resources",
+    Stability => "stability",
+]);
+named_lenses!(PlanLens, [
+    Load => "load",
+    Timing => "timing",
+    Io => "io",
+    Identity => "identity",
+]);
+named_lenses!(TableLens, [
+    Access => "access",
+    Changes => "changes",
+    Maintenance => "maintenance",
+    SizeBuffers => "size_buffers",
+    Freeze => "freeze",
+]);
+named_lenses!(IndexLens, [
+    Usage => "usage",
+    LowActivity => "low_activity",
+    SizeBuffers => "size_buffers",
+    State => "state",
+]);
+
 impl PostgresqlSurface {
     pub(crate) fn parse(section: &str, lens: Option<&str>) -> Option<Self> {
         match (section, lens) {
             ("pg_stat_activity", None) => Some(Self::Activity),
             ("pg_locks", None | Some("graph")) => Some(Self::Locks),
-            ("pg_stat_statements", None | Some("load")) => {
-                Some(Self::Statements(StatementLens::Load))
+            ("pg_stat_statements", lens) => {
+                StatementLens::parse(lens.unwrap_or("load")).map(Self::Statements)
             }
-            ("pg_stat_statements", Some("per_call")) => {
-                Some(Self::Statements(StatementLens::PerCall))
-            }
-            ("pg_stat_statements", Some("io")) => Some(Self::Statements(StatementLens::Io)),
-            ("pg_stat_statements", Some("resources")) => {
-                Some(Self::Statements(StatementLens::Resources))
-            }
-            ("pg_stat_statements", Some("stability")) => {
-                Some(Self::Statements(StatementLens::Stability))
-            }
-            ("pg_store_plans", None | Some("load")) => Some(Self::Plans(PlanLens::Load)),
-            ("pg_store_plans", Some("timing")) => Some(Self::Plans(PlanLens::Timing)),
-            ("pg_store_plans", Some("io")) => Some(Self::Plans(PlanLens::Io)),
-            ("pg_store_plans", Some("identity")) => Some(Self::Plans(PlanLens::Identity)),
+            ("pg_store_plans", lens) => PlanLens::parse(lens.unwrap_or("load")).map(Self::Plans),
             ("pg_stat_database", None) => Some(Self::Databases),
-            ("pg_stat_user_tables", None | Some("access")) => Some(Self::Tables(TableLens::Access)),
-            ("pg_stat_user_tables", Some("changes")) => Some(Self::Tables(TableLens::Changes)),
-            ("pg_stat_user_tables", Some("maintenance")) => {
-                Some(Self::Tables(TableLens::Maintenance))
+            ("pg_stat_user_tables", lens) => {
+                TableLens::parse(lens.unwrap_or("access")).map(Self::Tables)
             }
-            ("pg_stat_user_tables", Some("size_buffers")) => {
-                Some(Self::Tables(TableLens::SizeBuffers))
+            ("pg_stat_user_indexes", lens) => {
+                IndexLens::parse(lens.unwrap_or("usage")).map(Self::Indexes)
             }
-            ("pg_stat_user_tables", Some("freeze")) => Some(Self::Tables(TableLens::Freeze)),
-            ("pg_stat_user_indexes", None | Some("usage")) => Some(Self::Indexes(IndexLens::Usage)),
-            ("pg_stat_user_indexes", Some("low_activity")) => {
-                Some(Self::Indexes(IndexLens::LowActivity))
-            }
-            ("pg_stat_user_indexes", Some("size_buffers")) => {
-                Some(Self::Indexes(IndexLens::SizeBuffers))
-            }
-            ("pg_stat_user_indexes", Some("state")) => Some(Self::Indexes(IndexLens::State)),
             _ => None,
         }
     }
@@ -313,6 +356,20 @@ pub(crate) enum RelationGroup {
     Schema,
     Tablespace,
     Object,
+}
+
+impl RelationGroup {
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Object, Self::Database, Self::Schema, Self::Tablespace];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::Schema => "schema",
+            Self::Tablespace => "tablespace",
+            Self::Object => "object",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use kronika_registry::contract;
+use serde_json::{Value, json};
 
 use super::ApiError;
 use crate::route::{
@@ -11,6 +12,37 @@ use crate::route::{
 };
 
 pub(crate) const PROCESS_PAGE_SIZE: usize = 200;
+
+#[derive(Clone, Copy)]
+struct ProcessSurfaceSpec {
+    default_order: Option<&'static str>,
+    default_direction: Option<Order>,
+}
+
+const fn process_surface(lens: ProcessLens) -> ProcessSurfaceSpec {
+    match lens {
+        ProcessLens::Generic => ProcessSurfaceSpec {
+            default_order: Some("pid"),
+            default_direction: Some(Order::Asc),
+        },
+        ProcessLens::Cpu => ProcessSurfaceSpec {
+            default_order: Some("utime"),
+            default_direction: Some(Order::Desc),
+        },
+        ProcessLens::Memory => ProcessSurfaceSpec {
+            default_order: Some("rmem_kb"),
+            default_direction: Some(Order::Desc),
+        },
+        ProcessLens::Disk => ProcessSurfaceSpec {
+            default_order: Some("read_bytes"),
+            default_direction: Some(Order::Desc),
+        },
+        ProcessLens::Tree => ProcessSurfaceSpec {
+            default_order: None,
+            default_direction: None,
+        },
+    }
+}
 
 pub(crate) fn resolve_process_surface(
     request: &mut SnapshotRequest,
@@ -25,23 +57,17 @@ pub(crate) fn resolve_process_surface(
     if lens == ProcessLens::Tree {
         return Ok(lens);
     }
-    let default_order = match lens {
-        ProcessLens::Generic => "pid",
-        ProcessLens::Cpu => "utime",
-        ProcessLens::Memory => "rmem_kb",
-        ProcessLens::Disk => "read_bytes",
-        ProcessLens::Tree => unreachable!(),
-    };
+    let surface = process_surface(lens);
+    let default_order = surface
+        .default_order
+        .expect("non-tree Process lenses have a default order");
     let order = product.order.as_deref().unwrap_or(default_order);
     request.by = process_order_tokens(lens, order)
         .ok_or_else(|| ApiError::NoSuchColumn(order.to_owned()))?;
     request.direction = product
         .direction
-        .unwrap_or(if lens == ProcessLens::Generic {
-            Order::Asc
-        } else {
-            Order::Desc
-        });
+        .or(surface.default_direction)
+        .expect("non-tree Process lenses have a default direction");
     request.page_size.get_or_insert(PROCESS_PAGE_SIZE);
     Ok(lens)
 }
@@ -634,6 +660,98 @@ pub(crate) fn postgresql_surface(
         PostgresqlSurface::Activity => spec(&[], "query_duration_ms"),
         PostgresqlSurface::Locks => spec(LOCK_DEFAULT_FIELDS, "pid"),
         PostgresqlSurface::Databases => spec(DATABASE_FIELDS, "xact_commit"),
+    }
+}
+
+pub(crate) fn product_surface_vocabulary() -> Value {
+    json!({
+        "process": {
+            "default_lens": ProcessLens::Tree.name(),
+            "lenses": ProcessLens::ALL
+                .into_iter()
+                .map(|lens| {
+                    let surface = process_surface(lens);
+                    json!({
+                        "id": lens.name(),
+                        "default_order": surface.default_order,
+                        "default_direction": surface.default_direction.map(order_name),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        },
+        "postgresql": {
+            "surfaces": postgresql_surface_vocabulary(),
+            "relation_groups": RelationGroup::ALL
+                .into_iter()
+                .map(RelationGroup::name)
+                .collect::<Vec<_>>(),
+        },
+    })
+}
+
+fn postgresql_surface_vocabulary() -> Vec<Value> {
+    vec![
+        postgresql_single_surface(PostgresqlSurface::Activity, None),
+        postgresql_lensed_surface(
+            PostgresqlSurface::Locks.section(),
+            "graph",
+            [("graph", PostgresqlSurface::Locks)],
+        ),
+        postgresql_lensed_surface(
+            PostgresqlSurface::Statements(StatementLens::Load).section(),
+            StatementLens::Load.name(),
+            StatementLens::ALL.map(|lens| (lens.name(), PostgresqlSurface::Statements(lens))),
+        ),
+        postgresql_lensed_surface(
+            PostgresqlSurface::Plans(PlanLens::Load).section(),
+            PlanLens::Load.name(),
+            PlanLens::ALL.map(|lens| (lens.name(), PostgresqlSurface::Plans(lens))),
+        ),
+        postgresql_single_surface(PostgresqlSurface::Databases, None),
+        postgresql_lensed_surface(
+            PostgresqlSurface::Tables(TableLens::Access).section(),
+            TableLens::Access.name(),
+            TableLens::ALL.map(|lens| (lens.name(), PostgresqlSurface::Tables(lens))),
+        ),
+        postgresql_lensed_surface(
+            PostgresqlSurface::Indexes(IndexLens::Usage).section(),
+            IndexLens::Usage.name(),
+            IndexLens::ALL.map(|lens| (lens.name(), PostgresqlSurface::Indexes(lens))),
+        ),
+    ]
+}
+
+fn postgresql_single_surface(surface: PostgresqlSurface, lens: Option<&str>) -> Value {
+    json!({
+        "id": surface.section(),
+        "default_lens": lens,
+        "default_order": postgresql_surface(surface, None).default_order,
+        "lenses": [],
+    })
+}
+
+fn postgresql_lensed_surface<const N: usize>(
+    section: &str,
+    default_lens: &str,
+    lenses: [(&str, PostgresqlSurface); N],
+) -> Value {
+    json!({
+        "id": section,
+        "default_lens": default_lens,
+        "lenses": lenses
+            .into_iter()
+            .map(|(id, surface)| json!({
+                "id": id,
+                "default_order": postgresql_surface(surface, None).default_order,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+const fn order_name(order: Order) -> &'static str {
+    match order {
+        Order::Asc => "asc",
+        Order::Desc => "desc",
     }
 }
 

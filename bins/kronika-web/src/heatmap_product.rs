@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use kronika_registry::{ColumnClass, logical_section_name, registry};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 const STORED: &str = include_str!("../product-heatmap.json");
 
@@ -183,6 +184,97 @@ pub(crate) fn policy() -> Result<&'static HeatmapPolicy, HeatmapProductError> {
 
 pub(crate) fn surfaces() -> Result<&'static [HeatmapSurface], HeatmapProductError> {
     product().map(|stored| stored.surfaces.as_ref())
+}
+
+pub(crate) fn vocabulary() -> Result<Value, HeatmapProductError> {
+    let product = product()?;
+    Ok(json!({
+        "default_top": product.policy.default_top,
+        "max_top": product.policy.max_top,
+        "max_columns": product.policy.max_columns,
+        "surfaces": product
+            .surfaces
+            .iter()
+            .map(|surface| json!({
+                "id": surface.id,
+                "default_cut": surface.default_cut,
+                "default_group": surface.default_group,
+                "default_columns": surface.default_columns,
+                "groups": surface
+                    .groups
+                    .iter()
+                    .map(|group| group.id.as_str())
+                    .collect::<Vec<_>>(),
+                "cuts": surface
+                    .cuts
+                    .iter()
+                    .map(public_cut)
+                    .collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn public_cut(cut: &HeatmapCut) -> Value {
+    json!({
+        "id": cut.id,
+        "unit": cut.raw_unit.name(),
+        "conversion": conversion_value(&cut.conversion, false),
+    })
+}
+
+pub(crate) fn semantic(surface: &HeatmapSurface, cut: &HeatmapCut) -> Value {
+    json!({
+        "id": format!("heatmap.{}.{}", surface.id, cut.id),
+        "origin": "accepted_presentation",
+        "fields": cut.fields,
+        "value_unit": cut.raw_unit.name(),
+        "values_scaled": false,
+        "conversion": conversion_value(&cut.conversion, true),
+    })
+}
+
+fn conversion_value(conversion: &HeatmapConversion, include_locator: bool) -> Value {
+    match conversion {
+        HeatmapConversion::Identity => Value::Null,
+        HeatmapConversion::FixedMultiply {
+            factor,
+            target_unit,
+        } => json!({
+            "status": "not_applied",
+            "operation": "multiply",
+            "factor": factor.to_string(),
+            "target_unit": target_unit.name(),
+            "origin": "exact_unit_conversion",
+        }),
+        HeatmapConversion::RecordedMultiply {
+            locator,
+            target_unit,
+        } => recorded_conversion("multiply", locator, *target_unit, include_locator),
+        HeatmapConversion::RecordedDivide {
+            locator,
+            target_unit,
+        } => recorded_conversion("divide", locator, *target_unit, include_locator),
+    }
+}
+
+fn recorded_conversion(
+    operation: &str,
+    locator: &str,
+    target_unit: HeatmapUnit,
+    include_locator: bool,
+) -> Value {
+    let mut value = json!({
+        "status": "not_applied",
+        "operation": operation,
+        "factor": Value::Null,
+        "target_unit": target_unit.name(),
+        "origin": "recorded",
+    });
+    if include_locator {
+        value["locator"] = json!(locator);
+    }
+    value
 }
 
 pub(crate) fn resolve(

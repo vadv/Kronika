@@ -6,7 +6,7 @@ use super::{Prepared, ValueCollector, ValueLimits, ValueStopReason};
 use crate::route::Window;
 
 fn empty_catalog() -> Prepared {
-    Prepared::Catalog(PreparedCatalog::from_listing(
+    Prepared::CatalogInventory(PreparedCatalog::from_listing(
         Listing {
             segments: Vec::new(),
             warnings: Vec::new(),
@@ -105,5 +105,6 @@ fn collected_values_report_completion_and_cancellation() {
         )
         .expect("cancelled values");
     assert!(cancelled.records.is_empty());
+    assert_eq!(cancelled.ndjson_bytes, 0);
     assert_eq!(cancelled.stop_reason, ValueStopReason::Cancelled);
 }

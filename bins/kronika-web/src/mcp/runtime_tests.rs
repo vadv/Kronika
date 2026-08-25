@@ -76,18 +76,26 @@ async fn all_eleven_core_and_expert_tools_execute_through_dispatch() {
             nonempty(data),
             "{name} returned no recorded data: {response}"
         );
-        assert!(
-            response
-                .pointer("/page/returned")
-                .and_then(Value::as_u64)
-                .is_some_and(|returned| returned > 0),
-            "{name} did not report a recorded result: {response}"
-        );
         if name == "kronika_get_context" {
+            assert_eq!(response.get("page"), Some(&Value::Null));
+            let segment = response["data"]["catalog"]
+                .as_array()
+                .expect("Context catalog records")
+                .iter()
+                .find(|record| record["record"] == "active_segment")
+                .expect("Context active segment");
             assert_eq!(
-                response.pointer("/data/context/recorded/segments/0/segment_id"),
-                Some(&json!(SEGMENT_ID.to_string())),
+                segment["id"],
+                SEGMENT_ID.to_string(),
                 "Context did not discover the recorded fixture: {response}"
+            );
+        } else {
+            assert!(
+                response
+                    .pointer("/page/returned")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|returned| returned > 0),
+                "{name} did not report a recorded result: {response}"
             );
         }
     }
@@ -199,8 +207,8 @@ fn runtime_calls() -> [(&'static str, Value, &'static str, &'static str); 11] {
         (
             "kronika_get_context",
             json!({}),
-            "/data/context/recorded/segments",
-            "Returned 20 tool definitions, current layouts, lenses, cuts, limits, and semantics.",
+            "/data/catalog",
+            "Returned the recorded catalog and shared product definitions.",
         ),
         (
             "kronika_list_hours",

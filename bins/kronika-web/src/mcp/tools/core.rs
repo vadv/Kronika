@@ -131,7 +131,7 @@ fn heatmap(
             "rows": rows,
             "totals": totals,
             "others": others,
-            "semantics": [discovery::heatmap_semantic(selected.surface, selected.cut)],
+            "semantics": [crate::heatmap_product::semantic(selected.surface, selected.cut)],
         }),
         page: page(
             rows.len(),
@@ -716,6 +716,14 @@ fn process_semantics() -> Vec<Value> {
 }
 
 fn api_failure(error: &ApiError) -> Failure {
+    if error.code() == "cancelled" {
+        return Failure {
+            code: "cancelled",
+            message: error.to_string(),
+            parameter: error.parameter().map(str::to_owned),
+            retryable: true,
+        };
+    }
     if error.source_changed_during_read() {
         return Failure {
             code: "source_changed",

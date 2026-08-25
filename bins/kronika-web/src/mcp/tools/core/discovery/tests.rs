@@ -1,177 +1,175 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::Ts;
 use kronika_registry::os_loadavg::OsLoadavg;
-use kronika_writer::{Journal, JournalConfig, SectionBuffers};
-use serde_json::Value;
+use kronika_writer::{Journal, JournalConfig, SectionBuffers, write_segment};
+use rmcp::model::CallToolRequestParams;
+use serde_json::{Value, json};
 
+use crate::api;
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
-use crate::mcp::State;
+use crate::mcp::{STRUCTURED_CONTENT_BYTES, State};
+use crate::route::{Route, Window};
 
 const SEGMENT_ID: i64 = 1_710_000_000_000_000;
 
 #[test]
-fn context_discovers_every_descriptor_once() {
-    let directory = tempfile::tempdir().expect("temporary empty context root");
-    let state = state(directory.path(), SOURCE_OS | SOURCE_POSTGRESQL, false);
-
-    let payload = super::payload(&state, &|| false).expect("MCP context");
-    let surfaces = payload.data["surfaces"].as_array().expect("tool surfaces");
-    let names = surfaces
-        .iter()
-        .map(|surface| surface["tool"].as_str().expect("tool name"))
-        .collect::<Vec<_>>();
-    let catalog = crate::mcp::catalog::all()
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .collect::<Vec<_>>();
-
-    assert_eq!(names, catalog);
-    assert_eq!(names.len(), 20);
-    assert_eq!(payload.page["returned"], 20);
-    assert_eq!(payload.page["stop_reason"], "complete");
-}
-
-#[test]
-fn context_exposes_schema_lenses_cuts_and_hard_limits() {
-    let directory = tempfile::tempdir().expect("temporary empty context root");
-    let state = state(directory.path(), SOURCE_OS, true);
-    let payload = super::payload(&state, &|| false).expect("MCP context");
-    let process = surface(&payload.data, "kronika_find_processes");
-    let heatmap = surface(&payload.data, "kronika_rank_heatmap");
-
-    assert_eq!(
-        process["lenses"],
-        serde_json::json!(["generic", "cpu", "memory", "disk", "tree"])
-    );
-    assert!(
-        heatmap["cuts"]["processes"]
-            .as_array()
-            .is_some_and(|cuts| cuts.iter().any(|cut| cut == "cpu"))
-    );
-    assert_eq!(
-        heatmap["groups"]["processes"],
-        serde_json::json!(["identity", "command"])
-    );
-    assert_eq!(heatmap["defaults"]["processes"]["cut"], "cpu");
-    assert_eq!(heatmap["defaults"]["processes"]["group"], "command");
-    assert_eq!(heatmap["defaults"]["processes"]["columns"], 60);
-    assert_eq!(heatmap["defaults"]["processes"]["top"], 25);
-    assert_eq!(
-        payload.data["context"]["limits"]["physical_row_visits"],
-        super::super::MAX_ROWS
-    );
-    assert_eq!(
-        payload.data["context"]["limits"]["decoded_cells"],
-        super::super::super::DECODED_CELLS
-    );
-    assert_eq!(
-        payload.data["context"]["configured_sources"][0]["configured"],
-        true
-    );
-    assert_eq!(
-        payload.data["context"]["configured_sources"][1]["configured"],
-        false
-    );
-}
-
-#[test]
-fn context_reports_latest_recorded_layout_and_active_prefix() {
+fn http_and_mcp_return_the_same_shared_context_payload() {
     let mut fixture = Fixture::new();
     fixture.append_load(SEGMENT_ID + 10);
 
-    let payload = super::payload(&fixture.state(), &|| false).expect("recorded MCP context");
-    let recorded = &payload.data["context"]["recorded"];
-    assert_eq!(recorded["as_of_us"], (SEGMENT_ID + 10).to_string());
-    assert_eq!(recorded["source_families"][0]["name"], "os");
-    assert_eq!(recorded["source_families"][0]["present"], true);
-    assert_eq!(recorded["source_families"][0]["metrics_present"], true);
-    assert_eq!(recorded["source_families"][1]["present"], false);
-
-    let layout = recorded["layouts"]
-        .as_array()
-        .expect("recorded layouts")
+    let prepared = api::prepare(
+        fixture.root(),
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        Route::Catalog(Window::default()),
+        None,
+    )
+    .expect("HTTP catalog");
+    let mut records = Vec::new();
+    prepared
+        .stream_values(
+            &mut |record| {
+                records.push(record);
+                true
+            },
+            &|| false,
+        )
+        .expect("HTTP catalog records");
+    let web = &records
         .iter()
-        .find(|layout| layout["logical_name"] == "os_loadavg")
-        .expect("Loadavg layout");
-    assert_eq!(layout["physical_name"], "os_loadavg");
-    assert_eq!(layout["source_family"], "os");
-    assert_eq!(
-        layout["segment_ids"],
-        serde_json::json!([SEGMENT_ID.to_string()])
-    );
+        .find(|record| record["record"] == "product_context")
+        .expect("HTTP product context")["context"];
 
-    let segment = &recorded["segments"][0];
-    assert_eq!(segment["segment_id"], SEGMENT_ID.to_string());
-    assert_eq!(segment["kind"], "active");
-    assert!(segment["active_wal_position"].as_str().is_some());
+    let payload = super::payload(&fixture.state(), &|| false).expect("MCP context");
+    assert_eq!(&payload.data, web);
+    assert_eq!(payload.page, Value::Null);
+    assert!(payload.summary.contains("shared product definitions"));
+    assert!(!payload.summary.contains("20"));
 }
 
 #[test]
-fn heatmap_lookup_and_discovery_share_one_registry() {
-    let selected = crate::heatmap_product::resolve("tables", Some("writes"), None, None)
-        .expect("accepted Heatmap cut");
-    let cut = selected.cut;
-
-    assert_eq!(cut.section, "pg_stat_user_tables");
-    assert_eq!(cut.fields, ["n_tup_ins", "n_tup_upd", "n_tup_del"]);
-    assert!(crate::heatmap_product::resolve("tables", Some("cpu"), None, None).is_err());
-    let semantic = super::heatmap_semantic(selected.surface, cut);
-    assert_eq!(semantic["origin"], "accepted_presentation");
-    assert_eq!(semantic["value_unit"], "count");
-    assert_eq!(semantic["values_scaled"], false);
-
-    let blocks =
-        crate::heatmap_product::resolve("statements", Some("shared_read"), Some("identity"), None)
-            .expect("block cut");
-    let blocks_semantic = super::heatmap_semantic(blocks.surface, blocks.cut);
-    assert_eq!(blocks_semantic["value_unit"], "blocks");
-    assert_eq!(
-        blocks_semantic["conversion"],
-        serde_json::json!({
-            "status": "not_applied",
-            "operation": "multiply",
-            "factor": null,
-            "target_unit": "bytes",
-            "origin": "recorded",
-            "locator": "pg_settings.block_size",
-        })
-    );
-
-    let ticks =
-        crate::heatmap_product::resolve("processes", None, None, None).expect("default clock cut");
-    let ticks_semantic = super::heatmap_semantic(ticks.surface, ticks.cut);
-    assert_eq!(ticks_semantic["value_unit"], "clock_ticks");
-    assert_eq!(
-        ticks_semantic["conversion"]["locator"],
-        "instance_metadata.clock_ticks_per_sec"
-    );
-    assert_eq!(ticks.group.id, "command");
-    assert_eq!(ticks.columns, 60);
+fn context_adapter_preserves_shared_cancellation() {
+    let fixture = Fixture::new();
+    let error = match super::payload(&fixture.state(), &|| true) {
+        Ok(_) => panic!("MCP Context was not cancelled"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "cancelled");
+    assert!(error.retryable);
 }
 
-fn surface<'a>(context: &'a Value, name: &str) -> &'a Value {
-    context["surfaces"]
-        .as_array()
-        .expect("tool surfaces")
-        .iter()
-        .find(|surface| surface["tool"] == name)
-        .expect("named tool surface")
-}
+#[tokio::test]
+async fn http_and_real_mcp_dispatch_share_the_atomic_catalog_bound() {
+    let mut fixture = Fixture::new();
+    fixture.fill_finished_segments(64);
 
-fn state(root: &std::path::Path, sources: u32, synthetic_demo: bool) -> State {
-    State {
-        data_root: root.to_owned(),
-        sources,
-        synthetic_demo,
-        heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
-    }
+    let prepared = api::prepare(
+        fixture.root(),
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        Route::Catalog(Window::default()),
+        None,
+    )
+    .expect("maximum HTTP catalog");
+    let mut records = Vec::new();
+    prepared
+        .stream_values(
+            &mut |record| {
+                records.push(record);
+                true
+            },
+            &|| false,
+        )
+        .expect("maximum HTTP context");
+    assert!(
+        records
+            .iter()
+            .any(|record| record["record"] == "product_context")
+    );
+
+    let default = crate::mcp::tools::dispatch(
+        fixture.state(),
+        CallToolRequestParams::new("kronika_get_context"),
+        || false,
+    )
+    .await
+    .expect("default MCP Context dispatch");
+    let mut explicit_default_request = CallToolRequestParams::new("kronika_get_context");
+    explicit_default_request.arguments = Some(serde_json::Map::from_iter([(
+        "data_budget_bytes".to_owned(),
+        json!(32 * 1_024),
+    )]));
+    let explicit_default =
+        crate::mcp::tools::dispatch(fixture.state(), explicit_default_request, || false)
+            .await
+            .expect("explicit default MCP Context dispatch");
+    assert_eq!(
+        default.structured_content, explicit_default.structured_content,
+        "the implicit Context budget must remain exactly 32 KiB"
+    );
+
+    let mut request = CallToolRequestParams::new("kronika_get_context");
+    request.arguments = Some(serde_json::Map::from_iter([(
+        "data_budget_bytes".to_owned(),
+        json!(STRUCTURED_CONTENT_BYTES),
+    )]));
+    let dispatched = crate::mcp::tools::dispatch(fixture.state(), request, || false)
+        .await
+        .expect("maximum MCP Context dispatch");
+    let structured = dispatched
+        .structured_content
+        .as_ref()
+        .expect("maximum Context structured content");
+    assert_eq!(structured.get("status"), Some(&json!("ok")));
+    assert!(
+        serde_json::to_vec(structured)
+            .expect("maximum Context JSON")
+            .len()
+            <= STRUCTURED_CONTENT_BYTES
+    );
+
+    fixture.fill_finished_segments(1);
+
+    let prepared = api::prepare(
+        fixture.root(),
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        Route::Catalog(Window::default()),
+        None,
+    )
+    .expect("bounded HTTP catalog");
+    let mut records = Vec::new();
+    let http = prepared
+        .stream_values(
+            &mut |record| {
+                records.push(record);
+                true
+            },
+            &|| false,
+        )
+        .expect_err("over-bound HTTP context");
+    assert_eq!(http.code(), "segment_limit_exceeded");
+    assert!(records.is_empty());
+
+    let over_bound = crate::mcp::tools::dispatch(
+        fixture.state(),
+        CallToolRequestParams::new("kronika_get_context"),
+        || false,
+    )
+    .await
+    .expect("over-bound MCP Context dispatch");
+    assert_eq!(
+        over_bound
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code")),
+        Some(&json!("segment_limit_exceeded"))
+    );
 }
 
 struct Fixture {
     directory: tempfile::TempDir,
-    _writer: WriterOwner,
+    writer: WriterOwner,
     journal: Journal,
     address: SegmentAddress,
 }
@@ -189,14 +187,23 @@ impl Fixture {
             .expect("segment address");
         Self {
             directory,
-            _writer: writer,
+            writer,
             journal,
             address,
         }
     }
 
+    fn root(&self) -> &Path {
+        self.directory.path()
+    }
+
     fn state(&self) -> State {
-        state(self.directory.path(), SOURCE_OS, false)
+        State {
+            data_root: self.root().to_owned(),
+            sources: SOURCE_OS | SOURCE_POSTGRESQL,
+            synthetic_demo: false,
+            heavy_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+        }
     }
 
     fn append_load(&mut self, timestamp: i64) {
@@ -219,5 +226,18 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append context fixture");
+    }
+
+    fn fill_finished_segments(&mut self, count: usize) {
+        for _index in 0..count {
+            self.append_load(self.address.id.get() + 10);
+            write_segment(&self.journal, &self.writer, self.address)
+                .expect("finish bounded context segment");
+            self.journal.reset().expect("reset context journal");
+            self.address = SegmentAddress::new(
+                SegmentId::new(self.address.id.get() + 100).expect("next segment id"),
+            )
+            .expect("next segment address");
+        }
     }
 }

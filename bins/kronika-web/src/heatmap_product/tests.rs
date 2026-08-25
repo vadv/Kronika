@@ -66,3 +66,47 @@ fn product_selection_rejects_cross_surface_values_and_bounds() {
         Some(HeatmapProductError::Columns)
     );
 }
+
+#[test]
+fn public_vocabulary_and_result_semantics_share_the_registry() {
+    let vocabulary = super::vocabulary().expect("Heatmap vocabulary");
+    let policy = super::policy().expect("Heatmap policy");
+    assert_eq!(vocabulary["default_top"], policy.default_top);
+    assert_eq!(vocabulary["max_top"], policy.max_top);
+    assert_eq!(vocabulary["max_columns"], policy.max_columns);
+    let processes = vocabulary["surfaces"]
+        .as_array()
+        .expect("Heatmap surfaces")
+        .iter()
+        .find(|surface| surface["id"] == "processes")
+        .expect("Process Heatmap");
+    let cpu = processes["cuts"]
+        .as_array()
+        .expect("Process cuts")
+        .iter()
+        .find(|cut| cut["id"] == "cpu")
+        .expect("CPU cut");
+    assert_eq!(cpu["unit"], "clock_ticks");
+    assert_eq!(cpu["conversion"]["operation"], "divide");
+    assert!(cpu["conversion"].get("locator").is_none());
+    assert!(processes.get("section").is_none());
+    assert!(processes.get("fields").is_none());
+
+    let selected = super::resolve("statements", Some("shared_read"), Some("identity"), None)
+        .expect("Statement block cut");
+    let semantic = super::semantic(selected.surface, selected.cut);
+    assert_eq!(semantic["origin"], "accepted_presentation");
+    assert_eq!(semantic["value_unit"], "blocks");
+    assert_eq!(semantic["values_scaled"], false);
+    assert_eq!(
+        semantic["conversion"],
+        serde_json::json!({
+            "status": "not_applied",
+            "operation": "multiply",
+            "factor": null,
+            "target_unit": "bytes",
+            "origin": "recorded",
+            "locator": "pg_settings.block_size",
+        })
+    );
+}

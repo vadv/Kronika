@@ -37,7 +37,7 @@ fn discovery_tools() -> Vec<Tool> {
         tool(
             "kronika_get_context",
             "Kronika context",
-            "Return source families, limits, surfaces, lenses, Heatmap cuts, groups, defaults, and semantic definitions.",
+            "Return recorded catalog availability and shared product surface and semantic definitions.",
             input(common(map([])), &[]),
         ),
         tool(

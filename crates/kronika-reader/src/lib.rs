@@ -615,6 +615,14 @@ fn cancelled_snapshot_read() -> ReaderError {
     .into()
 }
 
+fn cancelled_catalog_read() -> ReaderError {
+    std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "catalog listing was cancelled",
+    )
+    .into()
+}
+
 /// An open data directory.
 #[derive(Debug)]
 pub struct Reader {
@@ -708,6 +716,65 @@ impl Reader {
     /// read safely.
     pub fn catalog_segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
         self.list_segments(range, false, false)
+    }
+
+    /// List segment catalogs while allowing a caller to cancel discovery.
+    ///
+    /// The active reference pins the exact committed journal prefix captured
+    /// by the cancellable inventory. Finished catalogs are checked one at a
+    /// time so a large retained store remains interruptible throughout the
+    /// listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or decode error when the directory or a segment catalog
+    /// cannot be read safely. Cancellation returns an interrupted error.
+    pub fn catalog_segments_cancellable<R: RangeBounds<i64>>(
+        &self,
+        range: R,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Listing, ReaderError> {
+        if cancelled() {
+            return Err(cancelled_catalog_read());
+        }
+        let mut inventory = self.dir.catalog_inventory(cancelled)?;
+        let active_id = inventory.active.first().map(|part| part.segment_id.get());
+        let mut finished_is_canonical = false;
+        let mut segments = Vec::new();
+        for index in 0..inventory.finished.len() {
+            if cancelled() {
+                return Err(cancelled_catalog_read());
+            }
+            let artifact = inventory.finished[index];
+            let Some(unit) = self
+                .dir
+                .read_finished_catalog_summary(&mut inventory, artifact)?
+            else {
+                continue;
+            };
+            if overlaps(&range, unit.summary.min_ts, unit.summary.max_ts) {
+                finished_is_canonical |= active_id == Some(unit.address.id.get());
+                segments.push(finished_snapshot_reference(self, &unit)?);
+            }
+        }
+        if cancelled() {
+            return Err(cancelled_catalog_read());
+        }
+        if !finished_is_canonical
+            && active_bounds(&inventory.active)
+                .is_some_and(|(min_ts, max_ts)| overlaps(&range, min_ts, max_ts))
+            && let Some(reference) = active_inventory_reference(self, &inventory)?
+        {
+            segments.push(reference);
+        }
+        if cancelled() {
+            return Err(cancelled_catalog_read());
+        }
+        segments.sort_by_key(SegmentRef::id);
+        Ok(Listing {
+            segments,
+            warnings: inventory.warnings,
+        })
     }
 
     /// Find one segment by its stable id without opening unrelated catalogs.

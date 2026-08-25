@@ -5,7 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::OnceLock;
 
+use kronika_index::{
+    SemanticBoundary as IndexBoundary, SemanticDefinition as IndexDefinition,
+    SemanticOperator as IndexOperator, SemanticOrigin as IndexOrigin, SemanticUnit as IndexUnit,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 const STORED: &str = include_str!("../product-semantics.json");
 
@@ -176,6 +181,76 @@ pub(crate) fn all() -> Result<&'static [SemanticDefinition], ProductSemanticsErr
 
 pub(crate) fn get(id: &str) -> Result<Option<&'static SemanticDefinition>, ProductSemanticsError> {
     Ok(all()?.iter().find(|definition| definition.id == id))
+}
+
+pub(crate) fn indexed(definition: IndexDefinition) -> Value {
+    json!({
+        "id": definition.id,
+        "logical_name": definition.logical_name,
+        "field": definition.field,
+        "origin": index_origin(definition.origin),
+        "source": "kronika_index",
+        "unit": definition.unit.map(index_unit),
+        "formula": definition.formula,
+        "operands": definition.operands,
+        "boundary": definition.boundary.map(index_boundary),
+    })
+}
+
+pub(crate) fn findings() -> Vec<Value> {
+    kronika_index::FINDING_SEMANTICS
+        .iter()
+        .copied()
+        .map(indexed)
+        .collect()
+}
+
+pub(crate) fn health() -> Vec<Value> {
+    kronika_index::HEALTH_SEMANTICS
+        .iter()
+        .copied()
+        .map(indexed)
+        .collect()
+}
+
+const fn index_origin(origin: IndexOrigin) -> &'static str {
+    match origin {
+        IndexOrigin::KronikaDerived => "kronika_derived",
+    }
+}
+
+const fn index_unit(unit: IndexUnit) -> &'static str {
+    match unit {
+        IndexUnit::Percent => "percent",
+        IndexUnit::Milliseconds => "milliseconds",
+        IndexUnit::Count => "count",
+    }
+}
+
+fn index_boundary(boundary: IndexBoundary) -> Value {
+    match boundary {
+        IndexBoundary::Compare {
+            operator,
+            numerator,
+            denominator,
+        } => json!({
+            "operator": index_operator(operator),
+            "numerator": numerator.to_string(),
+            "denominator": denominator.to_string(),
+        }),
+        IndexBoundary::Increase => json!({"operator": "increase"}),
+        IndexBoundary::Nonempty => json!({"operator": "nonempty"}),
+    }
+}
+
+const fn index_operator(operator: IndexOperator) -> &'static str {
+    match operator {
+        IndexOperator::Lt => "lt",
+        IndexOperator::Lte => "lte",
+        IndexOperator::Eq => "eq",
+        IndexOperator::Gt => "gt",
+        IndexOperator::Gte => "gte",
+    }
 }
 
 fn load() -> Result<Box<[SemanticDefinition]>, ProductSemanticsError> {

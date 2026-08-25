@@ -19,6 +19,7 @@ mod hour;
 mod index;
 mod lock_graph;
 mod process_tree;
+mod product_context;
 mod query;
 mod render;
 mod row_detail;
@@ -27,13 +28,11 @@ mod snapshot;
 mod surface;
 mod vacuum;
 
-pub(crate) use catalog::{
-    metric_source_bit as catalog_metric_source_bit, source_bit as catalog_source_bit,
-    warning_value as catalog_warning_value,
-};
+pub(crate) use catalog::warning_value as catalog_warning_value;
 pub(crate) use events::{
     EventPageError, EventPageRequest, EventSourceRequest, EventStopReason, read_event_page,
 };
+pub(crate) use product_context::produce as produce_product_context;
 pub(crate) use row_detail::{RowDetailRequest, read_row_detail};
 pub(crate) use snapshot::prepare_for_mcp as prepare_snapshot_for_mcp;
 pub(crate) use surface::postgresql_order_tokens;
@@ -97,7 +96,8 @@ impl ResponseMeta {
 
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
-    Catalog(catalog::PreparedCatalog),
+    Catalog(product_context::PreparedCatalogResponse),
+    CatalogInventory(catalog::PreparedCatalog),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
     Heatmap(heatmap::PreparedHeatmap),
@@ -114,7 +114,8 @@ impl Prepared {
     /// Response status and caching, available before the first body record.
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
-            Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
+            Self::Catalog(_prepared) => product_context::PreparedCatalogResponse::meta(),
+            Self::CatalogInventory(_prepared) => catalog::PreparedCatalog::meta(),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
             Self::Heatmap(prepared) => prepared.meta(),
@@ -156,6 +157,7 @@ impl Prepared {
     ) -> Result<(), ApiError> {
         match self {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
+            Self::CatalogInventory(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
             Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
@@ -335,7 +337,7 @@ impl ApiError {
 
     pub(crate) fn source_changed_during_read(&self) -> bool {
         if let Self::Product(error) = self {
-            return error.retryable;
+            return error.retryable && error.code == "source_changed";
         }
         let Self::Unreadable(error) = self else {
             return false;
@@ -420,6 +422,7 @@ pub(crate) fn prepare_with_demo(
         route,
         if_none_match,
         hour::IndexAccess::Publishing,
+        true,
     )
 }
 
@@ -437,6 +440,7 @@ pub(crate) fn prepare_for_mcp(
         route,
         None,
         hour::IndexAccess::ReadOnly,
+        false,
     )
 }
 
@@ -447,10 +451,14 @@ fn prepare_with_index_access(
     route: Route,
     if_none_match: Option<&str>,
     index_access: hour::IndexAccess,
+    include_catalog_context: bool,
 ) -> Result<Prepared, ApiError> {
     let prepared = match route {
+        Route::Catalog(window) if include_catalog_context => Ok(Prepared::Catalog(
+            product_context::prepare(root, window, sources, synthetic_demo),
+        )),
         Route::Catalog(window) => {
-            catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
+            catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::CatalogInventory)
         }
         Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
