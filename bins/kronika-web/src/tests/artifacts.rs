@@ -465,10 +465,13 @@ impl Fixture {
             .expect("append process summary snapshot");
     }
 
+    /// `processes` is `(pid, uid, euid, utime, stime)`: the last two exist
+    /// so a fixture exercising the `user`/`effective_user` virtual fields
+    /// can carry nonzero CPU ticks on the same row, for `cpu_time_ticks`.
     fn append_user_processes(
         &mut self,
         ts: i64,
-        processes: &[(i32, u32, u32)],
+        processes: &[(i32, u32, u32, i64, i64)],
         names: &[(u32, &str)],
     ) {
         let mut interner = Interner::new(DictLimits::default());
@@ -479,12 +482,14 @@ impl Fixture {
                 .get(),
         );
         let mut buffers = SectionBuffers::new();
-        for &(pid, uid, euid) in processes {
+        for &(pid, uid, euid, utime, stime) in processes {
             let mut row = process(ts, None, command);
             row.pid = pid;
             row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
             row.uid = uid;
             row.euid = euid;
+            row.utime = utime;
+            row.stime = stime;
             buffers.push(row).expect("process row fits");
         }
         for &(uid, name) in names {
@@ -4441,11 +4446,11 @@ fn process_user_search_filters_the_full_set_and_keeps_real_and_effective_names_d
     let processes = (0..205)
         .map(|pid| {
             if pid == 0 {
-                (pid, 26, 27)
+                (pid, 26, 27, 0, 0)
             } else if pid == 1 {
-                (pid, 9_999, 9_999)
+                (pid, 9_999, 9_999, 0, 0)
             } else {
-                (pid, 1_000, 1_000)
+                (pid, 1_000, 1_000, 0, 0)
             }
         })
         .collect::<Vec<_>>();
@@ -4571,10 +4576,10 @@ fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
 #[test]
 fn process_user_join_uses_the_mapping_from_each_historical_segment() {
     let mut fixture = Fixture::new();
-    fixture.append_user_processes(100, &[(10, 26, 26)], &[(26, "old-name")]);
+    fixture.append_user_processes(100, &[(10, 26, 26, 0, 0)], &[(26, "old-name")]);
     let second_segment = SEGMENT_ID + 1_000;
     fixture.finish_and_continue(second_segment);
-    fixture.append_user_processes(200, &[(10, 26, 26)], &[(26, "new-name")]);
+    fixture.append_user_processes(200, &[(10, 26, 26, 0, 0)], &[(26, "new-name")]);
     fixture.finish();
 
     for (segment, at, expected) in [
@@ -5362,6 +5367,97 @@ fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and
             .map_or(Value::Null, crate::api::snapshot::relation::Metric::json);
         assert_eq!(direct_value, http["values"]["seq_scan"]);
     }
+}
+
+#[test]
+fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_virtual_fields() {
+    let mut fixture = Fixture::new();
+    fixture.append_user_processes(
+        100,
+        &[
+            (7, 26, 27, 40, 10),
+            (9, 1_000, 1_000, 5, 5),
+            (3, 26, 26, 0, 0),
+        ],
+        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
+    );
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=ppid&field=user&field=effective_user&field=cpu_time_ticks&by=pid&direction=asc&page_size=10"
+    );
+    let via_http = stream(fixture.prepare(&base, None)).expect("streamed process page");
+    let http_rows = row_records(&via_http);
+    assert_eq!(http_rows.len(), 3);
+    let page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("process page trailer");
+    assert_eq!(page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 100,
+        sections: vec!["os_process".to_owned()],
+        fields: vec![
+            "pid".to_owned(),
+            "ppid".to_owned(),
+            "user".to_owned(),
+            "effective_user".to_owned(),
+            "cpu_time_ticks".to_owned(),
+        ],
+        by: vec!["pid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let (rows, has_more) = prepared
+        .compute_process_rows(10, &|| false)
+        .expect("compute_process_rows");
+    assert!(!has_more);
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(direct.pid, http["values"][0].as_i64().expect("pid"));
+        assert_eq!(direct.ppid, http["values"][1].as_i64());
+        assert_eq!(direct.fields["pid"], http["values"][0]);
+        assert_eq!(direct.fields["user"], http["values"][2]);
+        assert_eq!(direct.fields["effective_user"], http["values"][3]);
+        assert_eq!(direct.fields["cpu_time_ticks"], http["values"][4]);
+    }
+
+    let by_pid = rows
+        .iter()
+        .map(|row| (row.pid, row))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        by_pid[&7].fields["user"],
+        serde_json::json!("postgres"),
+        "uid 26 resolves through the os_user section fixture wrote"
+    );
+    assert_eq!(
+        by_pid[&7].fields["effective_user"],
+        serde_json::json!("postgres-worker"),
+        "euid 27 resolves separately from uid, so they stay distinct"
+    );
+    assert_eq!(
+        by_pid[&7].fields["cpu_time_ticks"],
+        serde_json::json!("50"),
+        "cpu_time_ticks is utime+stime, rendered as a decimal string"
+    );
+    assert_eq!(by_pid[&9].fields["cpu_time_ticks"], serde_json::json!("10"));
+    assert_eq!(by_pid[&3].fields["cpu_time_ticks"], serde_json::json!("0"));
 }
 
 #[test]

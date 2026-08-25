@@ -1020,6 +1020,20 @@ fn validate_exact_locator(
     Ok(())
 }
 
+/// One ranked process row, self-describing for MCP consumers instead of the
+/// HTTP wire's positional `values` array: `pid` is the row's identity (every
+/// `os_process` row has one), `ppid` is broken out too since a caller
+/// commonly wants to walk the process tree, and everything else — including
+/// the `user`/`effective_user`/`cpu_time_ticks` virtual fields `row_record`
+/// already knows how to render — is named in `fields`. `pid`/`ppid` are also
+/// present in `fields` under their own names; keeping both is simpler than
+/// special-casing their removal, and a duplicate is harmless.
+pub(crate) struct ProcessRowOut {
+    pub(crate) pid: i64,
+    pub(crate) ppid: Option<i64>,
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
 impl PreparedSnapshot {
     pub(super) fn meta(&self) -> ResponseMeta {
         self.meta.clone()
@@ -1484,6 +1498,120 @@ impl PreparedSnapshot {
             emit,
         )?;
         Ok(())
+    }
+
+    /// Runs the same ranked top-N scan `emit_page` streams over HTTP, but
+    /// bounded top-N instead of cursor-relative paging: always ranks from
+    /// the top and reports `has_more` rather than a next-page cursor.
+    /// Scoped to `os_process`, the only section this method's row shape
+    /// covers. Shared computation for MCP process retrieval.
+    pub(crate) fn compute_process_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Vec<ProcessRowOut>, bool), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        if section.logical_name != "os_process" {
+            return Err(ApiError::NoSuchSection);
+        }
+        let contexts = self.page_contexts(section, cancelled)?;
+        if cancelled() {
+            return Ok((Vec::new(), false));
+        }
+        let process_users = contexts
+            .iter()
+            .map(|context| {
+                let source = self.reader.open_segment(context.source)?;
+                ProcessUsers::load(&source, context.plan)
+                    .map(|users| (context.context_index, users))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut page = PageRows::new(limit.saturating_add(1));
+        let mut eligible = 0_u64;
+        for context in &contexts {
+            self.scan_page(
+                context,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
+                None,
+                &mut page,
+                &mut eligible,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok((Vec::new(), false));
+            }
+        }
+        let mut ranked = page.finish();
+        let has_more = ranked.len() > limit;
+        ranked.truncate(limit);
+        let rows = self.process_rows_out(&contexts, &process_users, ranked)?;
+        Ok((rows, has_more))
+    }
+
+    /// Renders each ranked candidate through the same `row_record` HTTP
+    /// uses, then reshapes its positional `values` into `ProcessRowOut`'s
+    /// keyed `fields` — one render path, two output shapes.
+    fn process_rows_out(
+        &self,
+        contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
+        ranked: Vec<PageRankedRow>,
+    ) -> Result<Vec<ProcessRowOut>, ApiError> {
+        let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
+        for ranked in &ranked {
+            for (_name, value) in ranked.staged.row.iter() {
+                if let Cell::StrId(id) = value {
+                    ids_by_context
+                        .entry(ranked.staged.context_index)
+                        .or_default()
+                        .insert(*id);
+                }
+            }
+        }
+        let dictionaries = contexts
+            .iter()
+            .map(|context| {
+                let ids = ids_by_context
+                    .get(&context.context_index)
+                    .cloned()
+                    .unwrap_or_default();
+                let source = self.reader.open_segment(context.source)?;
+                resolved_dictionary(&source, &ids)
+                    .map(|dictionary| (context.context_index, dictionary))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut rows = Vec::with_capacity(ranked.len());
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.context_index == ranked.staged.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let dictionary = dictionaries
+                .get(&context.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let before = context.predecessor(&ranked.staged.row, &ranked.staged.identity);
+            let record = Self::row_record(
+                context.plan,
+                &ranked.staged.row,
+                before,
+                context.elapsed_for(&ranked.staged.row),
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: ranked.staged.ordinal,
+                },
+                dictionary,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
+                self.text,
+            )?;
+            rows.push(process_row_out(context.plan, record)?);
+        }
+        Ok(rows)
     }
 
     fn emit_first_match(
@@ -2683,6 +2811,50 @@ impl PreparedSnapshot {
             "values": values,
         }))
     }
+}
+
+/// Pulls `row_record`'s positional `values` back apart into `ProcessRowOut`'s
+/// keyed shape, using `plan.fields`'s names for the zip. `pid` is required —
+/// `compute_process_rows`'s callers request the default (empty) field list,
+/// so it is always part of `os_process`'s full projection; a plan built with
+/// an explicit field list that dropped `pid` would be a caller bug, not a
+/// recoverable read failure, so it surfaces as `ApiError::Unreadable`
+/// alongside this function's other internal-shape checks.
+fn process_row_out(plan: &Plan, mut record: Value) -> Result<ProcessRowOut, ApiError> {
+    let invalid = |message: &str| {
+        ApiError::Unreadable(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message.to_owned(),
+        )))
+    };
+    let Some(Value::Array(values)) = record
+        .as_object_mut()
+        .and_then(|object| object.remove("values"))
+    else {
+        return Err(invalid("process row record has no values array"));
+    };
+    if values.len() != plan.fields.len() {
+        return Err(invalid(
+            "process row field count does not match its rendered values",
+        ));
+    }
+    let mut fields = BTreeMap::new();
+    let mut pid = None;
+    let mut parent = None;
+    for (field, value) in plan.fields.iter().zip(values) {
+        match field.name.as_str() {
+            "pid" => pid = value.as_i64(),
+            "ppid" => parent = value.as_i64(),
+            _ => {}
+        }
+        fields.insert(field.name.clone(), value);
+    }
+    let pid = pid.ok_or_else(|| invalid("process row has no pid"))?;
+    Ok(ProcessRowOut {
+        pid,
+        ppid: parent,
+        fields,
+    })
 }
 
 impl PageRows {
