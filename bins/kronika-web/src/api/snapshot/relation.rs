@@ -331,7 +331,7 @@ const INDEX_AGGREGATE_FIELDS: &[FieldSpec] = &[
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RelationKind {
+pub(crate) enum RelationKind {
     Tables,
     Indexes,
 }
@@ -518,7 +518,7 @@ pub(super) fn split_filters(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum GroupKey {
+pub(crate) enum GroupKey {
     Database {
         datid: u32,
         datname: String,
@@ -611,7 +611,7 @@ impl GroupKey {
         }))
     }
 
-    fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
+    pub(crate) fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
         match self.clone().for_group(kind, group) {
             Self::Database { datid, datname } => json!({
                 "datid": datid.to_string(),
@@ -817,7 +817,7 @@ enum Input {
     reason = "exact rational rates avoid heap allocation and preserve ordering"
 )]
 #[derive(Clone, Copy, Debug)]
-enum RateValue {
+pub(crate) enum RateValue {
     /// A non-negative rate represented exactly as units per microsecond.
     Exact { numerator: u128, denominator: u128 },
     /// Units per microsecond when the input counter is floating point or exact
@@ -1781,7 +1781,7 @@ fn sum_values_neutral(
 }
 
 #[derive(Clone)]
-enum Metric {
+pub(crate) enum Metric {
     Number(OrderedNumber),
     Rate(RateValue),
     RateRatio {
@@ -1885,7 +1885,7 @@ impl Metric {
         Some(ordering)
     }
 
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         match self {
             Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
                 Value::String(value.to_string())
@@ -3168,9 +3168,9 @@ fn process_history_chunk(
     Ok(())
 }
 
-struct RelationRow {
-    key: GroupKey,
-    metrics: BTreeMap<String, Option<Metric>>,
+pub(crate) struct RelationRow {
+    pub(crate) key: GroupKey,
+    pub(crate) metrics: BTreeMap<String, Option<Metric>>,
     source: Source,
     from: Option<i64>,
     to: Option<i64>,
@@ -3319,6 +3319,82 @@ impl PreparedSnapshot {
             "to": to.map(|value| value.to_string()),
         }))?);
         Ok(())
+    }
+
+    /// Runs the same aggregate/filter/sort pipeline `emit_relation_page`
+    /// streams over HTTP, but bounded top-N instead of cursor-relative
+    /// paging: always ranks from the top and reports `has_more` rather than
+    /// a next-page cursor. Shared computation for MCP table/index retrieval.
+    pub(crate) fn compute_relation_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Vec<RelationRow>, bool), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let group = self.group.ok_or(ApiError::BadCursor)?;
+        let kind = RelationKind::from_name(&section.logical_name)?;
+        let fields = kind.fields(group);
+        let keys = key_fields(kind, group);
+        for name in &self.by {
+            let semantic = sort_name(name);
+            if !fields.iter().any(|field| field.name == semantic) && !keys.contains(&semantic) {
+                return Err(ApiError::NoSuchColumn(name.clone()));
+            }
+        }
+        let contexts = self.partitioned_contexts(section, cancelled)?;
+        let mut aggregates = BTreeMap::<GroupKey, Aggregate>::new();
+        for context in &contexts {
+            if cancelled() {
+                break;
+            }
+            scan_context(self, kind, group, context, &mut aggregates, cancelled)?;
+        }
+        aggregates.retain(|_key, aggregate| {
+            aggregate.matches_result_search(kind, group, self.search.as_deref())
+        });
+        let order_by = self.by.first().map(|name| sort_name(name));
+        let mut ranked = aggregates
+            .into_values()
+            .map(|aggregate| {
+                let sort = order_by.and_then(|name| {
+                    aggregate
+                        .metric(kind, group, name)
+                        .or_else(|| aggregate.key.metric(name))
+                });
+                (aggregate, sort)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left, left_sort), (right, right_sort)| {
+            compare_relation_order(
+                &left.key,
+                left_sort.as_ref(),
+                &right.key,
+                right_sort.as_ref(),
+                self.direction,
+            )
+        });
+        let has_more = ranked.len() > limit;
+        let rows = ranked
+            .into_iter()
+            .take(limit)
+            .map(|(aggregate, _sort)| {
+                let metrics = self
+                    .relation_fields
+                    .iter()
+                    .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
+                    .collect();
+                RelationRow {
+                    key: aggregate.key,
+                    metrics,
+                    source: aggregate.source,
+                    from: aggregate.from,
+                    to: aggregate.to,
+                }
+            })
+            .collect();
+        Ok((rows, has_more))
     }
 }
 

@@ -1,6 +1,6 @@
 //! Reads one snapshot and derives counter rates.
 
-mod relation;
+pub(crate) mod relation;
 pub(crate) mod search;
 
 use std::borrow::Cow;
@@ -480,7 +480,7 @@ pub(super) fn stream_relation_history(
 #[cfg(test)]
 pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     root: &Path,
     request: SnapshotRequest,
     if_none_match: Option<&str>,
@@ -4446,7 +4446,7 @@ fn rate(
 }
 
 #[derive(Clone, Copy)]
-enum OrderedNumber {
+pub(crate) enum OrderedNumber {
     Integer(i128),
     Float(f64),
 }

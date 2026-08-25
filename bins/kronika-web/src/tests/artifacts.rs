@@ -5295,6 +5295,73 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
 }
 
 #[test]
+fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and_values() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 0, "db", "public", "alpha"),
+        (200, 1, 11, 30, "db", "public", "alpha"),
+        (100, 1, 12, 0, "db", "public", "beta"),
+        (200, 1, 12, 15, "db", "public", "beta"),
+        (100, 1, 13, 0, "db", "public", "gamma"),
+        (200, 1, 13, 60, "db", "public", "gamma"),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&direction=desc&page_size=200"
+    );
+    let via_http = stream(fixture.prepare(&target, None)).expect("streamed relation page");
+    let http_rows = relation_records(&via_http);
+    assert_eq!(http_rows.len(), 3);
+    let http_page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("relation trailer");
+    assert_eq!(http_page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_user_tables".to_owned()],
+        fields: vec!["seq_scan".to_owned()],
+        by: vec!["seq_scan".to_owned()],
+        direction: crate::route::Order::Desc,
+        group: Some(crate::route::RelationGroup::Object),
+        page_size: Some(200),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let (rows, has_more) = prepared
+        .compute_relation_rows(200, &|| false)
+        .expect("compute_relation_rows");
+    assert!(!has_more);
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(
+            direct.key.json(
+                crate::api::snapshot::relation::RelationKind::Tables,
+                crate::route::RelationGroup::Object
+            ),
+            http["key"],
+        );
+        let direct_value = direct.metrics["seq_scan"]
+            .as_ref()
+            .map_or(Value::Null, crate::api::snapshot::relation::Metric::json);
+        assert_eq!(direct_value, http["values"]["seq_scan"]);
+    }
+}
+
+#[test]
 fn relation_snapshot_and_history_cross_the_bounded_chunk_without_loss() {
     const OBJECTS: u32 = 513;
     let mut fixture = Fixture::new();
