@@ -1,5 +1,3 @@
-//! Whole-hour `PostgreSQL` population facts.
-
 use std::collections::{BTreeMap, HashMap};
 
 use kronika_reader::{Reader, Row, Segment, SegmentRef};
@@ -13,7 +11,7 @@ mod facts;
 #[cfg(test)]
 mod tests;
 
-use facts::{FIELDS, Summary, Values, WANTED, integer};
+use facts::{FIELDS, Previous, Summary, WANTED, integer};
 
 pub(super) const SECTION: &str = "postgresql_summary";
 const SOURCES: [&str; 5] = [
@@ -24,22 +22,20 @@ const SOURCES: [&str; 5] = [
     "pg_stat_user_indexes",
 ];
 
-struct Point(i64, i64, u8, Values);
+struct Point(i64, i64, u8, [Option<f64>; 17]);
 
 pub(super) fn validate(request: &SeriesRequest) -> Result<(), ApiError> {
-    if let Some(filter) = request.filters.first() {
-        return Err(ApiError::BadFilter(filter.column.clone()));
-    }
-    let parameter = if request.type_id.is_some() {
-        "type_id"
-    } else if request.group.is_some() {
-        "group"
-    } else if !request.fields.is_empty() {
-        "field"
-    } else {
-        return Ok(());
-    };
-    Err(ApiError::BadFilter(parameter.to_owned()))
+    let parameter = request
+        .filters
+        .first()
+        .map(|filter| filter.column.as_str())
+        .or_else(|| request.type_id.is_some().then_some("type_id"))
+        .or_else(|| request.group.is_some().then_some("group"))
+        .or_else(|| (!request.fields.is_empty()).then_some("field"));
+    parameter.map_or_else(
+        || Ok(()),
+        |parameter| Err(ApiError::BadFilter(parameter.to_owned())),
+    )
 }
 
 pub(super) fn with_predecessors(
@@ -101,7 +97,7 @@ fn surface_points(
     cancelled: &impl Fn() -> bool,
 ) -> Result<Vec<Point>, ApiError> {
     let source = SOURCES[usize::from(surface - 1)];
-    let mut previous = HashMap::<Vec<i128>, (i64, Row)>::new();
+    let mut previous = HashMap::<Vec<i128>, (i64, Previous)>::new();
     let mut moments = BTreeMap::<(i64, i128), (i64, Summary)>::new();
     for segment in segments {
         for (type_id, _) in segment.sections() {
@@ -124,17 +120,15 @@ fn surface_points(
                 if cancelled() {
                     return false;
                 }
-                let Some(timestamp) = timestamp(&row) else {
+                let Some(timestamp) = integer(row.get("ts")).and_then(|ts| i64::try_from(ts).ok())
+                else {
                     return true;
                 };
-                let datid = if surface >= 4 {
-                    integer(row.get("datid")).unwrap_or(i128::MIN)
-                } else {
-                    0
+                let datid = match (surface, integer(row.get("datid"))) {
+                    (3, Some(0)) => return true,
+                    (4 | 5, datid) => datid.unwrap_or(i128::MIN),
+                    _ => 0,
                 };
-                if surface == 3 && integer(row.get("datid")) == Some(0) {
-                    return true;
-                }
                 let key = identity(type_id, &row);
                 let before = previous
                     .get(&key)
@@ -145,7 +139,7 @@ fn surface_points(
                     .or_insert_with(|| (segment.id(), Summary::new(surface)))
                     .1
                     .add(&row, before);
-                previous.insert(key, (timestamp, row));
+                previous.insert(key, (timestamp, Previous::new(surface, &row)));
                 true
             })?;
         }
@@ -164,12 +158,10 @@ fn fold_moments(surface: u8, moments: BTreeMap<(i64, i128), (i64, Summary)>) -> 
     }
     let mut by_time = BTreeMap::<i64, Vec<(i128, i64, Summary)>>::new();
     for ((timestamp, datid), (segment, summary)) in moments {
-        by_time
-            .entry(timestamp)
-            .or_default()
-            .push((datid, segment, summary));
+        let updates = by_time.entry(timestamp).or_default();
+        updates.push((datid, segment, summary));
     }
-    let mut latest = HashMap::<i128, Summary>::new();
+    let mut latest = BTreeMap::<i128, Summary>::new();
     let mut points = Vec::with_capacity(by_time.len());
     for (timestamp, updates) in by_time {
         let segment = updates[0].1;
@@ -186,18 +178,14 @@ fn fold_moments(surface: u8, moments: BTreeMap<(i64, i128), (i64, Summary)>) -> 
 }
 
 fn identity(type_id: u32, row: &Row) -> Vec<i128> {
-    let mut key = vec![i128::from(type_id)];
-    key.extend(
-        row.contract()
-            .identity
-            .iter()
-            .map(|name| integer(row.get(name)).unwrap_or(i128::MIN)),
-    );
-    key
-}
-
-fn timestamp(row: &Row) -> Option<i64> {
-    integer(row.get("ts")).and_then(|value| i64::try_from(value).ok())
+    std::iter::once(i128::from(type_id))
+        .chain(
+            row.contract()
+                .identity
+                .iter()
+                .map(|name| integer(row.get(name)).unwrap_or(i128::MIN)),
+        )
+        .collect()
 }
 
 fn emit_points(
@@ -209,9 +197,7 @@ fn emit_points(
     let mut segment = None;
     let mut ordinal = 0_u64;
     for point in points {
-        if window.from.is_some_and(|from| point.1 < from)
-            || window.to.is_some_and(|to| point.1 > to)
-        {
+        if !window.contains(point.1) {
             continue;
         }
         if cancelled() {
@@ -235,19 +221,15 @@ fn emit_points(
             "ordinal": ordinal.to_string(),
             "timestamp": point.1.to_string(),
             "identity": [],
-            "values": values(point),
+            "values": std::iter::once(json!(point.2))
+                .chain(point.3.iter().map(|value| json!(value)))
+                .collect::<Vec<_>>(),
         }))?) {
             return Ok(());
         }
         ordinal = ordinal.saturating_add(1);
     }
     Ok(())
-}
-
-fn values(point: &Point) -> Vec<Value> {
-    let mut values = vec![json!(point.2)];
-    values.extend(point.3.iter().map(|value| json!(value)));
-    values
 }
 
 fn layout() -> Value {
