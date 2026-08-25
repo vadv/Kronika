@@ -21,12 +21,7 @@ test("the accepted product registry has stable unique definitions", () => {
   assert.deepEqual(duration.expected_band, { min_inclusive: null, max_exclusive: 1000 })
 })
 
-test("Vacuum, relation, and event policies keep exact accepted mappings", () => {
-  const vacuum = semantics.semantic("vacuum.phase_risk", "vacuum_risk").policy
-  assert.equal(vacuum.default, "ordinary")
-  assert.deepEqual(vacuum.order, ["dangerous", "heavy", "ordinary"])
-  assert.equal(vacuum.phases["truncating heap"], "dangerous")
-
+test("relation and event policies keep exact accepted mappings", () => {
   const relation = semantics.semantic("relation.index_state_severity", "relation_severity")
   assert.equal(relation.origin, "kronika_derived")
   assert.deepEqual(relation.policy.states, [

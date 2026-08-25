@@ -15,6 +15,9 @@ const MAX_HEATMAP_FIELDS: usize = 4;
 const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
+const HOUR_US: i64 = 3_600_000_000;
+const MAX_VACUUM_FIELDS: usize = 32;
+const MAX_VACUUM_EPISODES: usize = 500;
 
 /// The requests the server answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +34,17 @@ pub(crate) enum Route {
     Snapshot(Box<SnapshotRequest>),
     /// The ranked top view of one section over one window.
     Heatmap(HeatmapRequest),
+    /// One bounded `PostgreSQL` Vacuum episode product over one UTC hour.
+    Vacuum(VacuumRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VacuumRequest {
+    pub(crate) from: i64,
+    pub(crate) to: i64,
+    pub(crate) at: i64,
+    pub(crate) fields: Vec<String>,
+    pub(crate) page_size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +368,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     if path == "/api/heatmap" {
         return parse_heatmap(query).map(Route::Heatmap);
     }
+    if path == "/api/postgresql/vacuum" {
+        return parse_vacuum(query).map(Route::Vacuum);
+    }
     let tail = path
         .strip_prefix("/api/segments/")
         .ok_or(RouteError::NoSuchPath)?;
@@ -382,6 +399,50 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         "rows" => parse_rows(segment, query).map(Route::Rows),
         _ => Err(RouteError::NoSuchPath),
     }
+}
+
+fn parse_vacuum(query: &str) -> Result<VacuumRequest, RouteError> {
+    let mut from = None;
+    let mut to = None;
+    let mut at = None;
+    let mut fields = Vec::new();
+    let mut page_size = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "from" if from.is_none() => from = Some(number("from", &value)?),
+            "to" if to.is_none() => to = Some(number("to", &value)?),
+            "at" if at.is_none() => at = Some(number("at", &value)?),
+            "field" => {
+                if value.is_empty() || fields.len() >= MAX_VACUUM_FIELDS || fields.contains(&value)
+                {
+                    return Err(RouteError::BadParameter("field".to_owned()));
+                }
+                fields.push(value);
+            }
+            "page_size" if page_size.is_none() => {
+                page_size = Some(bounded("page_size", &value, MAX_VACUUM_EPISODES)?);
+            }
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
+    let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    let at = at.unwrap_or(to);
+    if from > to || from.div_euclid(HOUR_US) != to.div_euclid(HOUR_US) {
+        return Err(RouteError::BadParameter("to".to_owned()));
+    }
+    if !(from..=to).contains(&at) {
+        return Err(RouteError::BadParameter("at".to_owned()));
+    }
+    Ok(VacuumRequest {
+        from,
+        to,
+        at,
+        fields,
+        page_size: page_size.unwrap_or(MAX_VACUUM_EPISODES),
+    })
 }
 
 #[expect(

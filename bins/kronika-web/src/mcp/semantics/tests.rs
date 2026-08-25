@@ -1,34 +1,7 @@
 use kronika_index::{FINDING_SEMANTICS, HEALTH_SEMANTICS, LOCKS_BLOCKED_BY_SEMANTIC};
 use serde_json::json;
 
-use super::{accepted, health, indexed, recorded_layout, referenced};
-
-#[test]
-fn accepted_definition_keeps_the_product_registry_value_in_one_envelope() {
-    let definition = accepted("value_tone.query_duration_ms").expect("accepted semantic");
-
-    assert_eq!(
-        definition,
-        json!({
-            "id": "value_tone.query_duration_ms",
-            "origin": "accepted_presentation",
-            "source": "kronika_product_registry",
-            "unit": "milliseconds",
-            "formula": "(sample_timestamp - query_start) / 1000",
-            "operands": ["sample_timestamp", "query_start", "backend_type", "state"],
-            "thresholds": [
-                {"operator": "gte", "value": 5000.0, "tone": "critical"},
-                {"operator": "gte", "value": 1000.0, "tone": "warning"}
-            ],
-            "expected_band": {"min_inclusive": null, "max_exclusive": 1000.0},
-            "policy": {
-                "kind": "numeric_value_tone",
-                "field": "query_duration_ms",
-                "active_client_only": true
-            }
-        })
-    );
-}
+use super::{health, indexed, referenced};
 
 #[test]
 fn indexed_health_definition_uses_the_evaluator_descriptor() {
@@ -90,22 +63,6 @@ fn referenced_dictionary_is_unique_exact_and_uses_index_descriptors() {
     assert_eq!(definitions[0]["boundary"]["operator"], "gte");
     assert_eq!(definitions[0]["boundary"]["numerator"], "80");
     assert_eq!(definitions[0]["boundary"]["denominator"], "1");
-}
-
-#[test]
-fn recorded_layout_keeps_lossless_registry_identity() {
-    let layout = json!({
-        "logical_name": "pg_locks",
-        "type_id": "1011002",
-        "columns": [{"name": "blocked_by", "unit": "none"}],
-    });
-
-    let definition = recorded_layout(&layout).expect("recorded layout");
-
-    assert_eq!(definition["id"], "layout.1011002");
-    assert_eq!(definition["origin"], "recorded");
-    assert_eq!(definition["source"], "kronika_registry");
-    assert_eq!(definition["layout"], layout);
 }
 
 #[test]

@@ -1,293 +1,263 @@
-import type { DataRow } from "./api"
-import { asNumber, rawText, value } from "./model"
-import { exactCounterDelta } from "./postgres-metrics"
-import { semantic, type VacuumRisk } from "./product-semantics"
+import type { Cell, DataRow } from "./api"
 
-// The vacuum ledger: one recorded hour of pg_stat_progress_vacuum, grouped
-// into episodes for display. Grouping is presentation over recorded values,
-// the same shape as the events console: rows group by recorded identity
-// fields, and nothing is inferred about time nobody recorded.
+export type VacuumRisk = "ordinary" | "heavy" | "dangerous"
 
-// Two samples of one key continue an episode when they are no further apart
-// than this many recorded sampling intervals: collection drifts, so exactly
-// one interval would split ordinary runs. Without a recorded interval the
-// time condition is not applied — nothing is invented in its place.
-const EPISODE_POLICY = semantic("vacuum.episode_adjacency", "vacuum_episode").policy
-export const EPISODE_ADJACENCY_FACTOR = EPISODE_POLICY.adjacency_factor
-
-// How many consecutive samples with an unchanged designated counter make the
-// "No movement" reading.
-const NO_MOVEMENT_POLICY = semantic("vacuum.no_movement", "vacuum_no_movement").policy
-export const NO_MOVEMENT_SAMPLES = NO_MOVEMENT_POLICY.samples
-
-export type { VacuumRisk } from "./product-semantics"
-
-// Fixed by phase name, never computed from observed load. `truncating heap`
-// is dangerous unconditionally: the phase is set before the conditional
-// AccessExclusiveLock attempt.
-const RISK_POLICY = semantic("vacuum.phase_risk", "vacuum_risk").policy
-
-export function phaseRisk(phase: string | null): VacuumRisk {
-  return phase === null ? RISK_POLICY.default : RISK_POLICY.phases[phase] ?? RISK_POLICY.default
-}
-
-export interface VacuumEpisode {
-  /// Recorded samples, ascending by timestamp.
-  readonly rows: readonly DataRow[]
-  readonly last: DataRow
-  /// The trailing run of samples sharing the last row's phase and index
-  /// cycle: a cycle increment starts a new span even when the phase string
-  /// is unchanged.
-  readonly phaseRows: readonly DataRow[]
-  readonly noMovement: { readonly samples: number; readonly spanUs: number } | null
-}
-
-// Counters that only grow within one vacuum run. A row where any of them is
-// lower than in the previous row is a different run and starts a new episode.
-const MONOTONE_FIELDS = ["index_vacuum_count", "heap_blks_scanned", "heap_blks_vacuumed"] as const
-
-function episodeKey(row: DataRow): string {
-  return [row.typeId, rawText(value(row, "pid")) ?? "", rawText(value(row, "datid")) ?? "", rawText(value(row, "relid")) ?? ""].join(":")
-}
-
-export function buildVacuumEpisodes(rows: readonly DataRow[], intervalSeconds: number | null): readonly VacuumEpisode[] {
-  const streams = new Map<string, DataRow[]>()
-  for (const row of [...rows].sort((left, right) => left.timestamp - right.timestamp)) {
-    const key = episodeKey(row)
-    const stored = streams.get(key)
-    if (stored === undefined) streams.set(key, [row])
-    else stored.push(row)
-  }
-  const limit = intervalSeconds === null || intervalSeconds <= 0
-    ? null
-    : intervalSeconds * 1_000_000 * EPISODE_ADJACENCY_FACTOR
-  const episodes: VacuumEpisode[] = []
-  for (const stream of streams.values()) {
-    let current: DataRow[] = []
-    for (const row of stream) {
-      const previous = current[current.length - 1]
-      const continues = previous !== undefined
-        && (limit === null || row.timestamp - previous.timestamp <= limit)
-        && MONOTONE_FIELDS.every((field) => {
-          const before = asNumber(value(previous, field))
-          const after = asNumber(value(row, field))
-          return before === null || after === null || after >= before
-        })
-      if (!continues && current.length > 0) {
-        episodes.push(finishEpisode(current))
-        current = []
-      }
-      current.push(row)
-    }
-    if (current.length > 0) episodes.push(finishEpisode(current))
-  }
-  return episodes
-}
-
-function finishEpisode(rows: readonly DataRow[]): VacuumEpisode {
-  const last = rows[rows.length - 1] as DataRow
-  const phase = rawText(value(last, "phase"))
-  const cycle = asNumber(value(last, "index_vacuum_count"))
-  let start = rows.length - 1
-  while (start > 0) {
-    const candidate = rows[start - 1] as DataRow
-    if (rawText(value(candidate, "phase")) !== phase) break
-    if (asNumber(value(candidate, "index_vacuum_count")) !== cycle) break
-    start -= 1
-  }
-  const phaseRows = rows.slice(start)
-  return { rows, last, phaseRows, noMovement: noMovement(phaseRows, last) }
-}
-
-// The counter whose movement says the phase is progressing. Layout 1_012_004
-// (PG10-16) does not record index progress, so its index phases never claim
-// stillness.
-function movementField(phase: string | null, typeId: string): string | null {
-  const policy = NO_MOVEMENT_POLICY.phases.find((candidate) => candidate.phase === phase)
-  return policy === undefined || policy.unavailable_type_ids.includes(typeId) ? null : policy.field
-}
-
-function noMovement(phaseRows: readonly DataRow[], last: DataRow): VacuumEpisode["noMovement"] {
-  const field = movementField(rawText(value(last, "phase")), last.typeId)
-  if (field === null) return null
-  let start = phaseRows.length - 1
-  if (field !== "phase") {
-    const reading = asNumber(value(last, field))
-    if (reading === null) return null
-    while (start > 0 && asNumber(value(phaseRows[start - 1] as DataRow, field)) === reading) start -= 1
-  } else {
-    start = 0
-  }
-  const still = phaseRows.slice(start)
-  if (still.length < NO_MOVEMENT_SAMPLES) return null
-  const first = still[0] as DataRow
-  return { samples: still.length, spanUs: last.timestamp - first.timestamp }
-}
-
-// The moment of the collection pass the cursor stands on: the newest recorded
-// progress timestamp at or before the cursor. An episode whose last sample
-// carries this timestamp was seen at the cursor; every other episode was last
-// seen at its own recorded moment.
-export function vacuumAtTimestamp(rows: readonly DataRow[], cursor: number): number | null {
-  let at: number | null = null
-  for (const row of rows) {
-    if (row.timestamp <= cursor && (at === null || row.timestamp > at)) at = row.timestamp
-  }
-  return at
-}
-
-const RISK_ORDER = Object.fromEntries(RISK_POLICY.order.map((risk, index) => [risk, index])) as Readonly<Record<VacuumRisk, number>>
-
-// At-sample episodes first, riskiest first, longest phase first; everything
-// last seen earlier follows, newest first.
-export function sortVacuumEpisodes(episodes: readonly VacuumEpisode[], atTs: number | null): readonly VacuumEpisode[] {
-  return [...episodes].sort((left, right) => {
-    const leftAt = atTs !== null && left.last.timestamp === atTs
-    const rightAt = atTs !== null && right.last.timestamp === atTs
-    if (leftAt !== rightAt) return leftAt ? -1 : 1
-    if (leftAt) {
-      const risk = RISK_ORDER[phaseRisk(rawText(value(left.last, "phase")))] - RISK_ORDER[phaseRisk(rawText(value(right.last, "phase")))]
-      if (risk !== 0) return risk
-      const span = phaseSpanUs(right) - phaseSpanUs(left)
-      if (span !== 0) return span
-      const cycles = (asNumber(value(right.last, "index_vacuum_count")) ?? 0) - (asNumber(value(left.last, "index_vacuum_count")) ?? 0)
-      if (cycles !== 0) return cycles
-    }
-    return right.last.timestamp - left.last.timestamp
-  })
-}
-
-export function phaseSpanUs(episode: VacuumEpisode): number {
-  const first = episode.phaseRows[0]
-  return first === undefined ? 0 : episode.last.timestamp - first.timestamp
-}
-
-// Whether any loaded row's layout defines the column: PG17 index progress
-// exists from 1_012_005 on, the PG18 cost delay only on 1_012_006. In an
-// hour without such layouts the columns are omitted rather than all-N/A.
-export function vacuumLayoutHas(rows: readonly DataRow[], field: "indexes_total" | "delay_time"): boolean {
-  return rows.some((row) => field === "delay_time" ? row.typeId === "1012006" : row.typeId !== "1012004")
-}
-
-// The scan-progress percent of every episode sample that carries a positive
-// heap total, in recorded order: what the row's progress sparkline draws.
-// Samples with no usable total are skipped, not zero-filled.
-export function progressSeries(episode: VacuumEpisode): readonly number[] {
-  const series: number[] = []
-  for (const row of episode.rows) {
-    const scanned = asNumber(value(row, "heap_blks_scanned"))
-    const total = asNumber(value(row, "heap_blks_total"))
-    if (scanned === null || total === null || total <= 0) continue
-    series.push(Math.max(0, Math.min(100, (scanned / total) * 100)))
-  }
-  return series
-}
-
-// The PG18 cost-delay delta between the episode's last two samples, when the
-// layout records it. Cumulative milliseconds; adjacent samples only.
-export function delayDelta(episode: VacuumEpisode): number | null {
-  if (episode.last.typeId !== "1012006") return null
-  const previous = episode.rows[episode.rows.length - 2]
-  if (previous === undefined) return null
-  const before = asNumber(value(previous, "delay_time"))
-  const after = asNumber(value(episode.last, "delay_time"))
-  return before === null || after === null || after < before ? null : after - before
+export interface VacuumNoMovement {
+  readonly field: string
+  readonly samples: number
+  readonly spanUs: number
 }
 
 export interface VacuumProcessLoad {
-  readonly before: DataRow
-  readonly after: DataRow
-  /// User plus system CPU time, in jiffies (scale by the recorded clock rate).
-  readonly cpuTicks: bigint | null
-  /// Time blocked on I/O, in jiffies.
-  readonly blockWaitTicks: bigint | null
-  /// Time waiting for a CPU slot, nanoseconds.
-  readonly runDelayNs: bigint | null
-  /// Bytes actually read from storage, not page-cache hits.
-  readonly readBytes: bigint | null
-  readonly writeBytes: bigint | null
-  readonly majorFaults: bigint | null
-}
-
-// The vacuuming process's own recorded work across the episode's own window:
-// the latest usable `os_process` sample at or before the episode's first
-// recorded moment stands as the baseline, the latest at or before its last
-// recorded moment as the reading. A backend that also did other work outside
-// this window is not filtered out — every recorded process, autovacuum
-// worker or plain backend running a manual VACUUM, keeps whatever else it
-// did in the same span. The delta is exactly what the process accumulated
-// between two real recorded moments: a hint at the vacuum's cost, not proof
-// the vacuum alone produced it.
-export function vacuumProcessLoad(processRows: readonly DataRow[], episode: VacuumEpisode): VacuumProcessLoad | null {
-  const start = episode.rows[0]?.timestamp
-  if (start === undefined) return null
-  const before = latestAtOrBefore(processRows, start)
-  const after = latestAtOrBefore(processRows, episode.last.timestamp)
-  if (before === null || after === null || after.timestamp <= before.timestamp) return null
-  const delta = (field: string) => exactCounterDelta(value(before, field), value(after, field))
-  return {
-    before,
-    after,
-    cpuTicks: sumDeltas(before, after, ["utime", "stime"]),
-    blockWaitTicks: delta("blkdelay_ticks"),
-    runDelayNs: delta("rundelay_ns"),
-    readBytes: delta("read_bytes"),
-    writeBytes: delta("write_bytes"),
-    majorFaults: delta("majflt"),
-  }
-}
-
-export interface VacuumLoadShares {
+  readonly beforeAt: number
+  readonly afterAt: number
   readonly cpuMs: number | null
   readonly cpuShare: number | null
   readonly blockWaitMs: number | null
+  readonly runDelayNs: number | null
   readonly readBytes: number | null
   readonly writeBytes: number | null
-  readonly readShare: number | null
   readonly majorFaults: number | null
 }
 
-// The display numbers derived from a raw load delta: CPU and block-wait
-// converted from ticks, and each byte delta's share of what its natural
-// comparison covers — CPU against the span's own wall-clock time, bytes read
-// against what PG itself reports scanning. `scannedBytes` is null when the
-// recorded block size is unknown, and the read share is then withheld rather
-// than compared against a guessed size.
-export function vacuumLoadShares(load: VacuumProcessLoad, ticksPerSecond: number | null, scannedBytes: number | null): VacuumLoadShares {
-  const spanSeconds = (load.after.timestamp - load.before.timestamp) / 1_000_000
-  const cpuMs = ticksToMs(load.cpuTicks, ticksPerSecond)
-  const readBytes = load.readBytes === null ? null : Number(load.readBytes)
+export interface VacuumSample {
+  readonly row: DataRow
+  readonly phase: string
+  readonly risk: VacuumRisk
+  readonly cadenceSeconds: number | null
+}
+
+export interface VacuumRelation {
+  readonly database: string | null
+  readonly schema: string | null
+  readonly name: string | null
+  readonly relid: string
+  readonly isAutovacuum: boolean
+}
+
+export interface VacuumEpisode {
+  readonly rows: readonly DataRow[]
+  readonly samples: readonly VacuumSample[]
+  readonly last: DataRow
+  readonly firstAt: number
+  readonly lastAt: number
+  readonly spanUs: number
+  readonly atSample: boolean
+  readonly phase: {
+    readonly name: string
+    readonly risk: VacuumRisk
+    readonly firstAt: number
+    readonly lastAt: number
+    readonly spanUs: number
+    readonly sampleCount: number
+    readonly indexVacuumCount: number | null
+    readonly noMovement: VacuumNoMovement | null
+  }
+  readonly progress: readonly number[]
+  readonly indexProgress: {
+    readonly applicable: boolean
+    readonly processed: number | null
+    readonly total: number | null
+  } | null
+  readonly delayDeltaMs: number | null
+  readonly processLoad: VacuumProcessLoad | null
+  readonly processCurrent: DataRow | null
+  readonly relation: VacuumRelation
+}
+
+export interface VacuumProduct {
+  readonly episodes: readonly VacuumEpisode[]
+  readonly atTimestamp: number | null
+  readonly cadenceSeconds: number | null
+  readonly availableFields: ReadonlySet<string>
+}
+
+export function parseVacuumProduct(records: readonly Record<string, unknown>[]): VacuumProduct {
+  const products = records.filter((record) => record.record === "vacuum")
+  if (products.length !== 1) throw new Error("Vacuum response must contain exactly one product record")
+  const product = products[0] as Record<string, unknown>
+  const rawEpisodes = array(product.episodes, "Vacuum episodes")
+  const episodes = rawEpisodes.map((raw, index) => parseEpisode(object(raw, `Vacuum episode ${index}`)))
+  const availableFields = new Set<string>()
+  for (const episode of episodes) {
+    for (const row of episode.rows) {
+      for (const field of Object.keys(row.values)) availableFields.add(field)
+    }
+  }
+  for (const field of optionalArray(product.available_fields, "Vacuum available fields")) {
+    availableFields.add(text(field, "Vacuum available field"))
+  }
+  const anchor = object(product.anchor, "Vacuum anchor")
+  const atTimestamp = optionalInteger(anchor.selected_at_us, "Vacuum selected timestamp")
+  const cadenceSeconds = optionalNumber(anchor.cadence_seconds, "Vacuum selected cadence")
+  return { episodes, atTimestamp, cadenceSeconds, availableFields }
+}
+
+function parseEpisode(raw: Record<string, unknown>): VacuumEpisode {
+  const latest = parseRow(object(raw.latest_row, "Vacuum latest row"))
+  const rawSamples = array(raw.samples, "Vacuum samples")
+  const samples = rawSamples.map((value, index) => parseSample(object(value, `Vacuum sample ${index}`)))
+  if (samples.length === 0) throw new Error("Vacuum episode has no samples")
+  const phase = object(raw.phase, "Vacuum phase")
+  const noMovement = phase.no_movement === null || phase.no_movement === undefined
+    ? null
+    : parseNoMovement(object(phase.no_movement, "Vacuum no-movement reading"))
+  const progress = object(raw.progress, "Vacuum progress")
+  const heapScan = optionalArray(progress.heap_scan, "Vacuum heap scan")
+    .map((value) => number(object(value, "Vacuum progress point").percent, "Vacuum progress percent"))
+  const indexProgress = progress.index === undefined || progress.index === null
+    ? null
+    : object(progress.index, "Vacuum index progress")
+  const process = raw.process === undefined || raw.process === null
+    ? null
+    : object(raw.process, "Vacuum process")
+  const relation = object(raw.relation, "Vacuum relation")
   return {
-    cpuMs,
-    cpuShare: cpuMs !== null && spanSeconds > 0 ? Math.min(100, cpuMs / 1000 / spanSeconds * 100) : null,
-    blockWaitMs: ticksToMs(load.blockWaitTicks, ticksPerSecond),
-    readBytes,
-    writeBytes: load.writeBytes === null ? null : Number(load.writeBytes),
-    readShare: readBytes !== null && scannedBytes !== null && scannedBytes > 0
-      ? Math.min(100, readBytes / scannedBytes * 100)
-      : null,
-    majorFaults: load.majorFaults === null ? null : Number(load.majorFaults),
+    rows: samples.map((sample) => sample.row),
+    samples,
+    last: latest,
+    firstAt: integer(raw.first_at_us, "Vacuum first timestamp"),
+    lastAt: integer(raw.last_at_us, "Vacuum last timestamp"),
+    spanUs: integer(raw.span_us, "Vacuum episode span"),
+    atSample: object(raw.observation, "Vacuum observation").at_sample === true,
+    phase: {
+      name: text(phase.name, "Vacuum phase name"),
+      risk: risk(phase.risk),
+      firstAt: integer(phase.first_at_us, "Vacuum phase first timestamp"),
+      lastAt: integer(phase.last_at_us, "Vacuum phase last timestamp"),
+      spanUs: integer(phase.span_us, "Vacuum phase span"),
+      sampleCount: integer(phase.sample_count, "Vacuum phase samples"),
+      indexVacuumCount: optionalNumber(phase.index_vacuum_count, "Vacuum index cycle"),
+      noMovement,
+    },
+    progress: heapScan,
+    indexProgress: indexProgress === null ? null : {
+      applicable: indexProgress.applicable === true,
+      processed: optionalNumber(indexProgress.processed, "Vacuum indexes processed"),
+      total: optionalNumber(indexProgress.total, "Vacuum indexes total"),
+    },
+    delayDeltaMs: optionalNumber(raw.delay_delta_ms, "Vacuum delay delta"),
+    processLoad: process === null ? null : parseProcessLoad(process),
+    processCurrent: process?.current_row === undefined || process.current_row === null
+      ? null
+      : parseProcessRow(object(process.current_row, "Vacuum current process row")),
+    relation: {
+      database: optionalText(relation.database, "Vacuum relation database"),
+      schema: optionalText(relation.schema, "Vacuum relation schema"),
+      name: optionalText(relation.name, "Vacuum relation name"),
+      relid: text(relation.relid, "Vacuum relation id"),
+      isAutovacuum: relation.is_autovacuum === true,
+    },
   }
 }
 
-function ticksToMs(ticks: bigint | null, ticksPerSecond: number | null): number | null {
-  return ticks === null || ticksPerSecond === null || ticksPerSecond <= 0 ? null : (Number(ticks) / ticksPerSecond) * 1000
+function parseSample(raw: Record<string, unknown>): VacuumSample {
+  const storedRow = raw.row === undefined ? raw : object(raw.row, "Vacuum sample row")
+  const row = parseRow(storedRow)
+  return {
+    row,
+    phase: text(raw.phase ?? row.values.phase, "Vacuum sample phase"),
+    risk: risk(raw.risk),
+    cadenceSeconds: optionalNumber(raw.cadence_seconds, "Vacuum sample cadence"),
+  }
 }
 
-function sumDeltas(before: DataRow, after: DataRow, fields: readonly string[]): bigint | null {
-  let total = 0n
-  for (const field of fields) {
-    const delta = exactCounterDelta(value(before, field), value(after, field))
-    if (delta === null) return null
-    total += delta
+function parseRow(raw: Record<string, unknown>): DataRow {
+  const rawValues = object(raw.values, "Vacuum row values")
+  return {
+    segmentId: text(raw.segment_id, "Vacuum row segment"),
+    logicalName: "pg_stat_progress_vacuum",
+    typeId: text(raw.type_id, "Vacuum row layout"),
+    ordinal: text(raw.ordinal ?? raw.row_ordinal, "Vacuum row ordinal"),
+    timestamp: integer(raw.timestamp ?? raw.timestamp_us, "Vacuum row timestamp"),
+    values: rawValues as Readonly<Record<string, Cell>>,
   }
-  return total
 }
 
-function latestAtOrBefore(rows: readonly DataRow[], target: number): DataRow | null {
-  let best: DataRow | null = null
-  for (const row of rows) {
-    if (row.timestamp <= target && (best === null || row.timestamp > best.timestamp)) best = row
+function parseNoMovement(raw: Record<string, unknown>): VacuumNoMovement {
+  return {
+    field: text(raw.field, "Vacuum no-movement field"),
+    samples: integer(raw.samples, "Vacuum no-movement samples"),
+    spanUs: integer(raw.span_us, "Vacuum no-movement span"),
   }
-  return best
+}
+
+function parseProcessLoad(raw: Record<string, unknown>): VacuumProcessLoad | null {
+  if (raw.load === null) return null
+  const load = raw.load === undefined ? raw : object(raw.load, "Vacuum process load")
+  const beforeAt = optionalInteger(load.before_at_us ?? load.before_timestamp_us, "Vacuum process first timestamp")
+  const afterAt = optionalInteger(load.after_at_us ?? load.after_timestamp_us, "Vacuum process last timestamp")
+  if (beforeAt === null || afterAt === null) return null
+  return {
+    beforeAt,
+    afterAt,
+    cpuMs: optionalNumber(load.cpu_ms, "Vacuum process CPU"),
+    cpuShare: optionalNumber(load.cpu_share_percent, "Vacuum process CPU share"),
+    blockWaitMs: optionalNumber(load.block_wait_ms, "Vacuum process block wait"),
+    runDelayNs: optionalNumber(load.run_delay_ns, "Vacuum process run delay"),
+    readBytes: optionalNumber(load.read_bytes, "Vacuum process reads"),
+    writeBytes: optionalNumber(load.write_bytes, "Vacuum process writes"),
+    majorFaults: optionalNumber(load.major_faults, "Vacuum process major faults"),
+  }
+}
+
+function parseProcessRow(raw: Record<string, unknown>): DataRow {
+  const values = object(raw.values, "Vacuum process row values")
+  return {
+    segmentId: text(raw.segment_id, "Vacuum process row segment"),
+    logicalName: "os_process",
+    typeId: text(raw.type_id, "Vacuum process row layout"),
+    ordinal: text(raw.ordinal ?? raw.row_ordinal, "Vacuum process row ordinal"),
+    timestamp: integer(raw.timestamp ?? raw.timestamp_us, "Vacuum process row timestamp"),
+    values: values as Readonly<Record<string, Cell>>,
+  }
+}
+
+function risk(value: unknown): VacuumRisk {
+  if (value === "ordinary" || value === "heavy" || value === "dangerous") return value
+  throw new Error("Vacuum response has an invalid phase risk")
+}
+
+function object(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${name} is not an object`)
+  return value as Record<string, unknown>
+}
+
+function array(value: unknown, name: string): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is not an array`)
+  return value
+}
+
+function optionalArray(value: unknown, name: string): readonly unknown[] {
+  return value === undefined || value === null ? [] : array(value, name)
+}
+
+function text(value: unknown, name: string): string {
+  if (typeof value === "string") return value
+  if (typeof value === "number" && Number.isInteger(value)) return String(value)
+  throw new Error(`${name} is not textual`)
+}
+
+function optionalText(value: unknown, name: string): string | null {
+  return value === undefined || value === null ? null : text(value, name)
+}
+
+function integer(value: unknown, name: string): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} is not a safe integer`)
+  return parsed
+}
+
+function optionalInteger(value: unknown, name: string): number | null {
+  return value === undefined || value === null ? null : integer(value, name)
+}
+
+function number(value: unknown, name: string): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN
+  if (!Number.isFinite(parsed)) throw new Error(`${name} is not finite`)
+  return parsed
+}
+
+function optionalNumber(value: unknown, name: string): number | null {
+  return value === undefined || value === null ? null : number(value, name)
 }

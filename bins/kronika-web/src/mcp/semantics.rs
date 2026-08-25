@@ -8,7 +8,7 @@ use kronika_index::{
     SemanticBoundary, SemanticDefinition, SemanticOperator, SemanticOrigin as IndexOrigin,
     SemanticUnit as IndexUnit,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SemanticError(String);
@@ -20,19 +20,6 @@ impl fmt::Display for SemanticError {
 }
 
 impl std::error::Error for SemanticError {}
-
-pub(super) fn accepted(id: &str) -> Result<Value, SemanticError> {
-    let definition = crate::product_semantics::get(id)
-        .map_err(|error| SemanticError(error.to_string()))?
-        .ok_or_else(|| SemanticError(format!("missing accepted semantic {id}")))?;
-    let mut value = serde_json::to_value(definition)
-        .map_err(|error| SemanticError(format!("serialize accepted semantic {id}: {error}")))?;
-    value
-        .as_object_mut()
-        .ok_or_else(|| SemanticError(format!("accepted semantic {id} is not an object")))?
-        .insert("source".to_owned(), json!("kronika_product_registry"));
-    Ok(value)
-}
 
 pub(super) fn indexed(definition: SemanticDefinition) -> Value {
     json!({
@@ -76,29 +63,6 @@ pub(super) fn health() -> Vec<Value> {
         .copied()
         .map(indexed)
         .collect()
-}
-
-pub(super) fn recorded_layout(layout: &Value) -> Result<Value, SemanticError> {
-    let object = layout
-        .as_object()
-        .ok_or_else(|| SemanticError("layout is not an object".to_owned()))?;
-    let logical_name = text(object, "logical_name")?;
-    let type_id = text(object, "type_id")?;
-    Ok(json!({
-        "id": format!("layout.{type_id}"),
-        "origin": "recorded",
-        "source": "kronika_registry",
-        "logical_name": logical_name,
-        "type_id": type_id,
-        "layout": layout,
-    }))
-}
-
-fn text<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str, SemanticError> {
-    object
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| SemanticError(format!("layout has no textual {field}")))
 }
 
 const fn index_origin(origin: IndexOrigin) -> &'static str {

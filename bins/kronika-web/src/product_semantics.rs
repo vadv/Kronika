@@ -1,4 +1,4 @@
-//! TypeScript-owned accepted presentation semantics.
+//! Shared accepted presentation semantics for Rust products and UI decoration.
 //! Indexed finding boundaries and health formulas remain in `kronika-index`.
 
 use std::collections::{BTreeMap, BTreeSet};

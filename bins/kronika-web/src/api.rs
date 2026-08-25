@@ -25,6 +25,7 @@ mod row_detail;
 mod rows;
 mod snapshot;
 mod surface;
+mod vacuum;
 
 pub(crate) use catalog::{
     metric_source_bit as catalog_metric_source_bit, source_bit as catalog_source_bit,
@@ -105,6 +106,7 @@ pub(crate) enum Prepared {
     Snapshot(snapshot::PreparedSnapshot),
     LockGraph(lock_graph::PreparedLockGraph),
     ProcessTree(process_tree::PreparedProcessTree),
+    Vacuum(vacuum::PreparedVacuum),
     Empty(ResponseMeta),
 }
 
@@ -121,6 +123,7 @@ impl Prepared {
             Self::Snapshot(prepared) => prepared.meta(),
             Self::LockGraph(prepared) => prepared.meta(),
             Self::ProcessTree(prepared) => prepared.meta(),
+            Self::Vacuum(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -161,6 +164,7 @@ impl Prepared {
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::LockGraph(prepared) => prepared.stream(emit, cancelled),
             Self::ProcessTree(prepared) => prepared.stream(emit, cancelled),
+            Self::Vacuum(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -455,6 +459,7 @@ fn prepare_with_index_access(
             hour::prepare(root, request, sources, synthetic_demo, index_access).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
+        Route::Vacuum(request) => vacuum::prepare(root, request).map(Prepared::Vacuum),
         Route::Snapshot(mut request) => {
             let lock_graph = request
                 .postgresql

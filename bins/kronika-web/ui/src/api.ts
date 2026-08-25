@@ -6,6 +6,7 @@ import { heatmapFixtureRecipe, type HeatmapCutId, type HeatmapGroupId, type Heat
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationLens, type RelationRow } from "./postgres-relations"
+import { parseVacuumProduct, type VacuumProduct } from "./postgres-vacuum"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
@@ -446,6 +447,24 @@ export async function loadSeries(
     }
   }
   return rows
+}
+
+export async function loadVacuumProduct(
+  selectedHour: number,
+  at: number,
+  signal: AbortSignal,
+): Promise<VacuumProduct> {
+  signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const to = from + 3_600_000_000 - 1
+  if (bundledFixtureRange() !== null) {
+    return { episodes: [], atTimestamp: null, cadenceSeconds: null, availableFields: new Set() }
+  }
+  const records = await request(
+    `/api/postgresql/vacuum?from=${from}&to=${to}&at=${at}&page_size=500`,
+    signal,
+  )
+  return parseVacuumProduct(records)
 }
 
 export async function loadHeatmap(

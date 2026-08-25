@@ -1,8 +1,59 @@
 use super::{
     ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
     MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, PostgresqlSurface, ProcessLens,
-    Route, RouteError, SegmentRequest, StatementLens, TableLens, Window, parse,
+    Route, RouteError, SegmentRequest, StatementLens, TableLens, VacuumRequest, Window, parse,
 };
+
+#[test]
+fn vacuum_product_route_has_one_exact_hour_contract() {
+    assert_eq!(
+        parse(
+            "/api/postgresql/vacuum",
+            Some("from=3600000000&to=7199999999&at=5400000000&field=phase&page_size=37"),
+        ),
+        Ok(Route::Vacuum(VacuumRequest {
+            from: 3_600_000_000,
+            to: 7_199_999_999,
+            at: 5_400_000_000,
+            fields: vec!["phase".to_owned()],
+            page_size: 37,
+        }))
+    );
+    assert_eq!(
+        parse(
+            "/api/postgresql/vacuum",
+            Some("from=3600000000&to=7199999999"),
+        ),
+        Ok(Route::Vacuum(VacuumRequest {
+            from: 3_600_000_000,
+            to: 7_199_999_999,
+            at: 7_199_999_999,
+            fields: Vec::new(),
+            page_size: 500,
+        }))
+    );
+}
+
+#[test]
+fn vacuum_product_route_rejects_ambiguous_or_unbounded_inputs() {
+    for (query, parameter) in [
+        ("to=2", "from"),
+        ("from=1", "to"),
+        ("from=2&to=1", "to"),
+        ("from=1&to=3600000000", "to"),
+        ("from=1&to=2&at=3", "at"),
+        ("from=1&to=2&page_size=0", "page_size"),
+        ("from=1&to=2&page_size=501", "page_size"),
+        ("from=1&to=2&field=phase&field=phase", "field"),
+        ("from=1&to=2&cursor=x", "cursor"),
+    ] {
+        assert_eq!(
+            parse("/api/postgresql/vacuum", Some(query)),
+            Err(RouteError::BadParameter(parameter.to_owned())),
+            "query {query}"
+        );
+    }
+}
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {

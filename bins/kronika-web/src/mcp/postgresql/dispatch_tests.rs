@@ -229,6 +229,31 @@ async fn all_nine_postgresql_tools_execute_through_dispatch_on_one_recorded_fixt
             returned(&response) > 0,
             "{name} returned no fixture rows: {response}"
         );
+        if key == "episodes" {
+            assert_eq!(
+                response
+                    .pointer("/anchor/selected_at_us")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<i64>().ok()),
+                Some(AT),
+                "shared Vacuum anchor: {response}"
+            );
+            assert_eq!(
+                response.pointer("/data/episodes/0/identity/pid"),
+                Some(&json!(200)),
+                "shared Vacuum identity: {response}"
+            );
+            assert_eq!(
+                response.pointer("/data/episodes/0/phase/risk"),
+                Some(&json!("ordinary")),
+                "shared Vacuum phase risk: {response}"
+            );
+            assert_eq!(
+                response.pointer("/data/episodes/0/relation/name"),
+                Some(&json!("items")),
+                "shared Vacuum relation: {response}"
+            );
+        }
         let expected = match key {
             "overview" => format!("Returned {} PostgreSQL overview rows.", returned(&response)),
             "locks" => format!("Returned {} PostgreSQL lock rows.", returned(&response)),

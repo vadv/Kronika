@@ -449,11 +449,11 @@ test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
   const pg18 = row("1012006", { datid: 42, datname: "app", relid: 73, schemaname: "public", relname: "orders", phase: "truncating heap", pid: 9, is_autovacuum: true, heap_blks_scanned: 10, heap_blks_total: 20, heap_blks_vacuumed: 4, index_vacuum_count: 2, indexes_processed: 1, indexes_total: 3, delay_time: 100 })
   const pg16 = row("1012004", { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9, is_autovacuum: false, heap_blks_scanned: 1, heap_blks_total: 2, heap_blks_vacuumed: 0, index_vacuum_count: 0, num_dead_tuples: 5, max_dead_tuples: 9 })
   const episodes = new Map()
-  const all = helpers.vacuumColumns([pg18], episodes, 5, null, stubTime, "en", stubT)
+  const all = helpers.vacuumColumns(new Set(Object.keys(pg18.values)), episodes, 5, null, stubTime, "en", stubT)
   assert.equal(all.some(({ field }) => field === "datid" || field === "relid"), false)
   const relationColumn = all.find(({ field }) => field === "datname")
   assert.equal(relationColumn?.render?.(pg18), "app.public.orders")
-  const relationColumn16 = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT).find(({ field }) => field === "datname")
+  const relationColumn16 = helpers.vacuumColumns(new Set(Object.keys(pg16.values)), episodes, 5, null, stubTime, "en", stubT).find(({ field }) => field === "datname")
   assert.equal(relationColumn16?.render?.(pg16), "app · relid=73")
   assert.ok(all.some(({ field }) => field === "vacuum_progress"))
   assert.ok(all.some(({ field }) => field === "heap_blks_scanned"))
@@ -461,7 +461,7 @@ test("the Vacuum ledger names risk by phase and never shows a bare OID", () => {
   assert.doesNotMatch(String(sizeColumn?.render?.(pg18)), /%/)
   assert.ok(all.some(({ field }) => field === "indexes_processed"))
   assert.ok(all.some(({ field }) => field === "delay_time"))
-  const old = helpers.vacuumColumns([pg16], episodes, 5, null, stubTime, "en", stubT)
+  const old = helpers.vacuumColumns(new Set(Object.keys(pg16.values)), episodes, 5, null, stubTime, "en", stubT)
   assert.equal(old.some(({ field }) => field === "indexes_processed" || field === "delay_time"), false)
   assert.equal(all.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
   const detail18 = helpers.vacuumDetailColumns(pg18, null).map(({ field }) => field)
@@ -485,7 +485,7 @@ test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () 
   const stubT = (key) => key
   const progressRow = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012006", values: { datid: 42, datname: "app", relid: 73, schemaname: null, relname: null, phase: "scanning heap", pid: 9 } }
   const progress = [
-    ...helpers.vacuumColumns([progressRow], new Map(), 1, null, stubTime, "en", stubT),
+    ...helpers.vacuumColumns(new Set([...Object.keys(progressRow.values), "indexes_total", "delay_time"]), new Map(), 1, null, stubTime, "en", stubT),
     ...helpers.vacuumDetailColumns(progressRow, null),
     ...helpers.vacuumDetailColumns({ ...progressRow, typeId: "1012004" }, null),
     { field: "vacuum_workers", help: "pg.vacuum.workers.help", label: "pg.vacuum.workers.label" },

@@ -4131,6 +4131,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/postgresql/vacuum") return ndjson(response, vacuumProductRecords())
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
       if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
@@ -4972,12 +4973,35 @@ function progressVacuumRecords() {
   ], AT)]
 }
 
-// Mirrors the server's real rule (query.rs output_names): an empty `field`
-// list answers with every column the segment's own layout defines, not a
-// fixed union across every PG-version shape. VacuumView relies on exactly
-// this — asking by name for a column an older layout never defines is a
-// hard error server-side, not a null fill, so the hour fetch must omit the
-// field list entirely.
+function vacuumProductRecords() {
+  const values = {
+    datid: 20, datname: "operators", dead_tuple_bytes: 4_194_304, delay_time: 17.5, heap_blks_scanned: 3200,
+    heap_blks_total: 8000, heap_blks_vacuumed: 1200, index_vacuum_count: 1, indexes_processed: 2, indexes_total: 5,
+    is_autovacuum: true, max_dead_tuple_bytes: 67_108_864, num_dead_item_ids: 2400, phase: "vacuuming heap", pid: 4343,
+    relid: 73, relname: "bulk_events", schemaname: "public",
+  }
+  const stored = { segment_id: SEGMENT, type_id: "1012006", ordinal: "1", timestamp: String(AT), values }
+  return [{
+    record: "vacuum",
+    anchor: { hour_start_us: String(HOUR), requested_at_us: String(AT), selected_at_us: String(AT), segment_id: SEGMENT, active_wal_position: null, cadence_seconds: 10 },
+    available_fields: Object.keys(values),
+    episodes: [{
+      identity: { type_id: "1012006", pid: 4343, datid: 20, relid: 73 },
+      first_at_us: String(AT), last_at_us: String(AT), span_us: "0", sample_count: 1,
+      observation: { kind: "at_sample", at_sample: true, timestamp_us: String(AT) },
+      phase: { name: "vacuuming heap", risk: "heavy", first_at_us: String(AT), last_at_us: String(AT), span_us: "0", sample_count: 1, index_vacuum_count: 1, no_movement: null },
+      progress: { heap_scan: [{ timestamp_us: String(AT), heap_blks_scanned: 3200, heap_blks_total: 8000, percent: 40 }] },
+      latest_row: stored,
+      samples: [{ ...stored, phase: "vacuuming heap", risk: "heavy", cadence_seconds: 10 }],
+      delay_delta_ms: null,
+      relation: { database: "operators", schema: "public", name: "bulk_events", relid: 73, is_autovacuum: true },
+      process: null,
+    }],
+    semantics: [], warnings: [], page: { returned: 1, truncated: false, next_cursor: null, stop_reason: "complete" },
+  }]
+}
+
+// Mirrors the generic hour resource's exact-layout projection contract.
 const VACUUM_V3_COLUMNS = [
   "ts", "pid", "datid", "datname", "relid", "schemaname", "relname", "is_autovacuum", "phase", "heap_blks_total",
   "heap_blks_scanned", "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes",

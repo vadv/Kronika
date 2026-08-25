@@ -1,156 +1,75 @@
-//! Bounded episode projection over exact recorded `PostgreSQL` Vacuum samples.
-
-mod cadence;
-mod episodes;
-mod policy;
-mod reader;
+//! Thin MCP adapter for the shared `PostgreSQL` Vacuum product.
 
 use serde_json::{Map, Value, json};
 
-use self::cadence::recorded_cadence;
-use self::episodes::{build_episodes, episode_value, sort_episodes};
-use self::policy::{Policies, adjacency_limit};
-#[cfg(test)]
-use self::reader::{EpisodeKey, Sample};
-use self::reader::{admit_samples, collect_hour, decode_hour};
 use super::{
-    HOUR_US, MAX_FIELDS, MAX_ROWS, PostgresqlFailure, PostgresqlPayload, State, failure, fields,
-    input, page_size, resolve_anchor,
+    PostgresqlFailure, PostgresqlPayload, State, collect, failure, fields, page_size, timestamp,
 };
-
-const SECTION: &str = "pg_stat_progress_vacuum";
-const MAX_EPISODES: usize = MAX_ROWS;
-const VACUUM_FIELDS: &[&str] = &[
-    "ts",
-    "pid",
-    "datid",
-    "datname",
-    "relid",
-    "schemaname",
-    "relname",
-    "is_autovacuum",
-    "phase",
-    "heap_blks_total",
-    "heap_blks_scanned",
-    "heap_blks_vacuumed",
-    "index_vacuum_count",
-    "max_dead_tuples",
-    "num_dead_tuples",
-    "max_dead_tuple_bytes",
-    "dead_tuple_bytes",
-    "num_dead_item_ids",
-    "indexes_total",
-    "indexes_processed",
-    "delay_time",
-];
+use crate::api::ValueStopReason;
+use crate::route::{Route, VacuumRequest};
 
 pub(super) fn execute(
     state: &State,
     args: &Map<String, Value>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<PostgresqlPayload, PostgresqlFailure> {
-    if args.contains_key("find") {
-        return Err(input(
-            "find",
-            "find is not supported by the shared Rust field registry for Vacuum",
-        ));
-    }
-    if args.contains_key("cursor") {
-        return Err(input(
-            "cursor",
-            "Vacuum returns one bounded episode set and does not accept a cursor",
-        ));
-    }
-    let from = super::timestamp(args, "from_us")?;
-    let to = super::timestamp(args, "to_us")?;
-    if from > to || from.div_euclid(HOUR_US) != to.div_euclid(HOUR_US) {
-        return Err(input(
-            "to_us",
-            "Vacuum intervals must be ordered and contained in one UTC hour",
-        ));
-    }
-    let projected = projected_fields(args)?;
-    let admitted_episodes = page_size(args)?;
-    let policies = Policies::load()?;
-    let anchor = resolve_anchor(state, to, &[SECTION, "instance_metadata"], cancelled)?;
-    let collected = collect_hour(state, from, to, &anchor, cancelled)?;
-    let decoded = decode_hour(collected.records)?;
-    admit_samples(&decoded.rows)?;
-    let cadence = recorded_cadence(state, &anchor, to, cancelled)?;
-    let adjacency_limit = cadence
-        .seconds
-        .filter(|seconds| *seconds > 0)
-        .map(|seconds| adjacency_limit(seconds, policies.adjacency_factor))
-        .transpose()?;
-    let (mut episodes, at_timestamp) = build_episodes(decoded.rows, adjacency_limit)?;
-    if episodes.len() > MAX_EPISODES || episodes.len() > admitted_episodes {
+    let from = timestamp(args, "from_us")?;
+    let to = timestamp(args, "to_us")?;
+    let request = VacuumRequest {
+        from,
+        to,
+        at: to,
+        fields: fields(args, &[])?,
+        page_size: page_size(args)?,
+    };
+    let collected = collect(state, Route::Vacuum(request), cancelled)?;
+    if collected.stop_reason != ValueStopReason::Complete {
         return Err(failure(
-            "whole_set_bound_exceeded",
-            format!(
-                "the Vacuum result has {} episodes; page_size admits {}",
-                episodes.len(),
-                admitted_episodes.min(MAX_EPISODES)
-            ),
+            "result_bound_exceeded",
+            "the shared Vacuum product exceeds the retained result bound",
             Some("page_size"),
         ));
     }
-    sort_episodes(&mut episodes, at_timestamp, &policies)?;
-    let episode_values = episodes
-        .iter()
-        .map(|episode| episode_value(episode, at_timestamp, &projected, &policies))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut semantics = policies.definitions;
-    semantics.extend(
-        decoded
-            .layouts
-            .iter()
-            .map(crate::mcp::semantics::recorded_layout)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| failure("semantics_unreadable", error.to_string(), None))?,
-    );
-    if let Some(provenance) = cadence.provenance {
-        semantics.push(provenance);
-    }
-    let returned = episode_values.len();
-    let mut warnings = decoded.warnings;
-    warnings.extend(cadence.warnings);
+    let product = collected
+        .records
+        .into_iter()
+        .find(|record| record.get("record").and_then(Value::as_str) == Some("vacuum"))
+        .ok_or_else(|| {
+            failure(
+                "vacuum_product_unreadable",
+                "the shared Vacuum producer returned no product record",
+                None,
+            )
+        })?;
+    let episodes = member(&product, "episodes")?;
+    let returned = episodes.as_array().map_or(0, Vec::len);
     Ok(PostgresqlPayload {
-        anchor: json!({
-            "hour_start_us": from.div_euclid(HOUR_US).saturating_mul(HOUR_US).to_string(),
-            "requested_at_us": to.to_string(),
-            "selected_at_us": at_timestamp.map(|timestamp| timestamp.to_string()),
-            "segment_id": anchor.segment_id.to_string(),
-            "active_wal_position": anchor.active_wal_position.map(|position| position.to_string()),
-        }),
+        anchor: member(&product, "anchor")?,
         data: json!({
-            "episodes": episode_values,
-            "semantics": semantics,
+            "episodes": episodes,
+            "semantics": member(&product, "semantics")?,
         }),
-        page: json!({
-            "returned": returned,
-            "truncated": false,
-            "next_cursor": Value::Null,
-            "stop_reason": "complete",
-        }),
-        warnings,
+        page: member(&product, "page")?,
+        warnings: member(&product, "warnings")?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| {
+                failure(
+                    "vacuum_product_unreadable",
+                    "the shared Vacuum product warnings are not an array",
+                    None,
+                )
+            })?,
         summary: format!("Returned {returned} Vacuum episode summaries."),
     })
 }
 
-fn projected_fields(args: &Map<String, Value>) -> Result<Vec<String>, PostgresqlFailure> {
-    let projected = fields(args, VACUUM_FIELDS)?;
-    if projected.len() > MAX_FIELDS {
-        return Err(input("fields", "fields may contain at most 32 names"));
-    }
-    if let Some(unknown) = projected
-        .iter()
-        .find(|field| !VACUUM_FIELDS.contains(&field.as_str()))
-    {
-        return Err(input("fields", format!("Vacuum has no field {unknown:?}")));
-    }
-    Ok(projected)
+fn member(product: &Value, name: &'static str) -> Result<Value, PostgresqlFailure> {
+    product.get(name).cloned().ok_or_else(|| {
+        failure(
+            "vacuum_product_unreadable",
+            format!("the shared Vacuum product has no {name}"),
+            None,
+        )
+    })
 }
-
-#[cfg(test)]
-#[path = "vacuum/tests.rs"]
-mod tests;

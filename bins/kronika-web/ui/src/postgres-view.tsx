@@ -11,8 +11,8 @@ import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
-import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
-import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, vacuumLoadShares, vacuumProcessLoad, type VacuumEpisode, type VacuumProcessLoad } from "./postgres-vacuum"
+import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, loadVacuumProduct } from "./api"
+import type { VacuumEpisode, VacuumProcessLoad, VacuumProduct } from "./postgres-vacuum"
 import { decorateLockGraph } from "./postgres-locks"
 import { LabelHelp } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
@@ -476,6 +476,8 @@ function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, 
   return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="ml-auto flex items-center gap-[5px] text-xs text-fg4 [&_i]:ml-2 [&_i]:inline-block [&_i]:h-1.5 [&_i]:w-1.5 [&_i]:rounded-full" aria-label={t("pg.value.legend")}><i className="bg-ok" />{t("pg.value.good")}<i className="bg-warn" />{t("pg.value.warning")}<i className="bg-bad" />{t("pg.value.critical")}</div></div>
 }
 
+const EMPTY_FIELDS: ReadonlySet<string> = new Set()
+
 function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onOrder, onPattern, onRelated, onSelectedKey, order, pattern, searchRequest, segments, selectedKey, tablesLoading, t }: {
   readonly cursor: number
   readonly data: HourData
@@ -496,59 +498,28 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
   readonly t: Translate
 }) {
   const time = useDisplayTime()
-  const [hourRows, setHourRows] = useState<readonly DataRow[] | null>(null)
+  const [vacuum, setVacuum] = useState<VacuumProduct | null | undefined>(undefined)
   useEffect(() => {
+    setVacuum(undefined)
     const controller = new AbortController()
     acceptResponse(
-      // Omit fields so each segment returns its own physical layout.
-      // Requesting a cross-version union would reject layout-absent columns.
-      loadSeries(hour, "pg_stat_progress_vacuum", {}, [], controller.signal),
+      loadVacuumProduct(hour, cursor, controller.signal),
       controller.signal,
-      (rows) => setHourRows(rows),
-      () => setHourRows(null),
+      (product) => setVacuum(product),
+      () => setVacuum(null),
     )
     return () => controller.abort()
-  }, [hour, historyRevision])
-  const allRows = hourRows ?? data.sections.pg_stat_progress_vacuum ?? NO_ROWS
-
-  // Missing cadence or clock metadata disables the dependent calculations.
-  const [intervalSeconds, setIntervalSeconds] = useState<number | null>(null)
-  const [ticksPerSecond, setTicksPerSecond] = useState<number | null>(null)
-  const anchorId = segmentBoundAt(segments, cursor)?.id ?? null
-  useEffect(() => {
-    const bound = segments.find((candidate) => candidate.id === anchorId)
-    if (bound === undefined) {
-      setIntervalSeconds(null)
-      setTicksPerSecond(null)
-      return undefined
-    }
-    const controller = new AbortController()
-    acceptResponse(
-      loadSnapshot(bound.id, bound.maxTs, [{ fields: ["postgresql_interval_seconds", "clock_ticks_per_sec"], section: "instance_metadata" }], controller.signal),
-      controller.signal,
-      (loaded) => {
-        const metadata = loaded.sections.instance_metadata?.[0] ?? null
-        setIntervalSeconds(asNumber(value(metadata, "postgresql_interval_seconds")))
-        setTicksPerSecond(asNumber(value(metadata, "clock_ticks_per_sec")))
-      },
-      () => {
-        setIntervalSeconds(null)
-        setTicksPerSecond(null)
-      },
-    )
-    return () => controller.abort()
-  }, [anchorId, segments])
-
-  const episodes = useMemo(() => buildVacuumEpisodes(allRows, intervalSeconds), [allRows, intervalSeconds])
-  const atTs = useMemo(() => vacuumAtTimestamp(allRows, cursor), [allRows, cursor])
-  const sorted = useMemo(() => sortVacuumEpisodes(episodes, atTs), [atTs, episodes])
-  const displayRows = useMemo(() => sorted.map((episode) => episode.last), [sorted])
-  const episodeByKey = useMemo(() => new Map(sorted.map((episode) => [rowKey(episode.last), episode])), [sorted])
+  }, [cursor, historyRevision, hour])
+  const episodes = vacuum?.episodes ?? []
+  const atTs = vacuum?.atTimestamp ?? null
+  const intervalSeconds = vacuum?.cadenceSeconds ?? null
+  const displayRows = useMemo(() => episodes.map((episode) => episode.last), [episodes])
+  const episodeByKey = useMemo(() => new Map(episodes.map((episode) => [rowKey(episode.last), episode])), [episodes])
 
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   const columns = useMemo(
-    () => vacuumColumns(allRows, episodeByKey, atTs, blockSize, time, locale, t),
-    [allRows, atTs, blockSize, episodeByKey, locale, t, time],
+    () => vacuumColumns(vacuum?.availableFields ?? EMPTY_FIELDS, episodeByKey, atTs, blockSize, time, locale, t),
+    [atTs, blockSize, episodeByKey, locale, t, time, vacuum?.availableFields],
   )
 
   const [selected, setSelected] = useState<DataRow | null>(null)
@@ -590,7 +561,7 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
         columns={columns}
         empty={t("pg.vacuum.empty")}
         label={t("pg.section.vacuum")}
-        loading={tablesLoading && hourRows === null}
+        loading={tablesLoading || vacuum === undefined}
         locale={locale}
         onOrder={onOrder}
         onPattern={onPattern}
@@ -606,7 +577,7 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
       />
       {selected !== null && <InspectorPortal identity={`postgres:pg_stat_progress_vacuum:${rowKey(selected)}`} onClose={() => { setSelected(null); onSelectedKey(null) }} title={detailTitle(selected, "pg_stat_progress_vacuum", t)}>
         <PgDetail
-          allRows={allRows}
+          allRows={selectedEpisode?.rows ?? NO_ROWS}
           columns={vacuumDetailColumns(selected, blockSize)}
           cursor={cursor}
           historyField="heap_blks_scanned"
@@ -624,7 +595,7 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
           <ActivityFacts activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} locale={locale} onRelated={onRelated} t={t} />
         </InspectorRelatedPortal>}
         {selectedEpisode !== undefined && <InspectorRelatedPortal id="os_process" identity={`vacuum:${rowKey(selected)}`} label={t("pg.related.process_tab")}>
-          <VacuumProcessTab blockSize={blockSize} cursor={cursor} episode={selectedEpisode} hour={hour} locale={locale} t={t} ticksPerSecond={ticksPerSecond} />
+          <VacuumProcessTab blockSize={blockSize} episode={selectedEpisode} locale={locale} t={t} />
         </InspectorRelatedPortal>}
       </InspectorPortal>}
     </div>
@@ -633,13 +604,14 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
 
 // relid is the fallback identity when the recorded relation name is absent.
 // Display it only as part of the relation label, never as a bare OID.
-function vacuumRelationLabel(row: DataRow): string {
-  const datname = rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
-  const schema = rawText(value(row, "schemaname"))
-  const relname = rawText(value(row, "relname"))
+function vacuumRelationLabel(row: DataRow, episode?: VacuumEpisode): string {
+  const datname = episode?.relation.database ?? rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
+  const schema = episode?.relation.schema ?? rawText(value(row, "schemaname"))
+  const relname = episode?.relation.name ?? rawText(value(row, "relname"))
+  const relid = episode?.relation.relid ?? identifier(value(row, "relid"))
   return schema !== null && relname !== null
     ? `${datname}.${schema}.${relname}`
-    : `${datname} · relid=${identifier(value(row, "relid"))}`
+    : `${datname} · relid=${relid}`
 }
 
 function vacuumHeapCell(row: DataRow, field: string, blockSize: number | null, locale: Locale): string {
@@ -653,16 +625,8 @@ function vacuumHeapBytes(row: DataRow, field: string, blockSize: number | null):
   return blocks === null || blockSize === null ? null : blocks * blockSize
 }
 
-function vacuumScanPercent(row: DataRow): number | null {
-  const scanned = asNumber(value(row, "heap_blks_scanned"))
-  const total = asNumber(value(row, "heap_blks_total"))
-  return scanned === null || total === null || total <= 0 ? null : Math.max(0, Math.min(100, (scanned / total) * 100))
-}
-
-const VACUUM_INDEX_PHASES = new Set(["vacuuming indexes", "cleaning up indexes"])
-
 export function vacuumColumns(
-  allRows: readonly DataRow[],
+  availableFields: ReadonlySet<string>,
   episodes: ReadonlyMap<string, VacuumEpisode>,
   atTs: number | null,
   blockSize: number | null,
@@ -682,8 +646,8 @@ export function vacuumColumns(
     },
     {
       field: "datname", label: "pg.vacuum.relation.label", help: "pg.vacuum.relation.help", kind: "text", width: 250, sticky: true,
-      render: (row) => vacuumRelationLabel(row),
-      sortValue: (row) => vacuumRelationLabel(row),
+      render: (row) => vacuumRelationLabel(row, episode(row)),
+      sortValue: (row) => vacuumRelationLabel(row, episode(row)),
     },
     {
       field: "is_autovacuum", label: "pg.vacuum.kind.label", help: "pg.vacuum.kind.help", kind: "text", width: 120,
@@ -694,7 +658,7 @@ export function vacuumColumns(
       field: "phase", label: "pg.vacuum.phase.label", help: "pg.vacuum.phase.help", kind: "text", width: 175,
       render: (row) => {
         const phase = phaseOf(row)
-        return phase === null ? "—" : <span className="vacuum-chip" data-risk={phaseRisk(phase)}>{phase}</span>
+        return phase === null ? "—" : <span className="vacuum-chip" data-risk={episode(row)?.phase.risk}>{phase}</span>
       },
       sortValue: (row) => phaseOf(row),
     },
@@ -703,12 +667,11 @@ export function vacuumColumns(
       render: (row) => {
         const own = episode(row)
         if (own === undefined) return "—"
-        const span = phaseSpanUs(own)
-        return `${humanDuration(span / 1000, locale)} · ${own.phaseRows.length}`
+        return `${humanDuration(own.phase.spanUs / 1000, locale)} · ${own.phase.sampleCount}`
       },
       sortValue: (row) => {
         const own = episode(row)
-        return own === undefined ? 0 : phaseSpanUs(own)
+        return own?.phase.spanUs ?? 0
       },
     },
     pgColumn("pid", "id", 80, false, false),
@@ -716,14 +679,14 @@ export function vacuumColumns(
       field: "vacuum_progress", label: "pg.vacuum.progress.label", help: "pg.vacuum.progress.help", kind: "text", width: 130,
       render: (row) => {
         const own = episode(row)
-        const percent = vacuumScanPercent(row)
-        if (percent === null) return "—"
-        return <span className="vacuum-progress-cell" data-risk={phaseRisk(phaseOf(row))}>
-          <VacuumProgressSpark series={own === undefined ? [percent] : progressSeries(own)} />
+        if (own === undefined || own.progress.length === 0) return "—"
+        const percent = own.progress.at(-1) as number
+        return <span className="vacuum-progress-cell" data-risk={own?.phase.risk}>
+          <VacuumProgressSpark series={own.progress} />
           <strong>{humanPercent(percent, locale)}</strong>
         </span>
       },
-      sortValue: (row) => vacuumScanPercent(row),
+      sortValue: (row) => episode(row)?.progress.at(-1) ?? null,
     },
     {
       field: "heap_blks_scanned", label: "pg.vacuum.heap_size.label", help: "pg.vacuum.heap_size.help", kind: "text", width: 170,
@@ -738,31 +701,32 @@ export function vacuumColumns(
     {
       field: "index_vacuum_count", label: "pg.vacuum.cycles.label", help: "pg.vacuum.cycles.help", kind: "text", width: 110,
       render: (row) => {
-        const cycles = asNumber(value(row, "index_vacuum_count"))
+        const cycles = episode(row)?.phase.indexVacuumCount ?? null
         if (cycles === null) return "—"
         return cycles > 1
-          ? <span className="vacuum-chip" data-risk="heavy">{t("pg.vacuum.cycles.repeat", { count: compact(cycles, locale) })}</span>
+          ? <span className="vacuum-chip" data-risk={episode(row)?.phase.risk}>{t("pg.vacuum.cycles.repeat", { count: compact(cycles, locale) })}</span>
           : compact(cycles, locale)
       },
-      sortValue: (row) => asNumber(value(row, "index_vacuum_count")),
+      sortValue: (row) => episode(row)?.phase.indexVacuumCount ?? null,
     },
-    ...vacuumLayoutHas(allRows, "indexes_total") ? [{
+    ...availableFields.has("indexes_total") ? [{
       field: "indexes_processed", label: "pg.vacuum.index_progress.label", help: "pg.vacuum.index_progress.help", kind: "text", width: 130,
       render: (row: DataRow) => {
-        const phase = phaseOf(row)
-        const processed = asNumber(value(row, "indexes_processed"))
-        const total = asNumber(value(row, "indexes_total"))
+        const progress = episode(row)?.indexProgress ?? null
+        if (progress === null) return t("common.unavailable")
+        if (!progress.applicable) return "—"
+        const { processed, total } = progress
         if (processed === null || total === null) return t("common.unavailable")
-        return phase !== null && VACUUM_INDEX_PHASES.has(phase) ? `${compact(processed, locale)} / ${compact(total, locale)}` : "—"
+        return `${compact(processed, locale)} / ${compact(total, locale)}`
       },
-      sortValue: (row: DataRow) => asNumber(value(row, "indexes_processed")),
+      sortValue: (row: DataRow) => episode(row)?.indexProgress?.processed ?? null,
     } satisfies EntityColumn] : [],
-    ...vacuumLayoutHas(allRows, "delay_time") ? [{
+    ...availableFields.has("delay_time") ? [{
       field: "delay_time", label: "pg.vacuum.delay.label", help: "pg.vacuum.delay.help", kind: "text", width: 150,
       render: (row: DataRow) => {
         const total = asNumber(value(row, "delay_time"))
         if (total === null) return t("common.unavailable")
-        const delta = episode(row) === undefined ? null : delayDelta(episode(row) as VacuumEpisode)
+        const delta = episode(row)?.delayDeltaMs ?? null
         return delta === null || delta === 0
           ? humanDuration(total, locale)
           : `${humanDuration(total, locale)} · +${humanDuration(delta, locale)}`
@@ -772,10 +736,10 @@ export function vacuumColumns(
     {
       field: "vacuum_no_movement", label: "pg.vacuum.no_movement.label", help: "pg.vacuum.no_movement.help", kind: "text", width: 165,
       render: (row) => {
-        const still = episode(row)?.noMovement ?? null
+        const still = episode(row)?.phase.noMovement ?? null
         return still === null ? "—" : t("pg.vacuum.no_movement.value", { count: still.samples, span: humanDuration(still.spanUs / 1000, locale) })
       },
-      sortValue: (row) => episode(row)?.noMovement?.samples ?? 0,
+      sortValue: (row) => episode(row)?.phase.noMovement?.samples ?? 0,
     },
   ]
 }
@@ -826,18 +790,16 @@ function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
   readonly onCursor: (timestamp: number) => void
   readonly t: Translate
 }) {
-  const span = phaseSpanUs(episode)
-  const first = episode.rows[0] as DataRow
   return <section className="border-b border-line2 px-2 py-1.5" data-testid="vacuum-episode">
     <svg className="block h-[14px] w-full" preserveAspectRatio="none" viewBox="0 0 1000 10">
-      {episode.rows.map((sample) => {
-        const x = (sample.timestamp - hour) / 3_600_000_000 * 1000
+      {episode.samples.map((sample) => {
+        const x = (sample.row.timestamp - hour) / 3_600_000_000 * 1000
         return <rect
           className="vacuum-tick cursor-pointer"
-          data-risk={phaseRisk(rawText(value(sample, "phase")))}
+          data-risk={sample.risk}
           height={10}
-          key={`${sample.segmentId}:${sample.ordinal}`}
-          onClick={() => onCursor(sample.timestamp)}
+          key={`${sample.row.segmentId}:${sample.row.ordinal}`}
+          onClick={() => onCursor(sample.row.timestamp)}
           width={3}
           x={Math.max(0, Math.min(997, x))}
           y={0}
@@ -845,62 +807,44 @@ function VacuumEpisodeFacts({ episode, hour, locale, onCursor, t }: {
       })}
     </svg>
     <p className="m-0 mt-1 font-sans text-xs text-fg3">
-      {t("pg.vacuum.episode", { count: episode.rows.length, span: humanDuration((episode.last.timestamp - first.timestamp) / 1000, locale) })}
+      {t("pg.vacuum.episode", { count: episode.rows.length, span: humanDuration(episode.spanUs / 1000, locale) })}
       {" · "}
-      {t("pg.vacuum.in_phase.value", { count: episode.phaseRows.length, span: humanDuration(span / 1000, locale) })}
-      {episode.noMovement === null ? "" : ` · ${t("pg.vacuum.no_movement.value", { count: episode.noMovement.samples, span: humanDuration(episode.noMovement.spanUs / 1000, locale) })}`}
+      {t("pg.vacuum.in_phase.value", { count: episode.phase.sampleCount, span: humanDuration(episode.phase.spanUs / 1000, locale) })}
+      {episode.phase.noMovement === null ? "" : ` · ${t("pg.vacuum.no_movement.value", { count: episode.phase.noMovement.samples, span: humanDuration(episode.phase.noMovement.spanUs / 1000, locale) })}`}
     </p>
   </section>
 }
 
-function VacuumProcessTab({ blockSize, cursor, episode, hour, locale, t, ticksPerSecond }: {
+function VacuumProcessTab({ blockSize, episode, locale, t }: {
   readonly blockSize: number | null
-  readonly cursor: number
   readonly episode: VacuumEpisode
-  readonly hour: number
   readonly locale: Locale
   readonly t: Translate
-  readonly ticksPerSecond: number | null
 }) {
-  const pid = asNumber(value(episode.last, "pid"))
-  const [rows, setRows] = useState<readonly DataRow[] | null | undefined>(undefined)
-  useEffect(() => {
-    setRows(undefined)
-    if (pid === null) {
-      setRows(null)
-      return undefined
-    }
-    const controller = new AbortController()
-    acceptResponse(
-      loadSeries(hour, "os_process", { pid: String(pid) }, [], controller.signal),
-      controller.signal,
-      (loaded) => setRows(loaded),
-      () => setRows(null),
-    )
-    return () => controller.abort()
-  }, [hour, pid])
-  if (rows === undefined) return <section className="p-3" data-testid="vacuum-process-panel"><p className="m-0 text-sm text-fg4">{t("history.loading")}</p></section>
-  if (rows === null || rows.length === 0) return <section className="p-3" data-testid="vacuum-process-panel"><p className="m-0 text-sm text-fg4">{t("pg.related.process_missing")}</p></section>
-  const current = snapshot(rows, cursor)[0] ?? null
-  const load = vacuumProcessLoad(rows, episode)
+  const current = episode.processCurrent
+  const load = episode.processLoad
   return <section data-testid="vacuum-process-panel">
-    {load !== null && <VacuumLoadFacts blockSize={blockSize} episode={episode} load={load} locale={locale} t={t} ticksPerSecond={ticksPerSecond} />}
-    <ProcessFacts locale={locale} process={current} processTime={current?.timestamp ?? null} t={t} />
+    {load !== null && <VacuumLoadFacts blockSize={blockSize} episode={episode} load={load} locale={locale} t={t} />}
+    {current === null
+      ? <p className="m-0 p-3 text-sm text-fg4">{t("pg.related.process_missing")}</p>
+      : <ProcessFacts locale={locale} process={current} processTime={current.timestamp} t={t} />}
   </section>
 }
 
 // Process deltas span the episode endpoints.
 // A manual VACUUM backend may include other work in that interval.
-function VacuumLoadFacts({ blockSize, episode, load, locale, t, ticksPerSecond }: {
+function VacuumLoadFacts({ blockSize, episode, load, locale, t }: {
   readonly blockSize: number | null
   readonly episode: VacuumEpisode
   readonly load: VacuumProcessLoad
   readonly locale: Locale
   readonly t: Translate
-  readonly ticksPerSecond: number | null
 }) {
   const scannedBytes = vacuumHeapBytes(episode.last, "heap_blks_scanned", blockSize)
-  const { blockWaitMs, cpuMs, cpuShare, majorFaults, readBytes, readShare, writeBytes } = vacuumLoadShares(load, ticksPerSecond, scannedBytes)
+  const { blockWaitMs, cpuMs, cpuShare, majorFaults, readBytes, writeBytes } = load
+  const readShare = readBytes !== null && scannedBytes !== null && scannedBytes > 0
+    ? Math.min(100, readBytes / scannedBytes * 100)
+    : null
   const nothingRecorded = cpuMs === null && readBytes === null && writeBytes === null && blockWaitMs === null && majorFaults === null
   return <section className="border-b border-line2 px-2 py-1.5" data-testid="vacuum-process-load">
     <span className="mb-1 flex items-center gap-1 font-sans text-xs font-medium text-fg2"><LabelHelp helpKey="pg.vacuum.load.help" labelKey="pg.vacuum.load.label" t={t} /></span>
@@ -1125,7 +1069,13 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     localHistoryRows,
     (candidate) => Object.hasOwn(candidate.values, activeMetricField) ? chartPointValue(value(candidate, activeMetricField), historyColumn) : undefined,
   ), [activeMetricField, historyColumn, localHistoryRows])
-  const exactHistory = usePostgresMetricHistory(row, section, historyColumn, hour, historyRevision)
+  const exactHistory = usePostgresMetricHistory(
+    row,
+    section,
+    section === "pg_stat_progress_vacuum" ? undefined : historyColumn,
+    hour,
+    historyRevision,
+  )
   const history = exactHistory.value?.length ? exactHistory.value : loadedHistory
   const textField = section === "pg_store_plans" ? "plan" : "query"
   const wholeText = useWholeText(row, section, textField)

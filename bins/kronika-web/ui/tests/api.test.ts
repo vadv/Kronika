@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { parseVacuumProduct } from "../src/postgres-vacuum.ts"
 import { readNdjson } from "../src/wire.ts"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
@@ -170,6 +171,91 @@ function chunkedResponse(bytes: Uint8Array, cuts: readonly number[]): Response {
 }
 
 const START = 1_800_000_000_000_000
+
+test("PostgreSQL Vacuum requests and decodes the shared episode product", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/postgresql/vacuum")
+    assert.equal(url.searchParams.get("from"), String(START))
+    assert.equal(url.searchParams.get("to"), String(START + 3_600_000_000 - 1))
+    assert.equal(url.searchParams.get("at"), String(START + 30_000_000))
+    assert.equal(url.searchParams.get("page_size"), "500")
+    for (const physical of ["section", "field", "where.pid", "cursor"]) assert.equal(url.searchParams.has(physical), false)
+    const row = {
+      segment_id: String(START), type_id: "1012006", ordinal: "7", timestamp: String(START + 30_000_000),
+      values: { pid: 41, datid: 7, datname: "app", relid: 9, schemaname: "public", relname: "orders", is_autovacuum: true, phase: "vacuuming indexes", heap_blks_total: 20, heap_blks_scanned: 10, heap_blks_vacuumed: 2, index_vacuum_count: 2, indexes_total: 3, indexes_processed: 1, delay_time: 12 },
+    }
+    return ndjson([{
+      record: "vacuum",
+      anchor: { selected_at_us: String(START + 30_000_000), cadence_seconds: 10 },
+      available_fields: Object.keys(row.values),
+      episodes: [{
+        identity: { type_id: "1012006", pid: 41, datid: 7, relid: 9 },
+        first_at_us: String(START + 10_000_000), last_at_us: String(START + 30_000_000), span_us: "20000000", sample_count: 2,
+        observation: { at_sample: true, timestamp_us: String(START + 30_000_000) },
+        phase: { name: "vacuuming indexes", risk: "heavy", first_at_us: String(START + 10_000_000), last_at_us: String(START + 30_000_000), span_us: "20000000", sample_count: 2, index_vacuum_count: 2, no_movement: null },
+        progress: { heap_scan: [{ timestamp_us: String(START + 10_000_000), percent: 25 }, { timestamp_us: String(START + 30_000_000), percent: 50 }] },
+        latest_row: row,
+        samples: [
+          { ...row, ordinal: "6", timestamp: String(START + 10_000_000), phase: "vacuuming indexes", risk: "heavy", cadence_seconds: 10 },
+          { ...row, phase: "vacuuming indexes", risk: "heavy", cadence_seconds: 10 },
+        ],
+        delay_delta_ms: 4,
+        relation: { database: "app", schema: "public", name: "orders", relid: 9, is_autovacuum: true },
+        process: {
+          load: { before_at_us: String(START + 10_000_000), after_at_us: String(START + 30_000_000), cpu_ms: 30, cpu_share_percent: 0.15, block_wait_ms: 2, run_delay_ns: 40, read_bytes: 8192, write_bytes: 4096, major_faults: 1 },
+          current_row: { segment_id: String(START), type_id: "1100001", ordinal: "8", timestamp: String(START + 30_000_000), values: { pid: 41, comm: "postgres" } },
+        },
+      }],
+      semantics: [], warnings: [], page: { returned: 1, truncated: false, next_cursor: null, stop_reason: "complete" },
+    }])
+  }
+  try {
+    const product = await api.loadVacuumProduct(START, START + 30_000_000, new AbortController().signal)
+    assert.equal(product.atTimestamp, START + 30_000_000)
+    assert.equal(product.cadenceSeconds, 10)
+    assert.equal(product.episodes.length, 1)
+    assert.equal(product.episodes[0]?.phase.risk, "heavy")
+    assert.deepEqual(product.episodes[0]?.progress, [25, 50])
+    assert.equal(product.episodes[0]?.last.values.relname, "orders")
+    assert.equal(product.episodes[0]?.processLoad?.readBytes, 8192)
+    assert.equal(product.episodes[0]?.processCurrent?.values.pid, 41)
+    assert.equal(product.availableFields.has("delay_time"), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("PostgreSQL Vacuum keeps missing process enrichment missing", () => {
+  const row = {
+    segment_id: String(START), type_id: "1012004", ordinal: "1", timestamp: String(START + 10),
+    values: { pid: 41, datid: 7, relid: 9, is_autovacuum: false, phase: "scanning heap" },
+  }
+  const product = parseVacuumProduct([{
+    record: "vacuum",
+    anchor: { selected_at_us: String(START + 10), cadence_seconds: null },
+    available_fields: Object.keys(row.values),
+    episodes: [{
+      first_at_us: String(START + 10), last_at_us: String(START + 10), span_us: "0",
+      observation: { at_sample: true },
+      phase: { name: "scanning heap", risk: "ordinary", first_at_us: String(START + 10), last_at_us: String(START + 10), span_us: "0", sample_count: 1, index_vacuum_count: 0, no_movement: null },
+      progress: { heap_scan: [], index: null },
+      latest_row: row,
+      samples: [{ ...row, phase: "scanning heap", risk: "ordinary", cadence_seconds: null }],
+      delay_delta_ms: null,
+      relation: { database: null, schema: null, name: null, relid: 9, is_autovacuum: false },
+      process: { load: null, current_row: null },
+    }],
+  }])
+
+  assert.equal(product.cadenceSeconds, null)
+  assert.equal(product.episodes[0]?.processLoad, null)
+  assert.equal(product.episodes[0]?.processCurrent, null)
+})
+
 const TEST_REGISTRY = [
   {
     typeId: "1001001",
