@@ -2884,8 +2884,18 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
         .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
         .and_then(|record| record["total"].as_f64())
         .expect("others band");
-    assert_eq!(http_totals_total, 118.0);
-    assert_eq!(http_others_total, 63.0);
+    // Both sides come from summing the same fixture rows through the same
+    // arithmetic (no independent rounding on either side), so exact
+    // equality is the assertion this differential test needs, not an
+    // epsilon comparison that would hide a real divergence.
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact totals from identical summed fixture rows, not independently rounded values"
+    )]
+    {
+        assert_eq!(http_totals_total, 118.0);
+        assert_eq!(http_others_total, 63.0);
+    }
 
     let prepared = crate::api::heatmap::prepare(fixture.root(), request).expect("prepare");
     let ranking = prepared
@@ -2950,7 +2960,16 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_others_for_a_grouped_request() 
         .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
         .and_then(|record| record["total"].as_f64())
         .expect("others band");
-    assert_eq!(http_others_total, 63.0);
+    // Same reasoning as the ungrouped test above: both sides sum the same
+    // fixture rows through the same arithmetic, so exact equality is
+    // intended here.
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact totals from identical summed fixture rows, not independently rounded values"
+    )]
+    {
+        assert_eq!(http_others_total, 63.0);
+    }
 
     let prepared = crate::api::heatmap::prepare(fixture.root(), request).expect("prepare");
     let ranking = prepared

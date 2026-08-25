@@ -13,9 +13,9 @@ pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
 /// a chosen numeric field, over an explicit window.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct OverviewInput {
-    /// Recorded logical section to rank within, e.g. "os_cpu",
-    /// "os_diskstats", "pg_stat_user_tables", "pg_stat_statements",
-    /// "pg_store_plans". Call kronika_get_context first to see which
+    /// Recorded logical section to rank within, e.g. "`os_cpu`",
+    /// "`os_diskstats`", "`pg_stat_user_tables`", "`pg_stat_statements`",
+    /// "`pg_store_plans`". Call `kronika_get_context` first to see which
     /// sections this host actually recorded — not every section is
     /// present on every host.
     pub(crate) section: String,
@@ -32,7 +32,7 @@ pub(crate) struct OverviewInput {
 
 /// `kronika_get_context` takes no arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct GetContextInput {}
+pub(crate) struct GetContextInput;
 
 pub(crate) fn tools() -> Vec<Tool> {
     vec![

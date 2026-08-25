@@ -21,20 +21,6 @@ impl Serialize for DecimalI64 {
     }
 }
 
-/// A `u64` serialized as a decimal string — same reasoning as `DecimalI64`,
-/// for byte counters and other unsigned quantities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DecimalU64(pub(crate) u64);
-
-impl Serialize for DecimalU64 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
 /// The one error shape every MCP tool handler in this catalog uses: a
 /// factual message, no structured content, marked as an error result.
 pub(crate) fn mcp_error(message: impl Into<String>) -> CallToolResult {

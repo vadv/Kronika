@@ -1286,7 +1286,7 @@ pub(crate) struct RankedEntity {
 }
 
 /// Whole-window ranking result, shared by the HTTP heatmap stream and the
-/// kronika_overview MCP tool.
+/// `kronika_overview` MCP tool.
 pub(crate) struct HeatmapRanking {
     pub(crate) entities: Vec<RankedEntity>,
     pub(crate) totals_total: Option<f64>,

@@ -69,6 +69,13 @@ cargo = { level = "warn", priority = -1 }
 # crate-internal item in a private module, one lint demands `pub(crate)`
 # and the other calls it redundant. `unreachable_pub` wins.
 redundant_pub_crate = "allow"
+# One shared Cargo.lock resolves `serde_derive` to `syn` 3.x (needed by
+# kronika-web's `rmcp`/`schemars` dependency chain) while other proc-macro
+# dependencies (kronika-derive, futures, cucumber) still need `syn` 2.x.
+# Because the lockfile is workspace-wide, every crate that depends on serde
+# and on one of those syn-2 macros sees both versions, not just kronika-web,
+# so this is set here rather than as a per-crate `#[allow]`.
+multiple_crate_versions = "allow"
 # Hand-picked from `restriction` (the whole group is intentionally not enabled:
 # it contains mutually exclusive lints).
 allow_attributes_without_reason = "warn"

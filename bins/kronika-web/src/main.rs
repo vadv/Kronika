@@ -3,10 +3,6 @@
 //! Disk, Parquet, index construction, and JSON record production run on Tokio's
 //! blocking pool. Request workers await only metadata and a bounded body
 //! channel. No data or response cache is retained by the process.
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "the registry's arrow/parquet stack pulls duplicate transitive versions outside our control"
-)]
 
 mod api;
 mod auth;

@@ -17,7 +17,7 @@ fn overview_schema_requires_section_fields_from_to_top() {
         .as_array()
         .expect("required array")
         .iter()
-        .map(|value| value.as_str().expect("string").to_string())
+        .map(|value| value.as_str().expect("string").to_owned())
         .collect::<std::collections::HashSet<_>>();
     for field in ["section", "fields", "from", "to", "top"] {
         assert!(required.contains(field), "missing required field: {field}");
