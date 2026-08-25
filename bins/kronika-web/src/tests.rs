@@ -7,8 +7,8 @@ use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    RequestTarget, SingleHeader, authorization, if_none_match_values, response_from_meta,
-    route_request, route_request_at, session_response,
+    RequestError, RequestTarget, SingleHeader, authorization, if_none_match_values,
+    response_from_meta, route_request, route_request_at, session_response,
 };
 use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
@@ -326,6 +326,30 @@ fn expired_cookie_is_rejected_without_implicit_cleanup() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(!response.headers().contains_key(SET_COOKIE));
     assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+}
+
+#[test]
+fn mcp_request_with_a_well_formed_origin_is_rejected() {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(hyper::header::ORIGIN, "https://example.com")
+        .body(())
+        .expect("request");
+    let target = route_request_at(&account(), &request, 0);
+    assert!(matches!(target, Err(RequestError::OriginNotAllowed)));
+}
+
+#[test]
+fn mcp_request_with_no_origin_and_valid_auth_reaches_the_mcp_target() {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(hyper::header::AUTHORIZATION, AUTHORIZATION)
+        .body(())
+        .expect("request");
+    let target = route_request_at(&account(), &request, 0);
+    assert!(matches!(target, Ok(RequestTarget::Mcp)));
 }
 
 #[test]

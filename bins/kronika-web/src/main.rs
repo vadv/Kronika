@@ -28,7 +28,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{
     ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, ETAG, HeaderValue,
-    IF_NONE_MATCH, SET_COOKIE, VARY, WWW_AUTHENTICATE,
+    IF_NONE_MATCH, ORIGIN, SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -95,6 +95,7 @@ async fn answer(
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
         }
+        RequestTarget::Mcp => mcp::response(config, request).await,
     })
 }
 
@@ -162,6 +163,15 @@ fn route_request_with_authentication<B>(
         }
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
+    if path == "/mcp" && request.uri().query().is_none() {
+        reject_browser_origin(request.headers())?;
+        if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
+            return Err(RequestError::Unauthorized {
+                challenge: !is_ui_request(request.headers()),
+            });
+        }
+        return Ok(RequestTarget::Mcp);
+    }
     if path != "/api" && !path.starts_with("/api/") {
         return Err(RequestError::Route(RouteError::NoSuchPath));
     }
@@ -190,6 +200,7 @@ enum RequestTarget {
         route: route::Route,
         accepted: AcceptedEncodings,
     },
+    Mcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +218,8 @@ enum RequestError {
     MethodNotAllowed(&'static str),
     UiEncodingNotAcceptable,
     ApiEncodingNotAcceptable,
+    InvalidOrigin,
+    OriginNotAllowed,
 }
 
 impl RequestError {
@@ -222,6 +235,8 @@ impl RequestError {
             Self::MethodNotAllowed(allow) => method_not_allowed(allow),
             Self::UiEncodingNotAcceptable => encoding_not_acceptable(false),
             Self::ApiEncodingNotAcceptable => encoding_not_acceptable(true),
+            Self::InvalidOrigin => refused(StatusCode::BAD_REQUEST, "invalid_origin", None),
+            Self::OriginNotAllowed => refused(StatusCode::FORBIDDEN, "origin_not_allowed", None),
         }
     }
 }
@@ -275,6 +290,29 @@ fn admitted_api(account: &config::Account, headers: &HeaderMap, now: u64) -> boo
         SingleHeader::Value(value) => auth::admits_basic(account, Some(value)),
         SingleHeader::Absent => admitted_session(account, headers, now),
         SingleHeader::Invalid => false,
+    }
+}
+
+/// Reject any request carrying a well-formed `Origin` header — MCP clients
+/// are backend-to-backend, not browser JavaScript, so there is no origin to
+/// accept CORS from. A missing header (the normal case for these clients)
+/// passes through to the usual admission check.
+fn reject_browser_origin(headers: &HeaderMap) -> Result<(), RequestError> {
+    match unique_header(headers.get_all(ORIGIN).iter()) {
+        SingleHeader::Absent => Ok(()),
+        SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
+        SingleHeader::Value(text) => {
+            let uri: hyper::Uri = text.parse().map_err(|_error| RequestError::InvalidOrigin)?;
+            let well_formed = matches!(uri.scheme_str(), Some("http" | "https"))
+                && uri.authority().is_some()
+                && uri.path() == "/"
+                && uri.query().is_none();
+            if well_formed {
+                Err(RequestError::OriginNotAllowed)
+            } else {
+                Err(RequestError::InvalidOrigin)
+            }
+        }
     }
 }
 
