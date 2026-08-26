@@ -25,6 +25,7 @@ mod dispatch;
 mod event_labels;
 mod events;
 mod filter;
+mod instance;
 mod overview;
 mod postgresql;
 mod processes;

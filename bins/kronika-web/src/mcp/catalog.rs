@@ -12,6 +12,7 @@ use super::filter::FilterInput;
 
 pub(crate) const OVERVIEW_TOOL: &str = "kronika_overview";
 pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
+pub(crate) const GET_INSTANCE_TOOL: &str = "kronika_get_instance";
 pub(crate) const FIND_POSTGRESQL_TABLES_TOOL: &str = "kronika_find_postgresql_tables";
 pub(crate) const FIND_POSTGRESQL_INDEXES_TOOL: &str = "kronika_find_postgresql_indexes";
 pub(crate) const FIND_POSTGRESQL_ACTIVITY_TOOL: &str = "kronika_find_postgresql_activity";
@@ -55,6 +56,15 @@ pub(crate) struct OverviewInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GetContextInput {}
+
+/// Takes no parameters.
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "schemars needs the braces to render an object schema, not type: null"
+)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GetInstanceInput {}
 
 /// Output identity for table and index tools. `object` keeps one table or
 /// index identity. Other values aggregate matching objects; each metric uses
@@ -387,9 +397,9 @@ pub(crate) fn tools() -> Vec<Tool> {
         .collect()
 }
 
-/// `kronika_overview` and `kronika_get_context`, kept separate to satisfy
-/// the line-count lint.
-fn entry_tools() -> [Tool; 2] {
+/// `kronika_overview`, `kronika_get_context`, and `kronika_get_instance`,
+/// kept separate to satisfy the line-count lint.
+fn entry_tools() -> [Tool; 3] {
     [
         Tool::new(
             OVERVIEW_TOOL,
@@ -431,6 +441,32 @@ fn entry_tools() -> [Tool; 2] {
              segments, so one logical name may appear more than once. \
              Store-internal `dict.*` layouts are omitted.",
             schema_object::<GetContextInput>(),
+        ),
+        Tool::new(
+            GET_INSTANCE_TOOL,
+            "Returns stored host facts and PostgreSQL server settings; it \
+             does not query the live host or database. `host` is the newest \
+             recorded instance_metadata row — hostname, kernel version, \
+             environment (0 machine or VM, 1 container), \
+             `clock_ticks_per_sec` (converts jiffies/s rates), \
+             `page_size_bytes` (converts page counts), boot id and Unix-\
+             microsecond boot time, whether PostgreSQL collection was \
+             configured, its cadence in seconds, and its effective CPU \
+             count — or null when never recorded. `postgresql_settings` are \
+             the newest recorded pg_settings rows, one per parameter per \
+             monitored session (`datname`/`usename` name the session): \
+             `name`, `setting`, and `unit` (null for unitless parameters) \
+             are the strings PostgreSQL reports, alongside `source`, \
+             `context`, `vartype`, `boot_val`, `reset_val`, and \
+             `pending_restart`; empty when never recorded. The two \
+             parameters whose values may hold secrets (primary_conninfo, \
+             ssl_passphrase_command) are never recorded. `host_as_of` and `settings_as_of` \
+             are each part's snapshot anchor as decimal-string Unix \
+             microseconds, null for a part never recorded; \
+             `settings_has_more` means settings rows were omitted at the \
+             5,000-row cap. Rows carry decimal-string locator fields \
+             accepted unchanged by kronika_get_row_detail.",
+            schema_object::<GetInstanceInput>(),
         ),
     ]
 }

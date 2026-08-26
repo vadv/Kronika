@@ -6,10 +6,10 @@ use super::catalog::{
     FIND_EVENTS_TOOL, FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL,
     FIND_POSTGRESQL_INDEXES_TOOL, FIND_POSTGRESQL_LOCKS_TOOL, FIND_POSTGRESQL_PLANS_TOOL,
     FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
-    FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
+    FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
 };
 use super::semantics::mcp_error;
-use super::{context, events, overview, postgresql, processes, row_detail};
+use super::{context, events, instance, overview, postgresql, processes, row_detail};
 
 pub(crate) fn dispatch(
     config: &Config,
@@ -19,6 +19,7 @@ pub(crate) fn dispatch(
     let arguments = request.arguments.unwrap_or_default();
     match request.name.as_ref() {
         GET_CONTEXT_TOOL => context::call(config, arguments, cancelled),
+        GET_INSTANCE_TOOL => instance::call(config, arguments, cancelled),
         OVERVIEW_TOOL => overview::call(config, arguments, cancelled),
         FIND_POSTGRESQL_TABLES_TOOL => postgresql::call_tables(config, arguments, cancelled),
         FIND_POSTGRESQL_INDEXES_TOOL => postgresql::call_indexes(config, arguments, cancelled),

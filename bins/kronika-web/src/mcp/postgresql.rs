@@ -352,7 +352,7 @@ fn call_plain(
     )
 }
 
-fn plain_rows(
+pub(super) fn plain_rows(
     logical_name: &str,
     config: &Config,
     filters: &[FilterInput],
@@ -587,7 +587,7 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> 
 
 /// Flattens projected fields and appends decimal-string locator fields accepted
 /// by `kronika_get_row_detail`.
-fn plain_row_to_json(row: PlainRowOut) -> Value {
+pub(super) fn plain_row_to_json(row: PlainRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));

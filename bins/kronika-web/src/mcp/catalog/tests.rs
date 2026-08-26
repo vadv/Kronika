@@ -2,11 +2,12 @@ use super::{
     FIND_EVENTS_TOOL, FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL,
     FIND_POSTGRESQL_INDEXES_TOOL, FIND_POSTGRESQL_LOCKS_TOOL, FIND_POSTGRESQL_PLANS_TOOL,
     FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
-    FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL, tools,
+    FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
+    tools,
 };
 
 #[test]
-fn catalog_has_exactly_thirteen_tools() {
+fn catalog_has_exactly_fourteen_tools() {
     let catalog = tools();
     let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_ref()).collect();
     assert_eq!(
@@ -14,6 +15,7 @@ fn catalog_has_exactly_thirteen_tools() {
         vec![
             OVERVIEW_TOOL,
             GET_CONTEXT_TOOL,
+            GET_INSTANCE_TOOL,
             FIND_POSTGRESQL_TABLES_TOOL,
             FIND_POSTGRESQL_INDEXES_TOOL,
             FIND_POSTGRESQL_ACTIVITY_TOOL,
@@ -104,11 +106,13 @@ fn no_tool_description_uses_banned_reasoning_words() {
 }
 
 #[test]
-fn get_context_schema_is_a_closed_empty_object() {
-    let context = tools()
-        .into_iter()
-        .find(|tool| tool.name.as_ref() == GET_CONTEXT_TOOL)
-        .expect("get_context tool");
-    assert_eq!(context.input_schema["type"], "object");
-    assert_eq!(context.input_schema["additionalProperties"], false);
+fn parameterless_tool_schemas_are_closed_empty_objects() {
+    for name in [GET_CONTEXT_TOOL, GET_INSTANCE_TOOL] {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .expect("parameterless tool");
+        assert_eq!(tool.input_schema["type"], "object", "{name}");
+        assert_eq!(tool.input_schema["additionalProperties"], false, "{name}");
+    }
 }

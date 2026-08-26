@@ -27,7 +27,7 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn tools_list_returns_the_thirteen_tool_catalog() {
+async fn tools_list_returns_the_fourteen_tool_catalog() {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -65,6 +65,7 @@ async fn tools_list_returns_the_thirteen_tool_catalog() {
         vec![
             "kronika_overview",
             "kronika_get_context",
+            "kronika_get_instance",
             "kronika_find_postgresql_tables",
             "kronika_find_postgresql_indexes",
             "kronika_find_postgresql_activity",
@@ -1845,4 +1846,57 @@ fn find_events_reports_more_rows_behind_a_skipped_segment() {
         vec!["100", "200"]
     );
     assert_eq!(structured["has_more"], true);
+}
+
+#[test]
+fn get_instance_returns_host_facts_and_postgresql_settings() {
+    let mut fixture = Fixture::new();
+    fixture.append_instance_facts();
+    fixture.append_postgres_block_size(8_192);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(
+        result.content[0].as_text().expect("text").text,
+        "Returned recorded host facts and 1 recorded pg_settings row."
+    );
+    let structured = result.structured_content.expect("structured content");
+    let host = structured["host"].as_object().expect("host object");
+    // `row_record` renders 64-bit integers as decimal strings.
+    assert_eq!(host["clock_ticks_per_sec"], "100");
+    assert_eq!(host["page_size_bytes"], "4096");
+    assert_eq!(host["hostname"], "fixture-host");
+    assert!(structured["host_as_of"].is_string());
+    let settings = structured["postgresql_settings"]
+        .as_array()
+        .expect("settings array");
+    assert_eq!(settings.len(), 1);
+    assert_eq!(settings[0]["name"], "block_size");
+    assert_eq!(settings[0]["setting"], "8192");
+    assert!(settings[0]["segment_id"].is_string());
+    assert!(structured["settings_as_of"].is_string());
+    assert_eq!(structured["settings_has_more"], false);
+}
+
+#[test]
+fn get_instance_reports_unrecorded_parts_as_null_and_empty() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert!(structured["host"].is_null());
+    assert!(structured["host_as_of"].is_null());
+    assert_eq!(
+        structured["postgresql_settings"].as_array(),
+        Some(&Vec::new())
+    );
+    assert!(structured["settings_as_of"].is_null());
 }

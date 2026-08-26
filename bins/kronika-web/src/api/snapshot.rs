@@ -1532,7 +1532,7 @@ impl PreparedSnapshot {
     }
 
     /// Returns the first `limit` rows from the full sort for supported
-    /// non-relation `PostgreSQL` sections.
+    /// plain (non-relation) sections.
     pub(crate) fn compute_plain_rows(
         &self,
         limit: usize,
@@ -1549,6 +1549,8 @@ impl PreparedSnapshot {
                 | "pg_stat_database"
                 | "pg_stat_statements"
                 | "pg_store_plans"
+                | "pg_settings"
+                | "instance_metadata"
         ) {
             return Err(ApiError::NoSuchSection);
         }

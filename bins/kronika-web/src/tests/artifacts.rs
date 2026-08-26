@@ -1047,7 +1047,46 @@ impl Fixture {
             .expect("append vacuum fixture");
     }
 
-    fn append_postgres_block_size(&mut self, block_size: u128) {
+    pub(crate) fn append_instance_facts(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut intern = |value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern instance string")
+                    .get(),
+            )
+        };
+        let hostname = intern("fixture-host");
+        let kernel_version = intern("6.1.0-fixture");
+        let boot_id = intern("boot-fixture");
+        let dictionary = dict::encode(interner.window()).expect("instance dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(100),
+                hostname,
+                kernel_version,
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("instance row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode instance row")
+            .expect("nonempty instance row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append instance row");
+    }
+
+    pub(crate) fn append_postgres_block_size(&mut self, block_size: u128) {
         let mut interner = Interner::new(DictLimits::default());
         let intern = |interner: &mut Interner, value: &str| {
             StrId(
