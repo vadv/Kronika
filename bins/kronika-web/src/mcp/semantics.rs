@@ -27,6 +27,22 @@ pub(crate) fn mcp_error(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
+/// Rejects a `limit`/`top` argument outside `1..=cap`, the same
+/// reject-not-clamp contract `bounded()` (`route.rs`) already enforces on
+/// the HTTP side for the identical numeric ceiling. Called once per tool
+/// at the point where every one of its call paths converges on the raw
+/// argument, before it can size a `Vec` or a query.
+pub(crate) fn bounded_limit(name: &str, value: u32, cap: usize) -> Result<usize, CallToolResult> {
+    let value = value as usize;
+    if (1..=cap).contains(&value) {
+        Ok(value)
+    } else {
+        Err(mcp_error(format!(
+            "{name} must be between 1 and {cap}, got {value}"
+        )))
+    }
+}
+
 /// The one success shape every MCP tool handler in this catalog uses:
 /// `structuredContent` carries the data, `content` carries one short
 /// factual sentence. `CallToolResult::structured` alone puts the whole JSON

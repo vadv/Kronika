@@ -5,15 +5,19 @@ use serde_json::{Map, Value, json};
 
 use crate::api::heatmap;
 use crate::config::Config;
-use crate::route::HeatmapRequest;
+use crate::route::{HeatmapRequest, MAX_HEATMAP_TOP};
 
 use super::catalog::OverviewInput;
-use super::semantics::{DecimalI64, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
 
 pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
     let input: OverviewInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+    };
+    let top = match bounded_limit("top", input.top, MAX_HEATMAP_TOP) {
+        Ok(top) => top,
+        Err(error) => return error,
     };
 
     let request = HeatmapRequest {
@@ -22,7 +26,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         section: input.section,
         fields: input.fields,
         columns: 1,
-        top: input.top as usize,
+        top,
         labels: Vec::new(),
         group: Vec::new(),
         type_id: None,

@@ -6,7 +6,7 @@ use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::route::{Order, RelationGroup};
+use crate::route::{MAX_HEATMAP_TOP, MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
 
 use super::filter::FilterInput;
 
@@ -42,6 +42,7 @@ pub(crate) struct OverviewInput {
     /// Exclusive end of the ranking window, Unix seconds.
     pub(crate) to: i64,
     /// How many top-ranked identities to return.
+    #[schemars(range(min = 1, max = MAX_HEATMAP_TOP))]
     pub(crate) top: u32,
 }
 
@@ -114,6 +115,7 @@ pub(crate) struct TablesInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -131,6 +133,7 @@ pub(crate) struct IndexesInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -150,6 +153,7 @@ pub(crate) struct ActivityInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -167,6 +171,7 @@ pub(crate) struct LocksInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -186,6 +191,7 @@ pub(crate) struct VacuumInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -203,6 +209,7 @@ pub(crate) struct DatabasesInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -232,6 +239,7 @@ pub(crate) struct StatementsInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -256,6 +264,7 @@ pub(crate) struct PlansInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -272,6 +281,7 @@ pub(crate) struct ProcessesInput {
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 
@@ -324,6 +334,7 @@ pub(crate) struct EventsInput {
     /// cannot exceed one hour.
     pub(crate) to: i64,
     /// Maximum rows to return in total, across every requested source.
+    #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
 }
 

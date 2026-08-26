@@ -47,6 +47,39 @@ fn overview_schema_requires_section_fields_from_to_top() {
 }
 
 #[test]
+fn every_limit_or_top_field_documents_its_runtime_cap_in_the_json_schema() {
+    // Mirrors the runtime ceilings `mcp::semantics::bounded_limit` enforces
+    // (`route::MAX_HEATMAP_TOP`, `route::MAX_SNAPSHOT_PAGE_SIZE`): a calling
+    // model should see the cap in the schema, not discover it from an error.
+    let capped = [
+        (OVERVIEW_TOOL, "top", 500),
+        (FIND_POSTGRESQL_TABLES_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_INDEXES_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_ACTIVITY_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_LOCKS_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_VACUUM_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_DATABASES_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_STATEMENTS_TOOL, "limit", 5_000),
+        (FIND_POSTGRESQL_PLANS_TOOL, "limit", 5_000),
+        (FIND_PROCESSES_TOOL, "limit", 5_000),
+        (FIND_EVENTS_TOOL, "limit", 5_000),
+    ];
+    let catalog = tools();
+    for (tool_name, field, max) in capped {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} tool"));
+        let maximum = &tool.input_schema["properties"][field]["maximum"];
+        assert_eq!(
+            maximum,
+            &serde_json::json!(max),
+            "{tool_name}.{field} should document maximum {max}, schema was {maximum:?}"
+        );
+    }
+}
+
+#[test]
 fn no_tool_description_uses_banned_reasoning_words() {
     let banned = [
         "confidence",

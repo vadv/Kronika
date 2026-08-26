@@ -8,12 +8,12 @@ use crate::api::Prepared;
 use crate::api::snapshot;
 use crate::api::snapshot::ProcessRowOut;
 use crate::config::Config;
-use crate::route::{Order, SnapshotRequest};
+use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, SnapshotRequest};
 
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
 use super::postgresql::current_segment;
-use super::semantics::{mcp_error, mcp_structured};
+use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
 const LOGICAL_NAME: &str = "os_process";
 
@@ -31,6 +31,10 @@ fn call_with(
     sort: Option<SortInput>,
     limit: u32,
 ) -> CallToolResult {
+    let limit = match bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE) {
+        Ok(limit) => limit,
+        Err(error) => return error,
+    };
     let search = match build_search(LOGICAL_NAME, filters) {
         Ok(search) => search,
         Err(error) => return mcp_error(error),
@@ -72,7 +76,7 @@ fn call_with(
         Ok(prepared) => prepared,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let (rows, has_more) = match prepared.compute_process_rows(limit as usize, &|| false) {
+    let (rows, has_more) = match prepared.compute_process_rows(limit, &|| false) {
         Ok(result) => result,
         Err(error) => return mcp_error(error.to_string()),
     };

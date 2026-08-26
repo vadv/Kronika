@@ -28,14 +28,14 @@ use crate::api::snapshot::PlainRowOut;
 use crate::api::snapshot::relation::{RelationKind, RelationRow};
 use crate::api::{ApiError, Prepared};
 use crate::config::Config;
-use crate::route::{Order, RelationGroup, SnapshotRequest};
+use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup, SnapshotRequest};
 
 use super::catalog::{
     ActivityInput, DatabasesInput, IndexesInput, LocksInput, PlansInput, SortInput,
     StatementsInput, TablesInput, VacuumInput,
 };
 use super::filter::{FilterInput, build_search};
-use super::semantics::{mcp_error, mcp_structured};
+use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
 pub(crate) fn call_tables(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
     let input: TablesInput = match serde_json::from_value(Value::Object(arguments)) {
@@ -75,6 +75,10 @@ fn call(
     sort: Option<SortInput>,
     limit: u32,
 ) -> CallToolResult {
+    let limit = match bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE) {
+        Ok(limit) => limit,
+        Err(error) => return error,
+    };
     let search = match build_search(kind.logical_name(), filters) {
         Ok(search) => search,
         Err(error) => return mcp_error(error),
@@ -116,7 +120,7 @@ fn call(
         Ok(prepared) => prepared,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let (rows, has_more) = match prepared.compute_relation_rows(limit as usize, &|| false) {
+    let (rows, has_more) = match prepared.compute_relation_rows(limit, &|| false) {
         Ok(result) => result,
         Err(error) => return mcp_error(error.to_string()),
     };
@@ -254,6 +258,7 @@ fn plain_rows(
     sort: Option<SortInput>,
     limit: u32,
 ) -> Result<(Vec<PlainRowOut>, bool), CallToolResult> {
+    let limit = bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE)?;
     let search = build_search(logical_name, filters).map_err(mcp_error)?;
     let (segment_id, at) =
         current_segment(&config.data_root).map_err(|error| mcp_error(error.to_string()))?;
@@ -288,7 +293,7 @@ fn plain_rows(
         .with_search(search)
         .map_err(|error| mcp_error(error.to_string()))?;
     prepared
-        .compute_plain_rows(limit as usize, &|| false)
+        .compute_plain_rows(limit, &|| false)
         .map_err(|error| mcp_error(error.to_string()))
 }
 

@@ -14,10 +14,10 @@ use serde_json::{Map, Value, json};
 use crate::api::ApiError;
 use crate::api::history::{EventRowOut, fetch_bounded_events};
 use crate::config::Config;
-use crate::route::Window;
+use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Window};
 
 use super::catalog::EventsInput;
-use super::semantics::{mcp_error, mcp_structured};
+use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
 /// The event-shaped logical sections this tool can read: the Events
 /// console's own `EVENT_STREAMS` list (`ui/src/events-view.tsx`) minus
@@ -43,6 +43,10 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
     };
+    let limit = match bounded_limit("limit", input.limit, MAX_SNAPSHOT_PAGE_SIZE) {
+        Ok(limit) => limit,
+        Err(error) => return error,
+    };
     let sources = match resolve_sources(input.sources) {
         Ok(sources) => sources,
         Err(error) => return mcp_error(error),
@@ -59,7 +63,6 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         from: Some(input.from),
         to: Some(input.to),
     };
-    let limit = input.limit as usize;
     let mut rows: Vec<(&'static str, EventRowOut)> = Vec::new();
     let mut has_more = false;
     for source in sources {

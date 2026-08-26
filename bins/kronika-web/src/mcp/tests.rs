@@ -174,6 +174,34 @@ fn overview_rejects_malformed_arguments_without_panicking() {
     assert_eq!(result.is_error, Some(true));
 }
 
+#[test]
+fn overview_rejects_a_top_above_the_heatmap_cap() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb"],
+        "from": 100,
+        "to": 400,
+        "top": 4_000_000_000_u64,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("500") || message.contains("top"),
+        "error should name the top cap: {message}"
+    );
+}
+
 #[tokio::test]
 async fn overview_end_to_end_through_the_real_transport() {
     // Same fixture as `overview_ranks_the_top_entities_and_reports_the_others_total`,
@@ -289,6 +317,32 @@ fn find_postgresql_tables_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::postgresql::call_tables(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_postgresql_tables_rejects_a_limit_above_the_snapshot_page_size_cap() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "group": "object",
+        "filters": [],
+        "limit": 4_000_000_000_u64,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_tables(&config, arguments);
+
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("5000") || message.contains("limit"),
+        "error should name the limit cap: {message}"
+    );
 }
 
 #[test]
@@ -920,6 +974,31 @@ fn find_processes_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::processes::call(&config, serde_json::Map::new());
     assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_processes_rejects_a_limit_above_the_snapshot_page_size_cap() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "filters": [],
+        "limit": 4_000_000_000_u64,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::processes::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("5000") || message.contains("limit"),
+        "error should name the limit cap: {message}"
+    );
 }
 
 #[tokio::test]
