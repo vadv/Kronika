@@ -1,6 +1,9 @@
 //! Stateless Model Context Protocol transport: `kronika_overview`,
 //! `kronika_get_context`, `kronika_find_postgresql_tables`,
-//! `kronika_find_postgresql_indexes`, `kronika_find_processes`,
+//! `kronika_find_postgresql_indexes`, `kronika_find_postgresql_activity`,
+//! `kronika_find_postgresql_locks`, `kronika_find_postgresql_vacuum`,
+//! `kronika_find_postgresql_databases`, `kronika_find_postgresql_statements`,
+//! `kronika_find_postgresql_plans`, `kronika_find_processes`,
 //! `kronika_get_row_detail`, and `kronika_find_events` served over
 //! Streamable HTTP.
 
