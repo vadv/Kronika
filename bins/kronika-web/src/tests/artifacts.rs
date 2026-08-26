@@ -5774,16 +5774,19 @@ fn fetch_bounded_events_agrees_with_the_streamed_hour_section_on_the_first_rows_
         from: Some(from),
         to: Some(to),
     };
-    let (rows, has_more) = crate::api::history::fetch_bounded_events(
+    let mut results = crate::api::history::fetch_bounded_events(
         &reader,
         &segments,
-        "pg_log_errors",
+        &["pg_log_errors"],
         window,
         3,
         &|| false,
     )
     .expect("fetch_bounded_events");
+    let section = results.remove(0);
+    let (rows, has_more) = (section.rows, section.has_more);
 
+    assert_eq!(section.section, "pg_log_errors");
     assert!(has_more, "5 rows exist in the window but limit is 3");
     assert_eq!(rows.len(), 3);
     assert_eq!(

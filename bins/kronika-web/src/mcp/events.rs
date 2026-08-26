@@ -1,9 +1,10 @@
 //! `kronika_find_events`: bounded merge across the recorded event-shaped
-//! log sections (`pg_log_*`, `pgbouncer_events`), through
-//! `fetch_bounded_events` called once per requested source. No existing
-//! code merges rows across sources — the Events console
-//! (`ui/src/events-view.tsx`) does that grouping in the browser, over
-//! separate per-section HTTP fetches.
+//! log sections (`pg_log_*`, `pgbouncer_events`), through one
+//! `fetch_bounded_events` call covering every requested source, so a
+//! segment overlapping the window is opened once no matter how many
+//! sources it is read for. No existing code merges rows across sources —
+//! the Events console (`ui/src/events-view.tsx`) does that grouping in the
+//! browser, over separate per-section HTTP fetches.
 
 use std::path::Path;
 
@@ -64,16 +65,16 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         from: Some(input.from),
         to: Some(input.to),
     };
-    let mut rows: Vec<(&'static str, EventRowOut)> = Vec::new();
+    let by_source =
+        match fetch_bounded_events(&reader, &segments, &sources, window, limit, &|| false) {
+            Ok(result) => result,
+            Err(error) => return mcp_error(error.to_string()),
+        };
     let mut has_more = false;
-    for source in sources {
-        let (source_rows, source_has_more) =
-            match fetch_bounded_events(&reader, &segments, source, window, limit, &|| false) {
-                Ok(result) => result,
-                Err(error) => return mcp_error(error.to_string()),
-            };
-        has_more = has_more || source_has_more;
-        rows.extend(source_rows.into_iter().map(|row| (source, row)));
+    let mut rows: Vec<(&'static str, EventRowOut)> = Vec::new();
+    for section in by_source {
+        has_more = has_more || section.has_more;
+        rows.extend(section.rows.into_iter().map(|row| (section.section, row)));
     }
     rows.sort_by_key(|(_, row)| row.at);
     has_more = has_more || rows.len() > limit;

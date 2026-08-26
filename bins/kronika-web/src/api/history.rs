@@ -350,9 +350,21 @@ pub(crate) struct EventRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-/// Bounded top-N read of one logical section across `segments`, keyed by
-/// field name for MCP consumers instead of `stream_plans`'s positional wire
-/// format.
+/// One logical section's bounded rows from [`fetch_bounded_events`], plus
+/// whether more rows matched than were returned for that section alone.
+pub(crate) struct SectionEvents<'a> {
+    pub(crate) section: &'a str,
+    pub(crate) rows: Vec<EventRowOut>,
+    pub(crate) has_more: bool,
+}
+
+/// Bounded top-N read of one or more logical sections across `segments`,
+/// keyed by field name for MCP consumers instead of `stream_plans`'s
+/// positional wire format. Each segment is opened at most once and its
+/// catalog shared across every requested section, rather than reopening the
+/// same physical file once per section — `kronika_find_events` reads up to
+/// seven sections over the same window, and `Segment::open` is a real file
+/// open plus catalog parse, not a cheap wrap.
 ///
 /// Physical row order within a segment is append order, which for a
 /// log-derived event section is already chronological, and `segments` is
@@ -360,58 +372,78 @@ pub(crate) struct EventRowOut {
 /// same order `PreparedHour` streams). That makes "collect the first
 /// `limit` matching rows and stop" a correct timestamp-ascending bound on
 /// its own — unlike `PreparedSnapshot`'s `PageRows`, nothing here ranks by
-/// an arbitrary sort column, so no heap is needed.
-pub(crate) fn fetch_bounded_events(
+/// an arbitrary sort column, so no heap is needed. Each section keeps its
+/// own bound and its own `has_more`, exactly as if fetched independently;
+/// only the segment opens are shared.
+pub(crate) fn fetch_bounded_events<'a>(
     reader: &Reader,
     segments: &[SegmentRef],
-    section: &str,
+    sections: &[&'a str],
     window: Window,
     limit: usize,
     cancelled: &impl Fn() -> bool,
-) -> Result<(Vec<EventRowOut>, bool), ApiError> {
+) -> Result<Vec<SectionEvents<'a>>, ApiError> {
     let bound = limit.saturating_add(1);
-    let mut rows: Vec<EventRowOut> = Vec::new();
-    for segment_ref in segments {
-        if cancelled() || rows.len() >= bound {
+    let mut rows: Vec<Vec<EventRowOut>> = sections.iter().map(|_| Vec::new()).collect();
+    'segments: for segment_ref in segments {
+        if cancelled() || rows.iter().all(|section_rows| section_rows.len() >= bound) {
             break;
         }
         let segment = reader.open_segment(segment_ref)?;
-        let request = DataRequest {
-            segment: SegmentRequest {
-                segment_id: segment_ref.id(),
-                section: section.to_owned(),
-            },
-            fields: Vec::new(),
-            filters: Vec::new(),
-            type_id: None,
-            after: None,
-        };
-        let section_plans = match plans(&segment, &request, true) {
-            Ok(section_plans) => section_plans,
-            Err(ApiError::NoSuchSection) => continue,
-            Err(error) => return Err(error),
-        };
-        for plan in &section_plans {
-            if cancelled() || rows.len() >= bound {
-                break;
+        for (section, section_rows) in sections.iter().zip(rows.iter_mut()) {
+            if cancelled() {
+                break 'segments;
             }
-            if !plan.applies() {
+            if section_rows.len() >= bound {
                 continue;
             }
-            collect_bounded_rows(
-                &segment,
-                segment_ref.id(),
-                plan,
-                window,
-                bound,
-                &mut rows,
-                cancelled,
-            )?;
+            let request = DataRequest {
+                segment: SegmentRequest {
+                    segment_id: segment_ref.id(),
+                    section: (*section).to_owned(),
+                },
+                fields: Vec::new(),
+                filters: Vec::new(),
+                type_id: None,
+                after: None,
+            };
+            let section_plans = match plans(&segment, &request, true) {
+                Ok(section_plans) => section_plans,
+                Err(ApiError::NoSuchSection) => continue,
+                Err(error) => return Err(error),
+            };
+            for plan in &section_plans {
+                if cancelled() || section_rows.len() >= bound {
+                    break;
+                }
+                if !plan.applies() {
+                    continue;
+                }
+                collect_bounded_rows(
+                    &segment,
+                    segment_ref.id(),
+                    plan,
+                    window,
+                    bound,
+                    section_rows,
+                    cancelled,
+                )?;
+            }
         }
     }
-    let has_more = rows.len() > limit;
-    rows.truncate(limit);
-    Ok((rows, has_more))
+    Ok(sections
+        .iter()
+        .zip(rows)
+        .map(|(section, mut rows)| {
+            let has_more = rows.len() > limit;
+            rows.truncate(limit);
+            SectionEvents {
+                section,
+                rows,
+                has_more,
+            }
+        })
+        .collect())
 }
 
 /// Scans one plan's rows for [`fetch_bounded_events`], stopping as soon as
