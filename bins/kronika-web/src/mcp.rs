@@ -79,7 +79,7 @@ impl ServerHandler for KronikaMcp {
             // with `std::fs`-based blocking I/O. Running it directly here
             // would tie up a Tokio worker thread for the whole read, the same
             // hazard `main.rs`'s `/api/*` path avoids with `spawn_blocking`.
-            let result = tokio::task::spawn_blocking(move || dispatch::dispatch(&config, &request))
+            let result = tokio::task::spawn_blocking(move || dispatch::dispatch(&config, request))
                 .await
                 .unwrap_or_else(|join_error| {
                     semantics::mcp_error(format!("tool dispatch panicked: {join_error}"))

@@ -13,8 +13,8 @@ use super::catalog::{
 use super::semantics::mcp_error;
 use super::{context, events, overview, postgresql, processes, row_detail};
 
-pub(crate) fn dispatch(config: &Config, request: &CallToolRequestParams) -> CallToolResult {
-    let arguments = request.arguments.clone().unwrap_or_default();
+pub(crate) fn dispatch(config: &Config, request: CallToolRequestParams) -> CallToolResult {
+    let arguments = request.arguments.unwrap_or_default();
     match request.name.as_ref() {
         GET_CONTEXT_TOOL => context::call(config, arguments),
         OVERVIEW_TOOL => overview::call(config, arguments),
