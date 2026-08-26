@@ -110,30 +110,6 @@ fn contains_on_an_identifier_field_is_rejected() {
 }
 
 #[test]
-fn negation_is_rejected_for_every_field_kind() {
-    let filters = vec![FilterInput {
-        field: "state".to_owned(),
-        op: Op::Ne,
-        value: json!("running"),
-    }];
-    let error = build_search("os_process", &filters).expect_err("no negation primitive exists");
-    assert!(error.contains("state"));
-}
-
-#[test]
-fn inclusive_bounds_are_rejected_for_quantity_fields() {
-    for op in [Op::Gte, Op::Lte] {
-        let filters = vec![FilterInput {
-            field: "rss".to_owned(),
-            op,
-            value: json!(1_000),
-        }];
-        let error = build_search("os_process", &filters).expect_err("no inclusive bound exists");
-        assert!(error.contains("rss"));
-    }
-}
-
-#[test]
 fn a_negative_quantity_value_is_rejected() {
     let filters = vec![FilterInput {
         field: "rss".to_owned(),

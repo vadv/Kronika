@@ -17,11 +17,8 @@ use crate::api::snapshot::search::{
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Op {
     Eq,
-    Ne,
     Gt,
-    Gte,
     Lt,
-    Lte,
     Contains,
 }
 
@@ -79,17 +76,6 @@ pub(crate) fn build_search(
 
 /// Map a typed `Op` to the 3-variant `SearchOperator` the matching engine
 /// understands, rejecting every combination the engine cannot express.
-///
-/// Two rejections are not a placeholder gap, they are permanent: `Ne` has
-/// no negation anywhere in `Expr`/`SearchClause` — the text parser itself
-/// rejects the `NOT` keyword, and none of `matches_all`/`matches_member`/
-/// `matches_result` (`StructuredSearch`) have a "not" combinator to give
-/// one to. `Gte`/`Lte` have no inclusive counterpart either:
-/// `SearchMetricValue::matches` (`snapshot.rs`) only ever tests strict
-/// `Ordering::Greater`/`Ordering::Less` for `SearchOperator::Greater`/
-/// `Less`, and there is no single value adjustment (like `value - 1`) that
-/// makes a strict bound exact for every `QuantityKind` — several
-/// (`Percentage`, `Scalar`, rates) are not integer-valued.
 const fn operator_for(field: &SearchField, op: Op) -> Option<SearchOperator> {
     match (field.kind, op) {
         (SearchFieldKind::String, Op::Eq | Op::Contains)
