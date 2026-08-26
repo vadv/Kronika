@@ -1267,6 +1267,41 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
 }
 
 #[test]
+fn find_events_labels_the_numeric_severity_and_category_codes() {
+    // pg_log_errors's severity/category are Kronika-invented numeric codes
+    // (not even a monotonic severity ordering), documented previously only
+    // in ui/src/events-format.ts, unreachable by an MCP tool-calling client.
+    // `append_log_error` records severity=0 ("error") and category=8
+    // ("auth").
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["severity"], 0, "raw numeric code stays untouched");
+    assert_eq!(row["severity_label"], "error");
+    assert_eq!(row["category"], 8);
+    assert_eq!(row["category_label"], "auth");
+}
+
+#[test]
 fn find_events_merges_multiple_sources_by_timestamp() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
@@ -1417,6 +1452,49 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     assert_eq!(detail_row["type_id"], listing_row["type_id"]);
     assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
     assert_eq!(detail_row["at"], listing_row["at"]);
+}
+
+#[test]
+fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
+    // A row fetched by exact locator through kronika_get_row_detail must
+    // carry the same severity_label/category_label siblings the listing
+    // row from kronika_find_events already has — one labeling step shared
+    // by both read paths, not a second implementation of the same table.
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let listing_arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let listing = crate::mcp::events::call(&config, listing_arguments);
+    let listing_row = listing.structured_content.expect("structured content")["rows"][0].clone();
+
+    let detail_arguments = serde_json::json!({
+        "section": "pg_log_errors",
+        "segment_id": listing_row["segment_id"],
+        "at": listing_row["at"],
+        "type_id": listing_row["type_id"],
+        "row_ordinal": listing_row["row_ordinal"],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+
+    assert_eq!(detail.is_error, Some(false));
+    let detail_row = detail.structured_content.expect("structured content");
+    assert_eq!(detail_row["severity_label"], "error");
+    assert_eq!(detail_row["category_label"], "auth");
+    assert_eq!(detail_row["severity_label"], listing_row["severity_label"]);
+    assert_eq!(detail_row["category_label"], listing_row["category_label"]);
 }
 
 #[tokio::test]

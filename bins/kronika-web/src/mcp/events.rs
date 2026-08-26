@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Window};
 
 use super::catalog::EventsInput;
+use super::event_labels::label_event_fields;
 use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
 /// The event-shaped logical sections this tool can read: the Events
@@ -143,12 +144,15 @@ fn windowed_segments(
 }
 
 /// Flattens one event row into a single keyed JSON object: `fields` first,
-/// then `source` and the locator (`segment_id`/`type_id`/`row_ordinal`/
-/// `at`) written as decimal strings, the same convention
+/// labeled in place by `label_event_fields` (adds a `<field>_label` sibling
+/// next to a numeric log-event code, source's own numeric fields
+/// untouched), then `source` and the locator (`segment_id`/`type_id`/
+/// `row_ordinal`/`at`) written as decimal strings, the same convention
 /// `kronika_get_row_detail` (`mcp/row_detail.rs`) uses for these same four
 /// fields, so a caller can copy them straight into that tool's arguments.
 fn row_to_json(source: &str, row: EventRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
+    label_event_fields(source, &mut object);
     object.insert("source".to_owned(), json!(source));
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));

@@ -157,7 +157,10 @@ pub(crate) struct ActivityInput {
     pub(crate) limit: u32,
 }
 
-/// Input for `kronika_find_postgresql_locks`.
+/// Input for `kronika_find_postgresql_locks`. Every returned row also
+/// carries `blocked_by`, the list of pids blocking it — not filterable as a
+/// predicate here (it is a list, not a scalar), but always present in the
+/// row.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LocksInput {
     /// Flat AND-only list of typed predicates over `pg_locks` fields:
@@ -420,7 +423,15 @@ pub(crate) fn tools() -> Vec<Tool> {
              were returned. Each row carries its own source plus \
              segment_id/type_id/row_ordinal/at as decimal strings — pass \
              them straight into kronika_get_row_detail to re-fetch that \
-             exact row later.",
+             exact row later. The numeric codes these sections record \
+             (pg_log_errors severity/category, pg_log_checkpoints phase, \
+             pg_log_autovacuum/pg_log_lock_waits/pg_log_lifecycle kind, \
+             pgbouncer_events level) are Kronika-recorded values, not a \
+             severity ordering — each such field comes with a \
+             `<field>_label` sibling carrying its human-readable string, \
+             e.g. `severity: 0, severity_label: \"error\"`, alongside the \
+             unchanged numeric field. kronika_get_row_detail carries the \
+             same label siblings when reading one of these rows back.",
             schema_object::<EventsInput>(),
         ),
     ])

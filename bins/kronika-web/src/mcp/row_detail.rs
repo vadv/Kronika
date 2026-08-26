@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::route::{Order, SnapshotRequest};
 
 use super::catalog::RowDetailInput;
+use super::event_labels::label_event_fields;
 use super::semantics::{mcp_error, mcp_structured};
 
 pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
@@ -62,12 +63,18 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Ok(row) => row,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let Some(row) = row else {
+    let Some(mut row) = row else {
         return mcp_error(format!(
             "no row at segment {segment_id}, section {:?}, at {at}, ordinal {row_ordinal}",
             input.section
         ));
     };
+    // Same numeric log-event codes `kronika_find_events` labels
+    // (`mcp/event_labels.rs`), so a row fetched by exact locator carries
+    // the same `<field>_label` siblings a listing row already has.
+    if let Value::Object(fields) = &mut row {
+        label_event_fields(&input.section, fields);
+    }
     mcp_structured(row, format!("row from {}", input.section))
 }
 

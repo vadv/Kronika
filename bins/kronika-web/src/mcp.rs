@@ -26,6 +26,7 @@ use crate::config::Config;
 mod catalog;
 mod context;
 mod dispatch;
+mod event_labels;
 mod events;
 mod filter;
 mod overview;
