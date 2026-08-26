@@ -1,4 +1,4 @@
-import { Activity, ChartLine, CircleHelp, LogOut, Moon, RotateCw, Sun } from "lucide-react"
+import { Activity, ChartLine, CircleHelp, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { ProcessesActivity } from "./activity"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
@@ -39,6 +39,7 @@ import { mergeObservationTimestamps, observationTimestamps } from "./cursor-time
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate, LabelHelp } from "./help"
+import { McpPanel } from "./mcp-connect"
 import { MobileControls } from "./mobile-controls"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
@@ -247,6 +248,7 @@ function App({ locale, onLocale, t }: {
     setSystemFocus(null)
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -597,8 +599,14 @@ function App({ locale, onLocale, t }: {
     const shortcuts = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (keyboardTargetOwnsArrows(event.target)) return
-      if (event.key === "?") setHelpOpen((current) => !current)
-      if (event.key === "Escape") setHelpOpen(false)
+      if (event.key === "?") {
+        setHelpOpen((current) => !current)
+        setMcpOpen(false)
+      }
+      if (event.key === "Escape") {
+        setHelpOpen(false)
+        setMcpOpen(false)
+      }
     }
     window.addEventListener("keydown", shortcuts)
     return () => window.removeEventListener("keydown", shortcuts)
@@ -934,7 +942,8 @@ function App({ locale, onLocale, t }: {
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
         <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
+        <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
 
@@ -990,6 +999,7 @@ function App({ locale, onLocale, t }: {
     </InspectorPortalProvider>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
+    {mcpOpen && <McpPanel onClose={() => setMcpOpen(false)} t={t} />}
   </main></DisplayTimeScope>
 }
 
