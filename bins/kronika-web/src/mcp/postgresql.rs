@@ -410,8 +410,13 @@ fn ratio_value(numerator: Option<f64>, denominator: Option<f64>) -> Value {
 }
 
 /// The seven `derived_*` per-row ratio fields for `pg_stat_statements`/
-/// `pg_store_plans`, on `derived_page_order`'s 0.0-1.0 fraction scale (not
-/// a percentage) for the two proportion fields. Every formula reads
+/// `pg_store_plans`. `derived_hit_fraction` and `derived_plan_time_fraction`
+/// carry `derived_page_order`'s 0.0-1.0 fraction scale (not a percentage) —
+/// named `_fraction`, not `_pct`, so they cannot be mistaken for the
+/// 0-100 `_pct` fields `api/snapshot/relation.rs` ships (`buffer_hit_pct`
+/// and friends). `derived_hit_fraction` counts shared-buffer traffic only
+/// (`shared_blks_hit`/`shared_blks_read`), not local (temp-table) blocks,
+/// unlike `derived_blocks_per_call` which sums both. Every formula reads
 /// `row_record`'s already-rated fields directly — cumulative-column rates
 /// on both sides of a ratio, so the shared elapsed interval cancels out and
 /// the result is a plain per-call or per-total-block figure, not a
@@ -422,9 +427,9 @@ fn ratio_value(numerator: Option<f64>, denominator: Option<f64>) -> Value {
 /// `derived_wal_per_call` is null on every `pg_store_plans` row (no
 /// `wal_bytes` column in any of its physical layouts) and on legacy
 /// `pg_stat_statements` rows (extension 1.5-1.7 predates WAL tracking).
-/// `derived_plan_time_pct` is null wherever `total_plan_time` is absent:
-/// legacy `pg_stat_statements` rows, and `pg_store_plans` rows from the
-/// ossc/Datasentinel physical layouts (only the vadv layout carries
+/// `derived_plan_time_fraction` is null wherever `total_plan_time` is
+/// absent: legacy `pg_stat_statements` rows, and `pg_store_plans` rows from
+/// the ossc/Datasentinel physical layouts (only the vadv layout carries
 /// planning time) — not simply "statements only".
 fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> {
     let calls = ratio_field(fields, &["calls_per_second", "calls"]);
@@ -456,7 +461,7 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> 
         ratio_value(blocks, calls),
     );
     derived.insert(
-        "derived_hit_pct".to_owned(),
+        "derived_hit_fraction".to_owned(),
         ratio_value(hit, hit.zip(read).map(|(hit, read)| hit + read)),
     );
     derived.insert(
@@ -464,7 +469,7 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> 
         ratio_value(ratio_field(fields, &["wal_bytes"]), calls),
     );
     derived.insert(
-        "derived_plan_time_pct".to_owned(),
+        "derived_plan_time_fraction".to_owned(),
         ratio_value(
             planning,
             planning

@@ -750,9 +750,9 @@ fn find_postgresql_statements_computes_derived_ratio_fields() {
     assert_close(&one["derived_mean_exec_ms_per_call"], 10.0);
     assert_close(&one["derived_rows_per_call"], 10.0);
     assert_close(&one["derived_blocks_per_call"], 10.0);
-    assert_close(&one["derived_hit_pct"], 0.8);
+    assert_close(&one["derived_hit_fraction"], 0.8);
     assert_close(&one["derived_wal_per_call"], 10.0);
-    assert_close(&one["derived_plan_time_pct"], 0.5);
+    assert_close(&one["derived_plan_time_fraction"], 0.5);
     assert_close(&one["derived_cv"], 0.9);
     assert!(one["segment_id"].is_string());
     assert!(one["type_id"].is_string());
@@ -763,18 +763,18 @@ fn find_postgresql_statements_computes_derived_ratio_fields() {
     assert_close(&two["derived_mean_exec_ms_per_call"], 15.0);
     assert_close(&two["derived_rows_per_call"], 30.0);
     assert_close(&two["derived_blocks_per_call"], 25.0);
-    assert_close(&two["derived_hit_pct"], 0.9);
+    assert_close(&two["derived_hit_fraction"], 0.9);
     assert_close(&two["derived_wal_per_call"], 30.0);
-    assert_close(&two["derived_plan_time_pct"], 40.0 / 70.0);
+    assert_close(&two["derived_plan_time_fraction"], 40.0 / 70.0);
     assert_close(&two["derived_cv"], 2.0);
 
     let three = row("3");
     assert_close(&three["derived_mean_exec_ms_per_call"], 5.0);
     assert_close(&three["derived_rows_per_call"], 1.0);
     assert_close(&three["derived_blocks_per_call"], 3.0);
-    assert_close(&three["derived_hit_pct"], 1.0 / 3.0);
+    assert_close(&three["derived_hit_fraction"], 1.0 / 3.0);
     assert_close(&three["derived_wal_per_call"], 5.0);
-    assert_close(&three["derived_plan_time_pct"], 1.0 / 6.0);
+    assert_close(&three["derived_plan_time_fraction"], 1.0 / 6.0);
     assert_close(&three["derived_cv"], 0.2);
 }
 
@@ -800,9 +800,9 @@ fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
         "derived_mean_exec_ms_per_call",
         "derived_rows_per_call",
         "derived_blocks_per_call",
-        "derived_hit_pct",
+        "derived_hit_fraction",
         "derived_wal_per_call",
-        "derived_plan_time_pct",
+        "derived_plan_time_fraction",
         "derived_cv",
     ] {
         assert_eq!(
@@ -825,7 +825,7 @@ fn find_postgresql_plans_computes_derived_ratio_fields() {
     // append_ranked_plans mirrors append_ranked_statements' readings for
     // the fields pg_store_plans (ossc layout) also carries; it has no
     // wal_bytes/total_plan_time column at all, so derived_wal_per_call and
-    // derived_plan_time_pct must be null on every row regardless of
+    // derived_plan_time_fraction must be null on every row regardless of
     // predecessor — not because this section is hardcoded to null them,
     // but because the underlying columns do not exist for this physical
     // layout. mean_time/stddev_time (2.2/24.9, store_plan()'s fixed
@@ -857,27 +857,27 @@ fn find_postgresql_plans_computes_derived_ratio_fields() {
     assert_close(&one["derived_mean_exec_ms_per_call"], 10.0);
     assert_close(&one["derived_rows_per_call"], 10.0);
     assert_close(&one["derived_blocks_per_call"], 10.0);
-    assert_close(&one["derived_hit_pct"], 0.8);
+    assert_close(&one["derived_hit_fraction"], 0.8);
     assert_eq!(one["derived_wal_per_call"], serde_json::Value::Null);
-    assert_eq!(one["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_eq!(one["derived_plan_time_fraction"], serde_json::Value::Null);
     assert_close(&one["derived_cv"], 2.2 / 24.9);
 
     let two = row("2");
     assert_close(&two["derived_mean_exec_ms_per_call"], 15.0);
     assert_close(&two["derived_rows_per_call"], 30.0);
     assert_close(&two["derived_blocks_per_call"], 25.0);
-    assert_close(&two["derived_hit_pct"], 0.9);
+    assert_close(&two["derived_hit_fraction"], 0.9);
     assert_eq!(two["derived_wal_per_call"], serde_json::Value::Null);
-    assert_eq!(two["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_eq!(two["derived_plan_time_fraction"], serde_json::Value::Null);
     assert_close(&two["derived_cv"], 2.2 / 24.9);
 
     let three = row("3");
     assert_close(&three["derived_mean_exec_ms_per_call"], 5.0);
     assert_close(&three["derived_rows_per_call"], 1.0);
     assert_close(&three["derived_blocks_per_call"], 3.0);
-    assert_close(&three["derived_hit_pct"], 1.0 / 3.0);
+    assert_close(&three["derived_hit_fraction"], 1.0 / 3.0);
     assert_eq!(three["derived_wal_per_call"], serde_json::Value::Null);
-    assert_eq!(three["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_eq!(three["derived_plan_time_fraction"], serde_json::Value::Null);
     assert_close(&three["derived_cv"], 2.2 / 24.9);
 }
 
@@ -904,7 +904,7 @@ fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
         "derived_mean_exec_ms_per_call",
         "derived_rows_per_call",
         "derived_blocks_per_call",
-        "derived_hit_pct",
+        "derived_hit_fraction",
     ] {
         assert_eq!(
             row[field],
@@ -914,9 +914,35 @@ fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
     }
     // Absent on this layout regardless of predecessor.
     assert_eq!(row["derived_wal_per_call"], serde_json::Value::Null);
-    assert_eq!(row["derived_plan_time_pct"], serde_json::Value::Null);
+    assert_eq!(row["derived_plan_time_fraction"], serde_json::Value::Null);
     // Gauge-only: computable even without a predecessor.
     assert_close(&row["derived_cv"], 2.2 / 24.9);
+}
+
+#[test]
+fn find_postgresql_plans_computes_plan_time_fraction_on_the_vadv_layout() {
+    // Only the vadv pg_store_plans layout (type_id 1_004_001) carries
+    // total_plan_time; ossc and Datasentinel do not, and that null case is
+    // already covered above. This fixture is the one physical layout where
+    // derived_plan_time_fraction should come back as a real number.
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_vadv_plans();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "filters": [], "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    // total_plan_time=25.0, total_time=100.0 => 25 / (25 + 100) = 0.2.
+    assert_close(&row["derived_plan_time_fraction"], 0.2);
 }
 
 #[test]

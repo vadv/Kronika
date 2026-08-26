@@ -845,6 +845,33 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    /// `pg_store_plans` counterpart of `append_ranked_plans`, on the vadv
+    /// physical layout (`1_004_001`) instead of ossc: the one
+    /// `pg_store_plans` layout that carries `total_plan_time`, so
+    /// `derived_plan_time_fraction` resolves to a real value here instead
+    /// of the null every ossc/Datasentinel row produces.
+    pub(crate) fn append_ranked_vadv_plans(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "ranked vadv plan");
+        let mut buffers = SectionBuffers::new();
+        for ts in [100, 200] {
+            let current = ts == 200;
+            let mut row = store_plan_vadv(ts, label);
+            row.calls = if current { 10 } else { 0 };
+            row.total_time = if current { 100.0 } else { 0.0 };
+            row.total_plan_time = if current { 25.0 } else { 0.0 };
+            buffers.push(row).expect("ranked vadv plan row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("ranked vadv plan dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode ranked vadv plans")
+            .expect("nonempty ranked vadv plans");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append ranked vadv plans");
+    }
+
     fn append_postgres_summary_relations(&mut self) {
         let mut buffers = SectionBuffers::new();
         for (ts, commits, rollbacks) in [(100, 100, 10), (200, 180, 30)] {

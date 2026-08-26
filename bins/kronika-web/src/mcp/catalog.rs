@@ -219,14 +219,16 @@ pub(crate) struct DatabasesInput {
 /// Input for `kronika_find_postgresql_statements`. Rows carry seven
 /// `derived_*` fields alongside the raw `pg_stat_statements` columns —
 /// `derived_mean_exec_ms_per_call`, `derived_rows_per_call`,
-/// `derived_blocks_per_call`, `derived_hit_pct`, `derived_wal_per_call`,
-/// `derived_plan_time_pct`, `derived_cv` — computed from the same row's
+/// `derived_blocks_per_call`, `derived_hit_fraction`, `derived_wal_per_call`,
+/// `derived_plan_time_fraction`, `derived_cv` — computed from the same row's
 /// already-rate-converted fields, never from a filter or a second lookup.
-/// `derived_hit_pct` and `derived_plan_time_pct` are a `0.0`-`1.0`
-/// fraction, not a percentage. Any `derived_*` field is `null` when its
-/// reading has no predecessor snapshot yet (a rate needs two samples) or
-/// when the underlying column does not exist on this extension version
-/// (e.g. `derived_wal_per_call` before extension 1.8, which predates WAL
+/// `derived_hit_fraction` and `derived_plan_time_fraction` are a `0.0`-`1.0`
+/// fraction, not a percentage. `derived_hit_fraction` covers shared-buffer
+/// traffic only (`shared_blks_hit`/`shared_blks_read`), not local
+/// (temp-table) blocks. Any `derived_*` field is `null` when its reading
+/// has no predecessor snapshot yet (a rate needs two samples) or when the
+/// underlying column does not exist on this extension version (e.g.
+/// `derived_wal_per_call` before extension 1.8, which predates WAL
 /// tracking).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct StatementsInput {
@@ -251,8 +253,8 @@ pub(crate) struct StatementsInput {
 /// the same way from `pg_store_plans`'s own already-rate-converted
 /// fields — `derived_wal_per_call` is always `null` here, since no
 /// `pg_store_plans` physical layout carries a WAL byte count;
-/// `derived_plan_time_pct` is `null` except on the one layout that tracks
-/// planning time separately from execution time.
+/// `derived_plan_time_fraction` is `null` except on the one layout that
+/// tracks planning time separately from execution time.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct PlansInput {
     /// Flat AND-only list of typed predicates over `pg_store_plans`
@@ -495,13 +497,16 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              tracked statement, with optional typed filters and a sort \
              field. Each row carries derived_mean_exec_ms_per_call, \
              derived_rows_per_call, derived_blocks_per_call, \
-             derived_hit_pct, derived_wal_per_call, \
-             derived_plan_time_pct and derived_cv alongside the raw \
-             columns; derived_hit_pct and derived_plan_time_pct are a \
-             0.0-1.0 fraction, not a percentage. Any derived_* field is \
-             null when its reading has no prior snapshot to compute a \
-             rate from, or when the column is absent on this extension \
-             version. Returns up to limit rows plus has_more when more \
+             derived_hit_fraction, derived_wal_per_call, \
+             derived_plan_time_fraction and derived_cv alongside the raw \
+             columns; derived_hit_fraction and derived_plan_time_fraction \
+             are a 0.0-1.0 fraction, not a percentage. derived_hit_fraction \
+             covers shared-buffer traffic only (shared_blks_hit/ \
+             shared_blks_read), not local (temp-table) blocks. Any \
+             derived_* field is null when its reading has no prior \
+             snapshot to compute a rate from, or when the column is \
+             absent on this extension version. Returns up to limit rows \
+             plus has_more when more \
              rows matched than were returned. Each row carries its own \
              segment_id/type_id/row_ordinal/at as decimal strings — pass \
              them straight into kronika_get_row_detail to re-fetch that \
@@ -516,7 +521,7 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              kronika_find_postgresql_statements does, computed the same \
              way; derived_wal_per_call is always null here (no \
              pg_store_plans layout tracks WAL bytes), and \
-             derived_plan_time_pct is null except where the installed \
+             derived_plan_time_fraction is null except where the installed \
              extension tracks planning time separately from execution \
              time. Returns up to limit rows plus has_more when more rows \
              matched than were returned. Each row carries its own \
