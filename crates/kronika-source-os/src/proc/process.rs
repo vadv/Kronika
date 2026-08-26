@@ -224,15 +224,13 @@ impl<'a> ProcessReader<'a> {
         self.read_raw(pid, "io").ok().map(parse_io)
     }
 
-    // Non-Linux platforms have no fs-creds switch to fall back to, so this
-    // always reports unavailable. The receiver is unused here but required:
-    // `read_io` (built on every platform) calls both variants as methods on
-    // the same type.
+    // Non-Linux builds cannot switch filesystem credentials. Keep the method
+    // shape used by shared `read_io`.
     #[cfg(not(target_os = "linux"))]
     #[allow(
         clippy::unused_self,
         clippy::needless_pass_by_ref_mut,
-        reason = "kept as a method to match the Linux variant's call site in the shared, non-cfg-gated read_io"
+        reason = "matches the Linux method called by platform-neutral read_io"
     )]
     const fn read_io_with_fs_creds(&mut self, _pid: i32, _uid: u32, _gid: u32) -> Option<ProcIo> {
         None

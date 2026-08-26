@@ -3322,10 +3322,8 @@ impl PreparedSnapshot {
         Ok(())
     }
 
-    /// Runs the same aggregate/filter/sort pipeline `emit_relation_page`
-    /// streams over HTTP, but bounded top-N instead of cursor-relative
-    /// paging: always ranks from the top and reports `has_more` rather than
-    /// a next-page cursor. Shared computation for MCP table/index retrieval.
+    /// Returns the first `limit` aggregates after filter and sort, plus whether
+    /// more matched.
     pub(crate) fn compute_relation_rows(
         &self,
         limit: usize,
@@ -3398,14 +3396,9 @@ impl PreparedSnapshot {
         Ok((rows, has_more))
     }
 
-    /// Applies an already-built expression tree as this snapshot's search,
-    /// bypassing the HTTP text parser (`StructuredSearch::parse`). This is
-    /// the MCP filter path (`mcp::filter::build_search`): it builds the same
-    /// `Expr`/`SearchClause` tree straight from typed JSON, so there is no
-    /// query text to parse or to round-trip through. Runs the same
-    /// grouped-phase and field-projection checks `prepare` applies to a
-    /// text search, so MCP and HTTP filters are validated identically.
-    /// A no-op when `search` is `None`.
+    /// Applies a typed expression after the grouped-phase and projection
+    /// validation used for parsed HTTP search. `None` leaves the snapshot
+    /// unchanged.
     pub(crate) fn with_search(
         mut self,
         search: Option<StructuredSearch>,

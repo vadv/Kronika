@@ -1,5 +1,3 @@
-//! Tool name -> handler routing.
-
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 
 use crate::config::Config;

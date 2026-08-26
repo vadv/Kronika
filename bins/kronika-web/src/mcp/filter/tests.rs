@@ -38,9 +38,8 @@ fn no_filters_produces_no_search() {
 
 #[test]
 fn two_filters_are_anded_together() {
-    // `pid` (an identifier field) cannot take `Gt` — comparison operators
-    // only apply to quantity fields — so the second predicate here uses
-    // `rss`, a real quantity field on `os_process`.
+    // `Gt` applies to quantity fields such as `rss`, not identifiers such as
+    // `pid`.
     let filters = vec![
         FilterInput {
             field: "state".to_owned(),
@@ -56,8 +55,6 @@ fn two_filters_are_anded_together() {
     let search = build_search("os_process", &filters)
         .expect("valid filters")
         .expect("search");
-    // Both clauses must be visited by matches_all's predicate — a pure AND
-    // has exactly two Predicate leaves, no Or node.
     let mut seen = Vec::new();
     search.matches_all(|clause| {
         seen.push(clause.key);

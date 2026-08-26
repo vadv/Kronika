@@ -31,7 +31,7 @@ fn bounded_limit_rejects_zero_and_values_above_the_cap() {
         .clone();
     assert!(
         message.contains("limit") && message.contains("5000") && message.contains("4000000000"),
-        "error should name the field, the cap and the rejected value: {message}"
+        "error must name the field, the cap and the rejected value: {message}"
     );
 
     let zero = bounded_limit("limit", 0, 5_000).expect_err("zero");
@@ -42,7 +42,7 @@ fn bounded_limit_rejects_zero_and_values_above_the_cap() {
         .clone();
     assert!(
         message.contains("limit"),
-        "error should name the field: {message}"
+        "error must name the field: {message}"
     );
 }
 

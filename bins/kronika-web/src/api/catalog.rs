@@ -132,10 +132,9 @@ impl PreparedCatalog {
         Ok(())
     }
 
-    /// Distinct logical sections recorded across every segment in this
-    /// window, rows and bytes summed. Same per-segment field composition
-    /// `/api/catalog` reports (`section_values`), collapsed to one entry per
-    /// section for `kronika_get_context`.
+    /// Physical section layouts recorded in the selected segments. Rows and
+    /// bytes are summed by `type_id`; output fields match `/api/catalog`
+    /// section entries.
     pub(crate) fn recorded_sections(&self) -> Vec<Value> {
         let mut totals: BTreeMap<u32, SegmentSection> = BTreeMap::new();
         for segment in &self.listing.segments {

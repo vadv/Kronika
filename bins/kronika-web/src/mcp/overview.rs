@@ -1,4 +1,4 @@
-//! `kronika_overview`: whole-window ranking, the entry point.
+//! `kronika_overview`: whole-window ranking for recorded section fields.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -47,7 +47,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
                     "others_total": null,
                     "entity_count": DecimalI64(0),
                 }),
-                "no rows matched the requested window",
+                "No recorded rows matched the inclusive window.",
             );
         }
         Err(error) => return mcp_error(error.to_string()),
@@ -60,7 +60,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         .map(|entity| json!({ "key": entity.key, "total": entity.total }))
         .collect();
     let summary = format!(
-        "{} ranked entities of {entity_count} recorded",
+        "Returned {} of {entity_count} recorded identities.",
         entities.len()
     );
 

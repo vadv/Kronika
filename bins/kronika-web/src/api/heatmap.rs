@@ -157,18 +157,11 @@ impl PreparedHeatmap {
         Ok(())
     }
 
-    /// Ranks entities over the full requested window, without the per-column
-    /// cell grid `stream` renders for the HTTP grid view. Shared computation
-    /// for `kronika_overview`.
+    /// Returns whole-window top-N without the HTTP cell grid.
     ///
-    /// For a gauge cut, a band total is not the sum of each entity's own
-    /// window maximum: `stream` corrects `totals_total` with `band_peak`
-    /// over the per-column sums already folded during ranking, and corrects
-    /// `others_total` from the winners-only cells `fill`/`fill_grouped`
-    /// compute (a band cell holds each entity's *last* value in the column,
-    /// not its maximum, so the "everyone else" band cannot be recovered
-    /// from the per-entity maxima ranking already has). This mirrors that
-    /// correction without building the rest of the per-column grid.
+    /// Gauge totals use the peak of per-column entity sums. `others_total` is
+    /// computed from per-column totals minus ranked-entity cells; it cannot be
+    /// derived from per-entity window maxima.
     pub(crate) fn rank_only(
         &self,
         cancelled: &impl Fn() -> bool,
@@ -1277,16 +1270,13 @@ pub(super) struct Ranked {
     pub(super) out_of_order: u64,
 }
 
-/// One ranked entity's total over the requested window — the shape
-/// `kronika_overview` needs, independent of the HTTP heatmap's NDJSON wire
-/// format.
+/// Entity key and whole-window ranking value.
 pub(crate) struct RankedEntity {
     pub(crate) key: String,
     pub(crate) total: Option<f64>,
 }
 
-/// Whole-window ranking result, shared by the HTTP heatmap stream and the
-/// `kronika_overview` MCP tool.
+/// Whole-window top-N with total and unranked-band values.
 pub(crate) struct HeatmapRanking {
     pub(crate) entities: Vec<RankedEntity>,
     pub(crate) totals_total: Option<f64>,

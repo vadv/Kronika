@@ -7,5 +7,5 @@ __pycache__/
 /demo-data-*/
 /demo-image.tar
 
-# Coding-agent working notes (AGENTS.md: these stay out of the repo)
+# Local coding-agent plans
 /docs/superpowers/

@@ -1,11 +1,4 @@
-//! Stateless Model Context Protocol transport: `kronika_overview`,
-//! `kronika_get_context`, `kronika_find_postgresql_tables`,
-//! `kronika_find_postgresql_indexes`, `kronika_find_postgresql_activity`,
-//! `kronika_find_postgresql_locks`, `kronika_find_postgresql_vacuum`,
-//! `kronika_find_postgresql_databases`, `kronika_find_postgresql_statements`,
-//! `kronika_find_postgresql_plans`, `kronika_find_processes`,
-//! `kronika_get_row_detail`, and `kronika_find_events` served over
-//! Streamable HTTP.
+//! Stateless, tools-only MCP transport over Streamable HTTP.
 
 use std::sync::Arc;
 
@@ -46,14 +39,7 @@ struct KronikaMcp {
     config: Arc<Config>,
 }
 
-// `ServerHandler` supplies a default for every method (read directly from
-// rmcp 3.1.4's `server_handler_methods!` macro, `src/handler/server.rs`).
-// The ones this struct leaves unimplemented already behave correctly for a
-// tools-only server: `get_prompt`/`read_resource`/`set_level`/`subscribe`/
-// `unsubscribe` default to `method_not_found`, and `list_prompts`/
-// `list_resources`/`list_resource_templates` default to an empty result,
-// which is the correct reply since `get_info` never advertises those
-// capabilities. No overrides needed beyond the three below.
+// Unadvertised prompt and resource methods use rmcp's default responses.
 impl ServerHandler for KronikaMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -75,10 +61,7 @@ impl ServerHandler for KronikaMcp {
     ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
         let config = Arc::clone(&self.config);
         async move {
-            // `dispatch` opens segments, parses catalogs and decompresses rows
-            // with `std::fs`-based blocking I/O. Running it directly here
-            // would tie up a Tokio worker thread for the whole read, the same
-            // hazard `main.rs`'s `/api/*` path avoids with `spawn_blocking`.
+            // Segment reads and decoding block; keep them off Tokio worker threads.
             let result = tokio::task::spawn_blocking(move || dispatch::dispatch(&config, request))
                 .await
                 .unwrap_or_else(|join_error| {
@@ -89,9 +72,7 @@ impl ServerHandler for KronikaMcp {
     }
 }
 
-/// Serve one authenticated request through the stateless Streamable HTTP
-/// transport. Caller has already run the same admission check `/api/*`
-/// uses before this is called.
+/// Handles an already-authenticated request with stateless Streamable HTTP.
 pub(crate) async fn response<B>(config: Arc<Config>, request: Request<B>) -> Response<WebBody>
 where
     B: Body + Send + 'static,
@@ -116,8 +97,7 @@ where
     with_private_headers(response)
 }
 
-/// Every `/mcp` response carries this cache policy: the response depends on
-/// who authenticated, so it is never a shared cache candidate.
+/// Makes MCP responses private, non-cacheable, and varied by authentication headers.
 pub(crate) fn with_private_headers(mut response: Response<WebBody>) -> Response<WebBody> {
     response
         .headers_mut()

@@ -1020,20 +1020,8 @@ fn validate_exact_locator(
     Ok(())
 }
 
-/// One ranked process row, self-describing for MCP consumers instead of the
-/// HTTP wire's positional `values` array: `pid` is the row's identity (every
-/// `os_process` row has one), `ppid` is broken out too since a caller
-/// commonly wants to walk the process tree, and everything else — including
-/// the `user`/`effective_user`/`cpu_time_ticks` virtual fields `row_record`
-/// already knows how to render — is named in `fields`. `pid`/`ppid` are also
-/// present in `fields` under their own names; keeping both is simpler than
-/// special-casing their removal, and a duplicate is harmless.
-///
-/// `segment_id`/`type_id`/`row_ordinal`/`at` are `row_record`'s own
-/// `segment_id`/`type_id`/`ordinal`/`timestamp` coordinate, carried through
-/// under `kronika_get_row_detail`'s field names: this is the locator that
-/// tool needs, so a row this type describes is addressable by
-/// `kronika_get_row_detail` without the caller reconstructing it.
+/// Keyed rendered process row. Locator fields identify the exact physical row;
+/// `pid` and `ppid` appear both as typed members and in `fields`.
 pub(crate) struct ProcessRowOut {
     pub(crate) pid: i64,
     pub(crate) ppid: Option<i64>,
@@ -1044,13 +1032,8 @@ pub(crate) struct ProcessRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-/// `ProcessRowOut` without the `pid`/`ppid` identity: the shape
-/// `compute_plain_rows` returns for the six `PostgreSQL` sections that carry
-/// no process-tree identity of their own (`pg_stat_activity`, `pg_locks`,
-/// `pg_stat_progress_vacuum`, `pg_stat_database`, `pg_stat_statements`,
-/// `pg_store_plans`). Every projected field is named in `fields`;
-/// `segment_id`/`type_id`/`row_ordinal`/`at` are the same
-/// `kronika_get_row_detail` locator `ProcessRowOut` carries.
+/// Keyed rendered PostgreSQL row with the exact physical locator used by row
+/// detail.
 pub(crate) struct PlainRowOut {
     pub(crate) segment_id: i64,
     pub(crate) type_id: u32,
@@ -1059,10 +1042,6 @@ pub(crate) struct PlainRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-/// One ranked row rendered through `row_record`, still paired with the
-/// `Plan` that produced it: `ranked_records`/`render_ranked_rows`'s shared
-/// output, before `compute_process_rows`/`compute_plain_rows` reshape it
-/// into their own typed row.
 type RankedRecord<'a> = (&'a Plan, Value);
 
 impl PreparedSnapshot {
@@ -1531,11 +1510,8 @@ impl PreparedSnapshot {
         Ok(())
     }
 
-    /// Runs the same ranked top-N scan `emit_page` streams over HTTP, but
-    /// bounded top-N instead of cursor-relative paging: always ranks from
-    /// the top and reports `has_more` rather than a next-page cursor.
-    /// Scoped to `os_process`, the only section this method's row shape
-    /// covers. Shared computation for MCP process retrieval.
+    /// Returns the first `limit` rows from the full sort and whether more
+    /// matched. Supports `os_process` only.
     pub(crate) fn compute_process_rows(
         &self,
         limit: usize,
@@ -1555,14 +1531,8 @@ impl PreparedSnapshot {
         Ok((rows, has_more))
     }
 
-    /// Same bounded top-N scan as `compute_process_rows`, for the six
-    /// `PostgreSQL` sections that are plain (non-relation-grouped) rows: no
-    /// `pid`/`ppid` identity, no virtual fields, just whatever `row_record`
-    /// projects, keyed by field name. Shared computation for MCP
-    /// `pg_stat_activity`/`pg_locks`/`pg_stat_progress_vacuum`/
-    /// `pg_stat_database` retrieval, and the physical read half of
-    /// `pg_stat_statements`/`pg_store_plans` retrieval — the MCP handler
-    /// layers per-row ratio math on top of these fields for the latter two.
+    /// Returns the first `limit` rows from the full sort for supported
+    /// non-relation PostgreSQL sections.
     pub(crate) fn compute_plain_rows(
         &self,
         limit: usize,
@@ -1590,15 +1560,8 @@ impl PreparedSnapshot {
         Ok((rows, has_more))
     }
 
-    /// The section-agnostic half of `compute_process_rows`/
-    /// `compute_plain_rows`: ranks the single requested section's rows the
-    /// same way `emit_page` does, top-N instead of cursor-relative, and
-    /// renders each survivor through the same `row_record` HTTP uses.
-    /// Leaves the reshape into a typed row (`process_row_out`/
-    /// `plain_row_out`) to the caller, since that is the one part that
-    /// actually differs per section. Does not check `logical_name` itself —
-    /// each public caller validates the section names it supports before
-    /// calling in.
+    /// Ranks one section from the start and renders survivors through
+    /// `row_record`. Callers validate the section name.
     fn ranked_records(
         &self,
         limit: usize,
@@ -1643,9 +1606,7 @@ impl PreparedSnapshot {
         Ok((records, has_more))
     }
 
-    /// Renders each ranked candidate through the same `row_record` HTTP
-    /// uses, paired with the `Plan` that produced it so a caller can reshape
-    /// the positional `values` into its own keyed row type.
+    /// Renders ranked rows with the `Plan` needed to re-key positional fields.
     fn render_ranked_rows<'a>(
         &self,
         contexts: &[PageContext<'a>],
@@ -1705,22 +1666,9 @@ impl PreparedSnapshot {
         Ok(records)
     }
 
-    /// Fetches the single physical row `row_ordinal` addresses on the
-    /// anchor segment, through the same `row_record` rendering HTTP's timed
-    /// path uses, reshaped into one flat keyed object: every projected
-    /// field under its own name, plus the coordinate that addressed it
-    /// (`segment_id`, `type_id`, `row_ordinal`, `at`) so the caller can
-    /// confirm what it got. `prepare` already ran `validate_exact_locator`
-    /// before a `PreparedSnapshot` with `row_ordinal` set exists, so a
-    /// `None` here is not observed in practice; it stays typed rather than
-    /// assumed away.
-    ///
-    /// Scoped to the plain, single-section timed path (`timed_contexts`/
-    /// `emit_context_rows`): a relation-grouped section
-    /// (`pg_stat_user_tables`/`pg_stat_user_indexes`) is windowed
-    /// differently (`partitioned_contexts`, keyed by `datid`), which this
-    /// does not replicate, so it is rejected rather than silently
-    /// mis-rendered.
+    /// Returns the anchored physical row as keyed fields plus its locator.
+    /// Relation-grouped sections are rejected because they require partitioned
+    /// contexts.
     pub(crate) fn fetch_exact_row(
         &self,
         cancelled: &impl Fn() -> bool,
@@ -2972,12 +2920,7 @@ impl PreparedSnapshot {
     }
 }
 
-/// The locator and positional `values` `row_record` puts on the wire,
-/// pulled back apart so `process_row_out`/`plain_row_out` only have to build
-/// their own keyed shape from `values`. `segment_id`, `ordinal` and
-/// `timestamp` come off `row_record`'s own decimal-string rendering of
-/// `RowCoordinate` and the row's timestamp; `type_id` is left to the caller,
-/// since it comes straight from `plan` instead of this record.
+/// Locator and positional values extracted from `row_record` output.
 struct RowLocator {
     segment_id: i64,
     row_ordinal: u64,
@@ -3024,13 +2967,7 @@ fn row_locator(plan: &Plan, mut record: Value) -> Result<RowLocator, ApiError> {
     })
 }
 
-/// Reshapes `row_locator`'s output into `ProcessRowOut`'s keyed shape,
-/// using `plan.fields`'s names for the zip. `pid` is required —
-/// `compute_process_rows`'s callers request the default (empty) field list,
-/// so it is always part of `os_process`'s full projection; a plan built with
-/// an explicit field list that dropped `pid` would be a caller bug, not a
-/// recoverable read failure, so it surfaces as `ApiError::Unreadable`
-/// alongside `row_locator`'s own internal-shape checks.
+/// Re-keys a rendered process row. A missing `pid` is invalid rendered data.
 fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError> {
     let RowLocator {
         segment_id,
@@ -3061,10 +2998,6 @@ fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError
     })
 }
 
-/// Reshapes `row_locator`'s output into `PlainRowOut`'s keyed shape: every
-/// projected field named in `fields`, no identity column singled out —
-/// unlike `os_process`, none of the sections `compute_plain_rows` covers
-/// has a column every row is guaranteed to carry.
 fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
     let RowLocator {
         segment_id,
@@ -3085,13 +3018,8 @@ fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
     })
 }
 
-/// Pulls `row_record`'s positional `values` array back out of its `record()`
-/// framing (`serde_json::to_vec` plus a trailing newline) so `fetch_exact_row`
-/// can re-key it by field name. `record()` bytes come only from a `Value`
-/// this crate built, so any parse failure here would be an internal
-/// invariant break, not a caller mistake; either way `None` collapses into
-/// `fetch_exact_row`'s existing "row not found" return, one path instead of
-/// a second one for a case that should not happen.
+/// Extracts values from an internal NDJSON row; malformed internal data returns
+/// `None`.
 fn row_values(bytes: &[u8]) -> Option<Vec<Value>> {
     let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else {
         return None;
@@ -3710,9 +3638,8 @@ fn search_metric(
     }
 }
 
-/// `pg_stat_activity`'s two quantity fields are `#[column(g)]` gauges (xid/
-/// xmin age, read straight off the backend), same as `process_search_metric`'s
-/// `rss`/`vsz`/`threads` — no predecessor, no rate.
+/// Compares recorded xid/xmin-age gauges directly; no predecessor or rate is
+/// used.
 fn activity_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
     match metric {
         "backend_xid_age" => gauge_metric(row, "backend_xid_age", 1, 1),
@@ -3721,9 +3648,8 @@ fn activity_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> 
     }
 }
 
-/// `pg_stat_progress_vacuum`'s three quantity fields are `#[column(g)]`
-/// gauges (heap block counts for the vacuum in progress) — no predecessor,
-/// no rate, same reasoning as `activity_search_metric`.
+/// Compares recorded heap-block gauges directly; no predecessor or rate is
+/// used.
 fn vacuum_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
     match metric {
         "heap_blks_total" => gauge_metric(row, "heap_blks_total", 1, 1),
@@ -3733,13 +3659,8 @@ fn vacuum_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
     }
 }
 
-/// `pg_stat_database`'s `numbackends` is a `#[column(g)]` gauge; its other
-/// four quantity fields (`xact_commit`/`xact_rollback`/`deadlocks`/
-/// `temp_bytes`) are `#[column(c)]` cumulative counters, rendered as a
-/// per-second rate by `row_record` the same way `pg_stat_statements`'
-/// cumulative columns are — so their search value is the same
-/// `rate_metric` computation `postgres_search_metric` already runs for
-/// `call_rate` and friends, not the raw counter.
+/// Compares `numbackends` as a recorded gauge and the four cumulative fields
+/// as interval rates.
 fn database_search_metric(
     context: &PageContext<'_>,
     row: &Row,

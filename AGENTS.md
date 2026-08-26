@@ -146,11 +146,9 @@ owner's attention:
 Formats are not findings either, until there is a release. Nothing has shipped,
 so a name, a magic number or a layout that reads wrong gets changed on the spot.
 
-Design docs and implementation plans a coding-agent skill writes along the way
-(Superpowers specs, plans, anything under `docs/superpowers/`) do not go into
-the repository. They are working notes for the session that produced them.
-DESIGN.md is the durable design record; a PR carries code, tests, and DESIGN.md
-updates, not a second copy of the planning conversation.
+Do not commit coding-agent plans or design drafts, including
+`docs/superpowers/`. Record durable design changes in both `DESIGN.md` and
+`DESIGN.ru.md`.
 
 ## Language
 

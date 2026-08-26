@@ -1,5 +1,5 @@
-//! `kronika_find_processes`: bounded top-N reads of the current `os_process`
-//! snapshot, through `compute_process_rows`.
+//! `kronika_find_processes`: bounded sorting and filtering of recorded
+//! `os_process` rows relative to the greatest-ID segment.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -70,7 +70,9 @@ fn call_with(
         Err(error) => return mcp_error(error.to_string()),
     };
     let Prepared::Snapshot(prepared) = prepared else {
-        return mcp_error("snapshot request did not prepare a process snapshot");
+        return mcp_error(
+            "internal error: snapshot preparation returned an unexpected response type",
+        );
     };
     let prepared = match prepared.with_search(search) {
         Ok(prepared) => prepared,
@@ -84,23 +86,20 @@ fn call_with(
     let row_count = rows.len();
     let rows: Vec<Value> = rows.into_iter().map(row_to_json).collect();
     let summary = format!(
-        "{row_count} process row{}{}",
+        "Returned {row_count} recorded process row{}{}.",
         if row_count == 1 { "" } else { "s" },
-        if has_more { ", more available" } else { "" },
+        if has_more {
+            "; result truncated to limit"
+        } else {
+            ""
+        },
     );
     mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
 }
 
-/// Flattens one process row into a single keyed JSON object: `fields`
-/// first (already keyed and JSON-rendered by `row_record`, and already
-/// carrying `pid`/`ppid` under their own names), then `pid`/`ppid` written
-/// again from `ProcessRowOut`'s own typed copies so they stay present
-/// even if a future field-list change ever narrowed `fields` — same
-/// "identity wins on collision" flattening `postgresql.rs`'s `row_to_json`
-/// uses for `RelationRow`. `segment_id`/`type_id`/`row_ordinal`/`at` are
-/// written out as decimal strings, the same convention
-/// `kronika_get_row_detail` (`mcp/row_detail.rs`) uses for these same four
-/// fields, so a caller can copy them straight into that tool's arguments.
+/// Flattens projected fields, overwrites `pid`/`ppid` from the typed identity,
+/// and appends decimal-string locator fields accepted by
+/// `kronika_get_row_detail`.
 fn row_to_json(row: ProcessRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("pid".to_owned(), json!(row.pid));

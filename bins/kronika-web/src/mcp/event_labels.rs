@@ -1,25 +1,11 @@
-//! Human-readable labels for the Kronika-invented numeric codes on the
-//! seven event-shaped log sections `kronika_find_events` and
-//! `kronika_get_row_detail` both render. The codes are not raw `PostgreSQL`
-//! or `PgBouncer` values and are not even a monotonic severity ordering (a
-//! `pg_log_errors` WARNING is numerically 3, higher than ERROR's 0), so a
-//! tool-calling model has no safe way to guess them. Before this module,
-//! the only decoding lived in `ui/src/events-format.ts`'s
-//! `enumValueKey`/`categoryLabel`, reachable only by the browser UI.
-//!
-//! Label strings are copied verbatim from that file's own tables so the
-//! MCP surface and the browser UI never disagree. The numeric field stays
-//! untouched — a caller doing numeric comparison keeps working — and a
-//! `<field>_label` sibling is added next to it.
+//! Adds text labels for section-specific numeric event codes.
+//! Numeric fields remain unchanged; labels are added as `<field>_label`
+//! siblings. Severity codes are not ordered by severity.
 
 use serde_json::{Map, Value, json};
 
-/// Adds a `<field>_label` sibling for every numeric code field `section`
-/// carries. A no-op for any other section (including `pg_log_slow_queries`,
-/// one of the seven event sections but with no enum-coded field of its
-/// own), for a field missing from `fields`, and for a code outside its
-/// label table — the same "stays missing, does not guess" treatment the
-/// rest of this codebase gives an absent or unrecognized value.
+/// Adds labels for known code fields. Unknown sections, missing fields,
+/// non-integer codes, and out-of-range codes remain unchanged.
 pub(crate) fn label_event_fields(section: &str, fields: &mut Map<String, Value>) {
     match section {
         "pg_log_errors" => {
@@ -35,7 +21,8 @@ pub(crate) fn label_event_fields(section: &str, fields: &mut Map<String, Value>)
     }
 }
 
-// Verbatim from `ui/src/events-format.ts`'s `enumValueKey`/`ERROR_CATEGORIES`.
+// Labels must match the corresponding tables in
+// `bins/kronika-web/ui/src/events-format.ts`.
 const SEVERITY_LABELS: &[&str] = &["error", "fatal", "panic", "warning", "log"];
 const CATEGORY_LABELS: &[&str] = &[
     "lock",

@@ -6,7 +6,7 @@ use super::{
 };
 
 #[test]
-fn the_catalog_has_exactly_these_thirteen_tools_so_far() {
+fn catalog_has_exactly_thirteen_tools() {
     let catalog = tools();
     let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_ref()).collect();
     assert_eq!(
@@ -48,9 +48,7 @@ fn overview_schema_requires_section_fields_from_to_top() {
 
 #[test]
 fn every_limit_or_top_field_documents_its_runtime_cap_in_the_json_schema() {
-    // Mirrors the runtime ceilings `mcp::semantics::bounded_limit` enforces
-    // (`route::MAX_HEATMAP_TOP`, `route::MAX_SNAPSHOT_PAGE_SIZE`): a calling
-    // model should see the cap in the schema, not discover it from an error.
+    // The schema exposes the cap before dispatch.
     let capped = [
         (OVERVIEW_TOOL, "top", 500),
         (FIND_POSTGRESQL_TABLES_TOOL, "limit", 5_000),
@@ -74,7 +72,7 @@ fn every_limit_or_top_field_documents_its_runtime_cap_in_the_json_schema() {
         assert_eq!(
             maximum,
             &serde_json::json!(max),
-            "{tool_name}.{field} should document maximum {max}, schema was {maximum:?}"
+            "{tool_name}.{field} maximum differs: expected {max}, got {maximum:?}"
         );
     }
 }

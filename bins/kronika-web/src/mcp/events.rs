@@ -1,10 +1,5 @@
-//! `kronika_find_events`: bounded merge across the recorded event-shaped
-//! log sections (`pg_log_*`, `pgbouncer_events`), through one
-//! `fetch_bounded_events` call covering every requested source, so a
-//! segment overlapping the window is opened once no matter how many
-//! sources it is read for. No existing code merges rows across sources —
-//! the Events console (`ui/src/events-view.tsx`) does that grouping in the
-//! browser, over separate per-section HTTP fetches.
+//! `kronika_find_events`: bounded reads from recorded PostgreSQL and PgBouncer
+//! event sections.
 
 use std::path::Path;
 
@@ -21,10 +16,7 @@ use super::catalog::EventsInput;
 use super::event_labels::label_event_fields;
 use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
-/// The event-shaped logical sections this tool can read: the Events
-/// console's own `EVENT_STREAMS` list (`ui/src/events-view.tsx`) minus
-/// `pg_settings`, which the console reads only to label a slow-query
-/// threshold and carries no event rows of its own.
+/// Event sections accepted by this tool.
 const SOURCES: [&str; 7] = [
     "pg_log_errors",
     "pg_log_checkpoints",
@@ -35,9 +27,8 @@ const SOURCES: [&str; 7] = [
     "pgbouncer_events",
 ];
 
-/// One hour in microseconds, minus one: the widest window this tool
-/// accepts, matching the Events console's own window span
-/// (`ui/src/api.ts`: `from=start&to=start + 3_600_000_000 - 1`).
+/// Maximum endpoint difference for an inclusive window: 3,599,999,999
+/// microseconds.
 const MAX_WINDOW_MICROS: i64 = 3_600_000_000 - 1;
 
 pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
@@ -86,15 +77,17 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         .map(|(source, row)| row_to_json(source, row))
         .collect();
     let summary = format!(
-        "{row_count} event row{}{}",
+        "Returned {row_count} recorded event row{}{}.",
         if row_count == 1 { "" } else { "s" },
-        if has_more { ", more available" } else { "" },
+        if has_more {
+            "; result truncated to limit"
+        } else {
+            ""
+        },
     );
     mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
 }
 
-/// Validates `sources` against [`SOURCES`], defaulting to all seven when
-/// omitted.
 fn resolve_sources(requested: Option<Vec<String>>) -> Result<Vec<&'static str>, String> {
     let Some(requested) = requested else {
         return Ok(SOURCES.to_vec());
@@ -111,8 +104,7 @@ fn resolve_sources(requested: Option<Vec<String>>) -> Result<Vec<&'static str>, 
         .collect()
 }
 
-/// Rejects a window wider than [`MAX_WINDOW_MICROS`] or with `to` before
-/// `from`, before any segment is opened.
+/// Validates the inclusive `[from, to]` window before opening storage.
 fn check_window(from: i64, to: i64) -> Result<(), String> {
     let span = to
         .checked_sub(from)
@@ -123,15 +115,13 @@ fn check_window(from: i64, to: i64) -> Result<(), String> {
     if span > MAX_WINDOW_MICROS {
         return Err(format!(
             "window too wide: to - from is {span} microseconds, the limit is \
-             {MAX_WINDOW_MICROS} microseconds (one hour)"
+             {MAX_WINDOW_MICROS} microseconds"
         ));
     }
     Ok(())
 }
 
-/// Opens the segments overlapping `[from, to]`, sorted by `min_ts` — the
-/// same ascending order `fetch_bounded_events` relies on to bound a
-/// timestamp-ordered scan without a heap.
+/// Opens segments overlapping inclusive `[from, to]`, sorted by `min_ts`.
 fn windowed_segments(
     root: &Path,
     from: i64,
@@ -144,13 +134,8 @@ fn windowed_segments(
     Ok((reader, segments))
 }
 
-/// Flattens one event row into a single keyed JSON object: `fields` first,
-/// labeled in place by `label_event_fields` (adds a `<field>_label` sibling
-/// next to a numeric log-event code, source's own numeric fields
-/// untouched), then `source` and the locator (`segment_id`/`type_id`/
-/// `row_ordinal`/`at`) written as decimal strings, the same convention
-/// `kronika_get_row_detail` (`mcp/row_detail.rs`) uses for these same four
-/// fields, so a caller can copy them straight into that tool's arguments.
+/// Adds labels and `source`, then appends decimal-string locator fields
+/// accepted by `kronika_get_row_detail`.
 fn row_to_json(source: &str, row: EventRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     label_event_fields(source, &mut object);

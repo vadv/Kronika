@@ -1,4 +1,4 @@
-//! `kronika_get_context`: what this host actually recorded.
+//! `kronika_get_context`: physical section layouts found in recorded segments.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -19,6 +19,6 @@ pub(crate) fn call(config: &Config, _arguments: Map<String, Value>) -> CallToolR
         Err(error) => return mcp_error(error.to_string()),
     };
     let sections = prepared.recorded_sections();
-    let summary = format!("{} recorded sections", sections.len());
+    let summary = format!("{} physical section layouts recorded", sections.len());
     mcp_structured(json!({ "sections": sections }), summary)
 }

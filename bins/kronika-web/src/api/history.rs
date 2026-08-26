@@ -337,11 +337,8 @@ pub(super) fn stream_plans(
     Ok(true)
 }
 
-/// One event-log row bounded by [`fetch_bounded_events`], keyed by column
-/// name instead of `stream_plans`'s positional `values` array.
-/// `segment_id`/`type_id`/`row_ordinal`/`at` are the same
-/// `kronika_get_row_detail` locator `ProcessRowOut`/`PlainRowOut`
-/// (`api/snapshot.rs`) carry, so a caller can chain straight into that tool.
+/// Recorded event row keyed by field name, with the exact locator accepted by
+/// `kronika_get_row_detail`.
 pub(crate) struct EventRowOut {
     pub(crate) segment_id: i64,
     pub(crate) type_id: u32,
@@ -350,31 +347,16 @@ pub(crate) struct EventRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-/// One logical section's bounded rows from [`fetch_bounded_events`], plus
-/// whether more rows matched than were returned for that section alone.
+/// Bounded rows for one logical section; `has_more` is section-local.
 pub(crate) struct SectionEvents<'a> {
     pub(crate) section: &'a str,
     pub(crate) rows: Vec<EventRowOut>,
     pub(crate) has_more: bool,
 }
 
-/// Bounded top-N read of one or more logical sections across `segments`,
-/// keyed by field name for MCP consumers instead of `stream_plans`'s
-/// positional wire format. Each segment is opened at most once and its
-/// catalog shared across every requested section, rather than reopening the
-/// same physical file once per section — `kronika_find_events` reads up to
-/// seven sections over the same window, and `Segment::open` is a real file
-/// open plus catalog parse, not a cheap wrap.
-///
-/// Physical row order within a segment is append order, which for a
-/// log-derived event section is already chronological, and `segments` is
-/// scanned in the order given (callers pass them sorted by `min_ts`, the
-/// same order `PreparedHour` streams). That makes "collect the first
-/// `limit` matching rows and stop" a correct timestamp-ascending bound on
-/// its own — unlike `PreparedSnapshot`'s `PageRows`, nothing here ranks by
-/// an arbitrary sort column, so no heap is needed. Each section keeps its
-/// own bound and its own `has_more`, exactly as if fetched independently;
-/// only the segment opens are shared.
+/// Collects at most `limit + 1` matching rows per section in physical reader
+/// order. Each segment is opened once for all requested sections; `has_more`
+/// is computed independently per section.
 pub(crate) fn fetch_bounded_events<'a>(
     reader: &Reader,
     segments: &[SegmentRef],
@@ -446,13 +428,8 @@ pub(crate) fn fetch_bounded_events<'a>(
         .collect())
 }
 
-/// Scans one plan's rows for [`fetch_bounded_events`], stopping as soon as
-/// `rows` reaches `bound` (`limit + 1`, so the caller can tell `has_more`
-/// apart from "exactly `limit` rows exist"). Flushes the pending chunk
-/// early, before `ROW_CHUNK_ROWS`, once it alone would satisfy `bound` —
-/// `emit_chunk`'s streaming caller always wants every row, so it only ever
-/// flushes at the full batch size, but a bounded fetch must not decode
-/// hundreds of rows it is about to throw away just to fill one batch.
+/// Reads through `limit + 1` rows for `has_more` and flushes a partial chunk
+/// as soon as it reaches that bound.
 fn collect_bounded_rows(
     segment: &Segment,
     segment_id: i64,
@@ -515,9 +492,7 @@ fn collect_bounded_rows(
     Ok(())
 }
 
-/// Renders one drained chunk into [`EventRowOut`]s, the same
-/// dictionary-per-chunk resolution `emit_chunk` uses, reshaped to a keyed
-/// map through the same [`cell`] renderer instead of a positional array.
+/// Resolves one chunk's dictionary and renders keyed [`EventRowOut`] values.
 fn append_chunk(
     segment: &Segment,
     segment_id: i64,

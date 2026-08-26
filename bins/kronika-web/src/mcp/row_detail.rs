@@ -1,5 +1,4 @@
-//! `kronika_get_row_detail`: one exact row by its physical locator, through
-//! `PreparedSnapshot::fetch_exact_row`.
+//! `kronika_get_row_detail`: one recorded row addressed by its physical locator.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
@@ -57,7 +56,9 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Err(error) => return mcp_error(error.to_string()),
     };
     let Prepared::Snapshot(prepared) = prepared else {
-        return mcp_error("row locator did not prepare a snapshot");
+        return mcp_error(
+            "internal error: snapshot preparation returned an unexpected response type",
+        );
     };
     let row = match prepared.fetch_exact_row(&|| false) {
         Ok(row) => row,
@@ -65,21 +66,24 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
     };
     let Some(mut row) = row else {
         return mcp_error(format!(
-            "no row at segment {segment_id}, section {:?}, at {at}, ordinal {row_ordinal}",
-            input.section
+            "no recorded row matched segment_id={segment_id}, section={:?}, type_id={type_id}, at={at}, row_ordinal={row_ordinal}",
+            input.section,
         ));
     };
-    // Same numeric log-event codes `kronika_find_events` labels
-    // (`mcp/event_labels.rs`), so a row fetched by exact locator carries
-    // the same `<field>_label` siblings a listing row already has.
+    // Keep event-code labels identical between list and exact-row reads.
     if let Value::Object(fields) = &mut row {
         label_event_fields(&input.section, fields);
     }
-    mcp_structured(row, format!("row from {}", input.section))
+    mcp_structured(
+        row,
+        format!(
+            "Returned one {} row at the requested locator.",
+            input.section
+        ),
+    )
 }
 
-/// Accepts a JSON number or a decimal string, same convention
-/// `mcp::filter::identifier_value` already uses for a large `i64` input.
+/// Accepts a JSON integer or decimal string.
 fn decimal_i64(field: &str, value: &Value) -> Result<i64, String> {
     match value {
         Value::String(text) => text
@@ -94,7 +98,7 @@ fn decimal_i64(field: &str, value: &Value) -> Result<i64, String> {
     }
 }
 
-/// Same acceptance as [`decimal_i64`], for the unsigned `row_ordinal`.
+/// Accepts a non-negative JSON integer or decimal string.
 fn decimal_u64(field: &str, value: &Value) -> Result<u64, String> {
     match value {
         Value::String(text) => text.parse().map_err(|error| {
@@ -109,13 +113,8 @@ fn decimal_u64(field: &str, value: &Value) -> Result<u64, String> {
     }
 }
 
-/// Same acceptance as [`decimal_i64`], for the unsigned `type_id`. `type_id`
-/// fits comfortably inside JSON's safe-integer range on its own, but a
-/// `kronika_find_*` row renders it as a decimal string alongside
-/// `segment_id`/`row_ordinal`/`at`, so it takes the same string-or-number
-/// input here too — otherwise a caller copying a row's locator fields
-/// straight into this tool's arguments would hit a type mismatch on this
-/// one field alone.
+/// Accepts `type_id` in the number-or-decimal-string form emitted by find
+/// tools.
 fn decimal_u32(field: &str, value: &Value) -> Result<u32, String> {
     match value {
         Value::String(text) => text.parse().map_err(|error| {

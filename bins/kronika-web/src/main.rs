@@ -1,8 +1,8 @@
-//! Serves authenticated, per-segment Kronika resources over HTTP/1.1.
+//! Serves authenticated Kronika HTTP resources and MCP tools over HTTP/1.1.
 //!
-//! Disk, Parquet, index construction, and JSON record production run on Tokio's
-//! blocking pool. Request workers await only metadata and a bounded body
-//! channel. No data or response cache is retained by the process.
+//! Streamed API reads and response generation, plus MCP tool dispatch, run on
+//! Tokio's blocking pool. The process retains no segment, decoded-data, or
+//! response cache between requests.
 
 mod api;
 mod auth;
@@ -289,10 +289,9 @@ fn admitted_api(account: &config::Account, headers: &HeaderMap, now: u64) -> boo
     }
 }
 
-/// Reject any request carrying a well-formed `Origin` header — MCP clients
-/// are backend-to-backend, not browser JavaScript, so there is no origin to
-/// accept CORS from. A missing header (the normal case for these clients)
-/// passes through to the usual admission check.
+/// Rejects every `/mcp` request with an `Origin` header. A missing header continues
+/// to authentication; malformed or duplicate headers are bad requests, and valid
+/// browser origins are forbidden.
 fn reject_browser_origin(headers: &HeaderMap) -> Result<(), RequestError> {
     match unique_header(headers.get_all(ORIGIN).iter()) {
         SingleHeader::Absent => Ok(()),

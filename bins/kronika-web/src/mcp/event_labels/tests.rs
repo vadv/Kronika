@@ -30,8 +30,9 @@ fn labels_pg_log_autovacuum_kind() {
 }
 
 #[test]
-fn labels_pg_log_lock_waits_kind_without_inverting_it() {
-    // The reviewer's whole complaint: 0 and 1 read backwards if guessed.
+fn labels_pg_log_lock_waits_kind() {
+    // Codes 0 and 1 mean waiting and acquired; numeric order has no semantic
+    // direction.
     let mut still_waiting = json!({ "kind": 0 }).as_object().expect("object").clone();
     label_event_fields("pg_log_lock_waits", &mut still_waiting);
     assert_eq!(still_waiting["kind_label"], "waiting");
@@ -57,7 +58,6 @@ fn labels_pgbouncer_events_level() {
 
 #[test]
 fn leaves_pg_log_slow_queries_untouched() {
-    // One of the seven sections, but it carries no enum-coded field.
     let mut fields = json!({ "pattern": "select 1" })
         .as_object()
         .expect("object")
@@ -71,7 +71,7 @@ fn leaves_pg_log_slow_queries_untouched() {
 }
 
 #[test]
-fn leaves_a_missing_field_missing_rather_than_guessing() {
+fn leaves_a_missing_field_unlabeled() {
     let mut fields = json!({}).as_object().expect("object").clone();
     label_event_fields("pg_log_errors", &mut fields);
     assert!(!fields.contains_key("severity_label"));

@@ -11,13 +11,6 @@ use super::response;
 use crate::config::{Account, Config};
 use crate::tests::artifacts::Fixture;
 
-// No existing test in this crate builds a `Config`: `bins/kronika-web/src/tests.rs`
-// only ever constructs an `Account` (its `account()` helper), because routing
-// there is tested through `route_request`/`route_request_at`, which take
-// `&Account` rather than the full `Config`. This is the smallest `Config` that
-// satisfies the transport, mirroring that file's `account()` helper. Callers
-// that don't read the data root (`tools/list`, malformed-argument rejection)
-// pass an arbitrary path; callers that do pass a real `Fixture::root()`.
 fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
     Arc::new(Config {
         data_root,
@@ -118,9 +111,7 @@ fn get_context_reports_no_sections_on_an_empty_data_root() {
     assert_eq!(structured["sections"].as_array(), Some(&Vec::new()));
 }
 
-// Same values as `rank_only`'s `ranked_process_gauge_rows` fixture
-// (`bins/kronika-web/src/tests/artifacts.rs`): five pids, each sampled
-// twice, so ranking with top=2 leaves a non-empty "others" band.
+// Two samples per PID make ranking maxima differ from last-value band totals.
 fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
     [
         (100, 101, 50, "fixture"),
@@ -198,14 +189,12 @@ fn overview_rejects_a_top_above_the_heatmap_cap() {
         .clone();
     assert!(
         message.contains("500") || message.contains("top"),
-        "error should name the top cap: {message}"
+        "error must name the top cap: {message}"
     );
 }
 
 #[tokio::test]
 async fn overview_end_to_end_through_the_real_transport() {
-    // Same fixture as `overview_ranks_the_top_entities_and_reports_the_others_total`,
-    // driven through `mcp::response` instead of calling `overview::call` directly.
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
     fixture.finish();
@@ -288,9 +277,6 @@ fn find_postgresql_tables_ranks_and_filters() {
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 2);
-    // Rows are keyed, not positional — a real field name is directly
-    // addressable, and the higher seq_scan rate (alpha: 30 over 100 units)
-    // ranks first.
     assert_eq!(rows[0]["relname"], "alpha");
     assert_eq!(rows[0]["datname"], "db");
     assert_eq!(rows[1]["relname"], "beta");
@@ -341,7 +327,7 @@ fn find_postgresql_tables_rejects_a_limit_above_the_snapshot_page_size_cap() {
         .clone();
     assert!(
         message.contains("5000") || message.contains("limit"),
-        "error should name the limit cap: {message}"
+        "error must name the limit cap: {message}"
     );
 }
 
@@ -397,8 +383,8 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
 
 #[test]
 fn find_postgresql_activity_ranks_and_filters() {
-    // Two active backends (pid 0, pid 1) and one idle backend (pid 10_000),
-    // per append_postgres_health's own fixture shape.
+    // `append_postgres_health(2)` records active PIDs 0 and 1 and idle PID
+    // 10,000.
     let mut fixture = Fixture::new();
     fixture.append_postgres_health(2);
     fixture.finish();
@@ -419,7 +405,6 @@ fn find_postgresql_activity_ranks_and_filters() {
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 3);
-    // Sorted by pid descending: the idle backend (pid 10_000) ranks first.
     assert_eq!(rows[0]["pid"], 10_000);
     assert_eq!(rows[0]["state"], "idle");
     assert!(rows[0]["segment_id"].is_string());
@@ -454,9 +439,6 @@ fn find_postgresql_activity_rejects_malformed_arguments_without_panicking() {
 
 #[tokio::test]
 async fn find_postgresql_activity_end_to_end_through_the_real_transport() {
-    // Same fixture and assertions as `find_postgresql_activity_ranks_and_filters`,
-    // driven through `mcp::response` instead of calling `postgresql::call_activity`
-    // directly.
     let mut fixture = Fixture::new();
     fixture.append_postgres_health(2);
     fixture.finish();
@@ -620,10 +602,7 @@ fn find_postgresql_vacuum_rejects_malformed_arguments_without_panicking() {
 
 #[test]
 fn find_postgresql_databases_ranks_and_filters() {
-    // Same numbers as
-    // compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter
-    // (bins/kronika-web/src/tests/artifacts.rs): one database, sampled
-    // twice, so its deadlocks rate over the window is above zero.
+    // Two samples for one database produce a positive deadlock rate.
     let mut fixture = Fixture::new();
     fixture.append_postgres_database_snapshots(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
     fixture.finish();
@@ -693,11 +672,8 @@ fn find_postgresql_databases_rejects_malformed_arguments_without_panicking() {
     assert_eq!(result.is_error, Some(true));
 }
 
-/// Asserts a JSON value is a number within `1e-9` of `expected` — the
-/// derived fields divide two rates that were each already rounded once
-/// (`delta / elapsed_seconds`), so exact `f64` equality on the composed
-/// ratio is not guaranteed bit-for-bit even though the numbers are "nice"
-/// by construction.
+/// Checks a JSON number within `1e-9`; composed ratios divide previously
+/// rounded rates, so exact `f64` equality is not stable.
 fn assert_close(actual: &serde_json::Value, expected: f64) {
     let actual = actual
         .as_f64()
@@ -710,17 +686,8 @@ fn assert_close(actual: &serde_json::Value, expected: f64) {
 
 #[test]
 fn find_postgresql_statements_computes_derived_ratio_fields() {
-    // append_ranked_statements: ts=100 all-zero predecessor, ts=200 real
-    // readings, three queryids. Expected numbers hand-computed from its
-    // own `readings` tuple (bins/kronika-web/src/tests/artifacts.rs):
-    // queryid 1: calls=10, total_exec_time=100.0, rows=100,
-    //   shared_blks_hit=80, shared_blks_read=20, wal_bytes=100,
-    //   total_plan_time=100, mean/stddev_exec_time=10.0/9.0.
-    // queryid 2: calls=2, total_exec_time=30.0, rows=60, hit=9, read=1,
-    //   local_hit=40, wal_bytes=60, total_plan_time=40.0,
-    //   mean/stddev=1.0/2.0.
-    // queryid 3: calls=1, total_exec_time=5.0, rows=1, hit=1, read=2,
-    //   wal_bytes=5, total_plan_time=1.0, mean/stddev=5.0/1.0.
+    // Expected fields use the `ts=200 - ts=100` deltas from
+    // `append_ranked_statements`.
     let mut fixture = Fixture::new();
     fixture.append_ranked_statements();
     fixture.finish();
@@ -808,7 +775,7 @@ fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
         assert_eq!(
             row[field],
             serde_json::Value::Null,
-            "{field} should be null with no predecessor snapshot"
+            "{field} must be null without a predecessor snapshot"
         );
     }
 }
@@ -822,15 +789,9 @@ fn find_postgresql_statements_rejects_malformed_arguments_without_panicking() {
 
 #[test]
 fn find_postgresql_plans_computes_derived_ratio_fields() {
-    // append_ranked_plans mirrors append_ranked_statements' readings for
-    // the fields pg_store_plans (ossc layout) also carries; it has no
-    // wal_bytes/total_plan_time column at all, so derived_wal_per_call and
-    // derived_plan_time_fraction must be null on every row regardless of
-    // predecessor — not because this section is hardcoded to null them,
-    // but because the underlying columns do not exist for this physical
-    // layout. mean_time/stddev_time (2.2/24.9, store_plan()'s fixed
-    // defaults) are gauges, so derived_cv is the same non-null value on
-    // every row, predecessor or not.
+    // The OSSC `pg_store_plans` layout lacks `wal_bytes` and
+    // `total_plan_time`, so both derived fields are null. `mean_time` and
+    // `stddev_time` are gauges; `derived_cv` needs no predecessor.
     let mut fixture = Fixture::new();
     fixture.append_ranked_plans();
     fixture.finish();
@@ -909,7 +870,7 @@ fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
         assert_eq!(
             row[field],
             serde_json::Value::Null,
-            "{field} should be null with no predecessor snapshot"
+            "{field} must be null without a predecessor snapshot"
         );
     }
     // Absent on this layout regardless of predecessor.
@@ -921,10 +882,8 @@ fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
 
 #[test]
 fn find_postgresql_plans_computes_plan_time_fraction_on_the_vadv_layout() {
-    // Only the vadv pg_store_plans layout (type_id 1_004_001) carries
-    // total_plan_time; ossc and Datasentinel do not, and that null case is
-    // already covered above. This fixture is the one physical layout where
-    // derived_plan_time_fraction should come back as a real number.
+    // Only the vadv layout (`1_004_001`) records `total_plan_time`; this
+    // fixture makes `derived_plan_time_fraction` non-null.
     let mut fixture = Fixture::new();
     fixture.append_ranked_vadv_plans();
     fixture.finish();
@@ -974,8 +933,6 @@ fn find_processes_ranks_and_filters() {
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 2);
-    // Rows are keyed, not positional — pid is directly addressable, and
-    // the process with the higher rmem_kb (alpha: 50) ranks first.
     assert_eq!(rows[0]["pid"], 101);
     assert_eq!(rows[1]["pid"], 102);
     assert_eq!(structured["has_more"], false);
@@ -1023,15 +980,12 @@ fn find_processes_rejects_a_limit_above_the_snapshot_page_size_cap() {
         .clone();
     assert!(
         message.contains("5000") || message.contains("limit"),
-        "error should name the limit cap: {message}"
+        "error must name the limit cap: {message}"
     );
 }
 
 #[tokio::test]
 async fn find_processes_end_to_end_through_the_real_transport() {
-    // Same fixture and assertions as `find_processes_ranks_and_filters`,
-    // driven through `mcp::response` instead of calling `processes::call`
-    // directly.
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
     fixture.finish();
@@ -1103,8 +1057,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     assert_eq!(listing_rows.len(), 1);
     let listing_row = listing_rows[0].clone();
 
-    // Row 0 in the fixture's insertion order is pid 101, the row the
-    // listing above narrowed down to.
+    // `append_process_gauge_rows` stores PID 101 at row ordinal 0.
     let (segment_id, at) =
         crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
     let type_id = kronika_registry::os_process::OsProcess::CONTRACT
@@ -1125,8 +1078,6 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
-    // The exact-locator path and the listing path must agree on content
-    // for the same physical row.
     assert_eq!(detail_row["pid"], listing_row["pid"]);
     assert_eq!(detail_row["rmem_kb"], listing_row["rmem_kb"]);
     assert_eq!(detail_row["segment_id"], segment_id.to_string());
@@ -1137,10 +1088,8 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
 
 #[test]
 fn get_row_detail_chains_directly_from_a_find_processes_locator() {
-    // The whole point of carrying segment_id/type_id/row_ordinal/at on a
-    // find_processes row: a caller can copy them straight into
-    // get_row_detail's arguments, with no side channel (no current_segment
-    // call, no manual row_ordinal bookkeeping) and no reformatting.
+    // The `find_processes` locator fields are valid `get_row_detail` arguments
+    // without conversion.
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
     fixture.finish();
@@ -1187,9 +1136,7 @@ fn get_row_detail_chains_directly_from_a_find_processes_locator() {
 
 #[test]
 fn get_row_detail_rejects_a_relation_grouped_section() {
-    // pg_stat_user_tables is grouped by (datid, relid) at the find_* layer,
-    // not addressed by a single physical row ordinal — out of scope for
-    // this tool, per its own description.
+    // Grouped `pg_stat_user_tables` results have no single physical row ordinal.
     let mut fixture = Fixture::new();
     fixture.append_named_table_snapshots(&[(100, 1, 11, 0, "db", "public", "alpha")]);
     fixture.finish();
@@ -1294,11 +1241,8 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
 
 #[test]
 fn find_events_labels_the_numeric_severity_and_category_codes() {
-    // pg_log_errors's severity/category are Kronika-invented numeric codes
-    // (not even a monotonic severity ordering), documented previously only
-    // in ui/src/events-format.ts, unreachable by an MCP tool-calling client.
-    // `append_log_error` records severity=0 ("error") and category=8
-    // ("auth").
+    // `severity` and `category` are unordered Kronika codes.
+    // `append_log_error` records 0 (`error`) and 8 (`auth`).
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.finish();
@@ -1328,7 +1272,7 @@ fn find_events_labels_the_numeric_severity_and_category_codes() {
 }
 
 #[test]
-fn find_events_merges_multiple_sources_by_timestamp() {
+fn find_events_sorts_returned_candidates_by_timestamp() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.append_pgbouncer_event(150);
@@ -1367,7 +1311,7 @@ fn find_events_merges_multiple_sources_by_timestamp() {
     assert_eq!(
         ordered_ats,
         vec![100, 150, 250],
-        "merged rows stay in ascending timestamp order across both sources"
+        "retained fixture rows are sorted by timestamp"
     );
     let sources: Vec<&str> = rows
         .iter()
@@ -1380,7 +1324,7 @@ fn find_events_merges_multiple_sources_by_timestamp() {
 }
 
 #[test]
-fn find_events_rejects_a_window_wider_than_one_hour() {
+fn find_events_rejects_a_3_600_000_000_microsecond_endpoint_difference() {
     let config = test_config(std::env::temp_dir());
     let arguments = serde_json::json!({
         "sources": ["pg_log_errors"],
@@ -1402,7 +1346,7 @@ fn find_events_rejects_a_window_wider_than_one_hour() {
         .clone();
     assert!(
         message.contains("3599999999") || message.contains("one hour"),
-        "error should name the window limit: {message}"
+        "error must name the window limit: {message}"
     );
 }
 
@@ -1432,10 +1376,8 @@ fn find_events_rejects_malformed_arguments_without_panicking() {
 
 #[test]
 fn get_row_detail_chains_directly_from_a_find_events_locator() {
-    // Same chaining guarantee as
-    // get_row_detail_chains_directly_from_a_find_processes_locator: a
-    // find_events row's own locator fields go straight into
-    // get_row_detail's arguments, unchanged.
+    // The `find_events` locator fields are valid `get_row_detail` arguments
+    // without conversion.
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.finish();
@@ -1482,10 +1424,6 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
 
 #[test]
 fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
-    // A row fetched by exact locator through kronika_get_row_detail must
-    // carry the same severity_label/category_label siblings the listing
-    // row from kronika_find_events already has — one labeling step shared
-    // by both read paths, not a second implementation of the same table.
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.finish();
@@ -1525,9 +1463,6 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
 
 #[tokio::test]
 async fn find_events_end_to_end_through_the_real_transport() {
-    // Same fixture and assertions as
-    // `find_events_returns_rows_with_source_and_locator_fields`, driven
-    // through `mcp::response` instead of calling `events::call` directly.
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.append_log_error(200);

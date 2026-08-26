@@ -379,10 +379,8 @@ impl Fixture {
             .expect("append finding rows");
     }
 
-    /// `rows` is `(ts, pid, rmem_kb, comm)`: one pid sampled at several
-    /// timestamps so its last observed value and its window maximum can
-    /// differ, which is what a ranked gauge band's totals/others correction
-    /// depends on. `comm` doubles as the grouping column for grouped tests.
+    /// `rows` is `(ts, pid, rmem_kb, comm)`. Multiple samples let gauge window
+    /// maxima differ from last column values; `comm` is the grouping key.
     pub(crate) fn append_process_gauge_rows(&mut self, rows: &[(i64, i32, i64, &str)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -470,9 +468,8 @@ impl Fixture {
             .expect("append process summary snapshot");
     }
 
-    /// `processes` is `(pid, uid, euid, utime, stime)`: the last two exist
-    /// so a fixture exercising the `user`/`effective_user` virtual fields
-    /// can carry nonzero CPU ticks on the same row, for `cpu_time_ticks`.
+    /// `processes` is `(pid, uid, euid, utime, stime)`; CPU fields populate
+    /// `cpu_time_ticks`.
     fn append_user_processes(
         &mut self,
         ts: i64,
@@ -737,11 +734,8 @@ impl Fixture {
             .expect("append boundary plans");
     }
 
-    /// Three statements at ts=100 (all zero, an unconditioned predecessor)
-    /// and ts=200 (real readings), so any rate/ratio derived from the
-    /// ts=200 -> ts=100 delta is non-null and hand-computable from the
-    /// `readings` tuple below. Shared by the sort-token tests and the MCP
-    /// `kronika_find_postgresql_statements` ratio-materialization tests.
+    /// At `ts=100` all counters are zero; `ts=200` uses the readings below,
+    /// producing non-null, hand-computable deltas.
     pub(crate) fn append_ranked_statements(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -803,9 +797,8 @@ impl Fixture {
             .expect("append ranked statements");
     }
 
-    /// `pg_store_plans` counterpart of `append_ranked_statements`: three
-    /// plans at ts=100 (zero, an unconditioned predecessor) and ts=200
-    /// (real readings).
+    /// Plan-layout counterpart to `append_ranked_statements`, with zero
+    /// predecessors at `ts=100` and current values at `ts=200`.
     pub(crate) fn append_ranked_plans(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -845,11 +838,8 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
-    /// `pg_store_plans` counterpart of `append_ranked_plans`, on the vadv
-    /// physical layout (`1_004_001`) instead of ossc: the one
-    /// `pg_store_plans` layout that carries `total_plan_time`, so
-    /// `derived_plan_time_fraction` resolves to a real value here instead
-    /// of the null every ossc/Datasentinel row produces.
+    /// Vadv plan-layout fixture (`type_id` `1_004_001`), whose
+    /// `total_plan_time` makes `derived_plan_time_fraction` non-null.
     pub(crate) fn append_ranked_vadv_plans(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let label = fixture_label(&mut interner, "ranked vadv plan");
@@ -909,13 +899,8 @@ impl Fixture {
         self.append(buffers);
     }
 
-    /// Same row shape as `append_postgres_database_rows`, but with a real
-    /// interned `datname` instead of `postgres_database`'s unresolvable
-    /// `StrId(901)` placeholder: `append_postgres_database_rows` flushes
-    /// with an empty dictionary, which is fine for the tests that only ever
-    /// project `datid`/numeric columns, but a full-field projection (every
-    /// `kronika_find_postgresql_databases` call) also asks for `datname`
-    /// and needs it to actually resolve.
+    /// Like `append_postgres_database_rows`, but interns `datname`; full-field
+    /// MCP projections require it.
     pub(crate) fn append_postgres_database_snapshots(&mut self, rows: &[(i64, i64, i64, i64)]) {
         let mut interner = Interner::new(DictLimits::default());
         let datname = StrId(interner.intern(b"db").expect("intern datname").get());
@@ -935,11 +920,8 @@ impl Fixture {
             .expect("append database fixture");
     }
 
-    /// `rows` is `(ts, pid, state, lock_mode)`: one backend row per entry,
-    /// each holding a lock in `lock_mode` on the same fixed relation. `state`
-    /// doubles for `application_name`/`client_addr`/`backend_type` too (same
-    /// trick `activity()` uses below), since nothing in `LOCKS_SEARCH_FIELDS`
-    /// needs those distinct from `state` for this fixture's tests.
+    /// `rows` is `(ts, pid, state, lock_mode)`. `state` also supplies the
+    /// application, client, and backend-type fixture columns.
     pub(crate) fn append_postgres_lock_rows(&mut self, rows: &[(i64, i32, &str, &str)]) {
         let mut interner = Interner::new(DictLimits::default());
         let datname = StrId(interner.intern(b"db").expect("intern datname").get());
@@ -3074,15 +3056,9 @@ fn empty_finished_heatmap_has_no_validator() {
     assert_eq!(prepared.meta().etag, None);
 }
 
-// Five processes, each sampled twice: (100, 101, 50), (300, 101, 10) ranks
-// pid 101 by its window maximum (50) but its last observed value (10) is
-// what a gauge band sums per column. Ranked by rmem_kb desc: 101 (50), 102
-// (45), 103 (30), 105 (25), 104 (20); top=2 selects 101 and 102, leaving
-// 103/104/105 as others. Sum of everyone's last value is 10+45+30+8+25=118
-// (the totals band); sum of the two winners' last values is 10+45=55, so
-// the others band is 118-55=63 — distinct from either band's naive
-// window-maximum sum (50 and 30), which is what makes this fixture able to
-// catch a `rank_only` that skips the correction `stream()` applies.
+// Gauge ranks use window maxima, while one-column bands use each PID's last
+// value. `top=2` selects PIDs 101 and 102. Total=118, winners=55, others=63;
+// these differ from sums of ranking maxima.
 fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
     [
         (100, 101, 50, "fixture"),
@@ -3131,13 +3107,10 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
         .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
         .and_then(|record| record["total"].as_f64())
         .expect("others band");
-    // Both sides come from summing the same fixture rows through the same
-    // arithmetic (no independent rounding on either side), so exact
-    // equality is the assertion this differential test needs, not an
-    // epsilon comparison that would hide a real divergence.
+    // Both paths sum identical fixture rows, so exact equality is required.
     #[allow(
         clippy::float_cmp,
-        reason = "exact totals from identical summed fixture rows, not independently rounded values"
+        reason = "both paths sum the same fixture rows exactly"
     )]
     {
         assert_eq!(http_totals_total, 118.0);
@@ -3167,10 +3140,8 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
 #[test]
 fn rank_only_agrees_with_the_streamed_heatmap_on_others_for_a_grouped_request() {
     let mut fixture = Fixture::new();
-    // Same values as the ungrouped fixture, but each pid is its own comm
-    // group, so a correct grouped others band totals the same 63 — the
-    // path this exercises is `Fold::finish_grouped`, which returns `None`
-    // for a gauge others_total until `fill_grouped`'s band is folded in.
+    // Each PID has a distinct `comm`; `Fold::finish_grouped` leaves gauge
+    // `others_total` unset until `fill_grouped` folds the band.
     fixture.append_process_gauge_rows(&[
         (100, 101, 50, "g101"),
         (300, 101, 10, "g101"),
@@ -3207,12 +3178,10 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_others_for_a_grouped_request() 
         .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
         .and_then(|record| record["total"].as_f64())
         .expect("others band");
-    // Same reasoning as the ungrouped test above: both sides sum the same
-    // fixture rows through the same arithmetic, so exact equality is
-    // intended here.
+    // Both paths sum identical fixture rows, so exact equality is required.
     #[allow(
         clippy::float_cmp,
-        reason = "exact totals from identical summed fixture rows, not independently rounded values"
+        reason = "both paths sum the same fixture rows exactly"
     )]
     {
         assert_eq!(http_others_total, 63.0);
@@ -5762,7 +5731,7 @@ fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fie
 }
 
 #[test]
-fn fetch_bounded_events_agrees_with_the_streamed_hour_section_on_the_first_rows_in_order() {
+fn fetch_bounded_events_matches_fixture_rows_in_physical_order() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
     let to = SEGMENT_ID + 14;
@@ -5819,7 +5788,7 @@ fn fetch_bounded_events_agrees_with_the_streamed_hour_section_on_the_first_rows_
     assert_eq!(
         rows.iter().map(|row| row.at).collect::<Vec<_>>(),
         (from..from + 3).collect::<Vec<_>>(),
-        "bounded fetch keeps the first 3 rows in ascending timestamp order"
+        "bounded fetch keeps the first three rows in fixture physical order"
     );
 
     for (direct, http) in rows.iter().zip(http_rows.iter().take(3)) {

@@ -36,11 +36,8 @@ pub(crate) struct SearchClause {
 }
 
 impl SearchClause {
-    /// Build a clause directly from typed parts, bypassing the text
-    /// parser — the MCP filter path (`mcp::filter`). `canonical` is left
-    /// empty for the same reason `StructuredSearch::from_expr` leaves its
-    /// own `canonical` empty: nothing that reads this clause runs the
-    /// cursor-binding hash that is `canonical`'s only consumer.
+    /// Constructs a typed clause for MCP. `canonical` is empty because typed
+    /// MCP searches never bind or resume HTTP cursors.
     pub(crate) const fn from_parts(
         key: &'static str,
         columns: &'static [&'static str],
@@ -72,11 +69,8 @@ pub(crate) enum SearchValue {
 }
 
 impl SearchValue {
-    /// Wrap raw text in a `GlobPattern`, matching what the text parser
-    /// builds for a `SearchFieldKind::String` field: `GlobPattern::new`
-    /// always brackets the pattern in leading/trailing `*`, so this is
-    /// always a case-insensitive substring match, never an anchored one —
-    /// the text DSL has no anchored-equality form for string fields.
+    /// Builds the text parser's case-insensitive substring glob. `*` and `?`
+    /// retain their glob semantics.
     pub(crate) fn pattern(raw: &str) -> Self {
         Self::Pattern(GlobPattern::new(raw))
     }
@@ -90,11 +84,8 @@ pub(crate) struct Quantity {
 }
 
 impl Quantity {
-    /// Build a `Quantity` from a plain non-negative integer count already
-    /// in the field's base unit (raw bytes, milliseconds, a count, or a
-    /// 0-100 percentage number) rather than parsed unit text — the MCP
-    /// filter path receives typed JSON numbers, not `"100MB"` strings, so
-    /// there is no unit suffix to interpret.
+    /// Builds a non-negative integer threshold already expressed in the field's
+    /// comparison unit.
     pub(crate) fn from_integer(value: u128) -> Self {
         Self {
             numerator: value,
@@ -211,14 +202,8 @@ impl StructuredSearch {
         &self.canonical
     }
 
-    /// Build a search directly from an already-assembled expression tree,
-    /// bypassing `parse`'s text grammar. This is the MCP filter path: it
-    /// builds `Expr`/`SearchClause` from typed JSON input instead of a
-    /// query string, so there is no source text to derive `canonical`
-    /// from. Leaving it empty is safe: the only reader of `canonical()`
-    /// outside this module is the HTTP snapshot cursor's binding hash
-    /// (`snapshot_binding` in `snapshot.rs`), which never runs on a search
-    /// built this way.
+    /// Constructs a typed MCP search. `canonical` is empty because this path
+    /// never creates or validates an HTTP snapshot cursor.
     pub(crate) const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
         Self {
             expr,

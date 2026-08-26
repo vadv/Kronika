@@ -135,8 +135,8 @@ one of these, the answer is no, and the reason is this paragraph.
 
 ### Banned words
 
-These words are banned in code, comments, logs, commit messages, and docs,
-because each one drags the machinery above back in behind it:
+The following terms are banned in code, comments, logs, commit messages, and
+documentation because they name the excluded machinery:
 
 | Banned | Use instead |
 |--------|-------------|
@@ -152,8 +152,9 @@ because each one drags the machinery above back in behind it:
 
 Write plainly. The collector writes a segment. A corrupt journal part is
 damaged and gets set aside. Two snapshots an hour apart are two snapshots.
-The last six rows are MCP's share of this rule: a tool result states what
-was recorded, never what it means or what to do about it.
+MCP tools read Kronika recordings and return recorded or computed values. They
+do not query the monitored host or PostgreSQL, interpret the values, or
+prescribe action.
 
 ## Where the collector is running
 

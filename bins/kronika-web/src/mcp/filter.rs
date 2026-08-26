@@ -1,9 +1,5 @@
-//! Typed MCP filter input, converted into the same `Expr`/`SearchClause`
-//! tree the HTTP structured-search text parser builds — so filtering goes
-//! through the one already-tested matching engine, just fed from JSON
-//! instead of parsed from a query string. Deliberately flat AND only: no
-//! OR, no nested groups (a session that needs OR semantics calls a `find_*`
-//! tool twice, or filters the results itself).
+//! Converts MCP filter arrays to the snapshot search engine.
+//! Predicates are combined with AND; OR and nested groups are not accepted.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -22,22 +18,25 @@ pub(crate) enum Op {
     Contains,
 }
 
-/// One AND-ed predicate: `field <op> value`.
+/// One predicate. Tool handlers combine all predicates with AND.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FilterInput {
-    /// Field name on the target section — see the tool's own schema for
-    /// the exact allowed set; it differs per entity.
+    /// Canonical field named in the enclosing tool's filters description.
     pub(crate) field: String,
+    /// `eq` accepts text or identifiers; `gt` and `lt` accept quantities;
+    /// `contains` accepts text. Text `eq` and `contains` both use a
+    /// case-insensitive substring glob; `*` and `?` are wildcards.
     pub(crate) op: Op,
-    /// A JSON string for text/identifier fields, or a non-negative integer
-    /// for quantity fields (raw bytes, milliseconds, a count, or a 0-100
-    /// percentage — whatever base unit the field uses).
+    /// Text uses a JSON string. Identifiers use an integer or decimal string.
+    /// Quantities use a non-negative JSON integer in the field's base unit:
+    /// bytes, bytes/s, count, count/s, milliseconds, milliseconds/s,
+    /// percentage points, or a unitless value. Missing values match neither
+    /// `gt` nor `lt`.
     pub(crate) value: serde_json::Value,
 }
 
-/// Build a `StructuredSearch`-equivalent expression tree from typed
-/// filters, or `Ok(None)` when there are no filters at all. `Err` names the
-/// first invalid field/operator/value combination.
+/// Combines filters with AND. Empty input returns `None`; invalid input reports
+/// the first rejected predicate.
 pub(crate) fn build_search(
     logical_name: &str,
     filters: &[FilterInput],
@@ -53,14 +52,14 @@ pub(crate) fn build_search(
             .iter()
             .find(|candidate| candidate.key == filter.field)
             .ok_or_else(|| format!("unknown field for {logical_name}: {}", filter.field))?;
-        let operator = operator_for(field, filter.op).ok_or_else(|| {
+        let operator = operator_for(field, filter.op)
+            .ok_or_else(|| format!("operator is not valid for field {}", filter.field))?;
+        let value = search_value(field, &filter.value).ok_or_else(|| {
             format!(
-                "field {} does not support operator {:?}",
-                filter.field, filter.op
+                "invalid value for {}: text uses a string, identifiers use an integer or decimal string, and quantities use a non-negative integer in the documented unit",
+                filter.field
             )
         })?;
-        let value = search_value(field, &filter.value)
-            .ok_or_else(|| format!("value does not match field kind for {}", filter.field))?;
         let clause = SearchClause::from_parts(field.key, field.columns, operator, value);
         clauses.push(clause.clone());
         expr = Some(match expr {
@@ -74,8 +73,6 @@ pub(crate) fn build_search(
     )))
 }
 
-/// Map a typed `Op` to the 3-variant `SearchOperator` the matching engine
-/// understands, rejecting every combination the engine cannot express.
 const fn operator_for(field: &SearchField, op: Op) -> Option<SearchOperator> {
     match (field.kind, op) {
         (SearchFieldKind::String, Op::Eq | Op::Contains)
@@ -94,11 +91,8 @@ fn search_value(field: &SearchField, value: &serde_json::Value) -> Option<Search
     }
 }
 
-/// Accept either a JSON string or a JSON number: a `pid` fits comfortably
-/// in a JSON number, but a `query_id` is a full `i64` that can exceed
-/// JSON's safe-integer range, so a caller that already has one as a
-/// decimal string (the same convention `DecimalI64` uses on the way out)
-/// can pass it through unchanged.
+/// Accepts identifiers as JSON integers or canonical decimal strings; strings
+/// preserve signed 64-bit IDs beyond JSON's safe range.
 fn identifier_value(value: &serde_json::Value, signed: bool) -> Option<SearchValue> {
     let text = match value {
         serde_json::Value::String(text) => text.clone(),
