@@ -5,33 +5,40 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::api::snapshot::search::{
-    Expr, Quantity, SearchClause, SearchField, SearchFieldKind, SearchOperator, SearchValue,
-    StructuredSearch, search_fields, valid_identifier,
+    Expr, Quantity, SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS, SearchClause, SearchField,
+    SearchFieldKind, SearchOperator, SearchValue, StructuredSearch, search_fields,
+    valid_identifier,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Op {
+    /// Whole-value match: case-insensitive equality on a string field,
+    /// exact value on an identifier field.
     Eq,
     Gt,
     Lt,
+    /// Case-insensitive substring match, string fields only.
     Contains,
 }
 
-/// One predicate. Tool handlers combine all predicates with AND.
+/// One predicate. Tool handlers combine all predicates with AND; at most
+/// 8 predicates per call, the same clause budget the text parser
+/// enforces.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FilterInput {
     /// Canonical field named in the enclosing tool's filters description.
     pub(crate) field: String,
     /// `eq` accepts text or identifiers; `gt` and `lt` accept quantities;
-    /// `contains` accepts text. Text `eq` and `contains` both use a
-    /// case-insensitive substring glob; `*` and `?` are wildcards.
+    /// `contains` accepts text. On text, `eq` is whole-value equality
+    /// with `*` and `?` literal; `contains` is a substring glob with `*`
+    /// and `?` wildcards. Both are case-insensitive.
     pub(crate) op: Op,
-    /// Text uses a JSON string. Identifiers use an integer or decimal string.
-    /// Quantities use a non-negative JSON integer in the field's base unit:
-    /// bytes, bytes/s, count, count/s, milliseconds, milliseconds/s,
-    /// percentage points, or a unitless value. Missing values match neither
-    /// `gt` nor `lt`.
+    /// Text uses a JSON string of at most 256 characters. Identifiers use
+    /// an integer or decimal string. Quantities use a non-negative JSON
+    /// integer in the field's base unit: bytes, bytes/s, count, count/s,
+    /// milliseconds, milliseconds/s, percentage points, or a unitless
+    /// value. Missing values match neither `gt` nor `lt`.
     pub(crate) value: serde_json::Value,
 }
 
@@ -44,6 +51,12 @@ pub(crate) fn build_search(
     if filters.is_empty() {
         return Ok(None);
     }
+    if filters.len() > SEARCH_MAX_CLAUSES {
+        return Err(format!(
+            "too many filters: {}, the limit is {SEARCH_MAX_CLAUSES}",
+            filters.len()
+        ));
+    }
     let fields = search_fields(logical_name);
     let mut expr: Option<Expr> = None;
     let mut clauses = Vec::with_capacity(filters.len());
@@ -54,7 +67,15 @@ pub(crate) fn build_search(
             .ok_or_else(|| format!("unknown field for {logical_name}: {}", filter.field))?;
         let operator = operator_for(field, filter.op)
             .ok_or_else(|| format!("operator is not valid for field {}", filter.field))?;
-        let value = search_value(field, &filter.value).ok_or_else(|| {
+        if let Some(text) = filter.value.as_str()
+            && text.chars().count() > SEARCH_MAX_VALUE_CHARS
+        {
+            return Err(format!(
+                "value for {} is longer than {SEARCH_MAX_VALUE_CHARS} characters",
+                filter.field
+            ));
+        }
+        let value = search_value(field, filter.op, &filter.value).ok_or_else(|| {
             format!(
                 "invalid value for {}: text uses a string, identifiers use an integer or decimal string, and quantities use a non-negative integer in the documented unit",
                 filter.field
@@ -83,11 +104,15 @@ const fn operator_for(field: &SearchField, op: Op) -> Option<SearchOperator> {
     }
 }
 
-fn search_value(field: &SearchField, value: &serde_json::Value) -> Option<SearchValue> {
-    match field.kind {
-        SearchFieldKind::String => value.as_str().map(SearchValue::pattern),
-        SearchFieldKind::Identifier { signed } => identifier_value(value, signed),
-        SearchFieldKind::Quantity(_) => quantity_value(value),
+/// `eq` on a string field builds an anchored whole-value pattern;
+/// `contains` builds the substring pattern the text DSL uses. Both are
+/// case-insensitive — the distinction is anchoring, not case.
+fn search_value(field: &SearchField, op: Op, value: &serde_json::Value) -> Option<SearchValue> {
+    match (field.kind, op) {
+        (SearchFieldKind::String, Op::Eq) => value.as_str().map(SearchValue::exact),
+        (SearchFieldKind::String, _) => value.as_str().map(SearchValue::pattern),
+        (SearchFieldKind::Identifier { signed }, _) => identifier_value(value, signed),
+        (SearchFieldKind::Quantity(_), _) => quantity_value(value),
     }
 }
 

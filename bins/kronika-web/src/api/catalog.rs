@@ -134,7 +134,8 @@ impl PreparedCatalog {
 
     /// Physical section layouts recorded in the selected segments. Rows and
     /// bytes are summed by `type_id`; output fields match `/api/catalog`
-    /// section entries.
+    /// section entries, minus store-internal `dict.*` layouts, plus each
+    /// layout's registry columns (name, class, unit) and identity.
     pub(crate) fn recorded_sections(&self) -> Vec<Value> {
         let mut totals: BTreeMap<u32, SegmentSection> = BTreeMap::new();
         for segment in &self.listing.segments {
@@ -148,7 +149,45 @@ impl PreparedCatalog {
                     .or_insert(*section);
             }
         }
-        section_values(&totals.into_values().collect::<Vec<_>>())
+        let sections: Vec<SegmentSection> = totals
+            .into_values()
+            .filter(|section| {
+                !logical_section_name(section.type_id).is_some_and(|name| name.starts_with("dict."))
+            })
+            .collect();
+        let mut values = section_values(&sections);
+        for (value, section) in values.iter_mut().zip(&sections) {
+            let Some(contract) = kronika_registry::contract(section.type_id) else {
+                continue;
+            };
+            let Value::Object(object) = value else {
+                continue;
+            };
+            object.insert("identity".to_owned(), json!(contract.identity.to_vec()));
+            object.insert(
+                "fields".to_owned(),
+                contract
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        json!({
+                            "name": column.name,
+                            "class": column.class.code(),
+                            "unit": column.unit.map(kronika_registry::Unit::code),
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        values
+    }
+
+    /// The first and last recorded timestamps across every segment, Unix
+    /// microseconds, or `None` on an empty store.
+    pub(crate) fn recorded_range(&self) -> Option<(i64, i64)> {
+        let from = self.listing.segments.iter().map(SegmentRef::min_ts).min()?;
+        let to = self.listing.segments.iter().map(SegmentRef::max_ts).max()?;
+        Some((from, to))
     }
 }
 

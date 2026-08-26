@@ -1518,7 +1518,7 @@ impl Fixture {
             .expect("append temporary-file row");
     }
 
-    fn finish_and_continue(&mut self, segment_id: i64) {
+    pub(crate) fn finish_and_continue(&mut self, segment_id: i64) {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
         self.journal.reset().expect("reset journal");
         self.address = SegmentAddress::new(SegmentId::new(segment_id).expect("segment id"))
@@ -3056,9 +3056,10 @@ fn empty_finished_heatmap_has_no_validator() {
     assert_eq!(prepared.meta().etag, None);
 }
 
-// Gauge ranks use window maxima, while one-column bands use each PID's last
-// value. `top=2` selects PIDs 101 and 102. Total=118, winners=55, others=63;
-// these differ from sums of ranking maxima.
+// Gauge ranks use window maxima (50/45/30/25/20 for PIDs 101/102/103/105/
+// 104), while one-column bands sum each PID's last value (118 total, 63
+// others). The two conventions disagree on purpose: a `rank_only` that
+// mixed them would fail the assertions below.
 fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
     [
         (100, 101, 50, "fixture"),
@@ -3075,7 +3076,7 @@ fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
 }
 
 #[test]
-fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
+fn rank_only_keeps_one_convention_for_gauge_totals() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
     fixture.finish();
@@ -3092,39 +3093,17 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
         type_id: None,
     };
 
-    let via_http = stream(fixture.prepare(
-        "/api/heatmap?from=100&to=400&section=os_process&field=rmem_kb&top=2&columns=1",
-        None,
-    ))
-    .expect("streamed heatmap");
-    let http_totals_total = via_http
-        .iter()
-        .find(|record| record["record"] == "heatmap_band" && record["band"] == "totals")
-        .and_then(|record| record["total"].as_f64())
-        .expect("totals band");
-    let http_others_total = via_http
-        .iter()
-        .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
-        .and_then(|record| record["total"].as_f64())
-        .expect("others band");
-    // Both paths sum identical fixture rows, so exact equality is required.
-    #[allow(
-        clippy::float_cmp,
-        reason = "both paths sum the same fixture rows exactly"
-    )]
-    {
-        assert_eq!(http_totals_total, 118.0);
-        assert_eq!(http_others_total, 63.0);
-    }
-
     let prepared = crate::api::heatmap::prepare(fixture.root(), request).expect("prepare");
     let ranking = prepared
         .rank_only(&|| false)
         .expect("rank_only")
         .expect("some ranking");
 
-    assert_eq!(ranking.totals_total, Some(http_totals_total));
-    assert_eq!(ranking.others_total, Some(http_others_total));
+    // Every number follows the per-entity window-maximum convention the
+    // entities themselves rank by: totals_total is the largest maximum
+    // across all five entities, others_total the largest across the three
+    // beyond top=2 — never smaller than a member, unlike the streamed
+    // grid's last-value band arithmetic (118/63 on this same fixture).
     assert_eq!(ranking.entities.len(), 2);
     assert_eq!(ranking.entity_count, 5);
     assert_eq!(
@@ -3135,67 +3114,11 @@ fn rank_only_agrees_with_the_streamed_heatmap_on_totals_and_others() {
             .collect::<Vec<_>>(),
         vec![Some(50.0), Some(45.0)]
     );
-}
-
-#[test]
-fn rank_only_agrees_with_the_streamed_heatmap_on_others_for_a_grouped_request() {
-    let mut fixture = Fixture::new();
-    // Each PID has a distinct `comm`; `Fold::finish_grouped` leaves gauge
-    // `others_total` unset until `fill_grouped` folds the band.
-    fixture.append_process_gauge_rows(&[
-        (100, 101, 50, "g101"),
-        (300, 101, 10, "g101"),
-        (100, 102, 40, "g102"),
-        (300, 102, 45, "g102"),
-        (100, 103, 5, "g103"),
-        (300, 103, 30, "g103"),
-        (100, 104, 20, "g104"),
-        (300, 104, 8, "g104"),
-        (100, 105, 15, "g105"),
-        (300, 105, 25, "g105"),
-    ]);
-    fixture.finish();
-
-    let request = crate::route::HeatmapRequest {
-        from: 100,
-        to: 400,
-        section: "os_process".to_owned(),
-        fields: vec!["rmem_kb".to_owned()],
-        columns: 1,
-        top: 2,
-        labels: Vec::new(),
-        group: vec!["comm".to_owned()],
-        type_id: None,
-    };
-
-    let via_http = stream(fixture.prepare(
-        "/api/heatmap?from=100&to=400&section=os_process&field=rmem_kb&top=2&columns=1&group=comm",
-        None,
-    ))
-    .expect("streamed heatmap");
-    let http_others_total = via_http
-        .iter()
-        .find(|record| record["record"] == "heatmap_band" && record["band"] == "others")
-        .and_then(|record| record["total"].as_f64())
-        .expect("others band");
-    // Both paths sum identical fixture rows, so exact equality is required.
-    #[allow(
-        clippy::float_cmp,
-        reason = "both paths sum the same fixture rows exactly"
-    )]
-    {
-        assert_eq!(http_others_total, 63.0);
-    }
-
-    let prepared = crate::api::heatmap::prepare(fixture.root(), request).expect("prepare");
-    let ranking = prepared
-        .rank_only(&|| false)
-        .expect("rank_only")
-        .expect("some ranking");
-
-    assert_eq!(ranking.others_total, Some(http_others_total));
-    assert_eq!(ranking.entities.len(), 2);
-    assert_eq!(ranking.entity_count, 5);
+    assert_eq!(ranking.totals_total, Some(50.0));
+    assert_eq!(ranking.others_total, Some(30.0));
+    let winner = &ranking.entities[0];
+    assert_eq!(winner.type_id, OsProcess::CONTRACT.type_id.get());
+    assert_eq!(winner.identity, vec![serde_json::json!(101)]);
 }
 
 // Each entry differs from its browser_resource_targets peer in one parameter.

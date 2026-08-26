@@ -87,7 +87,7 @@ fn get_context_lists_recorded_sections_with_row_counts() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let result = crate::mcp::context::call(&config, serde_json::Map::new());
+    let result = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -104,7 +104,7 @@ fn get_context_lists_recorded_sections_with_row_counts() {
 fn get_context_reports_no_sections_on_an_empty_data_root() {
     let empty_root = tempfile::tempdir().expect("empty data root");
     let config = test_config(empty_root.path().to_path_buf());
-    let result = crate::mcp::context::call(&config, serde_json::Map::new());
+    let result = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -145,23 +145,28 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::overview::call(&config, arguments);
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let entities = structured["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
+    assert_eq!(entities[0]["identity"]["pid"], 101);
     assert_eq!(entities[1]["total"], 45.0);
-    assert_eq!(structured["totals_total"], 118.0);
-    assert_eq!(structured["others_total"], 63.0);
+    // One convention for every number in a gauge ranking: entity totals
+    // are window maxima, so the two aggregate fields are maxima too —
+    // totals_total across all five entities, others_total across the
+    // three beyond top=2.
+    assert_eq!(structured["totals_total"], 50.0);
+    assert_eq!(structured["others_total"], 30.0);
     assert_eq!(structured["entity_count"], "5");
 }
 
 #[test]
 fn overview_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::overview::call(&config, serde_json::Map::new());
+    let result = crate::mcp::overview::call(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -179,7 +184,7 @@ fn overview_rejects_a_top_above_the_heatmap_cap() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::overview::call(&config, arguments);
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(true));
     let message = result.content[0]
@@ -240,12 +245,10 @@ async fn overview_end_to_end_through_the_real_transport() {
         .expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
+    assert_eq!(entities[0]["identity"]["pid"], 101);
     assert_eq!(entities[1]["total"], 45.0);
-    assert_eq!(
-        decoded["result"]["structuredContent"]["totals_total"],
-        118.0
-    );
-    assert_eq!(decoded["result"]["structuredContent"]["others_total"], 63.0);
+    assert_eq!(decoded["result"]["structuredContent"]["totals_total"], 50.0);
+    assert_eq!(decoded["result"]["structuredContent"]["others_total"], 30.0);
     assert_eq!(decoded["result"]["structuredContent"]["entity_count"], "5");
 }
 
@@ -271,7 +274,7 @@ fn find_postgresql_tables_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_tables(&config, arguments);
+    let result = crate::mcp::postgresql::call_tables(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -290,7 +293,7 @@ fn find_postgresql_tables_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let filtered = crate::mcp::postgresql::call_tables(&config, filtered_arguments);
+    let filtered = crate::mcp::postgresql::call_tables(&config, filtered_arguments, &|| false);
     assert_eq!(filtered.is_error, Some(false));
     let filtered_structured = filtered.structured_content.expect("structured content");
     let filtered_rows = filtered_structured["rows"].as_array().expect("rows array");
@@ -301,7 +304,7 @@ fn find_postgresql_tables_ranks_and_filters() {
 #[test]
 fn find_postgresql_tables_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_tables(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_tables(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -317,7 +320,7 @@ fn find_postgresql_tables_rejects_a_limit_above_the_snapshot_page_size_cap() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_tables(&config, arguments);
+    let result = crate::mcp::postgresql::call_tables(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(true));
     let message = result.content[0]
@@ -370,7 +373,7 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_indexes(&config, arguments);
+    let result = crate::mcp::postgresql::call_indexes(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -399,7 +402,7 @@ fn find_postgresql_activity_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_activity(&config, arguments);
+    let result = crate::mcp::postgresql::call_activity(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -420,7 +423,7 @@ fn find_postgresql_activity_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let filtered = crate::mcp::postgresql::call_activity(&config, filtered_arguments);
+    let filtered = crate::mcp::postgresql::call_activity(&config, filtered_arguments, &|| false);
     assert_eq!(filtered.is_error, Some(false));
     let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -433,7 +436,7 @@ fn find_postgresql_activity_ranks_and_filters() {
 #[test]
 fn find_postgresql_activity_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_activity(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_activity(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -505,7 +508,7 @@ fn find_postgresql_locks_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_locks(&config, arguments);
+    let result = crate::mcp::postgresql::call_locks(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -526,7 +529,7 @@ fn find_postgresql_locks_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let filtered = crate::mcp::postgresql::call_locks(&config, filtered_arguments);
+    let filtered = crate::mcp::postgresql::call_locks(&config, filtered_arguments, &|| false);
     assert_eq!(filtered.is_error, Some(false));
     let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -539,7 +542,7 @@ fn find_postgresql_locks_ranks_and_filters() {
 #[test]
 fn find_postgresql_locks_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_locks(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_locks(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -562,7 +565,7 @@ fn find_postgresql_vacuum_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_vacuum(&config, arguments);
+    let result = crate::mcp::postgresql::call_vacuum(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -583,7 +586,7 @@ fn find_postgresql_vacuum_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let filtered = crate::mcp::postgresql::call_vacuum(&config, filtered_arguments);
+    let filtered = crate::mcp::postgresql::call_vacuum(&config, filtered_arguments, &|| false);
     assert_eq!(filtered.is_error, Some(false));
     let filtered_rows = filtered.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -596,7 +599,7 @@ fn find_postgresql_vacuum_ranks_and_filters() {
 #[test]
 fn find_postgresql_vacuum_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_vacuum(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_vacuum(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -617,7 +620,7 @@ fn find_postgresql_databases_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_databases(&config, arguments);
+    let result = crate::mcp::postgresql::call_databases(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -638,7 +641,7 @@ fn find_postgresql_databases_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let matching = crate::mcp::postgresql::call_databases(&config, matching_arguments);
+    let matching = crate::mcp::postgresql::call_databases(&config, matching_arguments, &|| false);
     assert_eq!(matching.is_error, Some(false));
     let matching_rows = matching.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -654,7 +657,7 @@ fn find_postgresql_databases_ranks_and_filters() {
     .expect("object")
     .clone();
     let below_threshold =
-        crate::mcp::postgresql::call_databases(&config, below_threshold_arguments);
+        crate::mcp::postgresql::call_databases(&config, below_threshold_arguments, &|| false);
     assert_eq!(below_threshold.is_error, Some(false));
     let below_threshold_rows = below_threshold
         .structured_content
@@ -668,7 +671,7 @@ fn find_postgresql_databases_ranks_and_filters() {
 #[test]
 fn find_postgresql_databases_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_databases(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_databases(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -701,7 +704,7 @@ fn find_postgresql_statements_computes_derived_ratio_fields() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::postgresql::call_statements(&config, arguments);
+    let result = crate::mcp::postgresql::call_statements(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array").clone();
@@ -757,7 +760,7 @@ fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
         .expect("object")
         .clone();
 
-    let result = crate::mcp::postgresql::call_statements(&config, arguments);
+    let result = crate::mcp::postgresql::call_statements(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
@@ -783,7 +786,8 @@ fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
 #[test]
 fn find_postgresql_statements_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_statements(&config, serde_json::Map::new());
+    let result =
+        crate::mcp::postgresql::call_statements(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -802,7 +806,7 @@ fn find_postgresql_plans_computes_derived_ratio_fields() {
         .expect("object")
         .clone();
 
-    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    let result = crate::mcp::postgresql::call_plans(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array").clone();
@@ -854,7 +858,7 @@ fn find_postgresql_plans_nulls_rate_derived_fields_without_a_predecessor() {
         .expect("object")
         .clone();
 
-    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    let result = crate::mcp::postgresql::call_plans(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
@@ -894,7 +898,7 @@ fn find_postgresql_plans_computes_plan_time_fraction_on_the_vadv_layout() {
         .expect("object")
         .clone();
 
-    let result = crate::mcp::postgresql::call_plans(&config, arguments);
+    let result = crate::mcp::postgresql::call_plans(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let rows = structured["rows"].as_array().expect("rows array");
@@ -907,7 +911,7 @@ fn find_postgresql_plans_computes_plan_time_fraction_on_the_vadv_layout() {
 #[test]
 fn find_postgresql_plans_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_plans(&config, serde_json::Map::new());
+    let result = crate::mcp::postgresql::call_plans(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -927,7 +931,7 @@ fn find_processes_ranks_and_filters() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::processes::call(&config, arguments);
+    let result = crate::mcp::processes::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -944,7 +948,7 @@ fn find_processes_ranks_and_filters() {
     .as_object()
     .expect("object")
     .clone();
-    let filtered = crate::mcp::processes::call(&config, filtered_arguments);
+    let filtered = crate::mcp::processes::call(&config, filtered_arguments, &|| false);
     assert_eq!(filtered.is_error, Some(false));
     let filtered_structured = filtered.structured_content.expect("structured content");
     let filtered_rows = filtered_structured["rows"].as_array().expect("rows array");
@@ -955,7 +959,7 @@ fn find_processes_ranks_and_filters() {
 #[test]
 fn find_processes_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::processes::call(&config, serde_json::Map::new());
+    let result = crate::mcp::processes::call(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -970,7 +974,7 @@ fn find_processes_rejects_a_limit_above_the_snapshot_page_size_cap() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::processes::call(&config, arguments);
+    let result = crate::mcp::processes::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(true));
     let message = result.content[0]
@@ -1048,7 +1052,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     .as_object()
     .expect("object")
     .clone();
-    let listing = crate::mcp::processes::call(&config, listing_arguments);
+    let listing = crate::mcp::processes::call(&config, listing_arguments, &|| false);
     assert_eq!(listing.is_error, Some(false));
     let listing_rows = listing.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -1058,8 +1062,9 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     let listing_row = listing_rows[0].clone();
 
     // `append_process_gauge_rows` stores PID 101 at row ordinal 0.
-    let (segment_id, at) =
-        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+    let (segment_id, at) = crate::mcp::postgresql::current_segment(&config.data_root, "os_process")
+        .expect("current segment")
+        .expect("os_process recorded");
     let type_id = kronika_registry::os_process::OsProcess::CONTRACT
         .type_id
         .get();
@@ -1074,7 +1079,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     .expect("object")
     .clone();
 
-    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
@@ -1103,7 +1108,7 @@ fn get_row_detail_chains_directly_from_a_find_processes_locator() {
     .as_object()
     .expect("object")
     .clone();
-    let listing = crate::mcp::processes::call(&config, listing_arguments);
+    let listing = crate::mcp::processes::call(&config, listing_arguments, &|| false);
     assert_eq!(listing.is_error, Some(false));
     let listing_rows = listing.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -1122,7 +1127,7 @@ fn get_row_detail_chains_directly_from_a_find_processes_locator() {
     .as_object()
     .expect("object")
     .clone();
-    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
@@ -1143,7 +1148,9 @@ fn get_row_detail_rejects_a_relation_grouped_section() {
 
     let config = test_config(fixture.root().to_path_buf());
     let (segment_id, at) =
-        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+        crate::mcp::postgresql::current_segment(&config.data_root, "pg_stat_user_tables")
+            .expect("current segment")
+            .expect("pg_stat_user_tables recorded");
     let type_id = kronika_registry::pg_stat_user_tables::PgStatUserTablesV1::CONTRACT
         .type_id
         .get();
@@ -1158,7 +1165,7 @@ fn get_row_detail_rejects_a_relation_grouped_section() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::row_detail::call(&config, arguments);
+    let result = crate::mcp::row_detail::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -1169,8 +1176,9 @@ fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let (segment_id, at) =
-        crate::mcp::postgresql::current_segment(&config.data_root).expect("current segment");
+    let (segment_id, at) = crate::mcp::postgresql::current_segment(&config.data_root, "os_process")
+        .expect("current segment")
+        .expect("os_process recorded");
     let type_id = kronika_registry::os_process::OsProcess::CONTRACT
         .type_id
         .get();
@@ -1185,7 +1193,7 @@ fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::row_detail::call(&config, arguments);
+    let result = crate::mcp::row_detail::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     assert_eq!(structured["pid"], 101);
@@ -1194,7 +1202,7 @@ fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
 #[test]
 fn get_row_detail_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::row_detail::call(&config, serde_json::Map::new());
+    let result = crate::mcp::row_detail::call(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -1216,7 +1224,7 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::events::call(&config, arguments);
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -1258,7 +1266,7 @@ fn find_events_labels_the_numeric_severity_and_category_codes() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::events::call(&config, arguments);
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -1291,7 +1299,7 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::events::call(&config, arguments);
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
@@ -1329,14 +1337,14 @@ fn find_events_rejects_a_3_600_000_000_microsecond_endpoint_difference() {
     let arguments = serde_json::json!({
         "sources": ["pg_log_errors"],
         "from": 0,
-        "to": 3_600_000_000_i64,
+        "to": 3_600_000_001_i64,
         "limit": 10,
     })
     .as_object()
     .expect("object")
     .clone();
 
-    let result = crate::mcp::events::call(&config, arguments);
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(true));
     let message = result.content[0]
@@ -1345,9 +1353,32 @@ fn find_events_rejects_a_3_600_000_000_microsecond_endpoint_difference() {
         .text
         .clone();
     assert!(
-        message.contains("3599999999") || message.contains("one hour"),
+        message.contains("3600000000") || message.contains("one hour"),
         "error must name the window limit: {message}"
     );
+}
+
+#[test]
+fn find_events_accepts_a_window_of_exactly_one_hour() {
+    // "At most one hour" includes one hour itself: the schema promises the
+    // span, so the boundary must not be off by one microsecond.
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 3_600_000_000_i64,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(false));
 }
 
 #[test]
@@ -1363,14 +1394,14 @@ fn find_events_rejects_an_unknown_source_name() {
     .expect("object")
     .clone();
 
-    let result = crate::mcp::events::call(&config, arguments);
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
 fn find_events_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::events::call(&config, serde_json::Map::new());
+    let result = crate::mcp::events::call(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
 }
 
@@ -1392,7 +1423,7 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     .as_object()
     .expect("object")
     .clone();
-    let listing = crate::mcp::events::call(&config, listing_arguments);
+    let listing = crate::mcp::events::call(&config, listing_arguments, &|| false);
     assert_eq!(listing.is_error, Some(false));
     let listing_rows = listing.structured_content.expect("structured content")["rows"]
         .as_array()
@@ -1411,7 +1442,7 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     .as_object()
     .expect("object")
     .clone();
-    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
@@ -1438,7 +1469,7 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
     .as_object()
     .expect("object")
     .clone();
-    let listing = crate::mcp::events::call(&config, listing_arguments);
+    let listing = crate::mcp::events::call(&config, listing_arguments, &|| false);
     let listing_row = listing.structured_content.expect("structured content")["rows"][0].clone();
 
     let detail_arguments = serde_json::json!({
@@ -1451,7 +1482,7 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
     .as_object()
     .expect("object")
     .clone();
-    let detail = crate::mcp::row_detail::call(&config, detail_arguments);
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
@@ -1516,4 +1547,302 @@ async fn find_events_end_to_end_through_the_real_transport() {
         );
     }
     assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+}
+
+#[test]
+fn find_tables_falls_back_to_the_newest_segment_carrying_the_section() {
+    // Relations ride a slower cadence than the rest, so the newest segment
+    // regularly has none — the tool must answer from the newest segment
+    // that does, not fail with a paging error.
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(100, 1, 11, 0, "db", "public", "alpha")]);
+    fixture.finish_and_continue(1_709_164_800_000_000 + 1_000);
+    fixture.append_process_gauge_rows(&[(200, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "group": "object",
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_tables(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["relname"], "alpha");
+    assert!(structured["as_of"].is_string());
+}
+
+#[test]
+fn find_vacuum_reports_no_recorded_rows_instead_of_an_error() {
+    // On a healthy host this is the tool's normal state: the section is
+    // recorded only while a vacuum runs.
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::postgresql::call_vacuum(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["rows"].as_array(), Some(&Vec::new()));
+    assert_eq!(structured["has_more"], false);
+    assert!(structured["as_of"].is_null());
+}
+
+#[test]
+fn unknown_sort_fields_are_rejected_not_ignored() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(1);
+    fixture.append_named_table_snapshots(&[(100, 1, 11, 0, "db", "public", "alpha")]);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let plain = serde_json::json!({
+        "sort": {"field": "query_duration", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::postgresql::call_activity(&config, plain, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("no such sort field"),
+        "unexpected message: {message}"
+    );
+
+    let relation = serde_json::json!({
+        "group": "object",
+        "sort": {"field": "not_a_field", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::postgresql::call_tables(&config, relation, &|| false);
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn filter_eq_matches_the_whole_value_and_contains_a_substring() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(1);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let count_for = |op: &str, value: &str| {
+        let arguments = serde_json::json!({
+            "filters": [{"field": "state", "op": op, "value": value}],
+            "limit": 10,
+        })
+        .as_object()
+        .expect("object")
+        .clone();
+        let result = crate::mcp::postgresql::call_activity(&config, arguments, &|| false);
+        assert_eq!(result.is_error, Some(false));
+        result.structured_content.expect("structured content")["rows"]
+            .as_array()
+            .expect("rows array")
+            .len()
+    };
+
+    assert_eq!(count_for("eq", "idle"), 1);
+    assert_eq!(count_for("eq", "idl"), 0);
+    assert_eq!(count_for("contains", "idl"), 1);
+}
+
+#[test]
+fn more_than_eight_filters_are_rejected() {
+    let config = test_config(std::env::temp_dir());
+    let filters: Vec<serde_json::Value> = (0..9)
+        .map(|_| serde_json::json!({"field": "state", "op": "eq", "value": "idle"}))
+        .collect();
+    let arguments = serde_json::json!({ "filters": filters, "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+    let result = crate::mcp::postgresql::call_activity(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("too many filters"),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn overview_rejects_duplicate_fields_and_a_reversed_window() {
+    let config = test_config(std::env::temp_dir());
+
+    let duplicated = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb", "rmem_kb"],
+        "from": 0,
+        "to": 100,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::overview::call(&config, duplicated, &|| false);
+    assert_eq!(result.is_error, Some(true));
+
+    let reversed = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb"],
+        "from": 100,
+        "to": 0,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::overview::call(&config, reversed, &|| false);
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn get_context_reports_the_recorded_range_and_field_catalog() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture"), (300, 101, 10, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let result = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert!(structured["recorded_from"].is_string());
+    assert!(structured["recorded_to"].is_string());
+    let sections = structured["sections"].as_array().expect("sections array");
+    assert!(
+        sections.iter().all(|section| !section["logical_name"]
+            .as_str()
+            .expect("logical name")
+            .starts_with("dict.")),
+        "store-internal dict.* sections must stay hidden"
+    );
+    let os_process = sections
+        .iter()
+        .find(|section| section["logical_name"] == "os_process")
+        .expect("os_process section present");
+    assert!(
+        os_process["identity"]
+            .as_array()
+            .expect("identity array")
+            .contains(&serde_json::json!("pid"))
+    );
+    let fields = os_process["fields"].as_array().expect("fields array");
+    let rmem = fields
+        .iter()
+        .find(|field| field["name"] == "rmem_kb")
+        .expect("rmem_kb field present");
+    assert_eq!(rmem["class"], "gauge");
+    assert_eq!(rmem["unit"], "kibibytes");
+}
+
+#[test]
+fn find_events_accepts_the_temp_files_source() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_temp_files"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(false));
+}
+
+#[test]
+fn statements_sort_by_a_derived_field_ranks_by_it() {
+    // append_ranked_statements' derived_mean_exec_ms_per_call per queryid:
+    // 2 -> 15.0, 1 -> 10.0, 3 -> 5.0 (execution rate over call rate, the
+    // shared interval cancels).
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sort": {"field": "derived_mean_exec_ms_per_call", "direction": "desc"},
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::postgresql::call_statements(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    let ranked: Vec<f64> = rows
+        .iter()
+        .map(|row| {
+            row["derived_mean_exec_ms_per_call"]
+                .as_f64()
+                .expect("derived value")
+        })
+        .collect();
+    assert_eq!(ranked, vec![15.0, 10.0, 5.0]);
+}
+
+#[test]
+fn find_events_reports_more_rows_behind_a_skipped_segment() {
+    // Two matching rows fill limit=2 from the first segment; the second
+    // segment starts later than everything held, so it is skipped without
+    // being opened — its row must still surface as has_more.
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_log_error(200);
+    fixture.finish_and_continue(1_709_164_800_000_000 + 1_000);
+    fixture.append_log_error(300);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 2,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["at"].as_str().expect("at"))
+            .collect::<Vec<_>>(),
+        vec!["100", "200"]
+    );
+    assert_eq!(structured["has_more"], true);
 }

@@ -1,7 +1,7 @@
 use super::GlobPattern;
 
-pub(super) const SEARCH_MAX_CLAUSES: usize = 8;
-pub(super) const SEARCH_MAX_VALUE_CHARS: usize = 256;
+pub(crate) const SEARCH_MAX_CLAUSES: usize = 8;
+pub(crate) const SEARCH_MAX_VALUE_CHARS: usize = 256;
 const SEARCH_MAX_EXPRESSION_CHARS: usize = 1_024;
 const SEARCH_MAX_GROUP_DEPTH: usize = 4;
 const SEARCH_MAX_TOKENS: usize = 31;
@@ -73,6 +73,14 @@ impl SearchValue {
     /// retain their glob semantics.
     pub(crate) fn pattern(raw: &str) -> Self {
         Self::Pattern(GlobPattern::new(raw))
+    }
+
+    /// Wrap raw text in an anchored, literal-only pattern: whole-value,
+    /// case-insensitive equality — no substring behavior, `*`/`?` taken
+    /// literally. The text DSL cannot express this; the typed MCP filter
+    /// input uses it for its `eq` operator on string fields.
+    pub(crate) fn exact(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::exact(raw))
     }
 }
 

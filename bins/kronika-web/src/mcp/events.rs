@@ -1,4 +1,4 @@
-//! `kronika_find_events`: bounded reads from recorded PostgreSQL and PgBouncer
+//! `kronika_find_events`: bounded reads from recorded `PostgreSQL` and `PgBouncer`
 //! event sections.
 
 use std::path::Path;
@@ -17,21 +17,26 @@ use super::event_labels::label_event_fields;
 use super::semantics::{bounded_limit, mcp_error, mcp_structured};
 
 /// Event sections accepted by this tool.
-const SOURCES: [&str; 7] = [
+const SOURCES: [&str; 8] = [
     "pg_log_errors",
     "pg_log_checkpoints",
     "pg_log_autovacuum",
     "pg_log_slow_queries",
     "pg_log_lock_waits",
+    "pg_log_temp_files",
     "pg_log_lifecycle",
     "pgbouncer_events",
 ];
 
-/// Maximum endpoint difference for an inclusive window: 3,599,999,999
-/// microseconds.
-const MAX_WINDOW_MICROS: i64 = 3_600_000_000 - 1;
+/// Maximum `to - from` for an inclusive window: one hour exactly, so the
+/// covered span is one hour plus one microsecond.
+const MAX_WINDOW_MICROS: i64 = 3_600_000_000;
 
-pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: EventsInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -57,7 +62,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         to: Some(input.to),
     };
     let by_source =
-        match fetch_bounded_events(&reader, &segments, &sources, window, limit, &|| false) {
+        match fetch_bounded_events(&reader, &segments, &sources, window, limit, &|| cancelled()) {
             Ok(result) => result,
             Err(error) => return mcp_error(error.to_string()),
         };
@@ -121,7 +126,8 @@ fn check_window(from: i64, to: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Opens segments overlapping inclusive `[from, to]`, sorted by `min_ts`.
+/// Opens segments overlapping inclusive `[from, to]`, sorted by `min_ts`
+/// so a full collector can skip every later segment.
 fn windowed_segments(
     root: &Path,
     from: i64,

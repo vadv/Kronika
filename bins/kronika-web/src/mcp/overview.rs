@@ -10,7 +10,11 @@ use crate::route::{HeatmapRequest, MAX_HEATMAP_TOP};
 use super::catalog::OverviewInput;
 use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
 
-pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: OverviewInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -19,6 +23,23 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Ok(top) => top,
         Err(error) => return error,
     };
+    if input.fields.is_empty() || input.fields.len() > 4 {
+        return mcp_error(format!(
+            "fields must name 1 to 4 columns, got {}",
+            input.fields.len()
+        ));
+    }
+    for (index, field) in input.fields.iter().enumerate() {
+        if input.fields[..index].contains(field) {
+            return mcp_error(format!("fields names {field:?} twice"));
+        }
+    }
+    if input.to < input.from {
+        return mcp_error(format!(
+            "to ({}) must not be before from ({})",
+            input.to, input.from
+        ));
+    }
 
     let request = HeatmapRequest {
         from: input.from,
@@ -37,7 +58,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         Err(error) => return mcp_error(error.to_string()),
     };
 
-    let ranking = match prepared.rank_only(&|| false) {
+    let ranking = match prepared.rank_only(&|| cancelled()) {
         Ok(Some(ranking)) => ranking,
         Ok(None) => {
             return mcp_structured(
@@ -57,7 +78,12 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
     let entities: Vec<Value> = ranking
         .entities
         .into_iter()
-        .map(|entity| json!({ "key": entity.key, "total": entity.total }))
+        .map(|entity| {
+            json!({
+                "identity": identity_object(entity.type_id, entity.identity),
+                "total": entity.total,
+            })
+        })
         .collect();
     let summary = format!(
         "Returned {} of {entity_count} recorded identities.",
@@ -73,4 +99,24 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
         }),
         summary,
     )
+}
+
+/// Names an entity's identity values with the section's own identity
+/// column names from the registry, so a ranked entity reads as
+/// `{"queryid": ..., "datid": ...}` rather than an unlabeled tuple. The
+/// values ride through `kronika_find_*` filters to reach the full rows
+/// behind an entity. A registry/identity length mismatch falls back to
+/// positional `value_N` names rather than dropping the values.
+fn identity_object(type_id: u32, values: Vec<Value>) -> Value {
+    let names = kronika_registry::contract(type_id)
+        .map(|contract| contract.identity)
+        .unwrap_or_default();
+    let mut object = Map::new();
+    for (index, value) in values.into_iter().enumerate() {
+        let name = names
+            .get(index)
+            .map_or_else(|| format!("value_{index}"), |name| (*name).to_owned());
+        object.insert(name, value);
+    }
+    Value::Object(object)
 }

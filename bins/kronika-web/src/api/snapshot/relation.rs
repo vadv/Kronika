@@ -360,6 +360,15 @@ impl RelationKind {
         }
     }
 
+    /// Whether `name` is something this kind/group combination can rank
+    /// by: a projected metric field or a group-key identity field. The
+    /// aggregate sort resolves unknown names to "no value", so a caller
+    /// that wants a loud error checks here first.
+    pub(crate) fn sort_field_known(self, group: RelationGroup, name: &str) -> bool {
+        self.fields(group).iter().any(|field| field.name == name)
+            || key_fields(self, group).contains(&name)
+    }
+
     fn fields(self, group: RelationGroup) -> Vec<FieldSpec> {
         let base = match (self, group) {
             (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,

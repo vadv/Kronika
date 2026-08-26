@@ -102,3 +102,13 @@ fn no_tool_description_uses_banned_reasoning_words() {
         }
     }
 }
+
+#[test]
+fn get_context_schema_is_a_closed_empty_object() {
+    let context = tools()
+        .into_iter()
+        .find(|tool| tool.name.as_ref() == GET_CONTEXT_TOOL)
+        .expect("get_context tool");
+    assert_eq!(context.input_schema["type"], "object");
+    assert_eq!(context.input_schema["additionalProperties"], false);
+}

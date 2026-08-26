@@ -13,16 +13,20 @@ use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, SnapshotRequest};
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
 use super::postgresql::current_segment;
-use super::semantics::{bounded_limit, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
 
 const LOGICAL_NAME: &str = "os_process";
 
-pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: ProcessesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
     };
-    call_with(config, &input.filters, input.sort, input.limit)
+    call_with(config, &input.filters, input.sort, input.limit, cancelled)
 }
 
 fn call_with(
@@ -30,6 +34,7 @@ fn call_with(
     filters: &[FilterInput],
     sort: Option<SortInput>,
     limit: u32,
+    cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
     let limit = match bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE) {
         Ok(limit) => limit,
@@ -39,13 +44,18 @@ fn call_with(
         Ok(search) => search,
         Err(error) => return mcp_error(error),
     };
-    let (segment_id, at) = match current_segment(&config.data_root) {
-        Ok(segment) => segment,
+    let by = match &sort {
+        Some(sort) => match super::postgresql::plain_sort_token(LOGICAL_NAME, &sort.field) {
+            Ok(token) => vec![token],
+            Err(error) => return mcp_error(error),
+        },
+        None => Vec::new(),
+    };
+    let (segment_id, at) = match current_segment(&config.data_root, LOGICAL_NAME) {
+        Ok(Some(segment)) => segment,
+        Ok(None) => return super::postgresql::no_recorded_rows(LOGICAL_NAME),
         Err(error) => return mcp_error(error.to_string()),
     };
-    let by = sort
-        .as_ref()
-        .map_or_else(Vec::new, |sort| vec![sort.field.clone()]);
     let direction = sort.map_or(Order::Asc, |sort| sort.direction.into());
 
     let request = SnapshotRequest {
@@ -78,7 +88,7 @@ fn call_with(
         Ok(prepared) => prepared,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let (rows, has_more) = match prepared.compute_process_rows(limit, &|| false) {
+    let (rows, has_more) = match prepared.compute_process_rows(limit, &|| cancelled()) {
         Ok(result) => result,
         Err(error) => return mcp_error(error.to_string()),
     };
@@ -94,7 +104,10 @@ fn call_with(
             ""
         },
     );
-    mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
+    mcp_structured(
+        json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
+        summary,
+    )
 }
 
 /// Flattens projected fields, overwrites `pid`/`ppid` from the typed identity,

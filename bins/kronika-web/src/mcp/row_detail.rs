@@ -12,7 +12,11 @@ use super::catalog::RowDetailInput;
 use super::event_labels::label_event_fields;
 use super::semantics::{mcp_error, mcp_structured};
 
-pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: RowDetailInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -60,7 +64,7 @@ pub(crate) fn call(config: &Config, arguments: Map<String, Value>) -> CallToolRe
             "internal error: snapshot preparation returned an unexpected response type",
         );
     };
-    let row = match prepared.fetch_exact_row(&|| false) {
+    let row = match prepared.fetch_exact_row(&|| cancelled()) {
         Ok(row) => row,
         Err(error) => return mcp_error(error.to_string()),
     };

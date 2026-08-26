@@ -1032,7 +1032,7 @@ pub(crate) struct ProcessRowOut {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-/// Keyed rendered PostgreSQL row with the exact physical locator used by row
+/// Keyed rendered `PostgreSQL` row with the exact physical locator used by row
 /// detail.
 pub(crate) struct PlainRowOut {
     pub(crate) segment_id: i64,
@@ -1532,7 +1532,7 @@ impl PreparedSnapshot {
     }
 
     /// Returns the first `limit` rows from the full sort for supported
-    /// non-relation PostgreSQL sections.
+    /// non-relation `PostgreSQL` sections.
     pub(crate) fn compute_plain_rows(
         &self,
         limit: usize,
@@ -4204,6 +4204,13 @@ fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'
 }
 
 impl GlobPattern {
+    /// An anchored, literal-only pattern: matches a candidate equal to
+    /// `raw` case-insensitively, never a substring. `*` and `?` are
+    /// literal characters here, not wildcards.
+    fn exact(raw: &str) -> Self {
+        Self(raw.chars().map(GlobToken::Literal).collect())
+    }
+
     fn new(raw: &str) -> Self {
         let mut tokens = vec![GlobToken::Star];
         for character in raw.chars() {

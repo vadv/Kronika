@@ -28,26 +28,33 @@ pub(crate) const FIND_EVENTS_TOOL: &str = "kronika_find_events";
 /// window.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct OverviewInput {
-    /// Recorded logical section. `kronika_get_context` lists recorded names;
-    /// it does not list their fields or units.
+    /// Recorded logical section. `kronika_get_context` lists recorded names
+    /// with each layout's fields, classes, and units.
     pub(crate) section: String,
-    /// One or more numeric fields. All must be cumulative counters or all
-    /// gauges. Kronika sums the listed fields before ranking; repeated names
-    /// are counted repeatedly. Use fields with compatible units.
+    /// One to four distinct numeric fields. All must be cumulative counters
+    /// or all gauges. Kronika sums the listed fields before ranking;
+    /// repeated names are rejected. Use fields with compatible units.
+    #[schemars(length(min = 1, max = 4))]
     pub(crate) fields: Vec<String>,
     /// Inclusive window start, Unix microseconds.
     pub(crate) from: i64,
-    /// Inclusive window end, Unix microseconds. Use `from <= to`; an inverted
-    /// window returns no rows instead of an argument error.
+    /// Inclusive window end, Unix microseconds. An inverted window is
+    /// rejected.
     pub(crate) to: i64,
     /// Number of ranked identities to return, from 1 through 500.
     #[schemars(range(min = 1, max = MAX_HEATMAP_TOP))]
     pub(crate) top: u32,
 }
 
-/// Takes no parameters.
+/// Takes no parameters. Braced, not a unit struct: schemars renders a unit
+/// struct as `{"type": "null"}`, and tool arguments are always an object.
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "schemars needs the braces to render an object schema, not type: null"
+)]
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct GetContextInput;
+#[serde(deny_unknown_fields)]
+pub(crate) struct GetContextInput {}
 
 /// Output identity for table and index tools. `object` keeps one table or
 /// index identity. Other values aggregate matching objects; each metric uses
@@ -95,9 +102,9 @@ impl From<DirectionInput> for Order {
 /// Sorts matching rows before applying `limit`; omit for stable identity order.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SortInput {
-    /// Sort token documented by the enclosing tool. Relation tools reject
-    /// tokens unavailable for the selected group. Plain tools retain identity
-    /// order when no selected physical layout exposes the token.
+    /// Sort token documented by the enclosing tool. Unknown tokens are
+    /// rejected; a plain tool retains identity order for a known column no
+    /// selected physical layout exposes.
     pub(crate) field: String,
     /// `asc` puts the lowest non-null value first; `desc` puts the highest.
     /// Nulls remain last.
@@ -165,7 +172,7 @@ pub(crate) struct ActivityInput {
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned field, such as `pid`, `datname`, `state`,
     /// `backend_xid_age`, `backend_xmin_age`, or `query_start`. Filter aliases
-    /// are not sort aliases. An unavailable name leaves rows in identity order.
+    /// are not sort aliases; unknown names are rejected.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -184,8 +191,7 @@ pub(crate) struct LocksInput {
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned scalar field, such as `pid`, `datname`, `state`,
     /// `lock_locktype`, `lock_mode`, `lock_relname`, or `waitstart`. Filter
-    /// aliases are not sort aliases. An unavailable name leaves rows in
-    /// identity order.
+    /// aliases are not sort aliases; unknown names are rejected.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -228,8 +234,8 @@ pub(crate) struct DatabasesInput {
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned field, such as `datid`, `datname`, `numbackends`,
     /// `xact_commit`, `deadlocks`, `temp_bytes`, or `active_time`. Cumulative
-    /// fields sort by interval rate. Filter aliases are not sort aliases. An
-    /// unavailable name leaves rows in identity order.
+    /// fields sort by interval rate. Filter aliases are not sort aliases;
+    /// unknown names are rejected.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -260,12 +266,10 @@ pub(crate) struct StatementsInput {
     #[serde(default)]
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned field, such as `calls`, `total_exec_time`, `rows`,
-    /// `shared_blks_read`, or `wal_bytes`. The accepted derived spellings are
-    /// `derived.mean_exec_ms_per_call`, `derived.rows_per_call`,
-    /// `derived.blocks_per_call`, `derived.hit_pct`, `derived.wal_per_call`,
-    /// `derived.plan_time_pct`, and `derived.cv`; returned underscore-form
-    /// `derived_*` names are not sort fields. An unavailable name leaves rows
-    /// in identity order; omit for identity order.
+    /// `shared_blks_read`, or `wal_bytes`, or one of the seven returned
+    /// `derived_*` names (`derived_hit_fraction` and
+    /// `derived_plan_time_fraction` rank by their 0-100 renderings — the
+    /// same order). Unknown names are rejected; omit for identity order.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -295,13 +299,10 @@ pub(crate) struct PlansInput {
     #[serde(default)]
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned field, such as `calls`, `total_time`, `rows`, or
-    /// `shared_blks_read`. `calls` sorts by its interval rate although the
-    /// returned field is an exact cumulative count. The accepted derived
-    /// spellings are `derived.mean_exec_ms_per_call`,
-    /// `derived.rows_per_call`, `derived.blocks_per_call`, `derived.hit_pct`,
-    /// `derived.wal_per_call`, `derived.plan_time_pct`, and `derived.cv`;
-    /// returned underscore-form `derived_*` names are not sort fields. An
-    /// unavailable name leaves rows in identity order; omit for identity order.
+    /// `shared_blks_read`, or one of the seven returned `derived_*` names.
+    /// `calls` sorts by its interval rate although the returned field is an
+    /// exact cumulative count. Unknown names are rejected; omit for
+    /// identity order.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -327,9 +328,8 @@ pub(crate) struct ProcessesInput {
     pub(crate) filters: Vec<FilterInput>,
     /// Physical returned field, such as `pid`, `comm`, `rmem_kb`, `vmem_kb`,
     /// `num_threads`, `utime`, `read_bytes`, or `rundelay_ns`. Filter aliases
-    /// (`rss`, `vsz`, `threads`, and rate names) and virtual fields are not sort
-    /// aliases. An unavailable name leaves rows in identity order; omit for
-    /// identity order.
+    /// (`rss`, `vsz`, `threads`, and rate names) and virtual fields are not
+    /// sort aliases; unknown names are rejected. Omit for identity order.
     #[serde(default)]
     pub(crate) sort: Option<SortInput>,
     /// Maximum rows to return, from 1 through 5,000.
@@ -362,15 +362,15 @@ pub(crate) struct RowDetailInput {
 pub(crate) struct EventsInput {
     /// Recorded sections to read: `pg_log_errors`, `pg_log_checkpoints`,
     /// `pg_log_autovacuum`, `pg_log_slow_queries`, `pg_log_lock_waits`,
-    /// `pg_log_lifecycle`, `pgbouncer_events`. Omit or use null for all seven;
-    /// an empty array reads none. Use each source once: duplicates duplicate
-    /// its rows.
+    /// `pg_log_temp_files`, `pg_log_lifecycle`, `pgbouncer_events`. Omit or
+    /// use null for all eight; an empty array reads none. Use each source
+    /// once: duplicates duplicate its rows.
     #[serde(default)]
     pub(crate) sources: Option<Vec<String>>,
     /// Inclusive start of the window, Unix microseconds.
     pub(crate) from: i64,
     /// Inclusive end, Unix microseconds. `to` must be at least `from`, and
-    /// `to - from` must not exceed 3,599,999,999 microseconds.
+    /// `to - from` must not exceed 3,600,000,000 microseconds (one hour).
     pub(crate) to: i64,
     /// Maximum combined rows to return, from 1 through 5,000.
     #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
@@ -378,7 +378,19 @@ pub(crate) struct EventsInput {
 }
 
 pub(crate) fn tools() -> Vec<Tool> {
-    vec![
+    entry_tools()
+        .into_iter()
+        .chain(relation_tools())
+        .chain(postgresql_plain_tools())
+        .chain(ratio_tools())
+        .chain(tail_tools())
+        .collect()
+}
+
+/// `kronika_overview` and `kronika_get_context`, kept separate to satisfy
+/// the line-count lint.
+fn entry_tools() -> [Tool; 2] {
+    [
         Tool::new(
             OVERVIEW_TOOL,
             "Ranks stored values in one logical section over the inclusive \
@@ -389,32 +401,48 @@ pub(crate) fn tools() -> Vec<Tool> {
              descending by total with nulls last, and `entity_count` is the \
              decimal-string number of identities found. For counters, \
              `totals_total` and `others_total` sum all and omitted identity \
-             deltas. For gauges, those values use the one-column band's last \
-             usable readings rather than sums of identity maxima. Null means \
-             no usable value. Each `key` is an opaque identity encoding and \
-             is not accepted by a `find_*` tool. `kronika_get_context` can \
-             confirm section presence, but this catalog does not expose a \
-             section's overview-compatible field names or units. Across this \
-             catalog, tool failures set `isError=true` and contain text only, \
-             without `structuredContent`.",
+             deltas; for gauges they are the maxima across all and omitted \
+             identities. Null means no usable value. Each entity carries an \
+             `identity` object naming the section's identity columns (for \
+             example `queryid`/`dbid`/`userid`, or `pid`); pass those values \
+             to a `find_*` filter to reach the entity's rows. \
+             `kronika_get_context` lists each section's fields, classes, and \
+             units, and the recorded time range this window must fall into. \
+             Across this catalog, tool failures set `isError=true` and \
+             contain text only, without `structuredContent`.",
             schema_object::<OverviewInput>(),
         ),
         Tool::new(
             GET_CONTEXT_TOOL,
             "Lists physical section layouts found across all stored segments; \
-             it does not inspect the live host or database. Each `sections` \
-             item contains `logical_name`, `physical_name`, decimal-string \
-             `type_id`, `rows`, and `bytes`; `implementation` and \
-             `source_family` may be null. Rows and bytes are summed separately \
-             for each physical `type_id` across segments, so one logical name \
-             may appear more than once. This tool does not return field names \
-             or units.",
+             it does not inspect the live host or database. Top-level \
+             `recorded_from`/`recorded_to` are the store's first and last \
+             recorded timestamps, decimal-string Unix microseconds — an \
+             empty answer elsewhere may just mean the window fell outside \
+             them. Each `sections` item contains `logical_name`, \
+             `physical_name`, decimal-string `type_id`, `rows`, `bytes`, its \
+             `identity` column names, and `fields` — every column's `name`, \
+             `class`, and `unit`. A `cumulative` column is a monotonic \
+             counter that `find_*` rows return as a per-second rate under \
+             the raw column name and `kronika_overview` ranks as a \
+             whole-window delta; a `gauge` is an instantaneous value. \
+             `implementation` and `source_family` may be null. Rows and \
+             bytes are summed separately for each physical `type_id` across \
+             segments, so one logical name may appear more than once. \
+             Store-internal `dict.*` layouts are omitted.",
             schema_object::<GetContextInput>(),
         ),
+    ]
+}
+
+/// The table and index tools, kept separate to satisfy the line-count lint.
+fn relation_tools() -> [Tool; 2] {
+    [
         Tool::new(
             FIND_POSTGRESQL_TABLES_TOOL,
             "Finds stored PostgreSQL table statistics at the snapshot anchor: \
-             the greatest recorded segment ID's maximum timestamp, with each \
+             the maximum timestamp of the greatest recorded segment carrying \
+             the section, with each \
              compatible layout contributing its latest observation at or \
              before that time. It does not query PostgreSQL. Filters are \
              ANDed during aggregation and before sorting and `limit`; omitted \
@@ -428,16 +456,19 @@ pub(crate) fn tools() -> Vec<Tool> {
              block reads/hits are per second; `*_bytes` are bytes, `*_pct` are \
              percentage points, `*_mean_ms` are milliseconds, and timestamps \
              are Unix microseconds. Exact 64-bit values use decimal strings; \
-             unavailable metrics are null. Returns `{rows, has_more}`. \
-             `has_more` means matches were omitted; no continuation cursor is \
-             returned. Aggregated relation rows have no physical locator and \
+             unavailable metrics are null. Returns `{rows, has_more, as_of}`: \
+             `as_of` is the anchor as a decimal-string Unix-microsecond \
+             timestamp, null alongside empty rows when no segment records \
+             the section; `has_more` means matches were omitted; no \
+             continuation cursor is returned. Aggregated relation rows have no physical locator and \
              cannot be passed to `kronika_get_row_detail`.",
             schema_object::<TablesInput>(),
         ),
         Tool::new(
             FIND_POSTGRESQL_INDEXES_TOOL,
             "Finds stored PostgreSQL index statistics at the snapshot anchor: \
-             the greatest recorded segment ID's maximum timestamp, with each \
+             the maximum timestamp of the greatest recorded segment carrying \
+             the section, with each \
              compatible layout contributing its latest observation at or \
              before that time. It does not query PostgreSQL. Filters are \
              ANDed during aggregation and before sorting and `limit`; omitted \
@@ -452,20 +483,24 @@ pub(crate) fn tools() -> Vec<Tool> {
              `fetches_per_scan` are unitless. `*_bytes` are bytes, `*_pct` are \
              percentage points, and timestamps are Unix microseconds. Exact \
              64-bit values use decimal strings; unavailable metrics are null. \
-             Returns `{rows, has_more}`. `has_more` means matches were omitted; no \
-             continuation cursor is returned. Aggregated relation rows have \
+             Returns `{rows, has_more, as_of}` with the same meanings as the \
+             tables tool. Aggregated relation rows have \
              no physical locator and cannot be passed to \
              `kronika_get_row_detail`.",
             schema_object::<IndexesInput>(),
         ),
     ]
-    .into_iter()
-    .chain(postgresql_plain_tools())
-    .chain([
+}
+
+/// The process, row-detail, and event tools, kept separate to satisfy the
+/// line-count lint.
+fn tail_tools() -> [Tool; 3] {
+    [
         Tool::new(
             FIND_PROCESSES_TOOL,
             "Finds stored Linux process observations at the snapshot anchor: \
-             the greatest recorded segment ID's maximum timestamp, with each \
+             the maximum timestamp of the greatest recorded segment carrying \
+             the section, with each \
              compatible layout contributing its latest observation at or \
              before that time. It does not query the OS. Filters are ANDed \
              before sorting and `limit`; omitted filters match all. Returned \
@@ -474,9 +509,11 @@ pub(crate) fn tools() -> Vec<Tool> {
              jiffies/s; fault, context-switch, and syscall counters are \
              count/s; I/O counters are bytes/s. Rates are null without a \
              usable predecessor or across a PID start-time change. \
-             Unrecorded `/proc/PID/io` fields are null. Returns \
-             `{rows, has_more}`; `has_more` means matches were omitted, and no \
-             continuation cursor is returned. Each row \
+             Unrecorded `/proc/PID/io` fields are null. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. Each row \
              has decimal-string `segment_id`, `type_id`, `row_ordinal`, and \
              `at` accepted unchanged by `kronika_get_row_detail`.",
             schema_object::<ProcessesInput>(),
@@ -503,16 +540,14 @@ pub(crate) fn tools() -> Vec<Tool> {
             FIND_EVENTS_TOOL,
             "Reads stored event rows from selected PostgreSQL and PgBouncer \
              sources in inclusive Unix-microsecond `[from, to]`; it performs \
-             no live query and has no field predicates. It scans through at \
-             most `limit + 1` matches per source in physical reader order to \
-             set `has_more`, discards the extra per-source row, sorts the \
-             remaining prefixes by `at`, and truncates the combined list to \
-             `limit`. Returned rows are timestamp-sorted \
-             but are not guaranteed to be the earliest matches. Equal \
-             timestamps preserve requested source order and physical order \
-             within a source. Returns \
-             `{rows, has_more}`; `has_more` means rows were omitted, and no \
-             continuation cursor is returned. Each row includes `source` and \
+             no live query and has no field predicates. It keeps the \
+             earliest `limit` matches per source regardless of stored order, \
+             sorts the merged list by `at`, and truncates it to `limit` from \
+             the newest end — the oldest rows survive. Equal timestamps \
+             preserve requested source order; within a source they follow \
+             the physical locator. Returns `{rows, has_more}`; `has_more` \
+             means rows were omitted, including matches inside segments the \
+             scan could skip, and no continuation cursor is returned. Each row includes `source` and \
              decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
              accepted unchanged by `kronika_get_row_detail`. Recognized \
              Kronika event codes keep their numeric field and add a \
@@ -520,18 +555,18 @@ pub(crate) fn tools() -> Vec<Tool> {
              unknown codes have no label sibling.",
             schema_object::<EventsInput>(),
         ),
-    ])
-    .collect()
+    ]
 }
 
-/// Plain PostgreSQL tools, kept separate to satisfy the line-count lint.
-fn postgresql_plain_tools() -> [Tool; 6] {
+/// Plain `PostgreSQL` tools, kept separate to satisfy the line-count lint.
+fn postgresql_plain_tools() -> [Tool; 4] {
     [
         Tool::new(
             FIND_POSTGRESQL_ACTIVITY_TOOL,
             "Finds stored PostgreSQL backend activity, state, waits, query \
              text, and transaction-age fields at the snapshot anchor: the \
-             greatest recorded segment ID's maximum timestamp. Each compatible \
+             maximum timestamp of the greatest recorded segment carrying the \
+             section. Each compatible \
              layout contributes its latest observation at or before that time, \
              so layouts may contribute different `at` values. It does not \
              query PostgreSQL. Filters are ANDed before sorting and `limit`; \
@@ -539,52 +574,64 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              `xact_start`, `query_start`, and `state_change` are Unix \
              microseconds. Null denotes no transaction, query, or wait where \
              applicable, a null recording, or a field absent from the physical \
-             layout. Returns `{rows, has_more}`; `has_more` means matches were \
-             omitted, and no continuation cursor is returned. Each row has \
-             decimal-string `segment_id`, `type_id`, \
-             `row_ordinal`, and `at` accepted unchanged by \
+             layout. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. Each row has decimal-string `segment_id`, \
+             `type_id`, `row_ordinal`, and `at` accepted unchanged by \
              `kronika_get_row_detail`.",
             schema_object::<ActivityInput>(),
         ),
         Tool::new(
             FIND_POSTGRESQL_LOCKS_TOOL,
             "Finds stored PostgreSQL backends in a direct lock-wait graph at \
-             the snapshot anchor: the greatest recorded segment ID's maximum \
-             timestamp. Each compatible layout contributes its latest \
+             the snapshot anchor: the maximum timestamp of the greatest \
+             recorded segment carrying the section. Each compatible layout contributes its latest \
              observation at or before that time; it does not query PostgreSQL. \
              Filters are ANDed before sorting and `limit`; omitted filters \
              match all. `blocked_by` is always a list of direct blocker PIDs; \
              an empty list marks a root or blocker-only row, and PID 0 denotes \
              a prepared-transaction holder. Timestamp fields are Unix \
              microseconds. Null denotes an inapplicable, null, or unavailable \
-             field. Returns `{rows, has_more}`; `has_more` means matches were \
-             omitted, and no continuation cursor is returned. Each row has \
-             decimal-string `segment_id`, `type_id`, \
-             `row_ordinal`, and `at` accepted unchanged by \
-             `kronika_get_row_detail`.",
+             field. The wait graph is recorded only while contention \
+             exists, so the anchor can predate the present and the rows can \
+             describe contention that has since ended. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. Each row has \
+             decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
+             accepted unchanged by `kronika_get_row_detail`.",
             schema_object::<LocksInput>(),
         ),
         Tool::new(
             FIND_POSTGRESQL_VACUUM_TOOL,
             "Finds PostgreSQL backends recorded as running `VACUUM` at the \
-             snapshot anchor: the greatest recorded segment ID's maximum \
-             timestamp. Each compatible layout contributes its latest \
+             snapshot anchor: the maximum timestamp of the greatest recorded \
+             segment carrying the section. Each compatible layout contributes its latest \
              observation at or before that time; it does not query PostgreSQL. \
              Filters are ANDed before sorting and `limit`; omitted filters \
              match all. Heap, index, and dead-item fields are counts; \
              `dead_tuple_bytes` and `max_dead_tuple_bytes` are bytes; \
              `delay_time` is milliseconds. Version-specific unavailable \
-             fields are null. Returns `{rows, has_more}`; `has_more` means \
-             matches were omitted, and no continuation cursor is returned. \
-             Each row has decimal-string `segment_id`, \
-             `type_id`, `row_ordinal`, and `at` accepted unchanged by \
+             fields are null. The section is recorded only while a vacuum \
+             runs: empty rows with null `as_of` mean none was ever recorded, \
+             and the anchor can point at the last vacuum, not the present. \
+             Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. Each row has decimal-string `segment_id`, `type_id`, \
+             `row_ordinal`, and `at` accepted unchanged by \
              `kronika_get_row_detail`.",
             schema_object::<VacuumInput>(),
         ),
         Tool::new(
             FIND_POSTGRESQL_DATABASES_TOOL,
             "Finds stored per-database PostgreSQL statistics at the snapshot \
-             anchor: the greatest recorded segment ID's maximum timestamp. \
+             anchor: the maximum timestamp of the greatest recorded segment \
+             carrying the section. \
              Each compatible layout contributes its latest observation at or \
              before that time; it does not query PostgreSQL. Filters are ANDed \
              before sorting and `limit`; omitted filters match all. \
@@ -592,17 +639,27 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              returned as count/s, `temp_bytes` as bytes/s, and cumulative time \
              fields as ms/s. `stats_reset` and `checksum_last_failure` are Unix \
              microseconds. Interval rates are null without a usable predecessor \
-             or after counter rollback; absent or null fields are null. Returns \
-             `{rows, has_more}`; `has_more` means matches were omitted, and no \
-             continuation cursor is returned. Each row has decimal-string \
-             locator fields accepted unchanged by \
-             `kronika_get_row_detail`.",
+             or after counter rollback; absent or null fields are null. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. \
+             Each row has decimal-string locator fields accepted unchanged \
+             by `kronika_get_row_detail`.",
             schema_object::<DatabasesInput>(),
         ),
+    ]
+}
+
+/// The statement and plan tools, kept separate to satisfy the line-count
+/// lint.
+fn ratio_tools() -> [Tool; 2] {
+    [
         Tool::new(
             FIND_POSTGRESQL_STATEMENTS_TOOL,
             "Finds stored `pg_stat_statements` rows at the snapshot anchor: the \
-             greatest recorded segment ID's maximum timestamp, with the latest \
+             maximum timestamp of the greatest recorded segment carrying the \
+             section, with the latest \
              observation selected separately per compatible layout. It does \
              not query PostgreSQL. Filters are ANDed before sorting and \
              `limit`. Cumulative fields are returned as interval rates: \
@@ -616,15 +673,19 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              `derived_cv` (execution stddev/mean). A derived value is null for \
              a missing/null operand, zero denominator, or non-finite result; \
              rate operands are also null without a usable predecessor or after \
-             rollback. Returns `{rows, has_more}`; `has_more` means matches were \
-             omitted, and no continuation cursor is returned. Locator fields \
-             are decimal strings accepted by `kronika_get_row_detail`.",
+             rollback. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. Locator fields are decimal strings accepted \
+             by `kronika_get_row_detail`.",
             schema_object::<StatementsInput>(),
         ),
         Tool::new(
             FIND_POSTGRESQL_PLANS_TOOL,
             "Finds stored `pg_store_plans` rows at the snapshot anchor: the \
-             greatest recorded segment ID's maximum timestamp, with the latest \
+             maximum timestamp of the greatest recorded segment carrying the \
+             section, with the latest \
              observation selected separately per compatible layout. It does \
              not query PostgreSQL. Filters are ANDed before sorting and \
              `limit`. `calls` is the exact cumulative count and \
@@ -637,10 +698,13 @@ fn postgresql_plain_tools() -> [Tool; 6] {
              because plan layouts have no WAL bytes. \
              `derived_plan_time_fraction` is non-null only for the vadv layout. \
              Other derived nulls mean a missing/null operand, zero denominator, \
-             non-finite result, missing predecessor, or rollback. Returns \
-             `{rows, has_more}`; `has_more` means matches were omitted, and no \
-             continuation cursor is returned. Locator fields are decimal \
-             strings accepted by `kronika_get_row_detail`.",
+             non-finite result, missing predecessor, or rollback. Returns `{rows, has_more, as_of}`: `as_of` is the \
+             anchor as a decimal-string Unix-microsecond timestamp, null \
+             alongside empty rows when no segment records the section; \
+             `has_more` means matches were omitted, and no continuation \
+             cursor is returned. \
+             Locator fields are decimal strings accepted by \
+             `kronika_get_row_detail`.",
             schema_object::<PlansInput>(),
         ),
     ]

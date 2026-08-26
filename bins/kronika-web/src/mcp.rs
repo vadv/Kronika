@@ -57,16 +57,21 @@ impl ServerHandler for KronikaMcp {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
         let config = Arc::clone(&self.config);
         async move {
-            // Segment reads and decoding block; keep them off Tokio worker threads.
-            let result = tokio::task::spawn_blocking(move || dispatch::dispatch(&config, request))
-                .await
-                .unwrap_or_else(|join_error| {
-                    semantics::mcp_error(format!("tool dispatch panicked: {join_error}"))
-                });
+            // Segment reads and decoding block; keep them off Tokio worker
+            // threads. The request's cancellation token rides along so an
+            // abandoned request stops scanning.
+            let token = context.ct.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                dispatch::dispatch(&config, request, &|| token.is_cancelled())
+            })
+            .await
+            .unwrap_or_else(|join_error| {
+                semantics::mcp_error(format!("tool dispatch panicked: {join_error}"))
+            });
             Ok(CallToolResponse::from(result))
         }
     }

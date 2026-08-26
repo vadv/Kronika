@@ -35,11 +35,11 @@ pub(crate) fn bounded_limit(name: &str, value: u32, cap: usize) -> Result<usize,
     }
 }
 
-/// Places data in `structuredContent` and replaces rmcp's JSON `TextContent`
-/// mirror with the short summary.
+/// Places data in `structuredContent` with the summary as the only text
+/// content, built without `CallToolResult::structured`'s eager JSON mirror.
 pub(crate) fn mcp_structured(value: Value, summary: impl Into<String>) -> CallToolResult {
-    let mut result = CallToolResult::structured(value);
-    result.content = vec![ContentBlock::text(summary.into())];
+    let mut result = CallToolResult::success(vec![ContentBlock::text(summary.into())]);
+    result.structured_content = Some(value);
     result
 }
 

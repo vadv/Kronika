@@ -1,4 +1,4 @@
-//! MCP adapters over recorded PostgreSQL relation and snapshot rows selected
+//! MCP adapters over recorded `PostgreSQL` relation and snapshot rows selected
 //! relative to the greatest-ID segment.
 //! Statement and plan rows also expose ratios computed from fields in the same
 //! rendered row.
@@ -21,9 +21,13 @@ use super::catalog::{
     StatementsInput, TablesInput, VacuumInput,
 };
 use super::filter::{FilterInput, build_search};
-use super::semantics::{bounded_limit, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
 
-pub(crate) fn call_tables(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_tables(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: TablesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -35,10 +39,15 @@ pub(crate) fn call_tables(config: &Config, arguments: Map<String, Value>) -> Cal
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
-pub(crate) fn call_indexes(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_indexes(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: IndexesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -50,6 +59,7 @@ pub(crate) fn call_indexes(config: &Config, arguments: Map<String, Value>) -> Ca
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
@@ -60,6 +70,7 @@ fn call(
     filters: &[FilterInput],
     sort: Option<SortInput>,
     limit: u32,
+    cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
     let limit = match bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE) {
         Ok(limit) => limit,
@@ -69,8 +80,18 @@ fn call(
         Ok(search) => search,
         Err(error) => return mcp_error(error),
     };
-    let (segment_id, at) = match current_segment(&config.data_root) {
-        Ok(segment) => segment,
+    if let Some(sort) = &sort
+        && !kind.sort_field_known(group, &sort.field)
+    {
+        return mcp_error(format!(
+            "no such sort field for {}: {}",
+            kind.logical_name(),
+            sort.field
+        ));
+    }
+    let (segment_id, at) = match current_segment(&config.data_root, kind.logical_name()) {
+        Ok(Some(segment)) => segment,
+        Ok(None) => return no_recorded_rows(kind.logical_name()),
         Err(error) => return mcp_error(error.to_string()),
     };
     let by = sort
@@ -108,7 +129,7 @@ fn call(
         Ok(prepared) => prepared,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let (rows, has_more) = match prepared.compute_relation_rows(limit, &|| false) {
+    let (rows, has_more) = match prepared.compute_relation_rows(limit, &|| cancelled()) {
         Ok(result) => result,
         Err(error) => return mcp_error(error.to_string()),
     };
@@ -128,20 +149,88 @@ fn call(
             ""
         },
     );
-    mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
+    mcp_structured(
+        json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
+        summary,
+    )
 }
 
-/// Returns the highest-ID recorded segment and its maximum timestamp. `find_*`
-/// tools use this pair as their snapshot anchor; they do not query live sources.
-pub(crate) fn current_segment(root: &std::path::Path) -> Result<(i64, i64), ApiError> {
+/// Returns the highest-ID segment carrying `logical_name` and its maximum
+/// timestamp, or `None` when nothing recorded the section — resolved per
+/// section because a sparsely recorded one is regularly absent from the
+/// newest segment. `find_*` tools use this pair as their snapshot anchor;
+/// they do not query live sources.
+pub(crate) fn current_segment(
+    root: &std::path::Path,
+    logical_name: &str,
+) -> Result<Option<(i64, i64)>, ApiError> {
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(..)?;
     let segment = listing
         .segments
         .iter()
-        .max_by_key(|segment| segment.id())
-        .ok_or(ApiError::NoSuchSegment)?;
-    Ok((segment.id(), segment.max_ts()))
+        .filter(|segment| {
+            segment.sections().iter().any(|section| {
+                kronika_registry::logical_section_name(section.type_id) == Some(logical_name)
+            })
+        })
+        .max_by_key(|segment| segment.id());
+    Ok(segment.map(|segment| (segment.id(), segment.max_ts())))
+}
+
+/// Public `derived_*` sort names mapped to the dotted internal tokens
+/// `derived_page_order` (`api/snapshot.rs`) resolves. Sorting runs inside
+/// the snapshot pipeline before this module attaches the derived fields to
+/// rows, so the public names must translate before the request is built.
+/// `derived_hit_fraction`/`derived_plan_time_fraction` rank by the internal
+/// 0-100 renderings of the same ratios — identical order, different scale.
+const DERIVED_SORT_TOKENS: [(&str, &str); 7] = [
+    (
+        "derived_mean_exec_ms_per_call",
+        "derived.mean_exec_ms_per_call",
+    ),
+    ("derived_rows_per_call", "derived.rows_per_call"),
+    ("derived_blocks_per_call", "derived.blocks_per_call"),
+    ("derived_hit_fraction", "derived.hit_pct"),
+    ("derived_wal_per_call", "derived.wal_per_call"),
+    ("derived_plan_time_fraction", "derived.plan_time_pct"),
+    ("derived_cv", "derived.cv"),
+];
+
+/// Resolves a plain tool's public sort name to the token the snapshot
+/// pipeline ranks by, or errors on a name the pipeline would silently
+/// ignore — `page_order` (`api/snapshot.rs`) falls back to identity order
+/// on an unknown token.
+pub(super) fn plain_sort_token(logical_name: &str, field: &str) -> Result<String, String> {
+    if matches!(logical_name, "pg_stat_statements" | "pg_store_plans")
+        && let Some((_, internal)) = DERIVED_SORT_TOKENS
+            .iter()
+            .find(|(public, _)| *public == field)
+    {
+        return Ok((*internal).to_owned());
+    }
+    let known = kronika_registry::registry()
+        .iter()
+        .filter(|contract| {
+            kronika_registry::logical_section_name(contract.type_id.get()) == Some(logical_name)
+        })
+        .any(|contract| contract.column(field).is_some());
+    if known {
+        Ok(field.to_owned())
+    } else {
+        Err(format!("no such sort field for {logical_name}: {field}"))
+    }
+}
+
+/// The empty result a `find_*` tool returns when [`current_segment`] finds
+/// no segment carrying the section: an answer ("nothing recorded"), not an
+/// error — on a healthy host this is `pg_stat_progress_vacuum`'s normal
+/// state whenever no vacuum has run.
+pub(super) fn no_recorded_rows(logical_name: &str) -> CallToolResult {
+    mcp_structured(
+        json!({ "rows": [], "has_more": false, "as_of": Value::Null }),
+        format!("{logical_name} has no recorded rows in any segment"),
+    )
 }
 
 /// Flattens metrics and group identity; identity fields win name collisions.
@@ -156,7 +245,11 @@ fn row_to_json(row: RelationRow, kind: RelationKind, group: RelationGroup) -> Va
     Value::Object(object)
 }
 
-pub(crate) fn call_activity(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_activity(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: ActivityInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -167,18 +260,34 @@ pub(crate) fn call_activity(config: &Config, arguments: Map<String, Value>) -> C
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
-pub(crate) fn call_locks(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_locks(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: LocksInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
     };
-    call_plain("pg_locks", config, &input.filters, input.sort, input.limit)
+    call_plain(
+        "pg_locks",
+        config,
+        &input.filters,
+        input.sort,
+        input.limit,
+        cancelled,
+    )
 }
 
-pub(crate) fn call_vacuum(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_vacuum(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: VacuumInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -189,10 +298,15 @@ pub(crate) fn call_vacuum(config: &Config, arguments: Map<String, Value>) -> Cal
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
-pub(crate) fn call_databases(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_databases(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: DatabasesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -203,6 +317,7 @@ pub(crate) fn call_databases(config: &Config, arguments: Map<String, Value>) -> 
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
@@ -212,11 +327,14 @@ fn call_plain(
     filters: &[FilterInput],
     sort: Option<SortInput>,
     limit: u32,
+    cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    let (rows, has_more) = match plain_rows(logical_name, config, filters, sort, limit) {
-        Ok(result) => result,
-        Err(error) => return error,
-    };
+    let (rows, has_more, at) =
+        match plain_rows(logical_name, config, filters, sort, limit, cancelled) {
+            Ok(Some(result)) => result,
+            Ok(None) => return no_recorded_rows(logical_name),
+            Err(error) => return error,
+        };
     let row_count = rows.len();
     let rows: Vec<Value> = rows.into_iter().map(plain_row_to_json).collect();
     let summary = format!(
@@ -228,7 +346,10 @@ fn call_plain(
             ""
         },
     );
-    mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
+    mcp_structured(
+        json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
+        summary,
+    )
 }
 
 fn plain_rows(
@@ -237,14 +358,19 @@ fn plain_rows(
     filters: &[FilterInput],
     sort: Option<SortInput>,
     limit: u32,
-) -> Result<(Vec<PlainRowOut>, bool), CallToolResult> {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<(Vec<PlainRowOut>, bool, i64)>, CallToolResult> {
     let limit = bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE)?;
     let search = build_search(logical_name, filters).map_err(mcp_error)?;
-    let (segment_id, at) =
-        current_segment(&config.data_root).map_err(|error| mcp_error(error.to_string()))?;
-    let by = sort
-        .as_ref()
-        .map_or_else(Vec::new, |sort| vec![sort.field.clone()]);
+    let by = match &sort {
+        Some(sort) => vec![plain_sort_token(logical_name, &sort.field).map_err(mcp_error)?],
+        None => Vec::new(),
+    };
+    let Some((segment_id, at)) = current_segment(&config.data_root, logical_name)
+        .map_err(|error| mcp_error(error.to_string()))?
+    else {
+        return Ok(None);
+    };
     let direction = sort.map_or(Order::Asc, |sort| sort.direction.into());
 
     let request = SnapshotRequest {
@@ -274,12 +400,17 @@ fn plain_rows(
     let prepared = prepared
         .with_search(search)
         .map_err(|error| mcp_error(error.to_string()))?;
-    prepared
-        .compute_plain_rows(limit, &|| false)
-        .map_err(|error| mcp_error(error.to_string()))
+    let (rows, has_more) = prepared
+        .compute_plain_rows(limit, &|| cancelled())
+        .map_err(|error| mcp_error(error.to_string()))?;
+    Ok(Some((rows, has_more, at)))
 }
 
-pub(crate) fn call_statements(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_statements(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: StatementsInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -290,10 +421,15 @@ pub(crate) fn call_statements(config: &Config, arguments: Map<String, Value>) ->
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
-pub(crate) fn call_plans(config: &Config, arguments: Map<String, Value>) -> CallToolResult {
+pub(crate) fn call_plans(
+    config: &Config,
+    arguments: Map<String, Value>,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let input: PlansInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
         Err(error) => return mcp_error(format!("invalid arguments: {error}")),
@@ -304,6 +440,7 @@ pub(crate) fn call_plans(config: &Config, arguments: Map<String, Value>) -> Call
         &input.filters,
         input.sort,
         input.limit,
+        cancelled,
     )
 }
 
@@ -313,11 +450,14 @@ fn call_ratio(
     filters: &[FilterInput],
     sort: Option<SortInput>,
     limit: u32,
+    cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    let (rows, has_more) = match plain_rows(logical_name, config, filters, sort, limit) {
-        Ok(result) => result,
-        Err(error) => return error,
-    };
+    let (rows, has_more, at) =
+        match plain_rows(logical_name, config, filters, sort, limit, cancelled) {
+            Ok(Some(result)) => result,
+            Ok(None) => return no_recorded_rows(logical_name),
+            Err(error) => return error,
+        };
     let row_count = rows.len();
     let rows: Vec<Value> = rows.into_iter().map(ratio_row_to_json).collect();
     let summary = format!(
@@ -329,7 +469,10 @@ fn call_ratio(
             ""
         },
     );
-    mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
+    mcp_structured(
+        json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
+        summary,
+    )
 }
 
 fn ratio_row_to_json(row: PlainRowOut) -> Value {

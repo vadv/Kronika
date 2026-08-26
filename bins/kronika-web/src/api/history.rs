@@ -354,9 +354,135 @@ pub(crate) struct SectionEvents<'a> {
     pub(crate) has_more: bool,
 }
 
-/// Collects at most `limit + 1` matching rows per section in physical reader
-/// order. Each segment is opened once for all requested sections; `has_more`
-/// is computed independently per section.
+/// An [`EventRowOut`] ordered by `(at, segment_id, type_id, row_ordinal)`,
+/// so [`BoundedRows`]'s max-heap can evict the latest row it holds.
+struct OrderedRow(EventRowOut);
+
+impl OrderedRow {
+    const fn key(&self) -> (i64, i64, u32, u64) {
+        (
+            self.0.at,
+            self.0.segment_id,
+            self.0.type_id,
+            self.0.row_ordinal,
+        )
+    }
+}
+
+impl PartialEq for OrderedRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for OrderedRow {}
+
+impl PartialOrd for OrderedRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedRow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The `limit` earliest matching rows seen so far for one section: a
+/// max-heap that evicts its latest row on overflow, remembering that it
+/// overflowed. Stored row order within a segment follows the section's
+/// registry sort key, which for several event sections leads with
+/// something other than `ts` — so "keep the first `limit` physical rows"
+/// would drop an earlier event that merely appears later in the file.
+struct BoundedRows {
+    bound: usize,
+    heap: std::collections::BinaryHeap<OrderedRow>,
+    overflowed: bool,
+}
+
+impl BoundedRows {
+    fn new(bound: usize) -> Self {
+        Self {
+            bound: bound.max(1),
+            heap: std::collections::BinaryHeap::new(),
+            overflowed: false,
+        }
+    }
+
+    fn push(&mut self, row: EventRowOut) {
+        self.heap.push(OrderedRow(row));
+        if self.heap.len() > self.bound {
+            self.heap.pop();
+            self.overflowed = true;
+        }
+    }
+
+    /// The latest `at` this collector still holds, once full: any row at or
+    /// past it may still evict one, any row before it must be considered.
+    fn worst_at(&self) -> Option<i64> {
+        if self.heap.len() < self.bound {
+            return None;
+        }
+        self.heap.peek().map(|row| row.0.at)
+    }
+
+    /// Whether a segment whose rows all sit at or after `min_ts` can be
+    /// skipped for this section: only when the collector is full and even
+    /// the earliest possible row of that segment is later than everything
+    /// held.
+    fn satisfied_before(&self, min_ts: i64) -> bool {
+        self.worst_at().is_some_and(|worst| min_ts > worst)
+    }
+
+    /// Records that at least one row was dropped or never read — the
+    /// `has_more` the caller reports. A skipped segment that carries the
+    /// section must call this: nothing else remembers its rows. The
+    /// catalog has no per-section time range, so a skipped segment whose
+    /// rows all sit past the window's `to` overstates `has_more` — the
+    /// safe direction.
+    const fn note_more(&mut self) {
+        self.overflowed = true;
+    }
+
+    fn finish(self) -> (Vec<EventRowOut>, bool) {
+        let rows = self
+            .heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|row| row.0)
+            .collect();
+        (rows, self.overflowed)
+    }
+}
+
+/// Bounded top-N read of one or more logical sections across `segments`,
+/// keyed by field name for MCP consumers instead of `stream_plans`'s
+/// positional wire format. Each segment is opened at most once and its
+/// catalog shared across every requested section, rather than reopening the
+/// same physical file once per section — `kronika_find_events` reads up to
+/// eight sections over the same window, and `Segment::open` is a real file
+/// open plus catalog parse, not a cheap wrap.
+///
+/// Each section collects through a [`BoundedRows`] heap rather than
+/// stopping at the first `limit` physical rows: stored row order follows
+/// the section's registry sort key, not `ts`, so the earliest events of a
+/// window can sit anywhere in a segment's data. `segments` is scanned in
+/// the order given (callers pass them sorted by `min_ts`), which lets a
+/// full collector skip opening every segment that starts after the latest
+/// row it holds — noting `has_more` from the skipped segment's own catalog
+/// when it carries the section, since its rows were never read. Each
+/// section keeps its own bound and its own `has_more`, exactly as if
+/// fetched independently; only the segment opens are shared.
+/// Whether a segment's catalog lists any rows for `section` — readable
+/// without opening the segment, which is the point: the skip path must
+/// know whether it is leaving rows behind.
+fn segment_carries(segment_ref: &SegmentRef, section: &str) -> bool {
+    segment_ref.sections().iter().any(|stored| {
+        stored.rows > 0 && kronika_registry::logical_section_name(stored.type_id) == Some(section)
+    })
+}
+
 pub(crate) fn fetch_bounded_events<'a>(
     reader: &Reader,
     segments: &[SegmentRef],
@@ -365,18 +491,30 @@ pub(crate) fn fetch_bounded_events<'a>(
     limit: usize,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Vec<SectionEvents<'a>>, ApiError> {
-    let bound = limit.saturating_add(1);
-    let mut rows: Vec<Vec<EventRowOut>> = sections.iter().map(|_| Vec::new()).collect();
+    let mut rows: Vec<BoundedRows> = sections.iter().map(|_| BoundedRows::new(limit)).collect();
     'segments: for segment_ref in segments {
-        if cancelled() || rows.iter().all(|section_rows| section_rows.len() >= bound) {
+        if cancelled() {
             break;
+        }
+        let mut open_needed = false;
+        for (section, section_rows) in sections.iter().zip(rows.iter_mut()) {
+            if section_rows.satisfied_before(segment_ref.min_ts()) {
+                if segment_carries(segment_ref, section) {
+                    section_rows.note_more();
+                }
+            } else {
+                open_needed = true;
+            }
+        }
+        if !open_needed {
+            continue;
         }
         let segment = reader.open_segment(segment_ref)?;
         for (section, section_rows) in sections.iter().zip(rows.iter_mut()) {
             if cancelled() {
                 break 'segments;
             }
-            if section_rows.len() >= bound {
+            if section_rows.satisfied_before(segment_ref.min_ts()) {
                 continue;
             }
             let request = DataRequest {
@@ -395,7 +533,7 @@ pub(crate) fn fetch_bounded_events<'a>(
                 Err(error) => return Err(error),
             };
             for plan in &section_plans {
-                if cancelled() || section_rows.len() >= bound {
+                if cancelled() {
                     break;
                 }
                 if !plan.applies() {
@@ -406,7 +544,6 @@ pub(crate) fn fetch_bounded_events<'a>(
                     segment_ref.id(),
                     plan,
                     window,
-                    bound,
                     section_rows,
                     cancelled,
                 )?;
@@ -416,9 +553,8 @@ pub(crate) fn fetch_bounded_events<'a>(
     Ok(sections
         .iter()
         .zip(rows)
-        .map(|(section, mut rows)| {
-            let has_more = rows.len() > limit;
-            rows.truncate(limit);
+        .map(|(section, collected)| {
+            let (rows, has_more) = collected.finish();
             SectionEvents {
                 section,
                 rows,
@@ -428,15 +564,17 @@ pub(crate) fn fetch_bounded_events<'a>(
         .collect())
 }
 
-/// Reads through `limit + 1` rows for `has_more` and flushes a partial chunk
-/// as soon as it reaches that bound.
+/// Scans one plan's rows for [`fetch_bounded_events`]. Every row in the
+/// window is visited — stored order is the registry sort key, not `ts`, so
+/// no physical prefix is a valid cut — but a row later than everything a
+/// full collector holds is dropped before it costs a chunk slot or a
+/// dictionary decode.
 fn collect_bounded_rows(
     segment: &Segment,
     segment_id: i64,
     plan: &Plan,
     window: Window,
-    bound: usize,
-    rows: &mut Vec<EventRowOut>,
+    rows: &mut BoundedRows,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let Some(timestamp_column) = plan.timestamp else {
@@ -450,14 +588,19 @@ fn collect_bounded_rows(
         plan.start_row,
         usize::MAX,
         |ordinal, row| {
-            if cancelled() || rows.len() >= bound {
+            if cancelled() {
                 return false;
             }
-            if !matches!(row.get(timestamp_column), Some(Cell::Ts(at)) if window.contains(*at)) {
+            let at = match row.get(timestamp_column) {
+                Some(Cell::Ts(at)) if window.contains(*at) => *at,
+                _ => return true,
+            };
+            if rows.worst_at().is_some_and(|worst| at > worst) {
+                rows.note_more();
                 return true;
             }
             chunk.push((ordinal, row));
-            if chunk.len() < ROW_CHUNK_ROWS && rows.len() + chunk.len() < bound {
+            if chunk.len() < ROW_CHUNK_ROWS {
                 return true;
             }
             if let Err(error) = append_chunk(
@@ -467,18 +610,17 @@ fn collect_bounded_rows(
                 timestamp_column,
                 &mut chunk,
                 rows,
-                bound,
             ) {
                 failure = Some(error);
                 return false;
             }
-            rows.len() < bound
+            true
         },
     )?;
     if let Some(error) = failure {
         return Err(error);
     }
-    if !chunk.is_empty() && rows.len() < bound {
+    if !chunk.is_empty() {
         append_chunk(
             segment,
             segment_id,
@@ -486,7 +628,6 @@ fn collect_bounded_rows(
             timestamp_column,
             &mut chunk,
             rows,
-            bound,
         )?;
     }
     Ok(())
@@ -499,15 +640,11 @@ fn append_chunk(
     plan: &Plan,
     timestamp_column: &str,
     chunk: &mut Vec<(u64, Row)>,
-    rows: &mut Vec<EventRowOut>,
-    bound: usize,
+    rows: &mut BoundedRows,
 ) -> Result<(), ApiError> {
     let dictionary = streaming_chunk_dictionary(segment, chunk)?;
     for (ordinal, row) in chunk.drain(..) {
         validate_row_dictionary(&row, &dictionary)?;
-        if rows.len() >= bound {
-            break;
-        }
         let Some(Cell::Ts(at)) = row.get(timestamp_column) else {
             continue;
         };
@@ -528,4 +665,60 @@ fn append_chunk(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_rows_tests {
+    use super::{BoundedRows, EventRowOut};
+
+    fn row(at: i64, row_ordinal: u64) -> EventRowOut {
+        EventRowOut {
+            segment_id: 1,
+            type_id: 1,
+            row_ordinal,
+            at,
+            fields: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn keeps_the_earliest_rows_regardless_of_arrival_order() {
+        // Stored order follows the registry sort key, so an early event can
+        // arrive after the collector already looks full.
+        let mut collected = BoundedRows::new(2);
+        collected.push(row(300, 0));
+        collected.push(row(100, 1));
+        collected.push(row(200, 2));
+        let (rows, has_more) = collected.finish();
+        assert_eq!(
+            rows.iter().map(|row| row.at).collect::<Vec<_>>(),
+            vec![100, 200]
+        );
+        assert!(has_more);
+    }
+
+    #[test]
+    fn under_the_bound_nothing_is_dropped() {
+        let mut collected = BoundedRows::new(3);
+        collected.push(row(300, 0));
+        collected.push(row(100, 1));
+        let (rows, has_more) = collected.finish();
+        assert_eq!(
+            rows.iter().map(|row| row.at).collect::<Vec<_>>(),
+            vec![100, 300]
+        );
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn a_full_collector_skips_segments_starting_after_its_worst_row() {
+        let mut collected = BoundedRows::new(2);
+        collected.push(row(100, 0));
+        collected.push(row(200, 1));
+        assert!(collected.satisfied_before(201));
+        assert!(!collected.satisfied_before(200));
+        let mut sparse = BoundedRows::new(2);
+        sparse.push(row(100, 0));
+        assert!(!sparse.satisfied_before(500));
+    }
 }
