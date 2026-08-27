@@ -253,6 +253,8 @@ pub(crate) fn prepare_with_demo(
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+        // Answered directly in `main.rs`: it needs the account, not storage.
+        Route::McpAccess => return Err(ApiError::NoSuchSection),
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {

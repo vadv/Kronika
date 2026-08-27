@@ -93,7 +93,13 @@ fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
 
 #[test]
 fn authentication_is_mandatory_and_central() {
-    for target in ["/api", "/api/", "/api/catalog", "/api/not-a-resource"] {
+    for target in [
+        "/api",
+        "/api/",
+        "/api/catalog",
+        "/api/mcp-access",
+        "/api/not-a-resource",
+    ] {
         let response = route_request(&account(), &public_request(Method::GET, target))
             .expect_err("missing credentials")
             .response();
@@ -796,4 +802,26 @@ async fn changed_source_replay_is_bounded_and_does_not_repeat_refusals() {
         refused_attempts.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
+}
+
+#[test]
+fn mcp_access_body_carries_the_basic_value_only_when_authentication_is_on() {
+    let config = |authentication_required| crate::config::Config {
+        data_root: std::path::PathBuf::from("/nonexistent"),
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: account(),
+        authentication_required,
+        cookie_secure: false,
+        sources: crate::config::SOURCE_OS,
+        synthetic_demo: false,
+    };
+
+    let with_auth: serde_json::Value =
+        serde_json::from_str(&crate::mcp_access_body(&config(true))).expect("json");
+    assert_eq!(with_auth["record"], "mcp_access");
+    assert_eq!(with_auth["authorization"], AUTHORIZATION);
+
+    let open: serde_json::Value =
+        serde_json::from_str(&crate::mcp_access_body(&config(false))).expect("json");
+    assert!(open["authorization"].is_null());
 }

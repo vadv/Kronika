@@ -646,3 +646,12 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
         Err(RouteError::BadParameter("from".to_owned()))
     );
 }
+
+#[test]
+fn mcp_access_takes_no_query() {
+    assert_eq!(parse("/api/mcp-access", None), Ok(Route::McpAccess));
+    assert_eq!(
+        parse("/api/mcp-access", Some("verbose=1")),
+        Err(RouteError::BadParameter("query".to_owned()))
+    );
+}

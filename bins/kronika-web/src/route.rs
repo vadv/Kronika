@@ -34,6 +34,8 @@ pub(crate) enum Route {
     Snapshot(Box<SnapshotRequest>),
     /// The ranked top view of one section over one window.
     Heatmap(HeatmapRequest),
+    /// The MCP connection material for the authenticated operator.
+    McpAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +193,12 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
     if path == "/api/heatmap" {
         return parse_heatmap(query).map(Route::Heatmap);
+    }
+    if path == "/api/mcp-access" {
+        if !query.is_empty() {
+            return Err(RouteError::BadParameter("query".to_owned()));
+        }
+        return Ok(Route::McpAccess);
     }
     let tail = path
         .strip_prefix("/api/segments/")

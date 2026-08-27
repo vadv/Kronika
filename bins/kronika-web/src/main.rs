@@ -89,7 +89,11 @@ async fn answer(
             session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
         }
         RequestTarget::Api { route, accepted } => {
-            streamed(config, route, if_none_match, accepted).await
+            if matches!(route, route::Route::McpAccess) {
+                mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
+            } else {
+                streamed(config, route, if_none_match, accepted).await
+            }
         }
         RequestTarget::Mcp => mcp::response(config, request).await,
     })
@@ -628,6 +632,20 @@ fn encoding_not_acceptable(api: bool) -> Response<WebBody> {
         ui::set_vary(&mut response);
     }
     response
+}
+
+/// The same `Authorization` value `/mcp` accepts, or null when the server
+/// runs without authentication.
+fn mcp_access_body(config: &Config) -> String {
+    use base64::Engine as _;
+    let authorization = config.authentication_required.then(|| {
+        let credentials = format!("{}:{}", config.account.user, config.account.password);
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(credentials)
+        )
+    });
+    serde_json::json!({ "record": "mcp_access", "authorization": authorization }).to_string()
 }
 
 fn json_response(status: StatusCode, body: String) -> Response<WebBody> {
