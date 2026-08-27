@@ -1123,9 +1123,12 @@ Each finished per-section derived index has a stable URL and, because a
 finished segment cannot change, uses
 `Cache-Control: private, max-age=31536000, immutable` with the `ETag` from the
 `.idx` checksum. A browser that does revalidate gets `304 Not Modified` with no
-body. Active resources use `Cache-Control: private, no-store`. Basic
-authentication keeps all of these representations out of public and shared
-caches.
+body. Active resources use `Cache-Control: private, no-store`. The instance
+label answer uses `Cache-Control: private, max-age=86400` when a label
+exists — deriving it reads the newest relation snapshot, and a day-old
+name is acceptable; an absent label stays `no-store`, so a fresh
+install picks its name up on the next page load. Basic authentication
+keeps all of these representations out of public and shared caches.
 
 An active cursor is `(segment_id, wal_position)`, where `wal_position` is the
 committed end of the valid WAL prefix. It is never a metric timestamp, so rows

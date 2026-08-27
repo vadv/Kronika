@@ -82,17 +82,7 @@ fn session_route_response(
 }
 
 #[test]
-fn the_instance_label_body_names_the_largest_recorded_database() {
-    let config = |data_root: std::path::PathBuf| crate::config::Config {
-        data_root,
-        listen: "127.0.0.1:0".parse().expect("listen address"),
-        account: account(),
-        authentication_required: true,
-        cookie_secure: false,
-        sources: crate::config::SOURCE_OS,
-        synthetic_demo: false,
-    };
-
+fn the_instance_label_names_the_largest_recorded_database() {
     let mut fixture = artifacts::Fixture::new();
     fixture.append_placed_table_snapshots(&[
         (
@@ -101,19 +91,42 @@ fn the_instance_label_body_names_the_largest_recorded_database() {
         (100, 2, 21, 0, "big", "public", "t2", None, None, 900, None),
     ]);
     fixture.finish();
-    let body: serde_json::Value = serde_json::from_str(&crate::instance_label_body(&config(
-        fixture.root().to_path_buf(),
-    )))
-    .expect("json");
+    assert_eq!(
+        crate::largest_database(fixture.root()),
+        Some("big".to_owned())
+    );
+    let empty = artifacts::Fixture::new();
+    assert_eq!(crate::largest_database(empty.root()), None);
+
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::instance_label_body(Some("big"))).expect("json");
     assert_eq!(body["record"], "instance_label");
     assert_eq!(body["database"], "big");
-
-    let empty = artifacts::Fixture::new();
-    let body: serde_json::Value = serde_json::from_str(&crate::instance_label_body(&config(
-        empty.root().to_path_buf(),
-    )))
-    .expect("json");
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::instance_label_body(None)).expect("json");
     assert!(body["database"].is_null());
+}
+
+#[test]
+fn the_day_cache_header_overrides_no_store() {
+    let cached = crate::day_cached_private(crate::json_response(StatusCode::OK, "{}".to_owned()));
+    assert_eq!(
+        cached.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static(
+            "private,max-age=86400"
+        ))
+    );
+    assert_eq!(
+        cached.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Cookie"
+        ))
+    );
+    let plain = crate::json_response(StatusCode::OK, "{}".to_owned());
+    assert_eq!(
+        plain.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static("private,no-store"))
+    );
 }
 
 fn request_cookie(set_cookie: &str) -> &str {

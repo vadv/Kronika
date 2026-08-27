@@ -92,8 +92,18 @@ async fn answer(
             if matches!(route, route::Route::McpAccess) {
                 mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
             } else if matches!(route, route::Route::InstanceLabel) {
-                match tokio::task::spawn_blocking(move || instance_label_body(&config)).await {
-                    Ok(body) => mcp::with_private_headers(json_response(StatusCode::OK, body)),
+                match tokio::task::spawn_blocking(move || largest_database(&config.data_root)).await
+                {
+                    Ok(database) => {
+                        let cache_for_a_day = database.is_some();
+                        let response =
+                            json_response(StatusCode::OK, instance_label_body(database.as_deref()));
+                        if cache_for_a_day {
+                            day_cached_private(response)
+                        } else {
+                            response
+                        }
+                    }
                     Err(error) => {
                         eprintln!("kronika-web: instance label task: {error}");
                         failed()
@@ -656,11 +666,20 @@ fn mcp_access_body(config: &Config) -> String {
     serde_json::json!({ "record": "mcp_access", "authorization": authorization }).to_string()
 }
 
+/// Marks a response reusable by the operator's browser for a day.
+fn day_cached_private(mut response: Response<WebBody>) -> Response<WebBody> {
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private,max-age=86400"),
+    );
+    response
+}
+
 /// `{"record":"instance_label","database":…}`, null without a label.
-fn instance_label_body(config: &Config) -> String {
+fn instance_label_body(database: Option<&str>) -> String {
     serde_json::json!({
         "record": "instance_label",
-        "database": largest_database(&config.data_root),
+        "database": database,
     })
     .to_string()
 }
