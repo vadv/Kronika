@@ -10,9 +10,11 @@ import {
   credentialsKey,
   cursorConfig,
   cursorPrompt,
+  serverName,
 } from "../src/mcp-prompts.ts"
 
 const ENDPOINT = "http://192.168.0.22:8080/mcp"
+const NAME = "kronika-192-168-0-22-8080"
 const HEADER: Auth = { kind: "header", value: "Basic ZGVtbzpmb3JlbnNpY3M=" }
 const OPEN: Auth = { kind: "open" }
 const PLACEHOLDER: Auth = { kind: "placeholder" }
@@ -21,18 +23,19 @@ const t = (key: string) => key
 test("the cursor config parses as JSON in every mode and carries the header only when one exists", () => {
   for (const auth of [HEADER, OPEN, PLACEHOLDER]) {
     const parsed = JSON.parse(cursorConfig(ENDPOINT, auth)) as {
-      mcpServers: { kronika: { url: string; headers?: { Authorization: string } } }
+      mcpServers: Record<string, { url: string; headers?: { Authorization: string } }>
     }
-    assert.equal(parsed.mcpServers.kronika.url, ENDPOINT)
-    if (auth.kind === "open") assert.equal(parsed.mcpServers.kronika.headers, undefined)
+    const server = parsed.mcpServers[NAME]
+    assert.equal(server?.url, ENDPOINT)
+    if (auth.kind === "open") assert.equal(server?.headers, undefined)
     else if (auth.kind === "header") {
-      assert.equal(parsed.mcpServers.kronika.headers?.Authorization, HEADER.value)
-    } else assert.equal(parsed.mcpServers.kronika.headers?.Authorization, "Basic <BASE64>")
+      assert.equal(server?.headers?.Authorization, HEADER.value)
+    } else assert.equal(server?.headers?.Authorization, "Basic <BASE64>")
   }
 })
 
 test("the codex table omits http_headers on an open server and inlines the served value", () => {
-  assert.deepEqual(codexTable(ENDPOINT, OPEN), ["[mcp_servers.kronika]", `url = "${ENDPOINT}"`])
+  assert.deepEqual(codexTable(ENDPOINT, OPEN), [`[mcp_servers.${NAME}]`, `url = "${ENDPOINT}"`])
   assert.equal(
     codexTable(ENDPOINT, HEADER).at(-1),
     `http_headers = { "Authorization" = "${HEADER.value}" }`,
@@ -45,7 +48,7 @@ test("the codex table omits http_headers on an open server and inlines the serve
 
 test("the claude command drops the continuation backslash together with the header line", () => {
   assert.deepEqual(claudeCommand(ENDPOINT, OPEN), [
-    `claude mcp add --transport http --scope user kronika ${ENDPOINT}`,
+    `claude mcp add --transport http --scope user ${NAME} ${ENDPOINT}`,
   ])
   const [first, second] = claudeCommand(ENDPOINT, HEADER)
   assert.ok(first?.endsWith("\\"))
@@ -66,6 +69,28 @@ test("the base64 recipe appears only where a <BASE64> placeholder is left to fil
     [claudePrompt, PLACEHOLDER, false],
   ] as const) {
     assert.equal(prompt(ENDPOINT, auth, t).includes("mcp.prompt.base64"), expected)
+  }
+})
+
+test("the server name is one registration per instance", () => {
+  assert.equal(serverName(ENDPOINT), NAME)
+  assert.equal(serverName("http://demo.local/mcp"), "kronika-demo-local")
+  assert.equal(serverName("https://Db-Host.Example.com:8443/mcp"), "kronika-db-host-example-com-8443")
+  assert.equal(serverName("http://[::1]:8088/mcp"), "kronika-1-8088")
+  assert.equal(serverName("not a url"), "kronika")
+  assert.notEqual(serverName("http://192.168.0.20:8088/mcp"), serverName("http://192.168.0.20:18090/mcp"))
+})
+
+test("every prompt threads the derived name through each slotted key", () => {
+  const slotted = (key: string, slots?: Record<string, unknown>) =>
+    slots === undefined ? key : `${key} ${JSON.stringify(slots)}`
+  for (const [prompt, slots] of [
+    [claudePrompt, 1],
+    [codexPrompt, 2],
+    [cursorPrompt, 1],
+  ] as const) {
+    const text = prompt(ENDPOINT, OPEN, slotted)
+    assert.equal(text.split(`"name":"${NAME}"`).length - 1, slots, text)
   }
 })
 

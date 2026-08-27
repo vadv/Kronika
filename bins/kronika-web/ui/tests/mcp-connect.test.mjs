@@ -43,13 +43,12 @@ test("every client prompt carries the endpoint, wrap-safe base64, and the entry 
   // tr -d keeps long credentials from folding a newline into the header:
   // once in the placeholder claude command, once in the shared recipe.
   assert.equal(panel.match(/base64 \| tr -d '\\\\n'/g)?.length, 2)
-  assert.match(panel, /--transport http --scope user kronika \$\{url\}/)
-  assert.match(panel, /\[mcp_servers\.kronika\]/)
+  assert.match(panel, /--transport http --scope user \$\{name\} \$\{url\}/)
   const english = await readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8")
-  assert.match(english, /replace the whole \[mcp_servers\.kronika\] table/)
+  assert.match(english, /replace the whole \[mcp_servers\.\{name\}\] table/)
   assert.match(english, /kronika_get_context is the entry point/)
   const russian = await readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8")
-  assert.match(russian, /замени целиком таблицу \[mcp_servers\.kronika\]/)
+  assert.match(russian, /замени целиком таблицу \[mcp_servers\.\{name\}\]/)
   assert.match(russian, /точка входа — kronika_get_context/)
 })
 

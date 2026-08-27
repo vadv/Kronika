@@ -11,6 +11,10 @@ serves `/mcp` without credentials.
 Placeholders used throughout:
 
 - `<URL>` — the endpoint, e.g. `http://192.168.0.22:8080/mcp`
+- `kronika` — the registration name. With several Kronika instances, give
+  each its own name, or the second registration replaces the first; the
+  web UI's connection panel derives one from the endpoint, e.g.
+  `kronika-192-168-0-22-8080`.
 - `<USER>` / `<PASSWORD>` — the web UI credentials
 - `<BASE64>` — `base64` of `<USER>:<PASSWORD>`:
 
