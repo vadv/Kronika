@@ -57,7 +57,8 @@ pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
     })
 }
 
-/// Validates that every cut field exists and has one shared numeric class.
+/// Validates that every cut field exists and shares one numeric class and
+/// one unit — summing KiB with a thread count is a number with no meaning.
 fn fields_class(
     section: &str,
     fields: &[String],
@@ -65,6 +66,7 @@ fn fields_class(
 ) -> Result<ColumnClass, ApiError> {
     let mut section_seen = false;
     let mut found: Option<ColumnClass> = None;
+    let mut unit: Option<Option<kronika_registry::Unit>> = None;
     let mut matched = vec![false; fields.len()];
     for contract in registry() {
         let type_id = contract.type_id.get();
@@ -84,6 +86,9 @@ fn fields_class(
             }
             if *found.get_or_insert(column.class) != column.class {
                 return Err(ApiError::NoSuchColumn(field.clone()));
+            }
+            if *unit.get_or_insert(column.unit) != column.unit {
+                return Err(ApiError::MixedUnits(fields.join("+")));
             }
         }
     }

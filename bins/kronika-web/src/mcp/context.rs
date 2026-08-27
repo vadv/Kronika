@@ -10,9 +10,15 @@ use super::semantics::{DecimalI64, mcp_error, mcp_structured};
 
 pub(crate) fn call(
     config: &Config,
-    _arguments: Map<String, Value>,
+    arguments: Map<String, Value>,
     _cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
+    if let Err(error) = super::semantics::parameterless::<super::catalog::GetContextInput>(
+        "kronika_get_context",
+        arguments,
+    ) {
+        return error;
+    }
     let prepared = match crate::api::catalog::prepare(
         &config.data_root,
         Window::default(),

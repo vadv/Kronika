@@ -1900,3 +1900,167 @@ fn get_instance_reports_unrecorded_parts_as_null_and_empty() {
     );
     assert!(structured["settings_as_of"].is_null());
 }
+
+#[test]
+fn overview_rejects_fields_with_different_units() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb", "num_threads"],
+        "from": 0,
+        "to": 1_000,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("different units"),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn overview_identity_passes_verbatim_into_the_statements_finder() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let overview_arguments = serde_json::json!({
+        "section": "pg_stat_statements",
+        "fields": ["total_exec_time"],
+        "from": 0,
+        "to": 1_000,
+        "top": 1,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let overview = crate::mcp::overview::call(&config, overview_arguments, &|| false);
+    assert_eq!(overview.is_error, Some(false));
+    let structured = overview.structured_content.expect("structured content");
+    let identity = structured["entities"][0]["identity"]
+        .as_object()
+        .expect("identity object")
+        .clone();
+    let query_id = identity["query_id"].clone();
+    assert!(query_id.is_string() || query_id.is_number());
+
+    let find_arguments = serde_json::json!({
+        "filters": [{"field": "query_id", "op": "eq", "value": query_id}],
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let found = crate::mcp::postgresql::call_statements(&config, find_arguments, &|| false);
+    assert_eq!(found.is_error, Some(false));
+    let rows = found.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn parameterless_tools_reject_unexpected_arguments() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let unexpected = serde_json::json!({"unexpected": true})
+        .as_object()
+        .expect("object")
+        .clone();
+    for call in [crate::mcp::context::call, crate::mcp::instance::call] {
+        assert_eq!(
+            call(&config, serde_json::Map::new(), &|| false).is_error,
+            Some(false)
+        );
+        assert_eq!(
+            call(&config, unexpected.clone(), &|| false).is_error,
+            Some(true)
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_tool_name_is_a_protocol_error_not_a_tool_result() {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {"name": "kronika_made_up", "arguments": {}}
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("http://kronika.test/mcp")
+        .header(HOST, "kronika.test")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&body).expect("json"),
+        )))
+        .expect("request");
+
+    let response = response(test_config(std::env::temp_dir()), request).await;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    assert!(
+        decoded["error"].is_object(),
+        "expected top-level error: {decoded}"
+    );
+    assert!(decoded["result"].is_null(), "expected no result: {decoded}");
+}
+
+#[test]
+fn find_events_reports_no_more_rows_when_matches_lie_past_the_window() {
+    // Segment two overlaps the window only through another section; its
+    // pg_log_errors row sits past `to`, so nothing was omitted.
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_log_error(200);
+    fixture.finish_and_continue(1_709_164_800_000_000 + 1_000);
+    fixture.append_pgbouncer_event(300);
+    fixture.append_log_error(2_000);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 2,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rows = structured["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["at"].as_str().expect("at"))
+            .collect::<Vec<_>>(),
+        vec!["100", "200"]
+    );
+    assert_eq!(structured["has_more"], false);
+}

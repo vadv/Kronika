@@ -13,9 +13,15 @@ use super::semantics::{DecimalI64, mcp_structured};
 
 pub(crate) fn call(
     config: &Config,
-    _arguments: Map<String, Value>,
+    arguments: Map<String, Value>,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
+    if let Err(error) = super::semantics::parameterless::<super::catalog::GetInstanceInput>(
+        "kronika_get_instance",
+        arguments,
+    ) {
+        return error;
+    }
     let host = match newest_rows(config, "instance_metadata", cancelled) {
         Ok(part) => part,
         Err(error) => return error,

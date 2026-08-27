@@ -435,12 +435,8 @@ impl BoundedRows {
         self.worst_at().is_some_and(|worst| min_ts > worst)
     }
 
-    /// Records that at least one row was dropped or never read — the
-    /// `has_more` the caller reports. A skipped segment that carries the
-    /// section must call this: nothing else remembers its rows. The
-    /// catalog has no per-section time range, so a skipped segment whose
-    /// rows all sit past the window's `to` overstates `has_more` — the
-    /// safe direction.
+    /// Records that a matching row was dropped — the `has_more` the
+    /// caller reports.
     const fn note_more(&mut self) {
         self.overflowed = true;
     }
@@ -456,6 +452,29 @@ impl BoundedRows {
     }
 }
 
+/// Whether a segment's catalog lists any rows for `section` — readable
+/// without opening the segment, which is the point: the skip path must
+/// know whether it is leaving rows behind.
+fn segment_carries(segment_ref: &SegmentRef, section: &str) -> bool {
+    segment_ref.sections().iter().any(|stored| {
+        stored.rows > 0 && kronika_registry::logical_section_name(stored.type_id) == Some(section)
+    })
+}
+
+/// The catalog has no per-section time range, so a full collector still
+/// scans a carried in-window segment — only to count dropped matches into
+/// `has_more`, never to push.
+fn skippable(
+    segment_ref: &SegmentRef,
+    section: &str,
+    section_rows: &BoundedRows,
+    window: Window,
+) -> bool {
+    section_rows.satisfied_before(segment_ref.min_ts())
+        && (!segment_carries(segment_ref, section)
+            || window.to.is_some_and(|to| segment_ref.min_ts() > to))
+}
+
 /// Bounded top-N read of one or more logical sections across `segments`,
 /// keyed by field name for MCP consumers instead of `stream_plans`'s
 /// positional wire format. Each segment is opened at most once and its
@@ -468,21 +487,14 @@ impl BoundedRows {
 /// stopping at the first `limit` physical rows: stored row order follows
 /// the section's registry sort key, not `ts`, so the earliest events of a
 /// window can sit anywhere in a segment's data. `segments` is scanned in
-/// the order given (callers pass them sorted by `min_ts`), which lets a
-/// full collector skip opening every segment that starts after the latest
-/// row it holds — noting `has_more` from the skipped segment's own catalog
-/// when it carries the section, since its rows were never read. Each
-/// section keeps its own bound and its own `has_more`, exactly as if
-/// fetched independently; only the segment opens are shared.
-/// Whether a segment's catalog lists any rows for `section` — readable
-/// without opening the segment, which is the point: the skip path must
-/// know whether it is leaving rows behind.
-fn segment_carries(segment_ref: &SegmentRef, section: &str) -> bool {
-    segment_ref.sections().iter().any(|stored| {
-        stored.rows > 0 && kronika_registry::logical_section_name(stored.type_id) == Some(section)
-    })
-}
-
+/// the order given (callers pass them sorted by `min_ts`). A full
+/// collector skips opening a segment only when nothing in it could change
+/// the answer: the section is absent, or every row of the segment starts
+/// past the window's `to`. A segment that might still hold matching rows
+/// is scanned so `has_more` reports dropped matches, never a guess from
+/// segment bounds. Each section keeps its own bound and its own
+/// `has_more`, exactly as if fetched independently; only the segment
+/// opens are shared.
 pub(crate) fn fetch_bounded_events<'a>(
     reader: &Reader,
     segments: &[SegmentRef],
@@ -496,17 +508,11 @@ pub(crate) fn fetch_bounded_events<'a>(
         if cancelled() {
             break;
         }
-        let mut open_needed = false;
-        for (section, section_rows) in sections.iter().zip(rows.iter_mut()) {
-            if section_rows.satisfied_before(segment_ref.min_ts()) {
-                if segment_carries(segment_ref, section) {
-                    section_rows.note_more();
-                }
-            } else {
-                open_needed = true;
-            }
-        }
-        if !open_needed {
+        if sections
+            .iter()
+            .zip(rows.iter())
+            .all(|(section, section_rows)| skippable(segment_ref, section, section_rows, window))
+        {
             continue;
         }
         let segment = reader.open_segment(segment_ref)?;
@@ -514,7 +520,7 @@ pub(crate) fn fetch_bounded_events<'a>(
             if cancelled() {
                 break 'segments;
             }
-            if section_rows.satisfied_before(segment_ref.min_ts()) {
+            if skippable(segment_ref, section, section_rows, window) {
                 continue;
             }
             let request = DataRequest {

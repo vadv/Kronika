@@ -1,4 +1,4 @@
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorData};
 
 use crate::config::Config;
 
@@ -8,16 +8,18 @@ use super::catalog::{
     FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
     FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
 };
-use super::semantics::mcp_error;
 use super::{context, events, instance, overview, postgresql, processes, row_detail};
 
+/// An unknown tool name is a protocol-level error, not a tool result:
+/// `isError: true` is reserved for execution after a valid tool was
+/// selected, so a client can tell a stale tool name from a failing call.
 pub(crate) fn dispatch(
     config: &Config,
     request: CallToolRequestParams,
     cancelled: &dyn Fn() -> bool,
-) -> CallToolResult {
+) -> Result<CallToolResult, ErrorData> {
     let arguments = request.arguments.unwrap_or_default();
-    match request.name.as_ref() {
+    Ok(match request.name.as_ref() {
         GET_CONTEXT_TOOL => context::call(config, arguments, cancelled),
         GET_INSTANCE_TOOL => instance::call(config, arguments, cancelled),
         OVERVIEW_TOOL => overview::call(config, arguments, cancelled),
@@ -34,6 +36,11 @@ pub(crate) fn dispatch(
         FIND_PROCESSES_TOOL => processes::call(config, arguments, cancelled),
         GET_ROW_DETAIL_TOOL => row_detail::call(config, arguments, cancelled),
         FIND_EVENTS_TOOL => events::call(config, arguments, cancelled),
-        other => mcp_error(format!("unknown tool: {other}")),
-    }
+        other => {
+            return Err(ErrorData::invalid_params(
+                format!("unknown tool: {other}"),
+                None,
+            ));
+        }
+    })
 }

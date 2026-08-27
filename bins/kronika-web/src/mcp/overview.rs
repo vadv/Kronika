@@ -101,21 +101,33 @@ pub(crate) fn call(
     )
 }
 
-/// Names an entity's identity values with the section's own identity
-/// column names from the registry, so a ranked entity reads as
-/// `{"queryid": ..., "datid": ...}` rather than an unlabeled tuple. The
-/// values ride through `kronika_find_*` filters to reach the full rows
-/// behind an entity. A registry/identity length mismatch falls back to
-/// positional `value_N` names rather than dropping the values.
+/// Recorded identity column names whose values a `kronika_find_*` filter
+/// accepts under a different spelling. Emitting the finder's spelling
+/// makes the overview -> find handoff a verbatim copy instead of a
+/// rename the caller has to guess.
+const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
+
+/// Names an entity's identity values with the section's identity column
+/// names from the registry (finder-accepted spellings where they differ),
+/// so a ranked entity reads as `{"query_id": ..., "dbid": ...}` rather
+/// than an unlabeled tuple. A registry/identity length mismatch falls
+/// back to positional `value_N` names rather than dropping the values.
 fn identity_object(type_id: u32, values: Vec<Value>) -> Value {
     let names = kronika_registry::contract(type_id)
         .map(|contract| contract.identity)
         .unwrap_or_default();
     let mut object = Map::new();
     for (index, value) in values.into_iter().enumerate() {
-        let name = names
-            .get(index)
-            .map_or_else(|| format!("value_{index}"), |name| (*name).to_owned());
+        let name = names.get(index).map_or_else(
+            || format!("value_{index}"),
+            |name| {
+                IDENTITY_ALIASES
+                    .iter()
+                    .find(|(recorded, _)| recorded == name)
+                    .map_or(*name, |(_, public)| *public)
+                    .to_owned()
+            },
+        );
         object.insert(name, value);
     }
     Value::Object(object)

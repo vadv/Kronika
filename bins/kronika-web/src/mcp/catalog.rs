@@ -407,15 +407,20 @@ fn entry_tools() -> [Tool; 3] {
              Unix-microsecond `[from, to]` window; it does not query the live \
              host or database. Counter `entities[].total` values are \
              whole-window deltas; gauge totals are whole-window maxima. The \
-             requested fields are summed before ranking. `entities` is \
+             requested fields are summed before ranking and must share one \
+             unit. `entities` is \
              descending by total with nulls last, and `entity_count` is the \
              decimal-string number of identities found. For counters, \
              `totals_total` and `others_total` sum all and omitted identity \
              deltas; for gauges they are the maxima across all and omitted \
              identities. Null means no usable value. Each entity carries an \
-             `identity` object naming the section's identity columns (for \
-             example `queryid`/`dbid`/`userid`, or `pid`); pass those values \
-             to a `find_*` filter to reach the entity's rows. \
+             `identity` object naming the section's identity columns. \
+             Fields a finder accepts as filters keep the finder's spelling \
+             — `query_id`, `plan_id`, `pid`, and pg_stat_database's \
+             `datid` — and their values pass to a `find_*` filter \
+             verbatim. The other identity fields (`dbid`, `userid`, \
+             `toplevel`, and the table/index OIDs) have no finder filter: \
+             rank tables or indexes with the finder's own sort instead. \
              `kronika_get_context` lists each section's fields, classes, and \
              units, and the recorded time range this window must fall into. \
              Across this catalog, tool failures set `isError=true` and \

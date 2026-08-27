@@ -63,3 +63,15 @@ fn mcp_structured_keeps_the_summary_out_of_the_structured_content_and_vice_versa
         Some("1 section")
     );
 }
+
+#[test]
+fn an_oversized_structured_result_becomes_an_error() {
+    let giant = serde_json::json!({ "text": "x".repeat(9 * 1024 * 1024) });
+    let result = mcp_structured(giant, "summary");
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("encoded bytes"), "unexpected: {message}");
+
+    let small = serde_json::json!({ "rows": [] });
+    assert_eq!(mcp_structured(small, "s").is_error, Some(false));
+}

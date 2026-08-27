@@ -1,4 +1,11 @@
 //! Stateless, tools-only MCP transport over Streamable HTTP.
+//!
+//! Results are structured-content only: `content` carries a one-line
+//! summary and every row lives in `structuredContent` — a client that
+//! ignores structured content gets no rows. Cancellation covers HTTP
+//! response abandonment only: the stateless transport keeps no request-id
+//! state, so a client-issued `notifications/cancelled` cannot reach an
+//! in-flight call.
 
 use std::sync::Arc;
 
@@ -66,13 +73,22 @@ impl ServerHandler for KronikaMcp {
             // threads. The request's cancellation token rides along so an
             // abandoned request stops scanning.
             let token = context.ct.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = match tokio::task::spawn_blocking(move || {
                 dispatch::dispatch(&config, request, &|| token.is_cancelled())
             })
             .await
-            .unwrap_or_else(|join_error| {
-                semantics::mcp_error(format!("tool dispatch panicked: {join_error}"))
-            });
+            {
+                Ok(result) => result?,
+                // The panic detail stays in the server log; the caller gets
+                // a stable internal error without it.
+                Err(join_error) => {
+                    eprintln!("kronika-web: mcp dispatch task failed: {join_error}");
+                    return Err(rmcp::ErrorData::internal_error(
+                        "tool dispatch failed",
+                        None,
+                    ));
+                }
+            };
             Ok(CallToolResponse::from(result))
         }
     }
