@@ -58,7 +58,7 @@ pub(crate) type NamedIndexSnapshot<'a> = (
 
 type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
 
-type PlacedTableSnapshot<'a> = (
+pub(crate) type PlacedTableSnapshot<'a> = (
     i64,
     u32,
     u32,
@@ -1254,7 +1254,7 @@ impl Fixture {
             .expect("append large relation fixture");
     }
 
-    fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
+    pub(crate) fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(

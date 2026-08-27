@@ -29,7 +29,7 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   // Copying must go through the shared helper: plain-http origins have no
   // navigator.clipboard, and the raw optional chain swallowed the click.
   assert.match(panel, /void copyText\(prompt\)\.then\(setCopied\)/)
-  assert.match(panel, /selected\.builder\(url, auth, t\)/)
+  assert.match(panel, /selected\.builder\(url, auth, t, database\)/)
   // The Authorization value comes from the server, through the session
   // fetch wrapper that keeps UI 401s challenge-free.
   assert.match(panel, /apiFetch\("\/api\/mcp-access"/)
@@ -44,6 +44,12 @@ test("every client prompt carries the endpoint, wrap-safe base64, and the entry 
   // once in the placeholder claude command, once in the shared recipe.
   assert.equal(panel.match(/base64 \| tr -d '\\\\n'/g)?.length, 2)
   assert.match(panel, /--transport http --scope user \$\{name\} \$\{url\}/)
+  const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  assert.match(app, /apiFetch\("\/api\/instance-label"/)
+  assert.match(app, /document\.title = database === null \? "Kronika" : `\$\{database\} — Kronika`/)
+  assert.match(app, /<McpPanel database=\{database\}/)
+  const connect = await readFile(new URL("../src/mcp-connect.tsx", import.meta.url), "utf8")
+  assert.match(connect, /selected\.builder\(url, auth, t, database\)/)
   const english = await readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8")
   assert.match(english, /replace the whole \[mcp_servers\.\{name\}\] table/)
   assert.match(english, /kronika_get_context is the entry point/)

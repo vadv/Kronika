@@ -91,6 +91,14 @@ async fn answer(
         RequestTarget::Api { route, accepted } => {
             if matches!(route, route::Route::McpAccess) {
                 mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
+            } else if matches!(route, route::Route::InstanceLabel) {
+                match tokio::task::spawn_blocking(move || instance_label_body(&config)).await {
+                    Ok(body) => mcp::with_private_headers(json_response(StatusCode::OK, body)),
+                    Err(error) => {
+                        eprintln!("kronika-web: instance label task: {error}");
+                        failed()
+                    }
+                }
             } else {
                 streamed(config, route, if_none_match, accepted).await
             }
@@ -646,6 +654,62 @@ fn mcp_access_body(config: &Config) -> String {
         )
     });
     serde_json::json!({ "record": "mcp_access", "authorization": authorization }).to_string()
+}
+
+/// `{"record":"instance_label","database":…}`, null without a label.
+fn instance_label_body(config: &Config) -> String {
+    serde_json::json!({
+        "record": "instance_label",
+        "database": largest_database(&config.data_root),
+    })
+    .to_string()
+}
+
+/// Operators call an instance by its biggest database, so the label is
+/// the largest database in the newest recorded relation snapshot.
+fn largest_database(root: &std::path::Path) -> Option<String> {
+    match try_largest_database(root) {
+        Ok(database) => database,
+        Err(error) => {
+            eprintln!("kronika-web: instance label: {error}");
+            None
+        }
+    }
+}
+
+fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiError> {
+    use crate::api::snapshot::relation::Metric;
+    let Some((segment_id, at)) = mcp::current_segment(root, "pg_stat_user_tables")? else {
+        return Ok(None);
+    };
+    let request = route::SnapshotRequest {
+        segment_id,
+        at,
+        sections: vec!["pg_stat_user_tables".to_owned()],
+        fields: vec!["displayed_storage_bytes".to_owned()],
+        by: vec!["displayed_storage_bytes".to_owned()],
+        direction: route::Order::Desc,
+        group: Some(route::RelationGroup::Database),
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let api::Prepared::Snapshot(prepared) = api::snapshot::prepare(root, request, None)? else {
+        return Ok(None);
+    };
+    let (rows, _has_more) = prepared.compute_relation_rows(1, &|| false)?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|row| match row.key.metric("datname") {
+            Some(Metric::Text(name)) => Some(name),
+            _ => None,
+        }))
 }
 
 fn json_response(status: StatusCode, body: String) -> Response<WebBody> {

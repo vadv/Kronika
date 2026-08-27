@@ -73,7 +73,7 @@ import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, proce
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
-import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
+import { apiFetch, bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
 import type { RelatedNavigation } from "./statement-navigation"
 import {
@@ -195,6 +195,24 @@ function App({ locale, onLocale, t }: {
   readonly t: Translate
 }) {
   const time = useDisplayTime()
+  const [database, setDatabase] = useState<string | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    apiFetch("/api/instance-label", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return
+        const body: { database?: string | null } = await response.json()
+        if (typeof body.database === "string" && body.database !== "") setDatabase(body.database)
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
+  useEffect(() => {
+    document.title = database === null ? "Kronika" : `${database} — Kronika`
+    return () => {
+      document.title = "Kronika"
+    }
+  }, [database])
   const opened = useRef(readAddress(window.location.search))
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
@@ -913,7 +931,7 @@ function App({ locale, onLocale, t }: {
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
     <header className="topbar [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
-      <h1>{t("app.title")}</h1>
+      <h1>{database === null ? t("app.title") : `${t("app.title")} — ${database}`}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
         <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { navigateSearchSurface(null); setSystemFocus(null); setSelectedKey(null); setInspectorPanel(null); setSource("host") }} type="button">{t("nav.host")}</button>
@@ -999,7 +1017,7 @@ function App({ locale, onLocale, t }: {
     </InspectorPortalProvider>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
-    {mcpOpen && <McpPanel onClose={() => setMcpOpen(false)} t={t} />}
+    {mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
   </main></DisplayTimeScope>
 }
 

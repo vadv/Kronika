@@ -36,6 +36,8 @@ pub(crate) enum Route {
     Heatmap(HeatmapRequest),
     /// The MCP connection material for the authenticated operator.
     McpAccess,
+    /// The largest recorded database, naming the instance.
+    InstanceLabel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +201,12 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
             return Err(RouteError::BadParameter("query".to_owned()));
         }
         return Ok(Route::McpAccess);
+    }
+    if path == "/api/instance-label" {
+        if !query.is_empty() {
+            return Err(RouteError::BadParameter("query".to_owned()));
+        }
+        return Ok(Route::InstanceLabel);
     }
     let tail = path
         .strip_prefix("/api/segments/")

@@ -8,29 +8,33 @@ export type Auth =
 
 const PLACEHOLDER_HEADER = "Basic <BASE64>"
 
-// One registration per instance: endpoints on different hosts or ports
-// register under different names.
-export function serverName(url: string): string {
+// One registration per instance: the endpoint keeps names apart, the
+// largest recorded database says which instance the entry serves.
+export function serverName(url: string, database: string | null): string {
   let host = ""
   try {
     const parsed = new URL(url)
     host = parsed.port === "" ? parsed.hostname : `${parsed.hostname}-${parsed.port}`
   } catch {
-    return "kronika"
+    host = ""
   }
-  const cleaned = host
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-  return cleaned === "" ? "kronika" : `kronika-${cleaned}`
+  const parts = [database ?? "", host]
+    .map((part) =>
+      part
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+    )
+    .filter((part) => part !== "")
+  return parts.length === 0 ? "kronika" : `kronika-${parts.join("-")}`
 }
 
 function base64Recipe(t: Translate): readonly string[] {
   return ["", t("mcp.prompt.base64"), "printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\\n'"]
 }
 
-export function claudeCommand(url: string, auth: Auth): readonly string[] {
-  const name = serverName(url)
+export function claudeCommand(url: string, auth: Auth, database: string | null): readonly string[] {
+  const name = serverName(url, database)
   if (auth.kind === "open") return [`claude mcp add --transport http --scope user ${name} ${url}`]
   return [
     `claude mcp add --transport http --scope user ${name} ${url} \\`,
@@ -40,19 +44,19 @@ export function claudeCommand(url: string, auth: Auth): readonly string[] {
   ]
 }
 
-export function claudePrompt(url: string, auth: Auth, t: Translate): string {
-  const name = serverName(url)
+export function claudePrompt(url: string, auth: Auth, t: Translate, database: string | null): string {
+  const name = serverName(url, database)
   return [
     t("mcp.prompt.claude.intro"),
     "",
-    ...claudeCommand(url, auth),
+    ...claudeCommand(url, auth, database),
     "",
     t("mcp.prompt.claude.verify", { name }),
   ].join("\n")
 }
 
-export function codexTable(url: string, auth: Auth): readonly string[] {
-  const table = [`[mcp_servers.${serverName(url)}]`, `url = "${url}"`]
+export function codexTable(url: string, auth: Auth, database: string | null): readonly string[] {
+  const table = [`[mcp_servers.${serverName(url, database)}]`, `url = "${url}"`]
   if (auth.kind === "header") table.push(`http_headers = { "Authorization" = "${auth.value}" }`)
   if (auth.kind === "placeholder") {
     table.push(`http_headers = { "Authorization" = "${PLACEHOLDER_HEADER}" }`)
@@ -60,19 +64,19 @@ export function codexTable(url: string, auth: Auth): readonly string[] {
   return table
 }
 
-export function codexPrompt(url: string, auth: Auth, t: Translate): string {
-  const name = serverName(url)
+export function codexPrompt(url: string, auth: Auth, t: Translate, database: string | null): string {
+  const name = serverName(url, database)
   return [
     t("mcp.prompt.codex.intro", { name }),
     "",
-    ...codexTable(url, auth),
+    ...codexTable(url, auth, database),
     ...(auth.kind === "placeholder" ? base64Recipe(t) : []),
     "",
     t("mcp.prompt.codex.verify", { name }),
   ].join("\n")
 }
 
-export function cursorConfig(url: string, auth: Auth): string {
+export function cursorConfig(url: string, auth: Auth, database: string | null): string {
   const server =
     auth.kind === "open"
       ? [`      "url": "${url}"`]
@@ -82,15 +86,15 @@ export function cursorConfig(url: string, auth: Auth): string {
           `        "Authorization": "${auth.kind === "header" ? auth.value : PLACEHOLDER_HEADER}"`,
           "      }",
         ]
-  return ["{", '  "mcpServers": {', `    "${serverName(url)}": {`, ...server, "    }", "  }", "}"].join("\n")
+  return ["{", '  "mcpServers": {', `    "${serverName(url, database)}": {`, ...server, "    }", "  }", "}"].join("\n")
 }
 
-export function cursorPrompt(url: string, auth: Auth, t: Translate): string {
-  const name = serverName(url)
+export function cursorPrompt(url: string, auth: Auth, t: Translate, database: string | null): string {
+  const name = serverName(url, database)
   return [
     t("mcp.prompt.cursor.intro"),
     "",
-    cursorConfig(url, auth),
+    cursorConfig(url, auth, database),
     ...(auth.kind === "placeholder" ? base64Recipe(t) : []),
     "",
     t("mcp.prompt.cursor.verify", { name }),

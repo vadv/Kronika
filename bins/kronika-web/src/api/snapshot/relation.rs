@@ -732,7 +732,7 @@ impl GroupKey {
         clippy::unnested_or_patterns,
         reason = "each tuple arm keeps the requested field name attached to its variants"
     )]
-    fn metric(&self, name: &str) -> Option<Metric> {
+    pub(crate) fn metric(&self, name: &str) -> Option<Metric> {
         match (self, name) {
             (Self::Database { datid, .. } | Self::Schema { datid, .. }, "datid")
             | (Self::Table { datid, .. } | Self::Index { datid, .. }, "datid") => {

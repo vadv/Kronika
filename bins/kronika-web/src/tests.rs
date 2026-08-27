@@ -81,6 +81,41 @@ fn session_route_response(
     }
 }
 
+#[test]
+fn the_instance_label_body_names_the_largest_recorded_database() {
+    let config = |data_root: std::path::PathBuf| crate::config::Config {
+        data_root,
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: account(),
+        authentication_required: true,
+        cookie_secure: false,
+        sources: crate::config::SOURCE_OS,
+        synthetic_demo: false,
+    };
+
+    let mut fixture = artifacts::Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100, 1, 11, 0, "small", "public", "t1", None, None, 100, None,
+        ),
+        (100, 2, 21, 0, "big", "public", "t2", None, None, 900, None),
+    ]);
+    fixture.finish();
+    let body: serde_json::Value = serde_json::from_str(&crate::instance_label_body(&config(
+        fixture.root().to_path_buf(),
+    )))
+    .expect("json");
+    assert_eq!(body["record"], "instance_label");
+    assert_eq!(body["database"], "big");
+
+    let empty = artifacts::Fixture::new();
+    let body: serde_json::Value = serde_json::from_str(&crate::instance_label_body(&config(
+        empty.root().to_path_buf(),
+    )))
+    .expect("json");
+    assert!(body["database"].is_null());
+}
+
 fn request_cookie(set_cookie: &str) -> &str {
     set_cookie.split(';').next().expect("request cookie")
 }
@@ -98,6 +133,7 @@ fn authentication_is_mandatory_and_central() {
         "/api/",
         "/api/catalog",
         "/api/mcp-access",
+        "/api/instance-label",
         "/api/not-a-resource",
     ] {
         let response = route_request(&account(), &public_request(Method::GET, target))

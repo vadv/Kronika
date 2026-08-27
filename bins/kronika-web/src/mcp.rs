@@ -42,6 +42,8 @@ mod semantics;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use postgresql::current_segment;
+
 #[derive(Clone)]
 struct KronikaMcp {
     config: Arc<Config>,

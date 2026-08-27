@@ -648,8 +648,13 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
 }
 
 #[test]
-fn mcp_access_takes_no_query() {
+fn the_directly_answered_api_routes_take_no_query() {
     assert_eq!(parse("/api/mcp-access", None), Ok(Route::McpAccess));
+    assert_eq!(parse("/api/instance-label", None), Ok(Route::InstanceLabel));
+    assert_eq!(
+        parse("/api/instance-label", Some("verbose=1")),
+        Err(RouteError::BadParameter("query".to_owned()))
+    );
     assert_eq!(
         parse("/api/mcp-access", Some("verbose=1")),
         Err(RouteError::BadParameter("query".to_owned()))

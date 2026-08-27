@@ -13,8 +13,11 @@ Placeholders used throughout:
 - `<URL>` — the endpoint, e.g. `http://192.168.0.22:8080/mcp`
 - `kronika` — the registration name. With several Kronika instances, give
   each its own name, or the second registration replaces the first; the
-  web UI's connection panel derives one from the endpoint, e.g.
-  `kronika-192-168-0-22-8080`.
+  web UI's connection panel derives one from the largest recorded
+  database and the endpoint, e.g. `kronika-billing-192-168-0-22-8080`.
+  When another database outgrows the current one, the derived name
+  changes and a re-run prompt adds a new registration — remove the
+  stale entry yourself.
 - `<USER>` / `<PASSWORD>` — the web UI credentials
 - `<BASE64>` — `base64` of `<USER>:<PASSWORD>`:
 

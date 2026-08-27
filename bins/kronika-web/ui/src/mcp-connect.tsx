@@ -12,7 +12,11 @@ const CLIENTS = [
   { builder: cursorPrompt, id: "cursor", label: "Cursor", sectionKey: "mcp.section.cursor" },
 ] as const
 
-export function McpPanel({ onClose, t }: { readonly onClose: () => void; readonly t: Translate }) {
+export function McpPanel({ database, onClose, t }: {
+  readonly database: string | null
+  readonly onClose: () => void
+  readonly t: Translate
+}) {
   const [auth, setAuth] = useState<Auth | null>(null)
   const [client, setClient] = useState<(typeof CLIENTS)[number]["label"]>("Claude Code")
   const [copied, setCopied] = useState(false)
@@ -39,7 +43,7 @@ export function McpPanel({ onClose, t }: { readonly onClose: () => void; readonl
 
   const url = `${window.location.origin}/mcp`
   const selected = CLIENTS.find((candidate) => candidate.label === client) ?? CLIENTS[0]
-  const prompt = auth === null ? null : selected.builder(url, auth, t)
+  const prompt = auth === null ? null : selected.builder(url, auth, t, database)
   return (
     <aside aria-label={t("mcp.title")} className="fixed bottom-0 right-0 top-0 z-[100] w-[min(92vw,430px)] max-w-[430px] overflow-auto border-l border-line4 bg-s1 p-[18px] shadow-[-20px_0_50px_var(--color-shadow-a)]" data-testid="mcp-panel">
       <div className="flex items-center justify-between">
