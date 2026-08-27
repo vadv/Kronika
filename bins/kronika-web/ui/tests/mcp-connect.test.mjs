@@ -18,6 +18,15 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   assert.match(app, /\{mcpOpen && <McpPanel/)
   assert.match(panel, /window\.location\.origin\}\/mcp/)
   for (const label of ["Claude Code", "Codex CLI", "Cursor"]) assert.match(panel, new RegExp(label))
+  // One client at a time behind a segmented tab row, in the app's own
+  // lens-tabs shape.
+  assert.match(panel, /className="lens-tabs[^"]*" role="group"/)
+  assert.match(panel, /aria-pressed=\{client === candidate\.label\}/)
+  assert.match(panel, /data-testid=\{`mcp-tab-\$\{candidate\.id\}`\}/)
+  // The row must actually switch: a click updates the state and only the
+  // selected client's builder runs.
+  assert.match(panel, /onClick=\{\(\) => setClient\(candidate\.label\)\}/)
+  assert.match(panel, /selected\.builder\(url, auth, t\)/)
   // The Authorization value comes from the server, through the session
   // fetch wrapper that keeps UI 401s challenge-free.
   assert.match(panel, /apiFetch\("\/api\/mcp-access"/)
