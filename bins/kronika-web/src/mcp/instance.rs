@@ -37,7 +37,7 @@ pub(crate) fn call(
         .rows
         .into_iter()
         .max_by_key(|row| row.at)
-        .map(plain_row_to_json);
+        .map(|row| plain_row_to_json("instance_metadata", row));
     let row_count = settings.rows.len();
     let summary = format!(
         "Returned {} and {row_count} recorded pg_settings row{}{}.",
@@ -60,7 +60,7 @@ pub(crate) fn call(
             "postgresql_settings": settings
                 .rows
                 .into_iter()
-                .map(plain_row_to_json)
+                .map(|row| plain_row_to_json("pg_settings", row))
                 .collect::<Vec<Value>>(),
             "settings_as_of": settings.as_of.map(DecimalI64),
             "settings_has_more": settings.has_more,

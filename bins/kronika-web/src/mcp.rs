@@ -37,6 +37,7 @@ mod overview;
 mod postgresql;
 mod processes;
 mod row_detail;
+mod row_key;
 mod semantics;
 
 #[cfg(test)]

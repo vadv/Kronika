@@ -336,7 +336,10 @@ fn call_plain(
             Err(error) => return error,
         };
     let row_count = rows.len();
-    let rows: Vec<Value> = rows.into_iter().map(plain_row_to_json).collect();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(|row| plain_row_to_json(logical_name, row))
+        .collect();
     let summary = format!(
         "Returned {row_count} recorded {logical_name} row{}{}.",
         if row_count == 1 { "" } else { "s" },
@@ -459,7 +462,10 @@ fn call_ratio(
             Err(error) => return error,
         };
     let row_count = rows.len();
-    let rows: Vec<Value> = rows.into_iter().map(ratio_row_to_json).collect();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(|row| ratio_row_to_json(logical_name, row))
+        .collect();
     let summary = format!(
         "Returned {row_count} recorded {logical_name} row{}{}.",
         if row_count == 1 { "" } else { "s" },
@@ -475,9 +481,9 @@ fn call_ratio(
     )
 }
 
-fn ratio_row_to_json(row: PlainRowOut) -> Value {
+fn ratio_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
     let derived = derived_ratio_fields(&row.fields);
-    let mut value = plain_row_to_json(row);
+    let mut value = plain_row_to_json(logical_name, row);
     if let Value::Object(object) = &mut value {
         object.extend(derived);
     }
@@ -585,10 +591,11 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> 
     derived
 }
 
-/// Flattens projected fields and appends decimal-string locator fields accepted
-/// by `kronika_get_row_detail`.
-pub(super) fn plain_row_to_json(row: PlainRowOut) -> Value {
+/// Flattens projected fields and appends `row_key` plus the decimal-string
+/// locator fields accepted by `kronika_get_row_detail`.
+pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
+    super::row_key::attach(logical_name, &mut object);
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
     object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));

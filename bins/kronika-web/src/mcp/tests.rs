@@ -1329,6 +1329,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
         "at": at,
         "type_id": type_id,
         "row_ordinal": 0,
+        "row_key": listing_row["row_key"],
     })
     .as_object()
     .expect("object")
@@ -1378,6 +1379,7 @@ fn get_row_detail_chains_directly_from_a_find_processes_locator() {
         "at": listing_row["at"],
         "type_id": listing_row["type_id"],
         "row_ordinal": listing_row["row_ordinal"],
+        "row_key": listing_row["row_key"],
     })
     .as_object()
     .expect("object")
@@ -1443,6 +1445,7 @@ fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
         "at": at,
         "type_id": type_id,
         "row_ordinal": "0",
+        "row_key": 101,
     })
     .as_object()
     .expect("object")
@@ -1661,6 +1664,81 @@ fn find_events_rejects_malformed_arguments_without_panicking() {
 }
 
 #[test]
+fn get_row_detail_refuses_a_row_key_of_another_row() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "filters": [], "limit": 10 })
+        .as_object()
+        .expect("object")
+        .clone();
+    let listing = crate::mcp::postgresql::call_statements(&config, arguments, &|| false);
+    assert_eq!(listing.is_error, Some(false));
+    let rows = listing.structured_content.expect("structured content")["rows"]
+        .as_array()
+        .expect("rows array")
+        .clone();
+    let one = rows
+        .iter()
+        .find(|row| row["queryid"] == "1")
+        .expect("queryid 1");
+    let two = rows
+        .iter()
+        .find(|row| row["queryid"] == "2")
+        .expect("queryid 2");
+    assert_eq!(one["row_key"], "1");
+
+    let locator = |row_key: &serde_json::Value| {
+        serde_json::json!({
+            "section": "pg_stat_statements",
+            "segment_id": one["segment_id"],
+            "at": one["at"],
+            "type_id": one["type_id"],
+            "row_ordinal": one["row_ordinal"],
+            "row_key": row_key,
+        })
+        .as_object()
+        .expect("object")
+        .clone()
+    };
+
+    let same = crate::mcp::row_detail::call(&config, locator(&one["row_key"]), &|| false);
+    assert_eq!(same.is_error, Some(false));
+    assert_eq!(
+        same.structured_content.expect("structured content")["queryid"],
+        "1"
+    );
+
+    let swapped = crate::mcp::row_detail::call(&config, locator(&two["row_key"]), &|| false);
+    assert_eq!(swapped.is_error, Some(true));
+    let message = swapped.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("stale locator") && message.contains("re-run"),
+        "the mismatch names itself and the way out: {message}"
+    );
+
+    let mut absent = locator(&one["row_key"]);
+    absent.remove("row_key");
+    let missing = crate::mcp::row_detail::call(&config, absent, &|| false);
+    assert_eq!(missing.is_error, Some(true));
+    let message = missing.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("row_key is required"),
+        "the omission names the requirement: {message}"
+    );
+}
+
+#[test]
 fn get_row_detail_chains_directly_from_a_find_events_locator() {
     // The `find_events` locator fields are valid `get_row_detail` arguments
     // without conversion.
@@ -1693,6 +1771,7 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
         "at": listing_row["at"],
         "type_id": listing_row["type_id"],
         "row_ordinal": listing_row["row_ordinal"],
+        "row_key": listing_row["row_key"],
     })
     .as_object()
     .expect("object")
@@ -1733,6 +1812,7 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
         "at": listing_row["at"],
         "type_id": listing_row["type_id"],
         "row_ordinal": listing_row["row_ordinal"],
+        "row_key": listing_row["row_key"],
     })
     .as_object()
     .expect("object")
@@ -2130,9 +2210,28 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
     assert_eq!(settings.len(), 1);
     assert_eq!(settings[0]["name"], "block_size");
     assert_eq!(settings[0]["setting"], "8192");
+    assert_eq!(settings[0]["row_key"], "block_size");
     assert!(settings[0]["segment_id"].is_string());
     assert!(structured["settings_as_of"].is_string());
     assert_eq!(structured["settings_has_more"], false);
+
+    let detail_arguments = serde_json::json!({
+        "section": "pg_settings",
+        "segment_id": settings[0]["segment_id"],
+        "at": settings[0]["at"],
+        "type_id": settings[0]["type_id"],
+        "row_ordinal": settings[0]["row_ordinal"],
+        "row_key": settings[0]["row_key"],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
+    assert_eq!(detail.is_error, Some(false));
+    assert_eq!(
+        detail.structured_content.expect("structured content")["name"],
+        "block_size"
+    );
 }
 
 #[test]

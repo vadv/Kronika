@@ -365,6 +365,11 @@ pub(crate) struct RowDetailInput {
     /// Unsigned 64-bit physical row position within the section, as a JSON
     /// integer or decimal string.
     pub(crate) row_ordinal: serde_json::Value,
+    /// The identifying value copied verbatim from the find row's `row_key`
+    /// field. Required for rows that carry one; a mismatch reports a stale
+    /// locator instead of returning another row.
+    #[serde(default)]
+    pub(crate) row_key: Option<serde_json::Value>,
 }
 
 /// Reads selected recorded event sections over an inclusive time window.
@@ -481,8 +486,10 @@ fn entry_tools() -> [Tool; 3] {
              are each part's snapshot anchor as decimal-string Unix \
              microseconds, null for a part never recorded; \
              `settings_has_more` means settings rows were omitted at the \
-             5,000-row cap. Rows carry decimal-string locator fields \
-             accepted unchanged by kronika_get_row_detail.",
+             5,000-row cap. Settings rows carry `row_key` (the parameter \
+             `name`) and decimal-string locator fields accepted unchanged by \
+             kronika_get_row_detail; the single host-facts row is pinned by \
+             its `at` alone.",
             schema_object::<GetInstanceInput>(),
         ),
     ]
@@ -577,7 +584,23 @@ fn tail_tools() -> [Tool; 3] {
              (`section`, `segment_id`, `at`, `type_id`, `row_ordinal`) from any \
              stored segment. Locator fields accept JSON integers or decimal \
              strings; copy the strings from a `find_*` row to avoid precision \
-             loss. `pg_store_plans.calls` remains the exact stored count and \
+             loss. `row_key` is the row's identifying value, copied verbatim \
+             from the find row: `queryid` (pg_stat_statements), `planid` \
+             (pg_store_plans), `pid` (pg_stat_activity, \
+             pg_stat_progress_vacuum, pg_locks, pg_log_lock_waits, \
+             os_process), `datid` (pg_stat_database), `name` (pg_settings), \
+             `pattern` (pg_log_errors, pg_log_slow_queries), `phase` \
+             (pg_log_checkpoints), `relation` (pg_log_autovacuum), \
+             `size_bytes` (pg_log_temp_files), `kind` (pg_log_lifecycle), \
+             `text` (pgbouncer_events). Rows keep their ordinal only while a \
+             segment stays active; after finalization the same ordinal can \
+             hold another row, and the `row_key` check answers that with an \
+             error. The check pins the object, not its binding: columns like \
+             `dbid`, `userid`, or `toplevel` are reported in the row — \
+             confirm them there. A row whose identifying column is null \
+             carries no `row_key`; omit it then. Find rows without a \
+             `row_key` come from sections keeping one row per timestamp, \
+             pinned by `at` alone. `pg_store_plans.calls` remains the exact stored count and \
              adds `calls_per_second`; other cumulative columns are rendered as \
              interval rates rather than stored counter values. Missing, \
              unavailable, or underivable values are null. Plain timestamped \

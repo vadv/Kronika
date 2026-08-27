@@ -110,9 +110,9 @@ fn call_with(
     )
 }
 
-/// Flattens projected fields, overwrites `pid`/`ppid` from the typed identity,
-/// and appends decimal-string locator fields accepted by
-/// `kronika_get_row_detail`.
+/// Flattens projected fields, overwrites `pid`/`ppid` from the typed
+/// identity, and appends `row_key` plus the decimal-string locator fields
+/// accepted by `kronika_get_row_detail`.
 fn row_to_json(row: ProcessRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("pid".to_owned(), json!(row.pid));
@@ -120,6 +120,7 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
+    super::row_key::attach("os_process", &mut object);
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
     object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));

@@ -140,11 +140,12 @@ fn windowed_segments(
     Ok((reader, segments))
 }
 
-/// Adds labels and `source`, then appends decimal-string locator fields
-/// accepted by `kronika_get_row_detail`.
+/// Adds labels, `source`, and `row_key`, then appends the decimal-string
+/// locator fields accepted by `kronika_get_row_detail`.
 fn row_to_json(source: &str, row: EventRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     label_event_fields(source, &mut object);
+    super::row_key::attach(source, &mut object);
     object.insert("source".to_owned(), json!(source));
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
