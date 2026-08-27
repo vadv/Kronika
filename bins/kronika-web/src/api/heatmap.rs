@@ -25,6 +25,7 @@ const UNGROUPED_CELL_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) struct PreparedHeatmap {
     reader: Reader,
     segments: Vec<SegmentRef>,
+    recorded: Option<(i64, i64)>,
     request: HeatmapRequest,
     cumulative: bool,
     etag: Option<String>,
@@ -36,6 +37,11 @@ pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
     let stored = reader.catalog_segments(..)?;
+    let recorded = stored
+        .segments
+        .iter()
+        .map(|segment| (segment.min_ts(), segment.max_ts()))
+        .reduce(|(first, last), (min, max)| (first.min(min), last.max(max)));
     let mut segments: Vec<SegmentRef> = stored
         .segments
         .into_iter()
@@ -51,6 +57,7 @@ pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHe
     Ok(PreparedHeatmap {
         reader,
         segments,
+        recorded,
         request,
         cumulative,
         etag,
@@ -102,6 +109,12 @@ fn fields_class(
 }
 
 impl PreparedHeatmap {
+    /// First and last recorded timestamps across the whole store, taken
+    /// before the window cut drops non-overlapping segments.
+    pub(crate) const fn recorded_range(&self) -> Option<(i64, i64)> {
+        self.recorded
+    }
+
     pub(super) fn meta(&self) -> ResponseMeta {
         let settled = self
             .segments
@@ -125,7 +138,7 @@ impl PreparedHeatmap {
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         let started = std::time::Instant::now();
-        let Some((fold, seen_rows)) = self.rank(cancelled)? else {
+        let Some((fold, seen_rows, _scan)) = self.rank(cancelled)? else {
             return Ok(());
         };
         let (entities, out_of_order);
@@ -177,7 +190,7 @@ impl PreparedHeatmap {
             self.request.group.is_empty(),
             "rank_only has no grouped form"
         );
-        let Some((fold, _seen_rows)) = self.rank(cancelled)? else {
+        let Some((fold, _seen_rows, scan)) = self.rank(cancelled)? else {
             return Ok(None);
         };
         let ranked = fold.finish(self.request.top);
@@ -194,18 +207,23 @@ impl PreparedHeatmap {
             totals_total: ranked.totals_total,
             others_total: ranked.others_total,
             entity_count: ranked.entity_count,
+            scan,
         }))
     }
 
     /// Ranks entities and folds totals over a fixed row prefix per plan.
-    #[expect(clippy::type_complexity, reason = "one internal tuple, used once")]
+    #[expect(
+        clippy::type_complexity,
+        reason = "one internal triple shared by the two rank callers"
+    )]
     fn rank(
         &self,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<Option<(Fold, HashMap<(i64, u32), u64>)>, ApiError> {
+    ) -> Result<Option<(Fold, HashMap<(i64, u32), u64>, ScanStats)>, ApiError> {
         let request = &self.request;
         let mut fold = Fold::new(request.from, request.to, request.columns, self.cumulative);
         let mut seen_rows: HashMap<(i64, u32), u64> = HashMap::new();
+        let mut scan = ScanStats::default();
         for segment_ref in &self.segments {
             if cancelled() {
                 return Ok(None);
@@ -213,12 +231,17 @@ impl PreparedHeatmap {
             let segment = self.reader.open_segment(segment_ref)?;
             let ranked_plans = match plans(&segment, &self.data_request(segment_ref, false), true) {
                 Ok(plans) => plans,
-                Err(ApiError::NoSuchSection | ApiError::NoSuchColumn(_)) => continue,
+                Err(ApiError::NoSuchSection) => continue,
+                Err(ApiError::NoSuchColumn(_)) => {
+                    scan.layouts_without_fields = true;
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             for plan in &ranked_plans {
                 let cut = cut_columns(plan, self.request.fields.len());
                 if cut.is_empty() {
+                    scan.layouts_without_fields = true;
                     continue;
                 }
                 let group_columns: Vec<Option<&'static str>> = self
@@ -245,9 +268,17 @@ impl PreparedHeatmap {
                             continue;
                         };
                         let ts = *ts;
-                        if ts < request.from || ts > request.to {
+                        if ts < request.from {
+                            scan.nearest_before =
+                                Some(scan.nearest_before.map_or(ts, |seen| seen.max(ts)));
                             continue;
                         }
+                        if ts > request.to {
+                            scan.nearest_after =
+                                Some(scan.nearest_after.map_or(ts, |seen| seen.min(ts)));
+                            continue;
+                        }
+                        scan.window_rows = scan.window_rows.saturating_add(1);
                         identity.clear();
                         for name in plan.contract.identity {
                             identity.push(match row.get(name) {
@@ -277,7 +308,7 @@ impl PreparedHeatmap {
                 }
             }
         }
-        Ok(Some((fold, seen_rows)))
+        Ok(Some((fold, seen_rows, scan)))
     }
 
     /// Loads cells and last-seen labels for ranked entities.
@@ -1236,12 +1267,27 @@ pub(crate) struct RankedEntity {
     pub(crate) total: Option<f64>,
 }
 
+/// What the scan saw next to and inside the window, from the opened
+/// segments: the section's closest row timestamps on either side, and
+/// the row count inside the window over layouts that carry the
+/// requested fields, counting rows whose values ranked nothing.
+#[derive(Default)]
+pub(crate) struct ScanStats {
+    pub(crate) nearest_before: Option<i64>,
+    pub(crate) nearest_after: Option<i64>,
+    pub(crate) window_rows: u64,
+    /// True when a recorded layout of the section lacks the requested
+    /// fields; its rows are invisible to the counts above.
+    pub(crate) layouts_without_fields: bool,
+}
+
 /// Whole-window top-N with total and unranked-band values.
 pub(crate) struct HeatmapRanking {
     pub(crate) entities: Vec<RankedEntity>,
     pub(crate) totals_total: Option<f64>,
     pub(crate) others_total: Option<f64>,
     pub(crate) entity_count: usize,
+    pub(crate) scan: ScanStats,
 }
 
 /// One ranking accumulator per entity. Finished columns fold into totals when

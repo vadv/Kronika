@@ -165,6 +165,260 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
 }
 
 #[test]
+fn overview_empty_window_names_the_nearest_recorded_rows() {
+    let mut fixture = Fixture::new();
+    // Rows at 50 and 400 widen the recorded range past the neighbours at
+    // 100 and 300.
+    let mut rows = vec![(50, 101, 1, "fixture")];
+    rows.extend_from_slice(&ranked_process_gauge_rows());
+    rows.push((400, 101, 1, "fixture"));
+    fixture.append_process_gauge_rows(&rows);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb"],
+        "from": 150,
+        "to": 200,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["entity_count"], "0");
+    assert_eq!(
+        structured["entities"].as_array().expect("entities").len(),
+        0
+    );
+    assert_eq!(structured["nearest_row_before"], "100");
+    assert_eq!(structured["nearest_row_after"], "300");
+    assert_eq!(structured["recorded_from"], "50");
+    assert_eq!(structured["recorded_to"], "400");
+    assert_eq!(structured["window_rows"], "0");
+    let summary = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        summary.contains("100") && summary.contains("300") && !summary.contains("outside"),
+        "summary names the neighbouring rows: {summary}"
+    );
+}
+
+#[test]
+fn overview_reports_in_window_rows_whose_fields_rank_nothing() {
+    let mut fixture = Fixture::new();
+    // The fixture leaves toast_bytes null, the recorded state of a table
+    // that never had a TOAST relation.
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 10, "db", "public", "alpha"),
+        (200, 1, 11, 20, "db", "public", "alpha"),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "section": "pg_stat_user_tables",
+        "fields": ["toast_bytes"],
+        "from": 100,
+        "to": 200,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["entity_count"], "0");
+    assert_eq!(structured["window_rows"], "2");
+    let summary = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        summary.contains("usable value"),
+        "summary blames the fields, not the window: {summary}"
+    );
+    assert!(
+        !summary.contains("widen the window"),
+        "summary must not send the caller into widening: {summary}"
+    );
+}
+
+#[test]
+fn overview_names_the_layout_that_lacks_the_requested_fields() {
+    let mut fixture = Fixture::new();
+    // The fixture records the ossc layout; slow_log_calls exists only in
+    // the vadv layout of the same logical section.
+    fixture.append_plan_snapshots(&[(100, 7, 5, 1.5), (200, 7, 9, 2.5)]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "section": "pg_store_plans",
+        "fields": ["slow_log_calls"],
+        "from": 100,
+        "to": 200,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["entity_count"], "0");
+    assert_eq!(structured["window_rows"], "0");
+    let summary = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        summary.contains("layout"),
+        "summary names the layout mismatch: {summary}"
+    );
+    assert!(
+        !summary.contains("wider window") && !summary.contains("widen the window"),
+        "summary must not advise widening: {summary}"
+    );
+}
+
+#[test]
+fn overview_window_outside_the_recorded_range_says_so() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "section": "os_process",
+        "fields": ["rmem_kb"],
+        "from": 1000,
+        "to": 1100,
+        "top": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["entity_count"], "0");
+    assert_eq!(structured["nearest_row_before"], serde_json::Value::Null);
+    assert_eq!(structured["nearest_row_after"], serde_json::Value::Null);
+    assert_eq!(structured["recorded_from"], "100");
+    assert_eq!(structured["recorded_to"], "300");
+    assert_eq!(structured["window_rows"], "0");
+    let summary = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        summary.contains("outside"),
+        "summary places the window outside the range: {summary}"
+    );
+}
+
+#[test]
+fn empty_window_summary_covers_every_neighbour_shape() {
+    use crate::api::heatmap::ScanStats;
+    use crate::mcp::overview::empty_window_summary;
+    let stats = |before: Option<i64>, after: Option<i64>, rows: u64| ScanStats {
+        nearest_before: before,
+        nearest_after: after,
+        window_rows: rows,
+        layouts_without_fields: false,
+    };
+    let recorded = Some((100, 300));
+    let both = empty_window_summary(
+        "os_mountinfo",
+        (150, 200),
+        recorded,
+        &stats(Some(120), Some(280), 0),
+    );
+    assert!(both.contains("120") && both.contains("280"), "{both}");
+    let before = empty_window_summary(
+        "os_mountinfo",
+        (150, 200),
+        recorded,
+        &stats(Some(120), None, 0),
+    );
+    assert!(
+        before.contains("120") && !before.contains("280"),
+        "{before}"
+    );
+    let after = empty_window_summary(
+        "os_mountinfo",
+        (150, 200),
+        recorded,
+        &stats(None, Some(280), 0),
+    );
+    assert!(after.contains("280"), "{after}");
+    let hole = empty_window_summary("os_mountinfo", (150, 200), recorded, &stats(None, None, 0));
+    assert!(
+        hole.contains("100..300") && hole.contains("wider"),
+        "{hole}"
+    );
+    let outside = empty_window_summary(
+        "os_mountinfo",
+        (1000, 1100),
+        recorded,
+        &stats(None, None, 0),
+    );
+    assert!(outside.contains("outside"), "{outside}");
+    let nulls = empty_window_summary(
+        "pg_stat_user_tables",
+        (150, 200),
+        recorded,
+        &stats(Some(120), None, 7),
+    );
+    assert!(
+        nulls.contains('7') && nulls.contains("usable value"),
+        "{nulls}"
+    );
+    assert!(
+        !nulls.contains("120"),
+        "null rows outrank the neighbour wording: {nulls}"
+    );
+    let touching = empty_window_summary("os_mountinfo", (50, 100), recorded, &stats(None, None, 0));
+    assert!(
+        !touching.contains("outside") && touching.contains("wider"),
+        "a window touching the recorded edge is not outside it: {touching}"
+    );
+    let ending = empty_window_summary("os_mountinfo", (300, 400), recorded, &stats(None, None, 0));
+    assert!(
+        !ending.contains("outside") && ending.contains("wider"),
+        "a window starting at the recorded edge is not outside it: {ending}"
+    );
+    let mut missing_stats = stats(None, None, 0);
+    missing_stats.layouts_without_fields = true;
+    let missing = empty_window_summary("pg_store_plans", (150, 200), recorded, &missing_stats);
+    assert!(
+        missing.contains("layout") && !missing.contains("wider"),
+        "{missing}"
+    );
+    let bare = empty_window_summary("os_mountinfo", (0, 1), None, &stats(None, None, 0));
+    assert!(bare.contains("no recorded"), "{bare}");
+}
+
+#[test]
 fn overview_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::overview::call(&config, serde_json::Map::new(), &|| false);

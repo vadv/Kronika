@@ -414,7 +414,19 @@ fn entry_tools() -> [Tool; 3] {
              `totals_total` and `others_total` sum all and omitted identity \
              deltas; for gauges they are the maxima across all and omitted \
              identities. Null means no usable value. Each entity carries an \
-             `identity` object naming the section's identity columns. \
+             `identity` object naming the section's identity columns; \
+             sections recorded without identity columns collapse to one \
+             entity per physical layout, each shown with an empty \
+             `identity` object. Sections are written on independent \
+             intervals, so a short window can hold no rows at all: an \
+             empty result carries the store-wide \
+             `recorded_from`/`recorded_to`, this section's \
+             `nearest_row_before`/`nearest_row_after` — the closest row \
+             timestamps the scan saw around the window; widen the window \
+             to reach one — and `window_rows`, the count of in-window rows \
+             whose requested fields held no usable value: those make a \
+             wider window pointless. These five values are decimal \
+             strings; all but `window_rows` can be null. \
              Fields a finder accepts as filters keep the finder's spelling \
              — `query_id`, `plan_id`, `pid`, and pg_stat_database's \
              `datid` — and their values pass to a `find_*` filter \

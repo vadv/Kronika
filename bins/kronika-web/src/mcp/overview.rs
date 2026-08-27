@@ -41,6 +41,7 @@ pub(crate) fn call(
         ));
     }
 
+    let section = input.section.clone();
     let request = HeatmapRequest {
         from: input.from,
         to: input.to,
@@ -74,6 +75,15 @@ pub(crate) fn call(
         Err(error) => return mcp_error(error.to_string()),
     };
 
+    if ranking.entity_count == 0 {
+        return empty_window_result(
+            &section,
+            (input.from, input.to),
+            prepared.recorded_range(),
+            &ranking.scan,
+        );
+    }
+
     let entity_count = ranking.entity_count;
     let entities: Vec<Value> = ranking
         .entities
@@ -98,6 +108,86 @@ pub(crate) fn call(
             "entity_count": DecimalI64(i64::try_from(entity_count).unwrap_or(i64::MAX)),
         }),
         summary,
+    )
+}
+
+/// The empty-window response: a ranked shape plus where the section's rows sit.
+fn empty_window_result(
+    section: &str,
+    window: (i64, i64),
+    recorded: Option<(i64, i64)>,
+    scan: &heatmap::ScanStats,
+) -> CallToolResult {
+    let summary = empty_window_summary(section, window, recorded, scan);
+    mcp_structured(
+        json!({
+            "entities": [],
+            "totals_total": null,
+            "others_total": null,
+            "entity_count": DecimalI64(0),
+            "recorded_from": recorded.map(|(first, _last)| DecimalI64(first)),
+            "recorded_to": recorded.map(|(_first, last)| DecimalI64(last)),
+            "nearest_row_before": scan.nearest_before.map(DecimalI64),
+            "nearest_row_after": scan.nearest_after.map(DecimalI64),
+            "window_rows": DecimalI64(i64::try_from(scan.window_rows).unwrap_or(i64::MAX)),
+        }),
+        summary,
+    )
+}
+
+/// Names where this section's recorded rows sit relative to an empty window.
+pub(super) fn empty_window_summary(
+    section: &str,
+    window: (i64, i64),
+    recorded: Option<(i64, i64)>,
+    scan: &heatmap::ScanStats,
+) -> String {
+    let (from, to) = window;
+    let Some((first, last)) = recorded else {
+        return "The store holds no recorded segments.".to_owned();
+    };
+    if scan.window_rows > 0 {
+        return format!(
+            "{count} {section} rows sit inside the window, but none carries \
+             a usable value in the requested fields; a wider window changes \
+             nothing — `kronika_get_context` lists the section's other \
+             fields.",
+            count = scan.window_rows
+        );
+    }
+    if to < first || from > last {
+        return format!(
+            "No {section} rows: the window lies outside the recorded \
+             {first}..{last} microsecond range."
+        );
+    }
+    let neighbours = match (scan.nearest_before, scan.nearest_after) {
+        (Some(before), Some(after)) => {
+            format!("the closest {section} rows the scan saw sit at {before} and {after}")
+        }
+        (Some(before), None) => format!("the closest {section} row the scan saw sits at {before}"),
+        (None, Some(after)) => format!("the closest {section} row the scan saw sits at {after}"),
+        (None, None) if scan.layouts_without_fields => {
+            return format!(
+                "No {section} rows ranked inside the window: the requested \
+                 fields are not part of every recorded {section} layout — \
+                 `kronika_get_context` names each layout's fields. The \
+                 store records {first}..{last}."
+            );
+        }
+        (None, None) => {
+            return format!(
+                "No {section} rows inside the window, and none nearby in the \
+                 segments overlapping it; the store records {first}..{last}. \
+                 Sections are written on their own intervals — retry with a \
+                 much wider window."
+            );
+        }
+    };
+    format!(
+        "No {section} rows ranked inside the window; {neighbours}. Sections \
+         are written on their own intervals — widen the window to reach a \
+         recorded row."
     )
 }
 
