@@ -78,6 +78,7 @@ mcp.credentials.open: "This server runs without authentication; the prompts carr
 mcp.credentials.manual: "Could not fetch the credentials from the server; before pasting, replace <USER> and <PASSWORD> with the credentials you sign in with."
 mcp.client_label: "MCP client"
 mcp.copy: "Copy"
+mcp.copied: "Copied"
 mcp.section.claude: "Paste into a Claude Code chat:"
 mcp.section.codex: "Paste into a Codex chat:"
 mcp.section.cursor: "Paste into a Cursor chat:"

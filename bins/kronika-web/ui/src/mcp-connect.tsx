@@ -1,6 +1,7 @@
-import { Copy } from "lucide-react"
+import { Check, Copy } from "lucide-react"
 import { useEffect, useState } from "react"
 
+import { copyText } from "./clipboard"
 import type { Translate } from "./help"
 import { type Auth, claudePrompt, codexPrompt, credentialsKey, cursorPrompt } from "./mcp-prompts"
 import { apiFetch } from "./session"
@@ -14,6 +15,12 @@ const CLIENTS = [
 export function McpPanel({ onClose, t }: { readonly onClose: () => void; readonly t: Translate }) {
   const [auth, setAuth] = useState<Auth | null>(null)
   const [client, setClient] = useState<(typeof CLIENTS)[number]["label"]>("Claude Code")
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return undefined
+    const timer = window.setTimeout(() => setCopied(false), 2_000)
+    return () => window.clearTimeout(timer)
+  }, [copied])
   useEffect(() => {
     const controller = new AbortController()
     apiFetch("/api/mcp-access", { signal: controller.signal })
@@ -46,14 +53,14 @@ export function McpPanel({ onClose, t }: { readonly onClose: () => void; readonl
       {auth !== null && <p className="text-sm leading-[1.6] text-fg3">{t(credentialsKey(auth))}</p>}
       <div aria-label={t("mcp.client_label")} className="lens-tabs mt-2 w-full [&>button]:min-w-0 [&>button]:flex-1 [&>button]:px-1" role="group">
         {CLIENTS.map((candidate) => (
-          <button aria-pressed={client === candidate.label} data-testid={`mcp-tab-${candidate.id}`} key={candidate.id} onClick={() => setClient(candidate.label)} type="button">{candidate.label}</button>
+          <button aria-pressed={client === candidate.label} data-testid={`mcp-tab-${candidate.id}`} key={candidate.id} onClick={() => { setClient(candidate.label); setCopied(false) }} type="button">{candidate.label}</button>
         ))}
       </div>
       {prompt !== null && (
         <section className="mt-3">
           <p className="mb-1 mt-0 text-xs text-fg4">{t(selected.sectionKey)}</p>
           <pre className="m-0 select-all whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-line3 bg-s2 p-2 text-xs leading-[1.5] text-fg2">{prompt}</pre>
-          <button aria-label={`${t("mcp.copy")} — ${selected.label}`} className="mt-2 inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 py-1.5 text-sm font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(prompt)} type="button"><Copy aria-hidden="true" size={14} />{t("mcp.copy")}</button>
+          <button aria-label={`${t("mcp.copy")} — ${selected.label}`} className="mt-2 inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 py-1.5 text-sm font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(prompt).then(setCopied)} type="button">{copied ? <Check aria-hidden="true" size={14} /> : <Copy aria-hidden="true" size={14} />}{t(copied ? "mcp.copied" : "mcp.copy")}</button>
         </section>
       )}
       <p className="mt-3 text-xs text-fg4">{t("mcp.docs")}</p>

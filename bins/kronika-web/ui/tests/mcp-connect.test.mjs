@@ -25,7 +25,10 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   assert.match(panel, /data-testid=\{`mcp-tab-\$\{candidate\.id\}`\}/)
   // The row must actually switch: a click updates the state and only the
   // selected client's builder runs.
-  assert.match(panel, /onClick=\{\(\) => setClient\(candidate\.label\)\}/)
+  assert.match(panel, /onClick=\{\(\) => \{ setClient\(candidate\.label\); setCopied\(false\) \}\}/)
+  // Copying must go through the shared helper: plain-http origins have no
+  // navigator.clipboard, and the raw optional chain swallowed the click.
+  assert.match(panel, /void copyText\(prompt\)\.then\(setCopied\)/)
   assert.match(panel, /selected\.builder\(url, auth, t\)/)
   // The Authorization value comes from the server, through the session
   // fetch wrapper that keeps UI 401s challenge-free.
@@ -48,4 +51,15 @@ test("every client prompt carries the endpoint, wrap-safe base64, and the entry 
   const russian = await readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8")
   assert.match(russian, /замени целиком таблицу \[mcp_servers\.kronika\]/)
   assert.match(russian, /точка входа — kronika_get_context/)
+})
+
+test("no component calls navigator.clipboard directly", async () => {
+  const { readdir } = await import("node:fs/promises")
+  const sources = (await readdir(new URL("../src", import.meta.url), { recursive: true })).filter(
+    (name) => (name.endsWith(".ts") || name.endsWith(".tsx")) && name !== "clipboard.ts",
+  )
+  for (const name of sources) {
+    const source = await readFile(new URL(`../src/${name}`, import.meta.url), "utf8")
+    assert.doesNotMatch(source, /navigator\.clipboard/, name)
+  }
 })

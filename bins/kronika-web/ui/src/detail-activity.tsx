@@ -1,6 +1,7 @@
 import { Copy } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { copyText } from "./clipboard"
 import type { Cell, DataRow } from "./api"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
@@ -64,7 +65,7 @@ function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: numb
   const time = useDisplayTime()
   const timestamp = raw ?? asNumber(cell ?? null)
   if (timestamp === null || timestamp === undefined) return <>—</>
-  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-fg4 hover:text-accent3" onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-fg4 hover:text-accent3" onClick={() => void copyText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate): ReactNode {

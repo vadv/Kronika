@@ -1,5 +1,6 @@
 import { Copy } from "lucide-react"
 
+import { copyText } from "./clipboard"
 import type { Translate } from "./help"
 import { planTextSummary } from "./plan-text"
 import type { PlanQueryTextState } from "./plan-query"
@@ -14,7 +15,7 @@ export function PlanView({ raw, t }: { readonly raw: string | null; readonly t: 
   return <section className="query-block" data-testid="pg-plan-view">
     <header className="flex min-h-7 items-center justify-between gap-2 border-b border-line3 px-2 py-1">
       <strong className="text-xs font-medium text-fg3">{t("pg.plan.text")}</strong>
-      {available && raw !== null && <button aria-label={t("pg.plan.copy")} className="inline-flex cursor-pointer items-center gap-1 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-1.5 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(raw)} type="button"><Copy aria-hidden="true" size={12} />{t("pg.plan.copy")}</button>}
+      {available && raw !== null && <button aria-label={t("pg.plan.copy")} className="inline-flex cursor-pointer items-center gap-1 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-1.5 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(raw)} type="button"><Copy aria-hidden="true" size={12} />{t("pg.plan.copy")}</button>}
     </header>
     {available && raw !== null
       ? <pre className="m-0 max-h-[min(460px,48vh)] overflow-auto whitespace-pre-wrap px-2 py-1.5 text-xs leading-[1.5] text-fg2" data-testid="pg-text-plan">{raw}</pre>
@@ -31,7 +32,7 @@ export function QueryView({ retry, status, text, t }: PlanQueryTextState & { rea
       ? <div className="max-h-[min(320px,35vh)] overflow-auto [scrollbar-width:thin]" data-testid="pg-plan-query-list">
         <article data-testid="pg-plan-query-text">
           <div className="flex justify-end px-2 py-1.5">
-            <button aria-label={t("pg.query.plan.copy_aria")} className="inline-flex min-h-7 flex-none cursor-pointer items-center gap-1 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-1.5 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(text)} type="button"><Copy aria-hidden="true" size={12} />{t("pg.plan.copy")}</button>
+            <button aria-label={t("pg.query.plan.copy_aria")} className="inline-flex min-h-7 flex-none cursor-pointer items-center gap-1 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-1.5 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(text)} type="button"><Copy aria-hidden="true" size={12} />{t("pg.plan.copy")}</button>
           </div>
           <pre className="m-0 whitespace-pre-wrap break-words px-2 pb-2 text-sm leading-[1.55] text-event-edge">{text}</pre>
         </article>

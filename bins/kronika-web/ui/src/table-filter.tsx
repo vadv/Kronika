@@ -2,6 +2,7 @@ import { Check, CircleHelp, Search, X } from "lucide-react"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
+import { copyText } from "./clipboard"
 import type { Translate } from "./help"
 import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchExpr, type SearchSurface, withoutSearchClause } from "./search"
 
@@ -176,7 +177,7 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
         {fields.map((field) => <div className="border-t border-line2 pt-2" key={field.key}><dt><code className="text-accent3">{field.key}</code>{field.aliases.length === 0 ? null : <span className="ml-2 text-xs text-fg4">{t("filter.help.aliases", { aliases: field.aliases.join(", ") })}</span>}</dt><dd className="m-0 mt-1 text-fg3">{t(field.help)}</dd></div>)}
       </dl>
       <h3 className="mt-3 text-xs font-medium text-fg3">{t("filter.help.examples")}</h3>
-      <div className="grid gap-1.5">{examples.map((example) => <button aria-label={`${t("filter.help.copy")}: ${example}`} className="min-w-0 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void navigator.clipboard?.writeText(example)} type="button"><code>{example}</code></button>)}</div>
+      <div className="grid gap-1.5">{examples.map((example) => <button aria-label={`${t("filter.help.copy")}: ${example}`} className="min-w-0 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void copyText(example)} type="button"><code>{example}</code></button>)}</div>
     </aside>
   </div>
 }
