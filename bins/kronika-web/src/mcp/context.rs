@@ -13,12 +13,17 @@ pub(crate) fn call(
     arguments: Map<String, Value>,
     _cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    if let Err(error) = super::semantics::parameterless::<super::catalog::GetContextInput>(
-        "kronika_get_context",
-        arguments,
-    ) {
-        return error;
-    }
+    let input: super::catalog::GetContextInput =
+        match serde_json::from_value(Value::Object(arguments)) {
+            Ok(input) => input,
+            Err(error) => {
+                return super::semantics::invalid_arguments(
+                    super::catalog::GET_CONTEXT_TOOL,
+                    "an optional section name narrows the answer to one section",
+                    error,
+                );
+            }
+        };
     let prepared = match crate::api::catalog::prepare(
         &config.data_root,
         Window::default(),
@@ -28,8 +33,27 @@ pub(crate) fn call(
         Ok(prepared) => prepared,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let sections = prepared.recorded_sections();
+    let mut sections = prepared.recorded_sections();
     let range = prepared.recorded_range();
+    if let Some(wanted) = &input.section {
+        sections.retain(|section| section["logical_name"] == wanted.as_str());
+        if sections.is_empty() {
+            let recorded: Vec<String> = prepared
+                .recorded_sections()
+                .iter()
+                .filter_map(|section| section["logical_name"].as_str().map(str::to_owned))
+                .collect::<std::collections::BTreeSet<String>>()
+                .into_iter()
+                .collect();
+            return super::semantics::mcp_error_with(
+                format!(
+                    "no recorded section named {wanted:?}; recorded: {}",
+                    recorded.join(", ")
+                ),
+                recorded,
+            );
+        }
+    }
     let summary = format!("{} physical section layouts recorded", sections.len());
     mcp_structured(
         json!({

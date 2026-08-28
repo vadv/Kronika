@@ -14,7 +14,7 @@ use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Window};
 
 use super::catalog::EventsInput;
 use super::event_labels::label_event_fields;
-use super::semantics::{bounded_limit, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured_bounded};
 
 /// Event sections accepted by this tool.
 const SOURCES: [&str; 8] = [
@@ -39,7 +39,13 @@ pub(crate) fn call(
 ) -> CallToolResult {
     let input: EventsInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                super::catalog::FIND_EVENTS_TOOL,
+                "from, to, and limit are required; sources narrows the answer",
+                error,
+            );
+        }
     };
     let limit = match bounded_limit("limit", input.limit, MAX_SNAPSHOT_PAGE_SIZE) {
         Ok(limit) => limit,
@@ -47,7 +53,12 @@ pub(crate) fn call(
     };
     let sources = match resolve_sources(input.sources) {
         Ok(sources) => sources,
-        Err(error) => return mcp_error(error),
+        Err(error) => {
+            return super::semantics::mcp_error_with(
+                error,
+                SOURCES.iter().map(|&source| source.to_owned()).collect(),
+            );
+        }
     };
     if let Err(error) = check_window(input.from, input.to) {
         return mcp_error(error);
@@ -77,6 +88,10 @@ pub(crate) fn call(
     rows.truncate(limit);
 
     let row_count = rows.len();
+    let next_from = has_more
+        .then(|| rows.last())
+        .flatten()
+        .map(|(_, row)| row.at);
     let rows: Vec<Value> = rows
         .into_iter()
         .map(|(source, row)| row_to_json(source, row))
@@ -85,12 +100,21 @@ pub(crate) fn call(
         "Returned {row_count} recorded event row{}{}.",
         if row_count == 1 { "" } else { "s" },
         if has_more {
-            "; result truncated to limit"
+            "; result truncated to limit — continue with from = next_from and deduplicate by locator"
         } else {
             ""
         },
     );
-    mcp_structured(json!({ "rows": rows, "has_more": has_more }), summary)
+    mcp_structured_bounded(
+        json!({
+            "rows": rows,
+            "has_more": has_more,
+            "next_from": next_from.map(DecimalI64),
+        }),
+        summary,
+        "limit",
+        limit,
+    )
 }
 
 fn resolve_sources(requested: Option<Vec<String>>) -> Result<Vec<&'static str>, String> {
@@ -104,7 +128,7 @@ fn resolve_sources(requested: Option<Vec<String>>) -> Result<Vec<&'static str>, 
                 .iter()
                 .copied()
                 .find(|&source| source == name.as_str())
-                .ok_or_else(|| format!("unknown source {name:?}: must be one of {SOURCES:?}"))
+                .ok_or_else(|| format!("unknown source {name:?}: the sources are {SOURCES:?}"))
         })
         .collect()
 }

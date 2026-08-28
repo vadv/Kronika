@@ -106,12 +106,12 @@ fn no_tool_description_uses_banned_reasoning_words() {
 }
 
 #[test]
-fn parameterless_tool_schemas_are_closed_empty_objects() {
+fn context_and_instance_schemas_stay_closed_objects() {
     for name in [GET_CONTEXT_TOOL, GET_INSTANCE_TOOL] {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name.as_ref() == name)
-            .expect("parameterless tool");
+            .expect("catalog tool");
         assert_eq!(tool.input_schema["type"], "object", "{name}");
         assert_eq!(tool.input_schema["additionalProperties"], false, "{name}");
     }

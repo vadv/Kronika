@@ -42,20 +42,57 @@ pub(crate) struct FilterInput {
     pub(crate) value: serde_json::Value,
 }
 
+/// A refused filter together with the values that a retry can pick from.
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub(crate) message: String,
+    pub(crate) valid_options: Vec<String>,
+}
+
+impl Refusal {
+    const fn new(message: String) -> Self {
+        Self {
+            message,
+            valid_options: Vec::new(),
+        }
+    }
+
+    pub(crate) fn into_error(self) -> rmcp::model::CallToolResult {
+        super::semantics::mcp_error_with(self.message, self.valid_options)
+    }
+}
+
+const fn op_name(op: Op) -> &'static str {
+    match op {
+        Op::Eq => "eq",
+        Op::Gt => "gt",
+        Op::Lt => "lt",
+        Op::Contains => "contains",
+    }
+}
+
+fn accepted_ops(field: &SearchField) -> Vec<String> {
+    [Op::Eq, Op::Gt, Op::Lt, Op::Contains]
+        .into_iter()
+        .filter(|op| operator_for(field, *op).is_some())
+        .map(|op| op_name(op).to_owned())
+        .collect()
+}
+
 /// Combines filters with AND. Empty input returns `None`; invalid input reports
-/// the first rejected predicate.
+/// the first rejected predicate together with the accepted alternatives.
 pub(crate) fn build_search(
     logical_name: &str,
     filters: &[FilterInput],
-) -> Result<Option<StructuredSearch>, String> {
+) -> Result<Option<StructuredSearch>, Refusal> {
     if filters.is_empty() {
         return Ok(None);
     }
     if filters.len() > SEARCH_MAX_CLAUSES {
-        return Err(format!(
+        return Err(Refusal::new(format!(
             "too many filters: {}, the limit is {SEARCH_MAX_CLAUSES}",
             filters.len()
-        ));
+        )));
     }
     let fields = search_fields(logical_name);
     let mut expr: Option<Expr> = None;
@@ -64,22 +101,42 @@ pub(crate) fn build_search(
         let field = fields
             .iter()
             .find(|candidate| candidate.key == filter.field)
-            .ok_or_else(|| format!("unknown field for {logical_name}: {}", filter.field))?;
-        let operator = operator_for(field, filter.op)
-            .ok_or_else(|| format!("operator is not valid for field {}", filter.field))?;
+            .ok_or_else(|| {
+                let names: Vec<String> = fields.iter().map(|field| field.key.to_owned()).collect();
+                Refusal {
+                    message: format!(
+                        "unknown field for {logical_name}: {}; the filterable fields are {}",
+                        filter.field,
+                        names.join(", "),
+                    ),
+                    valid_options: names,
+                }
+            })?;
+        let operator = operator_for(field, filter.op).ok_or_else(|| {
+            let accepted = accepted_ops(field);
+            Refusal {
+                message: format!(
+                    "operator {} is not valid for field {}: it accepts {}",
+                    op_name(filter.op),
+                    filter.field,
+                    accepted.join(", "),
+                ),
+                valid_options: accepted,
+            }
+        })?;
         if let Some(text) = filter.value.as_str()
             && text.chars().count() > SEARCH_MAX_VALUE_CHARS
         {
-            return Err(format!(
+            return Err(Refusal::new(format!(
                 "value for {} is longer than {SEARCH_MAX_VALUE_CHARS} characters",
                 filter.field
-            ));
+            )));
         }
         let value = search_value(field, filter.op, &filter.value).ok_or_else(|| {
-            format!(
+            Refusal::new(format!(
                 "invalid value for {}: text uses a string, identifiers use an integer or decimal string, and quantities use a non-negative integer in the documented unit",
                 filter.field
-            )
+            ))
         })?;
         let clause = SearchClause::from_parts(field.key, field.columns, operator, value);
         clauses.push(clause.clone());

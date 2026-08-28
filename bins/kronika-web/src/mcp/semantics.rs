@@ -18,9 +18,59 @@ impl Serialize for DecimalI64 {
     }
 }
 
-/// Returns an in-band tool execution error with text content only.
+/// Returns an in-band tool execution error. The text is mirrored into
+/// `structuredContent` as `{"record":"error","message":…}`, so a client
+/// reading only the structure sees the error instead of an empty result.
 pub(crate) fn mcp_error(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(message.into())])
+    mcp_error_with(message, Vec::new())
+}
+
+/// An error whose structured mirror also carries `valid_options` — the
+/// choices the refused input can be replaced with, ready to pick without
+/// parsing the text.
+pub(crate) fn mcp_error_with(
+    message: impl Into<String>,
+    valid_options: Vec<String>,
+) -> CallToolResult {
+    let message = message.into();
+    let mut body = serde_json::Map::new();
+    body.insert("record".to_owned(), Value::String("error".to_owned()));
+    body.insert("message".to_owned(), Value::String(message.clone()));
+    if !valid_options.is_empty() {
+        body.insert(
+            "valid_options".to_owned(),
+            Value::Array(valid_options.into_iter().map(Value::String).collect()),
+        );
+    }
+    let mut result = CallToolResult::error(vec![ContentBlock::text(message)]);
+    result.structured_content = Some(Value::Object(body));
+    result
+}
+
+/// A storage error as a tool answer; an unknown section or column also
+/// names the tool that lists the valid ones.
+pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {
+    let hinted = matches!(
+        error,
+        crate::api::ApiError::NoSuchSection | crate::api::ApiError::NoSuchColumn(_)
+    );
+    let mut message = error.to_string();
+    if hinted {
+        message.push_str("; kronika_get_context lists recorded sections and their fields");
+    }
+    mcp_error(message)
+}
+
+/// Rejected tool arguments with the tool's one-line usage appended: the
+/// serde text alone names a field, not the shape of a working call.
+pub(crate) fn invalid_arguments(
+    tool: &str,
+    usage: &str,
+    error: impl std::fmt::Display,
+) -> CallToolResult {
+    mcp_error(format!(
+        "invalid arguments for {tool}: {error}. Usage: {usage}"
+    ))
 }
 
 /// Accepts the inclusive range `1..=cap` and never clamps.
@@ -78,17 +128,50 @@ impl std::io::Write for ByteBudget {
 /// A result whose encoding exceeds [`RESPONSE_MAX_BYTES`] comes back as an
 /// error instead.
 pub(crate) fn mcp_structured(value: Value, summary: impl Into<String>) -> CallToolResult {
+    structured_within_budget(value, summary, None)
+}
+
+/// [`mcp_structured`] for row-listing tools: the over-budget error names
+/// the requested knob value and the halved retry.
+pub(crate) fn mcp_structured_bounded(
+    value: Value,
+    summary: impl Into<String>,
+    knob: &str,
+    requested: usize,
+) -> CallToolResult {
+    structured_within_budget(value, summary, Some((knob, requested)))
+}
+
+fn structured_within_budget(
+    value: Value,
+    summary: impl Into<String>,
+    knob: Option<(&str, usize)>,
+) -> CallToolResult {
     let mut budget = ByteBudget {
         remaining: RESPONSE_MAX_BYTES,
     };
     if serde_json::to_writer(&mut budget, &value).is_err() {
-        return mcp_error(format!(
-            "result exceeds {RESPONSE_MAX_BYTES} encoded bytes: lower `limit`/`top` or add filters"
-        ));
+        return mcp_error(over_budget_message(knob));
     }
     let mut result = CallToolResult::success(vec![ContentBlock::text(summary.into())]);
     result.structured_content = Some(value);
     result
+}
+
+/// Names the way out of an oversized result; with a known knob, names
+/// the halved value to retry with.
+fn over_budget_message(knob: Option<(&str, usize)>) -> String {
+    match knob {
+        Some((name, requested)) if requested > 1 => format!(
+            "result exceeds {RESPONSE_MAX_BYTES} encoded bytes at {name}={requested}: \
+             retry with {name}={} or add filters",
+            requested / 2
+        ),
+        _ => format!(
+            "result exceeds {RESPONSE_MAX_BYTES} encoded bytes: lower `limit`/`top` or add \
+             filters"
+        ),
+    }
 }
 
 #[cfg(test)]

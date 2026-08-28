@@ -19,7 +19,13 @@ pub(crate) fn call(
 ) -> CallToolResult {
     let input: RowDetailInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                super::catalog::GET_ROW_DETAIL_TOOL,
+                "section, segment_id, at, type_id, and row_ordinal are required; row_key comes from the find row",
+                error,
+            );
+        }
     };
     let segment_id = match decimal_i64("segment_id", &input.segment_id) {
         Ok(segment_id) => segment_id,
@@ -57,7 +63,7 @@ pub(crate) fn call(
     };
     let prepared = match snapshot::prepare(&config.data_root, request, None) {
         Ok(prepared) => prepared,
-        Err(error) => return mcp_error(error.to_string()),
+        Err(error) => return super::semantics::storage_error(&error),
     };
     let Prepared::Snapshot(prepared) = prepared else {
         return mcp_error(
@@ -66,7 +72,7 @@ pub(crate) fn call(
     };
     let row = match prepared.fetch_exact_row(&|| cancelled()) {
         Ok(row) => row,
-        Err(error) => return mcp_error(error.to_string()),
+        Err(error) => return super::semantics::storage_error(&error),
     };
     let Some(mut row) = row else {
         return mcp_error(format!(

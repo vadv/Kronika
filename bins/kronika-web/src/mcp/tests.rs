@@ -1564,6 +1564,10 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
     let rows = structured["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 3, "4 rows exist in the window but limit is 3");
     assert_eq!(structured["has_more"], true);
+    assert_eq!(
+        structured["next_from"], "250",
+        "the continuation repeats the boundary timestamp — duplicates over losses"
+    );
     let ordered_ats: Vec<i64> = rows
         .iter()
         .map(|row| {
@@ -1637,6 +1641,88 @@ fn find_events_accepts_a_window_of_exactly_one_hour() {
 
     let result = crate::mcp::events::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
+}
+
+#[test]
+fn a_quantity_filter_refusal_lists_the_accepted_operators() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "filters": [{"field": "rss", "op": "eq", "value": 1}],
+        "limit": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::processes::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["record"], "error");
+    assert_eq!(structured["valid_options"], serde_json::json!(["gt", "lt"]));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("it accepts gt, lt"),
+        "the refusal names the alternatives: {message}"
+    );
+}
+
+#[test]
+fn rejected_tool_arguments_name_the_usage() {
+    let config = test_config(std::env::temp_dir());
+    let result =
+        crate::mcp::postgresql::call_statements(&config, serde_json::Map::new(), &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .clone();
+    assert!(
+        message.contains("kronika_find_postgresql_statements") && message.contains("Usage:"),
+        "{message}"
+    );
+}
+
+#[test]
+fn get_context_narrows_to_one_section_and_lists_names_on_a_miss() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha")]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({ "section": "os_process" })
+        .as_object()
+        .expect("object")
+        .clone();
+    let result = crate::mcp::context::call(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let sections = structured["sections"].as_array().expect("sections");
+    assert!(!sections.is_empty());
+    assert!(
+        sections
+            .iter()
+            .all(|section| section["logical_name"] == "os_process")
+    );
+
+    let arguments = serde_json::json!({ "section": "not_recorded" })
+        .as_object()
+        .expect("object")
+        .clone();
+    let result = crate::mcp::context::call(&config, arguments, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    let options = structured["valid_options"].as_array().expect("options");
+    assert!(options.contains(&serde_json::json!("os_process")));
 }
 
 #[test]
@@ -2325,7 +2411,7 @@ fn overview_identity_passes_verbatim_into_the_statements_finder() {
 }
 
 #[test]
-fn parameterless_tools_reject_unexpected_arguments() {
+fn context_and_instance_reject_unexpected_arguments() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
     fixture.finish();

@@ -47,15 +47,14 @@ pub(crate) struct OverviewInput {
     pub(crate) top: u32,
 }
 
-/// Takes no parameters. Braced, not a unit struct: schemars renders a unit
-/// struct as `{"type": "null"}`, and tool arguments are always an object.
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "schemars needs the braces to render an object schema, not type: null"
-)]
+/// Narrows the answer to one recorded section; omit it for all of them.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GetContextInput {}
+pub(crate) struct GetContextInput {
+    /// One recorded logical section name; omit for every recorded layout.
+    #[serde(default)]
+    pub(crate) section: Option<String>,
+}
 
 /// Takes no parameters.
 #[expect(
@@ -395,6 +394,7 @@ pub(crate) struct EventsInput {
 pub(crate) fn tools() -> Vec<Tool> {
     entry_tools()
         .into_iter()
+        .chain(instance_tools())
         .chain(relation_tools())
         .chain(postgresql_plain_tools())
         .chain(ratio_tools())
@@ -402,71 +402,95 @@ pub(crate) fn tools() -> Vec<Tool> {
         .collect()
 }
 
-/// `kronika_overview`, `kronika_get_context`, and `kronika_get_instance`,
-/// kept separate to satisfy the line-count lint.
-fn entry_tools() -> [Tool; 3] {
-    [
-        Tool::new(
-            OVERVIEW_TOOL,
-            "Ranks stored values in one logical section over the inclusive \
-             Unix-microsecond `[from, to]` window; it does not query the live \
-             host or database. Counter `entities[].total` values are \
-             whole-window deltas; gauge totals are whole-window maxima. The \
-             requested fields are summed before ranking and must share one \
-             unit. `entities` is \
-             descending by total with nulls last, and `entity_count` is the \
-             decimal-string number of identities found. For counters, \
-             `totals_total` and `others_total` sum all and omitted identity \
-             deltas; for gauges they are the maxima across all and omitted \
-             identities. Null means no usable value. Each entity carries an \
-             `identity` object naming the section's identity columns; \
-             sections recorded without identity columns collapse to one \
-             entity per physical layout, each shown with an empty \
-             `identity` object. Sections are written on independent \
-             intervals, so a short window can hold no rows at all: an \
-             empty result carries the store-wide \
-             `recorded_from`/`recorded_to`, this section's \
-             `nearest_row_before`/`nearest_row_after` — the closest row \
-             timestamps the scan saw around the window; widen the window \
-             to reach one — and `window_rows`, the count of in-window rows \
-             whose requested fields held no usable value: those make a \
-             wider window pointless. These five values are decimal \
-             strings; all but `window_rows` can be null. \
-             Fields a finder accepts as filters keep the finder's spelling \
-             — `query_id`, `plan_id`, `pid`, and pg_stat_database's \
-             `datid` — and their values pass to a `find_*` filter \
-             verbatim. The other identity fields (`dbid`, `userid`, \
-             `toplevel`, and the table/index OIDs) have no finder filter: \
-             rank tables or indexes with the finder's own sort instead. \
-             `kronika_get_context` lists each section's fields, classes, and \
-             units, and the recorded time range this window must fall into. \
-             Across this catalog, tool failures set `isError=true` and \
-             contain text only, without `structuredContent`.",
-            schema_object::<OverviewInput>(),
-        ),
-        Tool::new(
-            GET_CONTEXT_TOOL,
-            "Lists physical section layouts found across all stored segments; \
-             it does not inspect the live host or database. Top-level \
-             `recorded_from`/`recorded_to` are the store's first and last \
-             recorded timestamps, decimal-string Unix microseconds — an \
-             empty answer elsewhere may just mean the window fell outside \
-             them. Each `sections` item contains `logical_name`, \
-             `physical_name`, decimal-string `type_id`, `rows`, `bytes`, its \
-             `identity` column names, and `fields` — every column's `name`, \
-             `class`, and `unit`. A `cumulative` column is a monotonic \
-             counter that `find_*` rows return as a per-second rate under \
-             the raw column name and `kronika_overview` ranks as a \
-             whole-window delta; a `gauge` is an instantaneous value. \
-             `implementation` and `source_family` may be null. Rows and \
-             bytes are summed separately for each physical `type_id` across \
-             segments, so one logical name may appear more than once. \
-             Store-internal `dict.*` layouts are omitted.",
-            schema_object::<GetContextInput>(),
-        ),
-        Tool::new(
-            GET_INSTANCE_TOOL,
-            "Returns stored host facts and PostgreSQL server settings; it \
+/// `kronika_overview` and `kronika_get_context`, kept separate to
+/// satisfy the line-count lint.
+fn entry_tools() -> [Tool; 2] {
+    [overview_tool(), context_tool()]
+}
+
+fn overview_tool() -> Tool {
+    Tool::new(
+        OVERVIEW_TOOL,
+        "Ranks stored values in one logical section over the inclusive \
+         Unix-microsecond `[from, to]` window; it does not query the live \
+         host or database. Counter `entities[].total` values are \
+         whole-window deltas; gauge totals are whole-window maxima. The \
+         requested fields are summed before ranking and must share one \
+         unit. Values keep their recorded units — `kronika_get_context` \
+         names each field's unit and `kronika_get_instance` carries the \
+         conversion constants: jiffies divide by `clock_ticks_per_sec`, \
+         sectors are 512 bytes, kibibytes are 1024 bytes, and memory in \
+         use is \
+         `mem_total` minus `mem_available`. `entities` is \
+         descending by total with nulls last, and `entity_count` is the \
+         decimal-string number of identities found. For counters, \
+         `totals_total` and `others_total` sum all and omitted identity \
+         deltas; for gauges they are the maxima across all and omitted \
+         identities. Null means no usable value. Each entity carries an \
+         `identity` object naming the section's identity columns; \
+         sections recorded without identity columns collapse to one \
+         entity per physical layout, each shown with an empty \
+         `identity` object. Sections are written on independent \
+         intervals, so a short window can hold no rows at all: an \
+         empty result carries the store-wide \
+         `recorded_from`/`recorded_to`, this section's \
+         `nearest_row_before`/`nearest_row_after` — the closest row \
+         timestamps the scan saw around the window; widen the window \
+         to reach one — and `window_rows`, the count of in-window rows \
+         whose requested fields held no usable value: those make a \
+         wider window pointless. These five values are decimal \
+         strings; all but `window_rows` can be null. \
+         Fields a finder accepts as filters keep the finder's spelling \
+         — `query_id`, `plan_id`, `pid`, and pg_stat_database's \
+         `datid` — and their values pass to a `find_*` filter \
+         verbatim. The other identity fields (`dbid`, `userid`, \
+         `toplevel`, and the table/index OIDs) have no finder filter: \
+         rank tables or indexes with the finder's own sort instead. \
+         `kronika_get_context` lists each section's fields, classes, and \
+         units, and the recorded time range this window must fall into. \
+         Across this catalog, tool failures set `isError=true` and \
+         mirror the text into `structuredContent` as \
+         `{\"record\":\"error\",\"message\":…}`; a refusal that has concrete \
+         replacements also carries them in `valid_options`, ready to \
+         pick. A row-listing tool's oversized result is an error \
+         naming the halved `limit`/`top` to retry with.",
+        schema_object::<OverviewInput>(),
+    )
+}
+
+fn context_tool() -> Tool {
+    Tool::new(
+        GET_CONTEXT_TOOL,
+        "Lists physical section layouts found across all stored segments; \
+         it does not inspect the live host or database. Top-level \
+         `recorded_from`/`recorded_to` are the store's first and last \
+         recorded timestamps, decimal-string Unix microseconds — an \
+         empty answer elsewhere may just mean the window fell outside \
+         them. Each `sections` item contains `logical_name`, \
+         `physical_name`, decimal-string `type_id`, `rows`, `bytes`, its \
+         `identity` column names, and `fields` — every column's `name`, \
+         `class`, and `unit`. A `cumulative` column is a monotonic \
+         counter that `find_*` rows return as a per-second rate under \
+         the raw column name and `kronika_overview` ranks as a \
+         whole-window delta; a `gauge` is an instantaneous value. \
+         `implementation` and `source_family` may be null. Rows and \
+         bytes are summed separately for each physical `type_id` across \
+         segments, so one logical name may appear more than once. \
+         Store-internal `dict.*` layouts are omitted. The full answer \
+         is tens of kilobytes — read it once per session, or pass \
+         `section` to keep one section's layouts only. `recorded_to` is \
+         the newest recorded moment: the anchor of the present for a store \
+         read offline.",
+        schema_object::<GetContextInput>(),
+    )
+}
+
+/// `kronika_get_instance`, split from the other entry tools to satisfy
+/// the line-count lint.
+fn instance_tools() -> [Tool; 1] {
+    [Tool::new(
+        GET_INSTANCE_TOOL,
+        "Returns stored host facts and PostgreSQL server settings; it \
              does not query the live host or database. `host` is the newest \
              recorded instance_metadata row — hostname, kernel version, \
              environment (0 machine or VM, 1 container), \
@@ -490,9 +514,8 @@ fn entry_tools() -> [Tool; 3] {
              `name`) and decimal-string locator fields accepted unchanged by \
              kronika_get_row_detail; the single host-facts row is pinned by \
              its `at` alone.",
-            schema_object::<GetInstanceInput>(),
-        ),
-    ]
+        schema_object::<GetInstanceInput>(),
+    )]
 }
 
 /// The table and index tools, kept separate to satisfy the line-count lint.
@@ -609,7 +632,14 @@ fn tail_tools() -> [Tool; 3] {
              missing or mismatched locator returns an error. Recognized event \
              codes receive the same `<field>_label` siblings as \
              `kronika_find_events`; the find-only `source` field is not part of \
-             the stored row and is not returned here.",
+             the stored row and is not returned here. Text values under 4 KiB \
+             arrive as plain strings; from 4 KiB up they arrive as \
+             `{stored_text, full_len, truncated, sha256}`, where `truncated` \
+             marks the cut at the storage's own text ceiling (1 MiB by \
+             default). A marker such as \
+             `<truncated>` inside the text itself is the source's cut — \
+             pg_store_plans.max_plan_length trimmed the plan before Kronika \
+             saw it — and leaves `truncated` false.",
             schema_object::<RowDetailInput>(),
         ),
         Tool::new(
@@ -621,11 +651,22 @@ fn tail_tools() -> [Tool; 3] {
              sorts the merged list by `at`, and truncates it to `limit` from \
              the newest end — the oldest rows survive. Equal timestamps \
              preserve requested source order; within a source they follow \
-             the physical locator. Returns `{rows, has_more}`; `has_more` \
+             the physical locator. Returns `{rows, has_more, next_from}`; `has_more` \
              means rows were omitted, including matches inside segments the \
-             scan could skip, and no continuation cursor is returned. Each row includes `source` and \
+             scan could skip, and `next_from` is the ready-made `from` of \
+             the next chronological call; it repeats the boundary timestamp, \
+             so rows of that timestamp can reappear — deduplicate by the \
+             locator fields, and when every returned row shares `next_from`, \
+             raise `limit` or move `from` past it. `pg_log_errors` and \
+             `pg_log_slow_queries` rows arrive already grouped by the \
+             collector — one row is one (severity, category, pattern) group \
+             per collection window with a `count` column, so a pattern's \
+             total is the sum of `count`, not the number of rows; with \
+             `has_more` set those sums are incomplete. Each row includes `source` and \
              decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
-             accepted unchanged by `kronika_get_row_detail`. Recognized \
+             accepted unchanged by `kronika_get_row_detail`; exact 64-bit \
+             stored values such as `size_bytes` use decimal strings too. \
+             Recognized \
              Kronika event codes keep their numeric field and add a \
              `<field>_label` sibling. Code numbers are not severity ranks; \
              unknown codes have no label sibling.",

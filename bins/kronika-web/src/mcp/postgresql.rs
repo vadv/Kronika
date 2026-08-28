@@ -17,11 +17,15 @@ use crate::config::Config;
 use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup, SnapshotRequest};
 
 use super::catalog::{
-    ActivityInput, DatabasesInput, IndexesInput, LocksInput, PlansInput, SortInput,
-    StatementsInput, TablesInput, VacuumInput,
+    ActivityInput, DatabasesInput, FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL,
+    FIND_POSTGRESQL_INDEXES_TOOL, FIND_POSTGRESQL_LOCKS_TOOL, FIND_POSTGRESQL_PLANS_TOOL,
+    FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
+    IndexesInput, LocksInput, PlansInput, SortInput, StatementsInput, TablesInput, VacuumInput,
 };
 use super::filter::{FilterInput, build_search};
-use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
+use super::semantics::{
+    DecimalI64, bounded_limit, mcp_error, mcp_structured, mcp_structured_bounded,
+};
 
 pub(crate) fn call_tables(
     config: &Config,
@@ -30,7 +34,13 @@ pub(crate) fn call_tables(
 ) -> CallToolResult {
     let input: TablesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_TABLES_TOOL,
+                "group and limit are required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call(
         RelationKind::Tables,
@@ -50,7 +60,13 @@ pub(crate) fn call_indexes(
 ) -> CallToolResult {
     let input: IndexesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_INDEXES_TOOL,
+                "group and limit are required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call(
         RelationKind::Indexes,
@@ -78,13 +94,13 @@ fn call(
     };
     let search = match build_search(kind.logical_name(), filters) {
         Ok(search) => search,
-        Err(error) => return mcp_error(error),
+        Err(refusal) => return refusal.into_error(),
     };
     if let Some(sort) = &sort
         && !kind.sort_field_known(group, &sort.field)
     {
         return mcp_error(format!(
-            "no such sort field for {}: {}",
+            "no such sort field for {}: {}; kronika_get_context lists the section's fields",
             kind.logical_name(),
             sort.field
         ));
@@ -149,9 +165,11 @@ fn call(
             ""
         },
     );
-    mcp_structured(
+    mcp_structured_bounded(
         json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
         summary,
+        "limit",
+        limit,
     )
 }
 
@@ -218,7 +236,10 @@ pub(super) fn plain_sort_token(logical_name: &str, field: &str) -> Result<String
     if known {
         Ok(field.to_owned())
     } else {
-        Err(format!("no such sort field for {logical_name}: {field}"))
+        Err(format!(
+            "no such sort field for {logical_name}: {field}; kronika_get_context lists the \
+             section's fields"
+        ))
     }
 }
 
@@ -252,7 +273,13 @@ pub(crate) fn call_activity(
 ) -> CallToolResult {
     let input: ActivityInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_ACTIVITY_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_plain(
         "pg_stat_activity",
@@ -271,7 +298,13 @@ pub(crate) fn call_locks(
 ) -> CallToolResult {
     let input: LocksInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_LOCKS_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_plain(
         "pg_locks",
@@ -290,7 +323,13 @@ pub(crate) fn call_vacuum(
 ) -> CallToolResult {
     let input: VacuumInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_VACUUM_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_plain(
         "pg_stat_progress_vacuum",
@@ -309,7 +348,13 @@ pub(crate) fn call_databases(
 ) -> CallToolResult {
     let input: DatabasesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_DATABASES_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_plain(
         "pg_stat_database",
@@ -349,9 +394,11 @@ fn call_plain(
             ""
         },
     );
-    mcp_structured(
+    mcp_structured_bounded(
         json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
         summary,
+        "limit",
+        limit as usize,
     )
 }
 
@@ -364,7 +411,7 @@ pub(super) fn plain_rows(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<(Vec<PlainRowOut>, bool, i64)>, CallToolResult> {
     let limit = bounded_limit("limit", limit, MAX_SNAPSHOT_PAGE_SIZE)?;
-    let search = build_search(logical_name, filters).map_err(mcp_error)?;
+    let search = build_search(logical_name, filters).map_err(super::filter::Refusal::into_error)?;
     let by = match &sort {
         Some(sort) => vec![plain_sort_token(logical_name, &sort.field).map_err(mcp_error)?],
         None => Vec::new(),
@@ -416,7 +463,13 @@ pub(crate) fn call_statements(
 ) -> CallToolResult {
     let input: StatementsInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_STATEMENTS_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_ratio(
         "pg_stat_statements",
@@ -435,7 +488,13 @@ pub(crate) fn call_plans(
 ) -> CallToolResult {
     let input: PlansInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                FIND_POSTGRESQL_PLANS_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_ratio(
         "pg_store_plans",
@@ -475,9 +534,11 @@ fn call_ratio(
             ""
         },
     );
-    mcp_structured(
+    mcp_structured_bounded(
         json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
         summary,
+        "limit",
+        limit as usize,
     )
 }
 

@@ -1,4 +1,8 @@
-use super::{DecimalI64, bounded_limit, mcp_structured};
+use super::{
+    DecimalI64, bounded_limit, invalid_arguments, mcp_error, mcp_error_with, mcp_structured,
+    mcp_structured_bounded, storage_error,
+};
+use crate::api::ApiError;
 
 #[test]
 fn decimal_i64_serializes_as_a_json_string() {
@@ -74,4 +78,85 @@ fn an_oversized_structured_result_becomes_an_error() {
 
     let small = serde_json::json!({ "rows": [] });
     assert_eq!(mcp_structured(small, "s").is_error, Some(false));
+}
+
+#[test]
+fn an_error_mirrors_its_text_into_structured_content() {
+    let result = mcp_error("no such sort field");
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["record"], "error");
+    assert_eq!(structured["message"], "no such sort field");
+    assert!(structured.get("valid_options").is_none());
+}
+
+#[test]
+fn a_refusal_with_choices_carries_valid_options() {
+    let result = mcp_error_with(
+        "operator eq is not valid",
+        vec!["gt".to_owned(), "lt".to_owned()],
+    );
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["valid_options"], serde_json::json!(["gt", "lt"]));
+}
+
+#[test]
+fn rejected_arguments_name_the_tool_and_its_usage() {
+    let result = invalid_arguments(
+        "kronika_find_events",
+        "from, to, and limit are required",
+        "missing field `limit`",
+    );
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("kronika_find_events")
+            && message.contains("Usage: from, to, and limit are required"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_oversized_bounded_result_names_the_halved_knob() {
+    let giant = serde_json::json!({ "text": "x".repeat(9 * 1024 * 1024) });
+    let result = mcp_structured_bounded(giant, "summary", "limit", 5000);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("limit=5000") && message.contains("retry with limit=2500"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_missing_section_or_column_error_names_the_listing_tool() {
+    let section = storage_error(&ApiError::NoSuchSection);
+    let message = section.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("kronika_get_context lists recorded sections"),
+        "{message}"
+    );
+
+    let column = storage_error(&ApiError::NoSuchColumn("rss".to_owned()));
+    let message = column.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("kronika_get_context"), "{message}");
+
+    let unreadable = storage_error(&ApiError::Unreadable(Box::new(std::io::Error::other(
+        "broken",
+    ))));
+    let message = unreadable.content[0].as_text().expect("text").text.clone();
+    assert!(
+        !message.contains("kronika_get_context"),
+        "an unreadable store has no listing to point at: {message}"
+    );
+}
+
+#[test]
+fn an_oversized_result_at_the_smallest_limit_points_at_filters() {
+    let giant = serde_json::json!({ "text": "x".repeat(9 * 1024 * 1024) });
+    let result = mcp_structured_bounded(giant, "summary", "limit", 1);
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(
+        message.contains("add filters") && !message.contains("limit=0"),
+        "{message}"
+    );
 }

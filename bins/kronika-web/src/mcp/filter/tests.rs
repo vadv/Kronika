@@ -24,7 +24,7 @@ fn an_unknown_field_for_the_section_is_rejected() {
         value: json!("x"),
     }];
     let error = build_search("os_process", &filters).expect_err("unknown field");
-    assert!(error.contains("not_a_real_field"));
+    assert!(error.message.contains("not_a_real_field"));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn a_comparison_operator_on_a_string_field_is_rejected() {
         value: json!("running"),
     }];
     let error = build_search("os_process", &filters).expect_err("comparison on a string field");
-    assert!(error.contains("state"));
+    assert!(error.message.contains("state"));
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn contains_on_an_identifier_field_is_rejected() {
         value: json!(100),
     }];
     let error = build_search("os_process", &filters).expect_err("contains on an identifier field");
-    assert!(error.contains("pid"));
+    assert!(error.message.contains("pid"));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn a_negative_quantity_value_is_rejected() {
     }];
     let error = build_search("os_process", &filters)
         .expect_err("quantity fields take non-negative integers");
-    assert!(error.contains("rss"));
+    assert!(error.message.contains("rss"));
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn a_non_integer_quantity_value_is_rejected() {
     }];
     let error =
         build_search("os_process", &filters).expect_err("quantity fields take whole numbers");
-    assert!(error.contains("rss"));
+    assert!(error.message.contains("rss"));
 }
 
 #[test]

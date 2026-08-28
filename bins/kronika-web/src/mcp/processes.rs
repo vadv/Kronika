@@ -13,7 +13,7 @@ use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, SnapshotRequest};
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
 use super::postgresql::current_segment;
-use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, bounded_limit, mcp_error, mcp_structured_bounded};
 
 const LOGICAL_NAME: &str = "os_process";
 
@@ -24,7 +24,13 @@ pub(crate) fn call(
 ) -> CallToolResult {
     let input: ProcessesInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => return mcp_error(format!("invalid arguments: {error}")),
+        Err(error) => {
+            return super::semantics::invalid_arguments(
+                super::catalog::FIND_PROCESSES_TOOL,
+                "limit is required; filters and sort are optional",
+                error,
+            );
+        }
     };
     call_with(config, &input.filters, input.sort, input.limit, cancelled)
 }
@@ -42,7 +48,7 @@ fn call_with(
     };
     let search = match build_search(LOGICAL_NAME, filters) {
         Ok(search) => search,
-        Err(error) => return mcp_error(error),
+        Err(refusal) => return refusal.into_error(),
     };
     let by = match &sort {
         Some(sort) => match super::postgresql::plain_sort_token(LOGICAL_NAME, &sort.field) {
@@ -104,9 +110,11 @@ fn call_with(
             ""
         },
     );
-    mcp_structured(
+    mcp_structured_bounded(
         json!({ "rows": rows, "has_more": has_more, "as_of": DecimalI64(at) }),
         summary,
+        "limit",
+        limit,
     )
 }
 
