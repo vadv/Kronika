@@ -184,6 +184,72 @@ impl Dictionary {
         }
         Ok(())
     }
+
+    pub(crate) fn decode_selected_once(
+        &mut self,
+        type_id: u32,
+        section: VerifiedSection,
+        wanted: &HashSet<u64>,
+        expected_rows: u64,
+    ) -> Result<(), CodecError> {
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let (builder, _metadata) =
+            dictionary_builder(section.into_bytes(), type_id, expected_rows)?;
+        let reader = builder.build()?;
+        for batch in reader {
+            let batch = batch?;
+            let ids = required_array::<UInt64Array>(&batch, "str_id")?;
+            match type_id {
+                DICT_STRINGS_TYPE_ID => {
+                    let values = required_array::<BinaryArray>(&batch, "bytes")?;
+                    for row in 0..batch.num_rows() {
+                        if !wanted.contains(&ids.value(row)) {
+                            continue;
+                        }
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        self.by_id
+                            .insert(id, Value::String(values.value(row).to_vec()));
+                    }
+                }
+                DICT_BLOBS_TYPE_ID => {
+                    let stored = required_array::<BinaryArray>(&batch, "stored_bytes")?;
+                    let full_len = required_array::<UInt64Array>(&batch, "full_len")?;
+                    let truncated = required_array::<BooleanArray>(&batch, "truncated")?;
+                    let hash = nullable_hash_array(&batch)?;
+                    for row in 0..batch.num_rows() {
+                        if !wanted.contains(&ids.value(row)) {
+                            continue;
+                        }
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        let full_sha256 = if hash.is_null(row) {
+                            None
+                        } else {
+                            Some(
+                                hash.value(row)
+                                    .try_into()
+                                    .map_err(|_error| CodecError::SchemaMismatch)?,
+                            )
+                        };
+                        self.by_id.insert(
+                            id,
+                            Value::Blob {
+                                stored_bytes: stored.value(row).to_vec(),
+                                full_len: full_len.value(row),
+                                truncated: truncated.value(row),
+                                full_sha256,
+                            },
+                        );
+                    }
+                }
+                _ => return Err(CodecError::UnknownType { type_id }),
+            }
+        }
+        Ok(())
+    }
 }
 
 fn dictionary_builder(

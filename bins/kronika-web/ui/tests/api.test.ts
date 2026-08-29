@@ -1034,6 +1034,50 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
   assert.deepEqual(exactOldLayout.map((group) => group.anchor.id), ["100"])
 })
 
+test("heatmaps use automatic named labels without a label selector", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/heatmap")
+    assert.deepEqual(url.searchParams.getAll("field"), ["total_exec_time"])
+    assert.equal(url.searchParams.has("label"), false)
+    return ndjson([
+      {
+        record: "heatmap", class: "cumulative", entity_count: "1", others_count: "0",
+        labels: ["datname", "usename", "query", "missing"],
+        intervals: [{ start: String(START), end: String(START + 3_600_000_000 - 1) }],
+      },
+      {
+        record: "heatmap_row", type_id: "1002002", identity: ["42", "10", "5"],
+        labels: ["app", "reporter", { representation: "text", stored_text: "select 1" }, null],
+        total: 10, cells: [1],
+      },
+      { record: "heatmap_band", band: "totals", total: 10, cells: [1] },
+      { record: "heatmap_band", band: "others", total: null, cells: [null] },
+    ])
+  }
+  try {
+    const view = await api.loadHeatmap(
+      START,
+      "pg_stat_statements",
+      ["total_exec_time"],
+      1,
+      25,
+      new AbortController().signal,
+    )
+    assert.deepEqual(view.rows[0]?.labels, {
+      datname: "app",
+      usename: "reporter",
+      query: { representation: "text", stored_text: "select 1" },
+      missing: null,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("related plan query text uses one bounded query-ID-only first match", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")

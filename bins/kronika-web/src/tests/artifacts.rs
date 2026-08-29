@@ -129,6 +129,30 @@ impl Fixture {
         self.append(buffers);
     }
 
+    fn append_resolved_diskstats(&mut self, rows: &[(i64, i32, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let device = StrId(
+            interner
+                .intern(b"fixture-device")
+                .expect("intern fixture device")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, minor, reads) in rows {
+            buffers
+                .push(diskstats_with_device(ts, minor, reads, device))
+                .expect("diskstats row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode fixture device dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode diskstats fixture")
+            .expect("nonempty diskstats fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append diskstats fixture");
+    }
+
     fn append_named_diskstats(&mut self, rows: &[(i32, &str)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -2938,7 +2962,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 #[test]
 fn finished_browser_resources_are_immutable_and_revalidate_without_a_body() {
     let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.append_resolved_diskstats(&[(100, 0, 1), (200, 0, 2)]);
     fixture.finish();
 
     for target in browser_resource_targets() {
@@ -3056,7 +3080,7 @@ fn matching_finished_snapshot_etag_skips_predecessor_scans() {
 #[test]
 fn active_browser_resources_are_not_reusable() {
     let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.append_resolved_diskstats(&[(100, 0, 1), (200, 0, 2)]);
 
     for target in browser_resource_targets() {
         let prepared = fixture.prepare(&target, None);
@@ -3115,28 +3139,28 @@ fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
 }
 
 #[test]
-fn rank_only_keeps_one_convention_for_gauge_totals() {
+fn shared_heatmap_result_keeps_one_convention_for_gauge_totals() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
     fixture.finish();
 
-    let request = crate::route::HeatmapRequest {
-        from: 100,
-        to: 400,
-        section: "os_process".to_owned(),
-        fields: vec!["rmem_kb".to_owned()],
-        columns: 1,
-        top: 2,
-        labels: Vec::new(),
-        group: Vec::new(),
-        type_id: None,
+    let request = crate::api::heatmap::HeatmapBatchQuery {
+        range: crate::api::time::TimeRange::new(100, 401).expect("range"),
+        items: vec![crate::api::heatmap::HeatmapItemQuery {
+            ranking: crate::api::heatmap::NormalizedRanking {
+                section: "os_process".to_owned(),
+                fields: vec!["rmem_kb".to_owned()],
+                top: 2,
+            },
+            view: crate::api::heatmap::HeatmapView::RankingOnly,
+        }],
     };
 
-    let prepared = crate::api::heatmap::prepare(fixture.root(), request).expect("prepare");
-    let ranking = prepared
-        .rank_only(&|| false)
-        .expect("rank_only")
-        .expect("some ranking");
+    let result = crate::api::heatmap::prepare_batch(fixture.root(), request)
+        .expect("prepare")
+        .execute(&|| false)
+        .expect("execute");
+    let ranking = &result.results[0];
 
     // Every number follows the per-entity window-maximum convention the
     // entities themselves rank by: totals_total is the largest maximum
@@ -3157,7 +3181,7 @@ fn rank_only_keeps_one_convention_for_gauge_totals() {
     assert_eq!(ranking.others_total, Some(30.0));
     let winner = &ranking.entities[0];
     assert_eq!(winner.type_id, OsProcess::CONTRACT.type_id.get());
-    assert_eq!(winner.identity, vec![serde_json::json!(101)]);
+    assert_eq!(winner.identity["pid"], serde_json::json!(101));
 }
 
 // Each entry differs from its browser_resource_targets peer in one parameter.

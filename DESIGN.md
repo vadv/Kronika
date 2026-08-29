@@ -461,8 +461,9 @@ Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
 and similar display values would duplicate the largest fields in the segment.
-After a heatmap selects identities, projected raw reads supply query text,
-plans, command lines, and other large labels only for those identities.
+A heatmap that needs these labels selects a raw projection before execution and
+retains compact label references while decoding the selected rows. Ranking does
+not start a later read for its winners.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
 browser revalidates against, so the file has to hold it rather than have web
@@ -601,10 +602,10 @@ a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
 that cell sets — because a correct filter at a silent moment reads as a wrong
 filter; a row with a reading at the cursor leaves the cursor where the reader
-put it. Query text is loaded separately for ranked statements
-when the current table page does not contain it. Tables and indexes use twelve
-cells for their five-minute cadence. Gauge metrics rank by the window maximum
-and display values rather than rates.
+put it. Query text and every other available display label travel with each
+ranked entity in the heatmap response; ranked statements do not issue a later
+point read. Tables and indexes use twelve cells for their five-minute cadence.
+Gauge metrics rank by the window maximum and display values rather than rates.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -1049,8 +1050,9 @@ the catalog. `listSeries` discovers identities and applies exact label filters.
 The other calls request every intersecting segment and combine finished and
 active representations by `SegmentId`. `heatmap` asks the server for ranked
 identities, interval cells, and last-seen labels. The bundled-fixture build
-derives the same response shape from embedded rows. Health is an ordinary
-indexed time series available through `history` and section indexes.
+runs the same Rust product executor and embeds its exact response; JavaScript
+only decodes it. Health is an ordinary indexed time series available through
+`history` and section indexes.
 
 History can select several fields and series. The client requests every segment
 that intersects the window. Neither client nor server applies an implicit limit
@@ -1083,17 +1085,17 @@ sample exists. An hour holds one fewer span than it holds samples, so an edge
 column reads only when a recorded span reaches into it.
 
 Ranking uses the whole requested window and does not change with the number of
-columns. The first pass scans the whole window and selects the top K identities.
-Later passes allocate cells only for bounded batches of ranked identities or
-groups until K results are emitted. The requested K limits the returned
-identities, not the work needed to rank them. A counter ranks by its
-whole-window delta and a gauge by its whole-window maximum. A band total uses
-the sum for counters and the maximum for gauges. The response also carries a
-totals band containing the per-column sum of every entity and an others band
-equal to totals minus the ranked rows.
-Long ranges use segment-grain `.idx` for fields in the summary allowlist.
-Other fields, sub-segment resolution and partial boundary segments use
-projected raw samples.
+columns. HTTP heatmaps and MCP overview rankings normalize into one ordered
+batch query and one typed result. The planner combines each physical layout's
+needed metric, identity, group, and automatic label fields before reading it.
+Each selected physical row and dictionary body is decoded at most once for the
+batch and feeds every applicable ranking during that pass; cells and compact
+label references needed for the result are retained then. The requested K
+limits the returned identities, not the work needed to rank them. A counter
+ranks by its whole-window delta and a gauge by its whole-window maximum. A band
+total uses the sum for counters and the maximum for gauges. The response also
+carries a totals band containing the per-column sum of every entity and an
+others band equal to totals minus the ranked rows.
 
 ### Representations
 

@@ -47,6 +47,20 @@ pub(crate) fn mcp_error_with(
     result
 }
 
+/// A batch refusal naming the zero-based ranking whose validation, resource,
+/// or reservation failed.
+pub(crate) fn mcp_error_indexed(
+    message: impl Into<String>,
+    ranking_index: usize,
+) -> CallToolResult {
+    let message = message.into();
+    let mut result = mcp_error(message);
+    if let Some(Value::Object(body)) = result.structured_content.as_mut() {
+        body.insert("ranking_index".to_owned(), serde_json::json!(ranking_index));
+    }
+    result
+}
+
 /// A storage error as a tool answer; an unknown section or column also
 /// names the tool that lists the valid ones.
 pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {

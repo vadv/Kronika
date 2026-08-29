@@ -156,6 +156,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
+    assert.equal(requests.filter(({ path, query }) => path.includes("/snapshot") && new URLSearchParams(query).get("first_match") === "1").length, 0)
     const ledger = await cdp.evaluate(`(() => ({
       top: document.querySelector('[data-testid="activity-top-count"]')?.textContent ?? "",
       totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
@@ -5269,10 +5270,19 @@ function targetedRelationRecords(url, label, eligible) {
 
 
 function answerHeatmap(url, response) {
+  assert.equal(url.searchParams.has("label"), false)
   const from = Number(url.searchParams.get("from") ?? "0")
   const to = Number(url.searchParams.get("to") ?? "0")
   const columns = Number(url.searchParams.get("columns") ?? "60")
-  const labels = url.searchParams.getAll("label")
+  const section = url.searchParams.get("section") ?? ""
+  const labels = {
+    pg_stat_database: ["datname"],
+    pg_stat_statements: ["datname", "usename", "query"],
+    pg_stat_user_indexes: ["datname", "schemaname", "relname", "indexrelname"],
+    pg_stat_user_tables: ["datname", "schemaname", "relname"],
+    pg_store_plans: ["datname", "usename", "plan"],
+  }[section] ?? []
+  const labelValues = labels.map((name) => name === "query" ? "select demo" : name === "plan" ? "demo plan" : "demo")
   const span = to - from + 1
   const intervals = Array.from({ length: columns }, (_at, index) => ({
     start: String(from + Math.floor((index * span) / columns)),
@@ -5281,12 +5291,12 @@ function answerHeatmap(url, response) {
   const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
   return ndjson(response, [
     {
-      record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
+      record: "heatmap", from: String(from), to: String(to), section,
       fields: url.searchParams.getAll("field"), class: "cumulative", labels,
       top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
     },
-    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },
-    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labels.map(() => "demo"), total: 60, cells },
+    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labelValues, total: 120, cells },
+    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labelValues, total: 60, cells },
     { record: "heatmap_band", band: "totals", total: 200, cells },
     { record: "heatmap_band", band: "others", total: 20, cells },
   ])

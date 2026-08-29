@@ -611,7 +611,7 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
         parse(
             "/api/heatmap",
             Some(
-                "from=0&to=3599999999&section=pg_stat_statements&field=wal_bytes&label=datname&label=usename&columns=60&top=25"
+                "from=0&to=3599999999&section=pg_stat_statements&field=wal_bytes&columns=60&top=25"
             ),
         ),
         Ok(Route::Heatmap(HeatmapRequest {
@@ -621,10 +621,16 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
             fields: vec!["wal_bytes".to_owned()],
             columns: 60,
             top: 25,
-            labels: vec!["datname".to_owned(), "usename".to_owned()],
             group: Vec::new(),
             type_id: None,
         }))
+    );
+    assert_eq!(
+        parse(
+            "/api/heatmap",
+            Some("from=0&to=1&section=s&field=f&label=name")
+        ),
+        Err(RouteError::BadParameter("label".to_owned()))
     );
     assert_eq!(
         parse("/api/heatmap", Some("from=0&to=1&section=s")),

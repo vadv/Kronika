@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { gunzipSync } from "node:zlib"
 import test from "node:test"
 
-import { bundledFixtureHour, bundledFixtureRange } from "../src/fixture.ts"
+import { bundledFixtureHeatmapRecords, bundledFixtureHour, bundledFixtureRange } from "../src/fixture.ts"
 
 const encoded = readFileSync(new URL("../fixtures/real-hour.json.gz", import.meta.url))
 const fixture = JSON.parse(gunzipSync(encoded).toString("utf8"))
@@ -67,4 +67,34 @@ test("the production path has no fixture when no approved bundle is injected", (
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   assert.equal(bundledFixtureRange(), null)
   assert.equal(bundledFixtureHour(0), null)
+})
+
+test("the fixture exposes only exact Rust-generated heatmap records", () => {
+  const records = [{ record: "heatmap", labels: ["comm"] }]
+  try {
+    Object.assign(globalThis, {
+      __KRONIKA_REAL_HOUR__: {
+        ...fixture,
+        heatmaps: [{
+          from: 10,
+          section: "os_process",
+          fields: ["utime", "stime"],
+          columns: 60,
+          top: 25,
+          group: ["comm"],
+          records,
+        }],
+      },
+    })
+    assert.equal(
+      bundledFixtureHeatmapRecords(10, "os_process", ["utime", "stime"], 60, 25, ["comm"]),
+      records,
+    )
+    assert.equal(
+      bundledFixtureHeatmapRecords(10, "os_process", ["stime", "utime"], 60, 25, ["comm"]),
+      null,
+    )
+  } finally {
+    Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  }
 })

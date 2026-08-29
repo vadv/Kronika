@@ -46,3 +46,10 @@ test("a drill moves the cursor only when the drilled row is silent at it", async
   // The strip's own click uses the same instant, so the two gestures agree.
   assert.match(source, /onCursor\(intervalInstant\(hour, column, columns\)\)/)
 })
+
+test("ranked statement and plan text comes only from automatic heatmap labels", async () => {
+  const source = await readFile(new URL("../src/activity.tsx", import.meta.url), "utf8")
+  assert.match(source, /const text = labelText\(row, "query"\)/)
+  assert.match(source, /const text = labelText\(row, "plan"\)/)
+  assert.doesNotMatch(source, /statementTextsByQueryId|planTextsByPlanId|readonly data: HourData/)
+})

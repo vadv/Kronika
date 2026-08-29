@@ -128,6 +128,23 @@ fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
     ]
 }
 
+fn overview_arguments(
+    section: &str,
+    fields: &[&str],
+    from: i64,
+    to: i64,
+    top: usize,
+) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "from": from,
+        "to": to,
+        "rankings": [{"section": section, "fields": fields, "top": top}],
+    })
+    .as_object()
+    .expect("object")
+    .clone()
+}
+
 #[test]
 fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     let mut fixture = Fixture::new();
@@ -135,22 +152,14 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let arguments = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb"],
-        "from": 100,
-        "to": 400,
-        "top": 2,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let arguments = overview_arguments("os_process", &["rmem_kb"], 100, 400, 2);
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let entities = structured["entities"].as_array().expect("entities array");
+    let ranking = &structured["results"][0];
+    let entities = ranking["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
     assert_eq!(entities[0]["identity"]["pid"], 101);
@@ -159,9 +168,9 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     // are window maxima, so the two aggregate fields are maxima too —
     // totals_total across all five entities, others_total across the
     // three beyond top=2.
-    assert_eq!(structured["totals_total"], 50.0);
-    assert_eq!(structured["others_total"], 30.0);
-    assert_eq!(structured["entity_count"], "5");
+    assert_eq!(ranking["totals_total"], 50.0);
+    assert_eq!(ranking["others_total"], 30.0);
+    assert_eq!(ranking["entity_count"], "5");
 }
 
 #[test]
@@ -176,40 +185,20 @@ fn overview_empty_window_names_the_nearest_recorded_rows() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let arguments = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb"],
-        "from": 150,
-        "to": 200,
-        "top": 5,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let arguments = overview_arguments("os_process", &["rmem_kb"], 150, 200, 5);
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    assert_eq!(structured["entity_count"], "0");
-    assert_eq!(
-        structured["entities"].as_array().expect("entities").len(),
-        0
-    );
-    assert_eq!(structured["nearest_row_before"], "100");
-    assert_eq!(structured["nearest_row_after"], "300");
-    assert_eq!(structured["recorded_from"], "50");
-    assert_eq!(structured["recorded_to"], "400");
-    assert_eq!(structured["window_rows"], "0");
-    let summary = result.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        summary.contains("100") && summary.contains("300") && !summary.contains("outside"),
-        "summary names the neighbouring rows: {summary}"
-    );
+    let ranking = &structured["results"][0];
+    assert_eq!(ranking["entity_count"], "0");
+    assert_eq!(ranking["entities"].as_array().expect("entities").len(), 0);
+    assert_eq!(ranking["coverage"]["nearest_row_before"], "100");
+    assert_eq!(ranking["coverage"]["nearest_row_after"], "300");
+    assert_eq!(ranking["coverage"]["recorded_from"], "50");
+    assert_eq!(ranking["coverage"]["recorded_to"], "400");
+    assert_eq!(ranking["coverage"]["window_rows"], "0");
 }
 
 #[test]
@@ -224,36 +213,16 @@ fn overview_reports_in_window_rows_whose_fields_rank_nothing() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let arguments = serde_json::json!({
-        "section": "pg_stat_user_tables",
-        "fields": ["toast_bytes"],
-        "from": 100,
-        "to": 200,
-        "top": 5,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let arguments = overview_arguments("pg_stat_user_tables", &["toast_bytes"], 100, 201, 5);
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    assert_eq!(structured["entity_count"], "0");
-    assert_eq!(structured["window_rows"], "2");
-    let summary = result.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        summary.contains("usable value"),
-        "summary blames the fields, not the window: {summary}"
-    );
-    assert!(
-        !summary.contains("widen the window"),
-        "summary must not send the caller into widening: {summary}"
-    );
+    let ranking = &structured["results"][0];
+    assert_eq!(ranking["entity_count"], "0");
+    assert_eq!(ranking["coverage"]["window_rows"], "2");
+    assert_eq!(ranking["coverage"]["state"], "no_data");
 }
 
 #[test]
@@ -265,36 +234,15 @@ fn overview_names_the_layout_that_lacks_the_requested_fields() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let arguments = serde_json::json!({
-        "section": "pg_store_plans",
-        "fields": ["slow_log_calls"],
-        "from": 100,
-        "to": 200,
-        "top": 5,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let arguments = overview_arguments("pg_store_plans", &["slow_log_calls"], 100, 201, 5);
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    assert_eq!(structured["entity_count"], "0");
-    assert_eq!(structured["window_rows"], "0");
-    let summary = result.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        summary.contains("layout"),
-        "summary names the layout mismatch: {summary}"
-    );
-    assert!(
-        !summary.contains("wider window") && !summary.contains("widen the window"),
-        "summary must not advise widening: {summary}"
-    );
+    let ranking = &structured["results"][0];
+    assert_eq!(ranking["entity_count"], "0");
+    assert_eq!(ranking["coverage"]["window_rows"], "0");
 }
 
 #[test]
@@ -304,118 +252,25 @@ fn overview_window_outside_the_recorded_range_says_so() {
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let arguments = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb"],
-        "from": 1000,
-        "to": 1100,
-        "top": 5,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let arguments = overview_arguments("os_process", &["rmem_kb"], 1000, 1100, 5);
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    assert_eq!(structured["entity_count"], "0");
-    assert_eq!(structured["nearest_row_before"], serde_json::Value::Null);
-    assert_eq!(structured["nearest_row_after"], serde_json::Value::Null);
-    assert_eq!(structured["recorded_from"], "100");
-    assert_eq!(structured["recorded_to"], "300");
-    assert_eq!(structured["window_rows"], "0");
-    let summary = result.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        summary.contains("outside"),
-        "summary places the window outside the range: {summary}"
+    let ranking = &structured["results"][0];
+    assert_eq!(ranking["entity_count"], "0");
+    assert_eq!(
+        ranking["coverage"]["nearest_row_before"],
+        serde_json::Value::Null
     );
-}
-
-#[test]
-fn empty_window_summary_covers_every_neighbour_shape() {
-    use crate::api::heatmap::ScanStats;
-    use crate::mcp::overview::empty_window_summary;
-    let stats = |before: Option<i64>, after: Option<i64>, rows: u64| ScanStats {
-        nearest_before: before,
-        nearest_after: after,
-        window_rows: rows,
-        layouts_without_fields: false,
-    };
-    let recorded = Some((100, 300));
-    let both = empty_window_summary(
-        "os_mountinfo",
-        (150, 200),
-        recorded,
-        &stats(Some(120), Some(280), 0),
+    assert_eq!(
+        ranking["coverage"]["nearest_row_after"],
+        serde_json::Value::Null
     );
-    assert!(both.contains("120") && both.contains("280"), "{both}");
-    let before = empty_window_summary(
-        "os_mountinfo",
-        (150, 200),
-        recorded,
-        &stats(Some(120), None, 0),
-    );
-    assert!(
-        before.contains("120") && !before.contains("280"),
-        "{before}"
-    );
-    let after = empty_window_summary(
-        "os_mountinfo",
-        (150, 200),
-        recorded,
-        &stats(None, Some(280), 0),
-    );
-    assert!(after.contains("280"), "{after}");
-    let hole = empty_window_summary("os_mountinfo", (150, 200), recorded, &stats(None, None, 0));
-    assert!(
-        hole.contains("100..300") && hole.contains("wider"),
-        "{hole}"
-    );
-    let outside = empty_window_summary(
-        "os_mountinfo",
-        (1000, 1100),
-        recorded,
-        &stats(None, None, 0),
-    );
-    assert!(outside.contains("outside"), "{outside}");
-    let nulls = empty_window_summary(
-        "pg_stat_user_tables",
-        (150, 200),
-        recorded,
-        &stats(Some(120), None, 7),
-    );
-    assert!(
-        nulls.contains('7') && nulls.contains("usable value"),
-        "{nulls}"
-    );
-    assert!(
-        !nulls.contains("120"),
-        "null rows outrank the neighbour wording: {nulls}"
-    );
-    let touching = empty_window_summary("os_mountinfo", (50, 100), recorded, &stats(None, None, 0));
-    assert!(
-        !touching.contains("outside") && touching.contains("wider"),
-        "a window touching the recorded edge is not outside it: {touching}"
-    );
-    let ending = empty_window_summary("os_mountinfo", (300, 400), recorded, &stats(None, None, 0));
-    assert!(
-        !ending.contains("outside") && ending.contains("wider"),
-        "a window starting at the recorded edge is not outside it: {ending}"
-    );
-    let mut missing_stats = stats(None, None, 0);
-    missing_stats.layouts_without_fields = true;
-    let missing = empty_window_summary("pg_store_plans", (150, 200), recorded, &missing_stats);
-    assert!(
-        missing.contains("layout") && !missing.contains("wider"),
-        "{missing}"
-    );
-    let bare = empty_window_summary("os_mountinfo", (0, 1), None, &stats(None, None, 0));
-    assert!(bare.contains("no recorded"), "{bare}");
+    assert_eq!(ranking["coverage"]["recorded_from"], "100");
+    assert_eq!(ranking["coverage"]["recorded_to"], "300");
+    assert_eq!(ranking["coverage"]["window_rows"], "0");
 }
 
 #[test]
@@ -429,11 +284,13 @@ fn overview_rejects_malformed_arguments_without_panicking() {
 fn overview_rejects_a_top_above_the_heatmap_cap() {
     let config = test_config(std::env::temp_dir());
     let arguments = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb"],
         "from": 100,
         "to": 400,
-        "top": 4_000_000_000_u64,
+        "rankings": [{
+            "section": "os_process",
+            "fields": ["rmem_kb"],
+            "top": 4_000_000_000_u64,
+        }],
     })
     .as_object()
     .expect("object")
@@ -453,6 +310,85 @@ fn overview_rejects_a_top_above_the_heatmap_cap() {
     );
 }
 
+#[test]
+fn overview_reports_the_index_for_each_invalid_top_shape() {
+    let config = test_config(std::env::temp_dir());
+    for top in [json!(-1), json!(1.5), json!("25")] {
+        let arguments = json!({
+            "from": 100,
+            "to": 400,
+            "rankings": [
+                {"section": "os_process", "fields": ["rmem_kb"], "top": 1},
+                {"section": "os_process", "fields": ["rmem_kb"], "top": top},
+            ],
+        })
+        .as_object()
+        .expect("object")
+        .clone();
+        let result = crate::mcp::overview::call(&config, arguments, &|| false);
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.expect("structured error")["ranking_index"],
+            1
+        );
+    }
+}
+
+#[test]
+fn overview_request_budget_is_exact_and_names_the_crossing_item() {
+    const MAX: usize = 64 * 1024;
+    let config = test_config(std::env::temp_dir());
+    let arguments_at = |target: usize| {
+        let mut value = json!({
+            "from": 100,
+            "to": 400,
+            "rankings": [{
+                "section": "os_process",
+                "fields": [""],
+                "top": 1,
+            }],
+        });
+        let base = serde_json::to_vec(&value).expect("measure base").len();
+        value["rankings"][0]["fields"][0] = json!("x".repeat(target - base));
+        assert_eq!(serde_json::to_vec(&value).expect("measure").len(), target);
+        value.as_object().expect("object").clone()
+    };
+
+    let at_limit = crate::mcp::overview::call(&config, arguments_at(MAX), &|| false);
+    assert_eq!(at_limit.is_error, Some(true));
+    let at_message = at_limit.content[0].as_text().expect("text").text.clone();
+    assert!(!at_message.contains("arguments exceed"), "{at_message}");
+
+    let over_limit = crate::mcp::overview::call(&config, arguments_at(MAX + 1), &|| false);
+    assert_eq!(over_limit.is_error, Some(true));
+    let over_message = over_limit.content[0].as_text().expect("text").text.clone();
+    assert!(over_message.contains("arguments exceed"), "{over_message}");
+    assert_eq!(
+        over_limit.structured_content.expect("structured error")["ranking_index"],
+        0
+    );
+
+    let long = "x".repeat(30_000);
+    let crossing = json!({
+        "from": 100,
+        "to": 400,
+        "rankings": [
+            {"section": long, "fields": ["rmem_kb"], "top": 1},
+            {"section": long, "fields": ["rmem_kb"], "top": 1},
+            {"section": long, "fields": ["rmem_kb"], "top": 1},
+        ],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let crossing = crate::mcp::overview::call(&config, crossing, &|| false);
+    assert_eq!(crossing.is_error, Some(true));
+    assert_eq!(
+        crossing.structured_content.expect("structured error")["ranking_index"],
+        2
+    );
+}
+
 #[tokio::test]
 async fn overview_end_to_end_through_the_real_transport() {
     let mut fixture = Fixture::new();
@@ -467,11 +403,13 @@ async fn overview_end_to_end_through_the_real_transport() {
         "params": {
             "name": "kronika_overview",
             "arguments": {
-                "section": "os_process",
-                "fields": ["rmem_kb"],
                 "from": 100,
                 "to": 400,
-                "top": 2,
+                "rankings": [{
+                    "section": "os_process",
+                    "fields": ["rmem_kb"],
+                    "top": 2,
+                }],
             }
         }
     });
@@ -495,16 +433,15 @@ async fn overview_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
-    let entities = decoded["result"]["structuredContent"]["entities"]
-        .as_array()
-        .expect("entities array");
+    let ranking = &decoded["result"]["structuredContent"]["results"][0];
+    let entities = ranking["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
     assert_eq!(entities[0]["identity"]["pid"], 101);
     assert_eq!(entities[1]["total"], 45.0);
-    assert_eq!(decoded["result"]["structuredContent"]["totals_total"], 50.0);
-    assert_eq!(decoded["result"]["structuredContent"]["others_total"], 30.0);
-    assert_eq!(decoded["result"]["structuredContent"]["entity_count"], "5");
+    assert_eq!(ranking["totals_total"], 50.0);
+    assert_eq!(ranking["others_total"], 30.0);
+    assert_eq!(ranking["entity_count"], "5");
 }
 
 #[test]
@@ -2110,11 +2047,13 @@ fn overview_rejects_duplicate_fields_and_a_reversed_window() {
     let config = test_config(std::env::temp_dir());
 
     let duplicated = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb", "rmem_kb"],
         "from": 0,
         "to": 100,
-        "top": 5,
+        "rankings": [{
+            "section": "os_process",
+            "fields": ["rmem_kb", "rmem_kb"],
+            "top": 5,
+        }],
     })
     .as_object()
     .expect("object")
@@ -2123,11 +2062,13 @@ fn overview_rejects_duplicate_fields_and_a_reversed_window() {
     assert_eq!(result.is_error, Some(true));
 
     let reversed = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb"],
         "from": 100,
         "to": 0,
-        "top": 5,
+        "rankings": [{
+            "section": "os_process",
+            "fields": ["rmem_kb"],
+            "top": 5,
+        }],
     })
     .as_object()
     .expect("object")
@@ -2348,11 +2289,13 @@ fn overview_rejects_fields_with_different_units() {
 
     let config = test_config(fixture.root().to_path_buf());
     let arguments = serde_json::json!({
-        "section": "os_process",
-        "fields": ["rmem_kb", "num_threads"],
         "from": 0,
         "to": 1_000,
-        "top": 5,
+        "rankings": [{
+            "section": "os_process",
+            "fields": ["rmem_kb", "num_threads"],
+            "top": 5,
+        }],
     })
     .as_object()
     .expect("object")
@@ -2375,11 +2318,13 @@ fn overview_identity_passes_verbatim_into_the_statements_finder() {
 
     let config = test_config(fixture.root().to_path_buf());
     let overview_arguments = serde_json::json!({
-        "section": "pg_stat_statements",
-        "fields": ["total_exec_time"],
         "from": 0,
         "to": 1_000,
-        "top": 1,
+        "rankings": [{
+            "section": "pg_stat_statements",
+            "fields": ["total_exec_time"],
+            "top": 1,
+        }],
     })
     .as_object()
     .expect("object")
@@ -2387,7 +2332,7 @@ fn overview_identity_passes_verbatim_into_the_statements_finder() {
     let overview = crate::mcp::overview::call(&config, overview_arguments, &|| false);
     assert_eq!(overview.is_error, Some(false));
     let structured = overview.structured_content.expect("structured content");
-    let identity = structured["entities"][0]["identity"]
+    let identity = structured["results"][0]["entities"][0]["identity"]
         .as_object()
         .expect("identity object")
         .clone();

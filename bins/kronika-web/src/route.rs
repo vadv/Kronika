@@ -1,5 +1,7 @@
 //! Strict parsing of the four resource families.
 
+pub(crate) use crate::api::heatmap::HeatmapRequest;
+
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
@@ -13,7 +15,6 @@ const DEFAULT_HEATMAP_COLUMNS: usize = 60;
 const MAX_HEATMAP_COLUMNS: usize = 1_440;
 const DEFAULT_HEATMAP_TOP: usize = 25;
 pub(crate) const MAX_HEATMAP_TOP: usize = 500;
-const MAX_HEATMAP_LABELS: usize = 8;
 const MAX_HEATMAP_FIELDS: usize = 4;
 const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
@@ -38,19 +39,6 @@ pub(crate) enum Route {
     McpAccess,
     /// The largest recorded database, naming the instance.
     InstanceLabel,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HeatmapRequest {
-    pub(crate) from: i64,
-    pub(crate) to: i64,
-    pub(crate) section: String,
-    pub(crate) fields: Vec<String>,
-    pub(crate) columns: usize,
-    pub(crate) top: usize,
-    pub(crate) labels: Vec<String>,
-    pub(crate) group: Vec<String>,
-    pub(crate) type_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,7 +427,6 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     let mut fields: Vec<String> = Vec::new();
     let mut columns = None;
     let mut top = None;
-    let mut labels: Vec<String> = Vec::new();
     let mut group: Vec<String> = Vec::new();
     let mut type_id = None;
     for (raw_name, raw_value) in pairs(query)? {
@@ -465,13 +452,6 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 columns = Some(bounded("columns", &value, MAX_HEATMAP_COLUMNS)?);
             }
             "top" if top.is_none() => top = Some(bounded("top", &value, MAX_HEATMAP_TOP)?),
-            "label" => {
-                if value.is_empty() || labels.contains(&value) || labels.len() >= MAX_HEATMAP_LABELS
-                {
-                    return Err(RouteError::BadParameter("label".to_owned()));
-                }
-                labels.push(value);
-            }
             "group" => {
                 if value.is_empty() || group.contains(&value) || group.len() >= MAX_HEATMAP_GROUP {
                     return Err(RouteError::BadParameter("group".to_owned()));
@@ -490,10 +470,6 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     if fields.is_empty() {
         return Err(RouteError::BadParameter("field".to_owned()));
     }
-    // Group rows cannot carry per-identity labels.
-    if !group.is_empty() && !labels.is_empty() {
-        return Err(RouteError::BadParameter("label".to_owned()));
-    }
     Ok(HeatmapRequest {
         from,
         to,
@@ -501,7 +477,6 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         fields,
         columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
         top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
-        labels,
         group,
         type_id,
     })

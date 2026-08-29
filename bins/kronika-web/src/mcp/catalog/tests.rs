@@ -32,7 +32,7 @@ fn catalog_has_exactly_fourteen_tools() {
 }
 
 #[test]
-fn overview_schema_requires_section_fields_from_to_top() {
+fn overview_schema_exposes_the_ordered_batch_and_nested_top_cap() {
     let overview = tools()
         .into_iter()
         .find(|tool| tool.name.as_ref() == OVERVIEW_TOOL)
@@ -43,16 +43,53 @@ fn overview_schema_requires_section_fields_from_to_top() {
         .iter()
         .map(|value| value.as_str().expect("string").to_owned())
         .collect::<std::collections::HashSet<_>>();
-    for field in ["section", "fields", "from", "to", "top"] {
+    for field in ["from", "to", "rankings"] {
         assert!(required.contains(field), "missing required field: {field}");
     }
+    assert_eq!(
+        overview.input_schema["properties"]["rankings"]["items"]["$ref"],
+        "#/$defs/OverviewRankingInput"
+    );
+    let ranking = &overview.input_schema["$defs"]["OverviewRankingInput"];
+    let ranking_required = ranking["required"]
+        .as_array()
+        .expect("ranking required array");
+    assert!(ranking_required.contains(&serde_json::json!("section")));
+    assert!(ranking_required.contains(&serde_json::json!("fields")));
+    assert!(!ranking_required.contains(&serde_json::json!("top")));
+    assert_eq!(ranking["properties"]["top"]["default"], 25);
+    assert_eq!(ranking["properties"]["top"]["maximum"], 500);
+}
+
+#[test]
+fn overview_output_schema_is_rankings_only() {
+    let overview = tools()
+        .into_iter()
+        .find(|tool| tool.name.as_ref() == OVERVIEW_TOOL)
+        .expect("overview tool");
+    let schema = serde_json::to_value(
+        overview
+            .output_schema
+            .as_ref()
+            .expect("overview output schema"),
+    )
+    .expect("serialize output schema");
+    let encoded = serde_json::to_string(&schema).expect("encode output schema");
+    assert!(
+        !encoded.contains("\"grid\""),
+        "MCP schema exposed HTTP grid"
+    );
+    assert!(
+        !encoded.contains("\"cells\""),
+        "MCP schema exposed HTTP entity cells"
+    );
+    assert!(encoded.contains("\"results\""), "missing ordered results");
 }
 
 #[test]
 fn every_limit_or_top_field_documents_its_runtime_cap_in_the_json_schema() {
     // The schema exposes the cap before dispatch.
     let capped = [
-        (OVERVIEW_TOOL, "top", 500),
         (FIND_POSTGRESQL_TABLES_TOOL, "limit", 5_000),
         (FIND_POSTGRESQL_INDEXES_TOOL, "limit", 5_000),
         (FIND_POSTGRESQL_ACTIVITY_TOOL, "limit", 5_000),

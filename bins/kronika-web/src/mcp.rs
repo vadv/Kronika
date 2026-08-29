@@ -39,6 +39,7 @@ mod processes;
 mod row_detail;
 mod row_key;
 mod semantics;
+mod time;
 
 #[cfg(test)]
 mod tests;

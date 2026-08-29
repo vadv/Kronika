@@ -19,6 +19,7 @@ mod query;
 mod render;
 mod rows;
 pub(crate) mod snapshot;
+pub(crate) mod time;
 
 #[cfg(test)]
 pub(crate) use hour::process_summary::{
@@ -126,7 +127,6 @@ pub(crate) enum ApiError {
     NoSuchSegment,
     NoSuchSection,
     NoSuchColumn(String),
-    MixedUnits(String),
     BadFilter(String),
     BadCursor,
     Unreadable(Box<dyn Error + Send + Sync>),
@@ -136,9 +136,7 @@ impl ApiError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_) | Self::MixedUnits(_) | Self::BadFilter(_) | Self::BadCursor => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::NoSuchColumn(_) | Self::BadFilter(_) | Self::BadCursor => StatusCode::BAD_REQUEST,
             Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -148,7 +146,6 @@ impl ApiError {
             Self::NoSuchSegment => "no_such_segment",
             Self::NoSuchSection => "no_such_section",
             Self::NoSuchColumn(_) => "no_such_column",
-            Self::MixedUnits(_) => "mixed_units",
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
             Self::Unreadable(_) => "unreadable",
@@ -157,9 +154,7 @@ impl ApiError {
 
     pub(crate) fn parameter(&self) -> Option<&str> {
         match self {
-            Self::NoSuchColumn(column) | Self::MixedUnits(column) | Self::BadFilter(column) => {
-                Some(column)
-            }
+            Self::NoSuchColumn(column) | Self::BadFilter(column) => Some(column),
             _ => None,
         }
     }
@@ -187,7 +182,6 @@ impl std::fmt::Display for ApiError {
             Self::NoSuchSegment => write!(f, "no such segment"),
             Self::NoSuchSection => write!(f, "no such logical section"),
             Self::NoSuchColumn(column) => write!(f, "no such column {column:?}"),
-            Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
             Self::Unreadable(error) => error.fmt(f),

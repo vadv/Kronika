@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::route::{MAX_HEATMAP_TOP, MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
+use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
+
+use super::time::TimeSpecInput;
+use crate::api::heatmap::{DEFAULT_TOP, HeatmapBatchResult, MAX_TOP};
 
 use super::filter::FilterInput;
 
@@ -25,26 +28,39 @@ pub(crate) const FIND_PROCESSES_TOOL: &str = "kronika_find_processes";
 pub(crate) const GET_ROW_DETAIL_TOOL: &str = "kronika_get_row_detail";
 pub(crate) const FIND_EVENTS_TOOL: &str = "kronika_find_events";
 
-/// Ranks identities in one recorded logical section over an explicit time
-/// window.
-#[derive(Debug, Deserialize, JsonSchema)]
+/// Executes ordered stored-data rankings over one half-open time window.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OverviewInput {
-    /// Recorded logical section. `kronika_get_context` lists recorded names
-    /// with each layout's fields, classes, and units.
+    /// Inclusive start and exclusive end accept Unix microseconds, RFC 3339,
+    /// `now`, or a fixed-duration `now-N` expression.
+    pub(crate) from: TimeSpecInput,
+    pub(crate) to: TimeSpecInput,
+    /// Ordered nonempty recipes. Exact duplicates are returned in place.
+    #[schemars(length(min = 1))]
+    pub(crate) rankings: Vec<OverviewRankingInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OverviewRankingInput {
+    /// Recorded logical section. `kronika_get_context` lists valid names.
+    #[schemars(length(min = 1, max = 128))]
     pub(crate) section: String,
     /// One to four distinct numeric fields. All must be cumulative counters
     /// or all gauges. Kronika sums the listed fields before ranking;
     /// repeated names are rejected. Use fields with compatible units.
     #[schemars(length(min = 1, max = 4))]
     pub(crate) fields: Vec<String>,
-    /// Inclusive window start, Unix microseconds.
-    pub(crate) from: i64,
-    /// Inclusive window end, Unix microseconds. An inverted window is
-    /// rejected.
-    pub(crate) to: i64,
-    /// Number of ranked identities to return, from 1 through 500.
-    #[schemars(range(min = 1, max = MAX_HEATMAP_TOP))]
-    pub(crate) top: u32,
+    /// Number of ranked identities to return, from 1 through 500. Defaults to
+    /// 25 when omitted.
+    #[serde(default = "default_overview_top")]
+    #[schemars(range(min = 1, max = MAX_TOP))]
+    pub(crate) top: u64,
+}
+
+const fn default_overview_top() -> u64 {
+    DEFAULT_TOP as u64
 }
 
 /// Narrows the answer to one recorded section; omit it for all of them.
@@ -411,51 +427,28 @@ fn entry_tools() -> [Tool; 2] {
 fn overview_tool() -> Tool {
     Tool::new(
         OVERVIEW_TOOL,
-        "Ranks stored values in one logical section over the inclusive \
-         Unix-microsecond `[from, to]` window; it does not query the live \
-         host or database. Counter `entities[].total` values are \
-         whole-window deltas; gauge totals are whole-window maxima. The \
-         requested fields are summed before ranking and must share one \
-         unit. Values keep their recorded units — `kronika_get_context` \
-         names each field's unit and `kronika_get_instance` carries the \
-         conversion constants: jiffies divide by `clock_ticks_per_sec`, \
-         sectors are 512 bytes, kibibytes are 1024 bytes, and memory in \
-         use is \
-         `mem_total` minus `mem_available`. `entities` is \
-         descending by total with nulls last, and `entity_count` is the \
-         decimal-string number of identities found. For counters, \
-         `totals_total` and `others_total` sum all and omitted identity \
-         deltas; for gauges they are the maxima across all and omitted \
-         identities. Null means no usable value. Each entity carries an \
-         `identity` object naming the section's identity columns; \
-         sections recorded without identity columns collapse to one \
-         entity per physical layout, each shown with an empty \
-         `identity` object. Sections are written on independent \
-         intervals, so a short window can hold no rows at all: an \
-         empty result carries the store-wide \
-         `recorded_from`/`recorded_to`, this section's \
-         `nearest_row_before`/`nearest_row_after` — the closest row \
-         timestamps the scan saw around the window; widen the window \
-         to reach one — and `window_rows`, the count of in-window rows \
-         whose requested fields held no usable value: those make a \
-         wider window pointless. These five values are decimal \
-         strings; all but `window_rows` can be null. \
-         Fields a finder accepts as filters keep the finder's spelling \
-         — `query_id`, `plan_id`, `pid`, and pg_stat_database's \
-         `datid` — and their values pass to a `find_*` filter \
-         verbatim. The other identity fields (`dbid`, `userid`, \
-         `toplevel`, and the table/index OIDs) have no finder filter: \
-         rank tables or indexes with the finder's own sort instead. \
-         `kronika_get_context` lists each section's fields, classes, and \
-         units, and the recorded time range this window must fall into. \
-         Across this catalog, tool failures set `isError=true` and \
-         mirror the text into `structuredContent` as \
-         `{\"record\":\"error\",\"message\":…}`; a refusal that has concrete \
-         replacements also carries them in `valid_options`, ready to \
-         pick. A row-listing tool's oversized result is an error \
-         naming the halved `limit`/`top` to retry with.",
+        "Runs an ordered batch of rankings over stored data in the half-open \
+         `[from,to)` window; it never queries the live host or database. \
+         `from` and `to` accept a JSON integer Unix-microsecond timestamp, \
+         RFC 3339 with `Z` or a numeric UTC offset, `now`, or \
+         `now-N{us,ms,s,m,h,d,w}`. One clock anchor resolves the whole call. \
+         Each recipe contains one logical section, one to four distinct \
+         numeric fields of one class and exact unit, and optional `top` \
+         (default 25, maximum 500). Fields are summed per row before ranking. \
+         Results retain request order and duplicate recipes. Counter totals \
+         are whole-window non-negative deltas; gauge totals are window \
+         maxima. `as_of` is the latest usable metric observation included in \
+         that ranking. Every entity includes its named identity and the full \
+         automatic label set for compatible recorded layouts; an unavailable \
+         label is null. Coverage always reports data/no_data state, store-wide \
+         recorded bounds, nearest rows around the window, and in-window row \
+         count. Timestamps, identifiers, and counts that may exceed safe JSON \
+         integer precision are decimal strings. A request or result budget \
+         refusal names `ranking_index`; split rankings across calls or lower \
+         the affected top value.",
         schema_object::<OverviewInput>(),
     )
+    .with_output_schema::<HeatmapBatchResult>()
 }
 
 fn context_tool() -> Tool {

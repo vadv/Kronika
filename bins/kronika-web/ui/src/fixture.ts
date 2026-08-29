@@ -10,6 +10,16 @@ interface FixtureTable {
   }[]
 }
 
+interface FixtureHeatmap {
+  readonly columns: number
+  readonly fields: readonly string[]
+  readonly from: number
+  readonly group: readonly string[]
+  readonly records: readonly Readonly<Record<string, unknown>>[]
+  readonly section: string
+  readonly top: number
+}
+
 type FixturePoint = readonly [string, number | null, string?]
 
 const FIXTURE_NON_TABLE_TYPE_NAMES: Readonly<Record<string, string>> = {
@@ -32,6 +42,7 @@ interface RealHourFixture {
     readonly t: string
     readonly type_id: string
   }[]
+  readonly heatmaps?: readonly FixtureHeatmap[]
   readonly meta: {
     readonly captureFromUs: string
     readonly captureToUs: string
@@ -56,6 +67,34 @@ export function bundledFixtureRange(): { readonly from: number; readonly to: num
     from: Number(fixture.meta.captureFromUs),
     to: Number(fixture.meta.captureToUs),
   }
+}
+
+export function bundledFixtureHeatmapRecords(
+  from: number,
+  section: string,
+  fields: readonly string[],
+  columns: number,
+  top: number,
+  group: readonly string[] = [],
+): readonly Readonly<Record<string, unknown>>[] | null {
+  const heatmaps = rawFixture()?.heatmaps
+  if (!Array.isArray(heatmaps)) return null
+  for (const candidate of heatmaps) {
+    if (candidate === null || typeof candidate !== "object"
+        || !Array.isArray(candidate.fields) || !Array.isArray(candidate.group)
+        || !candidate.fields.every((name: unknown) => typeof name === "string")
+        || !candidate.group.every((name: unknown) => typeof name === "string")
+        || !Array.isArray(candidate.records)
+        || !candidate.records.every((record: unknown) => record !== null && typeof record === "object" && !Array.isArray(record))) continue
+    if (candidate.from === from && candidate.section === section
+        && candidate.columns === columns && candidate.top === top
+        && sameNames(candidate.fields, fields) && sameNames(candidate.group, group)) return candidate.records
+  }
+  return null
+}
+
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((name, index) => name === right[index])
 }
 
 export function bundledFixtureHour(start: number): HourData | null {
