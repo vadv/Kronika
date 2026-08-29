@@ -9,7 +9,6 @@ use hyper::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, ETAG, Heade
 use hyper::{HeaderMap, StatusCode};
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
-use kronika_reader::Reader;
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
@@ -39,7 +38,6 @@ use crate::api::{
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
-use crate::route::Window;
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
@@ -1606,7 +1604,7 @@ impl Fixture {
         std::fs::write(self.root().join("foreign"), b"fixture").expect("write foreign entry");
     }
 
-    fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
+    pub(crate) fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
         self.prepare_with_sources(target, if_none_match, SOURCES)
     }
 
@@ -5717,76 +5715,66 @@ fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fie
 }
 
 #[test]
-fn fetch_bounded_events_matches_fixture_rows_in_physical_order() {
+fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
-    let to = SEGMENT_ID + 14;
+    let to_exclusive = SEGMENT_ID + 14;
     fixture.append_log_error(from - 1);
-    for at in from..=to {
+    for at in from..=to_exclusive {
         fixture.append_log_error(at);
     }
-    fixture.append_log_error(to + 1);
+    fixture.append_log_error(to_exclusive + 1);
     fixture.finish();
 
-    let via_http = stream(fixture.prepare(
-        &format!("/api/hour?section=pg_log_errors&from={from}&to={to}"),
-        None,
-    ))
-    .expect("streamed pg_log_errors section");
-    let http_rows = row_records(&via_http);
-    assert_eq!(
-        http_rows.len(),
-        5,
-        "window keeps only the 5 rows inside [from, to]"
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=3"
     );
-    let layout = via_http
+    let limited = stream(fixture.prepare(&target, None)).expect("stream event occurrences");
+    assert_eq!(limited[0]["record"], "events");
+    assert_eq!(limited[0]["representation"], "occurrences");
+    assert_eq!(limited[0]["truncated"], true);
+    let occurrences = limited
         .iter()
-        .find(|record| record["record"] == "layout")
-        .expect("pg_log_errors layout");
-    let field_names = layout["layout"]["columns"]
-        .as_array()
-        .expect("columns")
-        .iter()
-        .map(|column| column["name"].as_str().expect("column name").to_owned())
+        .filter(|record| record["record"] == "event_occurrence")
         .collect::<Vec<_>>();
-
-    let reader = Reader::open(fixture.root()).expect("open fixture reader");
-    let segments = reader.segments(..).expect("list fixture segments").segments;
-    let window = Window {
-        from: Some(from),
-        to: Some(to),
-    };
-    let mut results = crate::api::history::fetch_bounded_events(
-        &reader,
-        &segments,
-        &["pg_log_errors"],
-        window,
-        3,
-        &|| false,
-    )
-    .expect("fetch_bounded_events");
-    let section = results.remove(0);
-    let (rows, has_more) = (section.rows, section.has_more);
-
-    assert_eq!(section.section, "pg_log_errors");
-    assert!(has_more, "5 rows exist in the window but limit is 3");
-    assert_eq!(rows.len(), 3);
     assert_eq!(
-        rows.iter().map(|row| row.at).collect::<Vec<_>>(),
-        (from..from + 3).collect::<Vec<_>>(),
-        "bounded fetch keeps the first three rows in fixture physical order"
+        occurrences
+            .iter()
+            .map(|record| record["at"].as_str().expect("event timestamp"))
+            .collect::<Vec<_>>(),
+        (from..from + 3)
+            .map(|at| at.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|record| record["row_ordinal"].as_str().expect("row ordinal"))
+            .collect::<Vec<_>>(),
+        ["1", "2", "3"]
+    );
+    assert!(
+        limited
+            .iter()
+            .all(|record| record.get("next_from").is_none())
     );
 
-    for (direct, http) in rows.iter().zip(http_rows.iter().take(3)) {
-        assert_eq!(direct.segment_id, SEGMENT_ID);
-        assert_eq!(direct.type_id.to_string(), http["type_id"]);
-        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
-        assert_eq!(direct.at.to_string(), http["timestamp"]);
-        let http_values = http["values"].as_array().expect("values array");
-        for (name, value) in field_names.iter().zip(http_values.iter()) {
-            assert_eq!(&direct.fields[name], value, "field {name} mismatch");
-        }
-    }
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=5000"
+    );
+    let full = stream(fixture.prepare(&target, None)).expect("stream full event window");
+    let timestamps = full
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .map(|record| record["at"].as_str().expect("event timestamp"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        timestamps,
+        (from..to_exclusive)
+            .map(|at| at.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(full[0]["truncated"], false);
 }
 
 #[test]

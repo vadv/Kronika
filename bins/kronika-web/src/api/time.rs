@@ -14,6 +14,22 @@ impl TimeRange {
         }
         Ok(Self { from, to_exclusive })
     }
+
+    pub(crate) fn bounded(from: i64, to_exclusive: i64, max_width: i64) -> Result<Self, String> {
+        let width = to_exclusive.checked_sub(from).ok_or_else(|| {
+            format!("window is invalid: to ({to_exclusive}) minus from ({from}) overflows")
+        })?;
+        if width > max_width {
+            return Err(format!(
+                "window too wide: to - from is {width} microseconds, the limit is {max_width} microseconds"
+            ));
+        }
+        Self::new(from, to_exclusive).map_err(|error| error.to_string())
+    }
+
+    pub(crate) const fn contains(self, timestamp: i64) -> bool {
+        timestamp >= self.from && timestamp < self.to_exclusive
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +61,10 @@ mod tests {
 
         let range = TimeRange::new(7, 9).expect("range");
         assert_eq!((range.from, range.to_exclusive), (7, 9));
+        assert!(range.contains(7));
+        assert!(!range.contains(9));
         assert!(TimeRange::new(9, 7).is_err());
+        assert!(TimeRange::bounded(7, 10, 2).is_err());
+        assert_eq!(TimeRange::bounded(7, 9, 2).expect("bounded range"), range);
     }
 }

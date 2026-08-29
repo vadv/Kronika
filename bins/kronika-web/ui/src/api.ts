@@ -8,6 +8,7 @@ import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
+import type { EventEntry, EventStat, EventTier } from "./events-groups"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -443,6 +444,163 @@ export async function loadSeries(
     }
   }
   return rows
+}
+
+export async function loadEventGroups(
+  selectedHour: number,
+  sources: readonly string[],
+  signal: AbortSignal,
+): Promise<readonly EventEntry[]> {
+  signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const query = [
+    `from=${from}`,
+    `to=${from + 3_600_000_000}`,
+    "representation=groups",
+    "limit=5000",
+    ...sources.map((source) => `source=${encodeURIComponent(source)}`),
+  ].join("&")
+  const records = await request(`/api/events?${query}`, signal)
+  const [header, ...items] = records
+  if (header?.record !== "events" || header["representation"] !== "groups" || typeof header["truncated"] !== "boolean") {
+    throw new Error("events header is invalid")
+  }
+  if (items.some((record) => record.record !== "event_group")) throw new Error("events item is invalid")
+  return items.map(eventGroup)
+}
+
+function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
+  const tier = record["tier"]
+  if (tier !== "critical" && tier !== "notable" && tier !== "routine") throw new Error("event tier is invalid")
+  const minutes = numberArray(record["minutes"], "event minutes")
+  if (minutes.length !== 60) throw new Error("event minutes are invalid")
+  const rows = record["rows"]
+  if (!Array.isArray(rows)) throw new Error("event rows are invalid")
+  return {
+    key: requiredText(record["key"], "event key"),
+    section: requiredText(record["section"], "event section"),
+    tier: tier satisfies EventTier,
+    text: nullableText(record["text"], "event text"),
+    count: finiteNumber(record["count"], "event count"),
+    firstTs: integer(record["firstTs"], "event first timestamp"),
+    lastTs: integer(record["lastTs"], "event last timestamp"),
+    minutes,
+    stat: eventStat(record["stat"]),
+    rows: rows.map(eventRow),
+  }
+}
+
+function eventRow(value: unknown): DataRow {
+  const row = strictRecord(value, "event row")
+  const values = strictRecord(row["values"], "event values")
+  for (const [name, cell] of Object.entries(values)) {
+    if (!validCell(cell)) throw new Error(`event value ${name} is invalid`)
+  }
+  return {
+    segmentId: requiredText(row["segmentId"], "event segment id"),
+    logicalName: requiredText(row["logicalName"], "event logical name"),
+    typeId: requiredText(row["typeId"], "event type id"),
+    ordinal: requiredText(row["ordinal"], "event row ordinal"),
+    timestamp: integer(row["timestamp"], "event row timestamp"),
+    values: values as Readonly<Record<string, Cell>>,
+  }
+}
+
+function eventStat(value: unknown): EventStat {
+  const stat = strictRecord(value, "event stat")
+  const kind = stat["kind"]
+  if (kind === "pg.errors") return {
+    kind,
+    severity: finiteNumber(stat["severity"], "error severity"),
+    category: nullableNumber(stat["category"], "error category"),
+    sqlstate: nullableText(stat["sqlstate"], "error SQLSTATE"),
+    database: nullableText(stat["database"], "error database"),
+    username: nullableText(stat["username"], "error username"),
+  }
+  if (kind === "pg.slow") return {
+    kind,
+    maxMs: finiteNumber(stat["maxMs"], "slow maximum"),
+    totalMs: finiteNumber(stat["totalMs"], "slow total"),
+    thresholdMs: nullableNumber(stat["thresholdMs"], "slow threshold"),
+  }
+  if (kind === "pg.autovacuum") return {
+    kind,
+    analyze: requiredBoolean(stat["analyze"], "autovacuum analyze"),
+    runs: integer(stat["runs"], "autovacuum runs"),
+    totalMs: nullableNumber(stat["totalMs"], "autovacuum total"),
+    tuplesRemoved: nullableNumber(stat["tuplesRemoved"], "autovacuum removed tuples"),
+    tuplesDead: nullableNumber(stat["tuplesDead"], "autovacuum dead tuples"),
+  }
+  if (kind === "pg.checkpoints") return {
+    kind,
+    completes: integer(stat["completes"], "checkpoint completes"),
+    timed: integer(stat["timed"], "timed checkpoints"),
+    requested: integer(stat["requested"], "requested checkpoints"),
+    maxSyncMs: nullableNumber(stat["maxSyncMs"], "checkpoint maximum sync"),
+    buffers: nullableNumber(stat["buffers"], "checkpoint buffers"),
+  }
+  if (kind === "pg.checkpoint_warning") return {
+    kind,
+    secondsApart: nullableNumber(stat["secondsApart"], "checkpoint warning interval"),
+  }
+  if (kind === "pg.locks") return {
+    kind,
+    holders: nullableText(stat["holders"], "lock holders"),
+    acquired: requiredBoolean(stat["acquired"], "lock acquired"),
+    waiters: integer(stat["waiters"], "lock waiters"),
+    maxMs: nullableNumber(stat["maxMs"], "lock maximum"),
+    targets: textArray(stat["targets"], "lock targets"),
+  }
+  if (kind === "pg.lifecycle") return {
+    kind,
+    lifecycle: finiteNumber(stat["lifecycle"], "lifecycle kind"),
+    pid: nullableNumber(stat["pid"], "lifecycle pid"),
+    signal: nullableNumber(stat["signal"], "lifecycle signal"),
+    mode: nullableText(stat["mode"], "lifecycle mode"),
+  }
+  if (kind === "pgbouncer.events") return {
+    kind,
+    level: finiteNumber(stat["level"], "PgBouncer level"),
+    database: nullableText(stat["database"], "PgBouncer database"),
+  }
+  throw new Error("event stat kind is invalid")
+}
+
+function strictRecord(value: unknown, name: string): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value as Readonly<Record<string, unknown>>
+}
+
+function nullableText(value: unknown, name: string): string | null {
+  if (value === null) return null
+  if (typeof value !== "string") throw new Error(`${name} is invalid`)
+  return value
+}
+
+function nullableNumber(value: unknown, name: string): number | null {
+  return value === null ? null : finiteNumber(value, name)
+}
+
+function requiredBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${name} is invalid`)
+  return value
+}
+
+function numberArray(value: unknown, name: string): readonly number[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value.map((item) => finiteNumber(item, name))
+}
+
+function textArray(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function validCell(value: unknown): value is Cell {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return true
+  if (typeof value === "number") return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every((item) => typeof item === "number" && Number.isFinite(item))
+  return typeof value === "object"
 }
 
 export async function loadHeatmap(

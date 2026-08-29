@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Diamond, TriangleAlert } from "lucide-react"
 
-import { acceptResponse, loadSeries, type DataRow, type Finding, type HourData } from "./api"
+import { acceptResponse, loadEventGroups, type Finding, type HourData } from "./api"
 import { useDisplayTime } from "./display-time-context"
 import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
-import { MINUTE_COLUMNS, groupEvents, type EventEntry } from "./events-groups"
+import { MINUTE_COLUMNS, type EventEntry } from "./events-groups"
 import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
@@ -19,18 +19,10 @@ const MARK_ROWS = 120
 // The digest tile that selects the threshold band instead of a log stream.
 const MARKS_TILE = "marks"
 
-const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[]; readonly where?: Readonly<Record<string, string>> }[] = [
-  { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
-  { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
-  { section: "pg_log_autovacuum", fields: ["kind", "relation", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms"] },
-  { section: "pg_log_slow_queries", fields: ["pattern", "sample", "count", "max_duration_ms", "total_duration_ms"] },
-  { section: "pg_log_lock_waits", fields: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "holding_pids", "wait_queue", "statement"] },
-  { section: "pg_log_lifecycle", fields: ["kind", "pid", "signal", "shutdown_mode", "message", "query_detail"] },
-  { section: "pgbouncer_events", fields: ["level", "database", "username", "host", "text"] },
-  // What the server calls slow: the entries exist because a statement crossed
-  // this recorded setting, so the console says the setting out loud.
-  { section: "pg_settings", fields: ["name", "setting", "unit"], where: { name: "log_min_duration_statement" } },
-]
+const EVENT_SOURCES = [
+  "pg_log_errors", "pg_log_checkpoints", "pg_log_autovacuum", "pg_log_slow_queries",
+  "pg_log_lock_waits", "pg_log_lifecycle", "pgbouncer_events",
+] as const
 
 export function EventsView({
   cursor,
@@ -71,8 +63,8 @@ export function EventsView({
   readonly selectedLane: string
   readonly t: Translate
 }) {
-  const streams = useEventStreams(data, hour, revision)
-  const entries = useMemo(() => streams.rows === null ? null : groupEvents(streams.rows, hour), [hour, streams.rows])
+  const events = useEventGroups(data, hour, revision)
+  const entries = events.rows
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
   const selectedEntry = useMemo(() => selected === null || entries === null ? null : entryOf(entries, selected), [entries, selected])
@@ -131,7 +123,7 @@ export function EventsView({
   const markGroups = useMemo(() => groupMarks(marks, hour, t), [hour, marks, t])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
-  const busy = loading || streams.loading
+  const busy = loading || events.loading
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
     {markGroups.length > 0 && (digest === null || digest === MARKS_TILE)
@@ -167,8 +159,8 @@ export function EventsView({
       <div className={`${digest === MARKS_TILE ? "" : "max-[520px]:min-h-0 min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
         {digest === MARKS_TILE && <p className="table-empty" role="status">{t("events.marks.only")}</p>}
         {digest !== MARKS_TILE && <>
-        {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
-        {visible === null && !streams.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
+        {visible === null && events.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
+        {visible === null && !events.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
         {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
         {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
           entries={tierEntries}
@@ -420,7 +412,7 @@ function entryContains(entry: EventEntry, finding: Finding): boolean {
 
 interface StreamState {
   readonly key: string
-  readonly rows: Readonly<Record<string, readonly DataRow[]>> | null
+  readonly rows: readonly EventEntry[] | null
   readonly loading: boolean
   readonly failed: boolean
 }
@@ -428,17 +420,16 @@ interface StreamState {
 // Live-hour revisions are frequent; full log sections refresh at most once per minute.
 const STREAM_REFRESH_MIN_MS = 60_000
 
-function useEventStreams(data: HourData, hour: number, revision: number): StreamState {
-  const wanted = EVENT_STREAMS
-    .filter((stream) => data.availableSections.includes(stream.section))
-    .map((stream) => stream.section)
+function useEventGroups(data: HourData, hour: number, revision: number): StreamState {
+  const wanted = EVENT_SOURCES
+    .filter((source) => data.availableSections.includes(source))
     .join(",")
   const key = `${hour}:${wanted}`
   const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false, failed: false })
   const lastRead = useRef({ key: "", at: 0 })
   useEffect(() => {
     if (wanted === "") {
-      setState({ key, rows: {}, loading: false, failed: false })
+      setState({ key, rows: [], loading: false, failed: false })
       return
     }
     const now = Date.now()
@@ -448,14 +439,13 @@ function useEventStreams(data: HourData, hour: number, revision: number): Stream
       ? { ...current, loading: true }
       : { key, rows: null, loading: true, failed: false })
     const controller = new AbortController()
-    const streams = EVENT_STREAMS.filter((stream) => wanted.split(",").includes(stream.section))
-    const loads = Promise.all(streams.map((stream) => loadSeries(hour, stream.section, stream.where ?? {}, stream.fields, controller.signal)))
+    const load = loadEventGroups(hour, wanted.split(","), controller.signal)
     acceptResponse(
-      loads,
+      load,
       controller.signal,
-      (loaded) => setState({
+      (rows) => setState({
         key,
-        rows: Object.fromEntries(streams.map((stream, index) => [stream.section, loaded[index] ?? []])),
+        rows,
         loading: false,
         failed: false,
       }),
@@ -464,8 +454,8 @@ function useEventStreams(data: HourData, hour: number, revision: number): Stream
         setState((current) => ({ ...current, key, loading: false, failed: true }))
       },
     )
-    loads.catch((error: unknown) => {
-      if (!controller.signal.aborted) console.error("events streams load failed", error)
+    load.catch((error: unknown) => {
+      if (!controller.signal.aborted) console.error("events load failed", error)
     })
     return () => controller.abort()
   }, [hour, key, revision, wanted])

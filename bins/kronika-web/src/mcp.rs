@@ -29,7 +29,6 @@ use crate::config::Config;
 mod catalog;
 mod context;
 mod dispatch;
-mod event_labels;
 mod events;
 mod filter;
 mod instance;
@@ -37,7 +36,6 @@ mod overview;
 mod postgresql;
 mod processes;
 mod row_detail;
-mod row_key;
 mod semantics;
 mod time;
 

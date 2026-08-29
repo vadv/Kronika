@@ -1,4 +1,4 @@
-//! Row identity carried alongside `kronika_get_row_detail` locators.
+//! Row identity carried alongside exact physical row locators.
 
 use serde_json::{Map, Value};
 
@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 /// so an ordinal alone can drift onto a neighbouring row with the same
 /// timestamp. Locator-emitting sections absent here keep one row per
 /// timestamp, and `at` pins them alone.
-pub(super) fn discriminator(section: &str) -> Option<&'static str> {
+pub(crate) fn discriminator(section: &str) -> Option<&'static str> {
     match section {
         "pg_stat_statements" => Some("queryid"),
         "pg_store_plans" => Some("planid"),
@@ -31,7 +31,7 @@ pub(super) fn discriminator(section: &str) -> Option<&'static str> {
 /// Copies the discriminator value into a `row_key` field. A missing
 /// column or a null value attaches nothing: such a row has no key, and
 /// `verify` accepts it without one.
-pub(super) fn attach(section: &str, object: &mut Map<String, Value>) {
+pub(crate) fn attach(section: &str, object: &mut Map<String, Value>) {
     let value = discriminator(section)
         .and_then(|column| object.get(column))
         .filter(|value| !value.is_null())
@@ -43,7 +43,7 @@ pub(super) fn attach(section: &str, object: &mut Map<String, Value>) {
 
 /// Checks a requested `row_key` against the fetched row's discriminator
 /// value; the error text is the tool answer.
-pub(super) fn verify(
+pub(crate) fn verify(
     section: &str,
     column: &str,
     requested: Option<&Value>,
@@ -67,7 +67,7 @@ pub(super) fn verify(
 }
 
 /// Equality across the number and decimal-string renderings of one value.
-pub(super) fn matches(expected: &Value, actual: &Value) -> bool {
+pub(crate) fn matches(expected: &Value, actual: &Value) -> bool {
     comparable(expected) == comparable(actual)
 }
 

@@ -9,8 +9,8 @@ use crate::config::Config;
 use crate::route::{Order, SnapshotRequest};
 
 use super::catalog::RowDetailInput;
-use super::event_labels::label_event_fields;
 use super::semantics::{mcp_error, mcp_structured};
+use crate::api::events::label_event_fields;
 
 pub(crate) fn call(
     config: &Config,
@@ -80,13 +80,13 @@ pub(crate) fn call(
             input.section,
         ));
     };
-    if let Some(column) = super::row_key::discriminator(&input.section) {
+    if let Some(column) = crate::api::row_key::discriminator(&input.section) {
         let Value::Object(fields) = &row else {
             return mcp_error("internal error: the fetched row is not an object");
         };
         let actual = fields.get(column).cloned().unwrap_or(Value::Null);
         if let Err(error) =
-            super::row_key::verify(&input.section, column, input.row_key.as_ref(), &actual)
+            crate::api::row_key::verify(&input.section, column, input.row_key.as_ref(), &actual)
         {
             return mcp_error(error);
         }

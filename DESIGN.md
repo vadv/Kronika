@@ -391,11 +391,11 @@ physical `type_id` already identifies the event class. HTTP and dump expose
 the numeric category only on a `pg_log_errors` locator.
 
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
-an operator event: it has no finding locator and does not appear in Events or
-on the shared timeline. Raw temporary-file rows remain available through
-ordinary history and row reads. `pgbouncer_events` likewise has no finding
-locator and no timeline mark, but its rows do reach the Events console through
-ordinary row reads.
+a grouped operator event: it has no finding locator and does not appear in
+grouped Events or on the shared timeline. Raw temporary-file rows remain
+available through Events occurrences and ordinary history and row reads.
+`pgbouncer_events` likewise has no finding locator or timeline mark, but its
+rows do reach grouped Events.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,
@@ -628,10 +628,20 @@ cross-day comparison, shows the full date. One contextual formatter owns this
 presentation, while stored instants, addresses, joins and copied exact values
 remain unchanged.
 
-Events reads the hour's log sections through ordinary row reads. Each group
-shows its recorded key, count, per-minute occurrences, first and last times,
-and one sample. Expanding a group shows its stream-specific columns and source
-rows.
+Events resolves the selected hour as a half-open `[from, to)` product query in
+Rust. One executor pins the reader and catalog segment set, opens each selected
+segment once, and reads the selected event sections plus the internal
+`pg_settings` threshold input. It forms complete groups and their global order
+before applying the result limit. `GET /api/events`, the MCP Events tool, and
+the browser use the same typed result; the browser renders server order and has
+no second grouping reducer.
+
+Each group shows its recorded key, count, per-minute occurrences, first and
+last times, and one sample. Expanding a group shows its stream-specific columns
+and source rows. The separate occurrence representation retains every stored
+field, known code labels, the row key, and physical locators. It also admits
+raw `pg_log_temp_files`, which has no grouped representation. Both forms report
+truncation after the global limit and have no continuation cursor.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern and retain the slowest sample. Autovacuum and autoanalyze

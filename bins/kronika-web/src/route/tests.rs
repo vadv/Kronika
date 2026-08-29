@@ -3,6 +3,7 @@ use super::{
     MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
     Window, parse,
 };
+use crate::api::events::{EventSource, EventsRepresentation};
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {
@@ -21,6 +22,36 @@ fn catalog_accepts_only_valid_ordered_bounds() {
         parse("/api/catalog", Some("colour=green")),
         Err(RouteError::BadParameter("colour".to_owned()))
     );
+}
+
+#[test]
+fn events_route_is_half_open_deduplicated_and_strict() {
+    let Route::Events(request) = parse(
+        "/api/events",
+        Some("from=10&to=20&representation=occurrences&limit=5&source=pg_log_errors&source=pg_log_temp_files&source=pg_log_errors"),
+    )
+    .expect("events route") else {
+        panic!("events route");
+    };
+    assert_eq!(request.range.from, 10);
+    assert_eq!(request.range.to_exclusive, 20);
+    assert_eq!(request.representation, EventsRepresentation::Occurrences);
+    assert_eq!(
+        request.sources,
+        [EventSource::Errors, EventSource::TempFiles]
+    );
+
+    for query in [
+        "to=20&limit=5",
+        "from=10&limit=5",
+        "from=20&to=10&limit=5",
+        "from=0&to=3600000001&limit=5",
+        "from=10&to=20&limit=0",
+        "from=10&to=20&limit=5&representation=raw",
+        "from=10&to=20&limit=5&source=pg_log_temp_files",
+    ] {
+        assert!(parse("/api/events", Some(query)).is_err(), "{query}");
+    }
 }
 
 #[test]

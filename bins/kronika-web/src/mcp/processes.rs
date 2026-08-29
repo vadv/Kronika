@@ -128,7 +128,7 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
-    super::row_key::attach("os_process", &mut object);
+    crate::api::row_key::attach("os_process", &mut object);
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
     object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));

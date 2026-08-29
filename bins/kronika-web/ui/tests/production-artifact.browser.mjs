@@ -2051,8 +2051,10 @@ test("the minified artifact restores and clears its opaque browser session", { t
 test("the slow-query detail keeps readable labels and human event time", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: false }
+  const requests = []
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(url)
     if (url.pathname === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       response.end(html)
@@ -2066,16 +2068,21 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ record: "instance_label", database: null }))
+      return
+    }
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
     }
+    if (url.pathname === "/api/events") {
+      ndjson(response, slowQueryEventRecords())
+      return
+    }
     if (url.pathname === "/api/hour") {
-      if (url.searchParams.get("section") === "pg_log_slow_queries") {
-        ndjson(response, slowQuerySeriesRecords())
-        return
-      }
       if (url.searchParams.has("section")) {
         ndjson(response, [{ record: "series_segment", segment: { id: SEGMENT } }])
         return
@@ -2140,6 +2147,8 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
     assert.equal(narrow.chips.every(({ gap, sameRow }) => sameRow && gap >= 0 && gap <= 12), true, JSON.stringify(narrow.chips))
+    assert.equal(requests.filter((url) => url.pathname === "/api/events").length, 1)
+    assert.equal(requests.filter((url) => url.pathname === "/api/hour" && url.searchParams.has("section")).length, 0)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -3977,12 +3986,31 @@ function slowQueryTimelineRecords() {
   ]
 }
 
-function slowQuerySeriesRecords() {
-  const columns = ["ts", "pattern", "sample", "count", "max_duration_ms", "total_duration_ms"]
+function slowQueryEventRecords() {
+  const minutes = Array.from({ length: 60 }, () => 0)
+  minutes[Math.floor((AT - HOUR) / 60_000_000)] = 3
   return [
-    { record: "series_segment", segment: { id: SEGMENT } },
-    layout("2004001", "pg_log_slow_queries", columns),
-    row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 6_290, 12_580]),
+    { record: "events", representation: "groups", truncated: false },
+    {
+      record: "event_group",
+      key: `slow:${SLOW_PATTERN}`,
+      section: "pg_log_slow_queries",
+      tier: "notable",
+      text: SLOW_QUERY,
+      count: 3,
+      firstTs: AT,
+      lastTs: AT,
+      minutes,
+      stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
+      rows: [{
+        segmentId: SEGMENT,
+        logicalName: "pg_log_slow_queries",
+        typeId: "2004001",
+        ordinal: "3",
+        timestamp: AT,
+        values: { pattern: SLOW_PATTERN, sample: SLOW_QUERY, count: 3, max_duration_ms: 6_290, total_duration_ms: 12_580 },
+      }],
+    },
   ]
 }
 

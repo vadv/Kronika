@@ -656,7 +656,7 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> Map<String, Value> 
 /// locator fields accepted by `kronika_get_row_detail`.
 pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    super::row_key::attach(logical_name, &mut object);
+    crate::api::row_key::attach(logical_name, &mut object);
     object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
     object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
     object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));

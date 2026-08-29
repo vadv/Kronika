@@ -620,6 +620,57 @@ function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
 
+test("event groups use one half-open request and validate the server-owned shape", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let request: URL | null = null
+  const minutes = Array.from({ length: 60 }, () => 0)
+  minutes[3] = 2
+  globalThis.fetch = async (input) => {
+    request = new URL(String(input), "http://kronika.invalid")
+    return ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      {
+        record: "event_group", key: "slow:select ?", section: "pg_log_slow_queries", tier: "notable",
+        text: "select 1", count: 2, firstTs: START + 180_000_000, lastTs: START + 180_000_000,
+        minutes, stat: { kind: "pg.slow", maxMs: 800, totalMs: 1_200, thresholdMs: 500 },
+        rows: [{
+          segmentId: "7", logicalName: "pg_log_slow_queries", typeId: "2004001", ordinal: "3",
+          timestamp: START + 180_000_000,
+          values: { pattern: "select ?", sample: "select 1", count: 2, max_duration_ms: 800, total_duration_ms: 1_200 },
+        }],
+      },
+    ])
+  }
+  try {
+    const groups = await api.loadEventGroups(
+      START,
+      ["pg_log_errors", "pg_log_slow_queries"],
+      new AbortController().signal,
+    )
+    assert.equal(request?.pathname, "/api/events")
+    assert.equal(request?.searchParams.get("from"), String(START))
+    assert.equal(request?.searchParams.get("to"), String(START + 3_600_000_000))
+    assert.equal(request?.searchParams.get("representation"), "groups")
+    assert.equal(request?.searchParams.get("limit"), "5000")
+    assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
+    assert.equal(groups[0]?.stat.kind, "pg.slow")
+    assert.equal(groups[0]?.rows[0]?.values.sample, "select 1")
+
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      { record: "event_group", minutes: [] },
+    ])
+    await assert.rejects(
+      api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
+      /event tier is invalid|event minutes are invalid/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("the bundled review fixture answers detail reads without HTTP", async () => {
   const api = await bundledApi()
   Object.assign(globalThis, { __KRONIKA_REAL_HOUR__: apiFixture() })

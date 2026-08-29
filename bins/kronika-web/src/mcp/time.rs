@@ -46,6 +46,15 @@ pub(crate) fn resolve_range(
     resolve_range_with(from, to, system_now_micros)
 }
 
+pub(crate) fn resolve_bounded_range(
+    from: &TimeSpecInput,
+    to: &TimeSpecInput,
+    max_width: i64,
+) -> Result<TimeRange, TimeSpecError> {
+    let range = resolve_range_with(from, to, system_now_micros)?;
+    TimeRange::bounded(range.from, range.to_exclusive, max_width).map_err(TimeSpecError)
+}
+
 fn resolve_range_with(
     from: &TimeSpecInput,
     to: &TimeSpecInput,
@@ -217,5 +226,24 @@ mod tests {
         assert_eq!(range.to_exclusive, 9_000_000_000);
         assert!(resolve_range_with(&expression("now"), &expression("now-1us"), || Ok(7)).is_err());
         assert!(resolve_range_with(&expression("now"), &expression("now"), || Ok(7)).is_ok());
+
+        assert!(
+            super::resolve_bounded_range(
+                &TimeSpecInput::UnixMicros(0),
+                &TimeSpecInput::UnixMicros(11),
+                10,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::resolve_bounded_range(
+                &TimeSpecInput::UnixMicros(0),
+                &TimeSpecInput::UnixMicros(10),
+                10,
+            )
+            .expect("exact maximum width")
+            .to_exclusive,
+            10
+        );
     }
 }

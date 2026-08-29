@@ -1,6 +1,10 @@
 //! Strict parsing of the four resource families.
 
+use crate::api::events::{
+    EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+};
 pub(crate) use crate::api::heatmap::HeatmapRequest;
+use crate::api::time::TimeRange;
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -35,6 +39,8 @@ pub(crate) enum Route {
     Snapshot(Box<SnapshotRequest>),
     /// The ranked top view of one section over one window.
     Heatmap(HeatmapRequest),
+    /// Recorded event groups or physical occurrences over one window.
+    Events(EventsQuery),
     /// The MCP connection material for the authenticated operator.
     McpAccess,
     /// The largest recorded database, naming the instance.
@@ -183,6 +189,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
     if path == "/api/heatmap" {
         return parse_heatmap(query).map(Route::Heatmap);
+    }
+    if path == "/api/events" {
+        return parse_events(query).map(Route::Events);
     }
     if path == "/api/mcp-access" {
         if !query.is_empty() {
@@ -479,6 +488,54 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
         group,
         type_id,
+    })
+}
+
+fn parse_events(query: &str) -> Result<EventsQuery, RouteError> {
+    let mut from = None;
+    let mut to = None;
+    let mut representation = None;
+    let mut limit = None;
+    let mut sources = Vec::new();
+    let mut saw_source = false;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "from" if from.is_none() => from = Some(number("from", &value)?),
+            "to" if to.is_none() => to = Some(number("to", &value)?),
+            "representation" if representation.is_none() => {
+                representation = Some(match value.as_str() {
+                    "groups" => EventsRepresentation::Groups,
+                    "occurrences" => EventsRepresentation::Occurrences,
+                    _ => return Err(RouteError::BadParameter("representation".to_owned())),
+                });
+            }
+            "limit" if limit.is_none() => limit = Some(bounded("limit", &value, MAX_EVENTS_LIMIT)?),
+            "source" => {
+                saw_source = true;
+                sources.push(value);
+            }
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
+    let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    let range = TimeRange::bounded(from, to, MAX_EVENTS_WINDOW_MICROS)
+        .map_err(|_error| RouteError::BadParameter("to".to_owned()))?;
+    EventsQuery::normalize(
+        range,
+        saw_source.then_some(sources),
+        representation.unwrap_or(EventsRepresentation::Groups),
+        limit.ok_or_else(|| RouteError::BadParameter("limit".to_owned()))?,
+    )
+    .map_err(|error| match error {
+        crate::api::events::EventsQueryError::Limit(_) => {
+            RouteError::BadParameter("limit".to_owned())
+        }
+        crate::api::events::EventsQueryError::Source { .. } => {
+            RouteError::BadParameter("source".to_owned())
+        }
     })
 }
 

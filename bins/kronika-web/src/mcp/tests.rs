@@ -26,6 +26,20 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
     })
 }
 
+fn streamed(prepared: crate::api::Prepared) -> Vec<serde_json::Value> {
+    let mut records = Vec::new();
+    prepared
+        .stream(
+            &mut |record| {
+                records.push(serde_json::from_slice(&record).expect("JSON record"));
+                true
+            },
+            &|| false,
+        )
+        .expect("stream resource");
+    records
+}
+
 #[tokio::test]
 async fn tools_list_returns_the_fourteen_tool_catalog() {
     let body = json!({
@@ -54,9 +68,8 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
-    let names: Vec<&str> = decoded["result"]["tools"]
-        .as_array()
-        .expect("tools array")
+    let tools = decoded["result"]["tools"].as_array().expect("tools array");
+    let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("name"))
         .collect();
@@ -78,6 +91,23 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
             "kronika_get_row_detail",
             "kronika_find_events",
         ]
+    );
+    let events = tools
+        .iter()
+        .find(|tool| tool["name"] == "kronika_find_events")
+        .expect("Events tool");
+    assert!(events["outputSchema"].is_object());
+    let events_schema = &events["inputSchema"];
+    assert_eq!(events_schema["additionalProperties"], false);
+    assert_eq!(
+        events_schema["properties"]["representation"]["default"],
+        "groups"
+    );
+    assert_eq!(events_schema["properties"]["limit"]["minimum"], 1);
+    assert_eq!(events_schema["properties"]["limit"]["maximum"], 5_000);
+    assert_eq!(
+        events_schema["properties"]["sources"]["type"],
+        json!(["array", "null"])
     );
 }
 
@@ -1558,6 +1588,7 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 10,
     })
     .as_object()
@@ -1568,9 +1599,12 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let rows = structured["rows"].as_array().expect("rows array");
+    let rows = structured["occurrences"]
+        .as_array()
+        .expect("occurrences array");
     assert_eq!(rows.len(), 2);
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["representation"], "occurrences");
+    assert_eq!(structured["truncated"], false);
     for row in rows {
         assert_eq!(row["source"], "pg_log_errors");
         assert!(
@@ -1588,6 +1622,56 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
 }
 
 #[test]
+fn find_events_default_and_explicit_groups_are_identical() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let base = json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "limit": 10,
+    });
+    let default =
+        crate::mcp::events::call(&config, base.as_object().expect("object").clone(), &|| {
+            false
+        });
+    let mut explicit = base.as_object().expect("object").clone();
+    explicit.insert("representation".to_owned(), json!("groups"));
+    let explicit = crate::mcp::events::call(&config, explicit, &|| false);
+
+    assert_eq!(default.is_error, Some(false));
+    assert_eq!(explicit.is_error, Some(false));
+    assert_eq!(default.structured_content, explicit.structured_content);
+    let structured = default.structured_content.expect("structured groups");
+    assert_eq!(structured["representation"], "groups");
+    assert_eq!(structured["groups"].as_array().expect("groups").len(), 1);
+    assert!(structured.get("occurrences").is_none());
+
+    let http = streamed(fixture.prepare(
+        "/api/events?from=0&to=1000&source=pg_log_errors&representation=groups&limit=10",
+        None,
+    ));
+    let mut groups = Vec::new();
+    for record in http.iter().skip(1) {
+        let mut group = record.as_object().expect("event group").clone();
+        assert_eq!(group.remove("record"), Some(json!("event_group")));
+        groups.push(serde_json::Value::Object(group));
+    }
+    assert_eq!(
+        structured,
+        json!({
+            "representation": http[0]["representation"],
+            "groups": groups,
+            "truncated": http[0]["truncated"],
+        }),
+        "HTTP and MCP envelopes carry the same normalized product result"
+    );
+}
+
+#[test]
 fn find_events_labels_the_numeric_severity_and_category_codes() {
     // `severity` and `category` are unordered Kronika codes.
     // `append_log_error` records 0 (`error`) and 8 (`auth`).
@@ -1600,6 +1684,7 @@ fn find_events_labels_the_numeric_severity_and_category_codes() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 10,
     })
     .as_object()
@@ -1610,7 +1695,9 @@ fn find_events_labels_the_numeric_severity_and_category_codes() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let rows = structured["rows"].as_array().expect("rows array");
+    let rows = structured["occurrences"]
+        .as_array()
+        .expect("occurrences array");
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row["severity"], 0, "raw numeric code stays untouched");
@@ -1633,6 +1720,7 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
         "sources": ["pg_log_errors", "pgbouncer_events"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 3,
     })
     .as_object()
@@ -1643,13 +1731,13 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let rows = structured["rows"].as_array().expect("rows array");
+    let rows = structured["occurrences"]
+        .as_array()
+        .expect("occurrences array");
     assert_eq!(rows.len(), 3, "4 rows exist in the window but limit is 3");
-    assert_eq!(structured["has_more"], true);
-    assert_eq!(
-        structured["next_from"], "250",
-        "the continuation repeats the boundary timestamp — duplicates over losses"
-    );
+    assert_eq!(structured["truncated"], true);
+    assert!(structured.get("has_more").is_none());
+    assert!(structured.get("next_from").is_none());
     let ordered_ats: Vec<i64> = rows
         .iter()
         .map(|row| {
@@ -1822,6 +1910,19 @@ fn find_events_rejects_an_unknown_source_name() {
 
     let result = crate::mcp::events::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(
+        structured["valid_options"],
+        serde_json::json!([
+            "pg_log_errors",
+            "pg_log_checkpoints",
+            "pg_log_autovacuum",
+            "pg_log_slow_queries",
+            "pg_log_lock_waits",
+            "pg_log_lifecycle",
+            "pgbouncer_events"
+        ])
+    );
 }
 
 #[test]
@@ -1829,6 +1930,37 @@ fn find_events_rejects_malformed_arguments_without_panicking() {
     let config = test_config(std::env::temp_dir());
     let result = crate::mcp::events::call(&config, serde_json::Map::new(), &|| false);
     assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn find_events_request_budget_is_exact() {
+    const MAX: usize = crate::route::MAX_QUERY_BYTES;
+    let config = test_config(std::env::temp_dir());
+    let arguments_at = |target: usize| {
+        let mut value = json!({
+            "from": 100,
+            "to": 400,
+            "sources": [""],
+            "limit": 1,
+        });
+        let base = serde_json::to_vec(&value).expect("measure base").len();
+        value["sources"][0] = json!("x".repeat(target - base));
+        assert_eq!(serde_json::to_vec(&value).expect("measure").len(), target);
+        value.as_object().expect("object").clone()
+    };
+
+    let at_limit = crate::mcp::events::call(&config, arguments_at(MAX), &|| false);
+    assert_eq!(at_limit.is_error, Some(true));
+    let at_message = at_limit.content[0].as_text().expect("text").text.clone();
+    assert!(!at_message.contains("arguments exceed"), "{at_message}");
+
+    let over_limit = crate::mcp::events::call(&config, arguments_at(MAX + 1), &|| false);
+    assert_eq!(over_limit.is_error, Some(true));
+    let over_message = over_limit.content[0].as_text().expect("text").text.clone();
+    assert!(
+        over_message.contains("arguments exceed 65536"),
+        "{over_message}"
+    );
 }
 
 #[test]
@@ -1919,6 +2051,7 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 10,
     })
     .as_object()
@@ -1926,7 +2059,7 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     .clone();
     let listing = crate::mcp::events::call(&config, listing_arguments, &|| false);
     assert_eq!(listing.is_error, Some(false));
-    let listing_rows = listing.structured_content.expect("structured content")["rows"]
+    let listing_rows = listing.structured_content.expect("structured content")["occurrences"]
         .as_array()
         .expect("rows array")
         .clone();
@@ -1966,13 +2099,15 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 10,
     })
     .as_object()
     .expect("object")
     .clone();
     let listing = crate::mcp::events::call(&config, listing_arguments, &|| false);
-    let listing_row = listing.structured_content.expect("structured content")["rows"][0].clone();
+    let listing_row =
+        listing.structured_content.expect("structured content")["occurrences"][0].clone();
 
     let detail_arguments = serde_json::json!({
         "section": "pg_log_errors",
@@ -2013,6 +2148,7 @@ async fn find_events_end_to_end_through_the_real_transport() {
                 "sources": ["pg_log_errors"],
                 "from": 0,
                 "to": 1_000,
+                "representation": "occurrences",
                 "limit": 10,
             }
         }
@@ -2037,7 +2173,7 @@ async fn find_events_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
-    let rows = decoded["result"]["structuredContent"]["rows"]
+    let rows = decoded["result"]["structuredContent"]["occurrences"]
         .as_array()
         .expect("rows array");
     assert_eq!(rows.len(), 2);
@@ -2049,7 +2185,11 @@ async fn find_events_end_to_end_through_the_real_transport() {
             "segment_id is a decimal string"
         );
     }
-    assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+    assert_eq!(decoded["result"]["structuredContent"]["truncated"], false);
+    assert_eq!(
+        decoded["result"]["structuredContent"]["representation"],
+        "occurrences"
+    );
 }
 
 #[test]
@@ -2277,6 +2417,7 @@ fn find_events_accepts_the_temp_files_source() {
         "sources": ["pg_log_temp_files"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 10,
     })
     .as_object()
@@ -2285,6 +2426,31 @@ fn find_events_accepts_the_temp_files_source() {
 
     let result = crate::mcp::events::call(&config, arguments, &|| false);
     assert_eq!(result.is_error, Some(false));
+
+    let grouped = serde_json::json!({
+        "sources": ["pg_log_temp_files"],
+        "from": 0,
+        "to": 1_000,
+        "representation": "groups",
+        "limit": 10,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::events::call(&config, grouped, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.structured_content.expect("structured error")["valid_options"],
+        serde_json::json!([
+            "pg_log_errors",
+            "pg_log_checkpoints",
+            "pg_log_autovacuum",
+            "pg_log_slow_queries",
+            "pg_log_lock_waits",
+            "pg_log_lifecycle",
+            "pgbouncer_events"
+        ])
+    );
 }
 
 #[test]
@@ -2322,10 +2488,7 @@ fn statements_sort_by_a_derived_field_ranks_by_it() {
 }
 
 #[test]
-fn find_events_reports_more_rows_behind_a_skipped_segment() {
-    // Two matching rows fill limit=2 from the first segment; the second
-    // segment starts later than everything held, so it is skipped without
-    // being opened — its row must still surface as has_more.
+fn find_events_reports_truncation_across_segments() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.append_log_error(200);
@@ -2338,6 +2501,7 @@ fn find_events_reports_more_rows_behind_a_skipped_segment() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 2,
     })
     .as_object()
@@ -2348,14 +2512,16 @@ fn find_events_reports_more_rows_behind_a_skipped_segment() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let rows = structured["rows"].as_array().expect("rows array");
+    let rows = structured["occurrences"]
+        .as_array()
+        .expect("occurrences array");
     assert_eq!(
         rows.iter()
             .map(|row| row["at"].as_str().expect("at"))
             .collect::<Vec<_>>(),
         vec!["100", "200"]
     );
-    assert_eq!(structured["has_more"], true);
+    assert_eq!(structured["truncated"], true);
 }
 
 #[test]
@@ -2562,7 +2728,7 @@ async fn an_unknown_tool_name_is_a_protocol_error_not_a_tool_result() {
 }
 
 #[test]
-fn find_events_reports_no_more_rows_when_matches_lie_past_the_window() {
+fn find_events_does_not_truncate_for_matches_past_the_exclusive_window() {
     // Segment two overlaps the window only through another section; its
     // pg_log_errors row sits past `to`, so nothing was omitted.
     let mut fixture = Fixture::new();
@@ -2578,6 +2744,7 @@ fn find_events_reports_no_more_rows_when_matches_lie_past_the_window() {
         "sources": ["pg_log_errors"],
         "from": 0,
         "to": 1_000,
+        "representation": "occurrences",
         "limit": 2,
     })
     .as_object()
@@ -2588,12 +2755,14 @@ fn find_events_reports_no_more_rows_when_matches_lie_past_the_window() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    let rows = structured["rows"].as_array().expect("rows array");
+    let rows = structured["occurrences"]
+        .as_array()
+        .expect("occurrences array");
     assert_eq!(
         rows.iter()
             .map(|row| row["at"].as_str().expect("at"))
             .collect::<Vec<_>>(),
         vec!["100", "200"]
     );
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 }

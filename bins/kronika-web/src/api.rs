@@ -11,12 +11,14 @@ use crate::encoding::etag_matches;
 use crate::route::{ActiveCursor, Route};
 
 pub(crate) mod catalog;
+pub(crate) mod events;
 pub(crate) mod heatmap;
 pub(crate) mod history;
 mod hour;
 mod index;
 mod query;
 mod render;
+pub(crate) mod row_key;
 mod rows;
 pub(crate) mod snapshot;
 pub(crate) mod time;
@@ -84,6 +86,7 @@ pub(crate) enum Prepared {
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
+    Events(events::PreparedEvents),
     Empty(ResponseMeta),
 }
 
@@ -98,6 +101,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
+            Self::Events(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -116,6 +120,7 @@ impl Prepared {
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
+            Self::Events(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -130,6 +135,8 @@ pub(crate) enum ApiError {
     MixedUnits(String),
     BadFilter(String),
     BadCursor,
+    Cancelled,
+    ResultTooLarge(events::EventsRepresentation),
     Unreadable(Box<dyn Error + Send + Sync>),
 }
 
@@ -137,10 +144,12 @@ impl ApiError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_) | Self::MixedUnits(_) | Self::BadFilter(_) | Self::BadCursor => {
-                StatusCode::BAD_REQUEST
-            }
-            Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NoSuchColumn(_)
+            | Self::MixedUnits(_)
+            | Self::BadFilter(_)
+            | Self::BadCursor
+            | Self::ResultTooLarge(_) => StatusCode::BAD_REQUEST,
+            Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -152,6 +161,8 @@ impl ApiError {
             Self::MixedUnits(_) => "mixed_units",
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
+            Self::Cancelled => "cancelled",
+            Self::ResultTooLarge(_) => "result_too_large",
             Self::Unreadable(_) => "unreadable",
         }
     }
@@ -191,6 +202,15 @@ impl std::fmt::Display for ApiError {
             Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
+            Self::Cancelled => write!(f, "request cancelled"),
+            Self::ResultTooLarge(events::EventsRepresentation::Occurrences) => write!(
+                f,
+                "result exceeds 8388608 encoded bytes: narrow the interval, lower limit, or choose groups"
+            ),
+            Self::ResultTooLarge(events::EventsRepresentation::Groups) => write!(
+                f,
+                "result exceeds 8388608 encoded bytes: narrow the interval or lower limit"
+            ),
             Self::Unreadable(error) => error.fmt(f),
         }
     }
@@ -249,6 +269,7 @@ pub(crate) fn prepare_with_demo(
         Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
+        Route::Events(request) => events::prepare(root, request).map(Prepared::Events),
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }

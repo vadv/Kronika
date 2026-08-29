@@ -6,12 +6,12 @@ use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::api::events::{EventsRepresentation, EventsResult};
+use crate::api::heatmap::{DEFAULT_TOP, HeatmapBatchResult, MAX_TOP};
 use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
 
-use super::time::TimeSpecInput;
-use crate::api::heatmap::{DEFAULT_TOP, HeatmapBatchResult, MAX_TOP};
-
 use super::filter::FilterInput;
+use super::time::TimeSpecInput;
 
 pub(crate) const OVERVIEW_TOOL: &str = "kronika_overview";
 pub(crate) const GET_CONTEXT_TOOL: &str = "kronika_get_context";
@@ -387,24 +387,32 @@ pub(crate) struct RowDetailInput {
     pub(crate) row_key: Option<serde_json::Value>,
 }
 
-/// Reads selected recorded event sections over an inclusive time window.
+/// Reads selected recorded event sections over a half-open time window.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct EventsInput {
     /// Recorded sections to read: `pg_log_errors`, `pg_log_checkpoints`,
     /// `pg_log_autovacuum`, `pg_log_slow_queries`, `pg_log_lock_waits`,
     /// `pg_log_temp_files`, `pg_log_lifecycle`, `pgbouncer_events`. Omit or
-    /// use null for all eight; an empty array reads none. Use each source
-    /// once: duplicates duplicate its rows.
+    /// use null for every source valid for the representation; an empty array
+    /// reads none. Repeats are removed after their first occurrence.
     #[serde(default)]
     pub(crate) sources: Option<Vec<String>>,
-    /// Inclusive start of the window, Unix microseconds.
-    pub(crate) from: i64,
-    /// Inclusive end, Unix microseconds. `to` must be at least `from`, and
+    /// Inclusive start: Unix microseconds, RFC 3339, `now`, or `now-N<unit>`.
+    pub(crate) from: TimeSpecInput,
+    /// Exclusive end in the same time grammar. `to` must be at least `from`, and
     /// `to - from` must not exceed 3,600,000,000 microseconds (one hour).
-    pub(crate) to: i64,
+    pub(crate) to: TimeSpecInput,
+    /// Server-grouped console entries (default) or raw stored occurrences.
+    #[serde(default = "default_events_representation")]
+    pub(crate) representation: EventsRepresentation,
     /// Maximum combined rows to return, from 1 through 5,000.
     #[schemars(range(min = 1, max = MAX_SNAPSHOT_PAGE_SIZE))]
     pub(crate) limit: u32,
+}
+
+const fn default_events_representation() -> EventsRepresentation {
+    EventsRepresentation::Groups
 }
 
 pub(crate) fn tools() -> Vec<Tool> {
@@ -637,34 +645,19 @@ fn tail_tools() -> [Tool; 3] {
         ),
         Tool::new(
             FIND_EVENTS_TOOL,
-            "Reads stored event rows from selected PostgreSQL and PgBouncer \
-             sources in inclusive Unix-microsecond `[from, to]`; it performs \
-             no live query and has no field predicates. It keeps the \
-             earliest `limit` matches per source regardless of stored order, \
-             sorts the merged list by `at`, and truncates it to `limit` from \
-             the newest end — the oldest rows survive. Equal timestamps \
-             preserve requested source order; within a source they follow \
-             the physical locator. Returns `{rows, has_more, next_from}`; `has_more` \
-             means rows were omitted, including matches inside segments the \
-             scan could skip, and `next_from` is the ready-made `from` of \
-             the next chronological call; it repeats the boundary timestamp, \
-             so rows of that timestamp can reappear — deduplicate by the \
-             locator fields, and when every returned row shares `next_from`, \
-             raise `limit` or move `from` past it. `pg_log_errors` and \
-             `pg_log_slow_queries` rows arrive already grouped by the \
-             collector — one row is one (severity, category, pattern) group \
-             per collection window with a `count` column, so a pattern's \
-             total is the sum of `count`, not the number of rows; with \
-             `has_more` set those sums are incomplete. Each row includes `source` and \
-             decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
-             accepted unchanged by `kronika_get_row_detail`; exact 64-bit \
-             stored values such as `size_bytes` use decimal strings too. \
-             Recognized \
-             Kronika event codes keep their numeric field and add a \
-             `<field>_label` sibling. Code numbers are not severity ranks; \
-             unknown codes have no label sibling.",
+            "Reads stored PostgreSQL and PgBouncer events in half-open \
+             `[from,to)` without a live query. `groups` (default) returns the \
+             same ordered server-grouped entries as the web Events console; \
+             `occurrences` returns raw stored rows, labels, row keys, and exact \
+             decimal-string locators. Sources are ordered, repeated names are \
+             deduplicated, and an empty array returns no items. `limit` is \
+             applied after the complete merge or grouping. Returns a tagged \
+             `{representation, groups|occurrences, truncated}` result without \
+             a continuation cursor. Times accept integer Unix microseconds, \
+             RFC 3339 with a timezone, `now`, and `now-N{us,ms,s,m,h,d,w}`.",
             schema_object::<EventsInput>(),
-        ),
+        )
+        .with_output_schema::<EventsResult>(),
     ]
 }
 
