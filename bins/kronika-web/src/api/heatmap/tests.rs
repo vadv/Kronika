@@ -1,9 +1,9 @@
 use kronika_format::DictLimits;
-use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
+use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::{Section as _, StrId, Ts};
-use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
+use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
 use super::execution::{Obs, column_of, interval_start, summed};
@@ -11,6 +11,7 @@ use super::{
     HeatmapBatchQuery, HeatmapItemQuery, HeatmapRequest, HeatmapView, NormalizedRanking, prepare,
     prepare_batch,
 };
+use crate::api::ApiError;
 use crate::api::time::TimeRange;
 
 const HOUR: i64 = 1_000_000_000_000;
@@ -118,18 +119,52 @@ fn shared_section_batch_and_duplicates_decode_each_row_once() {
     let b = ranking("free_bytes", 2);
     let query = HeatmapBatchQuery {
         range: TimeRange::new(fixture.timestamp, fixture.timestamp + 1).expect("range"),
-        items: vec![a.clone(), b, a],
+        items: vec![a.clone(), b.clone(), a.clone()],
     };
     let prepared = prepare_batch(fixture.root.path(), query).expect("prepare");
     let result = prepared.execute(&|| false).expect("execute");
     assert_eq!(prepared.execution_operations(), 1);
     assert_eq!(prepared.row_visits(), 129);
     assert_eq!(result.results.len(), 3);
+    assert_eq!(
+        result
+            .results
+            .iter()
+            .map(|item| &item.ranking)
+            .collect::<Vec<_>>(),
+        [&a.ranking, &b.ranking, &a.ranking]
+    );
     assert_eq!(result.results[0], result.results[2]);
     assert_eq!(result.results[0].entity_count, 129);
     assert_eq!(
         result.results[1].coverage.state,
         super::result::CoverageState::NoData
+    );
+    assert_eq!(
+        serde_json::to_value(&result.results[1]).expect("serialize no-data result"),
+        json!({
+            "ranking": {
+                "section": "os_mountinfo",
+                "fields": ["free_bytes"],
+                "top": 2,
+            },
+            "as_of": null,
+            "coverage": {
+                "state": "no_data",
+                "recorded_from": HOUR.to_string(),
+                "recorded_to": HOUR.to_string(),
+                "nearest_row_before": null,
+                "nearest_row_after": null,
+                "window_rows": "129",
+            },
+            "class": "gauge",
+            "unit": "bytes",
+            "entities": [],
+            "totals_total": null,
+            "others_total": null,
+            "entity_count": "0",
+            "out_of_order": "0",
+        })
     );
 }
 
@@ -161,6 +196,80 @@ fn automatic_labels_are_complete_and_latest_non_null_wins() {
 }
 
 #[test]
+fn equal_timestamp_labels_use_the_winning_source_segment_dictionary() {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    for offset in 0..=1 {
+        let address = SegmentAddress::new(SegmentId::new(HOUR + offset).expect("segment id"))
+            .expect("segment address");
+        let mut interner = Interner::new(DictLimits::default());
+        let mount_point = StrId(
+            if offset == 0 {
+                interner.intern(b"/same")
+            } else {
+                interner.intern_blob(b"/same")
+            }
+            .expect("mount")
+            .get(),
+        );
+        let fstype = StrId(
+            if offset == 0 {
+                interner.intern_blob(b"same")
+            } else {
+                interner.intern(b"same")
+            }
+            .expect("filesystem")
+            .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(OsMountinfo {
+                ts: Ts(HOUR),
+                major: 8,
+                minor: 0,
+                mount_point,
+                root: mount_point,
+                fstype,
+                source: mount_point,
+                is_k8s_infra: false,
+                total_bytes: (offset == 1).then_some(100),
+                free_bytes: None,
+                total_inodes: None,
+                available_inodes: None,
+                scope: 0,
+            })
+            .expect("mount row");
+        let dictionary = dict::encode(interner.window()).expect("dictionary");
+        let part = buffers.flush(&dictionary).expect("encode").expect("part");
+        journal.append(address.id, &part).expect("append");
+        write_segment(&journal, &owner, address).expect("finish segment");
+        if offset == 0 {
+            journal.reset().expect("reset journal");
+        }
+    }
+    drop(journal);
+    drop(owner);
+
+    let result = prepare_batch(
+        root.path(),
+        HeatmapBatchQuery {
+            range: TimeRange::new(HOUR, HOUR + 1).expect("range"),
+            items: vec![ranking("total_bytes", 1)],
+        },
+    )
+    .expect("prepare")
+    .execute(&|| false)
+    .expect("execute");
+    let entity = &result.results[0].entities[0];
+    assert_eq!(entity.identity["mount_point"], "/same");
+    assert_eq!(entity.labels["fstype"], "same");
+}
+
+#[test]
 fn invalid_item_reports_its_zero_based_index_and_returns_no_prefix() {
     let fixture = mount_fixture(1);
     let query = HeatmapBatchQuery {
@@ -172,6 +281,44 @@ fn invalid_item_reports_its_zero_based_index_and_returns_no_prefix() {
         .expect("invalid item");
     assert_eq!(error.ranking_index(), 1);
     assert!(error.to_string().contains("rankings[1]"));
+}
+
+#[test]
+fn legacy_prepare_preserves_specific_api_errors() {
+    let request = |section: &str, fields: &[&str], to| HeatmapRequest {
+        from: HOUR,
+        to,
+        section: section.to_owned(),
+        fields: fields.iter().map(|field| (*field).to_owned()).collect(),
+        columns: 1,
+        top: 1,
+        group: Vec::new(),
+        type_id: None,
+    };
+    let root = std::env::temp_dir();
+
+    let section = prepare(&root, request("missing", &["total_bytes"], HOUR))
+        .err()
+        .expect("unknown section");
+    assert!(matches!(section, ApiError::NoSuchSection));
+
+    let column = prepare(&root, request("os_mountinfo", &["missing"], HOUR))
+        .err()
+        .expect("unknown column");
+    assert!(matches!(column, ApiError::NoSuchColumn(field) if field == "missing"));
+
+    let units = prepare(
+        &root,
+        request("os_mountinfo", &["total_bytes", "total_inodes"], HOUR),
+    )
+    .err()
+    .expect("mixed units");
+    assert!(matches!(units, ApiError::MixedUnits(fields) if fields == "total_bytes+total_inodes"));
+
+    let overflow = prepare(&root, request("os_mountinfo", &["total_bytes"], i64::MAX))
+        .err()
+        .expect("inclusive end overflow");
+    assert!(matches!(overflow, ApiError::BadFilter(parameter) if parameter == "to"));
 }
 
 #[test]
@@ -206,20 +353,26 @@ fn exact_to_is_excluded_from_the_product_range() {
 #[test]
 fn legacy_http_keeps_ndjson_rows_groups_bands_and_automatic_label_header() {
     let fixture = mount_fixture(129);
-    let prepared = prepare(
+    let request = HeatmapRequest {
+        from: fixture.timestamp,
+        to: fixture.timestamp,
+        section: "os_mountinfo".to_owned(),
+        fields: vec!["total_bytes".to_owned()],
+        columns: 1,
+        top: 1,
+        group: vec!["mount_point".to_owned()],
+        type_id: None,
+    };
+    let shared = prepare_batch(
         fixture.root.path(),
-        HeatmapRequest {
-            from: fixture.timestamp,
-            to: fixture.timestamp,
-            section: "os_mountinfo".to_owned(),
-            fields: vec!["total_bytes".to_owned()],
-            columns: 1,
-            top: 1,
-            group: vec!["mount_point".to_owned()],
-            type_id: None,
-        },
+        request.clone().normalize().expect("normalize HTTP request"),
     )
-    .expect("prepare");
+    .expect("prepare shared item")
+    .execute(&|| false)
+    .expect("execute shared item");
+    let item = &shared.results[0];
+    let grid = item.grid.as_ref().expect("grid result");
+    let prepared = prepare(fixture.root.path(), request).expect("prepare HTTP item");
     let mut bytes = Vec::new();
     prepared
         .stream(
@@ -247,6 +400,18 @@ fn legacy_http_keeps_ndjson_rows_groups_bands_and_automatic_label_header() {
     assert_eq!(records[1]["members"], 1);
     assert_eq!(records[2]["band"], "totals");
     assert_eq!(records[3]["band"], "others");
+    assert_eq!(records[0]["section"], item.ranking.section);
+    assert_eq!(records[0]["fields"], json!(item.ranking.fields));
+    assert_eq!(records[0]["entity_count"], item.entity_count);
+    assert_eq!(records[0]["top"], grid.groups.len());
+    assert_eq!(records[1]["identity"], json!(grid.groups[0].values));
+    assert_eq!(records[1]["members"], grid.groups[0].members);
+    assert_eq!(records[1]["total"], json!(grid.groups[0].total));
+    assert_eq!(records[1]["cells"], json!(grid.groups[0].cells));
+    assert_eq!(records[2]["total"], json!(grid.totals.total));
+    assert_eq!(records[2]["cells"], json!(grid.totals.cells));
+    assert_eq!(records[3]["total"], json!(grid.others.total));
+    assert_eq!(records[3]["cells"], json!(grid.others.cells));
 }
 
 struct MountFixture {

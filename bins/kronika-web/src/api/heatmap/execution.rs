@@ -20,20 +20,94 @@ use crate::api::{ApiError, CachePolicy, ResponseMeta};
 const WORKING_SET_MAX_BYTES: usize = 8 * 1024 * 1024;
 const RESULT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
+type RenderedIds = HashMap<(usize, u64), Value>;
+
+#[derive(Debug)]
+enum HeatmapApiError {
+    BadFilter(String),
+    NoSuchSection,
+    NoSuchColumn(String),
+    MixedUnits(String),
+}
 
 #[derive(Debug)]
 pub(crate) struct HeatmapError {
     ranking_index: usize,
     message: String,
-    invalid: bool,
+    api_error: Option<HeatmapApiError>,
+    valid_options: Vec<String>,
 }
 
 impl HeatmapError {
     fn invalid(ranking_index: usize, message: impl Into<String>) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::BadFilter("heatmap".to_owned()),
+            Vec::new(),
+        )
+    }
+
+    fn invalid_parameter(
+        ranking_index: usize,
+        message: impl Into<String>,
+        parameter: &str,
+    ) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::BadFilter(parameter.to_owned()),
+            Vec::new(),
+        )
+    }
+
+    fn no_such_section(
+        ranking_index: usize,
+        message: impl Into<String>,
+        valid_options: Vec<String>,
+    ) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::NoSuchSection,
+            valid_options,
+        )
+    }
+
+    fn no_such_column(
+        ranking_index: usize,
+        message: impl Into<String>,
+        column: String,
+        valid_options: Vec<String>,
+    ) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::NoSuchColumn(column),
+            valid_options,
+        )
+    }
+
+    fn mixed_units(ranking_index: usize, message: impl Into<String>, fields: String) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::MixedUnits(fields),
+            Vec::new(),
+        )
+    }
+
+    fn invalid_as(
+        ranking_index: usize,
+        message: impl Into<String>,
+        api_error: HeatmapApiError,
+        valid_options: Vec<String>,
+    ) -> Self {
         Self {
             ranking_index,
             message: message.into(),
-            invalid: true,
+            api_error: Some(api_error),
+            valid_options,
         }
     }
 
@@ -41,7 +115,8 @@ impl HeatmapError {
         Self {
             ranking_index,
             message: error.to_string(),
-            invalid: false,
+            api_error: None,
+            valid_options: Vec::new(),
         }
     }
 
@@ -49,11 +124,17 @@ impl HeatmapError {
         self.ranking_index
     }
 
-    pub(crate) fn into_api(self) -> ApiError {
-        if self.invalid {
-            ApiError::BadFilter(self.to_string())
-        } else {
-            ApiError::Unreadable(Box::new(self))
+    pub(crate) fn valid_options(&self) -> &[String] {
+        &self.valid_options
+    }
+
+    pub(crate) fn into_api(mut self) -> ApiError {
+        match self.api_error.take() {
+            Some(HeatmapApiError::BadFilter(parameter)) => ApiError::BadFilter(parameter),
+            Some(HeatmapApiError::NoSuchSection) => ApiError::NoSuchSection,
+            Some(HeatmapApiError::NoSuchColumn(column)) => ApiError::NoSuchColumn(column),
+            Some(HeatmapApiError::MixedUnits(fields)) => ApiError::MixedUnits(fields),
+            None => ApiError::Unreadable(Box::new(self)),
         }
     }
 }
@@ -96,7 +177,7 @@ struct ItemSpec {
 pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
     let query = request
         .normalize()
-        .map_err(|error| ApiError::BadFilter(error.to_string()))?;
+        .map_err(|_error| ApiError::BadFilter("to".to_owned()))?;
     prepare_batch(root, query)
         .map(|batch| PreparedHeatmap { batch })
         .map_err(HeatmapError::into_api)
@@ -198,20 +279,23 @@ impl PreparedHeatmapBatch {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let mut budget = WorkingBudget::default();
-        let mut accumulators: Vec<Accumulator> = self
-            .unique
-            .iter()
-            .map(|spec| Accumulator::new(spec, self.query.range))
-            .collect();
-        budget.reserve(
-            accumulators.len().saturating_mul(size_of::<Accumulator>()),
-            0,
-        )?;
+        for spec in &self.unique {
+            budget.reserve_array::<Accumulator>(2, spec.first_index)?;
+            if matches!(spec.query.view, HeatmapView::Grid { .. }) {
+                budget.reserve_array::<CellSum>(spec.query.view.columns(), spec.first_index)?;
+            }
+        }
+        let mut accumulators = Vec::with_capacity(self.unique.len());
+        for spec in &self.unique {
+            accumulators.push(Accumulator::new(spec, self.query.range));
+        }
+        budget.reserve_array::<Segment>(self.segments.len(), 0)?;
+        budget.reserve_array::<HashSet<u64>>(self.segments.len(), 0)?;
+        budget.reserve_array::<Vec<(u64, usize)>>(self.segments.len(), 0)?;
         let mut opened_segments = Vec::with_capacity(self.segments.len());
-        budget.reserve(self.segments.len().saturating_mul(size_of::<Segment>()), 0)?;
-        let mut rendered_ids: HashMap<u64, Value> = HashMap::new();
+        let mut rendered_ids = RenderedIds::new();
 
-        for segment_ref in &self.segments {
+        for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
             if cancelled() {
                 return Err(HeatmapError::storage(0, "request cancelled"));
             }
@@ -223,6 +307,7 @@ impl PreparedHeatmapBatch {
             for plan in plans {
                 scan_plan(
                     &segment,
+                    segment_slot,
                     &plan,
                     self.query.range,
                     &mut accumulators,
@@ -235,53 +320,62 @@ impl PreparedHeatmapBatch {
             opened_segments.push(segment);
         }
 
-        let mut retained_ids = HashSet::new();
+        let mut retained_ids = vec![HashSet::new(); opened_segments.len()];
+        let mut retained_indices = vec![Vec::new(); opened_segments.len()];
         for accumulator in &accumulators {
-            accumulator.collect_ids(&mut retained_ids, &mut budget)?;
+            accumulator.collect_ids(&mut retained_ids, &mut retained_indices, &mut budget)?;
         }
-        if !retained_ids.is_empty() {
-            let index = self
-                .unique
-                .iter()
-                .map(|spec| spec.first_index)
-                .min()
-                .unwrap_or(0);
-            for segment in &opened_segments {
-                let dictionary = segment
-                    .dictionary_once_for(&retained_ids)
-                    .map_err(|error| HeatmapError::storage(index, error))?;
-                for id in &retained_ids {
-                    if rendered_ids.contains_key(id) {
-                        continue;
-                    }
-                    let Some(resolved) = dictionary.resolve(*id) else {
-                        continue;
-                    };
-                    let value = cell(&Cell::StrId(*id), &dictionary)
-                        .map_err(|error| HeatmapError::storage(index, error))?;
-                    let bytes = serde_json::to_vec(&value)
-                        .map_err(|error| HeatmapError::storage(index, error))?
-                        .len()
-                        .saturating_add(size_of_val(&resolved))
-                        .saturating_add(size_of::<(u64, Value)>() * 2);
-                    budget.reserve(bytes, index)?;
-                    rendered_ids.insert(*id, value);
-                }
+        for (segment_slot, ((segment, ids), indexed_ids)) in opened_segments
+            .iter()
+            .zip(&retained_ids)
+            .zip(&retained_indices)
+            .enumerate()
+        {
+            if ids.is_empty() {
+                continue;
+            }
+            let Some(index) = indexed_ids.first().map(|(_id, index)| *index) else {
+                return Err(HeatmapError::storage(
+                    0,
+                    "retained dictionary IDs have no dependent ranking",
+                ));
+            };
+            let dictionary = segment
+                .dictionary_once_for(ids)
+                .map_err(|error| HeatmapError::storage(index, error))?;
+            for (id, index) in indexed_ids {
+                let value = cell(&Cell::StrId(*id), &dictionary)
+                    .map_err(|error| HeatmapError::storage(*index, error))?;
+                let bytes = encoded_value_len(&value, *index)?;
+                // The selected decoded value and its rendered JSON value
+                // coexist until this segment's dictionary is dropped.
+                budget.reserve_parts(
+                    [
+                        bytes,
+                        bytes,
+                        size_of::<((usize, u64), Value)>(),
+                        size_of::<((usize, u64), Value)>(),
+                    ],
+                    *index,
+                )?;
+                rendered_ids.insert((segment_slot, *id), value);
             }
         }
 
+        for spec in &self.unique {
+            budget.reserve_array::<HeatmapItemResult>(1, spec.first_index)?;
+        }
         let mut unique_results = Vec::with_capacity(accumulators.len());
         for (spec, accumulator) in self.unique.iter().zip(accumulators) {
-            unique_results.push(accumulator.finish(spec, self.recorded, &rendered_ids)?);
+            unique_results.push(accumulator.finish(
+                spec,
+                self.recorded,
+                &rendered_ids,
+                &mut budget,
+            )?);
         }
-        let results = self
-            .original_to_unique
-            .iter()
-            .map(|index| unique_results[*index].clone())
-            .collect();
-        let result = HeatmapBatchResult { results };
-        check_result_budget(&result)?;
-        Ok(result)
+        let results = expand_results(&unique_results, &self.original_to_unique, &mut budget)?;
+        Ok(HeatmapBatchResult { results })
     }
 }
 
@@ -321,30 +415,34 @@ fn validate_item(
 ) -> Result<(ColumnClass, Option<Unit>, Vec<String>), HeatmapError> {
     let ranking = &item.ranking;
     if ranking.section.is_empty() || ranking.section.len() > 128 {
-        return Err(HeatmapError::invalid(
+        return Err(HeatmapError::invalid_parameter(
             index,
             "section must contain 1 to 128 UTF-8 bytes",
+            "section",
         ));
     }
     if !(1..=MAX_FIELDS).contains(&ranking.fields.len()) {
-        return Err(HeatmapError::invalid(
+        return Err(HeatmapError::invalid_parameter(
             index,
             format!("fields must contain 1 to {MAX_FIELDS} names"),
+            "field",
         ));
     }
     let mut seen = HashSet::new();
     for field in &ranking.fields {
         if field.is_empty() || !seen.insert(field) {
-            return Err(HeatmapError::invalid(
+            return Err(HeatmapError::invalid_parameter(
                 index,
                 format!("field {field:?} is empty or repeated"),
+                "field",
             ));
         }
     }
     if !(1..=MAX_TOP).contains(&ranking.top) {
-        return Err(HeatmapError::invalid(
+        return Err(HeatmapError::invalid_parameter(
             index,
             format!("top must be between 1 and {MAX_TOP}, got {}", ranking.top),
+            "top",
         ));
     }
 
@@ -357,8 +455,31 @@ fn validate_item(
         })
         .collect();
     if contracts.is_empty() {
-        return Err(HeatmapError::invalid(index, "no such logical section"));
+        let mut seen = HashSet::new();
+        let valid_options = registry()
+            .iter()
+            .filter_map(|contract| logical_section_name(contract.type_id.get()))
+            .filter(|section| seen.insert(*section))
+            .map(str::to_owned)
+            .collect();
+        return Err(HeatmapError::no_such_section(
+            index,
+            "no such logical section",
+            valid_options,
+        ));
     }
+    let numeric_options = || {
+        let mut seen = HashSet::new();
+        contracts
+            .iter()
+            .flat_map(|contract| contract.columns)
+            .filter(|column| {
+                matches!(column.class, ColumnClass::Cumulative | ColumnClass::Gauge)
+                    && seen.insert(column.name)
+            })
+            .map(|column| column.name.to_owned())
+            .collect::<Vec<_>>()
+    };
     let mut class = None;
     let mut unit = None;
     for field in &ranking.fields {
@@ -367,37 +488,45 @@ fn validate_item(
             .filter_map(|contract| contract.column(field))
             .collect();
         if columns.is_empty() {
-            return Err(HeatmapError::invalid(
+            return Err(HeatmapError::no_such_column(
                 index,
                 format!("no such column {field:?}"),
+                field.clone(),
+                numeric_options(),
             ));
         }
         for column in columns {
             if !matches!(column.class, ColumnClass::Cumulative | ColumnClass::Gauge) {
-                return Err(HeatmapError::invalid(
+                return Err(HeatmapError::no_such_column(
                     index,
                     format!("column {field:?} is not numeric"),
+                    field.clone(),
+                    numeric_options(),
                 ));
             }
             if class
                 .replace(column.class)
                 .is_some_and(|seen| seen != column.class)
             {
-                return Err(HeatmapError::invalid(
+                return Err(HeatmapError::no_such_column(
                     index,
                     format!(
                         "fields carry different classes: {}",
                         ranking.fields.join("+")
                     ),
+                    field.clone(),
+                    numeric_options(),
                 ));
             }
             if unit
                 .replace(column.unit)
                 .is_some_and(|seen| seen != column.unit)
             {
-                return Err(HeatmapError::invalid(
+                let fields = ranking.fields.join("+");
+                return Err(HeatmapError::mixed_units(
                     index,
-                    format!("fields carry different units: {}", ranking.fields.join("+")),
+                    format!("fields carry different units: {fields}"),
+                    fields,
                 ));
             }
         }
@@ -408,9 +537,18 @@ fn validate_item(
                 .iter()
                 .any(|contract| contract.column(group).is_some())
         {
-            return Err(HeatmapError::invalid(
+            let mut seen = HashSet::new();
+            let valid_options = contracts
+                .iter()
+                .flat_map(|contract| contract.columns)
+                .filter(|column| seen.insert(column.name))
+                .map(|column| column.name.to_owned())
+                .collect();
+            return Err(HeatmapError::no_such_column(
                 index,
                 format!("no such column {group:?}"),
+                group.clone(),
+                valid_options,
             ));
         }
     }
@@ -539,8 +677,16 @@ fn physical_plans(segment: &Segment, specs: &[ItemSpec]) -> Vec<PhysicalPlan> {
     plans
 }
 
+#[cfg_attr(
+    test,
+    expect(
+        clippy::too_many_arguments,
+        reason = "one physical scan's explicit shared state"
+    )
+)]
 fn scan_plan(
     segment: &Segment,
+    segment_slot: usize,
     plan: &PhysicalPlan,
     range: crate::api::time::TimeRange,
     accumulators: &mut [Accumulator],
@@ -586,6 +732,7 @@ fn scan_plan(
                 }
                 accumulator.scan.window_rows = accumulator.scan.window_rows.saturating_add(1);
                 if let Err(error) = accumulator.observe(
+                    segment_slot,
                     plan.type_id,
                     plan.contract,
                     &row,
@@ -629,6 +776,47 @@ impl WorkingBudget {
         self.used = used;
         Ok(())
     }
+
+    fn reserve_array<T>(&mut self, count: usize, index: usize) -> Result<(), HeatmapError> {
+        let bytes = size_of::<T>().checked_mul(count).ok_or_else(|| {
+            HeatmapError::invalid(index, "heatmap execution working set size overflows")
+        })?;
+        self.reserve(bytes, index)
+    }
+
+    fn reserve_parts(
+        &mut self,
+        parts: impl IntoIterator<Item = usize>,
+        index: usize,
+    ) -> Result<(), HeatmapError> {
+        let mut bytes = 0_usize;
+        for part in parts {
+            bytes = bytes.checked_add(part).ok_or_else(|| {
+                HeatmapError::invalid(index, "heatmap execution working set size overflows")
+            })?;
+        }
+        self.reserve(bytes, index)
+    }
+
+    fn reserve_matrix<T>(
+        &mut self,
+        rows: usize,
+        columns: usize,
+        index: usize,
+    ) -> Result<(), HeatmapError> {
+        let count = rows.checked_mul(columns).ok_or_else(|| {
+            HeatmapError::invalid(index, "heatmap execution working set size overflows")
+        })?;
+        self.reserve_array::<T>(count, index)
+    }
+
+    fn release(&mut self, bytes: usize) {
+        debug_assert!(
+            bytes <= self.used,
+            "working-set release exceeds the reserved bytes"
+        );
+        self.used = self.used.saturating_sub(bytes);
+    }
 }
 
 #[derive(Default)]
@@ -642,8 +830,10 @@ struct Accumulator {
     range: crate::api::time::TimeRange,
     columns: usize,
     cumulative: bool,
+    grid: bool,
     grouped: bool,
     labels: usize,
+    top: usize,
     first_index: usize,
     entities: HashMap<String, EntityState>,
     totals: Vec<CellSum>,
@@ -656,6 +846,7 @@ struct Accumulator {
 
 struct EntityState {
     type_id: u32,
+    identity_segment: usize,
     identity: Vec<Cell>,
     labels: Vec<Option<StoredLabel>>,
     numeric: bool,
@@ -670,29 +861,45 @@ struct EntityState {
 
 #[derive(Clone)]
 struct StoredLabel {
+    segment_slot: usize,
     timestamp: i64,
     ordinal: u64,
     value: Cell,
+    reserved_heap: usize,
 }
 
 struct GroupState {
+    segment_slot: usize,
     values: Vec<Cell>,
     members: u32,
+}
+
+#[derive(Clone, Copy)]
+enum LabelCutoff {
+    Value(f64),
+    Null,
 }
 
 impl Accumulator {
     fn new(spec: &ItemSpec, range: crate::api::time::TimeRange) -> Self {
         let columns = spec.query.view.columns();
+        let grid = matches!(spec.query.view, HeatmapView::Grid { .. });
         let grouped = !spec.query.view.groups().is_empty();
         Self {
             range,
             columns,
             cumulative: spec.class == ColumnClass::Cumulative,
+            grid,
             grouped,
             labels: if grouped { 0 } else { spec.labels.len() },
+            top: spec.query.ranking.top,
             first_index: spec.first_index,
             entities: HashMap::new(),
-            totals: vec![CellSum::default(); columns],
+            totals: if grid {
+                vec![CellSum::default(); columns]
+            } else {
+                Vec::new()
+            },
             groups: Vec::new(),
             group_index: HashMap::new(),
             out_of_order: 0,
@@ -711,6 +918,7 @@ impl Accumulator {
     )]
     fn observe(
         &mut self,
+        segment_slot: usize,
         type_id: u32,
         contract: &'static kronika_registry::TypeContract,
         row: &Row,
@@ -727,17 +935,25 @@ impl Accumulator {
         let mut key = String::new();
         raw_key_into(&mut key, type_id, &identity);
         if !self.entities.contains_key(&key) {
-            let bytes = key
-                .len()
-                .saturating_add(identity.len().saturating_mul(size_of::<Cell>()))
-                .saturating_add(self.labels.saturating_mul(size_of::<Option<StoredLabel>>()))
-                .saturating_add(self.columns.saturating_mul(size_of::<Obs>()))
-                .saturating_add(size_of::<EntityState>());
-            budget.reserve(bytes, self.first_index)?;
+            budget.reserve_parts(
+                [
+                    key.len(),
+                    key.len(),
+                    cells_retained_bytes(&identity, self.first_index)?,
+                    size_of::<(String, EntityState)>(),
+                    size_of::<(String, EntityState)>(),
+                ],
+                self.first_index,
+            )?;
+            budget.reserve_array::<Option<StoredLabel>>(self.labels, self.first_index)?;
+            if self.grid {
+                budget.reserve_array::<Obs>(self.columns, self.first_index)?;
+            }
             self.entities.insert(
                 key.clone(),
                 EntityState {
                     type_id,
+                    identity_segment: segment_slot,
                     identity,
                     labels: vec![None; self.labels],
                     numeric: false,
@@ -745,7 +961,11 @@ impl Accumulator {
                     column: 0,
                     current: Obs::default(),
                     carry: None,
-                    cells: vec![Obs::default(); self.columns],
+                    cells: if self.grid {
+                        vec![Obs::default(); self.columns]
+                    } else {
+                        Vec::new()
+                    },
                     grid_carry: None,
                     group: None,
                 },
@@ -759,15 +979,22 @@ impl Accumulator {
             if matches!(value, Cell::Null) {
                 continue;
             }
-            let replace = slot
-                .as_ref()
-                .is_none_or(|stored| (timestamp, ordinal) >= (stored.timestamp, stored.ordinal));
+            let replace = slot.as_ref().is_none_or(|stored| {
+                (timestamp, segment_slot, ordinal)
+                    >= (stored.timestamp, stored.segment_slot, stored.ordinal)
+            });
             if replace {
+                let nested = cell_nested_bytes(value, self.first_index)?;
+                let replaced_heap = slot.as_ref().map_or(0, |stored| stored.reserved_heap);
+                budget.reserve(nested, self.first_index)?;
                 *slot = Some(StoredLabel {
+                    segment_slot,
                     timestamp,
                     ordinal,
                     value: value.clone(),
+                    reserved_heap: nested,
                 });
+                budget.release(replaced_heap);
             }
         }
 
@@ -791,10 +1018,29 @@ impl Accumulator {
                     .collect();
                 let mut group_key = String::new();
                 raw_key_into(&mut group_key, 0, &values);
-                let group = *self.group_index.entry(group_key).or_insert_with(|| {
-                    self.groups.push(GroupState { values, members: 0 });
-                    self.groups.len() - 1
-                });
+                let group = if let Some(group) = self.group_index.get(&group_key).copied() {
+                    group
+                } else {
+                    budget.reserve_parts(
+                        [
+                            group_key.len(),
+                            group_key.len(),
+                            cells_retained_bytes(&values, self.first_index)?,
+                            size_of::<(String, usize)>(),
+                            size_of::<(String, usize)>(),
+                            size_of::<GroupState>(),
+                        ],
+                        self.first_index,
+                    )?;
+                    self.groups.push(GroupState {
+                        segment_slot,
+                        values,
+                        members: 0,
+                    });
+                    let group = self.groups.len() - 1;
+                    self.group_index.insert(group_key, group);
+                    group
+                };
                 self.groups[group].members = self.groups[group].members.saturating_add(1);
                 state.group = Some(group);
             }
@@ -803,7 +1049,7 @@ impl Accumulator {
         let previous_ts = (state.window.count > 0).then_some(state.window.last_ts);
         let column = column_of_span(previous_ts, timestamp, self.range, self.columns);
         state.window.observe(timestamp, value);
-        if !self.grouped || column >= state.column {
+        if self.grid && (!self.grouped || column >= state.column) {
             let grid_column = column_of_span(
                 state.grid_carry.map(|(carry_ts, _value)| carry_ts),
                 timestamp,
@@ -830,7 +1076,9 @@ impl Accumulator {
             return Ok(());
         }
         if column > state.column {
-            if let Some(finished) = state.current.cell(self.cumulative) {
+            if self.grid
+                && let Some(finished) = state.current.cell(self.cumulative)
+            {
                 self.totals[state.column].add(finished);
             }
             if state.current.count > 0 {
@@ -850,65 +1098,120 @@ impl Accumulator {
 
     fn collect_ids(
         &self,
-        retained: &mut HashSet<u64>,
+        retained: &mut [HashSet<u64>],
+        retained_indices: &mut [Vec<(u64, usize)>],
         budget: &mut WorkingBudget,
     ) -> Result<(), HeatmapError> {
+        if self.grouped {
+            budget.reserve_array::<Option<f64>>(self.groups.len(), self.first_index)?;
+            budget.reserve_array::<usize>(self.groups.len(), self.first_index)?;
+            budget
+                .reserve_array::<(&String, &EntityState)>(self.entities.len(), self.first_index)?;
+            let group_totals = self.group_totals();
+            let order = group_order(&group_totals);
+            for group in order.into_iter().take(self.top) {
+                let group = &self.groups[group];
+                reserve_ids(
+                    &group.values,
+                    group.segment_slot,
+                    retained,
+                    retained_indices,
+                    budget,
+                    self.first_index,
+                )?;
+            }
+            return Ok(());
+        }
+        let numeric = self.entities.values().filter(|state| state.numeric).count();
+        budget.reserve_array::<Option<f64>>(numeric, self.first_index)?;
+        let label_cutoff = self.label_cutoff();
         for state in self.entities.values() {
             if !state.numeric {
                 continue;
             }
-            reserve_ids(&state.identity, retained, budget, self.first_index)?;
-            for label in state.labels.iter().flatten() {
-                reserve_id(&label.value, retained, budget, self.first_index)?;
+            reserve_ids(
+                &state.identity,
+                state.identity_segment,
+                retained,
+                retained_indices,
+                budget,
+                self.first_index,
+            )?;
+            if label_cutoff.is_some_and(|cutoff| {
+                ranking_reaches_cutoff(state.window.total(self.cumulative), cutoff)
+            }) {
+                for label in state.labels.iter().flatten() {
+                    reserve_id(
+                        &label.value,
+                        label.segment_slot,
+                        retained,
+                        retained_indices,
+                        budget,
+                        self.first_index,
+                    )?;
+                }
             }
         }
-        for group in &self.groups {
-            reserve_ids(&group.values, retained, budget, self.first_index)?;
-        }
         Ok(())
+    }
+
+    fn group_totals(&self) -> Vec<Option<f64>> {
+        let mut totals = vec![None; self.groups.len()];
+        for (_key, state) in self.ordered_numeric_states() {
+            if let (Some(group), Some(total)) = (state.group, state.window.total(self.cumulative)) {
+                totals[group] = Some(totals[group].unwrap_or(0.0) + total);
+            }
+        }
+        totals
+    }
+
+    fn ordered_numeric_states(&self) -> Vec<(&String, &EntityState)> {
+        let mut states = self
+            .entities
+            .iter()
+            .filter(|(_key, state)| state.numeric)
+            .collect::<Vec<_>>();
+        states.sort_unstable_by(|(left_key, left), (right_key, right)| {
+            compare_totals(
+                left.window.total(self.cumulative).as_ref(),
+                right.window.total(self.cumulative).as_ref(),
+            )
+            .then_with(|| left_key.cmp(right_key))
+        });
+        states
+    }
+
+    fn label_cutoff(&self) -> Option<LabelCutoff> {
+        if self.grouped {
+            return None;
+        }
+        let mut totals = self
+            .entities
+            .values()
+            .filter(|state| state.numeric)
+            .map(|state| state.window.total(self.cumulative))
+            .collect::<Vec<_>>();
+        totals.sort_by(|left, right| compare_totals(left.as_ref(), right.as_ref()));
+        totals
+            .get(self.top.min(totals.len()).saturating_sub(1))
+            .copied()
+            .map(|total| total.map_or(LabelCutoff::Null, LabelCutoff::Value))
     }
 
     fn finish(
         mut self,
         spec: &ItemSpec,
         recorded: Option<(i64, i64)>,
-        dictionary: &HashMap<u64, Value>,
+        dictionary: &RenderedIds,
+        budget: &mut WorkingBudget,
     ) -> Result<HeatmapItemResult, HeatmapError> {
-        let mut ranked = Vec::new();
-        for (_raw_key, state) in self.entities.drain() {
-            if !state.numeric {
-                continue;
-            }
-            if let Some(finished) = state.current.cell(self.cumulative) {
-                self.totals[state.column].add(finished);
-            }
-            let identity_values = render_cells(&state.identity, dictionary, self.first_index)?;
-            let mut key = String::new();
-            entity_key_into(&mut key, state.type_id, &identity_values);
-            ranked.push(RankedState {
-                key,
-                total: state.window.total(self.cumulative),
-                identity_values,
-                state,
-            });
-        }
-        ranked.sort_by(|left, right| match (left.total, right.total) {
-            (Some(left_total), Some(right_total)) => right_total
-                .partial_cmp(&left_total)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.key.cmp(&right.key)),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => left.key.cmp(&right.key),
-        });
-        let physical_entity_count = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
-        let totals_total =
-            summary_total(ranked.iter().filter_map(|row| row.total), self.cumulative);
+        self.reserve_finish(spec, dictionary, budget)?;
+        let has_data = self.entities.values().any(|state| state.numeric);
         let coverage = HeatmapCoverage {
-            state: if ranked.is_empty() {
-                CoverageState::NoData
-            } else {
+            state: if has_data {
                 CoverageState::Data
+            } else {
+                CoverageState::NoData
             },
             recorded_from: recorded.map(|(from, _to)| from),
             recorded_to: recorded.map(|(_from, to)| to),
@@ -918,16 +1221,40 @@ impl Accumulator {
         };
         let ranking = spec.query.ranking.clone();
         if self.grouped {
-            return self.finish_grouped(
-                spec,
-                &ranked,
-                physical_entity_count,
-                totals_total,
-                coverage,
-                ranking,
-                dictionary,
-            );
+            return self.finish_grouped(spec, coverage, ranking, dictionary);
         }
+        let mut ranked = Vec::new();
+        for (_raw_key, state) in self.entities.drain() {
+            if !state.numeric {
+                continue;
+            }
+            if self.grid
+                && let Some(finished) = state.current.cell(self.cumulative)
+            {
+                self.totals[state.column].add(finished);
+            }
+            let identity_values = render_cells(
+                &state.identity,
+                state.identity_segment,
+                dictionary,
+                self.first_index,
+            )?;
+            let mut key = String::new();
+            entity_key_into(&mut key, state.type_id, &identity_values);
+            ranked.push(RankedState {
+                key,
+                total: state.window.total(self.cumulative),
+                identity_values,
+                state,
+            });
+        }
+        ranked.sort_by(|left, right| {
+            compare_totals(left.total.as_ref(), right.total.as_ref())
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        let physical_entity_count = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
+        let totals_total =
+            summary_total(ranked.iter().filter_map(|row| row.total), self.cumulative);
         self.finish_ungrouped(
             spec,
             ranked,
@@ -937,6 +1264,135 @@ impl Accumulator {
             ranking,
             dictionary,
         )
+    }
+
+    fn reserve_finish(
+        &self,
+        spec: &ItemSpec,
+        dictionary: &RenderedIds,
+        budget: &mut WorkingBudget,
+    ) -> Result<(), HeatmapError> {
+        budget.reserve(spec.query.ranking.section.len(), self.first_index)?;
+        reserve_strings_clone(&spec.query.ranking.fields, budget, self.first_index)?;
+        if let HeatmapView::Grid { group, .. } = &spec.query.view {
+            reserve_strings_clone(&spec.labels, budget, self.first_index)?;
+            reserve_strings_clone(group, budget, self.first_index)?;
+        }
+        if self.grouped {
+            return self.reserve_grouped_finish(dictionary, budget);
+        }
+        let numeric = self.entities.values().filter(|state| state.numeric).count();
+        budget.reserve_array::<RankedState>(numeric, self.first_index)?;
+        budget.reserve_array::<RankedState>(numeric, self.first_index)?;
+        let top = spec.query.ranking.top.min(numeric);
+        budget.reserve_array::<HeatmapEntity>(top, self.first_index)?;
+        budget.reserve_array::<HeatmapEntity>(top, self.first_index)?;
+        let label_cutoff = self.label_cutoff();
+        for (raw_key, state) in &self.entities {
+            if !state.numeric {
+                continue;
+            }
+            budget.reserve_parts([raw_key.len(), raw_key.len()], self.first_index)?;
+            budget.reserve_array::<Value>(state.identity.len(), self.first_index)?;
+            let identity_names = contract(state.type_id)
+                .map(|contract| contract.identity)
+                .unwrap_or_default();
+            for (position, stored) in state.identity.iter().enumerate() {
+                let name_len = identity_names.get(position).map_or_else(
+                    || format!("value_{position}").len(),
+                    |name| public_identity_name(name).len(),
+                );
+                budget.reserve_parts(
+                    [
+                        size_of::<(String, Value)>(),
+                        size_of::<(String, Value)>(),
+                        name_len,
+                        name_len,
+                    ],
+                    self.first_index,
+                )?;
+                reserve_rendered_clone(
+                    stored,
+                    state.identity_segment,
+                    dictionary,
+                    budget,
+                    self.first_index,
+                )?;
+                reserve_rendered_clone(
+                    stored,
+                    state.identity_segment,
+                    dictionary,
+                    budget,
+                    self.first_index,
+                )?;
+            }
+            if label_cutoff.is_some_and(|cutoff| {
+                ranking_reaches_cutoff(state.window.total(self.cumulative), cutoff)
+            }) {
+                for (name, label) in spec.labels.iter().zip(&state.labels) {
+                    budget.reserve_parts(
+                        [
+                            size_of::<(String, Value)>(),
+                            size_of::<(String, Value)>(),
+                            name.len(),
+                            name.len(),
+                        ],
+                        self.first_index,
+                    )?;
+                    if let Some(label) = label {
+                        reserve_rendered_clone(
+                            &label.value,
+                            label.segment_slot,
+                            dictionary,
+                            budget,
+                            self.first_index,
+                        )?;
+                    }
+                }
+            }
+        }
+        if self.grid {
+            budget.reserve_array::<CellSum>(self.columns, self.first_index)?;
+            budget.reserve_array::<HeatmapInterval>(self.columns, self.first_index)?;
+            budget.reserve_matrix::<Option<f64>>(top, self.columns, self.first_index)?;
+            budget.reserve_array::<Option<f64>>(self.columns, self.first_index)?;
+            budget.reserve_array::<Option<f64>>(self.columns, self.first_index)?;
+        }
+        Ok(())
+    }
+
+    fn reserve_grouped_finish(
+        &self,
+        dictionary: &RenderedIds,
+        budget: &mut WorkingBudget,
+    ) -> Result<(), HeatmapError> {
+        let group_totals = self.group_totals();
+        let order = group_order(&group_totals);
+        let top = self.top.min(order.len());
+        budget.reserve_array::<Option<f64>>(self.groups.len(), self.first_index)?;
+        budget.reserve_matrix::<CellSum>(self.groups.len(), self.columns, self.first_index)?;
+        budget.reserve_array::<usize>(self.groups.len(), self.first_index)?;
+        budget.reserve_array::<usize>(self.groups.len(), self.first_index)?;
+        budget.reserve_array::<CellSum>(self.columns, self.first_index)?;
+        budget.reserve_array::<HeatmapInterval>(self.columns, self.first_index)?;
+        budget.reserve_array::<HeatmapGroup>(top, self.first_index)?;
+        budget.reserve_matrix::<Option<f64>>(top, self.columns, self.first_index)?;
+        budget.reserve_array::<Option<f64>>(self.columns, self.first_index)?;
+        budget.reserve_array::<Option<f64>>(self.columns, self.first_index)?;
+        for group in order.into_iter().take(top) {
+            let group = &self.groups[group];
+            budget.reserve_array::<Value>(group.values.len(), self.first_index)?;
+            for stored in &group.values {
+                reserve_rendered_clone(
+                    stored,
+                    group.segment_slot,
+                    dictionary,
+                    budget,
+                    self.first_index,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     #[expect(
@@ -951,7 +1407,7 @@ impl Accumulator {
         totals_total: Option<f64>,
         coverage: HeatmapCoverage,
         ranking: super::query::NormalizedRanking,
-        dictionary: &HashMap<u64, Value>,
+        dictionary: &RenderedIds,
     ) -> Result<HeatmapItemResult, HeatmapError> {
         let top = spec.query.ranking.top;
         let others_total = summary_total(
@@ -1030,48 +1486,34 @@ impl Accumulator {
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the typed result's shared completed parts"
-    )]
     fn finish_grouped(
-        self,
+        mut self,
         spec: &ItemSpec,
-        ranked: &[RankedState],
-        _physical_entity_count: u64,
-        _ranking_totals_total: Option<f64>,
         coverage: HeatmapCoverage,
         ranking: super::query::NormalizedRanking,
-        dictionary: &HashMap<u64, Value>,
+        dictionary: &RenderedIds,
     ) -> Result<HeatmapItemResult, HeatmapError> {
-        let totals = self.totals;
+        let mut totals = std::mem::take(&mut self.totals);
+        let ordered = self.ordered_numeric_states();
         let mut group_totals = vec![None; self.groups.len()];
         let mut group_cells = vec![vec![CellSum::default(); self.columns]; self.groups.len()];
-        for row in ranked {
-            let Some(group) = row.state.group else {
+        for (_key, state) in ordered {
+            if let Some(finished) = state.current.cell(self.cumulative) {
+                totals[state.column].add(finished);
+            }
+            let Some(group) = state.group else {
                 continue;
             };
-            if let Some(total) = row.total {
+            if let Some(total) = state.window.total(self.cumulative) {
                 group_totals[group] = Some(group_totals[group].unwrap_or(0.0) + total);
             }
-            for (sum, observed) in group_cells[group].iter_mut().zip(&row.state.cells) {
+            for (sum, observed) in group_cells[group].iter_mut().zip(&state.cells) {
                 if let Some(value) = observed.cell(self.cumulative) {
                     sum.add(value);
                 }
             }
         }
-        let mut order: Vec<usize> = (0..self.groups.len()).collect();
-        order.sort_by(
-            |left, right| match (group_totals[*left], group_totals[*right]) {
-                (Some(left_total), Some(right_total)) => right_total
-                    .partial_cmp(&left_total)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| left.cmp(right)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => left.cmp(right),
-            },
-        );
+        let order = group_order(&group_totals);
         let top = spec.query.ranking.top.min(order.len());
         let winners: HashSet<usize> = order.iter().take(top).copied().collect();
         let mut others = vec![CellSum::default(); self.columns];
@@ -1086,7 +1528,12 @@ impl Accumulator {
         for group in order.iter().take(top) {
             let state = &self.groups[*group];
             groups.push(HeatmapGroup {
-                values: render_cells(&state.values, dictionary, self.first_index)?,
+                values: render_cells(
+                    &state.values,
+                    state.segment_slot,
+                    dictionary,
+                    self.first_index,
+                )?,
                 members: state.members,
                 total: group_totals[*group],
                 cells: group_cells[*group].iter().map(CellSum::value).collect(),
@@ -1145,6 +1592,34 @@ struct RankedState {
     state: EntityState,
 }
 
+fn compare_totals(left: Option<&f64>, right: Option<&f64>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => right.partial_cmp(left).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn group_order(totals: &[Option<f64>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..totals.len()).collect();
+    order.sort_by(|left, right| {
+        compare_totals(totals[*left].as_ref(), totals[*right].as_ref())
+            .then_with(|| left.cmp(right))
+    });
+    order
+}
+
+fn ranking_reaches_cutoff(total: Option<f64>, cutoff: LabelCutoff) -> bool {
+    match cutoff {
+        LabelCutoff::Value(cutoff) if !cutoff.is_finite() => true,
+        LabelCutoff::Value(cutoff) => {
+            total.is_some_and(|total| !total.is_finite() || total >= cutoff)
+        }
+        LabelCutoff::Null => true,
+    }
+}
+
 fn summary_total(values: impl Iterator<Item = f64>, cumulative: bool) -> Option<f64> {
     values.fold(None, |current, value| {
         Some(match current {
@@ -1182,7 +1657,7 @@ fn public_identity_name(name: &str) -> &str {
 fn labels_object(
     spec: &ItemSpec,
     labels: &[Option<StoredLabel>],
-    dictionary: &HashMap<u64, Value>,
+    dictionary: &RenderedIds,
     index: usize,
 ) -> Result<NamedValues, HeatmapError> {
     spec.labels
@@ -1190,7 +1665,7 @@ fn labels_object(
         .zip(labels)
         .map(|(name, stored)| {
             let value = stored.as_ref().map_or(Ok(Value::Null), |stored| {
-                render_cell(&stored.value, dictionary, index)
+                render_cell(&stored.value, stored.segment_slot, dictionary, index)
             })?;
             Ok((name.clone(), value))
         })
@@ -1199,51 +1674,118 @@ fn labels_object(
 
 fn render_cells(
     cells: &[Cell],
-    dictionary: &HashMap<u64, Value>,
+    segment_slot: usize,
+    dictionary: &RenderedIds,
     index: usize,
 ) -> Result<Vec<Value>, HeatmapError> {
     cells
         .iter()
-        .map(|stored| render_cell(stored, dictionary, index))
+        .map(|stored| render_cell(stored, segment_slot, dictionary, index))
         .collect()
 }
 
 fn render_cell(
     stored: &Cell,
-    dictionary: &HashMap<u64, Value>,
+    segment_slot: usize,
+    dictionary: &RenderedIds,
     index: usize,
 ) -> Result<Value, HeatmapError> {
     if let Cell::StrId(id) = stored {
         return dictionary
-            .get(id)
+            .get(&(segment_slot, *id))
             .cloned()
             .ok_or_else(|| HeatmapError::storage(index, format!("unresolved dictionary id {id}")));
     }
     cell(stored, &Dictionary::default()).map_err(|error| HeatmapError::storage(index, error))
 }
 
-fn reserve_ids(
-    cells: &[Cell],
-    retained: &mut HashSet<u64>,
+fn reserve_rendered_clone(
+    stored: &Cell,
+    segment_slot: usize,
+    dictionary: &RenderedIds,
     budget: &mut WorkingBudget,
     index: usize,
 ) -> Result<(), HeatmapError> {
-    for stored in cells {
-        reserve_id(stored, retained, budget, index)?;
+    budget.reserve_array::<Value>(1, index)?;
+    if let Cell::StrId(id) = stored {
+        if let Some(value) = dictionary.get(&(segment_slot, *id)) {
+            let bytes = encoded_value_len(value, index)?;
+            budget.reserve(bytes, index)?;
+        }
+    } else if let Cell::ListI32(values) = stored {
+        budget.reserve_array::<Value>(values.len(), index)?;
+        budget.reserve_array::<Value>(values.len(), index)?;
     }
     Ok(())
 }
 
+fn encoded_value_len(value: &Value, index: usize) -> Result<usize, HeatmapError> {
+    let mut counter = ResultBudget {
+        remaining: usize::MAX,
+    };
+    serde_json::to_writer(&mut counter, value)
+        .map_err(|error| HeatmapError::storage(index, error))?;
+    Ok(usize::MAX - counter.remaining)
+}
+
+fn reserve_ids(
+    cells: &[Cell],
+    segment_slot: usize,
+    retained: &mut [HashSet<u64>],
+    retained_indices: &mut [Vec<(u64, usize)>],
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    for stored in cells {
+        reserve_id(
+            stored,
+            segment_slot,
+            retained,
+            retained_indices,
+            budget,
+            index,
+        )?;
+    }
+    Ok(())
+}
+
+fn cells_retained_bytes(cells: &[Cell], index: usize) -> Result<usize, HeatmapError> {
+    let mut bytes = size_of::<Cell>().checked_mul(cells.len()).ok_or_else(|| {
+        HeatmapError::invalid(index, "heatmap execution working set size overflows")
+    })?;
+    for stored in cells {
+        bytes = bytes
+            .checked_add(cell_nested_bytes(stored, index)?)
+            .ok_or_else(|| {
+                HeatmapError::invalid(index, "heatmap execution working set size overflows")
+            })?;
+    }
+    Ok(bytes)
+}
+
+fn cell_nested_bytes(stored: &Cell, index: usize) -> Result<usize, HeatmapError> {
+    match stored {
+        Cell::ListI32(values) => size_of::<i32>().checked_mul(values.len()).ok_or_else(|| {
+            HeatmapError::invalid(index, "heatmap execution working set size overflows")
+        }),
+        _ => Ok(0),
+    }
+}
+
 fn reserve_id(
     stored: &Cell,
-    retained: &mut HashSet<u64>,
+    segment_slot: usize,
+    retained: &mut [HashSet<u64>],
+    retained_indices: &mut [Vec<(u64, usize)>],
     budget: &mut WorkingBudget,
     index: usize,
 ) -> Result<(), HeatmapError> {
     if let Cell::StrId(id) = stored
-        && retained.insert(*id)
+        && !retained[segment_slot].contains(id)
     {
-        budget.reserve(size_of::<u64>().saturating_mul(4), index)?;
+        budget.reserve_parts([size_of::<u64>() * 4, size_of::<(u64, usize)>() * 2], index)?;
+        retained[segment_slot].insert(*id);
+        retained_indices[segment_slot].push((*id, index));
     }
     Ok(())
 }
@@ -1503,27 +2045,144 @@ fn peak_values(cells: &[Option<f64>]) -> Option<f64> {
         })
 }
 
-fn check_result_budget(result: &HeatmapBatchResult) -> Result<(), HeatmapError> {
-    let mut budget = ResultBudget {
+fn expand_results(
+    unique: &[HeatmapItemResult],
+    original_to_unique: &[usize],
+    working: &mut WorkingBudget,
+) -> Result<Vec<HeatmapItemResult>, HeatmapError> {
+    check_result_budget(unique, original_to_unique)?;
+    for (index, unique_index) in original_to_unique.iter().copied().enumerate() {
+        reserve_result_clone(&unique[unique_index], working, index)?;
+    }
+    Ok(original_to_unique
+        .iter()
+        .map(|index| unique[*index].clone())
+        .collect())
+}
+
+fn check_result_budget(
+    unique: &[HeatmapItemResult],
+    original_to_unique: &[usize],
+) -> Result<(), HeatmapError> {
+    let mut encoded = ResultBudget {
         remaining: RESULT_MAX_BYTES,
     };
-    std::io::Write::write_all(&mut budget, b"{\"results\":[")
+    std::io::Write::write_all(&mut encoded, b"{\"results\":[")
         .map_err(|_error| HeatmapError::invalid(0, result_overflow_message()))?;
-    for (index, item) in result.results.iter().enumerate() {
+    for (index, unique_index) in original_to_unique.iter().copied().enumerate() {
         if index > 0 {
-            std::io::Write::write_all(&mut budget, b",")
+            std::io::Write::write_all(&mut encoded, b",")
                 .map_err(|_error| HeatmapError::invalid(index, result_overflow_message()))?;
         }
-        serde_json::to_writer(&mut budget, item)
+        let item = &unique[unique_index];
+        serde_json::to_writer(&mut encoded, item)
             .map_err(|_error| HeatmapError::invalid(index, result_overflow_message()))?;
     }
-    std::io::Write::write_all(&mut budget, b"]}").map_err(|_error| {
+    std::io::Write::write_all(&mut encoded, b"]}").map_err(|_error| {
         HeatmapError::invalid(
-            result.results.len().saturating_sub(1),
+            original_to_unique.len().saturating_sub(1),
             result_overflow_message(),
         )
     })?;
     Ok(())
+}
+
+fn reserve_result_clone(
+    item: &HeatmapItemResult,
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    budget.reserve_array::<HeatmapItemResult>(1, index)?;
+    budget.reserve(item.ranking.section.len(), index)?;
+    reserve_strings_clone(&item.ranking.fields, budget, index)?;
+    budget.reserve_array::<HeatmapEntity>(item.entities.len(), index)?;
+    for entity in &item.entities {
+        reserve_named_values_clone(&entity.identity, budget, index)?;
+        reserve_named_values_clone(&entity.labels, budget, index)?;
+        if let Some(cells) = &entity.cells {
+            budget.reserve_array::<Option<f64>>(cells.len(), index)?;
+        }
+    }
+    if let Some(grid) = &item.grid {
+        reserve_strings_clone(&grid.label_names, budget, index)?;
+        reserve_strings_clone(&grid.group_names, budget, index)?;
+        budget.reserve_array::<HeatmapInterval>(grid.intervals.len(), index)?;
+        budget.reserve_array::<HeatmapGroup>(grid.groups.len(), index)?;
+        for group in &grid.groups {
+            budget.reserve_array::<Value>(group.values.len(), index)?;
+            for value in &group.values {
+                reserve_value_clone(value, budget, index)?;
+            }
+            budget.reserve_array::<Option<f64>>(group.cells.len(), index)?;
+        }
+        budget.reserve_array::<Option<f64>>(grid.totals.cells.len(), index)?;
+        budget.reserve_array::<Option<f64>>(grid.others.cells.len(), index)?;
+    }
+    Ok(())
+}
+
+fn reserve_strings_clone(
+    values: &[String],
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    budget.reserve_array::<String>(values.len(), index)?;
+    for value in values {
+        budget.reserve(value.len(), index)?;
+    }
+    Ok(())
+}
+
+fn reserve_named_values_clone(
+    values: &NamedValues,
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    for (name, value) in values {
+        reserve_map_entry_clone(name, value, budget, index)?;
+    }
+    Ok(())
+}
+
+fn reserve_map_entry_clone(
+    name: &str,
+    value: &Value,
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    budget.reserve_parts(
+        [
+            size_of::<(String, Value)>(),
+            size_of::<(String, Value)>(),
+            name.len(),
+        ],
+        index,
+    )?;
+    reserve_value_clone(value, budget, index)
+}
+
+fn reserve_value_clone(
+    value: &Value,
+    budget: &mut WorkingBudget,
+    index: usize,
+) -> Result<(), HeatmapError> {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+        Value::String(value) => budget.reserve(value.len(), index),
+        Value::Array(values) => {
+            budget.reserve_array::<Value>(values.len(), index)?;
+            for value in values {
+                reserve_value_clone(value, budget, index)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for (name, value) in values {
+                reserve_map_entry_clone(name, value, budget, index)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn result_overflow_message() -> String {
@@ -1668,5 +2327,134 @@ impl PreparedHeatmapBatch {
 
     pub(crate) fn row_visits(&self) -> u64 {
         self.row_visits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use std::collections::BTreeMap;
+    use std::io::Write as _;
+
+    use kronika_registry::ColumnClass;
+    use serde_json::Value;
+
+    use crate::api::heatmap::NormalizedRanking;
+
+    use super::{
+        CoverageState, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapItemResult,
+        RESULT_MAX_BYTES, ResultBudget, WORKING_SET_MAX_BYTES, WorkingBudget, check_result_budget,
+        expand_results, reserve_result_clone,
+    };
+
+    fn item(label: String) -> HeatmapItemResult {
+        HeatmapItemResult {
+            ranking: NormalizedRanking {
+                section: "os_process".to_owned(),
+                fields: vec!["utime".to_owned()],
+                top: 1,
+            },
+            as_of: Some(1),
+            coverage: HeatmapCoverage {
+                state: CoverageState::Data,
+                recorded_from: Some(1),
+                recorded_to: Some(2),
+                nearest_row_before: None,
+                nearest_row_after: None,
+                window_rows: 1,
+            },
+            class: ColumnClass::Cumulative,
+            unit: None,
+            entities: vec![HeatmapEntity {
+                type_id: 1,
+                identity: BTreeMap::new(),
+                labels: BTreeMap::from([("comm".to_owned(), Value::String(label))]),
+                total: Some(1.0),
+                cells: None,
+            }],
+            totals_total: Some(1.0),
+            others_total: None,
+            entity_count: 1,
+            out_of_order: 0,
+            grid: None,
+        }
+    }
+
+    #[test]
+    fn working_set_accepts_the_exact_limit_and_indexes_the_crossing_byte() {
+        let mut budget = WorkingBudget::default();
+        budget
+            .reserve(WORKING_SET_MAX_BYTES, 3)
+            .expect("exact working limit");
+        let error = budget.reserve(1, 7).expect_err("one byte over limit");
+        assert_eq!(error.ranking_index(), 7);
+    }
+
+    #[test]
+    fn working_set_arithmetic_overflow_keeps_the_original_usage_and_index() {
+        let mut budget = WorkingBudget::default();
+        let error = budget
+            .reserve_array::<u64>(usize::MAX, 7)
+            .expect_err("array byte count must overflow");
+        assert_eq!(error.ranking_index(), 7);
+        assert_eq!(budget.used, 0);
+    }
+
+    #[test]
+    fn duplicate_results_reserve_each_deep_clone_at_its_request_index() {
+        let item = item("x".repeat(1_024));
+        let mut measured = WorkingBudget::default();
+        reserve_result_clone(&item, &mut measured, 0).expect("measure one clone");
+        let both = measured.used.checked_mul(2).expect("two clone sizes");
+
+        let mut exact = WorkingBudget {
+            used: WORKING_SET_MAX_BYTES - both,
+        };
+        let results = expand_results(std::slice::from_ref(&item), &[0, 0], &mut exact)
+            .expect("exact remaining working bytes");
+        assert_eq!(results.len(), 2);
+        assert_eq!(exact.used, WORKING_SET_MAX_BYTES);
+
+        let mut over = WorkingBudget {
+            used: WORKING_SET_MAX_BYTES - both + 1,
+        };
+        let error = expand_results(std::slice::from_ref(&item), &[0, 0], &mut over)
+            .expect_err("second clone must cross the working limit");
+        assert_eq!(error.ranking_index(), 1);
+        assert!(error.to_string().contains("working bytes"));
+    }
+
+    #[test]
+    fn encoded_result_accepts_the_exact_limit_and_rejects_one_more_byte() {
+        let mut budget = ResultBudget {
+            remaining: RESULT_MAX_BYTES,
+        };
+        let chunk = [0_u8; 1_024];
+        for _ in 0..(RESULT_MAX_BYTES / chunk.len()) {
+            budget.write_all(&chunk).expect("exact result limit");
+        }
+        assert_eq!(budget.remaining, 0);
+        assert!(budget.write_all(&[0]).is_err(), "one byte over must fail");
+    }
+
+    #[test]
+    fn typed_result_accepts_exactly_eight_mib_and_rejects_one_more_byte() {
+        let mut item = item(String::new());
+        let base = serde_json::to_vec(&HeatmapBatchResult {
+            results: vec![item.clone()],
+        })
+        .expect("measure fixed result envelope")
+        .len();
+        let label = item.entities[0].labels.get_mut("comm").expect("comm label");
+        *label = Value::String("x".repeat(RESULT_MAX_BYTES - base));
+        check_result_budget(std::slice::from_ref(&item), &[0]).expect("exact encoded result limit");
+
+        let Value::String(label) = item.entities[0].labels.get_mut("comm").expect("comm label")
+        else {
+            panic!("comm label must be text");
+        };
+        label.push('x');
+        let error = check_result_budget(std::slice::from_ref(&item), &[0])
+            .expect_err("one encoded byte over must fail");
+        assert_eq!(error.ranking_index(), 0);
     }
 }

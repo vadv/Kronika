@@ -5,7 +5,7 @@ pub(crate) use crate::api::heatmap::HeatmapRequest;
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
-const MAX_QUERY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
 pub(crate) const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;

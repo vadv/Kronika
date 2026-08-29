@@ -171,6 +171,46 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     assert_eq!(ranking["totals_total"], 50.0);
     assert_eq!(ranking["others_total"], 30.0);
     assert_eq!(ranking["entity_count"], "5");
+    assert!(ranking.get("grid").is_none());
+    assert!(entities.iter().all(|entity| entity.get("cells").is_none()));
+}
+
+#[test]
+fn overview_batches_os_gauge_os_counter_and_postgresql_in_order() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 10, "db", "public", "alpha"),
+        (300, 1, 11, 20, "db", "public", "alpha"),
+    ]);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = json!({
+        "from": 100,
+        "to": 400,
+        "rankings": [
+            {"section": "os_process", "fields": ["rmem_kb"], "top": 1},
+            {"section": "os_process", "fields": ["utime"], "top": 1},
+            {"section": "pg_stat_user_tables", "fields": ["seq_scan"], "top": 1},
+        ],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let rankings = structured["results"].as_array().expect("rankings");
+    assert_eq!(rankings.len(), 3);
+    assert_eq!(rankings[0]["ranking"]["section"], "os_process");
+    assert_eq!(rankings[0]["class"], "gauge");
+    assert_eq!(rankings[1]["ranking"]["fields"], json!(["utime"]));
+    assert_eq!(rankings[1]["class"], "cumulative");
+    assert_eq!(rankings[2]["ranking"]["section"], "pg_stat_user_tables");
+    assert_eq!(rankings[2]["entities"][0]["total"], 10.0);
 }
 
 #[test]
@@ -281,15 +321,63 @@ fn overview_rejects_malformed_arguments_without_panicking() {
 }
 
 #[test]
-fn overview_rejects_a_top_above_the_heatmap_cap() {
+fn overview_enforces_top_boundaries_and_defaults_to_twenty_five() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    for (top, returned) in [(1, 1), (500, 5)] {
+        let result = crate::mcp::overview::call(
+            &config,
+            overview_arguments("os_process", &["rmem_kb"], 100, 400, top),
+            &|| false,
+        );
+        assert_eq!(result.is_error, Some(false));
+        let ranking = &result.structured_content.expect("structured content")["results"][0];
+        assert_eq!(ranking["ranking"]["top"], top);
+        assert_eq!(ranking["entities"].as_array().map(Vec::len), Some(returned));
+    }
+
+    let omitted = json!({
+        "from": 100,
+        "to": 400,
+        "rankings": [{"section": "os_process", "fields": ["rmem_kb"]}],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let omitted = crate::mcp::overview::call(&config, omitted, &|| false);
+    assert_eq!(omitted.is_error, Some(false));
+    assert_eq!(
+        omitted.structured_content.expect("structured content")["results"][0]["ranking"]["top"],
+        25
+    );
+
+    for top in [0, 501] {
+        let rejected = crate::mcp::overview::call(
+            &config,
+            overview_arguments("os_process", &["rmem_kb"], 100, 400, top),
+            &|| false,
+        );
+        assert_eq!(rejected.is_error, Some(true));
+        assert_eq!(
+            rejected.structured_content.expect("structured error")["ranking_index"],
+            0
+        );
+    }
+}
+
+#[test]
+fn overview_rejects_a_public_label_selector() {
     let config = test_config(std::env::temp_dir());
-    let arguments = serde_json::json!({
+    let arguments = json!({
         "from": 100,
         "to": 400,
         "rankings": [{
             "section": "os_process",
             "fields": ["rmem_kb"],
-            "top": 4_000_000_000_u64,
+            "labels": ["comm"],
         }],
     })
     .as_object()
@@ -299,14 +387,9 @@ fn overview_rejects_a_top_above_the_heatmap_cap() {
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
 
     assert_eq!(result.is_error, Some(true));
-    let message = result.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        message.contains("500") || message.contains("top"),
-        "error must name the top cap: {message}"
+    assert_eq!(
+        result.structured_content.expect("structured error")["ranking_index"],
+        0
     );
 }
 
@@ -335,6 +418,61 @@ fn overview_reports_the_index_for_each_invalid_top_shape() {
 }
 
 #[test]
+fn overview_unknown_section_and_field_return_indexed_known_options() {
+    let config = test_config(std::env::temp_dir());
+    let unknown_section = json!({
+        "from": 100,
+        "to": 400,
+        "rankings": [
+            {"section": "os_mountinfo", "fields": ["total_bytes"], "top": 1},
+            {"section": "missing", "fields": ["total_bytes"], "top": 1},
+        ],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::overview::call(&config, unknown_section, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("rankings[1]"), "{message}");
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["ranking_index"], 1);
+    assert!(
+        structured["valid_options"]
+            .as_array()
+            .expect("section options")
+            .contains(&json!("os_process"))
+    );
+
+    let unknown_field = json!({
+        "from": 100,
+        "to": 400,
+        "rankings": [
+            {"section": "os_mountinfo", "fields": ["total_bytes"], "top": 1},
+            {"section": "os_mountinfo", "fields": ["missing"], "top": 1},
+        ],
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let result = crate::mcp::overview::call(&config, unknown_field, &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("rankings[1]"), "{message}");
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["ranking_index"], 1);
+    assert_eq!(
+        structured["valid_options"],
+        json!([
+            "total_bytes",
+            "free_bytes",
+            "total_inodes",
+            "available_inodes",
+        ])
+    );
+}
+
+#[test]
 fn overview_request_budget_is_exact_and_names_the_crossing_item() {
     const MAX: usize = 64 * 1024;
     let config = test_config(std::env::temp_dir());
@@ -358,11 +496,13 @@ fn overview_request_budget_is_exact_and_names_the_crossing_item() {
     assert_eq!(at_limit.is_error, Some(true));
     let at_message = at_limit.content[0].as_text().expect("text").text.clone();
     assert!(!at_message.contains("arguments exceed"), "{at_message}");
+    assert!(at_message.contains("rankings[0]"), "{at_message}");
 
     let over_limit = crate::mcp::overview::call(&config, arguments_at(MAX + 1), &|| false);
     assert_eq!(over_limit.is_error, Some(true));
     let over_message = over_limit.content[0].as_text().expect("text").text.clone();
     assert!(over_message.contains("arguments exceed"), "{over_message}");
+    assert!(over_message.contains("rankings[0]"), "{over_message}");
     assert_eq!(
         over_limit.structured_content.expect("structured error")["ranking_index"],
         0
@@ -383,6 +523,11 @@ fn overview_request_budget_is_exact_and_names_the_crossing_item() {
     .clone();
     let crossing = crate::mcp::overview::call(&config, crossing, &|| false);
     assert_eq!(crossing.is_error, Some(true));
+    let crossing_message = crossing.content[0].as_text().expect("text").text.clone();
+    assert!(
+        crossing_message.contains("rankings[2]"),
+        "{crossing_message}"
+    );
     assert_eq!(
         crossing.structured_content.expect("structured error")["ranking_index"],
         2
@@ -2060,6 +2205,8 @@ fn overview_rejects_duplicate_fields_and_a_reversed_window() {
     .clone();
     let result = crate::mcp::overview::call(&config, duplicated, &|| false);
     assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("rankings[0]"), "{message}");
 
     let reversed = serde_json::json!({
         "from": 100,
@@ -2075,6 +2222,8 @@ fn overview_rejects_duplicate_fields_and_a_reversed_window() {
     .clone();
     let result = crate::mcp::overview::call(&config, reversed, &|| false);
     assert_eq!(result.is_error, Some(true));
+    let message = result.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("rankings[0]"), "{message}");
 }
 
 #[test]

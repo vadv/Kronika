@@ -53,8 +53,17 @@ pub(crate) fn mcp_error_indexed(
     message: impl Into<String>,
     ranking_index: usize,
 ) -> CallToolResult {
+    mcp_error_indexed_with(message, ranking_index, Vec::new())
+}
+
+/// A batch refusal with both its zero-based ranking and known replacements.
+pub(crate) fn mcp_error_indexed_with(
+    message: impl Into<String>,
+    ranking_index: usize,
+    valid_options: Vec<String>,
+) -> CallToolResult {
     let message = message.into();
-    let mut result = mcp_error(message);
+    let mut result = mcp_error_with(message, valid_options);
     if let Some(Value::Object(body)) = result.structured_content.as_mut() {
         body.insert("ranking_index".to_owned(), serde_json::json!(ranking_index));
     }
