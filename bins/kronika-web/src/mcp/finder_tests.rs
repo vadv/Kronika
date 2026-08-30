@@ -34,7 +34,7 @@ fn structured(result: rmcp::model::CallToolResult) -> Value {
 }
 
 #[test]
-fn explicit_process_time_reports_the_selected_sample_even_after_filtering() {
+fn process_time_selects_rows_without_exposing_internal_sample_metadata() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (300, 101, 60, "alpha")]);
     fixture.finish();
@@ -45,7 +45,8 @@ fn explicit_process_time_reports_the_selected_sample_even_after_filtering() {
         arguments(&json!({ "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(latest["as_of"], "300");
+    assert_eq!(latest["rows"].as_array().map(Vec::len), Some(1));
+    assert!(latest.get("as_of").is_none());
 
     let selected = structured(super::processes::call(
         &config,
@@ -57,14 +58,12 @@ fn explicit_process_time_reports_the_selected_sample_even_after_filtering() {
         &|| false,
     ));
     assert_eq!(selected["rows"], json!([]));
-    assert_eq!(selected["as_of"], "300");
 
     let edge = structured(super::processes::call(
         &config,
         arguments(&json!({ "at": 20_000_300, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(edge["as_of"], "300");
     assert_eq!(edge["rows"].as_array().expect("rows").len(), 1);
 
     let outside = structured(super::processes::call(
@@ -73,7 +72,6 @@ fn explicit_process_time_reports_the_selected_sample_even_after_filtering() {
         &|| false,
     ));
     assert_eq!(outside["rows"], json!([]));
-    assert_eq!(outside["as_of"], Value::Null);
 }
 
 #[test]
@@ -109,7 +107,6 @@ fn relation_and_recorded_postgresql_cadences_bound_current_samples() {
             })),
             &|| false,
         ));
-        assert_eq!(result["as_of"], "200");
         assert_eq!(result["rows"].as_array().expect("rows").len(), 1);
     }
 
@@ -122,7 +119,6 @@ fn relation_and_recorded_postgresql_cadences_bound_current_samples() {
         })),
         &|| false,
     ));
-    assert_eq!(old_table["as_of"], Value::Null);
     assert_eq!(old_table["rows"], json!([]));
 
     let recorded_cadence = structured(super::postgresql::call_activity(
@@ -130,7 +126,6 @@ fn relation_and_recorded_postgresql_cadences_bound_current_samples() {
         arguments(&json!({ "at": 150_000_150, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(recorded_cadence["as_of"], "150");
     assert_eq!(recorded_cadence["rows"].as_array().expect("rows").len(), 2);
 
     let outside_recorded_cadence = structured(super::postgresql::call_activity(
@@ -138,7 +133,7 @@ fn relation_and_recorded_postgresql_cadences_bound_current_samples() {
         arguments(&json!({ "at": 150_000_151, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(outside_recorded_cadence["as_of"], Value::Null);
+    assert_eq!(outside_recorded_cadence["rows"], json!([]));
 }
 
 #[test]
@@ -151,7 +146,6 @@ fn active_metadata_and_default_postgresql_cadences_bound_samples() {
         arguments(&json!({ "at": 150_000_150, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(edge["as_of"], "150");
     assert_eq!(edge["rows"].as_array().expect("rows").len(), 2);
 
     let mut fallback = Fixture::new();
@@ -163,13 +157,13 @@ fn active_metadata_and_default_postgresql_cadences_bound_samples() {
         arguments(&json!({ "at": 75_000_150, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(edge["as_of"], "150");
+    assert_eq!(edge["rows"].as_array().map(Vec::len), Some(2));
     let outside = structured(super::postgresql::call_activity(
         &config,
         arguments(&json!({ "at": 75_000_151, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(outside["as_of"], Value::Null);
+    assert_eq!(outside["rows"], json!([]));
 }
 
 #[test]
@@ -298,7 +292,6 @@ fn a_predecessor_before_the_current_window_still_feeds_rates() {
         arguments(&json!({ "at": CURRENT + 20_000_000, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(process["as_of"], CURRENT.to_string());
     assert_eq!(process["rows"][0]["read_bytes"], 5.0);
     assert_eq!(
         process["rows"][0]["segment_id"],
@@ -314,7 +307,6 @@ fn a_predecessor_before_the_current_window_still_feeds_rates() {
         })),
         &|| false,
     ));
-    assert_eq!(table["as_of"], "750000100");
     assert_eq!(table["rows"][0]["seq_scan"], 0.04);
 }
 
@@ -335,7 +327,6 @@ fn finder_chooses_the_latest_actual_sample_across_overlapping_segments() {
         arguments(&json!({ "at": 300, "limit": 10 })),
         &|| false,
     ));
-    assert_eq!(result["as_of"], "300");
     assert_eq!(result["rows"][0]["comm"], "later");
     assert_eq!(result["rows"][0]["segment_id"], FIRST_SEGMENT.to_string());
 }
@@ -393,8 +384,25 @@ fn every_plain_postgresql_finder_accepts_an_explicit_point() {
             &|| false,
         ));
         assert_eq!(result["rows"], json!([]));
-        assert_eq!(result["as_of"], Value::Null);
+        assert!(result.get("as_of").is_none());
     }
+}
+
+#[test]
+fn omitted_at_uses_the_global_store_bound_and_drops_an_old_vacuum() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_vacuum_rows(&[(100, 42, "scanning heap", 10, 5, 0)]);
+    fixture.append_log_error(75_000_101);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let result = structured(super::postgresql::call_vacuum(
+        &config,
+        arguments(&json!({ "limit": 10 })),
+        &|| false,
+    ));
+
+    assert_eq!(result, json!({"rows": [], "truncated": false}));
 }
 
 #[test]

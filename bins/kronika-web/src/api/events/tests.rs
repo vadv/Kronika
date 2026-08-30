@@ -4,11 +4,9 @@ use serde_json::{Value, json};
 
 use super::{
     EventDataRow, EventSource, EventStat, EventTier, EventsQuery, EventsQueryError,
-    EventsRepresentation, EventsResult, RESPONSE_MAX_BYTES, StoredEventRow, ensure_budget,
-    event_collator, group_events, groups_result, label_event_fields, occurrences_result,
-    slow_threshold_ms,
+    EventsRepresentation, EventsResult, StoredEventRow, event_collator, group_events,
+    groups_result, label_event_fields, occurrences_result, slow_threshold_ms,
 };
-use crate::api::ApiError;
 use crate::api::time::TimeRange;
 
 const HOUR: i64 = 1_780_000_000_000_000;
@@ -586,44 +584,4 @@ fn slow_threshold_uses_latest_strict_timestamp_and_exact_units() {
     );
     assert_eq!(slow_threshold_ms(&[setting(1, "-1", "ms")]), None);
     assert_eq!(slow_threshold_ms(&[setting(1, "not-a-number", "ms")]), None);
-}
-
-#[test]
-fn event_budget_is_all_or_error_and_representation_specific() {
-    let with_sample = |sample: String| EventsResult::Occurrences {
-        occurrences: vec![super::EventOccurrence {
-            fields: serde_json::Map::from_iter([("sample".to_owned(), json!(sample))]),
-            source: "pg_log_slow_queries".to_owned(),
-            segment_id: "1".to_owned(),
-            type_id: "1".to_owned(),
-            row_ordinal: "1".to_owned(),
-            at: "1".to_owned(),
-        }],
-        truncated: false,
-    };
-
-    let base = serde_json::to_vec(&with_sample(String::new()))
-        .expect("measure result")
-        .len();
-    let at_limit = with_sample("x".repeat(RESPONSE_MAX_BYTES - base));
-    assert_eq!(
-        serde_json::to_vec(&at_limit)
-            .expect("encode exact result")
-            .len(),
-        RESPONSE_MAX_BYTES
-    );
-    assert!(ensure_budget(&at_limit).is_ok());
-
-    let result = with_sample("x".repeat(RESPONSE_MAX_BYTES - base + 1));
-    assert!(matches!(
-        ensure_budget(&result),
-        Err(ApiError::ResultTooLarge(EventsRepresentation::Occurrences))
-    ));
-
-    let above_old_switch = with_sample("x".repeat(256 * 1024));
-    assert_eq!(
-        above_old_switch.representation(),
-        EventsRepresentation::Occurrences
-    );
-    assert!(ensure_budget(&above_old_switch).is_ok());
 }

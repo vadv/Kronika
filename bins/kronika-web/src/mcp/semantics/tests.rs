@@ -1,6 +1,6 @@
 use super::{
-    DecimalI64, RESPONSE_MAX_BYTES, bounded_limit, invalid_arguments, mcp_error, mcp_error_with,
-    mcp_structured, mcp_structured_bounded, storage_error,
+    DecimalI64, bounded_limit, invalid_arguments, mcp_error, mcp_error_with, mcp_structured,
+    storage_error,
 };
 use crate::api::ApiError;
 
@@ -69,33 +69,6 @@ fn mcp_structured_keeps_the_summary_out_of_the_structured_content_and_vice_versa
 }
 
 #[test]
-fn structured_result_budget_accepts_the_limit_and_rejects_one_more_byte() {
-    const ENVELOPE_BYTES: usize = br#"{"text":""}"#.len();
-    let at_limit = serde_json::json!({ "text": "x".repeat(RESPONSE_MAX_BYTES - ENVELOPE_BYTES) });
-    assert_eq!(
-        serde_json::to_vec(&at_limit)
-            .expect("encode exact-limit value")
-            .len(),
-        RESPONSE_MAX_BYTES
-    );
-    assert_eq!(mcp_structured(at_limit, "summary").is_error, Some(false));
-
-    let over_limit =
-        serde_json::json!({ "text": "x".repeat(RESPONSE_MAX_BYTES + 1 - ENVELOPE_BYTES) });
-    assert_eq!(
-        serde_json::to_vec(&over_limit)
-            .expect("encode over-limit value")
-            .len(),
-        RESPONSE_MAX_BYTES + 1
-    );
-    let result = mcp_structured(over_limit, "summary");
-    assert_eq!(result.is_error, Some(true));
-    let structured = result.structured_content.expect("structured error");
-    assert_eq!(structured["record"], "error");
-    assert!(structured.get("text").is_none());
-}
-
-#[test]
 fn an_error_mirrors_its_text_into_structured_content() {
     let result = mcp_error("no such sort field");
     assert_eq!(result.is_error, Some(true));
@@ -131,18 +104,6 @@ fn rejected_arguments_name_the_tool_and_its_usage() {
 }
 
 #[test]
-fn an_oversized_bounded_result_names_the_halved_knob() {
-    let giant = serde_json::json!({ "text": "x".repeat(9 * 1024 * 1024) });
-    let result = mcp_structured_bounded(giant, "summary", "limit", 5000);
-    assert_eq!(result.is_error, Some(true));
-    let message = result.content[0].as_text().expect("text").text.clone();
-    assert!(
-        message.contains("limit=5000") && message.contains("retry with limit=2500"),
-        "{message}"
-    );
-}
-
-#[test]
 fn a_missing_section_or_column_error_names_the_listing_tool() {
     let section = storage_error(&ApiError::NoSuchSection);
     let message = section.content[0].as_text().expect("text").text.clone();
@@ -162,16 +123,5 @@ fn a_missing_section_or_column_error_names_the_listing_tool() {
     assert!(
         !message.contains("kronika_get_context"),
         "an unreadable store has no listing to point at: {message}"
-    );
-}
-
-#[test]
-fn an_oversized_result_at_the_smallest_limit_points_at_filters() {
-    let giant = serde_json::json!({ "text": "x".repeat(9 * 1024 * 1024) });
-    let result = mcp_structured_bounded(giant, "summary", "limit", 1);
-    let message = result.content[0].as_text().expect("text").text.clone();
-    assert!(
-        message.contains("add filters") && !message.contains("limit=0"),
-        "{message}"
     );
 }

@@ -19,11 +19,6 @@ pub(crate) struct HeatmapBatchResult {
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapItemResult {
     pub(crate) ranking: NormalizedRanking,
-    /// Decimal-string latest usable metric observation. Pass it unchanged to
-    /// an MCP `from`, `to`, or `at` input.
-    #[serde(serialize_with = "serialize_optional_i64")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) as_of: Option<i64>,
     pub(crate) coverage: HeatmapCoverage,
     #[serde(serialize_with = "serialize_class")]
     #[schemars(with = "String")]
@@ -55,22 +50,6 @@ pub(crate) enum CoverageState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapCoverage {
     pub(crate) state: CoverageState,
-    /// Decimal-string first recorded timestamp. Pass it unchanged to an MCP
-    /// `from`, `to`, or `at` input.
-    #[serde(serialize_with = "serialize_optional_i64")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) recorded_from: Option<i64>,
-    /// Decimal-string last recorded timestamp. Pass it unchanged to an MCP
-    /// `from`, `to`, or `at` input.
-    #[serde(serialize_with = "serialize_optional_i64")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) recorded_to: Option<i64>,
-    #[serde(serialize_with = "serialize_optional_i64")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) nearest_row_before: Option<i64>,
-    #[serde(serialize_with = "serialize_optional_i64")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) nearest_row_after: Option<i64>,
     #[serde(serialize_with = "serialize_u64")]
     #[schemars(with = "String")]
     pub(crate) window_rows: u64,
@@ -154,20 +133,6 @@ where
     S: serde::Serializer,
 {
     serializer.serialize_str(&value.to_string())
-}
-
-#[expect(
-    clippy::ref_option,
-    reason = "serde serialize_with passes the optional field by reference"
-)]
-fn serialize_optional_i64<S>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    match value {
-        Some(value) => serializer.serialize_some(&value.to_string()),
-        None => serializer.serialize_none(),
-    }
 }
 
 #[expect(

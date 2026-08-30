@@ -296,7 +296,7 @@ fn overview_batches_os_gauge_os_counter_and_postgresql_in_order() {
 }
 
 #[test]
-fn overview_empty_window_names_the_nearest_recorded_rows() {
+fn overview_empty_window_reports_only_no_data_and_its_row_count() {
     let mut fixture = Fixture::new();
     // Rows at 50 and 400 widen the recorded range past the neighbours at
     // 100 and 300.
@@ -316,11 +316,20 @@ fn overview_empty_window_names_the_nearest_recorded_rows() {
     let ranking = &structured["results"][0];
     assert_eq!(ranking["entity_count"], "0");
     assert_eq!(ranking["entities"].as_array().expect("entities").len(), 0);
-    assert_eq!(ranking["coverage"]["nearest_row_before"], "100");
-    assert_eq!(ranking["coverage"]["nearest_row_after"], "300");
-    assert_eq!(ranking["coverage"]["recorded_from"], "50");
-    assert_eq!(ranking["coverage"]["recorded_to"], "400");
+    assert_eq!(ranking["coverage"]["state"], "no_data");
     assert_eq!(ranking["coverage"]["window_rows"], "0");
+    for removed in [
+        "as_of",
+        "recorded_from",
+        "recorded_to",
+        "nearest_row_before",
+        "nearest_row_after",
+    ] {
+        assert!(
+            ranking.get(removed).is_none() && ranking["coverage"].get(removed).is_none(),
+            "removed Overview time field {removed}"
+        );
+    }
 }
 
 #[test]
@@ -368,7 +377,7 @@ fn overview_names_the_layout_that_lacks_the_requested_fields() {
 }
 
 #[test]
-fn overview_window_outside_the_recorded_range_says_so() {
+fn overview_window_outside_the_recorded_range_is_no_data() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
     fixture.finish();
@@ -382,16 +391,7 @@ fn overview_window_outside_the_recorded_range_says_so() {
     let structured = result.structured_content.expect("structured content");
     let ranking = &structured["results"][0];
     assert_eq!(ranking["entity_count"], "0");
-    assert_eq!(
-        ranking["coverage"]["nearest_row_before"],
-        serde_json::Value::Null
-    );
-    assert_eq!(
-        ranking["coverage"]["nearest_row_after"],
-        serde_json::Value::Null
-    );
-    assert_eq!(ranking["coverage"]["recorded_from"], "100");
-    assert_eq!(ranking["coverage"]["recorded_to"], "300");
+    assert_eq!(ranking["coverage"]["state"], "no_data");
     assert_eq!(ranking["coverage"]["window_rows"], "0");
 }
 
@@ -2309,7 +2309,7 @@ async fn find_events_end_to_end_through_the_real_transport() {
 }
 
 #[test]
-fn find_tables_falls_back_to_the_newest_segment_carrying_the_section() {
+fn find_tables_uses_a_recent_section_sample_at_the_global_store_bound() {
     // Relations ride a slower cadence than the rest, so the newest segment
     // regularly has none — the tool must answer from the newest segment
     // that does, not fail with a paging error.
@@ -2335,7 +2335,7 @@ fn find_tables_falls_back_to_the_newest_segment_carrying_the_section() {
     let rows = structured["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["relname"], "alpha");
-    assert!(structured["as_of"].is_string());
+    assert!(structured.get("as_of").is_none());
 }
 
 #[test]
@@ -2358,7 +2358,7 @@ fn find_vacuum_reports_no_recorded_rows_instead_of_an_error() {
     let structured = result.structured_content.expect("structured content");
     assert_eq!(structured["rows"].as_array(), Some(&Vec::new()));
     assert_eq!(structured["truncated"], false);
-    assert!(structured["as_of"].is_null());
+    assert!(structured.get("as_of").is_none());
 }
 
 #[test]
@@ -2493,8 +2493,8 @@ fn get_context_reports_the_recorded_range_and_field_catalog() {
 
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
-    assert!(structured["recorded_from"].is_string());
-    assert!(structured["recorded_to"].is_string());
+    assert_eq!(structured["recorded_from"], "100");
+    assert_eq!(structured["recorded_to"], "301");
     let sections = structured["sections"].as_array().expect("sections array");
     assert!(
         sections.iter().all(|section| !section["logical_name"]
@@ -2550,14 +2550,13 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
     assert_eq!(overview.is_error, Some(false));
     let overview = overview.structured_content.expect("overview output");
     let overview_item = &overview["results"][0];
-    assert!(overview_item["as_of"].is_string());
-    assert!(overview_item["coverage"]["recorded_from"].is_string());
-    assert!(overview_item["coverage"]["recorded_to"].is_string());
+    assert_eq!(overview_item["coverage"]["state"], "data");
+    assert!(overview_item.get("as_of").is_none());
     let events = crate::mcp::events::call(
         &config,
         json!({
-            "from": overview_item["coverage"]["recorded_from"],
-            "to": overview_item["coverage"]["recorded_to"],
+            "from": context["recorded_from"],
+            "to": context["recorded_to"],
             "representation": "occurrences",
             "limit": 10,
         })
@@ -2575,7 +2574,7 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
     );
     let finder = crate::mcp::processes::call(
         &config,
-        json!({"at": overview_item["as_of"], "limit": 1})
+        json!({"at": context["recorded_to"], "limit": 1})
             .as_object()
             .expect("finder arguments")
             .clone(),
@@ -2583,12 +2582,13 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
     );
     assert_eq!(finder.is_error, Some(false));
     let finder = finder.structured_content.expect("finder output");
-    assert!(finder["as_of"].is_string());
+    assert_eq!(finder["rows"].as_array().map(Vec::len), Some(1));
+    assert!(finder.get("as_of").is_none());
     let replay = crate::mcp::overview::call(
         &config,
         json!({
-            "from": finder["as_of"],
-            "to": finder["as_of"],
+            "from": context["recorded_from"],
+            "to": context["recorded_to"],
             "rankings": [{"section": "os_process", "fields": ["rmem_kb"], "top": 1}],
         })
         .as_object()
@@ -2854,27 +2854,6 @@ fn get_instance_returns_more_than_five_thousand_settings_without_prefix_cutoff()
         5_001
     );
     assert_eq!(structured["settings_defaults_omitted"], false);
-}
-
-#[test]
-fn get_instance_refuses_an_over_budget_whole_result_instead_of_truncating() {
-    let mut fixture = Fixture::new();
-    let wide = "x".repeat(2_048);
-    fixture.append_postgres_settings(5_000, &wide, "configuration file");
-    fixture.finish();
-    let config = test_config(fixture.root().to_path_buf());
-
-    let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
-    let structured = result.structured_content.expect("structured error");
-    assert_eq!(structured["record"], "error");
-    assert!(
-        structured["message"]
-            .as_str()
-            .expect("message")
-            .contains("result exceeds")
-    );
-    assert!(structured.get("postgresql_settings").is_none());
 }
 
 #[test]

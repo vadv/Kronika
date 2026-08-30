@@ -16,21 +16,11 @@ pub(crate) struct FinderOutput {
     #[schemars(with = "Vec<BTreeMap<String, Value>>")]
     rows: Vec<Value>,
     truncated: bool,
-    /// Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input.
-    as_of: Option<String>,
 }
 
-pub(crate) fn finder_output(
-    rows: Vec<Value>,
-    truncated: bool,
-    as_of: Option<i64>,
-) -> Result<Value, CallToolResult> {
-    serde_json::to_value(FinderOutput {
-        rows,
-        truncated,
-        as_of: as_of.map(|timestamp| timestamp.to_string()),
-    })
-    .map_err(|error| mcp_error(format!("finder result encoding failed: {error}")))
+pub(crate) fn finder_output(rows: Vec<Value>, truncated: bool) -> Result<Value, CallToolResult> {
+    serde_json::to_value(FinderOutput { rows, truncated })
+        .map_err(|error| mcp_error(format!("finder result encoding failed: {error}")))
 }
 
 pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> String {
@@ -157,12 +147,6 @@ pub(crate) fn bounded_limit(name: &str, value: u32, cap: usize) -> Result<usize,
     }
 }
 
-/// The largest encoded `structuredContent` a tool returns. A legal
-/// 5,000-row request over wide text columns can otherwise encode hundreds
-/// of megabytes; past this ceiling the caller gets an error naming the way
-/// out instead of a response no MCP client will digest.
-const RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
-
 pub(crate) fn arguments_within_budget(arguments: &Map<String, Value>) -> bool {
     let mut budget = ByteBudget::new(MAX_QUERY_BYTES);
     serde_json::to_writer(&mut budget, arguments).is_ok()
@@ -170,51 +154,10 @@ pub(crate) fn arguments_within_budget(arguments: &Map<String, Value>) -> bool {
 
 /// Places data in `structuredContent` with the summary as the only text
 /// content, built without `CallToolResult::structured`'s eager JSON mirror.
-/// A result whose encoding exceeds [`RESPONSE_MAX_BYTES`] comes back as an
-/// error instead.
 pub(crate) fn mcp_structured(value: Value, summary: impl Into<String>) -> CallToolResult {
-    structured_within_budget(value, summary, None)
-}
-
-/// [`mcp_structured`] for row-listing tools: the over-budget error names
-/// the requested knob value and the halved retry.
-pub(crate) fn mcp_structured_bounded(
-    value: Value,
-    summary: impl Into<String>,
-    knob: &str,
-    requested: usize,
-) -> CallToolResult {
-    structured_within_budget(value, summary, Some((knob, requested)))
-}
-
-fn structured_within_budget(
-    value: Value,
-    summary: impl Into<String>,
-    knob: Option<(&str, usize)>,
-) -> CallToolResult {
-    let mut budget = ByteBudget::new(RESPONSE_MAX_BYTES);
-    if serde_json::to_writer(&mut budget, &value).is_err() {
-        return mcp_error(over_budget_message(knob));
-    }
     let mut result = CallToolResult::success(vec![ContentBlock::text(summary.into())]);
     result.structured_content = Some(value);
     result
-}
-
-/// Names the way out of an oversized result; with a known knob, names
-/// the halved value to retry with.
-fn over_budget_message(knob: Option<(&str, usize)>) -> String {
-    match knob {
-        Some((name, requested)) if requested > 1 => format!(
-            "result exceeds {RESPONSE_MAX_BYTES} encoded bytes at {name}={requested}: \
-             retry with {name}={} or add filters",
-            requested / 2
-        ),
-        _ => format!(
-            "result exceeds {RESPONSE_MAX_BYTES} encoded bytes: lower `limit`/`top` or add \
-             filters"
-        ),
-    }
 }
 
 #[cfg(test)]

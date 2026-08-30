@@ -138,7 +138,6 @@ pub(crate) enum ApiError {
     BadFilter(String),
     BadCursor,
     Cancelled,
-    ResultTooLarge(events::EventsRepresentation),
     Unreadable(Box<dyn Error + Send + Sync>),
 }
 
@@ -146,11 +145,9 @@ impl ApiError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_)
-            | Self::MixedUnits(_)
-            | Self::BadFilter(_)
-            | Self::BadCursor
-            | Self::ResultTooLarge(_) => StatusCode::BAD_REQUEST,
+            Self::NoSuchColumn(_) | Self::MixedUnits(_) | Self::BadFilter(_) | Self::BadCursor => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -164,7 +161,6 @@ impl ApiError {
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
             Self::Cancelled => "cancelled",
-            Self::ResultTooLarge(_) => "result_too_large",
             Self::Unreadable(_) => "unreadable",
         }
     }
@@ -205,14 +201,6 @@ impl std::fmt::Display for ApiError {
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
             Self::Cancelled => write!(f, "request cancelled"),
-            Self::ResultTooLarge(events::EventsRepresentation::Occurrences) => write!(
-                f,
-                "result exceeds 8388608 encoded bytes: narrow the interval, lower limit, or choose groups"
-            ),
-            Self::ResultTooLarge(events::EventsRepresentation::Groups) => write!(
-                f,
-                "result exceeds 8388608 encoded bytes: narrow the interval or lower limit"
-            ),
             Self::Unreadable(error) => error.fmt(f),
         }
     }

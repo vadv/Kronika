@@ -12,7 +12,7 @@ use crate::route::MAX_SNAPSHOT_PAGE_SIZE;
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
 use super::semantics::{
-    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_structured_bounded,
+    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_structured,
 };
 use super::time::resolve_point;
 
@@ -88,11 +88,11 @@ fn call_with(
     let row_count = result.rows.len();
     let rows: Vec<Value> = result.rows.into_iter().map(row_to_json).collect();
     let summary = finder_summary("process", row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated, result.as_of) {
+    let output = match finder_output(rows, result.truncated) {
         Ok(output) => output,
         Err(error) => return error,
     };
-    mcp_structured_bounded(output, summary, "limit", limit)
+    mcp_structured(output, summary)
 }
 
 /// Flattens projected fields, overwrites `pid`/`ppid` from the typed

@@ -23,8 +23,7 @@ use super::catalog::{
 };
 use super::filter::{FilterInput, build_search};
 use super::semantics::{
-    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_error,
-    mcp_structured_bounded,
+    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_error, mcp_structured,
 };
 use super::time::{TimeSpecInput, resolve_point};
 
@@ -97,7 +96,6 @@ fn call(
     query: FinderQuery,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    let limit = query.limit;
     let result = match execute_relation(&config.data_root, query, &|| cancelled()) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(kind.logical_name(), &error),
@@ -110,11 +108,11 @@ fn call(
         .map(|row| row_to_json(row, kind, group))
         .collect();
     let summary = finder_summary(kind.logical_name(), row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated, result.as_of) {
+    let output = match finder_output(rows, result.truncated) {
         Ok(output) => output,
         Err(error) => return error,
     };
-    mcp_structured_bounded(output, summary, "limit", limit)
+    mcp_structured(output, summary)
 }
 
 fn finder_point(tool: &str, at: Option<&TimeSpecInput>) -> Result<SnapshotPoint, CallToolResult> {
@@ -307,7 +305,6 @@ pub(crate) fn call_databases(
 
 fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool) -> CallToolResult {
     let surface = query.surface;
-    let limit = query.limit;
     let result = match execute_plain(&config.data_root, query, &|| cancelled()) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(surface.logical_name(), &error),
@@ -319,11 +316,11 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
         .map(|row| plain_row_to_json(surface.logical_name(), row))
         .collect();
     let summary = finder_summary(surface.logical_name(), row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated, result.as_of) {
+    let output = match finder_output(rows, result.truncated) {
         Ok(output) => output,
         Err(error) => return error,
     };
-    mcp_structured_bounded(output, summary, "limit", limit)
+    mcp_structured(output, summary)
 }
 
 pub(super) fn plain_rows(

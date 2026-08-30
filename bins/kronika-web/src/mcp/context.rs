@@ -34,7 +34,10 @@ pub(crate) fn call(
         Err(error) => return mcp_error(error.to_string()),
     };
     let mut sections = prepared.recorded_sections();
-    let range = prepared.recorded_range();
+    let range = match exclusive_recorded_range(prepared.recorded_range()) {
+        Ok(range) => range,
+        Err(error) => return mcp_error(error),
+    };
     if let Some(wanted) = &input.section {
         sections.retain(|section| section["logical_name"] == wanted.as_str());
         if sections.is_empty() {
@@ -64,3 +67,16 @@ pub(crate) fn call(
         summary,
     )
 }
+
+fn exclusive_recorded_range(range: Option<(i64, i64)>) -> Result<Option<(i64, i64)>, &'static str> {
+    range
+        .map(|(from, to)| {
+            to.checked_add(1)
+                .map(|to_exclusive| (from, to_exclusive))
+                .ok_or("last recorded timestamp cannot form an exclusive upper bound")
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests;

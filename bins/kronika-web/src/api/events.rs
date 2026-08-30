@@ -12,7 +12,6 @@ use super::query::{Plan, plans, streaming_chunk_dictionary, validate_row_diction
 use super::render::{cell, record};
 use super::time::TimeRange;
 use super::{ApiError, CachePolicy, ResponseMeta, log_warnings, weak_etag};
-use crate::budget::ByteBudget;
 use crate::route::{DataRequest, Filter, SegmentRequest};
 
 mod group;
@@ -23,7 +22,6 @@ use group::{group_events, slow_threshold_ms};
 
 pub(crate) const MAX_EVENTS_WINDOW_MICROS: i64 = 3_600_000_000;
 pub(crate) const MAX_EVENTS_LIMIT: usize = 5_000;
-const RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const ROW_CHUNK_ROWS: usize = 512;
 const MINUTE_COLUMNS: usize = 60;
 const MINUTE_MICROS: i64 = 60_000_000;
@@ -482,7 +480,6 @@ impl PreparedEvents {
             }
             EventsRepresentation::Occurrences => occurrences_result(&self.query, by_source),
         };
-        ensure_budget(&result)?;
         Ok(result)
     }
 
@@ -758,12 +755,6 @@ fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<StoredEventRow>>) 
         occurrences,
         truncated,
     }
-}
-
-fn ensure_budget(result: &EventsResult) -> Result<(), ApiError> {
-    let mut budget = ByteBudget::new(RESPONSE_MAX_BYTES);
-    serde_json::to_writer(&mut budget, result)
-        .map_err(|_error| ApiError::ResultTooLarge(result.representation()))
 }
 
 pub(crate) fn label_event_fields(section: &str, fields: &mut Map<String, Value>) {

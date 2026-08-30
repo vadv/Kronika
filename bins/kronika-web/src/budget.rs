@@ -1,4 +1,4 @@
-//! Capped byte counting for encoded requests and results.
+//! Capped byte counting for encoded requests.
 
 /// An `io::Write` that stops once an encoded byte limit is spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

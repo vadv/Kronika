@@ -442,14 +442,11 @@ resources when a user requests current data.
 ### Current-state finders
 
 The nine MCP current-state finders share one snapshot selector and the existing
-snapshot compute and search paths. Omitted `at` means the latest recorded
-point. An explicit `at` uses the common strict time grammar and selects the
-latest usable actual sample no later than that point. The bounded lookback is
-the larger of 20 seconds and 2.5 recorded collection intervals; fixed-cadence
-sections declare their interval in the selector policy. A counter result can
-use the closest canonical predecessor before that lookback. The returned
-`as_of` is the selected sample's actual timestamp even when filters remove
-every row; it is null only when no usable sample was selected.
+snapshot compute and search paths. Omitted `at` resolves once to the last
+timestamp in the whole captured store. The selector then uses the section's
+internal current-sample window at or before that point; an old sparse section
+does not become the present merely because it has no newer row. No usable row
+in the window produces an empty `rows` array.
 
 Structured filters are ANDed. `in` is one predicate with at most eight exact
 values and stays inside the same row scan. MCP finder results are bounded with
@@ -1131,11 +1128,10 @@ label references needed for the result are retained then. Rankings for one
 logical section share one section-owned identity index, compact identity cells,
 and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
-needed to rank them. The typed result has a separate exact 8 MiB encoded-byte
-budget. A counter ranks by its whole-window delta and a gauge by its whole-window
-maximum. A band total uses the sum for counters and the maximum for gauges. The
-response also carries a totals band containing the per-column sum of every
-entity and an others band equal to totals minus the ranked rows.
+needed to rank them. A counter ranks by its whole-window delta and a gauge by
+its whole-window maximum. A band total uses the sum for counters and the maximum
+for gauges. The response also carries a totals band containing the per-column
+sum of every entity and an others band equal to totals minus the ranked rows.
 
 ### Representations
 
@@ -1147,7 +1143,9 @@ does not lose precision. A blob value carries the stored bytes and the recorded
 The common MCP `from`, `to`, and `at` time inputs accept Unix microseconds as a
 JSON integer or canonical signed decimal-string `i64`, as well as the documented
 RFC 3339, `now`, and fixed relative forms. Decimal-string `recorded_from`,
-`recorded_to`, and `as_of` outputs can be passed to those inputs unchanged.
+the inclusive first stored timestamp, and `recorded_to`, the checked exclusive
+upper bound one microsecond after the last stored timestamp, can be passed to
+those inputs unchanged.
 
 The server returns codes and data: unit and kind names, logical section names,
 physical layouts, column names and unix times. It reads no `Accept-Language`,

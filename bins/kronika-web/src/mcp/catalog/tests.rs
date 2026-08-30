@@ -96,18 +96,14 @@ fn overview_output_schema_is_rankings_only() {
         "MCP schema exposed HTTP entity cells"
     );
     assert!(encoded.contains("\"results\""), "missing ordered results");
-    for field in ["as_of", "recorded_from", "recorded_to"] {
-        let description = schema["$defs"]
-            .as_object()
-            .expect("overview definitions")
-            .values()
-            .filter_map(|definition| definition["properties"].get(field))
-            .find_map(|property| property["description"].as_str())
-            .unwrap_or_else(|| panic!("missing {field} description"));
-        assert!(
-            description.contains("Pass it unchanged"),
-            "{field}: {description}"
-        );
+    for removed in [
+        "as_of",
+        "recorded_from",
+        "recorded_to",
+        "nearest_row_before",
+        "nearest_row_after",
+    ] {
+        assert!(!encoded.contains(&format!("\"{removed}\"")), "{removed}");
     }
 }
 
@@ -319,31 +315,26 @@ fn finder_schemas_expose_optional_time_and_the_exact_runtime_envelope() {
         let output_required = output["required"]
             .as_array()
             .expect("output required array");
-        for field in ["rows", "truncated", "as_of"] {
+        for field in ["rows", "truncated"] {
             assert!(
                 output_required.iter().any(|required| required == field),
                 "{name} output omits required {field}"
             );
         }
+        assert_eq!(output_required.len(), 2, "{name}");
         assert_eq!(output["properties"]["rows"]["type"], "array", "{name}");
         assert_eq!(
             output["properties"]["truncated"]["type"], "boolean",
             "{name}"
         );
-        assert_eq!(
-            output["properties"]["as_of"]["description"],
-            "Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input.",
-            "{name}.as_of"
-        );
-        let as_of_description = output["properties"]["as_of"]["description"]
-            .as_str()
-            .expect("as_of description");
-        assert!(
-            tool.description
-                .as_deref()
-                .is_some_and(|description| description.contains(as_of_description)),
-            "{name} does not reuse the output schema's exact as_of description"
-        );
+        assert!(output["properties"].get("as_of").is_none(), "{name}");
+        let description = tool.description.as_deref().expect("description");
+        for removed in ["as_of", "cadence", "freshness", "nearest"] {
+            assert!(
+                !description.to_ascii_lowercase().contains(removed),
+                "{name} advertises removed {removed} metadata"
+            );
+        }
         for obsolete in ["has_more", "next_from", "next_cursor", "cursor"] {
             assert!(
                 output["properties"].get(obsolete).is_none(),

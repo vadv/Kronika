@@ -1,5 +1,6 @@
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
@@ -70,6 +71,34 @@ fn counter_and_gauge_formulas_preserve_null_zero_rate_and_max_rules() {
     gauge.observe(HOUR + 2 * MINUTE, 30.0);
     assert_eq!(gauge.cell(false), Some(30.0));
     assert_eq!(gauge.total(false), Some(90.0));
+}
+
+#[test]
+fn cpu_overview_excludes_the_redundant_aggregate_row() {
+    let fixture = cpu_fixture();
+    let query = HeatmapBatchQuery {
+        range: TimeRange::new(100, 201).expect("CPU range"),
+        items: vec![HeatmapItemQuery {
+            ranking: NormalizedRanking {
+                section: "os_cpu".to_owned(),
+                fields: vec!["user".to_owned()],
+                top: 1,
+            },
+            view: HeatmapView::RankingOnly,
+        }],
+    };
+    let prepared = prepare_batch(fixture.root.path(), query).expect("prepare CPU overview");
+    let result = prepared.execute(&|| false).expect("execute CPU overview");
+    let item = &result.results[0];
+
+    assert_eq!(prepared.row_visits(), 6);
+    assert_eq!(item.coverage.window_rows, 4);
+    assert_eq!(item.entity_count, 2);
+    assert_eq!(item.totals_total, Some(30.0));
+    assert_eq!(item.others_total, Some(10.0));
+    assert_eq!(item.entities.len(), 1);
+    assert_eq!(item.entities[0].identity["cpu_id"], 1);
+    assert_eq!(item.entities[0].total, Some(20.0));
 }
 
 #[test]
@@ -157,13 +186,8 @@ fn shared_section_batch_and_duplicates_decode_each_row_once() {
                 "fields": ["free_bytes"],
                 "top": 2,
             },
-            "as_of": null,
             "coverage": {
                 "state": "no_data",
-                "recorded_from": HOUR.to_string(),
-                "recorded_to": HOUR.to_string(),
-                "nearest_row_before": null,
-                "nearest_row_after": null,
                 "window_rows": "129",
             },
             "class": "gauge",
@@ -249,26 +273,6 @@ fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
         .expect("current execution");
     assert_eq!(current.results[0].entities[0].identity["query_id"], "2");
     assert_eq!(current.results[0].entities[0].labels["query"], "active-2");
-}
-
-#[test]
-fn oversized_statement_labels_reach_the_exact_result_budget() {
-    let fixture = wide_statement_fixture(130, 65_000);
-    let prepared = prepare_batch(
-        fixture.root.path(),
-        statement_batch(&[statement_ranking("total_exec_time", 130)]),
-    )
-    .expect("prepare wide result");
-
-    let error = prepared
-        .execute(&|| false)
-        .expect_err("wide labels must exceed the encoded result budget");
-
-    assert_eq!(error.ranking_index(), 0);
-    assert_eq!(
-        error.to_string(),
-        "rankings[0]: heatmap result exceeds 8388608 encoded bytes; split rankings into several calls or reduce top"
-    );
 }
 
 #[test]
@@ -450,7 +454,10 @@ fn exact_to_is_excluded_from_the_product_range() {
         .execute(&|| false)
         .expect("execute");
     assert_eq!(result.results[0].entity_count, 0);
-    assert_eq!(result.results[0].as_of, None);
+    assert_eq!(
+        result.results[0].coverage.state,
+        super::result::CoverageState::NoData
+    );
 }
 
 #[test]
@@ -643,7 +650,6 @@ fn assert_statement_ranking(item: &super::result::HeatmapItemResult, field: &str
     expected.sort_by(|left, right| right.1.partial_cmp(&left.1).expect("finite fixture values"));
     assert_eq!(item.entity_count, 5_636);
     assert_eq!(item.entities.len(), top);
-    assert_eq!(item.as_of, Some(200));
     let count =
         f64::from(u32::try_from(REPRODUCED_STATEMENT_IDENTITIES).expect("fixture count fits u32"));
     assert_eq!(item.totals_total, Some(count * (count + 1.0) / 2.0));
@@ -728,55 +734,6 @@ fn statement_fixture(identities: usize) -> MountFixture {
     journal
         .append(SegmentId::new(HOUR).expect("segment id"), &part)
         .expect("append statements");
-    drop(journal);
-    drop(owner);
-    MountFixture {
-        root,
-        timestamp: 100,
-    }
-}
-
-fn wide_statement_fixture(identities: usize, query_bytes: usize) -> MountFixture {
-    let root = tempfile::tempdir().expect("fixture directory");
-    let data_root = DataRoot::open(root.path()).expect("data root");
-    let owner = data_root
-        .acquire_writer(LayoutLimits::default())
-        .expect("writer");
-    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
-    for chunk_start in (0..identities).step_by(50) {
-        let mut interner = Interner::new(DictLimits::default());
-        let datname = StrId(interner.intern(b"wide_db").expect("database label").get());
-        let usename = StrId(interner.intern(b"wide_role").expect("role label").get());
-        let mut buffers = SectionBuffers::new();
-        for query_id in chunk_start..(chunk_start + 50).min(identities) {
-            let prefix = format!("wide-{query_id:03}-");
-            let padding = query_bytes.saturating_sub(prefix.len());
-            let mut query_text = prefix;
-            query_text.push_str(&"x".repeat(padding));
-            assert_eq!(query_text.len(), query_bytes);
-            let query = StrId(
-                interner
-                    .intern(query_text.as_bytes())
-                    .expect("wide query label")
-                    .get(),
-            );
-            buffers
-                .push(statement_row(100, query_id, datname, usename, query))
-                .expect("wide baseline statement");
-            let mut current = statement_row(200, query_id, datname, usename, query);
-            current.total_exec_time =
-                f64::from(u32::try_from(query_id + 1).expect("wide fixture value fits u32"));
-            buffers.push(current).expect("wide current statement");
-        }
-        let dictionary = dict::encode(interner.window()).expect("wide dictionary");
-        let part = buffers
-            .flush(&dictionary)
-            .expect("encode wide statements")
-            .expect("nonempty wide statements");
-        journal
-            .append(SegmentId::new(HOUR).expect("segment id"), &part)
-            .expect("append wide statements");
-    }
     drop(journal);
     drop(owner);
     MountFixture {
@@ -920,6 +877,50 @@ fn cumulative_fixture() -> MountFixture {
     MountFixture {
         root,
         timestamp: HOUR,
+    }
+}
+
+fn cpu_fixture() -> MountFixture {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    let mut buffers = SectionBuffers::new();
+    for (timestamp, aggregate, first, second) in [(100, 0, 0, 0), (200, 30, 10, 20)] {
+        for (cpu_id, user) in [(-1, aggregate), (0, first), (1, second)] {
+            buffers
+                .push(OsCpu {
+                    ts: Ts(timestamp),
+                    cpu_id,
+                    user,
+                    nice: 0,
+                    system: 0,
+                    idle: 0,
+                    iowait: 0,
+                    irq: 0,
+                    softirq: 0,
+                    steal: 0,
+                    guest: 0,
+                    guest_nice: 0,
+                    scope: 0,
+                })
+                .expect("CPU row");
+        }
+    }
+    let part = buffers
+        .flush(&[])
+        .expect("encode CPU rows")
+        .expect("nonempty CPU rows");
+    journal
+        .append(SegmentId::new(HOUR).expect("segment id"), &part)
+        .expect("append CPU rows");
+    drop(journal);
+    drop(owner);
+    MountFixture {
+        root,
+        timestamp: 100,
     }
 }
 

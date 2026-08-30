@@ -16,9 +16,6 @@ use super::result::{
 };
 use crate::api::render::{cell, record};
 use crate::api::{ApiError, CachePolicy, ResponseMeta};
-use crate::budget::ByteBudget;
-
-const RESULT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
 type RenderedIds = HashMap<(usize, u64), Value>;
 
@@ -154,7 +151,6 @@ pub(crate) struct PreparedHeatmap {
 pub(crate) struct PreparedHeatmapBatch {
     reader: Reader,
     segments: Vec<SegmentRef>,
-    recorded: Option<(i64, i64)>,
     query: HeatmapBatchQuery,
     unique: Vec<ItemSpec>,
     original_to_unique: Vec<usize>,
@@ -206,13 +202,8 @@ pub(crate) fn prepare_batch(
     let started = std::time::Instant::now();
     let reader = Reader::open(root).map_err(|error| HeatmapError::storage(0, error))?;
     let stored = reader
-        .catalog_segments(..)
+        .catalog_segments(query.range.from..query.range.to_exclusive)
         .map_err(|error| HeatmapError::storage(0, error))?;
-    let recorded = stored
-        .segments
-        .iter()
-        .map(|segment| (segment.min_ts(), segment.max_ts()))
-        .reduce(|(first, last), (min, max)| (first.min(min), last.max(max)));
     let mut segments: Vec<SegmentRef> = stored
         .segments
         .into_iter()
@@ -230,7 +221,6 @@ pub(crate) fn prepare_batch(
     Ok(PreparedHeatmapBatch {
         reader,
         segments,
-        recorded,
         query,
         unique,
         original_to_unique,
@@ -290,7 +280,7 @@ impl PreparedHeatmapBatch {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one captured batch owns scan, dictionary resolution, and exact result admission"
+        reason = "one captured batch owns scan and dictionary resolution"
     )]
     pub(crate) fn execute(
         &self,
@@ -315,7 +305,6 @@ impl PreparedHeatmapBatch {
             ));
         }
         let mut opened_segments = Vec::with_capacity(self.segments.len());
-        // Rendered dictionary values feed the typed result's exact encoded-byte budget.
         let mut rendered_ids = RenderedIds::new();
 
         for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
@@ -395,9 +384,13 @@ impl PreparedHeatmapBatch {
         let mut unique_results = Vec::with_capacity(accumulators.len());
         for (spec, accumulator) in self.unique.iter().zip(accumulators) {
             let section = &indexed_sections[accumulator.section];
-            unique_results.push(accumulator.finish(spec, self.recorded, &rendered_ids, section)?);
+            unique_results.push(accumulator.finish(spec, &rendered_ids, section)?);
         }
-        let results = expand_results(&unique_results, &self.original_to_unique)?;
+        let results = self
+            .original_to_unique
+            .iter()
+            .map(|index| unique_results[*index].clone())
+            .collect();
         #[cfg(test)]
         {
             self.retained_identities.store(
@@ -778,24 +771,15 @@ fn scan_plan(
                 return true;
             };
             let timestamp = *timestamp;
+            if redundant_cpu_aggregate(plan, &row) {
+                return true;
+            }
             for binding in &plan.bindings {
                 let accumulator = &mut accumulators[binding.accumulator];
                 if timestamp < range.from {
-                    accumulator.scan.nearest_before = Some(
-                        accumulator
-                            .scan
-                            .nearest_before
-                            .map_or(timestamp, |seen| seen.max(timestamp)),
-                    );
                     continue;
                 }
                 if timestamp >= range.to_exclusive {
-                    accumulator.scan.nearest_after = Some(
-                        accumulator
-                            .scan
-                            .nearest_after
-                            .map_or(timestamp, |seen| seen.min(timestamp)),
-                    );
                     continue;
                 }
                 accumulator.scan.window_rows = accumulator.scan.window_rows.saturating_add(1);
@@ -837,10 +821,13 @@ fn scan_plan(
     Ok(())
 }
 
+fn redundant_cpu_aggregate(plan: &PhysicalPlan, row: &Row) -> bool {
+    logical_section_name(plan.type_id) == Some("os_cpu")
+        && matches!(row.get("cpu_id"), Some(Cell::I32(-1)))
+}
+
 #[derive(Default)]
 struct ScanStats {
-    nearest_before: Option<i64>,
-    nearest_after: Option<i64>,
     window_rows: u64,
 }
 
@@ -993,7 +980,6 @@ struct Accumulator {
     groups: Vec<GroupState>,
     group_index: HashMap<String, usize>,
     out_of_order: u64,
-    as_of: Option<i64>,
     scan: ScanStats,
 }
 
@@ -1099,7 +1085,6 @@ impl Accumulator {
             groups: Vec::new(),
             group_index: HashMap::new(),
             out_of_order: 0,
-            as_of: None,
             scan: ScanStats::default(),
         }
     }
@@ -1115,7 +1100,6 @@ impl Accumulator {
         let Some(value) = summed(row, &binding.metrics) else {
             return Ok(());
         };
-        self.as_of = Some(self.as_of.map_or(timestamp, |seen| seen.max(timestamp)));
         if !self.grid {
             self.rank_fold(entity)?.window.observe(timestamp, value);
             return Ok(());
@@ -1404,7 +1388,6 @@ impl Accumulator {
     fn finish(
         mut self,
         spec: &ItemSpec,
-        recorded: Option<(i64, i64)>,
         dictionary: &RenderedIds,
         section: &IndexedSection<'_>,
     ) -> Result<HeatmapItemResult, HeatmapError> {
@@ -1415,10 +1398,6 @@ impl Accumulator {
             } else {
                 CoverageState::NoData
             },
-            recorded_from: recorded.map(|(from, _to)| from),
-            recorded_to: recorded.map(|(_from, to)| to),
-            nearest_row_before: self.scan.nearest_before,
-            nearest_row_after: self.scan.nearest_after,
             window_rows: self.scan.window_rows,
         };
         let ranking = spec.query.ranking.clone();
@@ -1573,7 +1552,6 @@ impl Accumulator {
         };
         Ok(HeatmapItemResult {
             ranking,
-            as_of: self.as_of,
             coverage,
             class: spec.class,
             unit: spec.unit,
@@ -1672,7 +1650,6 @@ impl Accumulator {
         });
         Ok(HeatmapItemResult {
             ranking,
-            as_of: self.as_of,
             coverage,
             class: spec.class,
             unit: spec.unit,
@@ -2084,48 +2061,6 @@ fn peak_values(cells: &[Option<f64>]) -> Option<f64> {
         })
 }
 
-fn expand_results(
-    unique: &[HeatmapItemResult],
-    original_to_unique: &[usize],
-) -> Result<Vec<HeatmapItemResult>, HeatmapError> {
-    check_result_budget(unique, original_to_unique)?;
-    Ok(original_to_unique
-        .iter()
-        .map(|index| unique[*index].clone())
-        .collect())
-}
-
-fn check_result_budget(
-    unique: &[HeatmapItemResult],
-    original_to_unique: &[usize],
-) -> Result<(), HeatmapError> {
-    let mut encoded = ByteBudget::new(RESULT_MAX_BYTES);
-    std::io::Write::write_all(&mut encoded, b"{\"results\":[")
-        .map_err(|_error| HeatmapError::invalid(0, result_overflow_message()))?;
-    for (index, unique_index) in original_to_unique.iter().copied().enumerate() {
-        if index > 0 {
-            std::io::Write::write_all(&mut encoded, b",")
-                .map_err(|_error| HeatmapError::invalid(index, result_overflow_message()))?;
-        }
-        let item = &unique[unique_index];
-        serde_json::to_writer(&mut encoded, item)
-            .map_err(|_error| HeatmapError::invalid(index, result_overflow_message()))?;
-    }
-    std::io::Write::write_all(&mut encoded, b"]}").map_err(|_error| {
-        HeatmapError::invalid(
-            original_to_unique.len().saturating_sub(1),
-            result_overflow_message(),
-        )
-    })?;
-    Ok(())
-}
-
-fn result_overflow_message() -> String {
-    format!(
-        "heatmap result exceeds {RESULT_MAX_BYTES} encoded bytes; split rankings into several calls or reduce top"
-    )
-}
-
 fn emit_http(
     item: &HeatmapItemResult,
     from: i64,
@@ -2259,92 +2194,5 @@ impl PreparedHeatmapBatch {
     pub(crate) fn metric_fold_slots(&self) -> u64 {
         self.metric_fold_slots
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-#[cfg(test)]
-mod result_budget_tests {
-    use std::collections::BTreeMap;
-
-    use kronika_registry::ColumnClass;
-    use serde_json::Value;
-
-    use crate::api::heatmap::NormalizedRanking;
-
-    use super::{
-        CoverageState, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapItemResult,
-        RESULT_MAX_BYTES, check_result_budget,
-    };
-
-    fn item(label: String) -> HeatmapItemResult {
-        HeatmapItemResult {
-            ranking: NormalizedRanking {
-                section: "os_process".to_owned(),
-                fields: vec!["utime".to_owned()],
-                top: 1,
-            },
-            as_of: Some(1),
-            coverage: HeatmapCoverage {
-                state: CoverageState::Data,
-                recorded_from: Some(1),
-                recorded_to: Some(2),
-                nearest_row_before: None,
-                nearest_row_after: None,
-                window_rows: 1,
-            },
-            class: ColumnClass::Cumulative,
-            unit: None,
-            entities: vec![HeatmapEntity {
-                type_id: 1,
-                identity: BTreeMap::new(),
-                labels: BTreeMap::from([("comm".to_owned(), Value::String(label))]),
-                total: Some(1.0),
-                cells: None,
-            }],
-            totals_total: Some(1.0),
-            others_total: None,
-            entity_count: 1,
-            out_of_order: 0,
-            grid: None,
-        }
-    }
-
-    #[test]
-    fn duplicate_positions_each_count_toward_the_exact_encoded_result_limit() {
-        let item = item("x".repeat(RESULT_MAX_BYTES / 2));
-        check_result_budget(std::slice::from_ref(&item), &[0]).expect("one half-limit result");
-        let error = check_result_budget(std::slice::from_ref(&item), &[0, 0])
-            .expect_err("the duplicate position must cross the encoded limit");
-        assert_eq!(error.ranking_index(), 1);
-        assert_eq!(
-            error.to_string(),
-            "rankings[1]: heatmap result exceeds 8388608 encoded bytes; split rankings into several calls or reduce top"
-        );
-    }
-
-    #[test]
-    fn typed_result_accepts_exactly_eight_mib_and_rejects_one_more_byte() {
-        let mut item = item(String::new());
-        let base = serde_json::to_vec(&HeatmapBatchResult {
-            results: vec![item.clone()],
-        })
-        .expect("measure fixed result envelope")
-        .len();
-        let label = item.entities[0].labels.get_mut("comm").expect("comm label");
-        *label = Value::String("x".repeat(RESULT_MAX_BYTES - base));
-        check_result_budget(std::slice::from_ref(&item), &[0]).expect("exact encoded result limit");
-
-        let Value::String(label) = item.entities[0].labels.get_mut("comm").expect("comm label")
-        else {
-            panic!("comm label must be text");
-        };
-        label.push('x');
-        let error = check_result_budget(std::slice::from_ref(&item), &[0])
-            .expect_err("one encoded byte over must fail");
-        assert_eq!(error.ranking_index(), 0);
-        assert_eq!(
-            error.to_string(),
-            "rankings[0]: heatmap result exceeds 8388608 encoded bytes; split rankings into several calls or reduce top"
-        );
     }
 }

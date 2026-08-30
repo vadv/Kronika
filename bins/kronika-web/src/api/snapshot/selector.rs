@@ -232,36 +232,6 @@ fn prepare(
     if cancelled() {
         return Err(ApiError::Cancelled);
     }
-    let reader = Reader::open(root)?;
-    let (listing, requested_at, current_from) = match query.point {
-        SnapshotPoint::LatestRecorded => (reader.catalog_segments(..)?, None, None),
-        SnapshotPoint::At(at) => {
-            let policy = query.surface.policy();
-            let discovery = reader.catalog_discovery()?;
-            let cadence = if let Some(cadence) = policy.fixed_cadence_seconds {
-                cadence
-            } else {
-                let probe = discovery.clone().segments_with_predecessors_for(
-                    at..=at,
-                    &physical_type_ids("instance_metadata"),
-                )?;
-                recorded_postgresql_cadence(&reader, &probe.segments, at, cancelled)?
-                    .unwrap_or(DEFAULT_POSTGRESQL_CADENCE_SECONDS)
-            };
-            let lookback = cadence_lookback(cadence)?;
-            let from = at.checked_sub(lookback).unwrap_or(i64::MIN);
-            (
-                discovery.segments_with_predecessors_for(
-                    from..=at,
-                    &physical_type_ids(policy.logical_name),
-                )?,
-                Some(at),
-                Some(from),
-            )
-        }
-    };
-    super::super::log_warnings(&listing.warnings);
-    let clean = listing.warnings.is_empty();
     let by = query
         .order
         .as_ref()
@@ -273,12 +243,40 @@ fn prepare(
         .order
         .as_ref()
         .map_or(Order::Asc, |order| order.direction);
+    let reader = Reader::open(root)?;
+    let discovery = reader.catalog_discovery()?;
+    let at = match query.point {
+        SnapshotPoint::LatestRecorded => {
+            let Some(at) = discovery.ranges().map(|(_from, to)| to).max() else {
+                return Ok(None);
+            };
+            at
+        }
+        SnapshotPoint::At(at) => at,
+    };
+    let policy = query.surface.policy();
+    let cadence = if let Some(cadence) = policy.fixed_cadence_seconds {
+        cadence
+    } else {
+        let probe = discovery
+            .clone()
+            .segments_with_predecessors_for(at..=at, &physical_type_ids("instance_metadata"))?;
+        recorded_postgresql_cadence(&reader, &probe.segments, at, cancelled)?
+            .unwrap_or(DEFAULT_POSTGRESQL_CADENCE_SECONDS)
+    };
+    let lookback = cadence_lookback(cadence)?;
+    let current_from = at.checked_sub(lookback).unwrap_or(i64::MIN);
+    let listing = discovery.segments_with_predecessors_for(
+        current_from..=at,
+        &physical_type_ids(policy.logical_name),
+    )?;
+    super::super::log_warnings(&listing.warnings);
+    let clean = listing.warnings.is_empty();
     let mut segments = listing.segments;
     let Some(index) = selected_segment(&segments, query.surface.logical_name()) else {
         return Ok(None);
     };
     let anchor = segments.remove(index);
-    let at = requested_at.unwrap_or_else(|| anchor.max_ts());
     let request = SnapshotRequest {
         segment_id: anchor.id(),
         at,
@@ -301,7 +299,7 @@ fn prepare(
     else {
         return Err(ApiError::BadCursor);
     };
-    prepared.current_from = current_from;
+    prepared.current_from = Some(current_from);
     prepared.with_search(query.search.clone()).map(Some)
 }
 
