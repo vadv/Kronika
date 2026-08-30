@@ -102,9 +102,12 @@ test("Events scopes compact groups by source without treating one locator as a m
   const entry = {
     section: "pg_log_errors",
     detailLocator: {
+      section: "pg_log_errors",
       segment_id: "segment-a",
+      at: String(hour),
       type_id: "2001001",
       row_ordinal: "1",
+      identity: { pattern: "opaque-17" },
     },
   }
   const representative = {

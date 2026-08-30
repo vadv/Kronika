@@ -283,7 +283,11 @@ fn statement_overview_omits_query_and_keeps_the_latest_locator_in_one_scan() {
             "at": "200",
             "type_id": PgStatStatementsV2::CONTRACT.type_id.get().to_string(),
             "row_ordinal": "3",
-            "row_key": "1",
+            "identity": {
+                "queryid": "1",
+                "userid": "72",
+                "dbid": "73",
+            },
         })
     );
 }
@@ -304,8 +308,8 @@ fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
     assert_eq!(captured.results[0].entities[0].identity["query_id"], "1");
     assert!(!captured.results[0].entities[0].labels.contains_key("query"));
     assert_eq!(
-        captured.results[0].entities[0].detail_locator.row_key,
-        Some(json!("1"))
+        captured.results[0].entities[0].detail_locator.identity["queryid"],
+        json!("1")
     );
 
     let current_prepared = prepare_batch(fixture.root.path(), query).expect("current prepare");
@@ -316,8 +320,8 @@ fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
     assert_eq!(current.results[0].entities[0].identity["query_id"], "2");
     assert!(!current.results[0].entities[0].labels.contains_key("query"));
     assert_eq!(
-        current.results[0].entities[0].detail_locator.row_key,
-        Some(json!("2"))
+        current.results[0].entities[0].detail_locator.identity["queryid"],
+        json!("2")
     );
 }
 
@@ -735,9 +739,11 @@ fn assert_statement_ranking(item: &super::result::HeatmapItemResult, field: &str
             json!((query_id * 2 + 1).to_string())
         );
         assert_eq!(
-            entity.detail_locator.row_key,
-            Some(json!(query_id.to_string()))
+            entity.detail_locator.identity["queryid"],
+            json!(query_id.to_string())
         );
+        assert_eq!(entity.detail_locator.identity["userid"], "72");
+        assert_eq!(entity.detail_locator.identity["dbid"], "73");
     }
 }
 

@@ -427,21 +427,24 @@ fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
         row.at,
         row.type_id,
         row.row_ordinal,
-        &object,
+        row.identity,
     );
     object.retain(|field, _value| !crate::api::row_key::is_detail_text(logical_name, field));
     object.insert("detail_locator".to_owned(), json!(locator));
     Value::Object(object)
 }
 
-/// Flattens projected fields and appends `row_key` plus the decimal-string
-/// locator fields used by the unchanged instance result.
+/// Flattens projected fields and appends the shared ready detail locator.
 pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    crate::api::row_key::attach(logical_name, &mut object);
-    object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
-    object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
-    object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));
-    object.insert("at".to_owned(), json!(row.at.to_string()));
+    let locator = crate::api::row_key::detail_locator(
+        logical_name,
+        row.segment_id,
+        row.at,
+        row.type_id,
+        row.row_ordinal,
+        row.identity,
+    );
+    object.insert("detail_locator".to_owned(), json!(locator));
     Value::Object(object)
 }

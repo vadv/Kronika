@@ -64,8 +64,8 @@ pub(super) fn group_events(
         if let EventStat::Pgbouncer { level, .. } = &entry.stat {
             let digest = entry
                 .detail_locator
-                .row_key
-                .as_ref()
+                .identity
+                .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or("missing");
             entry.key = format!("pgbouncer:{level}:{digest}");
@@ -455,7 +455,7 @@ fn build(
         representative.timestamp,
         representative.type_id,
         representative.row_ordinal,
-        &representative.values,
+        representative.identity.clone(),
     );
     let mut minutes = vec![0.0; MINUTE_COLUMNS];
     let mut first_ts = i64::MAX;

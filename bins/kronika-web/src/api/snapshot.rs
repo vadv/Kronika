@@ -1059,6 +1059,7 @@ pub(crate) struct ProcessRowOut {
     pub(crate) type_id: u32,
     pub(crate) row_ordinal: u64,
     pub(crate) at: i64,
+    pub(crate) identity: super::row_key::RowIdentity,
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
@@ -1069,10 +1070,12 @@ pub(crate) struct PlainRowOut {
     pub(crate) type_id: u32,
     pub(crate) row_ordinal: u64,
     pub(crate) at: i64,
+    pub(crate) identity: super::row_key::RowIdentity,
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-type RankedRecord<'a> = (&'a Plan, Value);
+type RankedRecord<'a> = (&'a Plan, Value, super::row_key::RowIdentity);
+type RankedLocatorKey = (usize, i64, String);
 
 impl PreparedSnapshot {
     pub(super) fn meta(&self) -> ResponseMeta {
@@ -1145,7 +1148,7 @@ impl PreparedSnapshot {
             if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
-            if cancelled() || !self.emit_context_rows(context, emit, cancelled)? {
+            if cancelled() || !self.emit_context_rows(context, self.row_ordinal, emit, cancelled)? {
                 return Ok(false);
             }
         }
@@ -1155,12 +1158,11 @@ impl PreparedSnapshot {
     fn emit_context_rows(
         &self,
         context: &PageContext<'_>,
+        row_ordinal: Option<u64>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
-        let (start_row, row_count) = self
-            .row_ordinal
-            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let (start_row, row_count) = row_ordinal.map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         let source = self.reader.open_segment(context.source)?;
         let process_users = ProcessUsers::load(&source, context.plan)?;
         let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
@@ -1305,7 +1307,9 @@ impl PreparedSnapshot {
             if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
-            if cancelled() || !self.emit_context_rows(&context, emit, cancelled)? {
+            if cancelled()
+                || !self.emit_context_rows(&context, self.row_ordinal, emit, cancelled)?
+            {
                 return Ok(false);
             }
         }
@@ -1556,7 +1560,7 @@ impl PreparedSnapshot {
         let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
         let rows = records
             .into_iter()
-            .map(|(plan, record)| process_row_out(plan, record))
+            .map(|(plan, record, identity)| process_row_out(plan, record, identity))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(FinderResult {
             rows,
@@ -1591,7 +1595,7 @@ impl PreparedSnapshot {
         let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
         let rows = records
             .into_iter()
-            .map(|(plan, record)| plain_row_out(plan, record))
+            .map(|(plan, record, identity)| plain_row_out(plan, record, identity))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(FinderResult {
             rows,
@@ -1646,8 +1650,92 @@ impl PreparedSnapshot {
         let mut ranked = page.finish();
         let has_more = ranked.len() > limit;
         ranked.truncate(limit);
+        self.validate_ranked_locator_identities(&contexts, &ranked, cancelled)?;
         let records = self.render_ranked_rows(&contexts, &process_users, ranked)?;
         Ok((records, has_more, as_of))
+    }
+
+    /// Proves that every bounded finder survivor names one physical row.
+    /// A second minimal projection keeps top-K retention bounded while finding
+    /// a duplicate that appeared anywhere in the selected snapshot.
+    fn validate_ranked_locator_identities(
+        &self,
+        contexts: &[PageContext<'_>],
+        ranked: &[PageRankedRow],
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let mut targets: HashMap<RankedLocatorKey, u8> = HashMap::with_capacity(ranked.len());
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.context_index == ranked.staged.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let (at, identity) = encoded_locator_identity(context.plan, &ranked.staged.row)?;
+            if targets
+                .insert((context.context_index, at, identity), 0)
+                .is_some()
+            {
+                return Err(non_unique_locator(context, at));
+            }
+        }
+        for context in contexts {
+            if !targets
+                .keys()
+                .any(|(context_index, _at, _identity)| *context_index == context.context_index)
+            {
+                continue;
+            }
+            let timestamp = context.plan.timestamp.ok_or(ApiError::BadCursor)?;
+            let mut projection = vec![timestamp];
+            projection.extend(super::row_key::identity_columns(context.plan.contract));
+            let source = self.reader.open_segment(context.source)?;
+            let mut failure = None;
+            #[cfg(test)]
+            PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+            source.visit_rows(
+                context.plan.type_id,
+                &projection,
+                0,
+                usize::MAX,
+                |_ordinal, row| {
+                    if cancelled() {
+                        return false;
+                    }
+                    if !context.window.matches(&row) {
+                        return true;
+                    }
+                    let (at, identity) = match encoded_locator_identity(context.plan, &row) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            failure = Some(error);
+                            return false;
+                        }
+                    };
+                    let Some(count) = targets.get_mut(&(context.context_index, at, identity))
+                    else {
+                        return true;
+                    };
+                    *count = count.saturating_add(1);
+                    if *count > 1 {
+                        failure = Some(non_unique_locator(context, at));
+                        return false;
+                    }
+                    true
+                },
+            )?;
+            if let Some(error) = failure {
+                return Err(error);
+            }
+        }
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        if targets.values().all(|count| *count == 1) {
+            return Ok(());
+        }
+        Err(ApiError::BadLocator(
+            "cannot emit detail_locator: a selected row identity was not found".to_owned(),
+        ))
     }
 
     /// Renders ranked rows with the `Plan` needed to re-key positional fields.
@@ -1705,39 +1793,97 @@ impl PreparedSnapshot {
                     .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
-            records.push((context.plan, record));
+            let locator_identity =
+                super::row_key::identity(context.plan.type_id, &ranked.staged.row)
+                    .map_err(|error| row_locator_invalid(&error))?;
+            records.push((context.plan, record, locator_identity));
         }
         Ok(records)
     }
 
-    /// Returns the anchored physical row as keyed fields plus its locator.
-    /// Relation-grouped sections are rejected because they require partitioned
-    /// contexts.
-    pub(crate) fn fetch_exact_row(
+    /// Returns the physical row selected by timestamp and complete identity.
+    /// The supplied ordinal is only a physical hint and may change at finalization.
+    pub(crate) fn fetch_identity_row(
         &self,
+        ordinal_hint: u64,
+        requested_identity: &super::row_key::RowIdentity,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<Value>, ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
-        if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
-            return Err(ApiError::NoSuchSection);
-        }
         let [plan] = section.plans.as_slice() else {
             return Err(ApiError::BadCursor);
         };
         let Some(timestamp) = plan.timestamp else {
             return Err(ApiError::BadCursor);
         };
-        let Some(ordinal) = self.row_ordinal else {
-            return Err(ApiError::BadCursor);
+        super::row_key::validate(plan.type_id, requested_identity).map_err(ApiError::BadLocator)?;
+        if ordinal_hint >= plan.rows {
+            return Err(ApiError::BadLocator(format!(
+                "invalid detail_locator row_ordinal {ordinal_hint}: type_id {} has {} rows in segment {}",
+                plan.type_id,
+                plan.rows,
+                self.anchor.id(),
+            )));
+        }
+        let source = self.reader.open_segment(&self.anchor)?;
+        let mut projection = vec![timestamp];
+        projection.extend(super::row_key::identity_columns(plan.contract));
+        let mut resolved = None;
+        let mut failure = None;
+        source.visit_rows(
+            plan.type_id,
+            &projection,
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                match locator_matches(plan, timestamp, self.at, requested_identity, &row) {
+                    Ok(false) => true,
+                    Ok(true) if resolved.replace(ordinal).is_none() => true,
+                    Ok(true) => {
+                        failure = Some(ApiError::BadLocator(format!(
+                            "detail_locator identity is not unique for segment_id={}, type_id={}, at={}",
+                            self.anchor.id(),
+                            plan.type_id,
+                            self.at,
+                        )));
+                        false
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        false
+                    }
+                }
+            },
+        )?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let Some(ordinal) = resolved else {
+            return Err(ApiError::BadLocator(format!(
+                "no stored row matches detail_locator segment_id={}, type_id={}, at={} and identity",
+                self.anchor.id(),
+                plan.type_id,
+                self.at,
+            )));
         };
+        drop(source);
         let mut facts = HashMap::new();
-        let contexts = self.timed_contexts(section, 0, plan, timestamp, cancelled, &mut facts)?;
-        let Some(context) = contexts
-            .iter()
-            .find(|context| context.source.id() == self.anchor.id())
-        else {
+        let contexts = if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
+            self.partitioned_contexts(section, cancelled)?
+        } else {
+            self.timed_contexts(section, 0, plan, timestamp, cancelled, &mut facts)?
+        };
+        let Some(context) = contexts.iter().find(|context| {
+            context.source.id() == self.anchor.id() && context.plan.type_id == plan.type_id
+        }) else {
             return Ok(None);
         };
         let mut values = None;
@@ -1745,7 +1891,7 @@ impl PreparedSnapshot {
             values = row_values(&bytes);
             true
         };
-        self.emit_context_rows(context, &mut emit, cancelled)?;
+        self.emit_context_rows(context, Some(ordinal), &mut emit, cancelled)?;
         let Some(values) = values else {
             return Ok(None);
         };
@@ -3015,7 +3161,11 @@ fn row_locator(plan: &Plan, mut record: Value) -> Result<RowLocator, ApiError> {
 }
 
 /// Re-keys a rendered process row. A missing `pid` is invalid rendered data.
-fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError> {
+fn process_row_out(
+    plan: &Plan,
+    record: Value,
+    identity: super::row_key::RowIdentity,
+) -> Result<ProcessRowOut, ApiError> {
     let RowLocator {
         segment_id,
         row_ordinal,
@@ -3041,11 +3191,16 @@ fn process_row_out(plan: &Plan, record: Value) -> Result<ProcessRowOut, ApiError
         type_id: plan.type_id,
         row_ordinal,
         at,
+        identity,
         fields,
     })
 }
 
-fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
+fn plain_row_out(
+    plan: &Plan,
+    record: Value,
+    identity: super::row_key::RowIdentity,
+) -> Result<PlainRowOut, ApiError> {
     let RowLocator {
         segment_id,
         row_ordinal,
@@ -3067,6 +3222,7 @@ fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
         type_id: plan.type_id,
         row_ordinal,
         at,
+        identity,
         fields,
     })
 }
@@ -5103,6 +5259,41 @@ fn row_timestamp(row: &Row, column: &'static str) -> Option<i64> {
         Some(Cell::Ts(stored)) => Some(*stored),
         _other => None,
     }
+}
+
+fn encoded_locator_identity(plan: &Plan, row: &Row) -> Result<(i64, String), ApiError> {
+    let timestamp = plan.timestamp.ok_or(ApiError::BadCursor)?;
+    let at = row_timestamp(row, timestamp).ok_or_else(|| {
+        ApiError::BadLocator(format!(
+            "cannot emit detail_locator: type_id {} row has no timestamp",
+            plan.type_id,
+        ))
+    })?;
+    let identity = super::row_key::identity(plan.type_id, row).map_err(ApiError::BadLocator)?;
+    Ok((at, serde_json::to_string(&identity)?))
+}
+
+fn non_unique_locator(context: &PageContext<'_>, at: i64) -> ApiError {
+    ApiError::BadLocator(format!(
+        "cannot emit detail_locator: {} has a non-unique identity at timestamp {at} in segment {}",
+        context.logical_name,
+        context.source.id(),
+    ))
+}
+
+fn locator_matches(
+    plan: &Plan,
+    timestamp: &'static str,
+    at: i64,
+    requested: &super::row_key::RowIdentity,
+    row: &Row,
+) -> Result<bool, ApiError> {
+    if row_timestamp(row, timestamp) != Some(at) {
+        return Ok(false);
+    }
+    super::row_key::identity(plan.type_id, row)
+        .map(|identity| &identity == requested)
+        .map_err(ApiError::BadLocator)
 }
 
 #[cfg(test)]

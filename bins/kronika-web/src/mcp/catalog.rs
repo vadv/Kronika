@@ -499,7 +499,8 @@ fn overview_tool() -> Tool {
          Results retain request order and duplicate recipes. Counter totals \
          are whole-window non-negative deltas; gauge totals are window \
          maxima. Every entity includes its named identity, compact automatic \
-         labels for compatible recorded layouts, and a ready `detail_locator`; \
+         labels for compatible recorded layouts, and a ready `detail_locator` \
+         to copy unchanged into `kronika_get_row_detail`; \
          an unavailable label is null. Query text, plans, command lines, and log \
          payloads are returned only by `kronika_get_row_detail`. Coverage reports \
          data/no_data state and the in-window row count. Timestamps, identifiers, \
@@ -568,10 +569,9 @@ fn instance_tool() -> Tool {
              whether exact `source=default` rows were excluded, and \
              `settings_request_all` is the arguments object for requesting \
              all settings. Settings selection is complete or the call fails; \
-             it is never cut to a row prefix. Settings rows carry `row_key` (the parameter \
-             `name`) and decimal-string locator fields accepted unchanged by \
-             kronika_get_row_detail; the single host-facts row is pinned by \
-             its `at` alone.",
+             it is never cut to a row prefix. Every physical host or settings \
+             row carries one nested `detail_locator` accepted unchanged by \
+             `kronika_get_row_detail`.",
         schema_object::<GetInstanceInput>(),
     )
     .with_raw_output_schema(output_schema_object::<InstanceOutput>())
@@ -657,30 +657,22 @@ fn tail_tools() -> [Tool; 3] {
             GET_ROW_DETAIL_TOOL,
             "Returns the full rendered stored row addressed by a `detail_locator` \
              from a mass result. Pass that nested object as this tool's complete \
-             arguments without conversion. Its physical coordinates accept JSON \
-             integers or decimal strings. `row_key` is the row's identifying \
-             value carried inside the locator: `queryid` (pg_stat_statements), `planid` \
-             (pg_store_plans), `pid` (pg_stat_activity, \
-             pg_stat_progress_vacuum, pg_locks, pg_log_lock_waits, \
-             os_process), `datid` (pg_stat_database), `name` (pg_settings), \
-             `pattern` (pg_log_errors, pg_log_slow_queries), `phase` \
-             (pg_log_checkpoints), `relation` (pg_log_autovacuum), \
-             `size_bytes` (pg_log_temp_files), `kind` (pg_log_lifecycle), \
-             or a SHA-256 digest of `text` (pgbouncer_events). Rows keep their ordinal only while a \
-             segment stays active; after finalization the same ordinal can \
-             hold another row, and the `row_key` check answers that with an \
-             error. The check pins the object, not its binding: columns like \
-             `dbid`, `userid`, or `toplevel` are reported in the row — \
-             confirm them there. A row whose identifying column is null \
-             carries no `row_key`; omit it then. Find rows without a \
-             `row_key` come from sections keeping one row per timestamp, \
-             pinned by `at` alone. `pg_store_plans.calls` remains the exact stored count and \
+             arguments without conversion: never construct, guess, remove, or \
+             modify any member. Its coordinates accept JSON integers or decimal \
+             strings. `identity` is the complete opaque registry identity of the \
+             stored row; its dictionary IDs identify full stored strings/blobs \
+             without exposing those payloads. `row_ordinal` is only a physical \
+             hint. When active-WAL finalization reorders rows, this tool resolves \
+             the same `(segment_id,type_id,at,identity)` and returns its new \
+             ordinal; a missing, altered, or non-unique identity is an \
+             explicit error and can never select a different row. \
+             `pg_store_plans.calls` remains the exact stored count and \
              adds `calls_per_second`; other cumulative columns are rendered as \
              interval rates rather than stored counter values. Missing, \
              unavailable, or underivable values are null. Plain timestamped \
-             sections, including event sections, are supported; relation-grouped \
-             `pg_stat_user_tables` and `pg_stat_user_indexes` are rejected. A \
-             missing or mismatched locator returns an error. Recognized event \
+             sections, event sections, and physical relation rows from Overview \
+             are supported; aggregated relation finder rows have no locator. \
+             Recognized event \
              codes receive the same `<field>_label` siblings as \
              `kronika_find_events`; the find-only `source` field is not part of \
              the stored row and is not returned here. Every designated long-text \

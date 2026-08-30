@@ -107,7 +107,7 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         row.at,
         row.type_id,
         row.row_ordinal,
-        &object,
+        row.identity,
     );
     object.retain(|field, _| !crate::api::row_key::is_detail_text(LOGICAL_NAME, field));
     object.insert("detail_locator".to_owned(), json!(locator));

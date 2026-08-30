@@ -1,121 +1,117 @@
+use kronika_reader::{Cell, Row};
 use serde_json::{Map, Value, json};
 
-use super::{attach, detail_locator, discriminator, is_detail_text, matches, verify};
+use super::{detail_locator, identity, identity_columns, is_detail_text, validate};
 
-#[test]
-fn every_locator_emitting_section_names_its_discriminator() {
-    for (section, column) in [
-        ("pg_stat_statements", "queryid"),
-        ("pg_store_plans", "planid"),
-        ("pg_stat_activity", "pid"),
-        ("pg_stat_progress_vacuum", "pid"),
-        ("pg_locks", "pid"),
-        ("pg_log_lock_waits", "pid"),
-        ("pg_stat_database", "datid"),
-        ("pg_settings", "name"),
-        ("os_process", "pid"),
-        ("pg_log_errors", "pattern"),
-        ("pg_log_slow_queries", "pattern"),
-        ("pg_log_checkpoints", "phase"),
-        ("pg_log_autovacuum", "relation"),
-        ("pg_log_temp_files", "size_bytes"),
-        ("pg_log_lifecycle", "kind"),
-        ("pgbouncer_events", "text"),
-    ] {
-        assert_eq!(discriminator(section), Some(column), "{section}");
+fn row(type_id: u32, values: &[(&str, Cell)]) -> Row {
+    let contract = kronika_registry::contract(type_id).expect("registered fixture type");
+    let mut cells = vec![Cell::Null; contract.columns.len()];
+    for (name, value) in values {
+        let index = contract
+            .columns
+            .iter()
+            .position(|column| column.name == *name)
+            .expect("fixture column");
+        cells[index] = value.clone();
     }
-    assert_eq!(discriminator("instance_metadata"), None);
-    assert_eq!(discriminator("os_meminfo"), None);
+    Row::new(contract, cells)
 }
 
 #[test]
-fn attach_copies_the_value_and_skips_null_or_missing_columns() {
-    let mut row: Map<String, Value> = Map::new();
-    row.insert("planid".to_owned(), json!("-7"));
-    attach("pg_store_plans", &mut row);
-    assert_eq!(row["row_key"], "-7");
-
-    let mut null_row: Map<String, Value> = Map::new();
-    null_row.insert("relation".to_owned(), Value::Null);
-    attach("pg_log_autovacuum", &mut null_row);
-    assert!(!null_row.contains_key("row_key"));
-
-    let mut bare: Map<String, Value> = Map::new();
-    attach("pg_settings", &mut bare);
-    assert!(!bare.contains_key("row_key"));
-
-    let mut keyless: Map<String, Value> = Map::new();
-    keyless.insert("mem_total".to_owned(), json!(1));
-    attach("os_meminfo", &mut keyless);
-    assert!(!keyless.contains_key("row_key"));
-}
-
-#[test]
-fn verify_covers_all_four_outcomes() {
+fn mountinfo_identity_is_the_complete_registry_tuple() {
+    let row = row(
+        1_112_002,
+        &[
+            ("ts", Cell::Ts(11)),
+            ("major", Cell::U32(8)),
+            ("minor", Cell::U32(32)),
+            ("mount_point", Cell::StrId(99)),
+        ],
+    );
     assert_eq!(
-        verify("pg_log_autovacuum", "relation", None, &Value::Null),
-        Ok(())
+        identity(1_112_002, &row).expect("identity"),
+        Map::from_iter([
+            ("major".to_owned(), json!("8")),
+            ("minor".to_owned(), json!("32")),
+            ("mount_point".to_owned(), json!("99")),
+        ])
     );
-    let required = verify("pg_stat_statements", "queryid", None, &json!("1"))
-        .expect_err("a keyed row demands a row_key");
-    assert!(required.contains("row_key is required"), "{required}");
+}
+
+#[test]
+fn event_identity_covers_every_non_timestamp_cell_without_raw_text() {
+    let contract = kronika_registry::contract(2_100_001).expect("pgbouncer contract");
     assert_eq!(
-        verify(
-            "pg_stat_statements",
-            "queryid",
-            Some(&json!(1)),
-            &json!("1")
-        ),
-        Ok(())
+        identity_columns(contract).collect::<Vec<_>>(),
+        [
+            "source_file",
+            "level",
+            "database",
+            "username",
+            "host",
+            "text",
+        ]
     );
-    let stale = verify(
-        "pg_stat_statements",
-        "queryid",
-        Some(&json!("2")),
-        &json!("1"),
-    )
-    .expect_err("a mismatch is stale");
-    assert!(
-        stale.contains("stale locator") && stale.contains("re-run"),
-        "{stale}"
+    let row = row(
+        2_100_001,
+        &[
+            ("ts", Cell::Ts(11)),
+            ("source_file", Cell::StrId(1)),
+            ("level", Cell::U32(2)),
+            ("database", Cell::StrId(3)),
+            ("text", Cell::StrId(9_999)),
+        ],
     );
+    let identity = identity(2_100_001, &row).expect("identity");
+    assert_eq!(identity["text"], "9999");
+    assert_eq!(identity["username"], Value::Null);
 }
 
 #[test]
-fn stale_errors_keep_kilobyte_keys_to_one_line() {
-    let long = "x".repeat(5000);
-    let stale = verify(
-        "pg_log_errors",
-        "pattern",
-        Some(&json!("other")),
-        &json!(long),
-    )
-    .expect_err("mismatch");
-    assert!(
-        stale.len() < 600,
-        "error stays short: {} bytes",
-        stale.len()
-    );
-    assert!(stale.contains('…'));
+fn every_event_layout_uses_every_non_timestamp_column() {
+    for contract in kronika_registry::registry()
+        .iter()
+        .filter(|contract| contract.semantics == kronika_registry::Semantics::EventStream)
+    {
+        let expected = contract
+            .columns
+            .iter()
+            .filter(|column| column.class != kronika_registry::ColumnClass::Timestamp)
+            .map(|column| column.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identity_columns(contract).collect::<Vec<_>>(),
+            expected,
+            "type_id {}",
+            contract.type_id.get(),
+        );
+    }
 }
 
 #[test]
-fn matching_bridges_numbers_and_decimal_strings() {
-    assert!(matches(&json!("101"), &json!(101)));
-    assert!(matches(&json!(101), &json!("101")));
-    assert!(matches(&json!("alpha"), &json!("alpha")));
-    assert!(!matches(&json!("101"), &json!(102)));
-    assert!(!matches(&json!("alpha"), &json!("beta")));
-    assert!(!matches(&Value::Null, &json!(101)));
+fn validation_requires_every_exact_member_and_rejects_extras() {
+    let valid = Map::from_iter([
+        ("major".to_owned(), json!("8")),
+        ("minor".to_owned(), json!("32")),
+        ("mount_point".to_owned(), json!("99")),
+    ]);
+    assert_eq!(validate(1_112_002, &valid), Ok(()));
+
+    let mut missing = valid.clone();
+    missing.remove("minor");
+    let error = validate(1_112_002, &missing).expect_err("missing member");
+    assert!(error.contains("missing [minor]"), "{error}");
+
+    let mut extra = valid;
+    extra.insert("guess".to_owned(), json!(1));
+    let error = validate(1_112_002, &extra).expect_err("extra member");
+    assert!(error.contains("unexpected [guess]"), "{error}");
 }
 
 #[test]
 fn detail_locator_is_the_complete_nested_row_detail_input() {
-    let fields = serde_json::json!({"pid": 42, "cmdline": "private --argument"})
-        .as_object()
-        .expect("fields")
-        .clone();
-    let locator = serde_json::to_value(detail_locator("os_process", 7, 11, 1_100_001, 3, &fields))
+    let identity = Map::from_iter([("pid".to_owned(), json!("42"))]);
+    let locator = serde_json::to_value(detail_locator("os_process", 7, 11, 1_100_001, 3, identity))
         .expect("locator JSON");
 
     assert_eq!(
@@ -126,9 +122,28 @@ fn detail_locator_is_the_complete_nested_row_detail_input() {
             "at": "11",
             "type_id": "1100001",
             "row_ordinal": "3",
-            "row_key": 42,
+            "identity": { "pid": "42" },
         })
     );
+}
+
+#[test]
+fn exact_cell_encoding_preserves_float_bits_and_nulls() {
+    let row = row(
+        2_005_002,
+        &[
+            ("ts", Cell::Ts(11)),
+            ("system_identifier", Cell::U64(7)),
+            ("source_file", Cell::StrId(8)),
+            ("kind", Cell::U32(1)),
+            ("pid", Cell::I32(42)),
+            ("duration_ms", Cell::F64(-0.0)),
+        ],
+    );
+    let identity = identity(2_005_002, &row).expect("event identity");
+    assert_eq!(identity["duration_ms"], "f64:8000000000000000");
+    assert_eq!(identity["pid"], "42");
+    assert_eq!(identity["statement"], Value::Null);
 }
 
 #[test]
@@ -165,33 +180,4 @@ fn detail_text_policy_is_section_aware() {
     ] {
         assert!(!is_detail_text(section, field), "{section}.{field}");
     }
-}
-
-#[test]
-fn raw_text_discriminator_is_hashed_and_still_verifies() {
-    let raw = json!("closing because: private connection details");
-    let mut fields = Map::new();
-    fields.insert("text".to_owned(), raw.clone());
-    attach("pgbouncer_events", &mut fields);
-
-    let key = fields["row_key"].as_str().expect("hashed key");
-    assert!(key.starts_with("sha256:"));
-    assert_eq!(key.len(), "sha256:".len() + 64);
-    assert!(!key.contains("private"));
-    assert_eq!(
-        verify("pgbouncer_events", "text", fields.get("row_key"), &raw,),
-        Ok(())
-    );
-
-    let rendered_truncated = json!({
-        "representation": "text",
-        "stored_text": "stored prefix",
-        "full_len": "99",
-        "truncated": true,
-        "sha256": "full-value-digest",
-    });
-    let mut fields = Map::new();
-    fields.insert("text".to_owned(), rendered_truncated);
-    attach("pgbouncer_events", &mut fields);
-    assert_eq!(fields["row_key"], "sha256:full-value-digest");
 }

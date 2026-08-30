@@ -15,7 +15,8 @@ use crate::{Section, StrId, Ts};
     id = 1_012_004,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
-    sort_key("ts", "pid")
+    sort_key("ts", "pid"),
+    identity("pid", "datid", "relid")
 )]
 pub struct PgStatProgressVacuumV1 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -71,7 +72,8 @@ pub struct PgStatProgressVacuumV1 {
     id = 1_012_005,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
-    sort_key("ts", "pid")
+    sort_key("ts", "pid"),
+    identity("pid", "datid", "relid")
 )]
 pub struct PgStatProgressVacuumV2 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -136,7 +138,8 @@ pub struct PgStatProgressVacuumV2 {
     id = 1_012_006,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
-    sort_key("ts", "pid")
+    sort_key("ts", "pid"),
+    identity("pid", "datid", "relid")
 )]
 pub struct PgStatProgressVacuumV3 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -224,6 +227,7 @@ mod tests {
         assert_eq!(contract.type_id.get(), type_id);
         assert_eq!(contract.semantics, Semantics::ConditionalFull);
         assert_eq!(contract.sort_key, ["ts", "pid"]);
+        assert_eq!(contract.identity, ["pid", "datid", "relid"]);
         let expected = COMMON
             .iter()
             .chain(AFTER_PHASE.iter())

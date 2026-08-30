@@ -566,15 +566,13 @@ function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
 
 function detailLocator(value: unknown): DetailLocator {
   const locator = strictRecord(value, "event detail locator")
-  const rowKey = locator["row_key"]
-  if (rowKey !== undefined && !validCell(rowKey)) throw new Error("event detail row key is invalid")
   return {
     section: requiredText(locator["section"], "event detail section"),
     segment_id: requiredText(locator["segment_id"], "event detail segment id"),
     at: requiredText(locator["at"], "event detail timestamp"),
     type_id: requiredText(locator["type_id"], "event detail type id"),
     row_ordinal: requiredText(locator["row_ordinal"], "event detail row ordinal"),
-    ...(rowKey === undefined ? {} : { row_key: rowKey }),
+    identity: strictRecord(locator["identity"], "event detail identity"),
   }
 }
 

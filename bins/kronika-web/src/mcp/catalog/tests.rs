@@ -376,15 +376,27 @@ fn detail_locator_schema_and_descriptions_match_the_nested_transition() {
     let required = detail.input_schema["required"]
         .as_array()
         .expect("detail required fields");
-    for field in ["section", "segment_id", "at", "type_id", "row_ordinal"] {
+    for field in [
+        "section",
+        "segment_id",
+        "at",
+        "type_id",
+        "row_ordinal",
+        "identity",
+    ] {
         assert!(
             required.iter().any(|candidate| candidate == field),
             "{field}"
         );
     }
-    assert!(!required.iter().any(|candidate| candidate == "row_key"));
+    assert!(
+        detail.input_schema["properties"]["identity"]["type"] == "object"
+            || detail.input_schema["properties"]["identity"]["$ref"].is_string()
+    );
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));
+    assert!(description.contains("never construct, guess, remove, or modify"));
+    assert!(description.contains("physical hint"));
     assert!(!description.contains("plain strings"));
 
     for name in [

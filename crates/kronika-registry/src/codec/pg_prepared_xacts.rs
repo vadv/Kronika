@@ -20,7 +20,8 @@ use crate::{Section, StrId, Ts};
     id = 1_010_001,
     name = "pg_prepared_xacts",
     semantics = snapshot_full,
-    sort_key("datname", "ts")
+    sort_key("datname", "ts"),
+    identity("datname")
 )]
 pub struct PgPreparedXacts {
     /// Collection timestamp, unix microseconds.
@@ -62,6 +63,7 @@ mod tests {
         assert_eq!(c.type_id.get(), 1_010_001);
         assert_eq!(c.columns.len(), 5);
         assert_eq!(c.sort_key, ["datname", "ts"]);
+        assert_eq!(c.identity, ["datname"]);
         assert_eq!(c.column("datname").map(|col| col.nullable), Some(false));
         assert_eq!(
             c.column("prepared_count").map(|col| col.nullable),

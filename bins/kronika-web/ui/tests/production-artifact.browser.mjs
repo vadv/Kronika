@@ -4340,7 +4340,7 @@ function slowQueryEventRecords() {
       stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
       detail_locator: {
         section: "pg_log_slow_queries", segment_id: SEGMENT, at: String(AT),
-        type_id: "2004001", row_ordinal: "3", row_key: SLOW_PATTERN,
+        type_id: "2004001", row_ordinal: "3", identity: { pattern: SLOW_PATTERN },
       },
     },
   ]

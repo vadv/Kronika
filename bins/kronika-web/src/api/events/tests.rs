@@ -19,12 +19,20 @@ fn object(values: Value) -> Map<String, Value> {
 }
 
 fn row(ordinal: u64, minute: i64, values: Value) -> EventDataRow {
+    let values = object(values);
+    let mut identity = values.clone();
+    for field in values.keys() {
+        if crate::api::row_key::is_detail_text("pgbouncer_events", field) {
+            identity.insert(field.clone(), json!("stored-id"));
+        }
+    }
     EventDataRow {
         segment_id: 7,
         type_id: 2_000_001,
         row_ordinal: ordinal,
         timestamp: HOUR + minute * 60_000_000,
-        values: object(values),
+        identity,
+        values,
     }
 }
 
@@ -71,8 +79,8 @@ fn errors_keep_weighted_counts_minutes_shared_values_and_one_locator() {
     assert_eq!(duplicate.detail_locator.section, "pg_log_errors");
     assert_eq!(duplicate.detail_locator.row_ordinal, json!("1"));
     assert_eq!(
-        duplicate.detail_locator.row_key,
-        Some(json!("duplicate key"))
+        duplicate.detail_locator.identity["pattern"],
+        json!("duplicate key")
     );
     let EventStat::Errors {
         database,
@@ -182,13 +190,13 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
     assert_number(pool.count, 2.0);
     assert_eq!(pool.label, None);
     assert!(!pool.key.contains("server login failed"));
-    assert!(pool.key.starts_with("pgbouncer:2:sha256:"));
+    assert_eq!(pool.key, "pgbouncer:2:stored-id");
     assert!(
         pool.detail_locator
-            .row_key
-            .as_ref()
+            .identity
+            .get("text")
             .and_then(Value::as_str)
-            .is_some_and(|key| key.starts_with("sha256:"))
+            .is_some_and(|key| key == "stored-id")
     );
     assert!(
         !serde_json::to_string(pool)
@@ -418,6 +426,7 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
             type_id: 2_007_001,
             row_ordinal: ordinal,
             timestamp: at,
+            identity: fields.clone(),
             values: fields,
         }
     };
@@ -464,7 +473,7 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
     assert!(!occurrences[0].fields.contains_key("statement"));
     assert!(!occurrences[2].fields.contains_key("sample"));
     assert_eq!(occurrences[2].fields.get("pattern"), Some(&json!("boom")));
-    assert_eq!(occurrences[0].detail_locator.row_key, Some(json!("9")));
+    assert_eq!(occurrences[0].detail_locator.identity["size_bytes"], "9");
     let wire = serde_json::to_value(EventsResult::Occurrences {
         occurrences,
         truncated,
@@ -472,7 +481,7 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
     .expect("wire result");
     let first = &wire["occurrences"][0];
     assert!(first.get("segment_id").is_none());
-    assert!(first.get("row_key").is_none());
+    assert!(first.get("identity").is_none());
     assert_eq!(first["detail_locator"]["segment_id"], "7");
     assert!(wire.get("has_more").is_none());
     assert!(wire.get("next_from").is_none());
@@ -494,6 +503,7 @@ fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
         type_id: 2_001_001,
         row_ordinal: ordinal,
         timestamp: at,
+        identity: object(json!({ "severity": 0, "pattern": pattern, "count": count })),
         values: object(json!({ "severity": 0, "pattern": pattern, "count": count })),
     };
     let result = groups_result(
@@ -568,6 +578,7 @@ fn slow_threshold_uses_latest_strict_timestamp_and_exact_units() {
         type_id: 1,
         row_ordinal: 0,
         timestamp: at,
+        identity: Map::new(),
         values: object(json!({
             "name": "log_min_duration_statement",
             "setting": value,

@@ -18,7 +18,8 @@ use crate::{Section, StrId, Ts};
     id = 1_009_001,
     name = "pg_stat_io",
     semantics = snapshot_full,
-    sort_key("backend_type", "object", "context", "ts")
+    sort_key("backend_type", "object", "context", "ts"),
+    identity("backend_type", "object", "context")
 )]
 pub struct PgStatIoV1 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -94,7 +95,8 @@ pub struct PgStatIoV1 {
     id = 1_009_002,
     name = "pg_stat_io",
     semantics = snapshot_full,
-    sort_key("backend_type", "object", "context", "ts")
+    sort_key("backend_type", "object", "context", "ts"),
+    identity("backend_type", "object", "context")
 )]
 pub struct PgStatIoV2 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -197,6 +199,7 @@ mod tests {
         assert_eq!(c.type_id.get(), 1_009_001);
         assert_eq!(c.columns.len(), 19);
         assert_eq!(c.sort_key, ["backend_type", "object", "context", "ts"]);
+        assert_eq!(c.identity, ["backend_type", "object", "context"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(
             c.column("backend_type").map(|col| col.nullable),
@@ -251,6 +254,8 @@ mod tests {
         assert!(c.column("read_bytes").is_some());
         assert!(c.column("op_bytes").is_none());
         assert_eq!(c.column("read_bytes").map(|col| col.nullable), Some(true));
+        assert_eq!(c.sort_key, ["backend_type", "object", "context", "ts"]);
+        assert_eq!(c.identity, ["backend_type", "object", "context"]);
     }
 
     #[test]

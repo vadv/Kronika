@@ -1,5 +1,3 @@
-import type { Cell } from "./api"
-
 export type EventTier = "critical" | "notable" | "routine"
 
 export const EVENT_TIERS: readonly EventTier[] = ["critical", "notable", "routine"]
@@ -21,7 +19,7 @@ export interface DetailLocator {
   readonly at: string
   readonly type_id: string
   readonly row_ordinal: string
-  readonly row_key?: Cell
+  readonly identity: Readonly<Record<string, unknown>>
 }
 
 export interface EventEntry {

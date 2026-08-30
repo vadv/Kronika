@@ -167,7 +167,7 @@ fn active_metadata_and_default_postgresql_cadences_bound_samples() {
 }
 
 #[test]
-fn in_is_one_clause_and_one_scan_for_plain_and_relation_rows() {
+fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
     fixture.append_named_table_snapshots(&[

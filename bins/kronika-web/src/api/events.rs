@@ -1,6 +1,6 @@
 //! Shared recorded-event query, decoding, grouping, and result contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
@@ -218,7 +218,6 @@ impl EventSource {
                 "database",
                 "username",
                 "host",
-                // The raw discriminator is hashed into the locator, then removed.
                 "text",
             ],
         }
@@ -346,6 +345,7 @@ pub(crate) struct EventDataRow {
     pub(crate) type_id: u32,
     pub(crate) row_ordinal: u64,
     pub(crate) timestamp: i64,
+    pub(crate) identity: row_key::RowIdentity,
     pub(crate) values: Map<String, Value>,
 }
 
@@ -533,6 +533,7 @@ impl PreparedEvents {
         if cancelled() {
             return Err(ApiError::Cancelled);
         }
+        validate_locator_uniqueness(&self.query, &by_source)?;
 
         let result = match self.query.representation {
             EventsRepresentation::Groups => {
@@ -565,6 +566,27 @@ impl PreparedEvents {
             }
         }
     }
+}
+
+fn validate_locator_uniqueness(
+    query: &EventsQuery,
+    by_source: &[Vec<EventDataRow>],
+) -> Result<(), ApiError> {
+    for (source, rows) in query.sources.iter().zip(by_source) {
+        let mut seen = HashSet::new();
+        for row in rows {
+            let identity = serde_json::to_string(&row.identity)?;
+            if !seen.insert((row.segment_id, row.type_id, row.timestamp, identity)) {
+                return Err(ApiError::BadLocator(format!(
+                    "cannot emit detail_locator: {} has a non-unique identity at timestamp {} in segment {}",
+                    source.as_str(),
+                    row.timestamp,
+                    row.segment_id,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn emit_items<T: Serialize>(
@@ -718,6 +740,12 @@ fn append_chunk(
         let Some(Cell::Ts(at)) = row.get(timestamp_column) else {
             continue;
         };
+        let identity = row_key::identity(plan.type_id, &row).map_err(|error| {
+            ApiError::Unreadable(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error,
+            )))
+        })?;
         let mut values = Map::new();
         for field in &plan.fields {
             values.insert(
@@ -733,6 +761,7 @@ fn append_chunk(
             type_id: plan.type_id,
             row_ordinal: ordinal,
             timestamp: *at,
+            identity,
             values,
         });
     }
@@ -766,7 +795,7 @@ fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<EventDataRow>>) ->
                     row.timestamp,
                     row.type_id,
                     row.row_ordinal,
-                    &fields,
+                    row.identity,
                 );
                 fields.retain(|field, _| !row_key::is_detail_text(source.as_str(), field));
                 label_event_fields(source.as_str(), &mut fields);

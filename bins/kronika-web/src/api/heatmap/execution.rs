@@ -1,5 +1,6 @@
 //! One-pass Heatmap planning, execution, and transport-independent folding.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -645,7 +646,6 @@ struct PhysicalPlan {
     timestamp: &'static str,
     projection: Vec<&'static str>,
     labels: Vec<Option<&'static str>>,
-    locator_key: Option<&'static str>,
     bindings: Vec<Binding>,
     first_index: usize,
 }
@@ -677,16 +677,13 @@ fn physical_plans(
                 continue;
             };
             let mut projection = vec![timestamp];
-            projection.extend(contract.identity.iter().copied());
+            projection.extend(row_key::identity_columns(contract));
             let labels = shared
                 .labels
                 .iter()
                 .map(|name| contract.column(name).map(|column| column.name))
                 .collect::<Vec<_>>();
             projection.extend(labels.iter().flatten().copied());
-            let locator_key = row_key::discriminator(&shared.name)
-                .and_then(|name| contract.column(name).map(|column| column.name));
-            projection.extend(locator_key);
             let mut bindings = Vec::new();
             let mut first_index = usize::MAX;
             for (accumulator, spec) in specs.iter().enumerate() {
@@ -738,7 +735,6 @@ fn physical_plans(
                 timestamp,
                 projection,
                 labels,
-                locator_key,
                 bindings,
                 first_index,
             });
@@ -806,7 +802,6 @@ fn scan_plan(
                 ordinal,
                 timestamp,
                 &plan.labels,
-                plan.locator_key,
             ) {
                 Ok(entity) => entity,
                 Err(error) => {
@@ -875,28 +870,28 @@ struct StoredLocator {
     segment_id: i64,
     timestamp: i64,
     ordinal: u64,
-    row_key: Option<Cell>,
+    identity: row_key::RowIdentity,
+    event_identities: Option<EventLocatorIdentities>,
+}
+
+struct EventLocatorIdentities {
+    seen: HashSet<String>,
+    selected_non_unique: bool,
 }
 
 impl StoredLocator {
-    fn from_row(
-        segment_slot: usize,
-        segment_id: i64,
-        timestamp: i64,
-        ordinal: u64,
-        row: &Row,
-        locator_key: Option<&str>,
-    ) -> Self {
-        Self {
-            segment_slot,
-            segment_id,
-            timestamp,
-            ordinal,
-            row_key: locator_key
-                .and_then(|name| row.get(name))
-                .filter(|value| !matches!(value, Cell::Null))
-                .cloned(),
+    fn validate_selected_identity(&self, type_id: u32) -> Result<(), String> {
+        if self
+            .event_identities
+            .as_ref()
+            .is_none_or(|event| !event.selected_non_unique)
+        {
+            return Ok(());
         }
+        Err(format!(
+            "cannot emit detail_locator: type_id {type_id} has a non-unique identity at timestamp {}",
+            self.timestamp,
+        ))
     }
 
     fn observe(
@@ -906,19 +901,61 @@ impl StoredLocator {
         timestamp: i64,
         ordinal: u64,
         row: &Row,
-        locator_key: Option<&str>,
-    ) {
-        if (timestamp, segment_slot, ordinal) < (self.timestamp, self.segment_slot, self.ordinal) {
-            return;
+    ) -> Result<(), String> {
+        let identity = row_key::identity(row.contract().type_id.get(), row)?;
+        let position = (timestamp, segment_slot);
+        let selected_position = (self.timestamp, self.segment_slot);
+        if let Some(event) = &mut self.event_identities {
+            match position.cmp(&selected_position) {
+                Ordering::Less => return Ok(()),
+                Ordering::Greater => {
+                    event.seen.clear();
+                    event.seen.insert(
+                        serde_json::to_string(&identity)
+                            .map_err(|error| format!("encode detail_locator identity: {error}"))?,
+                    );
+                    event.selected_non_unique = false;
+                }
+                Ordering::Equal => {
+                    let encoded = serde_json::to_string(&identity)
+                        .map_err(|error| format!("encode detail_locator identity: {error}"))?;
+                    let duplicate = !event.seen.insert(encoded);
+                    if ordinal >= self.ordinal {
+                        event.selected_non_unique = duplicate;
+                    } else if duplicate && identity == self.identity {
+                        event.selected_non_unique = true;
+                    }
+                }
+            }
+            if (timestamp, segment_slot, ordinal)
+                >= (self.timestamp, self.segment_slot, self.ordinal)
+            {
+                self.segment_slot = segment_slot;
+                self.segment_id = segment_id;
+                self.timestamp = timestamp;
+                self.ordinal = ordinal;
+                self.identity = identity;
+            }
+            return Ok(());
         }
-        *self = Self::from_row(
-            segment_slot,
-            segment_id,
-            timestamp,
-            ordinal,
-            row,
-            locator_key,
-        );
+        if (timestamp, segment_slot) == (self.timestamp, self.segment_slot)
+            && ordinal != self.ordinal
+            && identity == self.identity
+        {
+            return Err(format!(
+                "cannot emit detail_locator: type_id {} has a non-unique identity at timestamp {timestamp}",
+                row.contract().type_id.get(),
+            ));
+        }
+        if (timestamp, segment_slot, ordinal) < (self.timestamp, self.segment_slot, self.ordinal) {
+            return Ok(());
+        }
+        self.segment_slot = segment_slot;
+        self.segment_id = segment_id;
+        self.timestamp = timestamp;
+        self.ordinal = ordinal;
+        self.identity = identity;
+        Ok(())
     }
 }
 
@@ -975,7 +1012,6 @@ impl SharedSection {
         ordinal: u64,
         timestamp: i64,
         labels: &[Option<&'static str>],
-        locator_key: Option<&'static str>,
     ) -> Result<EntityId, HeatmapError> {
         self.identity_scratch.clear();
         self.identity_scratch.extend(
@@ -986,14 +1022,10 @@ impl SharedSection {
         );
         raw_key_into(&mut self.key_scratch, type_id, &self.identity_scratch);
         let entity = if let Some(entity) = self.by_raw_key.get(self.key_scratch.as_str()).copied() {
-            self.entities[entity.index()].locator.observe(
-                segment_slot,
-                segment_id,
-                timestamp,
-                ordinal,
-                row,
-                locator_key,
-            );
+            self.entities[entity.index()]
+                .locator
+                .observe(segment_slot, segment_id, timestamp, ordinal, row)
+                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
             entity
         } else {
             let raw_key: Box<str> = self.key_scratch.clone().into_boxed_str();
@@ -1007,19 +1039,36 @@ impl SharedSection {
                 )
             })?);
             self.by_raw_key.insert(raw_key, entity);
+            let locator_identity = row_key::identity(row.contract().type_id.get(), row)
+                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
+            let event_identities = if contract.semantics == kronika_registry::Semantics::EventStream
+            {
+                let encoded = serde_json::to_string(&locator_identity).map_err(|error| {
+                    HeatmapError::invalid(
+                        self.first_index,
+                        format!("encode detail_locator identity: {error}"),
+                    )
+                })?;
+                Some(EventLocatorIdentities {
+                    seen: HashSet::from([encoded]),
+                    selected_non_unique: false,
+                })
+            } else {
+                None
+            };
             self.entities.push(SharedEntity {
                 type_id,
                 identity_segment: segment_slot,
                 identity: self.identity_scratch.clone().into_boxed_slice(),
                 labels: vec![None; self.label_count].into_boxed_slice(),
-                locator: StoredLocator::from_row(
+                locator: StoredLocator {
                     segment_slot,
                     segment_id,
                     timestamp,
                     ordinal,
-                    row,
-                    locator_key,
-                ),
+                    identity: locator_identity,
+                    event_identities,
+                },
             });
             entity
         };
@@ -1402,15 +1451,6 @@ impl Accumulator {
                         );
                     }
                 }
-                if let Some(value) = &state.locator.row_key {
-                    reserve_id(
-                        value,
-                        state.locator.segment_slot,
-                        retained,
-                        retained_indices,
-                        self.first_index,
-                    );
-                }
             }
         });
     }
@@ -1590,6 +1630,10 @@ impl Accumulator {
                 }
             }
             let shared = &section.entities[row.entity.index()];
+            shared
+                .locator
+                .validate_selected_identity(shared.type_id)
+                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
             let labels = labels_object(
                 spec,
                 &shared.labels,
@@ -1601,12 +1645,14 @@ impl Accumulator {
                 type_id: shared.type_id,
                 identity: identity_object(shared.type_id, row.identity_values),
                 labels,
-                detail_locator: render_detail_locator(
+                detail_locator: row_key::detail_locator(
                     &spec.query.ranking.section,
-                    shared,
-                    dictionary,
-                    self.first_index,
-                )?,
+                    shared.locator.segment_id,
+                    shared.locator.timestamp,
+                    shared.type_id,
+                    shared.locator.ordinal,
+                    shared.locator.identity.clone(),
+                ),
                 total: row.total,
                 cells: row.grid.map(|grid| {
                     grid.cells
@@ -1770,12 +1816,12 @@ struct RankedState {
     grid: Option<GridFold>,
 }
 
-fn compare_totals(left: Option<&f64>, right: Option<&f64>) -> std::cmp::Ordering {
+fn compare_totals(left: Option<&f64>, right: Option<&f64>) -> Ordering {
     match (left, right) {
-        (Some(left), Some(right)) => right.partial_cmp(left).unwrap_or(std::cmp::Ordering::Equal),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+        (Some(left), Some(right)) => right.partial_cmp(left).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -1850,30 +1896,6 @@ fn labels_object(
             Ok((name.clone(), value))
         })
         .collect()
-}
-
-fn render_detail_locator(
-    section: &str,
-    entity: &SharedEntity,
-    dictionary: &RenderedIds,
-    index: usize,
-) -> Result<row_key::DetailLocator, HeatmapError> {
-    let locator = &entity.locator;
-    let mut fields = serde_json::Map::new();
-    if let (Some(name), Some(value)) = (row_key::discriminator(section), locator.row_key.as_ref()) {
-        fields.insert(
-            name.to_owned(),
-            render_cell(value, locator.segment_slot, dictionary, index)?,
-        );
-    }
-    Ok(row_key::detail_locator(
-        section,
-        locator.segment_id,
-        locator.timestamp,
-        entity.type_id,
-        locator.ordinal,
-        &fields,
-    ))
 }
 
 fn render_cells(

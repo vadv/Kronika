@@ -17,6 +17,7 @@ fn row(source: Option<Value>, ordinal: u64) -> PlainRowOut {
         type_id: 2,
         row_ordinal: ordinal,
         at: 3,
+        identity: serde_json::Map::new(),
         fields,
     }
 }

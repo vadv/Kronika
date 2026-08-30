@@ -1160,10 +1160,16 @@ identifiers, metrics, bounded labels and an exact `detail_locator`; relation
 aggregates with no single physical row omit it. These results do not inline
 query text, plans, command lines, log messages or similar stored payloads.
 `kronika_get_row_detail` is the sole MCP
-transition to the complete stored row. Each potentially large text field in
-that response has one stable object shape: `stored_text`, decimal `full_len`,
-`truncated`, and `sha256`. These fields preserve collector-side truncation
-facts; a short untruncated value uses `truncated: false` and `sha256: null`.
+transition to the complete stored row. A locator carries the complete opaque
+registry identity of its row; dictionary-backed identity members use the exact
+stored string/blob ID and do not reveal the payload. Its `row_ordinal` is only
+a physical hint. If finalizing an active WAL reorders rows, row detail resolves
+the same `(segment_id, type_id, at, identity)` and reports the new ordinal; a
+missing, altered or non-unique identity is an error, never another row. Each
+potentially large text field in that response has one stable object shape:
+`stored_text`, decimal `full_len`, `truncated`, and `sha256`. These fields
+preserve collector-side truncation facts; a short untruncated value uses
+`truncated: false` and `sha256: null`.
 
 Finder, Events, and Overview requests retain an exact 65,536-byte ceiling on
 their encoded arguments. Their structured results have no encoded-size cap and

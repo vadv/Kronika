@@ -626,6 +626,7 @@ test("event groups use one half-open request and validate the server-owned shape
   const originalFetch = globalThis.fetch
   let request: URL | null = null
   const minutes = Array.from({ length: 60 }, () => 0)
+  const identity = { pattern: "opaque-17", tuple: ["1", "2"] }
   minutes[3] = 2
   globalThis.fetch = async (input) => {
     request = new URL(String(input), "http://kronika.invalid")
@@ -637,7 +638,7 @@ test("event groups use one half-open request and validate the server-owned shape
         minutes, stat: { kind: "pg.slow", maxMs: 800, totalMs: 1_200, thresholdMs: 500 },
         detail_locator: {
           section: "pg_log_slow_queries", segment_id: "7", at: String(START + 180_000_000),
-          type_id: "2004001", row_ordinal: "3", row_key: "select ?",
+          type_id: "2004001", row_ordinal: "3", identity,
         },
       },
     ])
@@ -657,17 +658,22 @@ test("event groups use one half-open request and validate the server-owned shape
     assert.equal(groups[0]?.stat.kind, "pg.slow")
     assert.equal(groups[0]?.label, "select ?")
     assert.equal(groups[0]?.detailLocator.row_ordinal, "3")
+    assert.deepEqual(groups[0]?.detailLocator.identity, identity)
 
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
       {
         record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
         count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
+        detail_locator: {
+          section: "pg_log_errors", segment_id: "7", at: String(START),
+          type_id: "2001001", row_ordinal: "1",
+        },
       },
     ])
     await assert.rejects(
       api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
-      /event detail locator/,
+      /event detail identity/,
     )
   } finally {
     globalThis.fetch = originalFetch

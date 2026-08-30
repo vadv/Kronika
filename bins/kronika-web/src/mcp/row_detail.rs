@@ -59,7 +59,7 @@ pub(crate) fn call(
         text: None,
         filters: Vec::new(),
         type_id: Some(type_id),
-        row_ordinal: Some(row_ordinal),
+        row_ordinal: None,
     };
     let prepared = match snapshot::prepare(&config.data_root, request, None) {
         Ok(prepared) => prepared,
@@ -70,7 +70,7 @@ pub(crate) fn call(
             "internal error: snapshot preparation returned an unexpected response type",
         );
     };
-    let row = match prepared.fetch_exact_row(&|| cancelled()) {
+    let row = match prepared.fetch_identity_row(row_ordinal, &input.identity, &|| cancelled()) {
         Ok(row) => row,
         Err(error) => return super::semantics::storage_error(&error),
     };
@@ -80,17 +80,6 @@ pub(crate) fn call(
             input.section,
         ));
     };
-    if let Some(column) = crate::api::row_key::discriminator(&input.section) {
-        let Value::Object(fields) = &row else {
-            return mcp_error("internal error: the fetched row is not an object");
-        };
-        let actual = fields.get(column).cloned().unwrap_or(Value::Null);
-        if let Err(error) =
-            crate::api::row_key::verify(&input.section, column, input.row_key.as_ref(), &actual)
-        {
-            return mcp_error(error);
-        }
-    }
     // Keep event-code labels identical between list and exact-row reads.
     if let Value::Object(fields) = &mut row {
         label_event_fields(&input.section, fields);

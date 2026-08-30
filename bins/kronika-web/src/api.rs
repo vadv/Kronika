@@ -137,6 +137,7 @@ pub(crate) enum ApiError {
     MixedUnits(String),
     BadFilter(String),
     BadCursor,
+    BadLocator(String),
     Cancelled,
     Unreadable(Box<dyn Error + Send + Sync>),
 }
@@ -145,9 +146,11 @@ impl ApiError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_) | Self::MixedUnits(_) | Self::BadFilter(_) | Self::BadCursor => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::NoSuchColumn(_)
+            | Self::MixedUnits(_)
+            | Self::BadFilter(_)
+            | Self::BadCursor
+            | Self::BadLocator(_) => StatusCode::BAD_REQUEST,
             Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -160,6 +163,7 @@ impl ApiError {
             Self::MixedUnits(_) => "mixed_units",
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
+            Self::BadLocator(_) => "bad_locator",
             Self::Cancelled => "cancelled",
             Self::Unreadable(_) => "unreadable",
         }
@@ -200,6 +204,7 @@ impl std::fmt::Display for ApiError {
             Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
+            Self::BadLocator(message) => message.fmt(f),
             Self::Cancelled => write!(f, "request cancelled"),
             Self::Unreadable(error) => error.fmt(f),
         }

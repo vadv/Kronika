@@ -12,6 +12,7 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOw
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
+use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
@@ -1573,6 +1574,10 @@ impl Fixture {
     }
 
     pub(crate) fn append_log_error(&mut self, at: i64) {
+        self.append_log_error_count(at, 1);
+    }
+
+    pub(crate) fn append_log_error_count(&mut self, at: i64, count: u32) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
         let dictionary = dict::encode(interner.window()).expect("log dictionary");
@@ -1586,7 +1591,7 @@ impl Fixture {
                 category: 8,
                 sqlstate: None,
                 pattern: label,
-                count: 1,
+                count,
                 sample: label,
                 detail: None,
                 hint: None,
@@ -1628,6 +1633,75 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append pgbouncer row");
+    }
+
+    /// Appends one 22-row mount snapshot whose active and finalized ordinals
+    /// deliberately differ for `/pgdata` and `/victim`.
+    pub(crate) fn append_reordering_mount_snapshot(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for minor in 0..20 {
+            let mount = if minor == 18 {
+                "/victim".to_owned()
+            } else {
+                format!("/before-{minor:02}")
+            };
+            let mount_point = fixture_label(&mut interner, &mount);
+            buffers
+                .push(OsMountinfo {
+                    ts: Ts(at),
+                    major: 0,
+                    minor,
+                    mount_point,
+                    root: mount_point,
+                    fstype: fixture_label(&mut interner, "xfs"),
+                    source: fixture_label(&mut interner, "/dev/fixture"),
+                    is_k8s_infra: false,
+                    total_bytes: Some(if minor == 18 { 900 } else { i64::from(minor) }),
+                    free_bytes: None,
+                    total_inodes: None,
+                    available_inodes: None,
+                    scope: 0,
+                })
+                .expect("mount row fits");
+        }
+        for (major, minor, mount, total_bytes) in [(8, 32, "/pgdata", 1_000), (9, 0, "/after", 1)] {
+            let mount_point = if mount == "/pgdata" {
+                StrId(
+                    interner
+                        .intern_blob(mount.as_bytes())
+                        .expect("intern blob-backed mount")
+                        .get(),
+                )
+            } else {
+                fixture_label(&mut interner, mount)
+            };
+            buffers
+                .push(OsMountinfo {
+                    ts: Ts(at),
+                    major,
+                    minor,
+                    mount_point,
+                    root: mount_point,
+                    fstype: fixture_label(&mut interner, "xfs"),
+                    source: fixture_label(&mut interner, "/dev/fixture"),
+                    is_k8s_infra: false,
+                    total_bytes: Some(total_bytes),
+                    free_bytes: None,
+                    total_inodes: None,
+                    available_inodes: None,
+                    scope: 0,
+                })
+                .expect("mount row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("mount dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode mount rows")
+            .expect("nonempty mount rows");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append mount rows");
     }
 
     fn append_log_temp_file(&mut self, at: i64) {
@@ -6057,7 +6131,12 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
         assert!(occurrence.get("segment_id").is_none());
         assert!(occurrence.get("row_ordinal").is_none());
         assert_eq!(occurrence["detail_locator"]["section"], "pg_log_errors");
-        assert_eq!(occurrence["detail_locator"]["row_key"], "fixture");
+        let identity = occurrence["detail_locator"]["identity"]
+            .as_object()
+            .expect("complete event identity");
+        assert_eq!(identity.len(), 14);
+        assert!(identity["pattern"].is_string());
+        assert_ne!(identity["pattern"], "fixture");
     }
 
     let target = format!(

@@ -34,7 +34,7 @@ fn assert_detail_locator(row: &serde_json::Value, section: &str, detail_only_fie
             "mass row exposed {section}.{field}"
         );
     }
-    for flat in ["segment_id", "at", "type_id", "row_ordinal", "row_key"] {
+    for flat in ["segment_id", "at", "type_id", "row_ordinal"] {
         assert!(!row.contains_key(flat), "mass row retained flat {flat}");
     }
     let locator = row["detail_locator"]
@@ -47,6 +47,7 @@ fn assert_detail_locator(row: &serde_json::Value, section: &str, detail_only_fie
             "{coordinate} decimal string"
         );
     }
+    assert!(locator["identity"].is_object(), "complete locator identity");
 }
 
 fn streamed(prepared: crate::api::Prepared) -> Vec<serde_json::Value> {
@@ -206,6 +207,18 @@ fn overview_arguments(
     .clone()
 }
 
+fn mount_entity<'a>(overview: &'a serde_json::Value, mount: &str) -> &'a serde_json::Value {
+    overview["results"][0]["entities"]
+        .as_array()
+        .expect("Overview entities")
+        .iter()
+        .find(|entity| {
+            entity["identity"]["mount_point"]["stored_text"] == mount
+                || entity["identity"]["mount_point"] == mount
+        })
+        .unwrap_or_else(|| panic!("{mount} entity in {overview:#?}"))
+}
+
 #[test]
 fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     let mut fixture = Fixture::new();
@@ -234,6 +247,157 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     assert_eq!(ranking["entity_count"], "5");
     assert!(ranking.get("grid").is_none());
     assert!(entities.iter().all(|entity| entity.get("cells").is_none()));
+}
+
+#[test]
+fn mount_locators_survive_active_segment_finalization_and_reordering() {
+    let mut fixture = Fixture::new();
+    for at in [100, 200, 300] {
+        fixture.append_reordering_mount_snapshot(at);
+    }
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = overview_arguments("os_mountinfo", &["total_bytes"], 100, 301, 2);
+
+    let active = crate::mcp::overview::call(&config, arguments.clone(), &|| false);
+    assert_eq!(active.is_error, Some(false));
+    let active = active.structured_content.expect("active Overview");
+    let pgdata = mount_entity(&active, "/pgdata");
+    let victim = mount_entity(&active, "/victim");
+    assert_eq!(pgdata["detail_locator"]["row_ordinal"], "64");
+    assert_eq!(victim["detail_locator"]["row_ordinal"], "62");
+    assert_eq!(pgdata["detail_locator"]["identity"]["major"], "8");
+    assert_eq!(pgdata["detail_locator"]["identity"]["minor"], "32");
+    assert!(pgdata["detail_locator"]["identity"]["mount_point"].is_string());
+
+    let active_detail = crate::mcp::row_detail::call(
+        &config,
+        pgdata["detail_locator"]
+            .as_object()
+            .expect("active locator")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(active_detail.is_error, Some(false));
+    let active_detail = active_detail.structured_content.expect("active detail");
+    assert_eq!(active_detail["mount_point"]["stored_text"], "/pgdata");
+
+    let pgdata_locator = pgdata["detail_locator"]
+        .as_object()
+        .expect("pgdata locator")
+        .clone();
+    let victim_locator = victim["detail_locator"]
+        .as_object()
+        .expect("victim locator")
+        .clone();
+    fixture.finish_and_continue(1_709_164_800_001_000);
+
+    let finished_pgdata = crate::mcp::row_detail::call(&config, pgdata_locator.clone(), &|| false);
+    assert_eq!(finished_pgdata.is_error, Some(false));
+    let finished_pgdata = finished_pgdata
+        .structured_content
+        .expect("finished pgdata detail");
+    assert_eq!(finished_pgdata["mount_point"]["stored_text"], "/pgdata");
+    assert_eq!(finished_pgdata["row_ordinal"], "62");
+
+    // The old victim ordinal is now occupied by /pgdata at the same timestamp;
+    // full identity must resolve the victim instead of silently returning it.
+    let finished_victim = crate::mcp::row_detail::call(&config, victim_locator, &|| false);
+    assert_eq!(finished_victim.is_error, Some(false));
+    let finished_victim = finished_victim
+        .structured_content
+        .expect("finished victim detail");
+    assert_eq!(finished_victim["mount_point"], "/victim");
+    assert_eq!(finished_victim["row_ordinal"], "56");
+
+    let finished = crate::mcp::overview::call(&config, arguments, &|| false);
+    assert_eq!(finished.is_error, Some(false));
+    let finished = finished.structured_content.expect("finished Overview");
+    let fresh_pgdata = mount_entity(&finished, "/pgdata");
+    assert_eq!(fresh_pgdata["detail_locator"]["row_ordinal"], "62");
+    let direct = crate::mcp::row_detail::call(
+        &config,
+        fresh_pgdata["detail_locator"]
+            .as_object()
+            .expect("fresh locator")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(direct.is_error, Some(false));
+    assert_eq!(
+        direct.structured_content.expect("fresh detail")["mount_point"]["stored_text"],
+        "/pgdata"
+    );
+
+    let mut tampered_identity = pgdata_locator.clone();
+    tampered_identity
+        .get_mut("identity")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("identity")
+        .insert("mount_point".to_owned(), json!("0"));
+    let rejected = crate::mcp::row_detail::call(&config, tampered_identity, &|| false);
+    assert_eq!(rejected.is_error, Some(true));
+    assert!(
+        rejected.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("no stored row matches")
+    );
+
+    let mut impossible_ordinal = pgdata_locator;
+    impossible_ordinal.insert("row_ordinal".to_owned(), json!("66"));
+    let rejected = crate::mcp::row_detail::call(&config, impossible_ordinal, &|| false);
+    assert_eq!(rejected.is_error, Some(true));
+    assert!(
+        rejected.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("invalid detail_locator row_ordinal")
+    );
+}
+
+#[test]
+fn overview_refuses_an_interleaved_duplicate_event_locator_identity() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error_count(100, 1);
+    fixture.append_log_error_count(100, 2);
+    fixture.append_log_error_count(100, 1);
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = overview_arguments("pg_log_errors", &["count"], 0, 101, 1);
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        result.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("cannot emit detail_locator: type_id 2001001 has a non-unique identity")
+    );
+}
+
+#[test]
+fn overview_emits_a_unique_final_event_after_an_older_duplicate() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error_count(100, 1);
+    fixture.append_log_error_count(100, 1);
+    fixture.append_log_error_count(100, 2);
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = overview_arguments("pg_log_errors", &["count"], 0, 101, 1);
+
+    let overview = crate::mcp::overview::call(&config, arguments, &|| false);
+    assert_eq!(overview.is_error, Some(false));
+    let overview = overview.structured_content.expect("Overview");
+    let locator = overview["results"][0]["entities"][0]["detail_locator"]
+        .as_object()
+        .expect("locator")
+        .clone();
+    let detail = crate::mcp::row_detail::call(&config, locator, &|| false);
+
+    assert_eq!(detail.is_error, Some(false));
+    assert_eq!(detail.structured_content.expect("detail")["count"], 2);
 }
 
 #[test]
@@ -1503,24 +1667,10 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     assert_eq!(listing_rows.len(), 1);
     let listing_row = listing_rows[0].clone();
 
-    // `append_process_gauge_rows` stores PID 101 at row ordinal 0.
-    let (segment_id, at) = crate::mcp::postgresql::current_segment(&config.data_root, "os_process")
-        .expect("current segment")
-        .expect("os_process recorded");
-    let type_id = kronika_registry::os_process::OsProcess::CONTRACT
-        .type_id
-        .get();
-    let detail_arguments = serde_json::json!({
-        "section": "os_process",
-        "segment_id": segment_id,
-        "at": at,
-        "type_id": type_id,
-        "row_ordinal": 0,
-        "row_key": listing_row["detail_locator"]["row_key"],
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let detail_arguments = listing_row["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
 
     let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
@@ -1528,10 +1678,16 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
     let detail_row = detail.structured_content.expect("structured content");
     assert_eq!(detail_row["pid"], listing_row["pid"]);
     assert_eq!(detail_row["rmem_kb"], listing_row["rmem_kb"]);
-    assert_eq!(detail_row["segment_id"], segment_id.to_string());
-    assert_eq!(detail_row["type_id"], type_id.to_string());
+    assert_eq!(
+        detail_row["segment_id"],
+        listing_row["detail_locator"]["segment_id"]
+    );
+    assert_eq!(
+        detail_row["type_id"],
+        listing_row["detail_locator"]["type_id"]
+    );
     assert_eq!(detail_row["row_ordinal"], "0");
-    assert_eq!(detail_row["at"], at.to_string());
+    assert_eq!(detail_row["at"], listing_row["detail_locator"]["at"]);
 }
 
 #[test]
@@ -1627,33 +1783,47 @@ fn get_row_detail_preserves_truncated_blob_text_facts_in_the_stable_shape() {
 }
 
 #[test]
-fn get_row_detail_rejects_a_relation_grouped_section() {
-    // Grouped `pg_stat_user_tables` results have no single physical row ordinal.
+fn get_row_detail_accepts_physical_relation_overview_but_aggregates_have_no_locator() {
     let mut fixture = Fixture::new();
     fixture.append_named_table_snapshots(&[(100, 1, 11, 0, "db", "public", "alpha")]);
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
-    let (segment_id, at) =
-        crate::mcp::postgresql::current_segment(&config.data_root, "pg_stat_user_tables")
-            .expect("current segment")
-            .expect("pg_stat_user_tables recorded");
-    let type_id = kronika_registry::pg_stat_user_tables::PgStatUserTablesV1::CONTRACT
-        .type_id
-        .get();
-    let arguments = serde_json::json!({
-        "section": "pg_stat_user_tables",
-        "segment_id": segment_id,
-        "at": at,
-        "type_id": type_id,
-        "row_ordinal": 0,
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let overview = crate::mcp::overview::call(
+        &config,
+        overview_arguments("pg_stat_user_tables", &["main_fork_bytes"], 100, 101, 1),
+        &|| false,
+    );
+    assert_eq!(overview.is_error, Some(false));
+    let overview = overview.structured_content.expect("Overview");
+    let entity = &overview["results"][0]["entities"][0];
+    assert_eq!(entity["detail_locator"]["identity"]["datid"], "1");
+    assert_eq!(entity["detail_locator"]["identity"]["relid"], "11");
+    let detail = crate::mcp::row_detail::call(
+        &config,
+        entity["detail_locator"]
+            .as_object()
+            .expect("physical relation locator")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(detail.is_error, Some(false));
+    assert_eq!(
+        detail.structured_content.expect("detail")["relname"],
+        "alpha"
+    );
 
-    let result = crate::mcp::row_detail::call(&config, arguments, &|| false);
-    assert_eq!(result.is_error, Some(true));
+    let aggregate = crate::mcp::postgresql::call_tables(
+        &config,
+        json!({"group": "object", "limit": 10})
+            .as_object()
+            .expect("arguments")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(aggregate.is_error, Some(false));
+    let aggregate = aggregate.structured_content.expect("aggregate finder");
+    assert!(aggregate["rows"][0].get("detail_locator").is_none());
 }
 
 #[test]
@@ -1675,7 +1845,7 @@ fn get_row_detail_accepts_segment_id_and_row_ordinal_as_decimal_strings() {
         "at": at,
         "type_id": type_id,
         "row_ordinal": "0",
-        "row_key": 101,
+        "identity": {"pid": "101"},
     })
     .as_object()
     .expect("object")
@@ -1729,7 +1899,7 @@ fn find_events_returns_structural_fields_with_one_nested_locator() {
         assert_eq!(row["pattern"], "fixture");
         assert!(row.get("sample").is_none());
         assert!(row.get("segment_id").is_none());
-        assert!(row.get("row_key").is_none());
+        assert!(row.get("identity").is_none());
         let locator = &row["detail_locator"];
         assert_eq!(locator["section"], "pg_log_errors");
         assert!(
@@ -1745,7 +1915,27 @@ fn find_events_returns_structural_fields_with_one_nested_locator() {
             "row_ordinal is a decimal string"
         );
         assert!(locator["at"].is_string(), "at is a decimal string");
-        assert_eq!(locator["row_key"], "fixture");
+        let identity = locator["identity"].as_object().expect("identity object");
+        for member in [
+            "system_identifier",
+            "source_file",
+            "severity",
+            "category",
+            "sqlstate",
+            "pattern",
+            "count",
+            "sample",
+            "detail",
+            "hint",
+            "context",
+            "statement",
+            "database",
+            "username",
+        ] {
+            assert!(identity.contains_key(member), "missing {member}");
+        }
+        assert!(identity["pattern"].is_string());
+        assert_ne!(identity["pattern"], "fixture");
         assert_eq!(row["category"], 8);
     }
 }
@@ -1783,6 +1973,19 @@ fn find_events_default_and_explicit_groups_are_identical() {
     assert!(group.get("text").is_none());
     assert!(group.get("rows").is_none());
     assert_eq!(group["detail_locator"]["section"], "pg_log_errors");
+    let group_detail = crate::mcp::row_detail::call(
+        &config,
+        group["detail_locator"]
+            .as_object()
+            .expect("group locator")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(group_detail.is_error, Some(false));
+    assert_eq!(
+        group_detail.structured_content.expect("group detail")["sample"]["stored_text"],
+        "fixture"
+    );
 
     let http = streamed(fixture.prepare(
         "/api/events?from=0&to=1000&source=pg_log_errors&representation=groups&limit=10",
@@ -1901,9 +2104,9 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
     {
         assert!(row.get("text").is_none());
         assert!(
-            row["detail_locator"]["row_key"]
+            row["detail_locator"]["identity"]["text"]
                 .as_str()
-                .is_some_and(|key| key.starts_with("sha256:"))
+                .is_some_and(|key| !key.contains("server login"))
         );
     }
 }
@@ -2173,7 +2376,7 @@ fn find_events_request_budget_is_exact() {
 }
 
 #[test]
-fn get_row_detail_refuses_a_row_key_of_another_row() {
+fn get_row_detail_uses_complete_identity_and_treats_ordinal_as_a_hint() {
     let mut fixture = Fixture::new();
     fixture.append_ranked_statements();
     fixture.finish();
@@ -2197,44 +2400,44 @@ fn get_row_detail_refuses_a_row_key_of_another_row() {
         .iter()
         .find(|row| row["queryid"] == "2")
         .expect("queryid 2");
-    assert_eq!(one["detail_locator"]["row_key"], "1");
+    assert_eq!(one["detail_locator"]["identity"]["queryid"], "1");
 
-    let locator = |row_key: &serde_json::Value| {
-        let mut locator = one["detail_locator"]
-            .as_object()
-            .expect("detail locator")
-            .clone();
-        locator.insert("row_key".to_owned(), row_key.clone());
-        locator
-    };
-
-    let same =
-        crate::mcp::row_detail::call(&config, locator(&one["detail_locator"]["row_key"]), &|| {
-            false
-        });
+    let locator = one["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
+    let same = crate::mcp::row_detail::call(&config, locator.clone(), &|| false);
     assert_eq!(same.is_error, Some(false));
     assert_eq!(
         same.structured_content.expect("structured content")["queryid"],
         "1"
     );
 
-    let swapped =
-        crate::mcp::row_detail::call(&config, locator(&two["detail_locator"]["row_key"]), &|| {
-            false
-        });
-    assert_eq!(swapped.is_error, Some(true));
-    let message = swapped.content[0]
-        .as_text()
-        .expect("text content")
-        .text
-        .clone();
-    assert!(
-        message.contains("stale locator") && message.contains("re-run"),
-        "the mismatch names itself and the way out: {message}"
+    let mut stale_hint = locator.clone();
+    stale_hint.insert(
+        "row_ordinal".to_owned(),
+        two["detail_locator"]["row_ordinal"].clone(),
+    );
+    let resolved = crate::mcp::row_detail::call(&config, stale_hint, &|| false);
+    assert_eq!(resolved.is_error, Some(false));
+    assert_eq!(
+        resolved.structured_content.expect("resolved row")["queryid"],
+        "1"
     );
 
-    let mut absent = locator(&one["detail_locator"]["row_key"]);
-    absent.remove("row_key");
+    let mut tampered = locator.clone();
+    tampered
+        .get_mut("identity")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("identity")
+        .insert("queryid".to_owned(), json!("999"));
+    let rejected = crate::mcp::row_detail::call(&config, tampered, &|| false);
+    assert_eq!(rejected.is_error, Some(true));
+    let message = rejected.content[0].as_text().expect("text").text.clone();
+    assert!(message.contains("no stored row matches"), "{message}");
+
+    let mut absent = locator;
+    absent.remove("identity");
     let missing = crate::mcp::row_detail::call(&config, absent, &|| false);
     assert_eq!(missing.is_error, Some(true));
     let message = missing.content[0]
@@ -2243,8 +2446,68 @@ fn get_row_detail_refuses_a_row_key_of_another_row() {
         .text
         .clone();
     assert!(
-        message.contains("row_key is required"),
+        message.contains("identity") && message.contains("missing field"),
         "the omission names the requirement: {message}"
+    );
+}
+
+#[test]
+fn find_processes_refuses_to_emit_a_non_unique_locator_identity() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "first"), (100, 101, 60, "second")]);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let result = crate::mcp::processes::call(
+        &config,
+        json!({
+            "filters": [{"field": "command", "op": "eq", "value": "first"}],
+            "limit": 10,
+        })
+        .as_object()
+        .expect("arguments")
+        .clone(),
+        &|| false,
+    );
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        result.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("cannot emit detail_locator: os_process has a non-unique identity")
+    );
+}
+
+#[test]
+fn get_row_detail_rejects_a_non_unique_identity() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "first"), (100, 101, 60, "second")]);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+    let (segment_id, at) = crate::mcp::postgresql::current_segment(&config.data_root, "os_process")
+        .expect("current segment")
+        .expect("os_process recorded");
+    let locator = json!({
+        "section": "os_process",
+        "segment_id": segment_id.to_string(),
+        "at": at.to_string(),
+        "type_id": kronika_registry::os_process::OsProcess::CONTRACT.type_id.get().to_string(),
+        "row_ordinal": "0",
+        "identity": {"pid": "101"},
+    })
+    .as_object()
+    .expect("locator")
+    .clone();
+    let detail = crate::mcp::row_detail::call(&config, locator, &|| false);
+    assert_eq!(detail.is_error, Some(true));
+    assert!(
+        detail.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("identity is not unique")
     );
 }
 
@@ -2293,6 +2556,36 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     assert_eq!(
         detail_row["sample"].as_object().map(serde_json::Map::len),
         Some(4)
+    );
+}
+
+#[test]
+fn find_events_refuses_to_emit_a_non_unique_locator_identity() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "representation": "occurrences",
+        "limit": 10,
+    })
+    .as_object()
+    .expect("arguments")
+    .clone();
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        result.content[0]
+            .as_text()
+            .expect("error")
+            .text
+            .contains("cannot emit detail_locator: pg_log_errors has a non-unique identity")
     );
 }
 
@@ -2831,8 +3124,13 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
     assert_eq!(settings.len(), 1);
     assert_eq!(settings[0]["name"], "work_mem");
     assert_eq!(settings[0]["setting"], "4096");
-    assert_eq!(settings[0]["row_key"], "work_mem");
-    assert!(settings[0]["segment_id"].is_string());
+    assert_eq!(
+        settings[0]["detail_locator"]["identity"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(3)
+    );
+    assert!(settings[0]["detail_locator"]["segment_id"].is_string());
     assert!(structured["settings_as_of"].is_string());
     assert_eq!(structured["settings_scope"], "non_default");
     assert_eq!(structured["settings_returned_count"], "1");
@@ -2874,17 +3172,10 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
         .find(|row| row["name"] == "block_size")
         .expect("default block_size row");
 
-    let detail_arguments = serde_json::json!({
-        "section": "pg_settings",
-        "segment_id": block_size["segment_id"],
-        "at": block_size["at"],
-        "type_id": block_size["type_id"],
-        "row_ordinal": block_size["row_ordinal"],
-        "row_key": block_size["row_key"],
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let detail_arguments = block_size["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
     let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
     assert_eq!(detail.is_error, Some(false));
     assert_eq!(
