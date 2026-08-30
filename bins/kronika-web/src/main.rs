@@ -7,6 +7,7 @@
 mod api;
 mod auth;
 mod body;
+mod budget;
 mod config;
 mod encoding;
 mod mcp;

@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::budget::ByteBudget;
 use crate::route::MAX_QUERY_BYTES;
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -166,30 +167,8 @@ pub(crate) fn bounded_limit(name: &str, value: u32, cap: usize) -> Result<usize,
 /// out instead of a response no MCP client will digest.
 const RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
-/// An `io::Write` that only counts, failing once the budget is spent — so
-/// oversized results abort during measurement instead of allocating fully.
-struct ByteBudget {
-    remaining: usize,
-}
-
-impl std::io::Write for ByteBudget {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.len() > self.remaining {
-            return Err(std::io::Error::other("over budget"));
-        }
-        self.remaining -= buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 pub(crate) fn arguments_within_budget(arguments: &Map<String, Value>) -> bool {
-    let mut budget = ByteBudget {
-        remaining: MAX_QUERY_BYTES,
-    };
+    let mut budget = ByteBudget::new(MAX_QUERY_BYTES);
     serde_json::to_writer(&mut budget, arguments).is_ok()
 }
 
@@ -217,9 +196,7 @@ fn structured_within_budget(
     summary: impl Into<String>,
     knob: Option<(&str, usize)>,
 ) -> CallToolResult {
-    let mut budget = ByteBudget {
-        remaining: RESPONSE_MAX_BYTES,
-    };
+    let mut budget = ByteBudget::new(RESPONSE_MAX_BYTES);
     if serde_json::to_writer(&mut budget, &value).is_err() {
         return mcp_error(over_budget_message(knob));
     }

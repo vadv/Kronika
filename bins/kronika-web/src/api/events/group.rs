@@ -225,12 +225,12 @@ fn group_checkpoints(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
             .filter(|row| number(row, "phase") == Some(1.0))
             .filter_map(|row| number(row, "sync_ms"))
             .max_by(f64::total_cmp);
-        let buffer_values: Vec<f64> = ordinary
+        let mut buffer_values = ordinary
             .iter()
             .filter(|row| number(row, "phase") == Some(1.0))
             .filter_map(|row| number(row, "buffers_written"))
-            .collect();
-        let buffers = (!buffer_values.is_empty()).then(|| buffer_values.iter().sum());
+            .peekable();
+        let buffers = buffer_values.peek().is_some().then(|| buffer_values.sum());
         entries.push(build(
             "checkpoints".to_owned(),
             EventSource::Checkpoints,
@@ -527,11 +527,12 @@ fn shared(members: &[EventDataRow], field: &str) -> Option<String> {
 }
 
 fn sum(members: &[EventDataRow], field: &str) -> Option<f64> {
-    let values: Vec<f64> = members
+    let mut values = members
         .iter()
         .filter_map(|row| number(row, field))
-        .collect();
-    (!values.is_empty()).then(|| values.iter().sum())
+        .peekable();
+    values.peek()?;
+    Some(values.sum())
 }
 
 fn max(members: &[EventDataRow], field: &str) -> Option<f64> {

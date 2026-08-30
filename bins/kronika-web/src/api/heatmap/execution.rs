@@ -16,6 +16,7 @@ use super::result::{
 };
 use crate::api::render::{cell, record};
 use crate::api::{ApiError, CachePolicy, ResponseMeta};
+use crate::budget::ByteBudget;
 
 const WORKING_SET_MAX_BYTES: usize = 8 * 1024 * 1024;
 const RESULT_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -1720,12 +1721,10 @@ fn reserve_rendered_clone(
 }
 
 fn encoded_value_len(value: &Value, index: usize) -> Result<usize, HeatmapError> {
-    let mut counter = ResultBudget {
-        remaining: usize::MAX,
-    };
+    let mut counter = ByteBudget::new(usize::MAX);
     serde_json::to_writer(&mut counter, value)
         .map_err(|error| HeatmapError::storage(index, error))?;
-    Ok(usize::MAX - counter.remaining)
+    Ok(usize::MAX - counter.remaining())
 }
 
 fn reserve_ids(
@@ -2064,9 +2063,7 @@ fn check_result_budget(
     unique: &[HeatmapItemResult],
     original_to_unique: &[usize],
 ) -> Result<(), HeatmapError> {
-    let mut encoded = ResultBudget {
-        remaining: RESULT_MAX_BYTES,
-    };
+    let mut encoded = ByteBudget::new(RESULT_MAX_BYTES);
     std::io::Write::write_all(&mut encoded, b"{\"results\":[")
         .map_err(|_error| HeatmapError::invalid(0, result_overflow_message()))?;
     for (index, unique_index) in original_to_unique.iter().copied().enumerate() {
@@ -2189,24 +2186,6 @@ fn result_overflow_message() -> String {
     format!(
         "heatmap result exceeds {RESULT_MAX_BYTES} encoded bytes; split rankings into several calls or reduce top"
     )
-}
-
-struct ResultBudget {
-    remaining: usize,
-}
-
-impl std::io::Write for ResultBudget {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.len() > self.remaining {
-            return Err(std::io::Error::other("over budget"));
-        }
-        self.remaining -= buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 fn emit_http(
@@ -2339,10 +2318,11 @@ mod budget_tests {
     use serde_json::Value;
 
     use crate::api::heatmap::NormalizedRanking;
+    use crate::budget::ByteBudget;
 
     use super::{
         CoverageState, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapItemResult,
-        RESULT_MAX_BYTES, ResultBudget, WORKING_SET_MAX_BYTES, WorkingBudget, check_result_budget,
+        RESULT_MAX_BYTES, WORKING_SET_MAX_BYTES, WorkingBudget, check_result_budget,
         expand_results, reserve_result_clone,
     };
 
@@ -2425,14 +2405,12 @@ mod budget_tests {
 
     #[test]
     fn encoded_result_accepts_the_exact_limit_and_rejects_one_more_byte() {
-        let mut budget = ResultBudget {
-            remaining: RESULT_MAX_BYTES,
-        };
+        let mut budget = ByteBudget::new(RESULT_MAX_BYTES);
         let chunk = [0_u8; 1_024];
         for _ in 0..(RESULT_MAX_BYTES / chunk.len()) {
             budget.write_all(&chunk).expect("exact result limit");
         }
-        assert_eq!(budget.remaining, 0);
+        assert_eq!(budget.remaining(), 0);
         assert!(budget.write_all(&[0]).is_err(), "one byte over must fail");
     }
 

@@ -12,6 +12,7 @@ use super::query::{Plan, plans, streaming_chunk_dictionary, validate_row_diction
 use super::render::{cell, record};
 use super::time::TimeRange;
 use super::{ApiError, CachePolicy, ResponseMeta, log_warnings, weak_etag};
+use crate::budget::ByteBudget;
 use crate::route::{DataRequest, Filter, SegmentRequest};
 
 mod group;
@@ -759,28 +760,8 @@ fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<StoredEventRow>>) 
     }
 }
 
-struct ByteBudget {
-    remaining: usize,
-}
-
-impl std::io::Write for ByteBudget {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.len() > self.remaining {
-            return Err(std::io::Error::other("over budget"));
-        }
-        self.remaining -= buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 fn ensure_budget(result: &EventsResult) -> Result<(), ApiError> {
-    let mut budget = ByteBudget {
-        remaining: RESPONSE_MAX_BYTES,
-    };
+    let mut budget = ByteBudget::new(RESPONSE_MAX_BYTES);
     serde_json::to_writer(&mut budget, result)
         .map_err(|_error| ApiError::ResultTooLarge(result.representation()))
 }
