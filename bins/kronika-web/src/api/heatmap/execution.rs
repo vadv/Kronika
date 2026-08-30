@@ -169,10 +169,6 @@ pub(crate) struct PreparedHeatmapBatch {
     retained_label_slots: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     metric_fold_slots: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    scan_working_bytes: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    peak_working_bytes: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone)]
@@ -249,10 +245,6 @@ pub(crate) fn prepare_batch(
         retained_label_slots: std::sync::atomic::AtomicU64::new(0),
         #[cfg(test)]
         metric_fold_slots: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        scan_working_bytes: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        peak_working_bytes: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
@@ -309,24 +301,10 @@ impl PreparedHeatmapBatch {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let (section_specs, accumulator_sections) = shared_section_specs(&self.unique);
-        let mut budget = WorkingBudget::default();
-        budget.reserve_array::<SharedSectionSpec>(section_specs.capacity(), 0)?;
-        budget.reserve_array::<usize>(accumulator_sections.capacity(), 0)?;
-        for section in &section_specs {
-            budget.reserve(section.name.capacity(), section.first_index)?;
-            budget.reserve_array::<String>(section.labels.capacity(), section.first_index)?;
-            for label in &section.labels {
-                budget.reserve(label.capacity(), section.first_index)?;
-            }
-        }
         let mut sections = section_specs
             .iter()
             .map(SharedSection::new)
             .collect::<Vec<_>>();
-        budget.reserve_array::<SharedSection>(sections.capacity(), 0)?;
-        for section in &sections {
-            budget.reserve(section.name.capacity(), section.first_index)?;
-        }
         let mut accumulators = Vec::with_capacity(self.unique.len());
         for (accumulator, spec) in self.unique.iter().enumerate() {
             accumulators.push(Accumulator::new(
@@ -336,22 +314,9 @@ impl PreparedHeatmapBatch {
                 &section_specs[accumulator_sections[accumulator]],
             ));
         }
-        budget.reserve_array::<Accumulator>(accumulators.capacity(), 0)?;
-        for accumulator in &accumulators {
-            budget.reserve_array::<usize>(
-                accumulator.label_slots.capacity(),
-                accumulator.first_index,
-            )?;
-            budget
-                .reserve_array::<CellSum>(accumulator.totals.capacity(), accumulator.first_index)?;
-        }
         let mut opened_segments = Vec::with_capacity(self.segments.len());
-        // Rendered dictionary values feed the typed result and are governed by
-        // its separate exact encoded-byte budget, not scan-state admission.
+        // Rendered dictionary values feed the typed result's exact encoded-byte budget.
         let mut rendered_ids = RenderedIds::new();
-        budget.reserve_array::<Segment>(opened_segments.capacity(), 0)?;
-        budget.reserve_array::<HashSet<u64>>(self.segments.len(), 0)?;
-        budget.reserve_array::<Vec<(u64, usize)>>(self.segments.len(), 0)?;
 
         for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
             if cancelled() {
@@ -375,7 +340,6 @@ impl PreparedHeatmapBatch {
                     self.query.range,
                     &mut accumulators,
                     &mut sections,
-                    &mut budget,
                     cancelled,
                     #[cfg(test)]
                     &self.row_visits,
@@ -384,26 +348,18 @@ impl PreparedHeatmapBatch {
             opened_segments.push(segment);
         }
 
-        #[cfg(test)]
-        self.scan_working_bytes.store(
-            u64::try_from(budget.used).unwrap_or(u64::MAX),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-
         let mut retained_ids = vec![HashSet::new(); opened_segments.len()];
         let mut retained_indices = vec![Vec::new(); opened_segments.len()];
         let indexed_sections = sections
             .iter()
-            .map(|section| section.indexed(&mut budget))
-            .collect::<Result<Vec<_>, _>>()?;
-        budget.reserve_array::<IndexedSection<'_>>(indexed_sections.capacity(), 0)?;
+            .map(SharedSection::indexed)
+            .collect::<Vec<_>>();
         for accumulator in &accumulators {
             accumulator.collect_ids(
                 &indexed_sections[accumulator.section],
                 &mut retained_ids,
                 &mut retained_indices,
-                &mut budget,
-            )?;
+            );
         }
         for (segment_slot, ((segment, ids), indexed_ids)) in opened_segments
             .iter()
@@ -462,10 +418,6 @@ impl PreparedHeatmapBatch {
             );
             self.metric_fold_slots
                 .store(metric_fold_slots, std::sync::atomic::Ordering::Relaxed);
-            self.peak_working_bytes.store(
-                u64::try_from(budget.peak).unwrap_or(u64::MAX),
-                std::sync::atomic::Ordering::Relaxed,
-            );
         }
         Ok(HeatmapBatchResult { results })
     }
@@ -793,9 +745,12 @@ fn physical_plans(
     plans
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one physical scan's explicit shared state"
+#[cfg_attr(
+    test,
+    expect(
+        clippy::too_many_arguments,
+        reason = "one physical scan's explicit shared state"
+    )
 )]
 fn scan_plan(
     segment: &Segment,
@@ -804,7 +759,6 @@ fn scan_plan(
     range: crate::api::time::TimeRange,
     accumulators: &mut [Accumulator],
     sections: &mut [SharedSection],
-    budget: &mut WorkingBudget,
     cancelled: &impl Fn() -> bool,
     #[cfg(test)] row_visits: &std::sync::atomic::AtomicU64,
 ) -> Result<(), HeatmapError> {
@@ -857,7 +811,6 @@ fn scan_plan(
                 ordinal,
                 timestamp,
                 &plan.labels,
-                budget,
             ) {
                 Ok(entity) => entity,
                 Err(error) => {
@@ -868,7 +821,7 @@ fn scan_plan(
             for binding in &plan.bindings {
                 let accumulator = &mut accumulators[binding.accumulator];
                 if let Err(error) =
-                    accumulator.observe(segment_slot, &row, timestamp, entity, binding, budget)
+                    accumulator.observe(segment_slot, &row, timestamp, entity, binding)
                 {
                     failure = Some(error);
                     return false;
@@ -882,130 +835,6 @@ fn scan_plan(
     }
     debug_assert!(visited <= take, "row visitor exceeded its declared bound");
     Ok(())
-}
-
-#[derive(Default)]
-struct WorkingBudget {
-    used: usize,
-    peak: usize,
-}
-
-impl WorkingBudget {
-    fn reserve(&mut self, bytes: usize, index: usize) -> Result<(), HeatmapError> {
-        let used = self.used.checked_add(bytes).ok_or_else(|| {
-            HeatmapError::invalid(index, "heatmap execution working set size overflows")
-        })?;
-        self.used = used;
-        self.peak = self.peak.max(used);
-        Ok(())
-    }
-
-    fn reserve_array<T>(&mut self, count: usize, index: usize) -> Result<(), HeatmapError> {
-        let bytes = size_of::<T>().checked_mul(count).ok_or_else(|| {
-            HeatmapError::invalid(index, "heatmap execution working set size overflows")
-        })?;
-        self.reserve(bytes, index)
-    }
-
-    fn reserve_parts(
-        &mut self,
-        parts: impl IntoIterator<Item = usize>,
-        index: usize,
-    ) -> Result<(), HeatmapError> {
-        let mut bytes = 0_usize;
-        for part in parts {
-            bytes = bytes.checked_add(part).ok_or_else(|| {
-                HeatmapError::invalid(index, "heatmap execution working set size overflows")
-            })?;
-        }
-        self.reserve(bytes, index)
-    }
-
-    fn release(&mut self, bytes: usize) {
-        debug_assert!(
-            bytes <= self.used,
-            "working-set release exceeds the reserved bytes"
-        );
-        self.used = self.used.saturating_sub(bytes);
-    }
-}
-
-fn reserve_vec_growth<T>(
-    values: &mut Vec<T>,
-    additional: usize,
-    budget: &mut WorkingBudget,
-    index: usize,
-) -> Result<(), HeatmapError> {
-    let before = values.capacity();
-    values.try_reserve(additional).map_err(|error| {
-        HeatmapError::invalid(
-            index,
-            format!("heatmap retained vector allocation failed: {error}"),
-        )
-    })?;
-    budget.reserve_array::<T>(values.capacity().saturating_sub(before), index)
-}
-
-fn reserve_hash_map_growth<K, V>(
-    values: &mut HashMap<K, V>,
-    budget: &mut WorkingBudget,
-    index: usize,
-) -> Result<(), HeatmapError>
-where
-    K: Eq + std::hash::Hash,
-{
-    let before = values.capacity();
-    values.try_reserve(1).map_err(|error| {
-        HeatmapError::invalid(
-            index,
-            format!("heatmap retained map allocation failed: {error}"),
-        )
-    })?;
-    // `HashMap` exposes bucket capacity but not allocator bytes. Account one
-    // entry plus one control byte for each reported retained-capacity bucket.
-    let bucket = size_of::<(K, V)>().checked_add(1).ok_or_else(|| {
-        HeatmapError::invalid(index, "heatmap execution working set size overflows")
-    })?;
-    budget.reserve_array::<u8>(
-        values
-            .capacity()
-            .saturating_sub(before)
-            .checked_mul(bucket)
-            .ok_or_else(|| {
-                HeatmapError::invalid(index, "heatmap execution working set size overflows")
-            })?,
-        index,
-    )
-}
-
-fn reserve_hash_set_growth<T>(
-    values: &mut HashSet<T>,
-    budget: &mut WorkingBudget,
-    index: usize,
-) -> Result<(), HeatmapError>
-where
-    T: Eq + std::hash::Hash,
-{
-    let before = values.capacity();
-    values.try_reserve(1).map_err(|error| {
-        HeatmapError::invalid(
-            index,
-            format!("heatmap retained set allocation failed: {error}"),
-        )
-    })?;
-    let bucket = size_of::<T>().checked_add(1).ok_or_else(|| {
-        HeatmapError::invalid(index, "heatmap execution working set size overflows")
-    })?;
-    budget.reserve_array::<u8>(
-        values
-            .capacity()
-            .saturating_sub(before)
-            .checked_mul(bucket)
-            .ok_or_else(|| {
-                HeatmapError::invalid(index, "heatmap execution working set size overflows")
-            })?,
-        index,
-    )
 }
 
 #[derive(Default)]
@@ -1030,6 +859,7 @@ struct SharedSection {
     label_count: usize,
     by_raw_key: HashMap<Box<str>, EntityId>,
     entities: Vec<SharedEntity>,
+    identity_scratch: Vec<Cell>,
     key_scratch: String,
 }
 
@@ -1053,6 +883,7 @@ impl SharedSection {
             label_count: spec.labels.len(),
             by_raw_key: HashMap::new(),
             entities: Vec::new(),
+            identity_scratch: Vec::new(),
             key_scratch: String::new(),
         }
     }
@@ -1067,16 +898,15 @@ impl SharedSection {
         self.entities.len().saturating_mul(self.label_count)
     }
 
-    fn indexed(&self, budget: &mut WorkingBudget) -> Result<IndexedSection<'_>, HeatmapError> {
-        budget.reserve_array::<&str>(self.entities.len(), self.first_index)?;
+    fn indexed(&self) -> IndexedSection<'_> {
         let mut raw_keys = vec![""; self.entities.len()];
         for (raw_key, entity) in &self.by_raw_key {
             raw_keys[entity.index()] = raw_key;
         }
-        Ok(IndexedSection {
+        IndexedSection {
             entities: &self.entities,
             raw_keys,
-        })
+        }
     }
 
     #[expect(
@@ -1092,19 +922,15 @@ impl SharedSection {
         ordinal: u64,
         timestamp: i64,
         labels: &[Option<&'static str>],
-        budget: &mut WorkingBudget,
     ) -> Result<EntityId, HeatmapError> {
-        let identity = contract
-            .identity
-            .iter()
-            .map(|name| row.get(name).cloned().unwrap_or(Cell::Null))
-            .collect::<Vec<_>>();
-        let old_scratch = self.key_scratch.capacity();
-        raw_key_into(&mut self.key_scratch, type_id, &identity);
-        budget.reserve(
-            self.key_scratch.capacity().saturating_sub(old_scratch),
-            self.first_index,
-        )?;
+        self.identity_scratch.clear();
+        self.identity_scratch.extend(
+            contract
+                .identity
+                .iter()
+                .map(|name| row.get(name).cloned().unwrap_or(Cell::Null)),
+        );
+        raw_key_into(&mut self.key_scratch, type_id, &self.identity_scratch);
         let entity = if let Some(entity) = self.by_raw_key.get(self.key_scratch.as_str()).copied() {
             entity
         } else {
@@ -1118,21 +944,11 @@ impl SharedSection {
                     ),
                 )
             })?);
-            reserve_hash_map_growth(&mut self.by_raw_key, budget, self.first_index)?;
-            reserve_vec_growth(&mut self.entities, 1, budget, self.first_index)?;
-            budget.reserve_parts(
-                [
-                    raw_key.len(),
-                    cells_retained_bytes(&identity, self.first_index)?,
-                    size_of::<Option<StoredLabel>>() * self.label_count,
-                ],
-                self.first_index,
-            )?;
             self.by_raw_key.insert(raw_key, entity);
             self.entities.push(SharedEntity {
                 type_id,
                 identity_segment: segment_slot,
-                identity: identity.into_boxed_slice(),
+                identity: self.identity_scratch.clone().into_boxed_slice(),
                 labels: vec![None; self.label_count].into_boxed_slice(),
             });
             entity
@@ -1150,17 +966,12 @@ impl SharedSection {
                     >= (stored.timestamp, stored.segment_slot, stored.ordinal)
             });
             if replace {
-                let nested = cell_nested_bytes(value, self.first_index)?;
-                let replaced_heap = slot.as_ref().map_or(0, |stored| stored.reserved_heap);
-                budget.reserve(nested, self.first_index)?;
                 *slot = Some(StoredLabel {
                     segment_slot,
                     timestamp,
                     ordinal,
                     value: value.clone(),
-                    reserved_heap: nested,
                 });
-                budget.release(replaced_heap);
             }
         }
         Ok(entity)
@@ -1221,7 +1032,6 @@ struct StoredLabel {
     timestamp: i64,
     ordinal: u64,
     value: Cell,
-    reserved_heap: usize,
 }
 
 struct GroupState {
@@ -1294,10 +1104,6 @@ impl Accumulator {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the one-pass fold keeps row-derived state updates together"
-    )]
     fn observe(
         &mut self,
         segment_slot: usize,
@@ -1305,21 +1111,18 @@ impl Accumulator {
         timestamp: i64,
         entity: EntityId,
         binding: &Binding,
-        budget: &mut WorkingBudget,
     ) -> Result<(), HeatmapError> {
         let Some(value) = summed(row, &binding.metrics) else {
             return Ok(());
         };
         self.as_of = Some(self.as_of.map_or(timestamp, |seen| seen.max(timestamp)));
         if !self.grid {
-            self.rank_fold(entity, budget)?
-                .window
-                .observe(timestamp, value);
+            self.rank_fold(entity)?.window.observe(timestamp, value);
             return Ok(());
         }
 
-        let (fold, inserted) = self.grid_fold(entity, timestamp, budget)?;
-        let group = if inserted && self.grouped {
+        let (fold, inserted) = self.grid_fold(entity, timestamp)?;
+        let group = (inserted && self.grouped).then(|| {
             let values: Vec<Cell> = binding
                 .groups
                 .iter()
@@ -1335,15 +1138,6 @@ impl Accumulator {
             let group = if let Some(group) = self.group_index.get(&group_key).copied() {
                 group
             } else {
-                reserve_hash_map_growth(&mut self.group_index, budget, self.first_index)?;
-                reserve_vec_growth(&mut self.groups, 1, budget, self.first_index)?;
-                budget.reserve_parts(
-                    [
-                        group_key.len(),
-                        cells_retained_bytes(&values, self.first_index)?,
-                    ],
-                    self.first_index,
-                )?;
                 self.groups.push(GroupState {
                     segment_slot,
                     values,
@@ -1354,10 +1148,8 @@ impl Accumulator {
                 group
             };
             self.groups[group].members = self.groups[group].members.saturating_add(1);
-            Some(group)
-        } else {
-            None
-        };
+            group
+        });
         let FoldArena::Grid { folds, .. } = &mut self.folds else {
             unreachable!("grid accumulator owns grid folds")
         };
@@ -1416,11 +1208,7 @@ impl Accumulator {
         Ok(())
     }
 
-    fn rank_fold(
-        &mut self,
-        entity: EntityId,
-        budget: &mut WorkingBudget,
-    ) -> Result<&mut RankFold, HeatmapError> {
+    fn rank_fold(&mut self, entity: EntityId) -> Result<&mut RankFold, HeatmapError> {
         let FoldArena::Ranking {
             slot_by_entity,
             folds,
@@ -1430,8 +1218,6 @@ impl Accumulator {
         };
         let entity_index = entity.index();
         if slot_by_entity.len() <= entity_index {
-            let added = entity_index + 1 - slot_by_entity.len();
-            reserve_vec_growth(slot_by_entity, added, budget, self.first_index)?;
             slot_by_entity.resize(entity_index + 1, NO_FOLD);
         }
         if slot_by_entity[entity_index] == NO_FOLD {
@@ -1444,7 +1230,6 @@ impl Accumulator {
                         "metric fold cardinality cannot be represented",
                     )
                 })?;
-            reserve_vec_growth(folds, 1, budget, self.first_index)?;
             folds.push(RankFold {
                 entity,
                 window: Obs::default(),
@@ -1461,7 +1246,6 @@ impl Accumulator {
         &mut self,
         entity: EntityId,
         timestamp: i64,
-        budget: &mut WorkingBudget,
     ) -> Result<(usize, bool), HeatmapError> {
         let FoldArena::Grid {
             slot_by_entity,
@@ -1472,8 +1256,6 @@ impl Accumulator {
         };
         let entity_index = entity.index();
         if slot_by_entity.len() <= entity_index {
-            let added = entity_index + 1 - slot_by_entity.len();
-            reserve_vec_growth(slot_by_entity, added, budget, self.first_index)?;
             slot_by_entity.resize(entity_index + 1, NO_FOLD);
         }
         if slot_by_entity[entity_index] != NO_FOLD {
@@ -1491,8 +1273,6 @@ impl Accumulator {
                     "metric fold cardinality cannot be represented",
                 )
             })?;
-        reserve_vec_growth(folds, 1, budget, self.first_index)?;
-        budget.reserve_array::<Obs>(self.columns, self.first_index)?;
         folds.push(GridFold {
             entity,
             window: Obs::default(),
@@ -1515,17 +1295,8 @@ impl Accumulator {
         section: &IndexedSection<'_>,
         retained: &mut [HashSet<u64>],
         retained_indices: &mut [Vec<(u64, usize)>],
-        budget: &mut WorkingBudget,
-    ) -> Result<(), HeatmapError> {
+    ) {
         if self.grouped {
-            let temporary = self
-                .groups
-                .len()
-                .saturating_mul(size_of::<Option<f64>>() + size_of::<usize>())
-                .saturating_add(self.fold_count().saturating_mul(size_of::<&GridFold>()));
-            budget.reserve_array::<Option<f64>>(self.groups.len(), self.first_index)?;
-            budget.reserve_array::<usize>(self.groups.len(), self.first_index)?;
-            budget.reserve_array::<&GridFold>(self.fold_count(), self.first_index)?;
             let group_totals = self.group_totals(section);
             let order = group_order(&group_totals);
             for group in order.into_iter().take(self.top) {
@@ -1535,26 +1306,21 @@ impl Accumulator {
                     group.segment_slot,
                     retained,
                     retained_indices,
-                    budget,
                     self.first_index,
-                )?;
+                );
             }
-            budget.release(temporary);
-            return Ok(());
+            return;
         }
-        let temporary = self.fold_count().saturating_mul(size_of::<Option<f64>>());
-        budget.reserve_array::<Option<f64>>(self.fold_count(), self.first_index)?;
         let label_cutoff = self.label_cutoff();
-        self.try_for_each_fold(|entity, window| {
+        self.for_each_fold(|entity, window| {
             let state = &section.entities[entity.index()];
             reserve_ids(
                 &state.identity,
                 state.identity_segment,
                 retained,
                 retained_indices,
-                budget,
                 self.first_index,
-            )?;
+            );
             if label_cutoff
                 .is_some_and(|cutoff| ranking_reaches_cutoff(window.total(self.cumulative), cutoff))
             {
@@ -1565,16 +1331,12 @@ impl Accumulator {
                             label.segment_slot,
                             retained,
                             retained_indices,
-                            budget,
                             self.first_index,
-                        )?;
+                        );
                     }
                 }
             }
-            Ok(())
-        })?;
-        budget.release(temporary);
-        Ok(())
+        });
     }
 
     fn group_totals(&self, section: &IndexedSection<'_>) -> Vec<Option<f64>> {
@@ -1624,25 +1386,6 @@ impl Accumulator {
                 }
             }
         }
-    }
-
-    fn try_for_each_fold(
-        &self,
-        mut visit: impl FnMut(EntityId, &Obs) -> Result<(), HeatmapError>,
-    ) -> Result<(), HeatmapError> {
-        match &self.folds {
-            FoldArena::Ranking { folds, .. } => {
-                for fold in folds {
-                    visit(fold.entity, &fold.window)?;
-                }
-            }
-            FoldArena::Grid { folds, .. } => {
-                for fold in folds {
-                    visit(fold.entity, &fold.window)?;
-                }
-            }
-        }
-        Ok(())
     }
 
     fn label_cutoff(&self) -> Option<LabelCutoff> {
@@ -2065,42 +1808,10 @@ fn reserve_ids(
     segment_slot: usize,
     retained: &mut [HashSet<u64>],
     retained_indices: &mut [Vec<(u64, usize)>],
-    budget: &mut WorkingBudget,
     index: usize,
-) -> Result<(), HeatmapError> {
+) {
     for stored in cells {
-        reserve_id(
-            stored,
-            segment_slot,
-            retained,
-            retained_indices,
-            budget,
-            index,
-        )?;
-    }
-    Ok(())
-}
-
-fn cells_retained_bytes(cells: &[Cell], index: usize) -> Result<usize, HeatmapError> {
-    let mut bytes = size_of::<Cell>().checked_mul(cells.len()).ok_or_else(|| {
-        HeatmapError::invalid(index, "heatmap execution working set size overflows")
-    })?;
-    for stored in cells {
-        bytes = bytes
-            .checked_add(cell_nested_bytes(stored, index)?)
-            .ok_or_else(|| {
-                HeatmapError::invalid(index, "heatmap execution working set size overflows")
-            })?;
-    }
-    Ok(bytes)
-}
-
-fn cell_nested_bytes(stored: &Cell, index: usize) -> Result<usize, HeatmapError> {
-    match stored {
-        Cell::ListI32(values) => size_of::<i32>().checked_mul(values.len()).ok_or_else(|| {
-            HeatmapError::invalid(index, "heatmap execution working set size overflows")
-        }),
-        _ => Ok(0),
+        reserve_id(stored, segment_slot, retained, retained_indices, index);
     }
 }
 
@@ -2109,18 +1820,13 @@ fn reserve_id(
     segment_slot: usize,
     retained: &mut [HashSet<u64>],
     retained_indices: &mut [Vec<(u64, usize)>],
-    budget: &mut WorkingBudget,
     index: usize,
-) -> Result<(), HeatmapError> {
+) {
     if let Cell::StrId(id) = stored
-        && !retained[segment_slot].contains(id)
+        && retained[segment_slot].insert(*id)
     {
-        reserve_hash_set_growth(&mut retained[segment_slot], budget, index)?;
-        reserve_vec_growth(&mut retained_indices[segment_slot], 1, budget, index)?;
-        retained[segment_slot].insert(*id);
         retained_indices[segment_slot].push((*id, index));
     }
-    Ok(())
 }
 
 fn raw_key_into(key: &mut String, type_id: u32, cells: &[Cell]) {
@@ -2554,20 +2260,10 @@ impl PreparedHeatmapBatch {
         self.metric_fold_slots
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-
-    pub(crate) fn scan_working_bytes(&self) -> u64 {
-        self.scan_working_bytes
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn peak_working_bytes(&self) -> u64 {
-        self.peak_working_bytes
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 #[cfg(test)]
-mod budget_tests {
+mod result_budget_tests {
     use std::collections::BTreeMap;
 
     use kronika_registry::ColumnClass;

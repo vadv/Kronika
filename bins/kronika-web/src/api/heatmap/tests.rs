@@ -181,7 +181,6 @@ fn shared_section_batch_and_duplicates_decode_each_row_once() {
 fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
     let fixture = statement_fixture(REPRODUCED_STATEMENT_IDENTITIES);
     let mut independent = Vec::new();
-    let mut independent_scan_bytes = Vec::new();
     for field in STATEMENT_FIELDS {
         let prepared = prepare_batch(
             fixture.root.path(),
@@ -193,7 +192,6 @@ fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
         assert_eq!(prepared.retained_identities(), 5_636);
         assert_eq!(prepared.metric_fold_slots(), 5_636);
         assert_statement_ranking(&result.results[0], field, 10);
-        independent_scan_bytes.push(prepared.scan_working_bytes());
         independent.push(result.results[0].clone());
     }
 
@@ -214,14 +212,6 @@ fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
         u64::try_from(REPRODUCED_STATEMENT_IDENTITIES * statement_label_count())
             .expect("label-slot count")
     );
-    assert!(
-        prepared.scan_working_bytes()
-            > independent_scan_bytes
-                .into_iter()
-                .max()
-                .expect("one ranking")
-    );
-    assert!(prepared.peak_working_bytes() >= prepared.scan_working_bytes());
     let top_one = STATEMENT_FIELDS
         .iter()
         .map(|field| statement_ranking(field, 1))
@@ -239,7 +229,6 @@ fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
         prepared.retained_label_slots()
     );
     assert_eq!(top_one.metric_fold_slots(), prepared.metric_fold_slots());
-    assert_eq!(top_one.scan_working_bytes(), prepared.scan_working_bytes());
 }
 
 #[test]

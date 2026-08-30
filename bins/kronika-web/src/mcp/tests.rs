@@ -92,6 +92,14 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
             "kronika_find_events",
         ]
     );
+    let overview = tools
+        .iter()
+        .find(|tool| tool["name"] == "kronika_overview")
+        .expect("Overview tool");
+    assert!(overview["outputSchema"].is_object());
+    let overview_description = overview["description"].as_str().expect("description");
+    assert!(!overview_description.contains("working"));
+    assert!(overview_description.contains("does not change pre-ranking scan state"));
     let events = tools
         .iter()
         .find(|tool| tool["name"] == "kronika_find_events")
