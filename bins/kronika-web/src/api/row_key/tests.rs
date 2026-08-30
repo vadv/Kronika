@@ -163,6 +163,16 @@ fn detail_ref_rejects_malformed_and_oversized_input_before_decode() {
 }
 
 #[test]
+fn detail_ref_encoder_obeys_the_public_input_bound() {
+    let mut locator = process_locator();
+    locator.identity.insert(
+        "pid".to_owned(),
+        json!("9".repeat(DETAIL_REF_MAX_ENCODED_BYTES)),
+    );
+    assert!(locator.detail_ref().is_err());
+}
+
+#[test]
 fn detail_ref_rejects_an_unsupported_version() {
     let locator = process_locator();
     let payload = serde_json::to_vec(&(

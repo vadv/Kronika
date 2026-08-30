@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::route::{Order, SnapshotRequest};
 
 use super::catalog::RowDetailInput;
-use super::semantics::{mcp_error, mcp_structured};
+use super::semantics::{detail_ref_error, mcp_error, mcp_structured};
 use crate::api::events::label_event_fields;
 use crate::api::row_key::DetailLocator;
 
@@ -48,18 +48,16 @@ pub(crate) fn call(
     };
     let prepared = match snapshot::prepare(&config.data_root, request, None) {
         Ok(prepared) => prepared,
-        Err(_error) => return mcp_error("detail_ref does not identify one recorded row"),
+        Err(error) => return detail_ref_error(&error),
     };
     let Prepared::Snapshot(prepared) = prepared else {
-        return mcp_error(
-            "internal error: snapshot preparation returned an unexpected response type",
-        );
+        return mcp_error("could not read stored data");
     };
     let row = match prepared
         .fetch_identity_row(locator.row_ordinal, &locator.identity, &|| cancelled())
     {
         Ok(row) => row,
-        Err(_error) => return mcp_error("detail_ref does not identify one recorded row"),
+        Err(error) => return detail_ref_error(&error),
     };
     let Some(mut row) = row else {
         return mcp_error("detail_ref does not identify one recorded row");
@@ -73,8 +71,8 @@ pub(crate) fn call(
         fields.remove("identity");
         fields.remove("detail_locator");
         label_event_fields(&locator.section, fields);
-        if let Err(error) = normalize_detail_text(&locator.section, fields) {
-            return mcp_error(error);
+        if normalize_detail_text(&locator.section, fields).is_err() {
+            return mcp_error("could not render stored row");
         }
     }
     mcp_structured(

@@ -115,28 +115,38 @@ pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {
         error,
         crate::api::ApiError::NoSuchSection | crate::api::ApiError::NoSuchColumn(_)
     );
-    let mut message = coordinate_free_error(error.to_string());
+    let mut message = storage_error_message(error);
     if hinted {
         message.push_str("; kronika_get_context lists recorded sections and their fields");
     }
     mcp_error(message)
 }
 
-/// Keeps storage-only coordinate names out of public MCP errors.
-pub(crate) fn coordinate_free_error(message: String) -> String {
-    if [
-        "detail_locator",
-        "type_id",
-        "segment_id",
-        "row_ordinal",
-        "row_key",
-    ]
-    .iter()
-    .any(|coordinate| message.contains(coordinate))
-    {
-        "could not produce detail_ref".to_owned()
-    } else {
-        message
+/// Maps typed storage failures to fail-closed public MCP text.
+pub(crate) fn storage_error_message(error: &crate::api::ApiError) -> String {
+    match error {
+        crate::api::ApiError::NoSuchSegment => {
+            "no stored data is available at the requested time".to_owned()
+        }
+        crate::api::ApiError::NoSuchSection
+        | crate::api::ApiError::MixedUnits(_)
+        | crate::api::ApiError::Cancelled => error.to_string(),
+        crate::api::ApiError::NoSuchColumn(_) => "no such stored-data field".to_owned(),
+        crate::api::ApiError::BadFilter(_) | crate::api::ApiError::BadCursor => {
+            "invalid stored-data request".to_owned()
+        }
+        crate::api::ApiError::BadLocator(_) => "could not produce detail_ref".to_owned(),
+        crate::api::ApiError::Unreadable(_) => "could not read stored data".to_owned(),
+    }
+}
+
+/// Distinguishes a failed lookup from cancellation or an unreadable store.
+pub(crate) fn detail_ref_error(error: &crate::api::ApiError) -> CallToolResult {
+    match error {
+        crate::api::ApiError::Cancelled | crate::api::ApiError::Unreadable(_) => {
+            storage_error(error)
+        }
+        _ => mcp_error("detail_ref does not identify one recorded row"),
     }
 }
 
@@ -144,9 +154,9 @@ pub(crate) fn finder_storage_error(
     logical_name: &str,
     error: &crate::api::ApiError,
 ) -> CallToolResult {
-    if let crate::api::ApiError::NoSuchColumn(field) = error {
+    if matches!(error, crate::api::ApiError::NoSuchColumn(_)) {
         return mcp_error(format!(
-            "no such sort field for {logical_name}: {field}; kronika_get_context lists the section's fields"
+            "no such sort field for {logical_name}; kronika_get_context lists the section's fields"
         ));
     }
     storage_error(error)

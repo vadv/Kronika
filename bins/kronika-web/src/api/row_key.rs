@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 const DETAIL_REF_VERSION: u8 = 1;
 const DETAIL_REF_CHECKSUM_BYTES: usize = size_of::<u32>();
-const DETAIL_REF_MAX_ENCODED_BYTES: usize = 8 * 1024;
+pub(crate) const DETAIL_REF_MAX_ENCODED_BYTES: usize = 8 * 1024;
 
 type DetailPayload = (u8, String, i64, i64, u32, u64, RowIdentity);
 
@@ -74,7 +74,11 @@ impl DetailLocator {
             &self.identity,
         ))
         .map_err(|error| format!("encode row locator: {error}"))?;
-        Ok(encode_payload(payload))
+        let detail_ref = encode_payload(payload);
+        if detail_ref.len() > DETAIL_REF_MAX_ENCODED_BYTES {
+            return Err("cannot encode an oversized row locator".to_owned());
+        }
+        Ok(detail_ref)
     }
 
     /// Decodes and validates the one current detail-reference format.

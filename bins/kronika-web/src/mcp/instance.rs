@@ -110,7 +110,7 @@ pub(crate) fn call(
     };
     match serde_json::to_value(output) {
         Ok(output) => mcp_structured(output, summary),
-        Err(error) => mcp_error(format!("instance result encoding failed: {error}")),
+        Err(_error) => mcp_error("could not encode instance result"),
     }
 }
 

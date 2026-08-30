@@ -393,8 +393,9 @@ the numeric category only on a `pg_log_errors` locator.
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 a grouped operator event: it has no finding locator and does not appear in
 grouped Events or on the shared timeline. Events occurrences expose its compact
-structural fields and an exact detail locator; the complete stored row remains
-available through row detail and ordinary history reads.
+structural fields; HTTP retains an internal typed row address, while MCP exposes
+only an opaque `detail_ref`. The complete stored row remains available through
+row detail and ordinary history reads.
 `pgbouncer_events` likewise has no finding locator or timeline mark, but its
 rows do reach grouped Events.
 
@@ -652,24 +653,27 @@ Rust. One executor pins the reader and catalog segment set, opens each selected
 segment once, and reads the selected event sections plus the internal
 `pg_settings` threshold input. It forms complete groups and their global order
 before applying the result limit. `GET /api/events`, the MCP Events tool, and
-the browser use the same typed result; the browser renders server order and has
-no second grouping reducer.
+the browser share this execution and product ordering. The HTTP result retains
+the browser's internal typed row address; a thin MCP boundary replaces it with
+one server-produced opaque `detail_ref` that the calling model only copies
+unchanged. The browser renders server order and has no second grouping reducer.
 
 Each group shows its recorded key, count, per-minute occurrences, first and
-last times, structural statistics, and one exact detail locator. Groups do not
-embed sample text or their source rows. The separate occurrence representation
-contains compact structural fields, known code labels, and an exact detail
-locator; it also admits `pg_log_temp_files`, which has no grouped
-representation. The complete stored row is returned only by row detail. Both
+last times, and structural statistics. Groups do not embed sample text or their
+source rows. The separate occurrence representation contains compact
+structural fields and known code labels; it also admits `pg_log_temp_files`,
+which has no grouped representation. HTTP groups and occurrences retain one
+internal typed row address for browser behavior, while their MCP forms expose
+only `detail_ref`. The complete stored row is returned only by row detail. Both
 forms report truncation only when the global limit excludes matching entries
 and have no continuation cursor.
 
 A timeline cluster narrows the grouped console by the event sources it
-represents. A group's single representative detail locator is used only for an
-exact auto-expansion match; it is not a list of the group's member rows.
+represents. A group's single representative internal row address is used only
+for an exact auto-expansion match; it is not a list of the group's member rows.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
-normalized pattern, and their detail locator identifies the slowest occurrence.
+normalized pattern, and their representative row is the slowest occurrence.
 Autovacuum and autoanalyze group by relation. Checkpoints form one group with
 timed and requested counts. PgBouncer events group by level and message.
 Lifecycle records remain separate.

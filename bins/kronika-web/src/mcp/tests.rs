@@ -55,6 +55,26 @@ fn assert_no_storage_coordinate_keys(value: &serde_json::Value) {
     }
 }
 
+fn assert_no_detail_ref_property(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            assert!(
+                !object.contains_key("detail_ref"),
+                "error emitted detail_ref"
+            );
+            for child in object.values() {
+                assert_no_detail_ref_property(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                assert_no_detail_ref_property(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn assert_detail_ref(row: &serde_json::Value, section: &str, detail_only_fields: &[&str]) {
     let row = row.as_object().expect("finder row object");
     for field in detail_only_fields {
@@ -106,6 +126,38 @@ fn streamed(prepared: crate::api::Prepared) -> Vec<serde_json::Value> {
         )
         .expect("stream resource");
     records
+}
+
+fn assert_opaque_tool_contract(tools: &[serde_json::Value]) {
+    for tool in tools {
+        assert_no_storage_coordinate_keys(&tool["inputSchema"]);
+        if let Some(output) = tool.get("outputSchema") {
+            assert_no_storage_coordinate_keys(output);
+        }
+        let description = tool["description"].as_str().expect("description");
+        for forbidden in FORBIDDEN_COORDINATE_KEYS {
+            assert!(
+                !description.contains(forbidden),
+                "{} description exposed {forbidden}",
+                tool["name"],
+            );
+        }
+    }
+    let detail = tools
+        .iter()
+        .find(|tool| tool["name"] == "kronika_get_row_detail")
+        .expect("row detail tool");
+    assert_eq!(detail["inputSchema"]["required"], json!(["detail_ref"]));
+    assert_eq!(
+        detail["inputSchema"]["properties"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(1),
+    );
+    assert_eq!(
+        detail["inputSchema"]["properties"]["detail_ref"]["type"],
+        "string",
+    );
 }
 
 #[tokio::test]
@@ -160,35 +212,7 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
             "kronika_find_events",
         ]
     );
-    for tool in tools {
-        assert_no_storage_coordinate_keys(&tool["inputSchema"]);
-        if let Some(output) = tool.get("outputSchema") {
-            assert_no_storage_coordinate_keys(output);
-        }
-        let description = tool["description"].as_str().expect("description");
-        for forbidden in FORBIDDEN_COORDINATE_KEYS {
-            assert!(
-                !description.contains(forbidden),
-                "{} description exposed {forbidden}",
-                tool["name"],
-            );
-        }
-    }
-    let detail = tools
-        .iter()
-        .find(|tool| tool["name"] == "kronika_get_row_detail")
-        .expect("row detail tool");
-    assert_eq!(detail["inputSchema"]["required"], json!(["detail_ref"]),);
-    assert_eq!(
-        detail["inputSchema"]["properties"]
-            .as_object()
-            .map(serde_json::Map::len),
-        Some(1),
-    );
-    assert_eq!(
-        detail["inputSchema"]["properties"]["detail_ref"]["type"],
-        "string",
-    );
+    assert_opaque_tool_contract(tools);
     let overview = tools
         .iter()
         .find(|tool| tool["name"] == "kronika_overview")
@@ -368,6 +392,8 @@ fn mount_detail_refs_survive_active_segment_finalization_and_reordering() {
         .structured_content
         .expect("finished pgdata detail");
     assert_eq!(finished_pgdata["mount_point"]["stored_text"], "/pgdata");
+    assert_eq!(finished_pgdata["major"], active_detail["major"]);
+    assert_eq!(finished_pgdata["minor"], active_detail["minor"]);
     assert_no_storage_coordinate_keys(&finished_pgdata);
 
     // The old positional hint now points at /pgdata, but the copied reference
@@ -429,6 +455,9 @@ fn overview_refuses_a_ref_for_an_interleaved_duplicate_event_identity() {
     assert_eq!(result.is_error, Some(true));
     let message = &result.content[0].as_text().expect("error").text;
     assert_eq!(message, "could not produce detail_ref");
+    if let Some(body) = &result.structured_content {
+        assert_no_detail_ref_property(body);
+    }
     for forbidden in FORBIDDEN_COORDINATE_KEYS {
         assert!(!message.contains(forbidden), "error exposed {forbidden}");
     }
@@ -1053,6 +1082,7 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
     assert_eq!(rows[0]["indexrelname"], "alpha_pkey");
     assert_eq!(rows[0]["relname"], "alpha");
     assert_eq!(structured["truncated"], false);
+    assert_no_storage_coordinate_keys(&structured);
 }
 
 #[test]
@@ -1856,14 +1886,12 @@ fn get_row_detail_accepts_relation_overview_but_aggregates_have_no_ref() {
 fn get_row_detail_rejects_the_old_structured_locator_input() {
     let config = test_config(std::env::temp_dir());
     let arguments = json!({
-        "detail_locator": {
-            "section": "os_process",
-            "segment_id": "7",
-            "at": "100",
-            "type_id": "1100001",
-            "row_ordinal": "0",
-            "identity": {"pid": "101"},
-        },
+        "section": "os_process",
+        "segment_id": "7",
+        "at": "100",
+        "type_id": "1100001",
+        "row_ordinal": "0",
+        "identity": {"pid": "101"},
     })
     .as_object()
     .expect("arguments")
@@ -2426,6 +2454,9 @@ fn find_processes_refuses_to_emit_a_ref_for_a_non_unique_identity() {
     assert_eq!(result.is_error, Some(true));
     let message = &result.content[0].as_text().expect("error").text;
     assert_eq!(message, "could not produce detail_ref");
+    if let Some(body) = &result.structured_content {
+        assert_no_detail_ref_property(body);
+    }
     for forbidden in FORBIDDEN_COORDINATE_KEYS {
         assert!(!message.contains(forbidden), "error exposed {forbidden}");
     }
@@ -2494,6 +2525,9 @@ fn find_events_refuses_to_emit_a_ref_for_a_non_unique_identity() {
     assert_eq!(result.is_error, Some(true));
     let message = &result.content[0].as_text().expect("error").text;
     assert_eq!(message, "could not produce detail_ref");
+    if let Some(body) = &result.structured_content {
+        assert_no_detail_ref_property(body);
+    }
     for forbidden in FORBIDDEN_COORDINATE_KEYS {
         assert!(!message.contains(forbidden), "error exposed {forbidden}");
     }

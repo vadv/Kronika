@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use crate::config::Config;
 use crate::route::Window;
 
-use super::semantics::{DecimalI64, mcp_error, mcp_structured};
+use super::semantics::{DecimalI64, mcp_error, mcp_structured, storage_error};
 
 pub(crate) fn call(
     config: &Config,
@@ -31,9 +31,7 @@ pub(crate) fn call(
         config.synthetic_demo,
     ) {
         Ok(prepared) => prepared,
-        Err(error) => {
-            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
-        }
+        Err(error) => return storage_error(&error),
     };
     let mut sections = prepared.recorded_sections();
     let range = match exclusive_recorded_range(prepared.recorded_range()) {

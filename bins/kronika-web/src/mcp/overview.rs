@@ -4,8 +4,8 @@ use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
 use crate::api::heatmap::{
-    HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, NormalizedRanking,
-    prepare_batch,
+    HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView,
+    NormalizedRanking, prepare_batch,
 };
 use crate::config::Config;
 use crate::route::MAX_QUERY_BYTES;
@@ -73,23 +73,11 @@ pub(crate) fn call(
     }
     let prepared = match prepare_batch(&config.data_root, HeatmapBatchQuery { range, items }) {
         Ok(prepared) => prepared,
-        Err(error) => {
-            return mcp_error_indexed_with(
-                super::semantics::coordinate_free_error(error.to_string()),
-                error.ranking_index(),
-                error.valid_options().to_vec(),
-            );
-        }
+        Err(error) => return heatmap_error(error),
     };
     let result = match prepared.execute(&|| cancelled()) {
         Ok(result) => result,
-        Err(error) => {
-            return mcp_error_indexed_with(
-                super::semantics::coordinate_free_error(error.to_string()),
-                error.ranking_index(),
-                error.valid_options().to_vec(),
-            );
-        }
+        Err(error) => return heatmap_error(error),
     };
     let returned = result.results.len();
     let structured = match public_result(&result) {
@@ -100,6 +88,19 @@ pub(crate) fn call(
         structured,
         format!("Returned {returned} ordered stored-data rankings."),
     )
+}
+
+fn heatmap_error(error: HeatmapError) -> CallToolResult {
+    let ranking_index = error.ranking_index();
+    let valid_options = error.valid_options().to_vec();
+    let api_error = error.into_api();
+    let message = super::semantics::storage_error_message(&api_error);
+    let message = if matches!(api_error, crate::api::ApiError::BadLocator(_)) {
+        message
+    } else {
+        format!("rankings[{ranking_index}]: {message}")
+    };
+    mcp_error_indexed_with(message, ranking_index, valid_options)
 }
 
 fn public_result(result: &HeatmapBatchResult) -> Result<Value, String> {

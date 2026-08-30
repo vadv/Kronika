@@ -9,6 +9,7 @@ use crate::config::Config;
 use super::catalog::{EventsInput, FIND_EVENTS_TOOL};
 use super::semantics::{
     arguments_within_budget, invalid_arguments, mcp_error, mcp_error_with, mcp_structured,
+    storage_error,
 };
 
 pub(crate) fn call(
@@ -38,9 +39,7 @@ pub(crate) fn call(
         MAX_EVENTS_WINDOW_MICROS,
     ) {
         Ok(range) => range,
-        Err(error) => {
-            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
-        }
+        Err(error) => return mcp_error(error.to_string()),
     };
     let query = match crate::api::events::EventsQuery::normalize(
         range,
@@ -55,9 +54,7 @@ pub(crate) fn call(
         .and_then(|prepared| prepared.execute(&|| cancelled()))
     {
         Ok(result) => result,
-        Err(error) => {
-            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
-        }
+        Err(error) => return storage_error(&error),
     };
     let summary = summary(&result);
     match public_result(&result) {

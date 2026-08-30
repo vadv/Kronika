@@ -42,7 +42,7 @@ pub(crate) struct OverviewInput {
     pub(crate) from: TimeSpecInput,
     pub(crate) to: TimeSpecInput,
     /// Ordered nonempty recipes. Exact duplicates are returned in place.
-    #[schemars(length(min = 1, max = 8192))]
+    #[schemars(length(min = 1))]
     pub(crate) rankings: Vec<OverviewRankingInput>,
 }
 
@@ -72,7 +72,7 @@ const fn default_overview_top() -> u64 {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GetContextInput {
-    /// One recorded logical section name; omit for every recorded layout.
+    /// One recorded logical section name; omit for every recorded section.
     #[serde(default)]
     pub(crate) section: Option<String>,
 }
@@ -146,8 +146,8 @@ impl From<DirectionInput> for Order {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SortInput {
     /// Sort token documented by the enclosing tool. Unknown tokens are
-    /// rejected; a plain tool retains identity order for a known column no
-    /// selected physical layout exposes.
+    /// rejected; a plain tool retains identity order for a known column the
+    /// selected rows do not expose.
     pub(crate) field: String,
     /// `asc` puts the lowest non-null value first; `desc` puts the highest.
     /// Nulls remain last.
@@ -231,7 +231,7 @@ pub(crate) struct ActivityInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `pid`, `datname`, `state`,
+    /// Returned field, such as `pid`, `datname`, `state`,
     /// `backend_xid_age`, `backend_xmin_age`, or `query_start`. Filter aliases
     /// are not sort aliases; unknown names are rejected.
     #[serde(default)]
@@ -257,7 +257,7 @@ pub(crate) struct LocksInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned scalar field, such as `pid`, `datname`, `state`,
+    /// Returned scalar field, such as `pid`, `datname`, `state`,
     /// `lock_locktype`, `lock_mode`, `lock_relname`, or `waitstart`. Filter
     /// aliases are not sort aliases; unknown names are rejected.
     #[serde(default)]
@@ -284,7 +284,7 @@ pub(crate) struct VacuumInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `pid`, `datname`, `schemaname`,
+    /// Returned field, such as `pid`, `datname`, `schemaname`,
     /// `relname`, `phase`, `heap_blks_scanned`, or `heap_blks_vacuumed`.
     /// Filter aliases are not sort aliases. An unavailable name leaves rows in
     /// identity order.
@@ -312,7 +312,7 @@ pub(crate) struct DatabasesInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `datid`, `datname`, `numbackends`,
+    /// Returned field, such as `datid`, `datname`, `numbackends`,
     /// `xact_commit`, `deadlocks`, `temp_bytes`, or `active_time`. Cumulative
     /// fields sort by interval rate. Filter aliases are not sort aliases;
     /// unknown names are rejected.
@@ -351,7 +351,7 @@ pub(crate) struct StatementsInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `calls`, `total_exec_time`, `rows`,
+    /// Returned field, such as `calls`, `total_exec_time`, `rows`,
     /// `shared_blks_read`, or `wal_bytes`, or one of the seven returned
     /// `derived_*` names (`derived_hit_fraction` and
     /// `derived_plan_time_fraction` rank by their 0-100 renderings — the
@@ -391,7 +391,7 @@ pub(crate) struct PlansInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `calls`, `total_time`, `rows`, or
+    /// Returned field, such as `calls`, `total_time`, `rows`, or
     /// `shared_blks_read`, or one of the seven returned `derived_*` names.
     /// `calls` sorts by its interval rate although the returned field is an
     /// exact cumulative count. Unknown names are rejected; omit for
@@ -426,7 +426,7 @@ pub(crate) struct ProcessesInput {
     #[serde(default)]
     #[schemars(length(max = SEARCH_MAX_CLAUSES))]
     pub(crate) filters: Vec<FilterInput>,
-    /// Physical returned field, such as `pid`, `comm`, `rmem_kb`, `vmem_kb`,
+    /// Returned field, such as `pid`, `comm`, `rmem_kb`, `vmem_kb`,
     /// `num_threads`, `utime`, `read_bytes`, or `rundelay_ns`. Filter aliases
     /// (`rss`, `vsz`, `threads`, and rate names) and virtual fields are not
     /// sort aliases; unknown names are rejected. Omit for identity order.
@@ -442,7 +442,10 @@ pub(crate) struct ProcessesInput {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RowDetailInput {
     /// Copy one server-produced `detail_ref` string unchanged.
-    #[schemars(length(min = 1))]
+    #[schemars(length(
+        min = 1,
+        max = crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES
+    ))]
     pub(crate) detail_ref: String,
 }
 
@@ -506,7 +509,7 @@ fn overview_tool() -> Tool {
          Results retain request order and duplicate recipes. Counter totals \
          are whole-window non-negative deltas; gauge totals are window \
          maxima. Every entity includes its named product identity, compact automatic \
-         labels for compatible recorded layouts, and a server-produced `detail_ref` \
+         labels when available in stored data, and a server-produced `detail_ref` \
          string to copy unchanged into `kronika_get_row_detail`; \
          an unavailable label is null. Query text, plans, command lines, and log \
          payloads are returned only by `kronika_get_row_detail`. Coverage reports \
@@ -537,10 +540,10 @@ fn context_tool() -> Tool {
          the raw column name and `kronika_overview` ranks as a \
          whole-window delta; a `gauge` is an instantaneous value. \
          `source_family` may be null. Rows and bytes are summed for each \
-         logical product section across recorded layouts and segments. \
-         Store-internal `dict.*` layouts are omitted. The full answer \
+         logical product section across stored data. Internal-only sections \
+         are omitted. The full answer \
          is tens of kilobytes — read it once per session, or pass \
-         `section` to keep one section's layouts only.",
+         `section` to keep one logical section only.",
         schema_object::<GetContextInput>(),
     )
 }
@@ -603,8 +606,8 @@ fn relation_tools() -> [Tool; 2] {
              are Unix microseconds. Exact 64-bit values use decimal strings; \
              unavailable metrics are null. Returns `{rows, truncated}`. \
              `truncated` means matching rows were omitted by `limit`; no \
-             continuation cursor is returned. Aggregated relation rows have no physical locator and \
-             cannot be passed to `kronika_get_row_detail`.",
+             continuation cursor is returned. Aggregated relation rows do not include \
+             `detail_ref` and cannot be passed to `kronika_get_row_detail`.",
             schema_object::<TablesInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -626,8 +629,8 @@ fn relation_tools() -> [Tool; 2] {
              percentage points, and timestamps are Unix microseconds. Exact \
              64-bit values use decimal strings; unavailable metrics are null. \
              Returns `{rows, truncated}`. `truncated` means matching rows were \
-             omitted by `limit`; no continuation cursor is returned. Aggregated relation rows have \
-             no physical locator and cannot be passed to \
+             omitted by `limit`; no continuation cursor is returned. Aggregated relation rows do \
+             not include `detail_ref` and cannot be passed to \
              `kronika_get_row_detail`.",
             schema_object::<IndexesInput>(),
         )
@@ -670,8 +673,8 @@ fn tail_tools() -> [Tool; 3] {
              adds `calls_per_second`; other cumulative columns are rendered as \
              interval rates rather than stored counter values. Missing, \
              unavailable, or underivable values are null. Plain timestamped \
-             sections, event sections, and physical relation rows from Overview \
-             are supported; aggregated relation finder rows have no detail reference. \
+             sections, event sections, and individual relation rows from Overview \
+             are supported; aggregated relation finder rows have no `detail_ref`. \
              Recognized event \
              codes receive the same `<field>_label` siblings as \
              `kronika_find_events`; the find-only `source` field is not part of \
@@ -719,8 +722,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              omitted filters match all. XID ages are counts; `backend_start`, \
              `xact_start`, `query_start`, and `state_change` are Unix \
              microseconds. Null denotes no transaction, query, or wait where \
-             applicable, a null recording, or a field absent from the physical \
-             layout. Returns `{rows, truncated}`. `truncated` means matching rows \
+             applicable, a null recording, or a field the source did not record. \
+             Returns `{rows, truncated}`. `truncated` means matching rows \
              were omitted by `limit`, and no continuation \
              cursor is returned. Query text is available only through \
              `kronika_get_row_detail`; copy a row's `detail_ref` string \
@@ -824,8 +827,9 @@ fn ratio_tools() -> [Tool; 2] {
              rows/call, shared-plus-local blocks/call, shared hit fraction \
              (0..1), WAL bytes/call, planning fraction (0..1), and execution \
              coefficient of variation. `derived_wal_per_call` is always null \
-             because plan layouts have no WAL bytes. \
-             `derived_plan_time_fraction` is non-null only for the vadv layout. \
+             because stored plan rows do not carry WAL bytes. \
+             `derived_plan_time_fraction` is non-null only when planning counters \
+             were recorded. \
              Other derived nulls mean a missing/null operand, zero denominator, \
              non-finite result, missing predecessor, or rollback. Returns \
              `{rows, truncated}`. `truncated` means matching rows were omitted \

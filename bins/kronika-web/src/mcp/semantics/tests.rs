@@ -144,5 +144,24 @@ fn storage_errors_do_not_publish_internal_coordinate_names() {
         "cannot emit detail_ref: row identity is not unique".to_owned(),
     ));
     let message = &result.content[0].as_text().expect("text").text;
-    assert!(message.contains("not unique"), "{message}");
+    assert_eq!(message, "could not produce detail_ref");
+
+    for private_message in ["row record has no ordinal", "unresolved dictionary id 92"] {
+        let result = storage_error(&ApiError::Unreadable(Box::new(std::io::Error::other(
+            private_message,
+        ))));
+        let message = &result.content[0].as_text().expect("text").text;
+        assert_eq!(message, "could not read stored data");
+        assert!(!message.contains(private_message));
+    }
+
+    for error in [
+        ApiError::BadFilter("type_id".to_owned()),
+        ApiError::NoSuchColumn("segment_id".to_owned()),
+    ] {
+        let result = storage_error(&error);
+        let message = &result.content[0].as_text().expect("text").text;
+        assert!(!message.contains("type_id"), "{message}");
+        assert!(!message.contains("segment_id"), "{message}");
+    }
 }

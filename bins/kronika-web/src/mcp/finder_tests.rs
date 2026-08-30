@@ -464,11 +464,7 @@ fn an_unknown_sort_is_rejected_even_when_the_surface_has_no_sample() {
         &|| false,
     );
     assert_eq!(result.is_error, Some(true));
-    assert!(
-        result.content[0]
-            .as_text()
-            .expect("error text")
-            .text
-            .contains("made_up")
-    );
+    let message = &result.content[0].as_text().expect("error text").text;
+    assert!(message.contains("no such sort field"), "{message}");
+    assert!(!message.contains("made_up"), "{message}");
 }

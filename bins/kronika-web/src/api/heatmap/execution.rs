@@ -24,6 +24,7 @@ type RenderedIds = HashMap<(usize, u64), Value>;
 #[derive(Debug)]
 enum HeatmapApiError {
     BadFilter(String),
+    BadLocator,
     NoSuchSection,
     NoSuchColumn(String),
     MixedUnits(String),
@@ -56,6 +57,15 @@ impl HeatmapError {
             ranking_index,
             message,
             HeatmapApiError::BadFilter(parameter.to_owned()),
+            Vec::new(),
+        )
+    }
+
+    fn bad_locator(ranking_index: usize, message: impl Into<String>) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapApiError::BadLocator,
             Vec::new(),
         )
     }
@@ -130,6 +140,7 @@ impl HeatmapError {
     pub(crate) fn into_api(mut self) -> ApiError {
         match self.api_error.take() {
             Some(HeatmapApiError::BadFilter(parameter)) => ApiError::BadFilter(parameter),
+            Some(HeatmapApiError::BadLocator) => ApiError::BadLocator(self.message),
             Some(HeatmapApiError::NoSuchSection) => ApiError::NoSuchSection,
             Some(HeatmapApiError::NoSuchColumn(column)) => ApiError::NoSuchColumn(column),
             Some(HeatmapApiError::MixedUnits(fields)) => ApiError::MixedUnits(fields),
@@ -1025,7 +1036,7 @@ impl SharedSection {
             self.entities[entity.index()]
                 .locator
                 .observe(segment_slot, segment_id, timestamp, ordinal, row)
-                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
+                .map_err(|error| HeatmapError::bad_locator(self.first_index, error))?;
             entity
         } else {
             let raw_key: Box<str> = self.key_scratch.clone().into_boxed_str();
@@ -1040,11 +1051,11 @@ impl SharedSection {
             })?);
             self.by_raw_key.insert(raw_key, entity);
             let locator_identity = row_key::identity(row.contract().type_id.get(), row)
-                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
+                .map_err(|error| HeatmapError::bad_locator(self.first_index, error))?;
             let event_identities = if contract.semantics == kronika_registry::Semantics::EventStream
             {
                 let encoded = serde_json::to_string(&locator_identity).map_err(|error| {
-                    HeatmapError::invalid(
+                    HeatmapError::bad_locator(
                         self.first_index,
                         format!("encode detail_locator identity: {error}"),
                     )
@@ -1633,7 +1644,7 @@ impl Accumulator {
             shared
                 .locator
                 .validate_selected_identity(shared.type_id)
-                .map_err(|error| HeatmapError::invalid(self.first_index, error))?;
+                .map_err(|error| HeatmapError::bad_locator(self.first_index, error))?;
             let labels = labels_object(
                 spec,
                 &shared.labels,

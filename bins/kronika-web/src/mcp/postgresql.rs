@@ -351,9 +351,7 @@ pub(super) fn plain_rows(
     let prepared = snapshot::prepare(&config.data_root, request, None)
         .map_err(|error| super::semantics::storage_error(&error))?;
     let Prepared::Snapshot(prepared) = prepared else {
-        return Err(mcp_error(
-            "internal error: snapshot preparation returned an unexpected response type",
-        ));
+        return Err(mcp_error("could not read stored data"));
     };
     let result = prepared
         .compute_plain_rows(usize::MAX, &|| cancelled())
