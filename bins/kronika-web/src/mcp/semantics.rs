@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
+
+use crate::route::MAX_QUERY_BYTES;
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -71,7 +73,7 @@ pub(crate) fn mcp_error_with(
     valid_options: Vec<String>,
 ) -> CallToolResult {
     let message = message.into();
-    let mut body = serde_json::Map::new();
+    let mut body = Map::new();
     body.insert("record".to_owned(), Value::String("error".to_owned()));
     body.insert("message".to_owned(), Value::String(message.clone()));
     if !valid_options.is_empty() {
@@ -182,6 +184,13 @@ impl std::io::Write for ByteBudget {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+pub(crate) fn arguments_within_budget(arguments: &Map<String, Value>) -> bool {
+    let mut budget = ByteBudget {
+        remaining: MAX_QUERY_BYTES,
+    };
+    serde_json::to_writer(&mut budget, arguments).is_ok()
 }
 
 /// Places data in `structuredContent` with the summary as the only text

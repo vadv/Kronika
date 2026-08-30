@@ -5,18 +5,22 @@ use serde_json::{Map, Value};
 
 use crate::api::events::{EventsRepresentation, EventsResult, MAX_EVENTS_WINDOW_MICROS};
 use crate::config::Config;
-use crate::route::MAX_QUERY_BYTES;
 
 use super::catalog::{EventsInput, FIND_EVENTS_TOOL};
-use super::semantics::{invalid_arguments, mcp_error, mcp_error_with, mcp_structured};
+use super::semantics::{
+    arguments_within_budget, invalid_arguments, mcp_error, mcp_error_with, mcp_structured,
+};
 
 pub(crate) fn call(
     config: &Config,
     arguments: Map<String, Value>,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    if let Err(error) = check_request_budget(&arguments) {
-        return mcp_error(error);
+    if !arguments_within_budget(&arguments) {
+        return mcp_error(format!(
+            "events arguments exceed {} encoded bytes; narrow sources or time input",
+            crate::route::MAX_QUERY_BYTES
+        ));
     }
     let input: EventsInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
@@ -56,17 +60,6 @@ pub(crate) fn call(
         Ok(value) => mcp_structured(value, summary),
         Err(error) => mcp_error(format!("encode events result: {error}")),
     }
-}
-
-fn check_request_budget(arguments: &Map<String, Value>) -> Result<(), String> {
-    let encoded = serde_json::to_vec(&Value::Object(arguments.clone()))
-        .map_err(|error| format!("could not measure events arguments: {error}"))?;
-    if encoded.len() <= MAX_QUERY_BYTES {
-        return Ok(());
-    }
-    Err(format!(
-        "events arguments exceed {MAX_QUERY_BYTES} encoded bytes; narrow sources or time input"
-    ))
 }
 
 fn summary(result: &EventsResult) -> String {

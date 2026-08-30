@@ -11,7 +11,8 @@ use crate::route::MAX_QUERY_BYTES;
 
 use super::catalog::{OVERVIEW_TOOL, OverviewInput, OverviewRankingInput};
 use super::semantics::{
-    invalid_arguments, mcp_error, mcp_error_indexed, mcp_error_indexed_with, mcp_structured,
+    arguments_within_budget, invalid_arguments, mcp_error, mcp_error_indexed,
+    mcp_error_indexed_with, mcp_structured,
 };
 
 pub(crate) fn call(
@@ -101,9 +102,7 @@ pub(crate) fn call(
 }
 
 fn check_request_budget(arguments: &Map<String, Value>) -> Result<(), (usize, String)> {
-    let encoded = serde_json::to_vec(&Value::Object(arguments.clone()))
-        .map_err(|error| (0, format!("could not measure arguments: {error}")))?;
-    if encoded.len() <= MAX_QUERY_BYTES {
+    if arguments_within_budget(arguments) {
         return Ok(());
     }
     let rankings = arguments
@@ -131,7 +130,6 @@ fn check_request_budget(arguments: &Map<String, Value>) -> Result<(), (usize, St
             return Err((index, request_overflow_message()));
         }
     }
-    debug_assert_eq!(used, encoded.len(), "incremental JSON size must be exact");
     Err((rankings.len().saturating_sub(1), request_overflow_message()))
 }
 

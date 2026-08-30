@@ -1867,6 +1867,49 @@ fn an_unknown_filter_operator_lists_valid_options_before_tag_decoding() {
 }
 
 #[test]
+fn every_finder_uses_the_exact_shared_argument_budget() {
+    const MAX: usize = crate::route::MAX_QUERY_BYTES;
+    const FINDERS: [&str; 9] = [
+        crate::mcp::catalog::FIND_PROCESSES_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_TABLES_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_INDEXES_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_ACTIVITY_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_LOCKS_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_VACUUM_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_DATABASES_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_STATEMENTS_TOOL,
+        crate::mcp::catalog::FIND_POSTGRESQL_PLANS_TOOL,
+    ];
+    let arguments_at = |target: usize| {
+        let mut value = json!({"limit": 1, "padding": ""});
+        let base = serde_json::to_vec(&value).expect("measure base").len();
+        value["padding"] = json!("x".repeat(target - base));
+        assert_eq!(serde_json::to_vec(&value).expect("measure").len(), target);
+        value.as_object().expect("object").clone()
+    };
+    let config = test_config(std::env::temp_dir());
+
+    let at_limit =
+        rmcp::model::CallToolRequestParams::new(FINDERS[0]).with_arguments(arguments_at(MAX));
+    let at_limit = crate::mcp::dispatch::dispatch(&config, at_limit, &|| false)
+        .expect("known tool dispatches");
+    let at_message = at_limit.content[0].as_text().expect("text").text.clone();
+    assert!(!at_message.contains("arguments exceed"), "{at_message}");
+
+    for tool in FINDERS {
+        let over_limit =
+            rmcp::model::CallToolRequestParams::new(tool).with_arguments(arguments_at(MAX + 1));
+        let over_limit = crate::mcp::dispatch::dispatch(&config, over_limit, &|| false)
+            .expect("known tool dispatches");
+        let message = over_limit.content[0].as_text().expect("text").text.clone();
+        assert!(
+            message.contains("arguments exceed 65536"),
+            "{tool}: {message}"
+        );
+    }
+}
+
+#[test]
 fn rejected_tool_arguments_name_the_usage() {
     let config = test_config(std::env::temp_dir());
     let result =

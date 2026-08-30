@@ -8,7 +8,9 @@ use super::catalog::{
     FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
     FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
 };
-use super::{context, events, filter, instance, overview, postgresql, processes, row_detail};
+use super::{
+    context, events, filter, instance, overview, postgresql, processes, row_detail, semantics,
+};
 
 /// An unknown tool name is a protocol-level error, not a tool result:
 /// `isError: true` is reserved for execution after a valid tool was
@@ -31,6 +33,13 @@ pub(crate) fn dispatch(
         FIND_POSTGRESQL_PLANS_TOOL => Some("pg_store_plans"),
         _ => None,
     };
+    if finder_section.is_some() && !semantics::arguments_within_budget(&arguments) {
+        return Ok(semantics::mcp_error(format!(
+            "{} arguments exceed {} encoded bytes; narrow filters or time input",
+            request.name,
+            crate::route::MAX_QUERY_BYTES
+        )));
+    }
     if let Some(logical_name) = finder_section
         && let Err(error) = filter::validate_filter_operators(logical_name, &arguments)
     {
