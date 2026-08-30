@@ -650,7 +650,7 @@ fn find_postgresql_tables_ranks_and_filters() {
     assert_eq!(rows[0]["relname"], "alpha");
     assert_eq!(rows[0]["datname"], "db");
     assert_eq!(rows[1]["relname"], "beta");
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
         "group": "object",
@@ -748,7 +748,7 @@ fn find_postgresql_indexes_returns_keyed_rows_with_indexrelname() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["indexrelname"], "alpha_pkey");
     assert_eq!(rows[0]["relname"], "alpha");
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 }
 
 #[test]
@@ -781,7 +781,7 @@ fn find_postgresql_activity_ranks_and_filters() {
     assert!(rows[0]["type_id"].is_string());
     assert!(rows[0]["row_ordinal"].is_string());
     assert!(rows[0]["at"].is_string());
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
         "filters": [{"field": "state", "op": "eq", "value": "idle"}],
@@ -853,7 +853,7 @@ async fn find_postgresql_activity_end_to_end_through_the_real_transport() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["pid"], 10_000);
     assert_eq!(rows[0]["state"], "idle");
-    assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+    assert_eq!(decoded["result"]["structuredContent"]["truncated"], false);
 }
 
 #[test]
@@ -887,7 +887,7 @@ fn find_postgresql_locks_ranks_and_filters() {
     assert!(rows[0]["type_id"].is_string());
     assert!(rows[0]["row_ordinal"].is_string());
     assert!(rows[0]["at"].is_string());
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
         "filters": [{"field": "lock_mode", "op": "eq", "value": "AccessShareLock"}],
@@ -944,7 +944,7 @@ fn find_postgresql_vacuum_ranks_and_filters() {
     assert!(rows[0]["type_id"].is_string());
     assert!(rows[0]["row_ordinal"].is_string());
     assert!(rows[0]["at"].is_string());
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
         "filters": [{"field": "phase", "op": "eq", "value": "scanning heap"}],
@@ -999,7 +999,7 @@ fn find_postgresql_databases_ranks_and_filters() {
     assert!(rows[0]["type_id"].is_string());
     assert!(rows[0]["row_ordinal"].is_string());
     assert!(rows[0]["at"].is_string());
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let matching_arguments = serde_json::json!({
         "filters": [{"field": "deadlocks", "op": "gt", "value": 0}],
@@ -1306,7 +1306,7 @@ fn find_processes_ranks_and_filters() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["pid"], 101);
     assert_eq!(rows[1]["pid"], 102);
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
         "filters": [{"field": "pid", "op": "eq", "value": 102}],
@@ -1401,7 +1401,7 @@ async fn find_processes_end_to_end_through_the_real_transport() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["pid"], 101);
     assert_eq!(rows[1]["pid"], 102);
-    assert_eq!(decoded["result"]["structuredContent"]["has_more"], false);
+    assert_eq!(decoded["result"]["structuredContent"]["truncated"], false);
 }
 
 #[test]
@@ -1846,6 +1846,27 @@ fn a_quantity_filter_refusal_lists_the_accepted_operators() {
 }
 
 #[test]
+fn an_unknown_filter_operator_lists_valid_options_before_tag_decoding() {
+    let config = test_config(std::env::temp_dir());
+    let arguments = serde_json::json!({
+        "filters": [{"field": "rss", "op": "approximately", "value": 1}],
+        "limit": 5,
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let request = rmcp::model::CallToolRequestParams::new(crate::mcp::catalog::FIND_PROCESSES_TOOL)
+        .with_arguments(arguments);
+    let result =
+        crate::mcp::dispatch::dispatch(&config, request, &|| false).expect("known tool dispatches");
+
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["record"], "error");
+    assert_eq!(structured["valid_options"], serde_json::json!(["gt", "lt"]));
+}
+
+#[test]
 fn rejected_tool_arguments_name_the_usage() {
     let config = test_config(std::env::temp_dir());
     let result =
@@ -2241,7 +2262,7 @@ fn find_vacuum_reports_no_recorded_rows_instead_of_an_error() {
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     assert_eq!(structured["rows"].as_array(), Some(&Vec::new()));
-    assert_eq!(structured["has_more"], false);
+    assert_eq!(structured["truncated"], false);
     assert!(structured["as_of"].is_null());
 }
 
@@ -2529,6 +2550,7 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
     let mut fixture = Fixture::new();
     fixture.append_instance_facts();
     fixture.append_postgres_block_size(8_192);
+    fixture.append_postgres_setting("work_mem", "4096", "configuration file");
     fixture.finish();
 
     let config = test_config(fixture.root().to_path_buf());
@@ -2550,20 +2572,58 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
         .as_array()
         .expect("settings array");
     assert_eq!(settings.len(), 1);
-    assert_eq!(settings[0]["name"], "block_size");
-    assert_eq!(settings[0]["setting"], "8192");
-    assert_eq!(settings[0]["row_key"], "block_size");
+    assert_eq!(settings[0]["name"], "work_mem");
+    assert_eq!(settings[0]["setting"], "4096");
+    assert_eq!(settings[0]["row_key"], "work_mem");
     assert!(settings[0]["segment_id"].is_string());
     assert!(structured["settings_as_of"].is_string());
-    assert_eq!(structured["settings_has_more"], false);
+    assert_eq!(structured["settings_scope"], "non_default");
+    assert_eq!(structured["settings_returned_count"], "1");
+    assert_eq!(structured["settings_defaults_omitted"], true);
+    assert_eq!(
+        structured["settings_request_all"],
+        serde_json::json!({"settings": "all"})
+    );
+    assert!(structured.get("settings_has_more").is_none());
+
+    let explicit_non_default = serde_json::json!({"settings": "non_default"})
+        .as_object()
+        .expect("object")
+        .clone();
+    let explicit_non_default = crate::mcp::instance::call(&config, explicit_non_default, &|| false)
+        .structured_content
+        .expect("explicit non-default result");
+    assert_eq!(explicit_non_default, structured);
+
+    let all_arguments = serde_json::json!({"settings": "all"})
+        .as_object()
+        .expect("object")
+        .clone();
+    let all = crate::mcp::instance::call(&config, all_arguments, &|| false);
+    assert_eq!(all.is_error, Some(false));
+    let all = all.structured_content.expect("all settings result");
+    assert_eq!(all["host"], structured["host"]);
+    assert_eq!(all["host_as_of"], structured["host_as_of"]);
+    assert_eq!(all["settings_as_of"], structured["settings_as_of"]);
+    assert_eq!(all["settings_scope"], "all");
+    assert_eq!(all["settings_returned_count"], "2");
+    assert_eq!(all["settings_defaults_omitted"], false);
+    let all_settings = all["postgresql_settings"]
+        .as_array()
+        .expect("all settings array");
+    assert_eq!(all_settings.len(), 2);
+    let block_size = all_settings
+        .iter()
+        .find(|row| row["name"] == "block_size")
+        .expect("default block_size row");
 
     let detail_arguments = serde_json::json!({
         "section": "pg_settings",
-        "segment_id": settings[0]["segment_id"],
-        "at": settings[0]["at"],
-        "type_id": settings[0]["type_id"],
-        "row_ordinal": settings[0]["row_ordinal"],
-        "row_key": settings[0]["row_key"],
+        "segment_id": block_size["segment_id"],
+        "at": block_size["at"],
+        "type_id": block_size["type_id"],
+        "row_ordinal": block_size["row_ordinal"],
+        "row_key": block_size["row_key"],
     })
     .as_object()
     .expect("object")
@@ -2594,6 +2654,55 @@ fn get_instance_reports_unrecorded_parts_as_null_and_empty() {
         Some(&Vec::new())
     );
     assert!(structured["settings_as_of"].is_null());
+    assert_eq!(structured["settings_scope"], "non_default");
+    assert_eq!(structured["settings_returned_count"], "0");
+    assert_eq!(structured["settings_defaults_omitted"], false);
+    assert_eq!(
+        structured["settings_request_all"],
+        serde_json::json!({"settings": "all"})
+    );
+}
+
+#[test]
+fn get_instance_returns_more_than_five_thousand_settings_without_prefix_cutoff() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_settings(5_001, "1", "configuration file");
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["settings_returned_count"], "5001");
+    assert_eq!(
+        structured["postgresql_settings"]
+            .as_array()
+            .expect("settings")
+            .len(),
+        5_001
+    );
+    assert_eq!(structured["settings_defaults_omitted"], false);
+}
+
+#[test]
+fn get_instance_refuses_an_over_budget_whole_result_instead_of_truncating() {
+    let mut fixture = Fixture::new();
+    let wide = "x".repeat(2_048);
+    fixture.append_postgres_settings(5_000, &wide, "configuration file");
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(structured["record"], "error");
+    assert!(
+        structured["message"]
+            .as_str()
+            .expect("message")
+            .contains("result exceeds")
+    );
+    assert!(structured.get("postgresql_settings").is_none());
 }
 
 #[test]
@@ -2691,6 +2800,14 @@ fn context_and_instance_reject_unexpected_arguments() {
             Some(true)
         );
     }
+    let obsolete = serde_json::json!({"additional": true})
+        .as_object()
+        .expect("object")
+        .clone();
+    assert_eq!(
+        crate::mcp::instance::call(&config, obsolete, &|| false).is_error,
+        Some(true)
+    );
 }
 
 #[tokio::test]

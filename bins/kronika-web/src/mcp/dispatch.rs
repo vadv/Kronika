@@ -8,7 +8,7 @@ use super::catalog::{
     FIND_POSTGRESQL_STATEMENTS_TOOL, FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL,
     FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
 };
-use super::{context, events, instance, overview, postgresql, processes, row_detail};
+use super::{context, events, filter, instance, overview, postgresql, processes, row_detail};
 
 /// An unknown tool name is a protocol-level error, not a tool result:
 /// `isError: true` is reserved for execution after a valid tool was
@@ -19,6 +19,23 @@ pub(crate) fn dispatch(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<CallToolResult, ErrorData> {
     let arguments = request.arguments.unwrap_or_default();
+    let finder_section = match request.name.as_ref() {
+        FIND_PROCESSES_TOOL => Some("os_process"),
+        FIND_POSTGRESQL_TABLES_TOOL => Some("pg_stat_user_tables"),
+        FIND_POSTGRESQL_INDEXES_TOOL => Some("pg_stat_user_indexes"),
+        FIND_POSTGRESQL_ACTIVITY_TOOL => Some("pg_stat_activity"),
+        FIND_POSTGRESQL_LOCKS_TOOL => Some("pg_locks"),
+        FIND_POSTGRESQL_VACUUM_TOOL => Some("pg_stat_progress_vacuum"),
+        FIND_POSTGRESQL_DATABASES_TOOL => Some("pg_stat_database"),
+        FIND_POSTGRESQL_STATEMENTS_TOOL => Some("pg_stat_statements"),
+        FIND_POSTGRESQL_PLANS_TOOL => Some("pg_store_plans"),
+        _ => None,
+    };
+    if let Some(logical_name) = finder_section
+        && let Err(error) = filter::validate_filter_operators(logical_name, &arguments)
+    {
+        return Ok(error);
+    }
     Ok(match request.name.as_ref() {
         GET_CONTEXT_TOOL => context::call(config, arguments, cancelled),
         GET_INSTANCE_TOOL => instance::call(config, arguments, cancelled),

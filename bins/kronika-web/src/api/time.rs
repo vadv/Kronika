@@ -30,6 +30,17 @@ impl TimeRange {
     pub(crate) const fn contains(self, timestamp: i64) -> bool {
         timestamp >= self.from && timestamp < self.to_exclusive
     }
+
+    #[cfg(test)]
+    pub(crate) const fn width(self) -> i128 {
+        self.to_exclusive as i128 - self.from as i128
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotPoint {
+    LatestRecorded,
+    At(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,20 +62,4 @@ impl std::fmt::Display for ReversedTimeRange {
 impl std::error::Error for ReversedTimeRange {}
 
 #[cfg(test)]
-mod tests {
-    use super::TimeRange;
-
-    #[test]
-    fn half_open_range_accepts_empty_and_excludes_end() {
-        let empty = TimeRange::new(7, 7).expect("empty range");
-        assert_eq!((empty.from, empty.to_exclusive), (7, 7));
-
-        let range = TimeRange::new(7, 9).expect("range");
-        assert_eq!((range.from, range.to_exclusive), (7, 9));
-        assert!(range.contains(7));
-        assert!(!range.contains(9));
-        assert!(TimeRange::new(9, 7).is_err());
-        assert!(TimeRange::bounded(7, 10, 2).is_err());
-        assert_eq!(TimeRange::bounded(7, 9, 2).expect("bounded range"), range);
-    }
-}
+mod tests;

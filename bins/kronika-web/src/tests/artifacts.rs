@@ -315,6 +315,15 @@ impl Fixture {
     }
 
     fn append_postgres_health_at(&mut self, at: i64, active: u32) {
+        self.append_postgres_health_with_interval(at, active, 30);
+    }
+
+    pub(crate) fn append_postgres_health_with_interval(
+        &mut self,
+        at: i64,
+        active: u32,
+        interval_seconds: u64,
+    ) {
         let mut interner = Interner::new(DictLimits::default());
         let active_state = StrId(interner.intern(b"active").expect("active state").get());
         let idle_state = StrId(interner.intern(b"idle").expect("idle state").get());
@@ -337,7 +346,7 @@ impl Fixture {
                 boot_id: StrId(903),
                 btime: Ts(1),
                 postgresql_enabled: true,
-                postgresql_interval_seconds: 30,
+                postgresql_interval_seconds: interval_seconds,
                 postgresql_effective_cpus: Some(2),
             })
             .expect("metadata row fits");
@@ -427,6 +436,10 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append process gauge fixture");
+    }
+
+    pub(crate) fn append_process_counter_rows(&mut self, rows: &[(i64, Option<i64>)]) {
+        self.append_finding_rows(rows, &[]);
     }
 
     fn append_process_summary_snapshot(
@@ -1109,6 +1122,10 @@ impl Fixture {
     }
 
     pub(crate) fn append_postgres_block_size(&mut self, block_size: u128) {
+        self.append_postgres_setting("block_size", &block_size.to_string(), "default");
+    }
+
+    pub(crate) fn append_postgres_setting(&mut self, name: &str, value: &str, source: &str) {
         let mut interner = Interner::new(DictLimits::default());
         let intern = |interner: &mut Interner, value: &str| {
             StrId(
@@ -1118,11 +1135,11 @@ impl Fixture {
                     .get(),
             )
         };
-        let name = intern(&mut interner, "block_size");
-        let setting = intern(&mut interner, &block_size.to_string());
+        let name = intern(&mut interner, name);
+        let setting = intern(&mut interner, value);
         let database = intern(&mut interner, "postgres");
         let role = intern(&mut interner, "collector");
-        let source = intern(&mut interner, "default");
+        let source = intern(&mut interner, source);
         let context = intern(&mut interner, "internal");
         let vartype = intern(&mut interner, "integer");
         let mut buffers = SectionBuffers::new();
@@ -1154,6 +1171,56 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append block-size setting");
+    }
+
+    pub(crate) fn append_postgres_settings(&mut self, count: usize, value: &str, source: &str) {
+        let mut interner = Interner::new(DictLimits::default());
+        let intern = |interner: &mut Interner, value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern bulk setting")
+                    .get(),
+            )
+        };
+        let setting = intern(&mut interner, value);
+        let database = intern(&mut interner, "postgres");
+        let role = intern(&mut interner, "collector");
+        let source = intern(&mut interner, source);
+        let context = intern(&mut interner, "user");
+        let vartype = intern(&mut interner, "string");
+        let mut buffers = SectionBuffers::new();
+        for index in 0..count {
+            let name = intern(&mut interner, &format!("fixture_setting_{index}"));
+            buffers
+                .push(PgSettings {
+                    ts: Ts(200),
+                    datid: 1,
+                    datname: database,
+                    usesysid: 2,
+                    usename: role,
+                    name,
+                    setting,
+                    unit: None,
+                    source,
+                    sourcefile: None,
+                    sourceline: None,
+                    pending_restart: false,
+                    context,
+                    vartype,
+                    boot_val: Some(setting),
+                    reset_val: Some(setting),
+                })
+                .expect("bulk setting row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("bulk settings dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode bulk settings")
+            .expect("nonempty bulk settings");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append bulk settings");
     }
 
     fn append_vadv_plan_quantities(&mut self) {
@@ -5540,10 +5607,11 @@ fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and
     let Prepared::Snapshot(prepared) = prepared else {
         panic!("snapshot request did not prepare a snapshot");
     };
-    let (rows, has_more) = prepared
+    let result = prepared
         .compute_relation_rows(200, &|| false)
         .expect("compute_relation_rows");
-    assert!(!has_more);
+    assert!(!result.truncated);
+    let rows = result.rows;
     assert_eq!(rows.len(), http_rows.len());
 
     for (direct, http) in rows.iter().zip(http_rows.iter()) {
@@ -5614,10 +5682,11 @@ fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_vi
     let Prepared::Snapshot(prepared) = prepared else {
         panic!("snapshot request did not prepare a snapshot");
     };
-    let (rows, has_more) = prepared
+    let result = prepared
         .compute_process_rows(10, &|| false)
         .expect("compute_process_rows");
-    assert!(!has_more);
+    assert!(!result.truncated);
+    let rows = result.rows;
     assert_eq!(rows.len(), http_rows.len());
 
     for (direct, http) in rows.iter().zip(http_rows.iter()) {
@@ -5696,10 +5765,11 @@ fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fie
     let Prepared::Snapshot(prepared) = prepared else {
         panic!("snapshot request did not prepare a snapshot");
     };
-    let (rows, has_more) = prepared
+    let result = prepared
         .compute_plain_rows(10, &|| false)
         .expect("compute_plain_rows");
-    assert!(!has_more);
+    assert!(!result.truncated);
+    let rows = result.rows;
     assert_eq!(rows.len(), http_rows.len());
 
     for (direct, http) in rows.iter().zip(http_rows.iter()) {
@@ -5809,10 +5879,11 @@ fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter
     let Prepared::Snapshot(prepared) = prepared else {
         panic!("snapshot request did not prepare a snapshot");
     };
-    let (rows, has_more) = prepared
+    let result = prepared
         .compute_plain_rows(10, &|| false)
         .expect("compute_plain_rows");
-    assert!(!has_more);
+    assert!(!result.truncated);
+    let rows = result.rows;
     assert_eq!(
         rows.len(),
         1,
@@ -5829,9 +5900,10 @@ fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter
     let Prepared::Snapshot(prepared) = prepared else {
         panic!("snapshot request did not prepare a snapshot");
     };
-    let (rows, _has_more) = prepared
+    let result = prepared
         .compute_plain_rows(10, &|| false)
         .expect("compute_plain_rows");
+    let rows = result.rows;
     assert!(
         rows.is_empty(),
         "a threshold above the observed rate matches nothing"

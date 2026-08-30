@@ -1,8 +1,46 @@
 //! `CallToolResult` helpers and decimal-string serialization for 64-bit integers.
 
+use std::collections::BTreeMap;
+
 use rmcp::model::{CallToolResult, ContentBlock};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct FinderOutput {
+    #[schemars(with = "Vec<BTreeMap<String, Value>>")]
+    rows: Vec<Value>,
+    truncated: bool,
+    /// Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected.
+    as_of: Option<String>,
+}
+
+pub(crate) fn finder_output(
+    rows: Vec<Value>,
+    truncated: bool,
+    as_of: Option<i64>,
+) -> Result<Value, CallToolResult> {
+    serde_json::to_value(FinderOutput {
+        rows,
+        truncated,
+        as_of: as_of.map(|timestamp| timestamp.to_string()),
+    })
+    .map_err(|error| mcp_error(format!("finder result encoding failed: {error}")))
+}
+
+pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> String {
+    let suffix = if truncated {
+        "; matching rows were omitted. Narrow filters or increase limit up to 5000"
+    } else {
+        ""
+    };
+    format!(
+        "Returned {row_count} recorded {noun} row{}{suffix}.",
+        if row_count == 1 { "" } else { "s" }
+    )
+}
 
 /// Serializes every `i64` as decimal text so JSON clients retain exact 64-bit
 /// values.
@@ -84,6 +122,18 @@ pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {
     mcp_error(message)
 }
 
+pub(crate) fn finder_storage_error(
+    logical_name: &str,
+    error: &crate::api::ApiError,
+) -> CallToolResult {
+    if let crate::api::ApiError::NoSuchColumn(field) = error {
+        return mcp_error(format!(
+            "no such sort field for {logical_name}: {field}; kronika_get_context lists the section's fields"
+        ));
+    }
+    storage_error(error)
+}
+
 /// Rejected tool arguments with the tool's one-line usage appended: the
 /// serde text alone names a field, not the shape of a working call.
 pub(crate) fn invalid_arguments(
@@ -106,18 +156,6 @@ pub(crate) fn bounded_limit(name: &str, value: u32, cap: usize) -> Result<usize,
             "{name} must be between 1 and {cap}, got {value}"
         )))
     }
-}
-
-/// Rejects arguments a parameterless tool's closed-object schema forbids:
-/// the schema says `additionalProperties: false`, so the runtime must not
-/// quietly accept `{"unexpected": true}` either.
-pub(crate) fn parameterless<T: serde::de::DeserializeOwned>(
-    name: &str,
-    arguments: serde_json::Map<String, Value>,
-) -> Result<(), CallToolResult> {
-    serde_json::from_value::<T>(Value::Object(arguments))
-        .map(|_input| ())
-        .map_err(|error| mcp_error(format!("invalid arguments for {name}: {error}")))
 }
 
 /// The largest encoded `structuredContent` a tool returns. A legal

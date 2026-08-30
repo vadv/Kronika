@@ -66,6 +66,7 @@ pub(crate) enum SearchValue {
     Identifier(String),
     Pattern(GlobPattern),
     Quantity(Quantity),
+    AnyOf(Vec<Self>),
 }
 
 impl SearchValue {
@@ -81,6 +82,14 @@ impl SearchValue {
     /// input uses it for its `eq` operator on string fields.
     pub(crate) fn exact(raw: &str) -> Self {
         Self::Pattern(GlobPattern::exact(raw))
+    }
+
+    pub(crate) fn same_exact(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Identifier(left), Self::Identifier(right)) => left == right,
+            (Self::Pattern(left), Self::Pattern(right)) => left.same_exact(right),
+            _ => false,
+        }
     }
 }
 
@@ -595,6 +604,7 @@ impl<'a> Parser<'a> {
             SearchValue::Identifier(value) => value.clone(),
             SearchValue::Pattern(_) => canonical_value(&value),
             SearchValue::Quantity(quantity) => quantity.canonical.clone(),
+            SearchValue::AnyOf(_) => unreachable!("the text parser does not construct typed sets"),
         };
         let clause = SearchClause {
             canonical: format!("{}{operator_text}{canonical_value}", field.key),

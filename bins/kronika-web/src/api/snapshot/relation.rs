@@ -1446,11 +1446,7 @@ impl Aggregate {
                 .get(column)
                 .map(String::as_str)
                 .or_else(|| self.key.search_text(column))
-                .is_some_and(|stored| match &clause.value {
-                    SearchValue::Identifier(wanted) => stored == wanted,
-                    SearchValue::Pattern(pattern) => pattern.matches(stored),
-                    SearchValue::Quantity(_) => false,
-                })
+                .is_some_and(|stored| super::search_value_matches(stored, &clause.value))
         })
     }
 
@@ -3337,7 +3333,7 @@ impl PreparedSnapshot {
         &self,
         limit: usize,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(Vec<RelationRow>, bool), ApiError> {
+    ) -> Result<super::selector::FinderResult<RelationRow>, ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
@@ -3352,10 +3348,17 @@ impl PreparedSnapshot {
             }
         }
         let contexts = self.partitioned_contexts(section, cancelled)?;
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let as_of = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
         let mut aggregates = BTreeMap::<GroupKey, Aggregate>::new();
         for context in &contexts {
             if cancelled() {
-                break;
+                return Err(ApiError::Cancelled);
             }
             scan_context(self, kind, group, context, &mut aggregates, cancelled)?;
         }
@@ -3383,7 +3386,7 @@ impl PreparedSnapshot {
                 self.direction,
             )
         });
-        let has_more = ranked.len() > limit;
+        let truncated = ranked.len() > limit;
         let rows = ranked
             .into_iter()
             .take(limit)
@@ -3402,7 +3405,11 @@ impl PreparedSnapshot {
                 }
             })
             .collect();
-        Ok((rows, has_more))
+        Ok(super::selector::FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
     }
 
     /// Applies a typed expression after the grouped-phase and projection
@@ -3458,7 +3465,10 @@ fn scan_context(
                 true
             },
         )?;
-        if cancelled() || chunk.is_empty() {
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        if chunk.is_empty() {
             break;
         }
         offset = chunk
@@ -3541,6 +3551,9 @@ fn scan_context(
                     source,
                 )?;
         }
+    }
+    if cancelled() {
+        return Err(ApiError::Cancelled);
     }
     Ok(())
 }

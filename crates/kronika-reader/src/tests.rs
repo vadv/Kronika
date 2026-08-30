@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_topology::OsTopology;
 use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -161,6 +162,34 @@ fn append_text_window(journal: &mut Journal, segment_id: SegmentId, ts: i64, tex
         .append(segment_id, &part)
         .expect("append current window");
     id
+}
+
+fn append_cpu_window(journal: &mut Journal, segment_id: SegmentId, ts: i64) {
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(OsCpu {
+            ts: Ts(ts),
+            cpu_id: -1,
+            user: 1,
+            nice: 0,
+            system: 1,
+            idle: 1,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            guest: 0,
+            guest_nice: 0,
+            scope: 0,
+        })
+        .expect("buffer CPU row");
+    let part = buffers
+        .flush(&[])
+        .expect("encode CPU part")
+        .expect("part has one row");
+    journal
+        .append(segment_id, &part)
+        .expect("append CPU window");
 }
 
 fn one_segment(reader: &Reader) -> Segment {
@@ -378,6 +407,86 @@ fn finished_segment_wins_over_the_same_active_generation() {
             .len(),
         1,
         "the active generation must not duplicate the finished segment"
+    );
+
+    let predecessor = reader
+        .catalog_segments_with_predecessor(200..=200)
+        .expect("select canonical predecessor");
+    assert_eq!(predecessor.segments.len(), 1);
+    let predecessor = reader
+        .open_segment(&predecessor.segments[0])
+        .expect("open canonical predecessor");
+    assert_eq!(
+        predecessor
+            .path()
+            .extension()
+            .and_then(std::ffi::OsStr::to_str),
+        Some("zms")
+    );
+}
+
+#[test]
+fn active_segment_can_be_the_closest_catalog_predecessor() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let finished_address = address(SEGMENT_ID);
+    let active_address = address(SEGMENT_ID + 1);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, finished_address.id, 100, b"finished");
+    write_segment(&journal, &owner, finished_address).expect("publish finished segment");
+    journal.reset().expect("start the active generation");
+    append_text_window(&mut journal, active_address.id, 200, b"active");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let discovery = reader.catalog_discovery().expect("capture catalog scan");
+    assert_eq!(
+        discovery.ranges().collect::<Vec<_>>(),
+        vec![(100, 100), (200, 200)]
+    );
+    let listing = discovery
+        .segments_with_predecessor(300..=300)
+        .expect("materialize active predecessor from captured scan");
+    assert_eq!(
+        listing
+            .segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        [active_address.id.get()]
+    );
+    assert!(listing.segments[0].active_position().is_some());
+}
+
+#[test]
+fn compatible_catalog_predecessor_skips_a_sectionless_segment() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let predecessor = address(SEGMENT_ID);
+    let sectionless = address(SEGMENT_ID + 1);
+    let current = address(SEGMENT_ID + 2);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, predecessor.id, 100, b"predecessor");
+    write_segment(&journal, &owner, predecessor).expect("publish predecessor");
+    journal.reset().expect("start sectionless generation");
+    append_cpu_window(&mut journal, sectionless.id, 200);
+    write_segment(&journal, &owner, sectionless).expect("publish sectionless segment");
+    journal.reset().expect("start current generation");
+    append_text_window(&mut journal, current.id, 300, b"current");
+    write_segment(&journal, &owner, current).expect("publish current segment");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments_with_predecessors_for(300..=300, &[OsTopology::CONTRACT.type_id.get()])
+        .expect("select compatible predecessor");
+    assert_eq!(
+        listing
+            .segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        [predecessor.id.get(), current.id.get()]
     );
 }
 

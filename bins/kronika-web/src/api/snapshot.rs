@@ -2,6 +2,7 @@
 
 pub(crate) mod relation;
 pub(crate) mod search;
+pub(crate) mod selector;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -23,6 +24,7 @@ use self::search::{
 };
 #[cfg(test)]
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
+use self::selector::FinderResult;
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
@@ -32,10 +34,12 @@ use crate::route::{SeriesRequest, Window};
 pub(crate) struct PreparedSnapshot {
     reader: Reader,
     anchor: SegmentRef,
+    pin_current: bool,
     prior_sources: Vec<SegmentRef>,
     relation_predecessors: Vec<SegmentRef>,
     relation_moments: RetainedRelationMoments,
     at: i64,
+    current_from: Option<i64>,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
     by: Vec<String>,
@@ -485,6 +489,30 @@ pub(crate) fn prepare(
     request: SnapshotRequest,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
+    let segment_id = request.segment_id;
+    prepare_with(request, if_none_match, true, || {
+        explicit_segment_with_listing(root, segment_id)
+    })
+}
+
+pub(super) fn prepare_selected(
+    reader: Reader,
+    current: SegmentRef,
+    segments: Vec<SegmentRef>,
+    clean: bool,
+    request: SnapshotRequest,
+) -> Result<Prepared, ApiError> {
+    prepare_with(request, None, false, || {
+        Ok((reader, current, segments, clean))
+    })
+}
+
+fn prepare_with(
+    request: SnapshotRequest,
+    if_none_match: Option<&str>,
+    pin_current: bool,
+    selected: impl FnOnce() -> Result<(Reader, SegmentRef, Vec<SegmentRef>, bool), ApiError>,
+) -> Result<Prepared, ApiError> {
     let cursor = request
         .cursor
         .as_deref()
@@ -498,8 +526,7 @@ pub(crate) fn prepare(
     if request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
     }
-    let (reader, current, segments, clean) =
-        explicit_segment_with_listing(root, request.segment_id)?;
+    let (reader, current, segments, clean) = selected()?;
     let segment_ref = pin(current, parsed)?;
     let meta = snapshot_meta(&request, &segment_ref, &segments, clean);
     let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
@@ -539,6 +566,7 @@ pub(crate) fn prepare(
             &segment,
             &sections,
             request.at,
+            pin_current,
         )?
     } else {
         Vec::new()
@@ -562,10 +590,12 @@ pub(crate) fn prepare(
     Ok(Prepared::Snapshot(PreparedSnapshot {
         reader,
         anchor: segment_ref,
+        pin_current,
         prior_sources,
         relation_predecessors,
         relation_moments,
         at: request.at,
+        current_from: None,
         sections,
         relation_filters,
         by: request.by,
@@ -1516,19 +1546,23 @@ impl PreparedSnapshot {
         &self,
         limit: usize,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(Vec<ProcessRowOut>, bool), ApiError> {
+    ) -> Result<FinderResult<ProcessRowOut>, ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
         if section.logical_name != "os_process" {
             return Err(ApiError::NoSuchSection);
         }
-        let (records, has_more) = self.ranked_records(limit, cancelled)?;
+        let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
         let rows = records
             .into_iter()
             .map(|(plan, record)| process_row_out(plan, record))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((rows, has_more))
+        Ok(FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
     }
 
     /// Returns the first `limit` rows from the full sort for supported
@@ -1537,7 +1571,7 @@ impl PreparedSnapshot {
         &self,
         limit: usize,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(Vec<PlainRowOut>, bool), ApiError> {
+    ) -> Result<FinderResult<PlainRowOut>, ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
@@ -1554,12 +1588,16 @@ impl PreparedSnapshot {
         ) {
             return Err(ApiError::NoSuchSection);
         }
-        let (records, has_more) = self.ranked_records(limit, cancelled)?;
+        let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
         let rows = records
             .into_iter()
             .map(|(plan, record)| plain_row_out(plan, record))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((rows, has_more))
+        Ok(FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
     }
 
     /// Ranks one section from the start and renders survivors through
@@ -1568,14 +1606,18 @@ impl PreparedSnapshot {
         &self,
         limit: usize,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(Vec<RankedRecord<'_>>, bool), ApiError> {
+    ) -> Result<(Vec<RankedRecord<'_>>, bool, Option<i64>), ApiError> {
         let [section] = self.sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
         let contexts = self.page_contexts(section, cancelled)?;
         if cancelled() {
-            return Ok((Vec::new(), false));
+            return Err(ApiError::Cancelled);
         }
+        let as_of = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
         let process_users = contexts
             .iter()
             .map(|context| {
@@ -1598,14 +1640,14 @@ impl PreparedSnapshot {
                 cancelled,
             )?;
             if cancelled() {
-                return Ok((Vec::new(), false));
+                return Err(ApiError::Cancelled);
             }
         }
         let mut ranked = page.finish();
         let has_more = ranked.len() > limit;
         ranked.truncate(limit);
         let records = self.render_ranked_rows(&contexts, &process_users, ranked)?;
-        Ok((records, has_more))
+        Ok((records, has_more, as_of))
     }
 
     /// Renders ranked rows with the `Plan` needed to re-key positional fields.
@@ -2179,10 +2221,8 @@ impl PreparedSnapshot {
         let anchor = self.reader.open_segment(&self.anchor)?;
         let here = Self::moments(&anchor, plan, timestamp, self.at, cancelled)?;
         drop(anchor);
-        let current = if let Some(here) = here {
-            Some(here.current)
-        } else {
-            let mut fallback = None;
+        let mut current = here.map(|moments| moments.current);
+        if current.is_none() || !self.pin_current {
             for source_ref in &self.prior_sources {
                 if rows_of(source_ref, plan.type_id).is_none() {
                     continue;
@@ -2190,16 +2230,18 @@ impl PreparedSnapshot {
                 let source = self.reader.open_segment(source_ref)?;
                 if let Some(moments) = Self::moments(&source, plan, timestamp, self.at, cancelled)?
                 {
-                    fallback = Some(
-                        fallback.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    current = Some(
+                        current.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
                     );
                 }
             }
-            fallback
-        };
+        }
         let Some(current) = current else {
             return Ok(None);
         };
+        if self.current_from.is_some_and(|from| current < from) {
+            return Ok(None);
+        }
         let mut previous = None;
         if let Some(before) = current.checked_sub(1) {
             for source_index in 0..self.source_count() {
@@ -2290,6 +2332,9 @@ impl PreparedSnapshot {
                 else {
                     continue;
                 };
+                if self.current_from.is_some_and(|from| current.at < from) {
+                    continue;
+                }
                 let moments = PartitionMoments {
                     current,
                     previous: retained
@@ -3011,6 +3056,12 @@ fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
     for (field, value) in plan.fields.iter().zip(values) {
         fields.insert(field.name.clone(), value);
     }
+    if matches!(
+        logical_section_name(plan.type_id),
+        Some("pg_stat_statements" | "pg_store_plans")
+    ) {
+        fields.extend(derived_ratio_fields(&fields));
+    }
     Ok(PlainRowOut {
         segment_id,
         type_id: plan.type_id,
@@ -3018,6 +3069,92 @@ fn plain_row_out(plan: &Plan, record: Value) -> Result<PlainRowOut, ApiError> {
         at,
         fields,
     })
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn ratio_field(fields: &BTreeMap<String, Value>, names: &[&str]) -> Option<f64> {
+    names
+        .iter()
+        .find_map(|name| fields.get(*name))
+        .and_then(value_as_f64)
+}
+
+fn ratio_sum(fields: &BTreeMap<String, Value>, names: &[&str]) -> Option<f64> {
+    let mut total = 0.0;
+    for name in names {
+        total += ratio_field(fields, &[name])?;
+    }
+    Some(total)
+}
+
+fn ratio_value(numerator: Option<f64>, denominator: Option<f64>) -> Value {
+    match numerator.zip(denominator).map(|(n, d)| n / d) {
+        Some(value) if value.is_finite() => json!(value),
+        _ => Value::Null,
+    }
+}
+
+fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    let calls = ratio_field(fields, &["calls_per_second", "calls"]);
+    let execution = ratio_field(fields, &["total_exec_time", "total_time"]);
+    let hit = ratio_field(fields, &["shared_blks_hit"]);
+    let read = ratio_field(fields, &["shared_blks_read"]);
+    let planning = ratio_field(fields, &["total_plan_time"]);
+    let blocks = ratio_sum(
+        fields,
+        &[
+            "shared_blks_hit",
+            "shared_blks_read",
+            "local_blks_hit",
+            "local_blks_read",
+        ],
+    );
+
+    BTreeMap::from([
+        (
+            "derived_mean_exec_ms_per_call".to_owned(),
+            ratio_value(execution, calls),
+        ),
+        (
+            "derived_rows_per_call".to_owned(),
+            ratio_value(ratio_field(fields, &["rows"]), calls),
+        ),
+        (
+            "derived_blocks_per_call".to_owned(),
+            ratio_value(blocks, calls),
+        ),
+        (
+            "derived_hit_fraction".to_owned(),
+            ratio_value(hit, hit.zip(read).map(|(hit, read)| hit + read)),
+        ),
+        (
+            "derived_wal_per_call".to_owned(),
+            ratio_value(ratio_field(fields, &["wal_bytes"]), calls),
+        ),
+        (
+            "derived_plan_time_fraction".to_owned(),
+            ratio_value(
+                planning,
+                planning
+                    .zip(execution)
+                    .map(|(planning, execution)| planning + execution),
+            ),
+        ),
+        (
+            "derived_cv".to_owned(),
+            ratio_value(
+                ratio_field(fields, &["stddev_exec_time", "stddev_time"]),
+                ratio_field(fields, &["mean_exec_time", "mean_time"]),
+            ),
+        ),
+    ])
 }
 
 /// Extracts values from an internal NDJSON row; malformed internal data returns
@@ -4127,13 +4264,8 @@ fn search_clause_matches(
     process_users: Option<&ProcessUsers>,
     clause: &SearchClause,
 ) -> bool {
-    if logical_name == "pg_store_plans"
-        && plan.type_id == 1_004_001
-        && clause.key == "query_id"
-        && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
-    {
-        return false;
-    }
+    let excludes_zero_query =
+        logical_name == "pg_store_plans" && plan.type_id == 1_004_001 && clause.key == "query_id";
     if logical_name == "os_process" {
         let name_matches = |uid_column| {
             process_users
@@ -4164,7 +4296,9 @@ fn search_clause_matches(
     columns.iter().any(|column| {
         row.get(column)
             .and_then(|value| searchable_text(value, dictionary))
-            .is_some_and(|text| search_value_matches(&text, &clause.value))
+            .is_some_and(|text| {
+                (!excludes_zero_query || text != "0") && search_value_matches(&text, &clause.value)
+            })
     })
 }
 
@@ -4181,11 +4315,14 @@ fn search_matches(
     })
 }
 
-fn search_value_matches(text: &str, value: &SearchValue) -> bool {
+pub(super) fn search_value_matches(text: &str, value: &SearchValue) -> bool {
     match value {
         SearchValue::Identifier(wanted) => text == wanted,
         SearchValue::Pattern(pattern) => pattern.matches(text),
         SearchValue::Quantity(_) => false,
+        SearchValue::AnyOf(values) => values
+            .iter()
+            .any(|candidate| search_value_matches(text, candidate)),
     }
 }
 fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'a, str>> {
@@ -4275,6 +4412,20 @@ impl GlobPattern {
             pattern_index += 1;
         }
         pattern_index == self.0.len()
+    }
+
+    fn same_exact(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&other.0)
+                .all(|(left, right)| match (left, right) {
+                    (GlobToken::Literal(left), GlobToken::Literal(right)) => {
+                        unicode_char_equal(*left, *right)
+                    }
+                    _ => left == right,
+                })
     }
 }
 
@@ -4639,6 +4790,7 @@ fn preceding(
     current: &Segment,
     sections: &[SectionPlans],
     at: i64,
+    pin_current: bool,
 ) -> Result<Vec<SegmentRef>, ApiError> {
     let layouts = sections
         .iter()
@@ -4665,7 +4817,7 @@ fn preceding(
         .keys()
         .map(|type_id| (*type_id, ContributingMoments::default()))
         .collect::<BTreeMap<_, _>>();
-    scan_contributing_moments(current, &layouts, at, true, &mut moments)?;
+    scan_contributing_moments(current, &layouts, at, pin_current, &mut moments)?;
     candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
     for candidate in &candidates {
         if moments.values().all(|samples| {

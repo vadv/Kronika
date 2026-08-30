@@ -6,6 +6,18 @@ use super::{
     tools,
 };
 
+const FINDER_TOOLS: [&str; 9] = [
+    FIND_POSTGRESQL_TABLES_TOOL,
+    FIND_POSTGRESQL_INDEXES_TOOL,
+    FIND_POSTGRESQL_ACTIVITY_TOOL,
+    FIND_POSTGRESQL_LOCKS_TOOL,
+    FIND_POSTGRESQL_VACUUM_TOOL,
+    FIND_POSTGRESQL_DATABASES_TOOL,
+    FIND_POSTGRESQL_STATEMENTS_TOOL,
+    FIND_POSTGRESQL_PLANS_TOOL,
+    FIND_PROCESSES_TOOL,
+];
+
 #[test]
 fn catalog_has_exactly_fourteen_tools() {
     let catalog = tools();
@@ -151,5 +163,126 @@ fn context_and_instance_schemas_stay_closed_objects() {
             .expect("catalog tool");
         assert_eq!(tool.input_schema["type"], "object", "{name}");
         assert_eq!(tool.input_schema["additionalProperties"], false, "{name}");
+    }
+}
+
+#[test]
+fn instance_schema_exposes_scope_default_and_complete_typed_result() {
+    let tool = tools()
+        .into_iter()
+        .find(|tool| tool.name.as_ref() == GET_INSTANCE_TOOL)
+        .expect("instance tool");
+    assert_eq!(
+        tool.input_schema["properties"]["settings"]["default"],
+        "non_default"
+    );
+    assert_eq!(
+        tool.input_schema["properties"]["settings"]["$ref"],
+        "#/$defs/SettingsScopeInput"
+    );
+    let settings_scopes = tool.input_schema["$defs"]["SettingsScopeInput"]["oneOf"]
+        .as_array()
+        .expect("settings scope choices")
+        .iter()
+        .map(|choice| choice["const"].as_str().expect("settings scope const"))
+        .collect::<Vec<_>>();
+    assert_eq!(settings_scopes, ["non_default", "all"]);
+    let output = tool.output_schema.as_ref().expect("instance output schema");
+    assert_eq!(output["additionalProperties"], false);
+    let required = output["required"].as_array().expect("required outputs");
+    for field in [
+        "host",
+        "host_as_of",
+        "postgresql_settings",
+        "settings_as_of",
+        "settings_scope",
+        "settings_returned_count",
+        "settings_defaults_omitted",
+        "settings_request_all",
+    ] {
+        assert!(
+            required.iter().any(|candidate| candidate == field),
+            "missing required instance output {field}"
+        );
+    }
+    assert_eq!(
+        output["properties"]["settings_request_all"]["$ref"],
+        "#/$defs/AllSettingsRequest"
+    );
+    let request_all = &output["$defs"]["AllSettingsRequest"];
+    assert_eq!(request_all["additionalProperties"], false);
+    assert_eq!(request_all["required"], serde_json::json!(["settings"]));
+    assert_eq!(
+        request_all["properties"]["settings"]["$ref"],
+        "#/$defs/AllSettingsScope"
+    );
+    assert_eq!(
+        output["$defs"]["AllSettingsScope"]["enum"],
+        serde_json::json!(["all"])
+    );
+    assert!(output["properties"].get("settings_has_more").is_none());
+}
+
+#[test]
+fn finder_schemas_expose_optional_time_and_the_exact_runtime_envelope() {
+    let catalog = tools();
+    for name in FINDER_TOOLS {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("{name} tool"));
+        let required = tool.input_schema["required"]
+            .as_array()
+            .expect("input required array");
+        assert!(
+            tool.input_schema["properties"]["at"].is_object(),
+            "{name}.at"
+        );
+        assert!(
+            !required.iter().any(|field| field == "at"),
+            "{name}.at must remain optional"
+        );
+        assert_eq!(tool.input_schema["additionalProperties"], false, "{name}");
+        assert_eq!(
+            tool.input_schema["properties"]["filters"]["maxItems"], 8,
+            "{name}.filters"
+        );
+
+        let output = tool.output_schema.as_ref().expect("finder output schema");
+        assert_eq!(output["additionalProperties"], false, "{name}");
+        let output_required = output["required"]
+            .as_array()
+            .expect("output required array");
+        for field in ["rows", "truncated", "as_of"] {
+            assert!(
+                output_required.iter().any(|required| required == field),
+                "{name} output omits required {field}"
+            );
+        }
+        assert_eq!(output["properties"]["rows"]["type"], "array", "{name}");
+        assert_eq!(
+            output["properties"]["truncated"]["type"], "boolean",
+            "{name}"
+        );
+        assert_eq!(
+            output["properties"]["as_of"]["description"],
+            "Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected.",
+            "{name}.as_of"
+        );
+        let as_of_description = output["properties"]["as_of"]["description"]
+            .as_str()
+            .expect("as_of description");
+        assert!(
+            tool.description
+                .as_deref()
+                .is_some_and(|description| description.contains(as_of_description)),
+            "{name} does not reuse the output schema's exact as_of description"
+        );
+        for obsolete in ["has_more", "next_from", "next_cursor", "cursor"] {
+            assert!(
+                output["properties"].get(obsolete).is_none(),
+                "{name} advertises obsolete {obsolete}"
+            );
+        }
     }
 }

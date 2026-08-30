@@ -439,6 +439,24 @@ the valid prefix of `active.wal`. Finished segments are immutable and
 browser-cacheable. Web revalidates the catalog and refreshes append-only active
 resources when a user requests current data.
 
+### Current-state finders
+
+The nine MCP current-state finders share one snapshot selector and the existing
+snapshot compute and search paths. Omitted `at` means the latest recorded
+point. An explicit `at` uses the common strict time grammar and selects the
+latest usable actual sample no later than that point. The bounded lookback is
+the larger of 20 seconds and 2.5 recorded collection intervals; fixed-cadence
+sections declare their interval in the selector policy. A counter result can
+use the closest canonical predecessor before that lookback. The returned
+`as_of` is the selected sample's actual timestamp even when filters remove
+every row; it is null only when no usable sample was selected.
+
+Structured filters are ANDed. `in` is one predicate with at most eight exact
+values and stays inside the same row scan. MCP finder results are bounded with
+`truncated` and have no continuation cursor. This does not change HTTP snapshot
+pagination: its existing page cursor and row representation remain the public
+contract.
+
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An

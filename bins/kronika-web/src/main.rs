@@ -721,8 +721,9 @@ fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiErr
     let api::Prepared::Snapshot(prepared) = api::snapshot::prepare(root, request, None)? else {
         return Ok(None);
     };
-    let (rows, _has_more) = prepared.compute_relation_rows(1, &|| false)?;
-    Ok(rows
+    let result = prepared.compute_relation_rows(1, &|| false)?;
+    Ok(result
+        .rows
         .into_iter()
         .next()
         .and_then(|row| match row.key.metric("datname") {

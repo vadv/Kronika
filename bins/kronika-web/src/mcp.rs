@@ -40,6 +40,8 @@ mod semantics;
 mod time;
 
 #[cfg(test)]
+mod finder_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use postgresql::current_segment;
