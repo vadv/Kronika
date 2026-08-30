@@ -32,9 +32,10 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 use serde_json::Value;
 
 use crate::api::{
-    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
-    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
-    reset_page_operations, reset_relation_snapshot_operations,
+    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, hour_operations,
+    page_operations, relation_snapshot_operations, reset_context_operations,
+    reset_first_match_rows, reset_hour_operations, reset_page_operations,
+    reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -2214,6 +2215,32 @@ fn stream(prepared: Prepared) -> Result<Vec<Value>, ApiError> {
         .collect())
 }
 
+fn prepare_result(fixture: &Fixture, target: &str) -> Result<Prepared, ApiError> {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    let route = match crate::route::parse(path, query) {
+        Ok(route) => route,
+        Err(error) => panic!("valid fixture route: {error}"),
+    };
+    crate::api::prepare(fixture.root(), SOURCES, route, None)
+}
+
+fn source_flags(records: &[Value], name: &str) -> (bool, bool) {
+    let family = records
+        .iter()
+        .find(|record| record["record"] == "catalog")
+        .and_then(|record| record["source_families"].as_array())
+        .and_then(|families| families.iter().find(|family| family["name"] == name))
+        .expect("source family");
+    (
+        family["present"].as_bool().expect("present flag"),
+        family["metrics_present"]
+            .as_bool()
+            .expect("metrics-present flag"),
+    )
+}
+
 fn row_records(records: &[Value]) -> Vec<&Value> {
     records
         .iter()
@@ -2701,6 +2728,46 @@ fn hour_source_presence_uses_only_rows_inside_the_requested_window() {
         assert_eq!(family["present"], expected);
         assert_eq!(family["metrics_present"], expected);
     }
+}
+
+#[test]
+fn hour_source_presence_folds_contained_inventory_and_scans_partial_rows() {
+    let mut contained = Fixture::new();
+    contained.append_log_error(100);
+    contained.finish();
+    reset_hour_operations();
+    let records = stream(contained.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("contained source inventory");
+    assert_eq!(source_flags(&records, "postgresql"), (true, false));
+    assert_eq!(
+        hour_operations().1,
+        0,
+        "contained segment needs no row scan"
+    );
+
+    let mut partial = Fixture::new();
+    partial.append_log_error(99);
+    partial.append_log_error(100);
+    partial.finish();
+    reset_hour_operations();
+    let records = stream(partial.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("partial positive source");
+    assert_eq!(source_flags(&records, "postgresql"), (true, false));
+    assert!(hour_operations().1 > 0, "partial segment scans timestamps");
+
+    let mut straddling = Fixture::new();
+    straddling.append_log_error(99);
+    straddling.append_diskstats(&[(100, 0, 1)]);
+    straddling.finish();
+    reset_hour_operations();
+    let records = stream(straddling.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("straddling source inventory");
+    assert_eq!(source_flags(&records, "os"), (true, true));
+    assert_eq!(source_flags(&records, "postgresql"), (false, false));
+    assert!(
+        hour_operations().1 > 0,
+        "straddling segment scans timestamps"
+    );
 }
 
 #[test]
@@ -3327,6 +3394,128 @@ fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
     for timestamp in ["100", "200"] {
         assert!(lanes.iter().any(|lane| lane["ts"] == timestamp));
     }
+}
+
+#[test]
+fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health_with_interval(100, 5, 17);
+    fixture.append_diskstats(&[(100, 0, 0), (200, 0, 2)]);
+    let second = SEGMENT_ID + 1;
+    fixture.finish_and_continue(second);
+    fixture.append_postgres_health_with_interval(300, 4, 19);
+    fixture.append_diskstats(&[(300, 0, 4), (400, 0, 8)]);
+    fixture.finish();
+
+    let legacy_prepared = fixture.prepare("/api/hour?from=100&to=400", None);
+    let legacy_etag = legacy_prepared.meta().etag.expect("legacy ETag");
+    let legacy = stream(legacy_prepared).expect("legacy combined hour");
+
+    reset_hour_operations();
+    let base_prepared = fixture.prepare("/api/hour?from=100&to=400&part=base", None);
+    assert_eq!(base_prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(base_prepared.meta().etag, None);
+    let base = stream(base_prepared).expect("lightweight hour base");
+    assert_eq!(hour_operations().0, 0, "base must not collect lanes");
+    assert!(base.iter().all(|record| record["record"] != "lane"));
+    assert!(base.iter().any(|record| record["record"] == "catalog"));
+    assert!(base.iter().any(|record| record["record"] == "point"));
+
+    let lanes_prepared = fixture.prepare(
+        &format!("/api/hour?from=100&to=400&part=lanes&segments={SEGMENT_ID},{second}"),
+        None,
+    );
+    assert_eq!(lanes_prepared.meta().cache, CachePolicy::Immutable);
+    let lanes_etag = lanes_prepared.meta().etag.expect("lanes ETag");
+    assert_ne!(lanes_etag, legacy_etag);
+    let lanes = stream(lanes_prepared).expect("finished pinned lanes");
+    assert_eq!(hour_operations().0, 2, "each segment uses one lane reducer");
+    assert!(
+        lanes
+            .iter()
+            .all(|record| { matches!(record["record"].as_str(), Some("lane_context" | "lane")) })
+    );
+    let contexts = lanes
+        .iter()
+        .filter(|record| record["record"] == "lane_context")
+        .collect::<Vec<_>>();
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(contexts[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(contexts[0]["postgresql_interval_seconds"], "17");
+    assert_eq!(contexts[1]["segment_id"], second.to_string());
+    assert_eq!(contexts[1]["postgresql_interval_seconds"], "19");
+
+    assert_eq!(
+        base,
+        legacy
+            .iter()
+            .filter(|record| record["record"] != "lane")
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .filter(|record| record["record"] == "lane")
+            .collect::<Vec<_>>(),
+        legacy
+            .iter()
+            .filter(|record| record["record"] == "lane")
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn active_hour_lanes_require_the_base_segment_set_and_wal_position() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health_with_interval(100, 5, 17);
+    let position = fixture.position();
+    let base_prepared = fixture.prepare("/api/hour?from=100&to=200&part=base", None);
+    assert_eq!(base_prepared.meta().cache, CachePolicy::NoStore);
+    let base = stream(base_prepared).expect("active hour base");
+    let active = base
+        .iter()
+        .find(|record| record["record"] == "active_segment")
+        .expect("active segment bound");
+    assert_eq!(active["id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["wal_position"], position.to_string());
+    let target = format!(
+        "/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}&active={SEGMENT_ID},{position}"
+    );
+
+    fixture.append_diskstats(&[(150, 0, 1)]);
+    let pinned_prepared = prepare_result(&fixture, &target).expect("valid active pin");
+    assert_eq!(pinned_prepared.meta().cache, CachePolicy::NoStore);
+    let pinned = stream(pinned_prepared).expect("pinned active lanes");
+    assert!(pinned.iter().all(|record| {
+        record["record"] != "lane" || record["lane"] != "disk_busy" || record["ts"] != "150"
+    }));
+    assert!(matches!(
+        prepare_result(
+            &fixture,
+            &format!("/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}")
+        ),
+        Err(ApiError::BadCursor)
+    ));
+    assert!(matches!(
+        prepare_result(
+            &fixture,
+            &format!(
+                "/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}&active={SEGMENT_ID},{}",
+                u64::MAX
+            )
+        ),
+        Err(ApiError::BadCursor)
+    ));
+
+    let next = SEGMENT_ID + 1;
+    fixture.finish_and_continue(next);
+    fixture.append_diskstats(&[(175, 0, 2)]);
+    assert!(matches!(
+        prepare_result(&fixture, &target),
+        Err(ApiError::BadCursor)
+    ));
 }
 
 #[test]

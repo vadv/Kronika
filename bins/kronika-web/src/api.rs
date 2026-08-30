@@ -28,6 +28,8 @@ pub(crate) use hour::process_summary::{
     operations as process_summary_operations, reset_operations as reset_process_summary_operations,
 };
 #[cfg(test)]
+pub(crate) use hour::{operations as hour_operations, reset_operations as reset_hour_operations};
+#[cfg(test)]
 pub(crate) use snapshot::{
     context_operations, first_match_rows, history_operations, page_operations,
     relation_snapshot_operations, reset_context_operations, reset_first_match_rows,

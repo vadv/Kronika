@@ -86,7 +86,7 @@ pub(super) fn collect(
     segment: &Segment,
     window: Window,
     state: &mut State,
-) -> Result<Vec<LanePoint>, ApiError> {
+) -> Result<(Vec<LanePoint>, Option<u64>), ApiError> {
     let mut facts = Facts::default();
     for (type_id, _rows) in segment.sections() {
         let Some(name) = logical_section_name(type_id) else {
@@ -114,23 +114,31 @@ pub(super) fn collect(
     );
     state.counters.retain_latest();
     state.emitted_before = state.emitted_before.max(segment.max_ts());
-    Ok(current)
+    Ok((current, facts.postgresql_interval_seconds))
 }
 
 #[derive(Default)]
 struct Facts {
     ticks_per_second: i64,
     cores: BTreeSet<i64>,
+    postgresql_interval_seconds: Option<u64>,
 }
 
 fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(), ApiError> {
-    let names = with_columns(type_id, &["clock_ticks_per_sec"], &[]);
+    let names = with_columns(
+        type_id,
+        &["clock_ticks_per_sec"],
+        &["postgresql_interval_seconds"],
+    );
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         if let Some(ticks) = number(&row, "clock_ticks_per_sec") {
             #[expect(clippy::cast_possible_truncation, reason = "a hundred, in practice")]
             {
                 facts.ticks_per_second = ticks as i64;
             }
+        }
+        if let Some(Cell::U64(seconds)) = row.get("postgresql_interval_seconds") {
+            facts.postgresql_interval_seconds = Some(*seconds);
         }
         true
     })?;

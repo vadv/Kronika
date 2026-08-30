@@ -1,5 +1,5 @@
 use super::{
-    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
+    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest, HourPart,
     MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
     Window, parse,
 };
@@ -130,6 +130,47 @@ fn physical_layout_selection_is_available_to_every_generic_row_resource() {
         hour.series.and_then(|series| series.type_id),
         Some(1_002_002)
     );
+}
+
+#[test]
+fn hour_parts_pin_one_exact_segment_set_and_active_prefix() {
+    let Route::Hour(base) = parse("/api/hour", Some("from=1&to=2&part=base")).expect("hour base")
+    else {
+        panic!("hour route");
+    };
+    assert_eq!(base.part, HourPart::Base);
+    assert_eq!(base.segments, None);
+    assert_eq!(base.active, None);
+
+    let Route::Hour(lanes) = parse(
+        "/api/hour",
+        Some("from=1&to=2&part=lanes&segments=7%2C9&active=9%2C100"),
+    )
+    .expect("pinned hour lanes") else {
+        panic!("hour route");
+    };
+    assert_eq!(lanes.part, HourPart::Lanes);
+    assert_eq!(lanes.segments, Some(vec![7, 9]));
+    assert_eq!(
+        lanes.active,
+        Some(ActiveCursor {
+            segment_id: 9,
+            wal_position: 100,
+        })
+    );
+
+    for query in [
+        "from=1&to=2&part=lanes",
+        "part=lanes&segments=",
+        "from=1&part=lanes&segments=",
+        "from=1&to=2&part=base&segments=7",
+        "from=1&to=2&part=base&active=7,100",
+        "from=1&to=2&part=lanes&segments=7,7",
+        "from=1&to=2&part=combined",
+        "from=1&to=2&section=os_cpu&part=base",
+    ] {
+        assert!(parse("/api/hour", Some(query)).is_err(), "{query}");
+    }
 }
 
 #[test]

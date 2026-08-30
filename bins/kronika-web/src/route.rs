@@ -73,6 +73,17 @@ pub(crate) struct SnapshotRequest {
 pub(crate) struct HourRequest {
     pub(crate) window: Window,
     pub(crate) series: Option<SeriesRequest>,
+    pub(crate) part: HourPart,
+    pub(crate) segments: Option<Vec<i64>>,
+    pub(crate) active: Option<ActiveCursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum HourPart {
+    #[default]
+    Combined,
+    Base,
+    Lanes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,14 +569,7 @@ fn parse_catalog(query: &str) -> Result<Window, RouteError> {
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
-    if window
-        .from
-        .zip(window.to)
-        .is_some_and(|(from, to)| from > to)
-    {
-        return Err(RouteError::BadParameter("from".to_owned()));
-    }
-    Ok(window)
+    valid_window(window)
 }
 
 fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
@@ -574,6 +578,10 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     let mut section = None;
     let mut type_id = None;
     let mut group = None;
+    let mut part = HourPart::Combined;
+    let mut segments = None;
+    let mut active = None;
+    let mut saw_part = false;
     for (name, value) in extras {
         match name.as_str() {
             "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
@@ -594,25 +602,59 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
                     _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
             }
+            "part" if !saw_part => {
+                part = match value.as_str() {
+                    "base" => HourPart::Base,
+                    "lanes" => HourPart::Lanes,
+                    _ => return Err(RouteError::BadParameter("part".to_owned())),
+                };
+                saw_part = true;
+            }
+            "segments" if segments.is_none() => segments = Some(segment_ids(&value)?),
+            "active" if active.is_none() => active = Some(active_cursor("active", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
-    if window
-        .from
-        .zip(window.to)
-        .is_some_and(|(from, to)| from > to)
-    {
-        return Err(RouteError::BadParameter("from".to_owned()));
-    }
+    let window = valid_window(window)?;
     let Some(section) = section else {
         if fields.is_empty() && filters.is_empty() && type_id.is_none() && group.is_none() {
+            if part == HourPart::Lanes && segments.is_none() {
+                return Err(RouteError::BadParameter("segments".to_owned()));
+            }
+            if part == HourPart::Lanes && (window.from.is_none() || window.to.is_none()) {
+                return Err(RouteError::BadParameter(
+                    if window.from.is_none() { "from" } else { "to" }.to_owned(),
+                ));
+            }
+            if part != HourPart::Lanes && (segments.is_some() || active.is_some()) {
+                return Err(RouteError::BadParameter(
+                    if segments.is_some() {
+                        "segments"
+                    } else {
+                        "active"
+                    }
+                    .to_owned(),
+                ));
+            }
             return Ok(HourRequest {
                 window,
                 series: None,
+                part,
+                segments,
+                active,
             });
         }
         return Err(RouteError::BadParameter("section".to_owned()));
     };
+    if part != HourPart::Combined || segments.is_some() || active.is_some() {
+        return Err(RouteError::BadParameter(if segments.is_some() {
+            "segments".to_owned()
+        } else if active.is_some() {
+            "active".to_owned()
+        } else {
+            "part".to_owned()
+        }));
+    }
     validate_relation_series(&section, &fields, &filters, type_id, group)?;
     Ok(HourRequest {
         window,
@@ -623,7 +665,36 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
             type_id,
             group,
         }),
+        part,
+        segments,
+        active,
     })
+}
+
+fn valid_window(window: Window) -> Result<Window, RouteError> {
+    if window
+        .from
+        .zip(window.to)
+        .is_some_and(|(from, to)| from > to)
+    {
+        return Err(RouteError::BadParameter("from".to_owned()));
+    }
+    Ok(window)
+}
+
+fn segment_ids(value: &str) -> Result<Vec<i64>, RouteError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for value in value.split(',') {
+        let id = number("segments", value)?;
+        if ids.contains(&id) {
+            return Err(RouteError::BadParameter("segments".to_owned()));
+        }
+        ids.push(id);
+    }
+    Ok(ids)
 }
 
 fn validate_relation_series(
@@ -674,7 +745,7 @@ fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, Route
     let mut type_id = None;
     for (name, value) in extras {
         match name.as_str() {
-            "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "after" if after.is_none() => after = Some(active_cursor("after", &value)?),
             "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
@@ -713,7 +784,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
                 saw_page_size = true;
             }
             "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),
-            "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "after" if after.is_none() => after = Some(active_cursor("after", &value)?),
             "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
@@ -733,18 +804,18 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
     })
 }
 
-fn active_cursor(value: &str) -> Result<ActiveCursor, RouteError> {
+fn active_cursor(name: &str, value: &str) -> Result<ActiveCursor, RouteError> {
     let (segment_id, wal_position) = value
         .split_once(',')
         .filter(|(segment_id, wal_position)| {
             !segment_id.is_empty() && !wal_position.is_empty() && !wal_position.contains(',')
         })
-        .ok_or_else(|| RouteError::BadParameter("after".to_owned()))?;
+        .ok_or_else(|| RouteError::BadParameter(name.to_owned()))?;
     Ok(ActiveCursor {
-        segment_id: number("after", segment_id)?,
+        segment_id: number(name, segment_id)?,
         wal_position: wal_position
             .parse()
-            .map_err(|_error| RouteError::BadParameter("after".to_owned()))?,
+            .map_err(|_error| RouteError::BadParameter(name.to_owned()))?,
     })
 }
 
