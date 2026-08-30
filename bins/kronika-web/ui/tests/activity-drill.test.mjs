@@ -47,9 +47,9 @@ test("a drill moves the cursor only when the drilled row is silent at it", async
   assert.match(source, /onCursor\(intervalInstant\(hour, column, columns\)\)/)
 })
 
-test("ranked statement and plan text comes only from automatic heatmap labels", async () => {
+test("ranked statement and plan rows use compact IDs instead of stored text labels", async () => {
   const source = await readFile(new URL("../src/activity.tsx", import.meta.url), "utf8")
-  assert.match(source, /const text = labelText\(row, "query"\)/)
-  assert.match(source, /const text = labelText\(row, "plan"\)/)
-  assert.doesNotMatch(source, /statementTextsByQueryId|planTextsByPlanId|readonly data: HourData/)
+  assert.match(source, /text: `Query ID \$\{queryId \?\? "—"\}`/)
+  assert.match(source, /text: `Plan ID \$\{planId \?\? "—"\}`/)
+  assert.doesNotMatch(source, /labelText\(row, "(?:query|plan)"\)|activityPreview|statementTextsByQueryId|planTextsByPlanId/)
 })

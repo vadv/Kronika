@@ -21,6 +21,8 @@ const SEGMENT = "7300"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
 const BEFORE_AT = AT - 5_000_000
 const AFTER_AT = AT + 7_000_000
+const EVENT_SCOPE_AT = AT + 900_000_000
+const EVENT_SCOPE_AFTER = EVENT_SCOPE_AT + 7_000_000
 const QUARTER = HOUR + 900_000_000
 const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
@@ -370,6 +372,11 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"database":"artifact_db"}')
+      return
+    }
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
@@ -478,12 +485,14 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
       cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
       help: document.querySelectorAll('[data-testid="activity-pg_stat_statements"] .help-dot').length,
+      labels: [...document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title")),
     }))()`)
     assert.equal(ledger.totals, true)
     assert.match(ledger.top, /2/)
     assert.match(ledger.others, /1/)
     assert.equal(ledger.cells, 6)
     assert.ok(ledger.help >= 3)
+    assert.deepEqual(ledger.labels, ["Query ID 101", "Query ID 102"])
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
@@ -2430,6 +2439,9 @@ test("the slow-query group keeps readable compact labels and human event time", 
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
     await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the slow-query entry")
+    await cdp.waitFor(`document.querySelector('[data-marker-count="2"]') !== null`, "the non-representative event marker")
+    await cdp.evaluate(`document.querySelector('[data-marker-count="2"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the non-representative event scope")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await settleLayout(cdp)
     const title = await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]').textContent`)
@@ -4286,23 +4298,33 @@ function slowQueryTimelineRecords() {
       source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }],
     },
     {
-      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(EVENT_SCOPE_AFTER),
       sections: [{
         logical_name: "pg_log_slow_queries", physical_name: "pg_log_slow_queries", type_id: "2004001",
-        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
+        implementation: "postgresql", source_family: "postgresql", rows: "3", bytes: "512",
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "lane", segment_id: SEGMENT, lane: "pg_running", ts: String(AT), value: 1 },
     {
-      record: "finding", logical_name: "pg_log_slow_queries", kind: "known_bad", type_id: "2004001",
-      field_ordinal: 4, row_ordinal: "3", ts: String(AT),
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
+      field_ordinal: 0, row_ordinal: "3", ts: String(AT),
+    },
+    {
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
+      field_ordinal: 0, row_ordinal: "4", ts: String(EVENT_SCOPE_AT),
+    },
+    {
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
+      field_ordinal: 0, row_ordinal: "5", ts: String(EVENT_SCOPE_AFTER),
     },
   ]
 }
 
 function slowQueryEventRecords() {
   const minutes = Array.from({ length: 60 }, () => 0)
-  minutes[Math.floor((AT - HOUR) / 60_000_000)] = 3
+  minutes[Math.floor((AT - HOUR) / 60_000_000)] = 1
+  minutes[Math.floor((EVENT_SCOPE_AT - HOUR) / 60_000_000)] = 2
   return [
     { record: "events", representation: "groups", truncated: false },
     {
@@ -4313,7 +4335,7 @@ function slowQueryEventRecords() {
       label: SLOW_PATTERN,
       count: 3,
       firstTs: AT,
-      lastTs: AT,
+      lastTs: EVENT_SCOPE_AFTER,
       minutes,
       stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
       detail_locator: {
@@ -5615,12 +5637,12 @@ function answerHeatmap(url, response) {
   const section = url.searchParams.get("section") ?? ""
   const labels = {
     pg_stat_database: ["datname"],
-    pg_stat_statements: ["datname", "usename", "query"],
+    pg_stat_statements: ["datname", "usename"],
     pg_stat_user_indexes: ["datname", "schemaname", "relname", "indexrelname"],
     pg_stat_user_tables: ["datname", "schemaname", "relname"],
-    pg_store_plans: ["datname", "usename", "plan"],
+    pg_store_plans: ["datname", "usename"],
   }[section] ?? []
-  const labelValues = labels.map((name) => name === "query" ? "select demo" : name === "plan" ? "demo plan" : "demo")
+  const labelValues = labels.map(() => "demo")
   const span = to - from + 1
   const intervals = Array.from({ length: columns }, (_at, index) => ({
     start: String(from + Math.floor((index * span) / columns)),

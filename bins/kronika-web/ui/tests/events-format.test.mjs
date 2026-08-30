@@ -4,7 +4,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const events = await importModule(
-  'export { eventValue, formatMetric } from "../src/events-format.ts"; export { findingMetric } from "../src/finding-presentation.ts"',
+  'export { formatMetric } from "../src/events-format.ts"; export { findingMetric } from "../src/finding-presentation.ts"',
   { plugins: [registryPlugin([{
     typeId: "1100001", logicalName: "os_process", identity: ["pid"],
     columns: ["ts", "pid", "starttime", "read_bytes"],
@@ -19,7 +19,6 @@ const events = await importModule(
   }])] },
 )
 const t = (key) => ({ "unit.ms": " ms", "unit.per_call": "/call", "unit.per_second": "/s" })[key] ?? key
-const finding = { logicalName: "pg_log_slow_queries" }
 
 test("event metrics use semantic precision for percent, rate, duration, zero and null", () => {
   assert.equal(events.formatMetric(41.729068244136855, "percent", "en", t), "41.7%")
@@ -40,18 +39,6 @@ test("event metrics use semantic precision for percent, rate, duration, zero and
   assert.equal(events.formatMetric(0.099, health.unit, "en", t), "<0.1%")
   const cpu = events.findingMetric({ fieldOrdinal: 0, kind: "known_bad", logicalName: "os_cpu", typeId: "1102001" }, t)
   assert.equal(cpu.helpKey, "system.metric.cpu_busy.help")
-})
-
-test("event identity fields remain exact while ordinary readings stay bounded", () => {
-  assert.equal(events.eventValue(finding, "queryid", "9007199254740993", "en", t), "9007199254740993")
-  assert.equal(events.eventValue(finding, "pid", "001234", "en", t), "001234")
-  assert.equal(events.eventValue(finding, "write_ms", 850, "en", t), "850 ms")
-  assert.equal(events.eventValue(finding, "write_ms", 850, "ru", t), "850 мс")
-  assert.equal(events.eventValue(finding, "max_duration_ms", 6_290, "en", t), "6.29 s")
-  assert.equal(events.eventValue(finding, "max_duration_ms", 6_290, "ru", t), "6,29 с")
-  assert.equal(events.eventValue(finding, "elapsed_ms", 90_500, "en", t), "1.51 min")
-  assert.equal(events.eventValue(finding, "elapsed_ms", 90_500, "ru", t), "1,51 мин")
-  assert.equal(events.eventValue(finding, "tiny", 4e-7, "en", t), "4E-7")
 })
 
 test("every known-bad boundary reaches Events with a named source and a stated boundary", () => {

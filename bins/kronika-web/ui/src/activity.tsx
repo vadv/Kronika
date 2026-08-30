@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
+import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { loadHeatmap } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
@@ -265,9 +265,8 @@ export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, 
 
   const label = (row: HeatmapViewRow): RowLabel => {
     const queryId = rowQueryId(row)
-    const text = labelText(row, "query")
     return {
-      text: text === null ? `Query ID ${queryId ?? "—"}` : activityPreview(text),
+      text: `Query ID ${queryId ?? "—"}`,
       // Query identity includes role, database, and top-level status.
       prefix: identityPrefix(row, row.identity[3] === "false" ? t("activity.nested") : null),
     }
@@ -293,9 +292,8 @@ export function PlansActivity({ blockSize, cursor, hour, locale, onCursor, onRel
   }
   const label = (row: HeatmapViewRow): RowLabel => {
     const planId = row.identity[3]
-    const text = labelText(row, "plan")
     return {
-      text: text === null ? `Plan ID ${planId ?? "—"}` : activityPreview(text),
+      text: `Plan ID ${planId ?? "—"}`,
       prefix: identityPrefix(row, null),
     }
   }

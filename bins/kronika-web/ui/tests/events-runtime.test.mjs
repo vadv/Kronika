@@ -29,7 +29,7 @@ const compiled = await build({
     typeId: "1005004",
   }])],
   stdin: {
-    contents: 'export { groupMarks, MarkGroupRow } from "../src/events-view.tsx"',
+    contents: 'export { entryInScope, entryOf, groupMarks, MarkGroupRow } from "../src/events-view.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -96,4 +96,34 @@ test("Events groups repeated crossings before rendering metric metadata", () => 
   assert.equal(group.metric.label, "Checksum failures")
   assert.equal(group.metric.helpKey, "pg.field.checksum_failures.help")
   assert.equal(group.metric.boundary, "any increase from the previous value")
+})
+
+test("Events scopes compact groups by source without treating one locator as a member list", () => {
+  const entry = {
+    section: "pg_log_errors",
+    detailLocator: {
+      segment_id: "segment-a",
+      type_id: "2001001",
+      row_ordinal: "1",
+    },
+  }
+  const representative = {
+    category: null,
+    fieldOrdinal: 0,
+    kind: "event",
+    logicalName: "pg_log_errors",
+    rowOrdinal: "1",
+    segmentId: "segment-a",
+    timestamp: hour,
+    typeId: "2001001",
+  }
+  const otherMember = { ...representative, rowOrdinal: "2", timestamp: hour + 1 }
+  const otherSource = { ...otherMember, logicalName: "pg_log_checkpoints", typeId: "2002001" }
+  const sameSourceThreshold = { ...otherMember, kind: "known_bad" }
+  const threshold = { ...sameSourceThreshold, logicalName: "os_cpu", typeId: "1102001" }
+
+  assert.equal(events.entryInScope(entry, [otherMember]), true)
+  assert.equal(events.entryInScope(entry, [sameSourceThreshold, otherSource, threshold]), false)
+  assert.equal(events.entryOf([entry], representative), entry)
+  assert.equal(events.entryOf([entry], otherMember), null)
 })

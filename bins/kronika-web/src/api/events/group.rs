@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 
 use super::{
     EventDataRow, EventGroup, EventSource, EventStat, EventTier, MINUTE_COLUMNS, MINUTE_MICROS,
-    StoredEventRow,
 };
 use crate::api::ApiError;
 
@@ -133,32 +132,20 @@ fn group_errors(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
 fn group_slow(rows: Vec<EventDataRow>, from: i64, threshold_ms: Option<f64>) -> Vec<EventGroup> {
     grouped(rows, |row| text(row, "pattern").unwrap_or_default())
         .into_iter()
-        .map(|(key, members)| {
-            let first = &members[0];
+        .map(|(key, mut members)| {
+            members.sort_by(|left, right| {
+                number(right, "max_duration_ms")
+                    .unwrap_or(0.0)
+                    .total_cmp(&number(left, "max_duration_ms").unwrap_or(0.0))
+            });
+            let slowest = &members[0];
             let weights: Vec<f64> = members
                 .iter()
                 .map(|row| number(row, "count").unwrap_or(1.0))
                 .collect();
-            let slowest = members.iter().skip(1).fold(first, |chosen, row| {
-                if number(row, "max_duration_ms").unwrap_or(0.0)
-                    > number(chosen, "max_duration_ms").unwrap_or(0.0)
-                {
-                    row
-                } else {
-                    chosen
-                }
-            });
             let max_ms = number(slowest, "max_duration_ms").unwrap_or(0.0);
             let total_ms = sum(&members, "total_duration_ms").unwrap_or(0.0);
-            let representative = super::row_key::detail_locator(
-                EventSource::SlowQueries.as_str(),
-                slowest.segment_id,
-                slowest.timestamp,
-                slowest.type_id,
-                slowest.row_ordinal,
-                &slowest.values,
-            );
-            let mut group = build(
+            build(
                 format!("slow:{key}"),
                 EventSource::SlowQueries,
                 &members,
@@ -172,9 +159,7 @@ fn group_slow(rows: Vec<EventDataRow>, from: i64, threshold_ms: Option<f64>) -> 
                     total_ms,
                     threshold_ms,
                 },
-            );
-            group.detail_locator = representative;
-            group
+            )
         })
         .collect()
 }
@@ -450,7 +435,7 @@ fn grouped(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the argument list mirrors the deliberately flat EventEntry contract"
+    reason = "the argument list mirrors the deliberately compact EventGroup contract"
 )]
 fn build(
     key: String,
@@ -584,16 +569,22 @@ const fn count_number(value: usize) -> f64 {
     value as f64
 }
 
-pub(super) fn slow_threshold_ms(rows: &[StoredEventRow]) -> Option<f64> {
+pub(super) fn slow_threshold_ms(rows: &[EventDataRow]) -> Option<f64> {
     let row = rows
         .iter()
         .filter(|row| {
-            row.fields.get("name").and_then(raw_text).as_deref()
+            row.values.get("name").and_then(raw_text).as_deref()
                 == Some("log_min_duration_statement")
         })
-        .reduce(|chosen, row| if row.at > chosen.at { row } else { chosen })?;
+        .reduce(|chosen, row| {
+            if row.timestamp > chosen.timestamp {
+                row
+            } else {
+                chosen
+            }
+        })?;
     let setting = row
-        .fields
+        .values
         .get("setting")
         .and_then(raw_text)?
         .parse::<f64>()
@@ -601,7 +592,7 @@ pub(super) fn slow_threshold_ms(rows: &[StoredEventRow]) -> Option<f64> {
     if !setting.is_finite() || setting < 0.0 {
         return None;
     }
-    Some(match row.fields.get("unit").and_then(raw_text).as_deref() {
+    Some(match row.values.get("unit").and_then(raw_text).as_deref() {
         Some("s") => setting * 1_000.0,
         Some("min") => setting * 60_000.0,
         _ => setting,

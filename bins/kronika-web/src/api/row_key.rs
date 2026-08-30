@@ -24,26 +24,6 @@ pub(crate) struct DetailLocator {
     pub(crate) row_key: Option<Value>,
 }
 
-impl DetailLocator {
-    pub(crate) fn new(
-        section: &str,
-        segment_id: i64,
-        at: i64,
-        type_id: u32,
-        row_ordinal: u64,
-        row_key: Option<Value>,
-    ) -> Self {
-        Self {
-            section: section.to_owned(),
-            segment_id: Value::String(segment_id.to_string()),
-            at: Value::String(at.to_string()),
-            type_id: Value::String(type_id.to_string()),
-            row_ordinal: Value::String(row_ordinal.to_string()),
-            row_key,
-        }
-    }
-}
-
 /// Builds the exact physical locator for one rendered row.
 pub(crate) fn detail_locator(
     section: &str,
@@ -53,16 +33,16 @@ pub(crate) fn detail_locator(
     row_ordinal: u64,
     fields: &Map<String, Value>,
 ) -> DetailLocator {
-    DetailLocator::new(
-        section,
-        segment_id,
-        at,
-        type_id,
-        row_ordinal,
-        discriminator(section)
+    DetailLocator {
+        section: section.to_owned(),
+        segment_id: Value::String(segment_id.to_string()),
+        at: Value::String(at.to_string()),
+        type_id: Value::String(type_id.to_string()),
+        row_ordinal: Value::String(row_ordinal.to_string()),
+        row_key: discriminator(section)
             .and_then(|column| fields.get(column))
             .and_then(|value| key_value(section, value)),
-    )
+    }
 }
 
 /// Stored text kept out of mass results and returned only by row detail.

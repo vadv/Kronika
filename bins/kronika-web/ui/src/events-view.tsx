@@ -95,7 +95,7 @@ export function EventsView({
   const scoped = useMemo(() => {
     if (entries === null) return null
     if (scope === null) return entries
-    return entries.filter((entry) => scope.some((finding) => entryContains(entry, finding)))
+    return entries.filter((entry) => entryInScope(entry, scope))
   }, [entries, scope])
   const chosen = useMemo(() => {
     if (scoped === null || digest === null) return scoped
@@ -402,14 +402,14 @@ function MarkStrip({ group, hour, onCursor, t }: {
   </button>
 }
 
-function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
-  return entries.find((entry) => entryContains(entry, finding)) ?? null
+export function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
+  return entries.find((entry) => entry.detailLocator.segment_id === finding.segmentId
+    && entry.detailLocator.type_id === finding.typeId
+    && entry.detailLocator.row_ordinal === finding.rowOrdinal) ?? null
 }
 
-function entryContains(entry: EventEntry, finding: Finding): boolean {
-  return entry.detailLocator.segment_id === finding.segmentId
-    && entry.detailLocator.type_id === finding.typeId
-    && entry.detailLocator.row_ordinal === finding.rowOrdinal
+export function entryInScope(entry: EventEntry, scope: readonly Finding[]): boolean {
+  return scope.some((finding) => finding.kind === "event" && finding.logicalName === entry.section)
 }
 
 interface StreamState {

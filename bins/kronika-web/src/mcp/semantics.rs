@@ -18,9 +18,8 @@ pub(crate) struct FinderOutput {
     truncated: bool,
 }
 
-pub(crate) fn finder_output(rows: Vec<Value>, truncated: bool) -> Result<Value, CallToolResult> {
-    serde_json::to_value(FinderOutput { rows, truncated })
-        .map_err(|error| mcp_error(format!("finder result encoding failed: {error}")))
+pub(crate) fn finder_output(rows: Vec<Value>, truncated: bool) -> Value {
+    serde_json::json!(FinderOutput { rows, truncated })
 }
 
 pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> String {
@@ -74,8 +73,8 @@ pub(crate) fn mcp_error_with(
     result
 }
 
-/// A batch refusal naming the zero-based ranking whose validation, resource,
-/// or reservation failed.
+/// A batch refusal naming the zero-based ranking whose validation or resource
+/// check failed.
 pub(crate) fn mcp_error_indexed(
     message: impl Into<String>,
     ranking_index: usize,

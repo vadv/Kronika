@@ -108,10 +108,7 @@ fn call(
         .map(|row| row_to_json(row, kind, group))
         .collect();
     let summary = finder_summary(kind.logical_name(), row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated) {
-        Ok(output) => output,
-        Err(error) => return error,
-    };
+    let output = finder_output(rows, result.truncated);
     mcp_structured(output, summary)
 }
 
@@ -316,10 +313,7 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
         .map(|row| finder_plain_row_to_json(surface.logical_name(), row))
         .collect();
     let summary = finder_summary(surface.logical_name(), row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated) {
-        Ok(output) => output,
-        Err(error) => return error,
-    };
+    let output = finder_output(rows, result.truncated);
     mcp_structured(output, summary)
 }
 

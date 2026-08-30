@@ -88,10 +88,7 @@ fn call_with(
     let row_count = result.rows.len();
     let rows: Vec<Value> = result.rows.into_iter().map(row_to_json).collect();
     let summary = finder_summary("process", row_count, result.truncated);
-    let output = match finder_output(rows, result.truncated) {
-        Ok(output) => output,
-        Err(error) => return error,
-    };
+    let output = finder_output(rows, result.truncated);
     mcp_structured(output, summary)
 }
 
@@ -112,7 +109,7 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         row.row_ordinal,
         &object,
     );
-    object.remove("cmdline");
+    object.retain(|field, _| !crate::api::row_key::is_detail_text(LOGICAL_NAME, field));
     object.insert("detail_locator".to_owned(), json!(locator));
     Value::Object(object)
 }

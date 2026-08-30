@@ -1,6 +1,6 @@
 //! Shared recorded-event query, decoding, grouping, and result contract.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
@@ -113,20 +113,12 @@ impl EventSource {
                 "reason",
                 "seconds_apart",
                 "buffers_written",
-                "write_ms",
                 "sync_ms",
-                "total_ms",
-                "distance_kb",
-                "wal_added",
-                "wal_removed",
-                "wal_recycled",
-                "sync_files",
             ],
             Self::Autovacuum => &[
                 "kind",
                 "relation",
                 "tuples_removed",
-                "tuples_remaining",
                 "tuples_dead_not_removable",
                 "elapsed_ms",
             ],
@@ -488,7 +480,7 @@ impl PreparedEvents {
     }
 
     pub(crate) fn execute(self, cancelled: &impl Fn() -> bool) -> Result<EventsResult, ApiError> {
-        let mut by_source: Vec<Vec<StoredEventRow>> = self
+        let mut by_source: Vec<Vec<EventDataRow>> = self
             .query
             .sources
             .iter()
@@ -596,15 +588,6 @@ fn emit_items<T: Serialize>(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct StoredEventRow {
-    segment_id: i64,
-    type_id: u32,
-    row_ordinal: u64,
-    at: i64,
-    fields: BTreeMap<String, Value>,
-}
-
 fn carries_selected(segment: &SegmentRef, sources: &[EventSource], settings: bool) -> bool {
     segment.sections().iter().any(|section| {
         let name = kronika_registry::logical_section_name(section.type_id);
@@ -624,7 +607,7 @@ fn collect_section(
     fields: &[&str],
     filters: &[Filter],
     range: TimeRange,
-    output: &mut Vec<StoredEventRow>,
+    output: &mut Vec<EventDataRow>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let request = DataRequest {
@@ -653,7 +636,7 @@ fn collect_plan(
     segment_id: i64,
     plan: &Plan,
     range: TimeRange,
-    output: &mut Vec<StoredEventRow>,
+    output: &mut Vec<EventDataRow>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     if !plan.applies() {
@@ -724,7 +707,7 @@ fn append_chunk(
     plan: &Plan,
     timestamp_column: &str,
     chunk: &mut Vec<(u64, Row)>,
-    output: &mut Vec<StoredEventRow>,
+    output: &mut Vec<EventDataRow>,
 ) -> Result<(), ApiError> {
     let dictionary = streaming_chunk_dictionary(segment, chunk)?;
     for (ordinal, row) in chunk.drain(..) {
@@ -735,7 +718,7 @@ fn append_chunk(
         let Some(Cell::Ts(at)) = row.get(timestamp_column) else {
             continue;
         };
-        let mut values = BTreeMap::new();
+        let mut values = Map::new();
         for field in &plan.fields {
             values.insert(
                 field.name.clone(),
@@ -745,12 +728,12 @@ fn append_chunk(
                     .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?,
             );
         }
-        output.push(StoredEventRow {
+        output.push(EventDataRow {
             segment_id,
             type_id: plan.type_id,
             row_ordinal: ordinal,
-            at: *at,
-            fields: values,
+            timestamp: *at,
+            values,
         });
     }
     Ok(())
@@ -758,46 +741,29 @@ fn append_chunk(
 
 fn groups_result(
     query: &EventsQuery,
-    by_source: Vec<Vec<StoredEventRow>>,
+    by_source: Vec<Vec<EventDataRow>>,
     threshold_ms: Option<f64>,
 ) -> Result<EventsResult, ApiError> {
-    let streams: HashMap<EventSource, Vec<EventDataRow>> = query
-        .sources
-        .iter()
-        .copied()
-        .zip(by_source)
-        .map(|(source, rows)| {
-            let rows = rows
-                .into_iter()
-                .map(|row| EventDataRow {
-                    segment_id: row.segment_id,
-                    type_id: row.type_id,
-                    row_ordinal: row.row_ordinal,
-                    timestamp: row.at,
-                    values: row.fields.into_iter().collect(),
-                })
-                .collect();
-            (source, rows)
-        })
-        .collect();
+    let streams: HashMap<EventSource, Vec<EventDataRow>> =
+        query.sources.iter().copied().zip(by_source).collect();
     let mut groups = group_events(streams, query.range.from, threshold_ms)?;
     let truncated = groups.len() > query.limit;
     groups.truncate(query.limit);
     Ok(EventsResult::Groups { groups, truncated })
 }
 
-fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<StoredEventRow>>) -> EventsResult {
+fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<EventDataRow>>) -> EventsResult {
     let mut occurrences: Vec<(i64, EventOccurrence)> = query
         .sources
         .iter()
         .zip(by_source)
         .flat_map(|(source, rows)| {
             rows.into_iter().map(|row| {
-                let mut fields: Map<String, Value> = row.fields.into_iter().collect();
+                let mut fields = row.values;
                 let detail_locator = row_key::detail_locator(
                     source.as_str(),
                     row.segment_id,
-                    row.at,
+                    row.timestamp,
                     row.type_id,
                     row.row_ordinal,
                     &fields,
@@ -805,7 +771,7 @@ fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<StoredEventRow>>) 
                 fields.retain(|field, _| !row_key::is_detail_text(source.as_str(), field));
                 label_event_fields(source.as_str(), &mut fields);
                 (
-                    row.at,
+                    row.timestamp,
                     EventOccurrence {
                         fields,
                         source: source.as_str().to_owned(),

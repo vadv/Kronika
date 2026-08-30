@@ -1,26 +1,30 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     EventDataRow, EventSource, EventStat, EventTier, EventsQuery, EventsQueryError,
-    EventsRepresentation, EventsResult, StoredEventRow, event_collator, group_events,
-    groups_result, label_event_fields, occurrences_result, slow_threshold_ms,
+    EventsRepresentation, EventsResult, event_collator, group_events, groups_result,
+    label_event_fields, occurrences_result, slow_threshold_ms,
 };
 use crate::api::time::TimeRange;
 
 const HOUR: i64 = 1_780_000_000_000_000;
 
-fn row(_source: EventSource, ordinal: u64, minute: i64, values: Value) -> EventDataRow {
+fn object(values: Value) -> Map<String, Value> {
     let Value::Object(values) = values else {
         panic!("fixture values must be an object");
     };
+    values
+}
+
+fn row(ordinal: u64, minute: i64, values: Value) -> EventDataRow {
     EventDataRow {
         segment_id: 7,
         type_id: 2_000_001,
         row_ordinal: ordinal,
         timestamp: HOUR + minute * 60_000_000,
-        values,
+        values: object(values),
     }
 }
 
@@ -38,19 +42,16 @@ fn errors_keep_weighted_counts_minutes_shared_values_and_one_locator() {
         EventSource::Errors,
         vec![
             row(
-                EventSource::Errors,
                 0,
                 30,
                 json!({ "severity": 0, "category": 1, "sqlstate": "23505", "pattern": "duplicate key", "count": 5, "database": "shop", "username": "app" }),
             ),
             row(
-                EventSource::Errors,
                 1,
                 2,
                 json!({ "severity": 0, "category": 1, "sqlstate": "23505", "pattern": "duplicate key", "count": 3, "database": "shop", "username": "other" }),
             ),
             row(
-                EventSource::Errors,
                 2,
                 30,
                 json!({ "severity": 1, "category": 6, "pattern": "terminating connection", "count": 1 }),
@@ -98,19 +99,16 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
             EventSource::SlowQueries,
             vec![
                 row(
-                    EventSource::SlowQueries,
                     0,
                     3,
                     json!({ "pattern": "select ?", "sample": "select 1", "count": 2, "max_duration_ms": 100, "total_duration_ms": 150 }),
                 ),
                 row(
-                    EventSource::SlowQueries,
                     1,
                     9,
                     json!({ "pattern": "select ?", "sample": "select 2", "count": 1, "max_duration_ms": 900, "total_duration_ms": 900 }),
                 ),
                 row(
-                    EventSource::SlowQueries,
                     2,
                     10,
                     json!({ "pattern": "select ?", "sample": "tie loses", "count": 1, "max_duration_ms": 900, "total_duration_ms": null }),
@@ -121,13 +119,11 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
             EventSource::Autovacuum,
             vec![
                 row(
-                    EventSource::Autovacuum,
                     3,
                     4,
                     json!({ "kind": 1, "relation": "public.orders", "elapsed_ms": 10, "tuples_removed": 3, "tuples_dead_not_removable": 8 }),
                 ),
                 row(
-                    EventSource::Autovacuum,
                     4,
                     8,
                     json!({ "kind": 1, "relation": "public.orders", "elapsed_ms": 15, "tuples_removed": 4, "tuples_dead_not_removable": 2 }),
@@ -138,13 +134,11 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
             EventSource::Pgbouncer,
             vec![
                 row(
-                    EventSource::Pgbouncer,
                     5,
                     1,
                     json!({ "level": 2, "text": "server login failed", "database": "app" }),
                 ),
                 row(
-                    EventSource::Pgbouncer,
                     6,
                     2,
                     json!({ "level": 2, "text": "server login failed", "database": "app" }),
@@ -220,61 +214,40 @@ fn checkpoints_locks_and_lifecycle_keep_exact_episode_rules() {
         (
             EventSource::Checkpoints,
             vec![
+                row(0, 0, json!({ "phase": 0, "reason": "time" })),
                 row(
-                    EventSource::Checkpoints,
-                    0,
-                    0,
-                    json!({ "phase": 0, "reason": "time" }),
-                ),
-                row(
-                    EventSource::Checkpoints,
                     1,
                     1,
                     json!({ "phase": 1, "buffers_written": 100, "sync_ms": 11 }),
                 ),
+                row(2, 20, json!({ "phase": 0, "reason": "wal" })),
                 row(
-                    EventSource::Checkpoints,
-                    2,
-                    20,
-                    json!({ "phase": 0, "reason": "wal" }),
-                ),
-                row(
-                    EventSource::Checkpoints,
                     3,
                     21,
                     json!({ "phase": 1, "buffers_written": 900, "sync_ms": 2100 }),
                 ),
-                row(
-                    EventSource::Checkpoints,
-                    4,
-                    21,
-                    json!({ "phase": 2, "seconds_apart": 18 }),
-                ),
+                row(4, 21, json!({ "phase": 2, "seconds_apart": 18 })),
             ],
         ),
         (
             EventSource::LockWaits,
             vec![
                 row(
-                    EventSource::LockWaits,
                     5,
                     10,
                     json!({ "kind": 0, "pid": 2078, "lock_target": "transaction 987", "duration_ms": 1000, "holding_pids": "583" }),
                 ),
                 row(
-                    EventSource::LockWaits,
                     6,
                     10,
                     json!({ "kind": 0, "pid": 456, "lock_target": "transaction 987", "duration_ms": 1001, "holding_pids": "583" }),
                 ),
                 row(
-                    EventSource::LockWaits,
                     7,
                     11,
                     json!({ "kind": 1, "pid": 2078, "lock_target": "transaction 987", "duration_ms": 40000 }),
                 ),
                 row(
-                    EventSource::LockWaits,
                     8,
                     12,
                     json!({ "kind": 1, "pid": 999, "lock_target": "transaction 44", "duration_ms": 1200 }),
@@ -285,17 +258,11 @@ fn checkpoints_locks_and_lifecycle_keep_exact_episode_rules() {
             EventSource::Lifecycle,
             vec![
                 row(
-                    EventSource::Lifecycle,
                     9,
                     5,
                     json!({ "kind": 0, "pid": 4242, "signal": 9, "message": "crash" }),
                 ),
-                row(
-                    EventSource::Lifecycle,
-                    10,
-                    6,
-                    json!({ "kind": 2, "message": "ready" }),
-                ),
+                row(10, 6, json!({ "kind": 2, "message": "ready" })),
             ],
         ),
     ]));
@@ -446,12 +413,12 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
         let Value::Object(fields) = fields else {
             panic!("fields");
         };
-        StoredEventRow {
+        EventDataRow {
             segment_id: 7,
             type_id: 2_007_001,
             row_ordinal: ordinal,
-            at,
-            fields: fields.into_iter().collect(),
+            timestamp: at,
+            values: fields,
         }
     };
     let result = occurrences_result(
@@ -522,16 +489,12 @@ fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
         representation: EventsRepresentation::Groups,
         limit: 1,
     };
-    let stored = |ordinal, at, pattern: &str, count| StoredEventRow {
+    let stored = |ordinal, at, pattern: &str, count| EventDataRow {
         segment_id: 7,
         type_id: 2_001_001,
         row_ordinal: ordinal,
-        at,
-        fields: BTreeMap::from([
-            ("severity".to_owned(), json!(0)),
-            ("pattern".to_owned(), json!(pattern)),
-            ("count".to_owned(), json!(count)),
-        ]),
+        timestamp: at,
+        values: object(json!({ "severity": 0, "pattern": pattern, "count": count })),
     };
     let result = groups_result(
         &query,
@@ -571,7 +534,7 @@ fn occurrence_labels_cover_every_known_code_and_leave_unknown_codes_untouched() 
         ("pg_log_lifecycle", "kind", 2, "ready"),
         ("pgbouncer_events", "level", 2, "warning"),
     ] {
-        let mut fields = serde_json::Map::from_iter([(field.to_owned(), json!(code))]);
+        let mut fields = Map::from_iter([(field.to_owned(), json!(code))]);
         label_event_fields(section, &mut fields);
         assert_eq!(
             fields[&format!("{field}_label")],
@@ -600,16 +563,16 @@ fn occurrence_labels_cover_every_known_code_and_leave_unknown_codes_untouched() 
 
 #[test]
 fn slow_threshold_uses_latest_strict_timestamp_and_exact_units() {
-    let setting = |at, value: &str, unit: &str| StoredEventRow {
+    let setting = |at, value: &str, unit: &str| EventDataRow {
         segment_id: 1,
         type_id: 1,
         row_ordinal: 0,
-        at,
-        fields: BTreeMap::from([
-            ("name".to_owned(), json!("log_min_duration_statement")),
-            ("setting".to_owned(), json!(value)),
-            ("unit".to_owned(), json!(unit)),
-        ]),
+        timestamp: at,
+        values: object(json!({
+            "name": "log_min_duration_statement",
+            "setting": value,
+            "unit": unit,
+        })),
     };
     assert_eq!(
         slow_threshold_ms(&[setting(1, "2", "s"), setting(2, "3", "min")]),

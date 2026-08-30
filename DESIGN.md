@@ -619,9 +619,11 @@ a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
 that cell sets — because a correct filter at a silent moment reads as a wrong
 filter; a row with a reading at the cursor leaves the cursor where the reader
-put it. Query text and every other available display label travel with each
-ranked entity in the heatmap response; ranked statements do not issue a later
-point read. Tables and indexes use twelve cells for their five-minute cadence.
+put it. Only compact identities and allowed display labels travel with ranked
+entities in the heatmap response. Query text, plans, command lines, log or
+sample text, statements, context, hints, detail payloads, and similar stored
+data do not; the complete row remains on its owning point/detail path. Tables
+and indexes use twelve cells for their five-minute cadence.
 Gauge metrics rank by the window maximum and display values rather than rates.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
@@ -661,6 +663,10 @@ locator; it also admits `pg_log_temp_files`, which has no grouped
 representation. The complete stored row is returned only by row detail. Both
 forms report truncation only when the global limit excludes matching entries
 and have no continuation cursor.
+
+A timeline cluster narrows the grouped console by the event sources it
+represents. A group's single representative detail locator is used only for an
+exact auto-expansion match; it is not a list of the group's member rows.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern, and their detail locator identifies the slowest occurrence.
@@ -1137,6 +1143,10 @@ needed to rank them. A counter ranks by its whole-window delta and a gauge by
 its whole-window maximum. A band total uses the sum for counters and the maximum
 for gauges. The response also carries a totals band containing the per-column
 sum of every entity and an others band equal to totals minus the ranked rows.
+Coverage contains only `state` (`data` or `no_data`) and decimal
+`window_rows`; it does not claim segment, field, or completeness coverage. The
+redundant `os_cpu` aggregate identity whose `cpu_id` is exactly `-1` is excluded
+from ranking, while recorded per-CPU identities remain.
 
 ### Representations
 
@@ -1145,13 +1155,20 @@ NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
 does not lose precision. A blob value carries the stored bytes and the recorded
 `full_len`, `truncated` and `hash` metadata.
 
-Mass MCP results contain compact identifiers, metrics, bounded labels and an
-exact `detail_locator`; they do not inline query text, plans, command lines, log
-messages or similar stored payloads. `kronika_get_row_detail` is the sole MCP
+Mass MCP results tied to a physical row, ranked entity, or event contain compact
+identifiers, metrics, bounded labels and an exact `detail_locator`; relation
+aggregates with no single physical row omit it. These results do not inline
+query text, plans, command lines, log messages or similar stored payloads.
+`kronika_get_row_detail` is the sole MCP
 transition to the complete stored row. Each potentially large text field in
 that response has one stable object shape: `stored_text`, decimal `full_len`,
 `truncated`, and `sha256`. These fields preserve collector-side truncation
 facts; a short untruncated value uses `truncated: false` and `sha256: null`.
+
+Finder, Events, and Overview requests retain an exact 65,536-byte ceiling on
+their encoded arguments. Their structured results have no encoded-size cap and
+produce no size-limit error or size-reduction advice; the documented product
+row, group, and ranking limits remain the only result bounds.
 
 The common MCP `from`, `to`, and `at` time inputs accept Unix microseconds as a
 JSON integer or canonical signed decimal-string `i64`, as well as the documented
