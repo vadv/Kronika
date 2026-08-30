@@ -172,10 +172,21 @@ test("first table settlement gates slow hour products without gating Process row
   assert.match(app, /backgroundTimeline\.segments\.length === 0/)
   assert.match(app, /backgroundTimeline === null \|\| backgroundTimeline\.hour !== hour/)
   assert.match(app, /backgroundTimelineRef\.current !== backgroundTimeline/)
-  assert.match(app, /enabled=\{processReadyHour === hour\}/)
+  assert.match(app, /const \[snapshotReloadVersion, setSnapshotReloadVersion\] = useState\(0\)/)
+  assert.match(app, /const foregroundAlreadyLoaded = refreshAwaitingSnapshot\.current/)
+  assert.match(app, /if \(!foregroundAlreadyLoaded\) setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
+  assert.match(app, /setBackgroundTimeline\(timeline\)\s+setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
+  const foregroundSnapshotEffect = app.slice(
+    app.indexOf('const [cursorState, setCursorState]'),
+    app.indexOf('if (backgroundTimeline === null || backgroundTimeline.segments.length === 0'),
+  )
+  assert.match(foregroundSnapshotEffect, /\}, \[finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget\]\)/)
+  assert.doesNotMatch(foregroundSnapshotEffect, /\[backgroundTimeline,/)
+  assert.match(app, /enabled=\{processReadyHour === hour && foregroundReadyKey\.current === foregroundKey\}/)
   assert.match(summary, /if \(!enabled \|\| \(state\.hour === hour && state\.status !== "loading"\)\) return/)
   assert.match(app, /foregroundReadyKey\.current === foregroundKey \? 250 : 0/)
   assert.match(app, /foregroundReadyKey\.current = foregroundKey\s+setBackgroundReadyHour\(hour\)\s+if \(visibleSource === "processes"\) setProcessReadyHour\(hour\)/)
+  assert.match(app, /foregroundReadyKey\.current = foregroundKey\s+if \(visibleSource !== "events"\) setBackgroundReadyHour\(hour\)/)
   const failedPage = app.match(/const failed = \(reason: unknown\) => \{([\s\S]*?)\n          \}/)?.[1] ?? ""
   assert.doesNotMatch(failedPage, /setBackgroundReadyHour|setProcessReadyHour|foregroundReadyKey/)
 

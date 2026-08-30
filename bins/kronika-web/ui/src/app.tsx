@@ -227,6 +227,7 @@ function App({ locale, onLocale, t }: {
   const backgroundTimelineRef = useRef(backgroundTimeline)
   backgroundTimelineRef.current = backgroundTimeline
   const [backgroundReadyHour, setBackgroundReadyHour] = useState<number | null>(null)
+  const [snapshotReloadVersion, setSnapshotReloadVersion] = useState(0)
   const [processReadyHour, setProcessReadyHour] = useState<number | null>(null)
   const foregroundReadyKey = useRef<string | null>(null)
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
@@ -288,6 +289,11 @@ function App({ locale, onLocale, t }: {
     ? `${viewKey}:${lens}`
     : activeRelation ? `${viewKey}:${activeRelationLens}:${relationLevel}` : viewKey
   const foregroundKey = `${hour ?? "pending"}:${foregroundView}`
+  const eventsReady = useCallback(() => {
+    if (hour === null || visibleSource !== "events") return
+    foregroundReadyKey.current = foregroundKey
+    setBackgroundReadyHour(hour)
+  }, [foregroundKey, hour, visibleSource])
   const viewRequests = useMemo(() => {
     if (visibleSource === "processes") return [
       ...TIMELINE_REQUESTS,
@@ -363,6 +369,7 @@ function App({ locale, onLocale, t }: {
   const finishRefresh = useCallback((succeeded: boolean) => {
     if (!refreshRequested.current) return
     const pending = pendingRefresh.current
+    const foregroundAlreadyLoaded = refreshAwaitingSnapshot.current
     if (succeeded && pending !== null) {
       drawn.current = pending.timeline.hour
       setAvailableHours(pending.timeline.availableHours)
@@ -372,6 +379,7 @@ function App({ locale, onLocale, t }: {
         points: current.lanePoints,
       }))
       setBackgroundTimeline(pending.timeline)
+      if (!foregroundAlreadyLoaded) setSnapshotReloadVersion((version) => version + 1)
     } else if (pending !== null) {
       setSegments(pending.previousSegments)
       setCursor(pending.previousCursor)
@@ -445,6 +453,7 @@ function App({ locale, onLocale, t }: {
         setSegments(timeline.segments)
         setTimelineData(hourOf(timeline))
         setBackgroundTimeline(timeline)
+        setSnapshotReloadVersion((version) => version + 1)
         setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
         followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
         setCursor(followsLatest.current ? latest : asked ?? latest)
@@ -521,7 +530,8 @@ function App({ locale, onLocale, t }: {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("ready")
       setDensePageState("idle")
-      setBackgroundReadyHour(hour)
+      foregroundReadyKey.current = foregroundKey
+      if (visibleSource !== "events") setBackgroundReadyHour(hour)
       if (completesRefresh) finishRefresh(true)
       return
     }
@@ -657,7 +667,7 @@ function App({ locale, onLocale, t }: {
       action.load()
     }, foregroundReadyKey.current === foregroundKey ? 250 : 0)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [backgroundTimeline, finishRefresh, hour, snapshotTarget])
+  }, [finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget])
   useEffect(() => {
     if (backgroundTimeline === null || backgroundTimeline.segments.length === 0
       || backgroundReadyHour !== backgroundTimeline.hour
@@ -1053,7 +1063,7 @@ function App({ locale, onLocale, t }: {
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={processReadyHour === hour} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
+          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={processReadyHour === hour && foregroundReadyKey.current === foregroundKey} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
@@ -1062,7 +1072,7 @@ function App({ locale, onLocale, t }: {
         </div>
       </>}
       {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
     {inspectorOpen && hour !== null && <Inspector

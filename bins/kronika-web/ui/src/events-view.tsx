@@ -35,6 +35,7 @@ export function EventsView({
   onFinding,
   onOpenChart,
   onPattern,
+  onReady,
   onShowAll,
   onSelectedLane,
   revision,
@@ -54,6 +55,7 @@ export function EventsView({
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
   readonly onPattern: (pattern: string) => void
+  readonly onReady: () => void
   readonly onShowAll: () => void
   readonly onSelectedLane: (lane: string) => void
   readonly revision: number
@@ -63,7 +65,7 @@ export function EventsView({
   readonly selectedLane: string
   readonly t: Translate
 }) {
-  const events = useEventGroups(data, hour, revision)
+  const events = useEventGroups(data, hour, revision, onReady)
   const entries = events.rows
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
@@ -420,7 +422,7 @@ interface StreamState {
 // Live-hour revisions are frequent; full log sections refresh at most once per minute.
 const STREAM_REFRESH_MIN_MS = 60_000
 
-function useEventGroups(data: HourData, hour: number, revision: number): StreamState {
+function useEventGroups(data: HourData, hour: number, revision: number, onReady: () => void): StreamState {
   const wanted = EVENT_SOURCES
     .filter((source) => data.availableSections.includes(source))
     .join(",")
@@ -430,6 +432,7 @@ function useEventGroups(data: HourData, hour: number, revision: number): StreamS
   useEffect(() => {
     if (wanted === "") {
       setState({ key, rows: [], loading: false, failed: false })
+      onReady()
       return
     }
     const now = Date.now()
@@ -443,12 +446,15 @@ function useEventGroups(data: HourData, hour: number, revision: number): StreamS
     acceptResponse(
       load,
       controller.signal,
-      (rows) => setState({
-        key,
-        rows,
-        loading: false,
-        failed: false,
-      }),
+      (rows) => {
+        setState({
+          key,
+          rows,
+          loading: false,
+          failed: false,
+        })
+        onReady()
+      },
       () => {
         lastRead.current = { key: "", at: 0 }
         setState((current) => ({ ...current, key, loading: false, failed: true }))
@@ -458,6 +464,6 @@ function useEventGroups(data: HourData, hour: number, revision: number): StreamS
       if (!controller.signal.aborted) console.error("events load failed", error)
     })
     return () => controller.abort()
-  }, [hour, key, revision, wanted])
+  }, [hour, key, onReady, revision, wanted])
   return state
 }

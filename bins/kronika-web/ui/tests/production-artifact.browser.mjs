@@ -49,6 +49,19 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
   const lanesRequest = waitForRequest("lanes")
   const pageRequest = waitForRequest("page")
   const summaryRequest = waitForRequest("summary")
+  const abortedCompanionAt = []
+  const processPageRequests = (at) => requests.filter(({ path, query }) => {
+    const params = new URLSearchParams(query)
+    return path.includes("/snapshot") && params.get("at") === String(at)
+      && params.getAll("section").length === 1 && params.get("section") === "os_process"
+      && params.has("page_size")
+  })
+  const companionRequests = (at) => requests.filter(({ path, query }) => {
+    const params = new URLSearchParams(query)
+    const sections = params.getAll("section")
+    return path.includes("/snapshot") && params.get("at") === String(at)
+      && sections.includes("instance_metadata") && !sections.includes("os_process")
+  })
   const baseRecords = timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment"
     ? record
     : {
@@ -95,6 +108,9 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
         return
       }
       if (sections.includes("instance_metadata") && !sections.includes("os_process")) {
+        response.once("close", () => {
+          if (!response.writableEnded) abortedCompanionAt.push(url.searchParams.get("at"))
+        })
         held.companion = response
         requested.companion()
         return
@@ -159,6 +175,21 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
         && queryParams.getAll("field").includes("postgresql_interval_seconds")
     }), false)
 
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent === "Events")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') !== null`, "Events while Process summary is pending")
+    await delay(100)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
+    await waitForRequests(() => requests.filter(({ path, query }) => {
+      const params = new URLSearchParams(query)
+      return path.includes("/snapshot") && params.getAll("section").length === 1
+        && params.get("section") === "os_process" && params.has("page_size")
+    }).length === 2)
+    await delay(100)
+    assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary").length, 1)
+    ndjson(held.page, snapshotRecords())
+    held.page = null
+    await waitForRequests(() => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary").length === 2)
+
     ndjson(held.companion, snapshotRecords())
     held.companion = null
     ndjson(held.lanes, [
@@ -171,7 +202,37 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
     await cdp.waitFor(`document.querySelector('.lane-select[aria-pressed="true"]')?.getAttribute("aria-label")?.includes("I/O PSI") === true`, "the pending Disk lane selection")
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]') === null`, "the Process summary")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
-    assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary").length, 1)
+    assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary").length, 2)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-cell"][aria-pressed="true"]') !== null`, "the current hour option")
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-cell"][aria-pressed="true"]').click()`)
+    await cdp.waitFor(`document.querySelector('button[title="Refresh"]')?.disabled === false`, "the advancing refresh action")
+    await cdp.evaluate(`document.querySelector('button[title="Refresh"]').click()`)
+    await waitForRequests(() => processPageRequests(AFTER_AT).length === 1 && companionRequests(AFTER_AT).length === 1)
+    const refreshedPage = held.page
+    const refreshedCompanion = held.companion
+    assert.notEqual(refreshedPage, null)
+    assert.notEqual(refreshedCompanion, null)
+    ndjson(refreshedPage, snapshotRecords().filter((record) => record.layout?.logical_name === "os_process" || record.type_id === "1100001"))
+    held.page = null
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AFTER_AT}"`, "the advanced cursor")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the refreshed Process page")
+    await cdp.waitFor(`![...document.querySelectorAll('[data-testid="process-table"] .entity-row span')].some((node) => node.textContent.trim() === "PG")`, "the page before its companion")
+    await delay(400)
+    assert.equal(processPageRequests(AFTER_AT).length, 1)
+    assert.equal(companionRequests(AFTER_AT).length, 1)
+    assert.equal(abortedCompanionAt.includes(String(AFTER_AT)), false)
+    ndjson(refreshedCompanion, snapshotRecords()
+      .filter((record) => record.layout?.logical_name === "pg_stat_activity" || record.type_id === "1001004")
+      .map((record) => record.type_id === "1001004"
+        ? { ...record, values: record.values.map((value, index) => index === 1 ? 2_686_800 : value) }
+        : record))
+    held.companion = null
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row span')].some((node) => node.textContent.trim() === "PG")`, "the late Process companion merge")
+    assert.equal(processPageRequests(AFTER_AT).length, 1)
+    assert.equal(companionRequests(AFTER_AT).length, 1)
+    assert.equal(abortedCompanionAt.includes(String(AFTER_AT)), false)
 
     await cdp.evaluate(`document.querySelector('[data-testid="lens-tree"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="lens-tree"]')?.getAttribute("aria-pressed") === "true"`, "the Process Tree lens")
@@ -189,6 +250,98 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
     const treeQuery = new URLSearchParams(treeRequest.query)
     assert.equal(treeQuery.getAll("section").includes("instance_metadata"), true)
     assert.deepEqual(treeQuery.getAll("field"), [])
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AFTER_AT))
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    for (const response of Object.values(held)) response?.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
+test("the first Events table settles before timeline lanes start", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const held = { events: null, lanes: null }
+  let eventsRequested
+  let lanesRequested
+  const eventsRequest = new Promise((resolve) => { eventsRequested = resolve })
+  const lanesRequest = new Promise((resolve) => { lanesRequested = resolve })
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"database":"artifact_db"}')
+      return
+    }
+    if (url.pathname === "/api/events") {
+      held.events = response
+      eventsRequested()
+      return
+    }
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("part") === "base") return ndjson(response, slowQueryTimelineRecords())
+      if (url.searchParams.get("part") === "lanes") {
+        held.lanes = response
+        lanesRequested()
+        return
+      }
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("focused browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
+
+    await eventsRequest
+    await delay(100)
+    assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("part") === "lanes"), false)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="events-console"]') !== null`), true)
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
+
+    ndjson(held.events, slowQueryEventRecords())
+    held.events = null
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the first Events table", 15_000)
+    await lanesRequest
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('[data-testid="timeline-empty"], .timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
+
+    ndjson(held.lanes, [{ record: "error", error: "stale" }])
+    held.lanes = null
+    await delay(100)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]') !== null`), true)
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
