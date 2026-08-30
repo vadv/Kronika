@@ -34,11 +34,7 @@ pub(crate) fn finder_output(
 }
 
 pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> String {
-    let suffix = if truncated {
-        "; matching rows were omitted. Narrow filters or increase limit up to 5000"
-    } else {
-        ""
-    };
+    let suffix = if truncated { "; truncated" } else { "" };
     format!(
         "Returned {row_count} recorded {noun} row{}{suffix}.",
         if row_count == 1 { "" } else { "s" }
