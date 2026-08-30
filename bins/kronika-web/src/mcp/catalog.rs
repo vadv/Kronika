@@ -526,9 +526,9 @@ fn overview_tool() -> Tool {
          label is null. Coverage always reports data/no_data state, store-wide \
          recorded bounds, nearest rows around the window, and in-window row \
          count. Timestamps, identifiers, and counts that may exceed safe JSON \
-         integer precision are decimal strings. A request or result budget \
-         refusal names `ranking_index`; split rankings across calls or lower \
-         the affected top value.",
+         integer precision are decimal strings. A request or encoded-result \
+         budget refusal names `ranking_index`. `top` bounds returned identities; \
+         it does not change pre-ranking scan state.",
         schema_object::<OverviewInput>(),
     )
     .with_output_schema::<HeatmapBatchResult>()

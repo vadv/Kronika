@@ -206,6 +206,50 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
 }
 
 #[test]
+fn overview_returns_the_five_statement_rankings_in_one_ordered_batch() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+    let fields = [
+        "total_exec_time",
+        "calls",
+        "shared_blks_read",
+        "temp_blks_written",
+        "wal_bytes",
+    ];
+    let rankings = fields
+        .iter()
+        .map(|field| json!({"section": "pg_stat_statements", "fields": [field], "top": 10}))
+        .collect::<Vec<_>>();
+    let arguments = json!({"from": 100, "to": 201, "rankings": rankings})
+        .as_object()
+        .expect("object")
+        .clone();
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let results = structured["results"].as_array().expect("ranking results");
+    assert_eq!(results.len(), fields.len());
+    for (result, field) in results.iter().zip(fields) {
+        assert_eq!(result["ranking"]["fields"], json!([field]));
+        assert_eq!(result["entity_count"], "3");
+        assert_eq!(result["entities"].as_array().expect("entities").len(), 3);
+        assert!(
+            result["entities"]
+                .as_array()
+                .expect("entities")
+                .iter()
+                .all(|entity| entity["labels"].get("query").is_some()
+                    && entity["labels"].get("datname").is_some()
+                    && entity["labels"].get("usename").is_some())
+        );
+    }
+}
+
+#[test]
 fn overview_batches_os_gauge_os_counter_and_postgresql_in_order() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());

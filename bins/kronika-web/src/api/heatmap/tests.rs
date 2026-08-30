@@ -1,8 +1,9 @@
 use kronika_format::DictLimits;
-use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
+use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_mountinfo::OsMountinfo;
-use kronika_registry::{Section as _, StrId, Ts};
+use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::{ColumnClass, Section as _, StrId, Ts, logical_section_name, registry};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
@@ -17,6 +18,14 @@ use crate::api::time::TimeRange;
 const HOUR: i64 = 1_000_000_000_000;
 const SPAN: i64 = 3_600_000_000;
 const MINUTE: i64 = 60_000_000;
+const REPRODUCED_STATEMENT_IDENTITIES: usize = 5_636;
+const STATEMENT_FIELDS: [&str; 5] = [
+    "total_exec_time",
+    "calls",
+    "shared_blks_read",
+    "temp_blks_written",
+    "wal_bytes",
+];
 
 #[test]
 fn intervals_cover_the_legacy_window_after_half_open_normalization() {
@@ -169,6 +178,111 @@ fn shared_section_batch_and_duplicates_decode_each_row_once() {
 }
 
 #[test]
+fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
+    let fixture = statement_fixture(REPRODUCED_STATEMENT_IDENTITIES);
+    let mut independent = Vec::new();
+    let mut independent_scan_bytes = Vec::new();
+    for field in STATEMENT_FIELDS {
+        let prepared = prepare_batch(
+            fixture.root.path(),
+            statement_batch(std::slice::from_ref(&statement_ranking(field, 10))),
+        )
+        .expect("prepare independent ranking");
+        let result = prepared.execute(&|| false).expect("independent ranking");
+        assert_eq!(prepared.row_visits(), 11_272);
+        assert_eq!(prepared.retained_identities(), 5_636);
+        assert_eq!(prepared.metric_fold_slots(), 5_636);
+        assert_statement_ranking(&result.results[0], field, 10);
+        independent_scan_bytes.push(prepared.scan_working_bytes());
+        independent.push(result.results[0].clone());
+    }
+
+    let rankings = STATEMENT_FIELDS
+        .iter()
+        .map(|field| statement_ranking(field, 10))
+        .collect::<Vec<_>>();
+    let prepared = prepare_batch(fixture.root.path(), statement_batch(&rankings))
+        .expect("prepare combined rankings");
+    let result = prepared.execute(&|| false).expect("combined rankings");
+    assert_eq!(result.results, independent);
+    assert_eq!(prepared.execution_operations(), 1);
+    assert_eq!(prepared.row_visits(), 11_272);
+    assert_eq!(prepared.retained_identities(), 5_636);
+    assert_eq!(prepared.metric_fold_slots(), 28_180);
+    assert_eq!(
+        prepared.retained_label_slots(),
+        u64::try_from(REPRODUCED_STATEMENT_IDENTITIES * statement_label_count())
+            .expect("label-slot count")
+    );
+    assert!(
+        prepared.scan_working_bytes()
+            > independent_scan_bytes
+                .into_iter()
+                .max()
+                .expect("one ranking")
+    );
+    assert!(prepared.peak_working_bytes() >= prepared.scan_working_bytes());
+    let top_one = STATEMENT_FIELDS
+        .iter()
+        .map(|field| statement_ranking(field, 1))
+        .collect::<Vec<_>>();
+    let top_one = prepare_batch(fixture.root.path(), statement_batch(&top_one))
+        .expect("prepare top-one rankings");
+    top_one.execute(&|| false).expect("top-one rankings");
+    assert_eq!(top_one.row_visits(), prepared.row_visits());
+    assert_eq!(
+        top_one.retained_identities(),
+        prepared.retained_identities()
+    );
+    assert_eq!(
+        top_one.retained_label_slots(),
+        prepared.retained_label_slots()
+    );
+    assert_eq!(top_one.metric_fold_slots(), prepared.metric_fold_slots());
+    assert_eq!(top_one.scan_working_bytes(), prepared.scan_working_bytes());
+}
+
+#[test]
+fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
+    let mut fixture = ActiveStatementFixture::new();
+    fixture.append(1, 10.0);
+    let query = statement_batch(&[statement_ranking("total_exec_time", 1)]);
+    let captured = prepare_batch(fixture.root.path(), query.clone()).expect("captured prepare");
+
+    fixture.append(2, 100.0);
+    let captured = captured.execute(&|| false).expect("captured execution");
+    assert_eq!(captured.results[0].entities[0].identity["query_id"], "1");
+    assert_eq!(captured.results[0].entities[0].labels["query"], "active-1");
+
+    let current = prepare_batch(fixture.root.path(), query)
+        .expect("current prepare")
+        .execute(&|| false)
+        .expect("current execution");
+    assert_eq!(current.results[0].entities[0].identity["query_id"], "2");
+    assert_eq!(current.results[0].entities[0].labels["query"], "active-2");
+}
+
+#[test]
+fn oversized_statement_labels_reach_the_exact_result_budget() {
+    let fixture = wide_statement_fixture(130, 65_000);
+    let prepared = prepare_batch(
+        fixture.root.path(),
+        statement_batch(&[statement_ranking("total_exec_time", 130)]),
+    )
+    .expect("prepare wide result");
+
+    let error = prepared
+        .execute(&|| false)
+        .expect_err("wide labels must exceed the encoded result budget");
+
+    assert_eq!(error.ranking_index(), 0);
+    assert_eq!(
+        error.to_string(),
+        "rankings[0]: heatmap result exceeds 8388608 encoded bytes; split rankings into several calls or reduce top"
+    );
+}
+
+#[test]
 fn automatic_labels_are_complete_and_latest_non_null_wins() {
     let fixture = labelled_mount_fixture();
     let query = HeatmapBatchQuery {
@@ -184,7 +298,7 @@ fn automatic_labels_are_complete_and_latest_non_null_wins() {
         .expect("contract")
         .columns
         .iter()
-        .filter(|column| column.class == kronika_registry::ColumnClass::Label)
+        .filter(|column| column.class == ColumnClass::Label)
         .map(|column| column.name.to_owned())
         .collect();
     assert_eq!(entity.labels.keys().count(), expected.len());
@@ -419,6 +533,59 @@ struct MountFixture {
     timestamp: i64,
 }
 
+struct ActiveStatementFixture {
+    root: tempfile::TempDir,
+    _owner: WriterOwner,
+    journal: Journal,
+    address: SegmentAddress,
+}
+
+impl ActiveStatementFixture {
+    fn new() -> Self {
+        let root = tempfile::tempdir().expect("fixture directory");
+        let data_root = DataRoot::open(root.path()).expect("data root");
+        let owner = data_root
+            .acquire_writer(LayoutLimits::default())
+            .expect("writer");
+        let journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+        let address = SegmentAddress::new(SegmentId::new(HOUR).expect("segment id"))
+            .expect("segment address");
+        Self {
+            root,
+            _owner: owner,
+            journal,
+            address,
+        }
+    }
+
+    fn append(&mut self, query_id: usize, total_exec_time: f64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"active_db").expect("database label").get());
+        let usename = StrId(interner.intern(b"active_role").expect("role label").get());
+        let query = StrId(
+            interner
+                .intern(format!("active-{query_id}").as_bytes())
+                .expect("query label")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(statement_row(100, query_id, datname, usename, query))
+            .expect("baseline statement");
+        let mut current = statement_row(200, query_id, datname, usename, query);
+        current.total_exec_time = total_exec_time;
+        buffers.push(current).expect("current statement");
+        let dictionary = dict::encode(interner.window()).expect("active dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode active statements")
+            .expect("nonempty active statements");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append active statements");
+    }
+}
+
 fn ranking(field: &str, top: usize) -> HeatmapItemQuery {
     HeatmapItemQuery {
         ranking: NormalizedRanking {
@@ -427,6 +594,251 @@ fn ranking(field: &str, top: usize) -> HeatmapItemQuery {
             top,
         },
         view: HeatmapView::RankingOnly,
+    }
+}
+
+fn statement_ranking(field: &str, top: usize) -> HeatmapItemQuery {
+    HeatmapItemQuery {
+        ranking: NormalizedRanking {
+            section: "pg_stat_statements".to_owned(),
+            fields: vec![field.to_owned()],
+            top,
+        },
+        view: HeatmapView::RankingOnly,
+    }
+}
+
+fn statement_batch(items: &[HeatmapItemQuery]) -> HeatmapBatchQuery {
+    HeatmapBatchQuery {
+        range: TimeRange::new(100, 201).expect("statement range"),
+        items: items.to_vec(),
+    }
+}
+
+fn statement_label_count() -> usize {
+    let mut labels = Vec::new();
+    for contract in registry().iter().filter(|contract| {
+        logical_section_name(contract.type_id.get()) == Some("pg_stat_statements")
+    }) {
+        for column in contract.columns {
+            if column.class == ColumnClass::Label && !labels.contains(&column.name) {
+                labels.push(column.name);
+            }
+        }
+    }
+    labels.len()
+}
+
+fn statement_integer_value(field: &str, query_id: usize) -> usize {
+    let rotation = match field {
+        "total_exec_time" => 0,
+        "calls" => 997,
+        "shared_blks_read" => 1_994,
+        "temp_blks_written" => 2_991,
+        "wal_bytes" => 3_988,
+        _ => panic!("unexpected statement field {field}"),
+    };
+    (query_id + rotation) % REPRODUCED_STATEMENT_IDENTITIES + 1
+}
+
+fn statement_value(field: &str, query_id: usize) -> f64 {
+    f64::from(
+        u32::try_from(statement_integer_value(field, query_id)).expect("fixture value fits u32"),
+    )
+}
+
+fn assert_statement_ranking(item: &super::result::HeatmapItemResult, field: &str, top: usize) {
+    let mut expected = (0..REPRODUCED_STATEMENT_IDENTITIES)
+        .map(|query_id| (query_id, statement_value(field, query_id)))
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| right.1.partial_cmp(&left.1).expect("finite fixture values"));
+    assert_eq!(item.entity_count, 5_636);
+    assert_eq!(item.entities.len(), top);
+    assert_eq!(item.as_of, Some(200));
+    let count =
+        f64::from(u32::try_from(REPRODUCED_STATEMENT_IDENTITIES).expect("fixture count fits u32"));
+    assert_eq!(item.totals_total, Some(count * (count + 1.0) / 2.0));
+    assert_eq!(
+        item.others_total,
+        Some(
+            expected
+                .iter()
+                .skip(top)
+                .map(|(_query_id, value)| value)
+                .sum()
+        )
+    );
+    for (entity, (query_id, value)) in item.entities.iter().zip(expected) {
+        assert_eq!(entity.identity["query_id"], query_id.to_string());
+        assert_eq!(entity.total, Some(value));
+        assert_eq!(entity.labels.len(), statement_label_count());
+        assert_eq!(entity.labels["queryid"], query_id.to_string());
+        assert_eq!(entity.labels["userid"], 72);
+        assert_eq!(entity.labels["dbid"], 73);
+        assert!(entity.labels["toplevel"].is_null());
+        assert_eq!(entity.labels["datname"], "fixture_db");
+        assert_eq!(entity.labels["usename"], "fixture_role");
+        assert_eq!(entity.labels["query"], format!("statement-{query_id}"));
+    }
+}
+
+fn statement_fixture(identities: usize) -> MountFixture {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let datname = StrId(
+        interner
+            .intern(b"fixture_db")
+            .expect("database label")
+            .get(),
+    );
+    let usename = StrId(interner.intern(b"fixture_role").expect("role label").get());
+    let mut buffers = SectionBuffers::new();
+    for query_id in 0..identities {
+        let query = StrId(
+            interner
+                .intern(format!("statement-{query_id}").as_bytes())
+                .expect("query label")
+                .get(),
+        );
+        for timestamp in [100, 200] {
+            let current = timestamp == 200;
+            let value = |field| {
+                if current {
+                    statement_value(field, query_id)
+                } else {
+                    0.0
+                }
+            };
+            let integer = |field| {
+                if current {
+                    i64::try_from(statement_integer_value(field, query_id))
+                        .expect("fixture value fits i64")
+                } else {
+                    0
+                }
+            };
+            let mut row = statement_row(timestamp, query_id, datname, usename, query);
+            row.calls = integer("calls");
+            row.total_exec_time = value("total_exec_time");
+            row.shared_blks_read = integer("shared_blks_read");
+            row.temp_blks_written = integer("temp_blks_written");
+            row.wal_bytes = integer("wal_bytes");
+            buffers.push(row).expect("statement row fits");
+        }
+    }
+    let dictionary = dict::encode(interner.window()).expect("statement dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode statements")
+        .expect("nonempty statements");
+    journal
+        .append(SegmentId::new(HOUR).expect("segment id"), &part)
+        .expect("append statements");
+    drop(journal);
+    drop(owner);
+    MountFixture {
+        root,
+        timestamp: 100,
+    }
+}
+
+fn wide_statement_fixture(identities: usize, query_bytes: usize) -> MountFixture {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    for chunk_start in (0..identities).step_by(50) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"wide_db").expect("database label").get());
+        let usename = StrId(interner.intern(b"wide_role").expect("role label").get());
+        let mut buffers = SectionBuffers::new();
+        for query_id in chunk_start..(chunk_start + 50).min(identities) {
+            let prefix = format!("wide-{query_id:03}-");
+            let padding = query_bytes.saturating_sub(prefix.len());
+            let mut query_text = prefix;
+            query_text.push_str(&"x".repeat(padding));
+            assert_eq!(query_text.len(), query_bytes);
+            let query = StrId(
+                interner
+                    .intern(query_text.as_bytes())
+                    .expect("wide query label")
+                    .get(),
+            );
+            buffers
+                .push(statement_row(100, query_id, datname, usename, query))
+                .expect("wide baseline statement");
+            let mut current = statement_row(200, query_id, datname, usename, query);
+            current.total_exec_time =
+                f64::from(u32::try_from(query_id + 1).expect("wide fixture value fits u32"));
+            buffers.push(current).expect("wide current statement");
+        }
+        let dictionary = dict::encode(interner.window()).expect("wide dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode wide statements")
+            .expect("nonempty wide statements");
+        journal
+            .append(SegmentId::new(HOUR).expect("segment id"), &part)
+            .expect("append wide statements");
+    }
+    drop(journal);
+    drop(owner);
+    MountFixture {
+        root,
+        timestamp: 100,
+    }
+}
+
+fn statement_row(
+    timestamp: i64,
+    query_id: usize,
+    datname: StrId,
+    usename: StrId,
+    query: StrId,
+) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(timestamp),
+        queryid: Some(i64::try_from(query_id).expect("query id")),
+        userid: 72,
+        dbid: 73,
+        datname: Some(datname),
+        usename: Some(usename),
+        query: Some(query),
+        calls: 0,
+        rows: 0,
+        plans: 0,
+        total_exec_time: 0.0,
+        total_plan_time: 0.0,
+        min_exec_time: 0.0,
+        max_exec_time: 0.0,
+        mean_exec_time: 0.0,
+        stddev_exec_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+        stddev_plan_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
     }
 }
 

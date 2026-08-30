@@ -134,7 +134,5 @@ fn check_request_budget(arguments: &Map<String, Value>) -> Result<(), (usize, St
 }
 
 fn request_overflow_message() -> String {
-    format!(
-        "overview arguments exceed {MAX_QUERY_BYTES} encoded bytes; split rankings into several calls or reduce top"
-    )
+    format!("overview arguments exceed {MAX_QUERY_BYTES} encoded bytes")
 }

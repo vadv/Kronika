@@ -1127,12 +1127,15 @@ batch query and one typed result. The planner combines each physical layout's
 needed metric, identity, group, and automatic label fields before reading it.
 Each selected physical row and dictionary body is decoded at most once for the
 batch and feeds every applicable ranking during that pass; cells and compact
-label references needed for the result are retained then. The requested K
-limits the returned identities, not the work needed to rank them. A counter
-ranks by its whole-window delta and a gauge by its whole-window maximum. A band
-total uses the sum for counters and the maximum for gauges. The response also
-carries a totals band containing the per-column sum of every entity and an
-others band equal to totals minus the ranked rows.
+label references needed for the result are retained then. Rankings for one
+logical section share one section-owned identity index, compact identity cells,
+and latest automatic-label references; only the metric fold is ranking-local.
+The requested K limits the returned identities, not scan admission or the work
+needed to rank them. The typed result has a separate exact 8 MiB encoded-byte
+budget. A counter ranks by its whole-window delta and a gauge by its whole-window
+maximum. A band total uses the sum for counters and the maximum for gauges. The
+response also carries a totals band containing the per-column sum of every
+entity and an others band equal to totals minus the ranked rows.
 
 ### Representations
 

@@ -11,11 +11,6 @@ impl ByteBudget {
     pub(crate) const fn new(limit: usize) -> Self {
         Self { remaining: limit }
     }
-
-    /// Returns the unused encoded-byte allowance.
-    pub(crate) const fn remaining(self) -> usize {
-        self.remaining
-    }
 }
 
 impl std::io::Write for ByteBudget {
