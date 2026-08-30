@@ -167,7 +167,7 @@ pub(crate) fn execute_processes(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    replay_source_change(|| {
+    replay_source_change(move || {
         let Some(prepared) = prepare(root, &query, cancelled)? else {
             return Ok(FinderResult::empty());
         };
@@ -187,7 +187,7 @@ pub(crate) fn execute_plain(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    replay_source_change(|| {
+    replay_source_change(move || {
         let Some(prepared) = prepare(root, &query, cancelled)? else {
             return Ok(FinderResult::empty());
         };
@@ -207,7 +207,7 @@ pub(crate) fn execute_relation(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    replay_source_change(|| {
+    replay_source_change(move || {
         let Some(prepared) = prepare(root, &query, cancelled)? else {
             return Ok(FinderResult::empty());
         };
