@@ -35,8 +35,9 @@ pub(crate) const FIND_EVENTS_TOOL: &str = "kronika_find_events";
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OverviewInput {
-    /// Inclusive start and exclusive end accept Unix microseconds, RFC 3339,
-    /// `now`, or a fixed-duration `now-N` expression.
+    /// Inclusive start and exclusive end accept JSON integer or canonical
+    /// signed decimal-string i64 Unix microseconds, RFC 3339, `now`, or a
+    /// fixed-duration `now-N` expression.
     pub(crate) from: TimeSpecInput,
     pub(crate) to: TimeSpecInput,
     /// Ordered nonempty recipes. Exact duplicates are returned in place.
@@ -471,7 +472,8 @@ pub(crate) struct EventsInput {
     /// reads none. Repeats are removed after their first occurrence.
     #[serde(default)]
     pub(crate) sources: Option<Vec<String>>,
-    /// Inclusive start: Unix microseconds, RFC 3339, `now`, or `now-N<unit>`.
+    /// Inclusive start: JSON integer or canonical signed decimal-string i64
+    /// Unix microseconds, RFC 3339, `now`, or `now-N<unit>`.
     pub(crate) from: TimeSpecInput,
     /// Exclusive end in the same time grammar. `to` must be at least `from`, and
     /// `to - from` must not exceed 3,600,000,000 microseconds (one hour).
@@ -510,8 +512,8 @@ fn overview_tool() -> Tool {
         OVERVIEW_TOOL,
         "Runs an ordered batch of rankings over stored data in the half-open \
          `[from,to)` window; it never queries the live host or database. \
-         `from` and `to` accept a JSON integer Unix-microsecond timestamp, \
-         RFC 3339 with `Z` or a numeric UTC offset, `now`, or \
+         `from` and `to` accept a JSON integer or canonical signed \
+         decimal-string i64 Unix-microsecond timestamp, RFC 3339 with `Z` or a numeric UTC offset, `now`, or \
          `now-N{us,ms,s,m,h,d,w}`. One clock anchor resolves the whole call. \
          Each recipe contains one logical section, one to four distinct \
          numeric fields of one class and exact unit, and optional `top` \
@@ -538,7 +540,8 @@ fn context_tool() -> Tool {
         "Lists physical section layouts found across all stored segments; \
          it does not inspect the live host or database. Top-level \
          `recorded_from`/`recorded_to` are the store's first and last \
-         recorded timestamps, decimal-string Unix microseconds — an \
+         recorded timestamps, decimal-string Unix microseconds accepted \
+         unchanged by MCP `from`, `to`, and `at` inputs — an \
          empty answer elsewhere may just mean the window fell outside \
          them. Each `sections` item contains `logical_name`, \
          `physical_name`, decimal-string `type_id`, `rows`, `bytes`, its \
@@ -618,7 +621,7 @@ fn relation_tools() -> [Tool; 2] {
              percentage points, `*_mean_ms` are milliseconds, and timestamps \
              are Unix microseconds. Exact 64-bit values use decimal strings; \
              unavailable metrics are null. Returns `{rows, truncated, as_of}`. \
-             `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted; no \
+             `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted; no \
              continuation cursor is returned. Aggregated relation rows have no physical locator and \
              cannot be passed to `kronika_get_row_detail`.",
             schema_object::<TablesInput>(),
@@ -642,7 +645,7 @@ fn relation_tools() -> [Tool; 2] {
              `fetches_per_scan` are unitless. `*_bytes` are bytes, `*_pct` are \
              percentage points, and timestamps are Unix microseconds. Exact \
              64-bit values use decimal strings; unavailable metrics are null. \
-             Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted; no continuation cursor is returned. Aggregated relation rows have \
+             Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted; no continuation cursor is returned. Aggregated relation rows have \
              no physical locator and cannot be passed to \
              `kronika_get_row_detail`.",
             schema_object::<IndexesInput>(),
@@ -667,7 +670,7 @@ fn tail_tools() -> [Tool; 3] {
              jiffies/s; fault, context-switch, and syscall counters are \
              count/s; I/O counters are bytes/s. Rates are null without a \
              usable predecessor or across a PID start-time change. \
-             Unrecorded `/proc/PID/io` fields are null. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             Unrecorded `/proc/PID/io` fields are null. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. Each row \
              has decimal-string `segment_id`, `type_id`, `row_ordinal`, and \
              `at` accepted unchanged by `kronika_get_row_detail`.",
@@ -725,8 +728,9 @@ fn tail_tools() -> [Tool; 3] {
              deduplicated, and an empty array returns no items. `limit` is \
              applied after the complete merge or grouping. Returns a tagged \
              `{representation, groups|occurrences, truncated}` result without \
-             a continuation cursor. Times accept integer Unix microseconds, \
-             RFC 3339 with a timezone, `now`, and `now-N{us,ms,s,m,h,d,w}`.",
+             a continuation cursor. Times accept JSON integer or canonical \
+             signed decimal-string i64 Unix microseconds, RFC 3339 with a timezone, \
+             `now`, and `now-N{us,ms,s,m,h,d,w}`.",
             schema_object::<EventsInput>(),
         )
         .with_output_schema::<EventsResult>(),
@@ -748,7 +752,7 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              `xact_start`, `query_start`, and `state_change` are Unix \
              microseconds. Null denotes no transaction, query, or wait where \
              applicable, a null recording, or a field absent from the physical \
-             layout. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             layout. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. Each row has decimal-string `segment_id`, \
              `type_id`, `row_ordinal`, and `at` accepted unchanged by \
              `kronika_get_row_detail`.",
@@ -768,7 +772,7 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              microseconds. Null denotes an inapplicable, null, or unavailable \
              field. The wait graph is recorded only while contention \
              exists, so the anchor can predate the present and the rows can \
-             describe contention that has since ended. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             describe contention that has since ended. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. Each row has \
              decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
              accepted unchanged by `kronika_get_row_detail`.",
@@ -789,7 +793,7 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              runs: empty rows with null `as_of` mean no usable observation \
              was selected for the requested point, and the anchor can point \
              at the last vacuum, not the present. \
-             Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. Each row has decimal-string `segment_id`, `type_id`, \
              `row_ordinal`, and `at` accepted unchanged by \
              `kronika_get_row_detail`.",
@@ -807,7 +811,7 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              returned as count/s, `temp_bytes` as bytes/s, and cumulative time \
              fields as ms/s. `stats_reset` and `checksum_last_failure` are Unix \
              microseconds. Interval rates are null without a usable predecessor \
-             or after counter rollback; absent or null fields are null. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             or after counter rollback; absent or null fields are null. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. \
              Each row has decimal-string locator fields accepted unchanged \
              by `kronika_get_row_detail`.",
@@ -838,7 +842,7 @@ fn ratio_tools() -> [Tool; 2] {
              `derived_cv` (execution stddev/mean). A derived value is null for \
              a missing/null operand, zero denominator, or non-finite result; \
              rate operands are also null without a usable predecessor or after \
-             rollback. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             rollback. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. Locator fields are decimal strings accepted \
              by `kronika_get_row_detail`.",
             schema_object::<StatementsInput>(),
@@ -860,7 +864,7 @@ fn ratio_tools() -> [Tool; 2] {
              because plan layouts have no WAL bytes. \
              `derived_plan_time_fraction` is non-null only for the vadv layout. \
              Other derived nulls mean a missing/null operand, zero denominator, \
-             non-finite result, missing predecessor, or rollback. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. `truncated` means matching rows were omitted, and no continuation \
+             non-finite result, missing predecessor, or rollback. Returns `{rows, truncated, as_of}`. `as_of`: Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input. `truncated` means matching rows were omitted, and no continuation \
              cursor is returned. \
              Locator fields are decimal strings accepted by \
              `kronika_get_row_detail`.",

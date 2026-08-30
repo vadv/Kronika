@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 use crate::api::time::SnapshotPoint;
+use crate::mcp::semantics::DecimalI64;
 
 use super::{
     TimeSpecInput, resolve_bounded_range, resolve_point, resolve_range, resolve_range_with,
@@ -60,9 +61,23 @@ fn resolves_integer_rfc3339_and_relative_forms() {
 }
 
 #[test]
+fn decimal_string_outputs_round_trip_as_time_inputs() {
+    for timestamp in [i64::MIN, -1, 0, 1, i64::MAX] {
+        let output = serde_json::to_value(DecimalI64(timestamp)).expect("decimal-string output");
+        let input: TimeSpecInput = serde_json::from_value(output).expect("time input");
+        assert_eq!(input.resolve(7), Ok(timestamp));
+    }
+}
+
+#[test]
 fn rejects_every_unlisted_form_and_overflow() {
     for invalid in [
-        "1",
+        "+1",
+        "01",
+        "-0",
+        "-01",
+        "9223372036854775808",
+        "-9223372036854775809",
         "+",
         "-",
         "  now",
@@ -87,6 +102,8 @@ fn rejects_every_unlisted_form_and_overflow() {
     }
     assert!(expression("now-9223372036854775807w").resolve(0).is_err());
     assert!(expression("now-1us").resolve(i64::MIN).is_err());
+    assert!(serde_json::from_str::<TimeSpecInput>("9223372036854775808").is_err());
+    assert!(serde_json::from_str::<TimeSpecInput>("-9223372036854775809").is_err());
     assert!(serde_json::from_str::<TimeSpecInput>("1.0").is_err());
     assert!(serde_json::from_str::<TimeSpecInput>("1e3").is_err());
 }

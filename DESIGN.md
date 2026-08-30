@@ -1141,6 +1141,11 @@ NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
 does not lose precision. A blob value carries the stored bytes and the recorded
 `full_len`, `truncated` and `hash` metadata.
 
+The common MCP `from`, `to`, and `at` time inputs accept Unix microseconds as a
+JSON integer or canonical signed decimal-string `i64`, as well as the documented
+RFC 3339, `now`, and fixed relative forms. Decimal-string `recorded_from`,
+`recorded_to`, and `as_of` outputs can be passed to those inputs unchanged.
+
 The server returns codes and data: unit and kind names, logical section names,
 physical layouts, column names and unix times. It reads no `Accept-Language`,
 translates nothing and formats nothing. The interface holds the words for every

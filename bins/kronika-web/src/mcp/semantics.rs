@@ -16,7 +16,7 @@ pub(crate) struct FinderOutput {
     #[schemars(with = "Vec<BTreeMap<String, Value>>")]
     rows: Vec<Value>,
     truncated: bool,
-    /// Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected.
+    /// Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input.
     as_of: Option<String>,
 }
 

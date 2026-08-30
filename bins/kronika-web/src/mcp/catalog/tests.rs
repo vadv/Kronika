@@ -96,6 +96,72 @@ fn overview_output_schema_is_rankings_only() {
         "MCP schema exposed HTTP entity cells"
     );
     assert!(encoded.contains("\"results\""), "missing ordered results");
+    for field in ["as_of", "recorded_from", "recorded_to"] {
+        let description = schema["$defs"]
+            .as_object()
+            .expect("overview definitions")
+            .values()
+            .filter_map(|definition| definition["properties"].get(field))
+            .find_map(|property| property["description"].as_str())
+            .unwrap_or_else(|| panic!("missing {field} description"));
+        assert!(
+            description.contains("Pass it unchanged"),
+            "{field}: {description}"
+        );
+    }
+}
+
+#[test]
+fn time_input_schemas_and_runtime_accept_decimal_string_outputs() {
+    let catalog = tools();
+    let time_fields: [(&str, &[&str]); 11] = [
+        (OVERVIEW_TOOL, &["from", "to"]),
+        (FIND_EVENTS_TOOL, &["from", "to"]),
+        (FIND_POSTGRESQL_TABLES_TOOL, &["at"]),
+        (FIND_POSTGRESQL_INDEXES_TOOL, &["at"]),
+        (FIND_POSTGRESQL_ACTIVITY_TOOL, &["at"]),
+        (FIND_POSTGRESQL_LOCKS_TOOL, &["at"]),
+        (FIND_POSTGRESQL_VACUUM_TOOL, &["at"]),
+        (FIND_POSTGRESQL_DATABASES_TOOL, &["at"]),
+        (FIND_POSTGRESQL_STATEMENTS_TOOL, &["at"]),
+        (FIND_POSTGRESQL_PLANS_TOOL, &["at"]),
+        (FIND_PROCESSES_TOOL, &["at"]),
+    ];
+    for (name, fields) in time_fields {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("{name} tool"));
+        let definition = &tool.input_schema["$defs"]["TimeSpecInput"];
+        let description = definition["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} TimeSpec description"));
+        assert!(
+            description.contains("passed unchanged"),
+            "{name}: {description}"
+        );
+        let schema_text = serde_json::to_string(definition).expect("encode TimeSpec schema");
+        assert!(schema_text.contains("\"integer\""), "{name}: {schema_text}");
+        assert!(
+            schema_text.contains("decimal-string"),
+            "{name}: {schema_text}"
+        );
+        for field in fields {
+            let field_schema = serde_json::to_string(&tool.input_schema["properties"][*field])
+                .expect("encode time field schema");
+            assert!(
+                field_schema.contains("#/$defs/TimeSpecInput"),
+                "{name}.{field}: {field_schema}"
+            );
+        }
+    }
+
+    for timestamp in [i64::MIN, i64::MAX] {
+        let input: crate::mcp::time::TimeSpecInput =
+            serde_json::from_value(serde_json::json!(timestamp.to_string()))
+                .expect("schema-advertised decimal string");
+        assert_eq!(input.resolve(0), Ok(timestamp));
+    }
 }
 
 #[test]
@@ -266,7 +332,7 @@ fn finder_schemas_expose_optional_time_and_the_exact_runtime_envelope() {
         );
         assert_eq!(
             output["properties"]["as_of"]["description"],
-            "Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected.",
+            "Decimal-string timestamp of the nearest usable observation found no later than the requested point; it may be earlier than the requested time. It is null only when no usable observation was selected. Pass it unchanged to an MCP `from`, `to`, or `at` input.",
             "{name}.as_of"
         );
         let as_of_description = output["properties"]["as_of"]["description"]

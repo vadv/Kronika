@@ -19,6 +19,8 @@ pub(crate) struct HeatmapBatchResult {
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapItemResult {
     pub(crate) ranking: NormalizedRanking,
+    /// Decimal-string latest usable metric observation. Pass it unchanged to
+    /// an MCP `from`, `to`, or `at` input.
     #[serde(serialize_with = "serialize_optional_i64")]
     #[schemars(with = "Option<String>")]
     pub(crate) as_of: Option<i64>,
@@ -53,9 +55,13 @@ pub(crate) enum CoverageState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapCoverage {
     pub(crate) state: CoverageState,
+    /// Decimal-string first recorded timestamp. Pass it unchanged to an MCP
+    /// `from`, `to`, or `at` input.
     #[serde(serialize_with = "serialize_optional_i64")]
     #[schemars(with = "Option<String>")]
     pub(crate) recorded_from: Option<i64>,
+    /// Decimal-string last recorded timestamp. Pass it unchanged to an MCP
+    /// `from`, `to`, or `at` input.
     #[serde(serialize_with = "serialize_optional_i64")]
     #[schemars(with = "Option<String>")]
     pub(crate) recorded_to: Option<i64>,

@@ -2471,6 +2471,83 @@ fn get_context_reports_the_recorded_range_and_field_catalog() {
 }
 
 #[test]
+fn decimal_time_outputs_reenter_every_shared_time_input() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture"), (300, 101, 10, "fixture")]);
+    fixture.append_log_error(200);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let context = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false)
+        .structured_content
+        .expect("context output");
+    assert!(context["recorded_from"].is_string());
+    assert!(context["recorded_to"].is_string());
+    let overview = crate::mcp::overview::call(
+        &config,
+        json!({
+            "from": context["recorded_from"],
+            "to": context["recorded_to"],
+            "rankings": [{"section": "os_process", "fields": ["rmem_kb"], "top": 1}],
+        })
+        .as_object()
+        .expect("overview arguments")
+        .clone(),
+        &|| false,
+    );
+    assert_eq!(overview.is_error, Some(false));
+    let overview = overview.structured_content.expect("overview output");
+    let overview_item = &overview["results"][0];
+    assert!(overview_item["as_of"].is_string());
+    assert!(overview_item["coverage"]["recorded_from"].is_string());
+    assert!(overview_item["coverage"]["recorded_to"].is_string());
+    let events = crate::mcp::events::call(
+        &config,
+        json!({
+            "from": overview_item["coverage"]["recorded_from"],
+            "to": overview_item["coverage"]["recorded_to"],
+            "representation": "occurrences",
+            "limit": 10,
+        })
+        .as_object()
+        .expect("events arguments")
+        .clone(),
+        &|| false,
+    );
+    assert_eq!(events.is_error, Some(false));
+    assert_eq!(
+        events.structured_content.expect("events output")["occurrences"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    let finder = crate::mcp::processes::call(
+        &config,
+        json!({"at": overview_item["as_of"], "limit": 1})
+            .as_object()
+            .expect("finder arguments")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(finder.is_error, Some(false));
+    let finder = finder.structured_content.expect("finder output");
+    assert!(finder["as_of"].is_string());
+    let replay = crate::mcp::overview::call(
+        &config,
+        json!({
+            "from": finder["as_of"],
+            "to": finder["as_of"],
+            "rankings": [{"section": "os_process", "fields": ["rmem_kb"], "top": 1}],
+        })
+        .as_object()
+        .expect("overview replay arguments")
+        .clone(),
+        &|| false,
+    );
+    assert_eq!(replay.is_error, Some(false));
+}
+
+#[test]
 fn find_events_accepts_the_temp_files_source() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);

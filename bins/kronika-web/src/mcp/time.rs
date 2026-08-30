@@ -8,14 +8,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::time::{SnapshotPoint, TimeRange};
 
-const VALID_FORMS: &str = "a JSON integer Unix timestamp in microseconds, RFC 3339 with Z or a numeric UTC offset, now, or now-N{us,ms,s,m,h,d,w}";
+const VALID_FORMS: &str = "a JSON integer or canonical signed decimal-string i64 Unix timestamp in microseconds, RFC 3339 with Z or a numeric UTC offset, now, or now-N{us,ms,s,m,h,d,w}";
 
+/// Shared MCP time input. Decimal-string `recorded_from`, `recorded_to`, and
+/// `as_of` outputs can be passed unchanged to `from`, `to`, and `at`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum TimeSpecInput {
-    /// Exact Unix timestamp in microseconds.
+    /// Exact Unix timestamp in microseconds as a JSON integer.
     UnixMicros(i64),
-    /// RFC 3339, `now`, or a fixed-duration expression such as `now-1h`.
+    /// Canonical signed decimal-string i64 Unix microseconds, RFC 3339, `now`,
+    /// or a fixed-duration expression such as `now-1h`.
     Expression(String),
 }
 
@@ -75,6 +78,11 @@ fn resolve_range_with(
 }
 
 fn resolve_expression(expression: &str, now: i64) -> Result<i64, TimeSpecError> {
+    if let Ok(timestamp) = expression.parse::<i64>()
+        && timestamp.to_string() == expression
+    {
+        return Ok(timestamp);
+    }
     if expression == "now" {
         return Ok(now);
     }
