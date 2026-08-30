@@ -875,8 +875,9 @@ fn opaque_output_schema<T: JsonSchema>(hide_layout: bool) -> Arc<JsonObject> {
         definitions.remove("DetailLocator");
     }
     rewrite_detail_schema(&mut value, hide_layout);
-    let object = value.as_object().expect("schema is a JSON object").clone();
-    Arc::new(object)
+    let object = value.as_object_mut().expect("schema is a JSON object");
+    object.insert("type".to_owned(), json!("object"));
+    Arc::new(object.clone())
 }
 
 fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {

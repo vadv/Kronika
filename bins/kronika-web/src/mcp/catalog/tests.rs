@@ -143,7 +143,14 @@ fn mass_event_schema_has_opaque_detail_refs_without_embedded_raw_rows() {
     let schema = serde_json::to_value(events.output_schema.as_ref().expect("Events output schema"))
         .expect("serialize Events schema");
     let encoded = serde_json::to_string(&schema).expect("encode Events schema");
+    let branch_types = schema["oneOf"]
+        .as_array()
+        .expect("Events output alternatives")
+        .iter()
+        .map(|branch| branch["type"].as_str())
+        .collect::<Vec<_>>();
 
+    assert_eq!(branch_types, vec![Some("object"), Some("object")]);
     assert!(encoded.contains("\"detail_ref\""), "missing detail_ref");
     assert!(encoded.contains("\"label\""), "missing bounded group label");
     for definition in ["EventGroup", "EventOccurrence"] {

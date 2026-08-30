@@ -212,6 +212,16 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
             "kronika_find_events",
         ]
     );
+    for tool in tools {
+        if let Some(output_schema) = tool.get("outputSchema") {
+            assert_eq!(
+                output_schema["type"],
+                json!("object"),
+                "{} outputSchema.type",
+                tool["name"]
+            );
+        }
+    }
     assert_opaque_tool_contract(tools);
     let overview = tools
         .iter()
