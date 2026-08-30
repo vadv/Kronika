@@ -227,6 +227,8 @@ function App({ locale, onLocale, t }: {
   const backgroundTimelineRef = useRef(backgroundTimeline)
   backgroundTimelineRef.current = backgroundTimeline
   const [backgroundReadyHour, setBackgroundReadyHour] = useState<number | null>(null)
+  const [processReadyHour, setProcessReadyHour] = useState<number | null>(null)
+  const foregroundReadyKey = useRef<string | null>(null)
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
   const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
@@ -282,6 +284,10 @@ function App({ locale, onLocale, t }: {
   const viewKey = pgSection === "statements" && visibleSource === "postgresql"
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
+  const foregroundView = visibleSource === "processes"
+    ? `${viewKey}:${lens}`
+    : activeRelation ? `${viewKey}:${activeRelationLens}:${relationLevel}` : viewKey
+  const foregroundKey = `${hour ?? "pending"}:${foregroundView}`
   const viewRequests = useMemo(() => {
     if (visibleSource === "processes") return [
       ...TIMELINE_REQUESTS,
@@ -555,14 +561,15 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
           setCursorState("ready")
+          foregroundReadyKey.current = foregroundKey
           setBackgroundReadyHour(hour)
+          if (visibleSource === "processes") setProcessReadyHour(hour)
           setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
           if (stale()) return
           setCursorState("missing")
-          setBackgroundReadyHour(hour)
           if (completesRefresh) finishRefresh(false)
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -606,7 +613,9 @@ function App({ locale, onLocale, t }: {
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            foregroundReadyKey.current = foregroundKey
             setBackgroundReadyHour(hour)
+            if (visibleSource === "processes") setProcessReadyHour(hour)
             if (tracksPageSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
             setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
@@ -616,7 +625,6 @@ function App({ locale, onLocale, t }: {
             action.failed = pageCursor
             setDensePageState("error")
             setCursorState("ready")
-            setBackgroundReadyHour(hour)
             if (tracksPageSearch && denseSurface !== null) {
               setSearchRequest({ phase: "error", retained: pageCursor !== undefined || retainedSearchRows, surface: denseSurface })
             }
@@ -647,7 +655,7 @@ function App({ locale, onLocale, t }: {
       }
       densePage.current = action
       action.load()
-    }, backgroundReadyHour === hour ? 250 : 0)
+    }, foregroundReadyKey.current === foregroundKey ? 250 : 0)
     return () => { clearTimeout(timer); controller.abort() }
   }, [backgroundTimeline, finishRefresh, hour, snapshotTarget])
   useEffect(() => {
@@ -1045,7 +1053,7 @@ function App({ locale, onLocale, t }: {
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={backgroundReadyHour === hour} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
+          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={processReadyHour === hour} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />

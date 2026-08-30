@@ -172,9 +172,12 @@ test("first table settlement gates slow hour products without gating Process row
   assert.match(app, /backgroundTimeline\.segments\.length === 0/)
   assert.match(app, /backgroundTimeline === null \|\| backgroundTimeline\.hour !== hour/)
   assert.match(app, /backgroundTimelineRef\.current !== backgroundTimeline/)
-  assert.match(app, /enabled=\{backgroundReadyHour === hour\}/)
+  assert.match(app, /enabled=\{processReadyHour === hour\}/)
   assert.match(summary, /if \(!enabled \|\| \(state\.hour === hour && state\.status !== "loading"\)\) return/)
-  assert.match(app, /backgroundReadyHour === hour \? 250 : 0/)
+  assert.match(app, /foregroundReadyKey\.current === foregroundKey \? 250 : 0/)
+  assert.match(app, /foregroundReadyKey\.current = foregroundKey\s+setBackgroundReadyHour\(hour\)\s+if \(visibleSource === "processes"\) setProcessReadyHour\(hour\)/)
+  const failedPage = app.match(/const failed = \(reason: unknown\) => \{([\s\S]*?)\n          \}/)?.[1] ?? ""
+  assert.doesNotMatch(failedPage, /setBackgroundReadyHour|setProcessReadyHour|foregroundReadyKey/)
 
   const processFastPath = app.match(/if \(pageCursor === undefined && visibleSource === "processes"\) \{([\s\S]*?)\n          \}/)?.[1] ?? ""
   assert.ok(processFastPath.indexOf("loaded(incoming, null)") >= 0)
