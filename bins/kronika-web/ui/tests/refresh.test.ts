@@ -17,6 +17,7 @@ function timeline() {
     findings: [{ timestamp: HOUR + 40, segmentId: "a", logicalName: "health", typeId: "0", rowOrdinal: "0", fieldOrdinal: 0, kind: "spike" as const, category: null }],
     health: [{ timestamp: HOUR + 20 }],
     lanePoints: [{ timestamp: HOUR + 30 }],
+    laneContexts: [],
     lanes: {},
     points: [{ timestamp: HOUR + 25 }],
     segments: [{ id: "a", minTs: HOUR + 10, maxTs: HOUR + 50, sections: [] }],
@@ -157,6 +158,31 @@ test("a failed following-latest refresh restores one committed view before the r
   }
   assert.deepEqual(retry, { cursor: HOUR + 80, data: "B", segments: [{ id: "B" }], timeline: "B" })
   assert.equal(refreshedCursor(a.cursor, false, bTimeline), a.cursor)
+})
+
+test("first table settlement gates slow hour products without gating Process rows", async () => {
+  const [app, api, summary] = await Promise.all([
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/api.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(api, /new URLSearchParams\(\{ part: "base" \}\)/)
+  assert.doesNotMatch(api, /loadHealthMetadata|Promise\.all\(\[\.\.\.evaluations\]/)
+  assert.match(app, /backgroundReadyHour !== backgroundTimeline\.hour/)
+  assert.match(app, /backgroundTimeline\.segments\.length === 0/)
+  assert.match(app, /backgroundTimeline === null \|\| backgroundTimeline\.hour !== hour/)
+  assert.match(app, /backgroundTimelineRef\.current !== backgroundTimeline/)
+  assert.match(app, /enabled=\{backgroundReadyHour === hour\}/)
+  assert.match(summary, /if \(!enabled \|\| \(state\.hour === hour && state\.status !== "loading"\)\) return/)
+  assert.match(app, /backgroundReadyHour === hour \? 250 : 0/)
+
+  const processFastPath = app.match(/if \(pageCursor === undefined && visibleSource === "processes"\) \{([\s\S]*?)\n          \}/)?.[1] ?? ""
+  assert.ok(processFastPath.indexOf("loaded(incoming, null)") >= 0)
+  assert.ok(processFastPath.indexOf("loaded(incoming, null)") < processFastPath.indexOf("void base.then"))
+  assert.match(processFastPath, /mergeSnapshotData\(current\.data, companion\)/)
+
+  assert.doesNotMatch(app, /fields: \["mem_total"\]/)
+  assert.match(app, /\.\.\.\(lens === "tree" \? \[\{ section: "os_meminfo" \}\] : \[\]\)/)
 })
 
 function fakeVisibility(initial: boolean) {

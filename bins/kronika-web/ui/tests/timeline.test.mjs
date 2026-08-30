@@ -42,6 +42,8 @@ test("the selected lane draws while one explicit domain owns every shared cursor
   assert.match(timeline, /moveCursor\(cursor, cursorTimes, event\.key\)/)
   assert.match(timeline, /<UPlotChart/)
   assert.match(timeline, /window\.addEventListener\("keydown", move\)/)
+  assert.match(timeline, /if \(controlledLane !== undefined\) return/)
+  assert.match(timeline, /previousPrimary\.current = primaryLane\s+setSelectedLane\(primaryLane\)/)
 })
 
 test("one timeline mark stays an unlabeled shape", () => {

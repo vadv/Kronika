@@ -38,6 +38,169 @@ async function switchZone(cdp, zone) {
   await cdp.evaluate(`document.querySelector('[data-testid="timezone-option-${zone}"]').click()`)
 }
 
+test("the first Process table does not wait for lanes, summary, or enrichment", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const held = { companion: null, lanes: null, page: null, summary: null }
+  const requested = {}
+  const waitForRequest = (name) => new Promise((resolve) => { requested[name] = resolve })
+  const companionRequest = waitForRequest("companion")
+  const lanesRequest = waitForRequest("lanes")
+  const pageRequest = waitForRequest("page")
+  const summaryRequest = waitForRequest("summary")
+  const baseRecords = timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment"
+    ? record
+    : {
+        ...record,
+        sections: [...record.sections, {
+          logical_name: "os_meminfo", physical_name: "os_meminfo", type_id: "1104001",
+          implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+        }],
+      })
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"database":"artifact_db"}')
+      return
+    }
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("part") === "base") return ndjson(response, baseRecords)
+      if (url.searchParams.get("part") === "lanes") {
+        held.lanes = response
+        requested.lanes()
+        return
+      }
+      if (url.searchParams.get("section") === "os_process_summary") {
+        held.summary = response
+        requested.summary()
+        return
+      }
+      return ndjson(response, baseRecords)
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = url.searchParams.getAll("section")
+      if (sections.length === 1 && sections[0] === "os_process" && url.searchParams.has("page_size")) {
+        held.page = response
+        requested.page()
+        return
+      }
+      if (sections.includes("instance_metadata") && !sections.includes("os_process")) {
+        held.companion = response
+        requested.companion()
+        return
+      }
+      return ndjson(response, snapshotRecords())
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("focused browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=disk` })
+
+    await pageRequest
+    await companionRequest
+    assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("part") === "lanes"), false)
+    assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary"), false)
+
+    ndjson(held.page, snapshotRecords())
+    held.page = null
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the first Process table", 15_000)
+    await lanesRequest
+    await summaryRequest
+    const firstScreen = await cdp.evaluate(`(() => ({
+      at: new URL(location.href).searchParams.get("at"),
+      rows: document.querySelectorAll('[data-testid="process-table"] .entity-row').length,
+      summary: document.querySelector('[data-testid="process-summary-status"]')?.textContent ?? "",
+      wholeSkeleton: document.querySelector('[data-testid="hour-skeleton"]') !== null,
+    }))()`)
+    assert.equal(firstScreen.at, String(AT))
+    assert.ok(firstScreen.rows > 10, JSON.stringify(firstScreen))
+    assert.equal(firstScreen.wholeSkeleton, false, JSON.stringify(firstScreen))
+    assert.match(firstScreen.summary, /Loading/)
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
+
+    const snapshotRequests = requests.filter(({ path }) => path.includes("/snapshot"))
+    assert.equal(snapshotRequests.some(({ query }) => new URLSearchParams(query).getAll("section").includes("os_meminfo")), false)
+    assert.equal(snapshotRequests.some(({ query }) => {
+      const queryParams = new URLSearchParams(query)
+      return queryParams.getAll("section").length === 1
+        && queryParams.get("section") === "instance_metadata"
+        && queryParams.getAll("field").includes("postgresql_interval_seconds")
+    }), false)
+
+    ndjson(held.companion, snapshotRecords())
+    held.companion = null
+    ndjson(held.lanes, [
+      { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: "30" },
+      { record: "lane", segment_id: SEGMENT, lane: "io_stall", ts: String(AT), value: 12 },
+    ])
+    held.lanes = null
+    ndjson(held.summary, processSummaryRecords(HOUR, 3, 80))
+    held.summary = null
+    await cdp.waitFor(`document.querySelector('.lane-select[aria-pressed="true"]')?.getAttribute("aria-label")?.includes("I/O PSI") === true`, "the pending Disk lane selection")
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]') === null`, "the Process summary")
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
+    assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary").length, 1)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="lens-tree"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="lens-tree"]')?.getAttribute("aria-pressed") === "true"`, "the Process Tree lens")
+    await waitForRequests(() => requests.some(({ path, query }) => {
+      if (!path.includes("/snapshot")) return false
+      const sections = new URLSearchParams(query).getAll("section")
+      return sections.includes("os_process") && sections.includes("os_meminfo")
+    }))
+    const treeRequest = requests.findLast(({ path, query }) => {
+      if (!path.includes("/snapshot")) return false
+      const sections = new URLSearchParams(query).getAll("section")
+      return sections.includes("os_process") && sections.includes("os_meminfo")
+    })
+    assert.notEqual(treeRequest, undefined)
+    const treeQuery = new URLSearchParams(treeRequest.query)
+    assert.equal(treeQuery.getAll("section").includes("instance_metadata"), true)
+    assert.deepEqual(treeQuery.getAll("field"), [])
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    for (const response of Object.values(held)) response?.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("display timezone and human chart precision stay global", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []

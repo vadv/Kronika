@@ -112,6 +112,10 @@ interface Segment {
   readonly id: string
   readonly min_ts: string
   readonly max_ts: string
+  readonly cursor?: {
+    readonly segment_id: string
+    readonly wal_position: string
+  }
   readonly sections: readonly Section[]
 }
 
@@ -131,6 +135,7 @@ export interface HourData {
   readonly health: readonly DataRow[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts: readonly LaneContext[]
   readonly findings: readonly Finding[]
   readonly findingGroups: readonly FindingGroup[]
 }
@@ -190,6 +195,7 @@ export function mergeSnapshotData(current: HourData, incoming: HourData, appendS
     postgresqlPresent: current.postgresqlPresent === true || incoming.postgresqlPresent === true,
     points: [],
     lanePoints: [],
+    laneContexts: [],
     findings: [],
   })
 }
@@ -201,9 +207,20 @@ export interface LanePoint {
   readonly value: number | null
 }
 
+export interface LaneContext {
+  readonly segmentId: string
+  readonly postgresqlIntervalSeconds: number | null
+}
+
+export interface TimelineLanes {
+  readonly contexts: readonly LaneContext[]
+  readonly points: readonly LanePoint[]
+}
+
 export interface TimelineData {
   readonly hour: number
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts: readonly LaneContext[]
   readonly lanes: Readonly<Record<string, readonly DataRow[]>>
   readonly availableHours: readonly number[]
   readonly segments: readonly SegmentBound[]
@@ -238,6 +255,7 @@ export function hourOf(timeline: TimelineData): HourData {
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
+    laneContexts: timeline.laneContexts,
     findings: timeline.findings,
     findingGroups: timeline.findingGroups,
   })
@@ -262,6 +280,7 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
+    laneContexts: timeline.laneContexts,
     findings: timeline.findings,
     findingGroups: timeline.findingGroups,
   })
@@ -271,6 +290,7 @@ export interface SegmentBound {
   readonly id: string
   readonly minTs: number
   readonly maxTs: number
+  readonly activeWalPosition?: string
   readonly sections: readonly SegmentSection[]
 }
 
@@ -291,7 +311,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
   if (fixture !== null && range !== null) {
     return {
       hour: requested, availableHours: unique([floorHour(range.from), floorHour(range.to)]),
-      segments: [], lanePoints: fixture.lanePoints, lanes: fixture.sections, health: fixture.health, points: fixture.points,
+      segments: [], lanePoints: fixture.lanePoints, laneContexts: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings,
       findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
@@ -300,8 +320,12 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
       postgresqlPresent: fixture.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_")),
     }
   }
-  const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
-  const records = await request(`/api/hour${window}`, signal, onBytes)
+  const query = new URLSearchParams({ part: "base" })
+  if (start !== null) {
+    query.set("from", String(start))
+    query.set("to", String(start + 3_600_000_000 - 1))
+  }
+  const records = await request(`/api/hour?${query}`, signal, onBytes)
   const header = records.find((record) => record.record === "hour")
   const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
@@ -315,12 +339,14 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
       id: segment.id,
       minTs: Number(segment.min_ts),
       maxTs: Number(segment.max_ts),
+      ...(segment.cursor === undefined ? {} : {
+        activeWalPosition: activePosition(segment),
+      }),
       sections: segment["sections"].flatMap((section) => section.logical_name === null ? [] : [{
         logicalName: section.logical_name,
         typeId: section.type_id,
       }]),
     }))
-    .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
   const findingGroups: FindingGroup[] = []
@@ -356,17 +382,9 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
-    } else if (record.record === "lane") {
-      lanePoints.push({
-        segmentId: requiredText(record.segment_id, "lane segment id"),
-        lane: requiredText(record["lane"], "lane name"),
-        timestamp: integer(record.ts, "lane timestamp"),
-        value: record.value === null ? null : finiteNumber(record.value, "lane value"),
-      })
     }
   }
-  const healthMetadata = await loadHealthMetadata(points, signal)
-  lanes[HEALTH] = healthRows(points, healthMetadata) as DataRow[]
+  lanes[HEALTH] = healthRows(points) as DataRow[]
   const resolvedFindingGroups = findingGroups.map((group) => ({
     ...group,
     shown: findings.filter((finding) => finding.segmentId === group.segmentId && finding.typeId === group.typeId).length,
@@ -374,6 +392,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
   return {
     hour,
     lanePoints,
+    laneContexts: [],
     lanes,
     availableHours: ((header?.available_hours ?? []) as readonly string[])
       .map((value) => integer(value, "available hour")),
@@ -387,6 +406,63 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     postgresqlConfigured: sourceConfigured(catalog, "postgresql"),
     postgresqlPresent: sourceMetricsPresent(catalog, "postgresql"),
   }
+}
+
+export async function loadTimelineLanes(
+  timeline: Pick<TimelineData, "hour" | "segments">,
+  signal: AbortSignal,
+): Promise<TimelineLanes> {
+  const fixture = bundledFixtureHour(timeline.hour)
+  if (fixture !== null) return { contexts: [], points: fixture.lanePoints }
+  const query = new URLSearchParams({
+    from: String(timeline.hour),
+    to: String(timeline.hour + 3_600_000_000 - 1),
+    part: "lanes",
+    segments: timeline.segments.map((segment) => segment.id).join(","),
+  })
+  const active = timeline.segments.filter((segment) => segment.activeWalPosition !== undefined)
+  if (active.length > 1) throw new Error("hour base has more than one active segment")
+  const pinned = active[0]
+  if (pinned?.activeWalPosition !== undefined) {
+    query.set("active", `${pinned.id},${pinned.activeWalPosition}`)
+  }
+  const records = await request(`/api/hour?${query}`, signal)
+  const contexts: LaneContext[] = []
+  const points: LanePoint[] = []
+  for (const record of records) {
+    if (record.record === "lane_context") {
+      const seconds = record.postgresql_interval_seconds
+      contexts.push({
+        segmentId: requiredText(record.segment_id, "lane context segment id"),
+        postgresqlIntervalSeconds: seconds === null ? null : integer(seconds, "PostgreSQL interval"),
+      })
+    } else if (record.record === "lane") {
+      points.push({
+        segmentId: requiredText(record.segment_id, "lane segment id"),
+        lane: requiredText(record["lane"], "lane name"),
+        timestamp: integer(record.ts, "lane timestamp"),
+        value: record.value === null ? null : finiteNumber(record.value, "lane value"),
+      })
+    }
+  }
+  return { contexts, points }
+}
+
+export function withTimelineLanes(base: HourData, lanes: TimelineLanes): HourData {
+  return hourData({
+    sections: { ...base.sections, [HEALTH]: healthRows(base.points, lanes.contexts) },
+    rateColumns: base.rateColumns,
+    snapshotRows: base.snapshotRows,
+    availableSections: base.availableSections,
+    syntheticDemo: base.syntheticDemo === true,
+    postgresqlConfigured: base.postgresqlConfigured === true,
+    postgresqlPresent: base.postgresqlPresent === true,
+    points: base.points,
+    lanePoints: lanes.points,
+    laneContexts: lanes.contexts,
+    findings: base.findings,
+    findingGroups: base.findingGroups,
+  })
 }
 
 export async function loadSeries(
@@ -710,7 +786,7 @@ function laneRow(
   }
 }
 
-export function healthRows(points: readonly Point[], metadata: readonly DataRow[] = []): readonly DataRow[] {
+export function healthRows(points: readonly Point[], contexts: readonly LaneContext[] = []): readonly DataRow[] {
   const healthPoints = new Map<string, Point>()
   for (const point of points) {
     if (!HEALTH_SERIES.has(point.series)) continue
@@ -722,10 +798,11 @@ export function healthRows(points: readonly Point[], metadata: readonly DataRow[
   for (const point of stored) {
     if (!segmentOrder.has(point.segmentId)) segmentOrder.set(point.segmentId, segmentOrder.size)
   }
-  const postgresIntervals = new Map(metadata.flatMap((row) => {
-    const seconds = row.values.postgresql_interval_seconds
-    const interval = typeof seconds === "number" ? seconds * 1_000_000 : Number.NaN
-    return Number.isSafeInteger(interval) && interval >= 0 ? [[row.segmentId, interval] as const] : []
+  const postgresIntervals = new Map(contexts.flatMap((context) => {
+    const interval = context.postgresqlIntervalSeconds === null
+      ? Number.NaN
+      : context.postgresqlIntervalSeconds * 1_000_000
+    return Number.isSafeInteger(interval) && interval >= 0 ? [[context.segmentId, interval] as const] : []
   }))
   const postgresSegments = new Set(stored.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
   const osSegments = new Set(stored.filter((point) => point.series === "os_health").map((point) => point.segmentId))
@@ -767,27 +844,6 @@ export function healthRows(points: readonly Point[], metadata: readonly DataRow[
         values,
       }
     })
-}
-
-async function loadHealthMetadata(points: readonly Point[], signal: AbortSignal): Promise<readonly DataRow[]> {
-  const postgresSegments = new Set(points.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
-  const evaluations = new Map<string, number>()
-  for (const point of points) {
-    if (point.series !== "overall_health" || !postgresSegments.has(point.segmentId)) continue
-    evaluations.set(point.segmentId, Math.max(evaluations.get(point.segmentId) ?? Number.MIN_SAFE_INTEGER, point.timestamp))
-  }
-  return (await Promise.all([...evaluations].map(async ([segmentId, at]) => {
-    try {
-      const snapshot = await loadSnapshot(segmentId, at, [{
-        section: "instance_metadata",
-        fields: ["postgresql_interval_seconds"],
-      }], signal)
-      return (snapshot.sections.instance_metadata ?? []).map((row) => ({ ...row, segmentId }))
-    } catch (error) {
-      if (signal.aborted) throw error
-      return []
-    }
-  }))).flat()
 }
 
 const HEALTH_SERIES = new Set(["overall_health", "os_health", "postgres_health"])
@@ -975,6 +1031,7 @@ function hourData(input: {
   readonly postgresqlPresent?: boolean
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts?: readonly LaneContext[]
   readonly findings: readonly Finding[]
   readonly findingGroups?: readonly FindingGroup[]
 }): HourData {
@@ -986,6 +1043,7 @@ function hourData(input: {
     postgresqlPresent: input.postgresqlPresent ?? false,
     rateColumns: input.rateColumns ?? {},
     snapshotRows: input.snapshotRows ?? [],
+    laneContexts: input.laneContexts ?? [],
     findingGroups: input.findingGroups ?? [],
     processes: rows("os_process"),
     activities: rows("pg_stat_activity"),
@@ -1551,6 +1609,15 @@ function catalogSegments(records: readonly Record<string, unknown>[]): readonly 
   return records.filter(
     (record) => record.record === "finished_segment" || record.record === "active_segment",
   ) as unknown as readonly Segment[]
+}
+
+function activePosition(segment: Segment): string {
+  const cursor = segment.cursor
+  if (cursor === undefined || cursor.segment_id !== segment.id
+    || typeof cursor.wal_position !== "string" || !/^\d+$/.test(cursor.wal_position)) {
+    throw new Error(`active segment ${segment.id} cursor is invalid`)
+  }
+  return cursor.wal_position
 }
 
 function sourceConfigured(header: Record<string, unknown> | undefined, name: string): boolean {

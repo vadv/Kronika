@@ -600,7 +600,7 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /current\.target === snapshotTarget \? current\.data : EMPTY_DATA/)
   assert.match(source, /action\.failed = pageCursor[\s\S]*setDensePageState\("error"\)/)
   assert.match(source, /return \(\) => \{ clearTimeout\(timer\); controller\.abort\(\) \}/)
-  assert.match(source, /\}, \[finishRefresh, hour, snapshotTarget\]\)/)
+  assert.match(source, /\}, \[backgroundTimeline, finishRefresh, hour, snapshotTarget\]\)/)
   assert.doesNotMatch(source, /snapshotRefreshVersion/)
   assert.match(source, /const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"/)
   assert.match(source, /disabled=\{refreshing \|\| !refreshReady\}/)

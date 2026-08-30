@@ -168,6 +168,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     health,
     points,
     lanePoints,
+    laneContexts: [],
     findings,
     findingGroups,
   }

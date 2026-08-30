@@ -107,12 +107,13 @@ export function Timeline({
   useEffect(() => {
     if (previousPrimary.current === primaryLane) return
     previousPrimary.current = primaryLane
-    if (lanes.some((lane) => lane.key === primaryLane)) setSelectedLane(primaryLane)
-  }, [lanes, primaryLane])
+    setSelectedLane(primaryLane)
+  }, [primaryLane])
   useEffect(() => {
     if (lanes.some((lane) => lane.key === selectedLane)) return
+    if (controlledLane !== undefined) return
     setSelectedLane(lanes.find((lane) => lane.key === primaryLane)?.key ?? lanes[0]?.key ?? "health")
-  }, [lanes, primaryLane, selectedLane])
+  }, [controlledLane, lanes, primaryLane, selectedLane])
   const selected = lanes.find((lane) => lane.key === selectedLane) ?? lanes[0]
   const laneTimes = useMemo(() => timelineNavigationTimes(lanes), [lanes])
   const cursorTimes = useMemo(

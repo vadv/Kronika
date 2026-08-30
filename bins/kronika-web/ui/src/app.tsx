@@ -8,6 +8,7 @@ import {
   TIMELINE_REQUESTS,
   acceptResponse,
   loadTimeline,
+  loadTimelineLanes,
   loadSeries,
   hourOf,
   loadSnapshot,
@@ -16,6 +17,7 @@ import {
   snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
+  withTimelineLanes,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   POSTGRESQL_CONTEXT_REQUESTS,
@@ -91,7 +93,7 @@ type Theme = "dark" | "light"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  points: [], lanePoints: [], findings: [], findingGroups: [],
+  points: [], lanePoints: [], laneContexts: [], findings: [], findingGroups: [],
 }
 
 interface CurrentSnapshot {
@@ -221,6 +223,10 @@ function App({ locale, onLocale, t }: {
   const [cursor, setCursor] = useState(0)
   const followsLatest = useRef(opened.current.at === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
+  const [backgroundTimeline, setBackgroundTimeline] = useState<TimelineData | null>(null)
+  const backgroundTimelineRef = useRef(backgroundTimeline)
+  backgroundTimelineRef.current = backgroundTimeline
+  const [backgroundReadyHour, setBackgroundReadyHour] = useState<number | null>(null)
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
   const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
@@ -277,7 +283,13 @@ function App({ locale, onLocale, t }: {
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
   const viewRequests = useMemo(() => {
-    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
+    if (visibleSource === "processes") return [
+      ...TIMELINE_REQUESTS,
+      processRequest(lens),
+      { section: "pg_stat_activity" },
+      { section: "instance_metadata" },
+      ...(lens === "tree" ? [{ section: "os_meminfo" }] : []),
+    ]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
@@ -349,7 +361,11 @@ function App({ locale, onLocale, t }: {
       drawn.current = pending.timeline.hour
       setAvailableHours(pending.timeline.availableHours)
       setSegments(pending.timeline.segments)
-      setTimelineData(hourOf(pending.timeline))
+      setTimelineData((current) => withTimelineLanes(hourOf(pending.timeline), {
+        contexts: current.laneContexts,
+        points: current.lanePoints,
+      }))
+      setBackgroundTimeline(pending.timeline)
     } else if (pending !== null) {
       setSegments(pending.previousSegments)
       setCursor(pending.previousCursor)
@@ -389,6 +405,8 @@ function App({ locale, onLocale, t }: {
     const controller = new AbortController()
     setRefreshFailed(false)
     if (!refresh) {
+      setBackgroundTimeline(null)
+      setBackgroundReadyHour(null)
       setLoading(true)
       setRefreshing(false)
       setError(null)
@@ -420,6 +438,7 @@ function App({ locale, onLocale, t }: {
         setHour(timeline.hour)
         setSegments(timeline.segments)
         setTimelineData(hourOf(timeline))
+        setBackgroundTimeline(timeline)
         setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
         followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
         setCursor(followsLatest.current ? latest : asked ?? latest)
@@ -440,6 +459,8 @@ function App({ locale, onLocale, t }: {
       setHour(fallback)
       setSegments([])
       setTimelineData(EMPTY_DATA)
+      setBackgroundTimeline(null)
+      setBackgroundReadyHour(null)
       setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursor(fallback)
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -485,10 +506,16 @@ function App({ locale, onLocale, t }: {
       if (completesRefresh) finishRefresh(false)
       return
     }
+    if (backgroundTimeline === null || backgroundTimeline.hour !== hour) {
+      setCursorState("loading")
+      setDensePageState("idle")
+      return
+    }
     if (snapshotTarget === null) {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("ready")
       setDensePageState("idle")
+      setBackgroundReadyHour(hour)
       if (completesRefresh) finishRefresh(true)
       return
     }
@@ -528,12 +555,14 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
           setCursorState("ready")
+          setBackgroundReadyHour(hour)
           setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
           if (stale()) return
           setCursorState("missing")
+          setBackgroundReadyHour(hour)
           if (completesRefresh) finishRefresh(false)
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -544,7 +573,7 @@ function App({ locale, onLocale, t }: {
         ? Promise.resolve(EMPTY_DATA)
         : loadOrdinarySnapshot(ordinaryGroups)
           .catch((reason: unknown) => {
-            if (completesRefresh) throw reason
+            if (completesRefresh && visibleSource !== "processes") throw reason
             if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
             return EMPTY_DATA
           })
@@ -564,10 +593,8 @@ function App({ locale, onLocale, t }: {
             ...denseOptions,
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
           }
-          void Promise.all([
-            pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options),
-          ]).then(([companion, incoming]) => {
+          const page = loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options)
+          const loaded = (incoming: HourData, companion: HourData | null) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
               cursor,
@@ -579,27 +606,63 @@ function App({ locale, onLocale, t }: {
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            setBackgroundReadyHour(hour)
             if (tracksPageSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
             setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
-          }).catch((reason: unknown) => {
+          }
+          const failed = (reason: unknown) => {
             if (stale()) return
             action.failed = pageCursor
             setDensePageState("error")
             setCursorState("ready")
+            setBackgroundReadyHour(hour)
             if (tracksPageSearch && denseSurface !== null) {
               setSearchRequest({ phase: "error", retained: pageCursor !== undefined || retainedSearchRows, surface: denseSurface })
             }
             if (completesRefresh && pageCursor === undefined) finishRefresh(false)
             console.error("kronika: snapshot page failed", reason)
-          }).finally(() => { inFlight = false })
+          }
+          if (pageCursor === undefined && visibleSource === "processes") {
+            void page.then((incoming) => {
+              loaded(incoming, null)
+              void base.then((companion) => {
+                if (stale() || companion === EMPTY_DATA) return
+                setCurrentSnapshot((current) => current.target !== snapshotTarget ? current : {
+                  ...current,
+                  data: mergeSnapshotData(current.data, companion),
+                })
+              }).catch((reason: unknown) => {
+                if (!stale()) console.error("kronika: snapshot companion failed", reason)
+              })
+            }).catch(failed).finally(() => { inFlight = false })
+            return
+          }
+          void Promise.all([
+            pageCursor === undefined ? base : Promise.resolve(null),
+            page,
+          ]).then(([companion, incoming]) => loaded(incoming, companion)).catch(failed)
+            .finally(() => { inFlight = false })
         },
       }
       densePage.current = action
       action.load()
-    }, 250)
+    }, backgroundReadyHour === hour ? 250 : 0)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [finishRefresh, hour, snapshotTarget])
+  }, [backgroundTimeline, finishRefresh, hour, snapshotTarget])
+  useEffect(() => {
+    if (backgroundTimeline === null || backgroundTimeline.segments.length === 0
+      || backgroundReadyHour !== backgroundTimeline.hour
+      || hour !== backgroundTimeline.hour) return
+    const controller = new AbortController()
+    void loadTimelineLanes(backgroundTimeline, controller.signal).then((lanes) => {
+      if (controller.signal.aborted || backgroundTimelineRef.current !== backgroundTimeline) return
+      setTimelineData((current) => withTimelineLanes(current, lanes))
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) console.error("kronika: timeline lanes failed", reason)
+    })
+    return () => controller.abort()
+  }, [backgroundReadyHour, backgroundTimeline, hour])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
   useEffect(() => hour === null || !refreshReady || refreshing
     ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
@@ -982,7 +1045,7 @@ function App({ locale, onLocale, t }: {
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
+          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={backgroundReadyHour === hour} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />

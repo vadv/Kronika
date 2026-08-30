@@ -794,7 +794,16 @@ screen. An explicit control on the Inspector expands its chart across the
 viewport below the top bar; Escape or the same control restores the docked
 width. While the hour itself loads, the
 workspace paints its own shape — the timeline band, one status line carrying
-the received bytes and elapsed time, and table rows — not a modal card. Charts
+the received bytes and elapsed time, and table rows — not a modal card.
+
+The first usable object screen publishes its table after the lightweight hour
+base and the first cursor snapshot. It never waits for timeline lanes,
+Process-summary, or health context from metadata. While those products load,
+the timeline remains exactly 124 px high and the exact URL `at` does not move.
+Each background response is applied whole; an error leaves the working table
+and its prior data on screen.
+
+Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. Their required horizontal rail does not create
