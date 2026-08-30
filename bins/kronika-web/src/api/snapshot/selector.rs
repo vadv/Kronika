@@ -167,10 +167,12 @@ pub(crate) fn execute_processes(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(root, query, cancelled)? else {
-        return Ok(FinderResult::empty());
-    };
-    prepared.compute_process_rows(limit, cancelled)
+    replay_source_change(|| {
+        let Some(prepared) = prepare(root, &query, cancelled)? else {
+            return Ok(FinderResult::empty());
+        };
+        prepared.compute_process_rows(limit, cancelled)
+    })
 }
 
 pub(crate) fn execute_plain(
@@ -185,10 +187,12 @@ pub(crate) fn execute_plain(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(root, query, cancelled)? else {
-        return Ok(FinderResult::empty());
-    };
-    prepared.compute_plain_rows(limit, cancelled)
+    replay_source_change(|| {
+        let Some(prepared) = prepare(root, &query, cancelled)? else {
+            return Ok(FinderResult::empty());
+        };
+        prepared.compute_plain_rows(limit, cancelled)
+    })
 }
 
 pub(crate) fn execute_relation(
@@ -203,15 +207,26 @@ pub(crate) fn execute_relation(
         return Err(ApiError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(root, query, cancelled)? else {
-        return Ok(FinderResult::empty());
-    };
-    prepared.compute_relation_rows(limit, cancelled)
+    replay_source_change(|| {
+        let Some(prepared) = prepare(root, &query, cancelled)? else {
+            return Ok(FinderResult::empty());
+        };
+        prepared.compute_relation_rows(limit, cancelled)
+    })
+}
+
+fn replay_source_change<R>(
+    mut execute: impl FnMut() -> Result<R, ApiError>,
+) -> Result<R, ApiError> {
+    match execute() {
+        Err(error) if error.source_changed_during_read() => execute(),
+        result => result,
+    }
 }
 
 fn prepare(
     root: &Path,
-    query: FinderQuery,
+    query: &FinderQuery,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Option<PreparedSnapshot>, ApiError> {
     if cancelled() {
@@ -287,7 +302,7 @@ fn prepare(
         return Err(ApiError::BadCursor);
     };
     prepared.current_from = current_from;
-    prepared.with_search(query.search).map(Some)
+    prepared.with_search(query.search.clone()).map(Some)
 }
 
 fn selected_segment(segments: &[SegmentRef], logical_name: &str) -> Option<usize> {
