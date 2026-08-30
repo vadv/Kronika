@@ -30,6 +30,18 @@ pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> S
     )
 }
 
+/// Replaces an internal HTTP row locator with its public MCP reference.
+pub(crate) fn set_detail_ref(value: &mut Value, detail_ref: String) -> Result<(), String> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "detail-bearing result is not an object".to_owned())?;
+    if object.remove("detail_locator").is_none() || object.contains_key("detail_ref") {
+        return Err("detail-bearing result has an invalid internal shape".to_owned());
+    }
+    object.insert("detail_ref".to_owned(), Value::String(detail_ref));
+    Ok(())
+}
+
 /// Serializes every `i64` as decimal text so JSON clients retain exact 64-bit
 /// values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +115,29 @@ pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {
         error,
         crate::api::ApiError::NoSuchSection | crate::api::ApiError::NoSuchColumn(_)
     );
-    let mut message = error.to_string();
+    let mut message = coordinate_free_error(error.to_string());
     if hinted {
         message.push_str("; kronika_get_context lists recorded sections and their fields");
     }
     mcp_error(message)
+}
+
+/// Keeps storage-only coordinate names out of public MCP errors.
+pub(crate) fn coordinate_free_error(message: String) -> String {
+    if [
+        "detail_locator",
+        "type_id",
+        "segment_id",
+        "row_ordinal",
+        "row_key",
+    ]
+    .iter()
+    .any(|coordinate| message.contains(coordinate))
+    {
+        "could not produce detail_ref".to_owned()
+    } else {
+        message
+    }
 }
 
 pub(crate) fn finder_storage_error(

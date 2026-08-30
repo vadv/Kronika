@@ -125,3 +125,24 @@ fn a_missing_section_or_column_error_names_the_listing_tool() {
         "an unreadable store has no listing to point at: {message}"
     );
 }
+
+#[test]
+fn storage_errors_do_not_publish_internal_coordinate_names() {
+    for coordinate in [
+        "detail_locator",
+        "type_id",
+        "segment_id",
+        "row_ordinal",
+        "row_key",
+    ] {
+        let result = storage_error(&ApiError::BadLocator(format!("invalid {coordinate}")));
+        let message = &result.content[0].as_text().expect("text").text;
+        assert_eq!(message, "could not produce detail_ref");
+    }
+
+    let result = storage_error(&ApiError::BadLocator(
+        "cannot emit detail_ref: row identity is not unique".to_owned(),
+    ));
+    let message = &result.content[0].as_text().expect("text").text;
+    assert!(message.contains("not unique"), "{message}");
+}

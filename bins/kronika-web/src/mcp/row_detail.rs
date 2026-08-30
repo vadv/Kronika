@@ -1,4 +1,4 @@
-//! `kronika_get_row_detail`: one recorded row addressed by its physical locator.
+//! `kronika_get_row_detail`: one recorded row addressed by an opaque reference.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -11,6 +11,7 @@ use crate::route::{Order, SnapshotRequest};
 use super::catalog::RowDetailInput;
 use super::semantics::{mcp_error, mcp_structured};
 use crate::api::events::label_event_fields;
+use crate::api::row_key::DetailLocator;
 
 pub(crate) fn call(
     config: &Config,
@@ -19,35 +20,19 @@ pub(crate) fn call(
 ) -> CallToolResult {
     let input: RowDetailInput = match serde_json::from_value(Value::Object(arguments)) {
         Ok(input) => input,
-        Err(error) => {
-            return super::semantics::invalid_arguments(
-                super::catalog::GET_ROW_DETAIL_TOOL,
-                "pass one complete detail_locator object from a mass result",
-                error,
-            );
+        Err(_error) => {
+            return mcp_error("invalid arguments: pass only one copied detail_ref string");
         }
     };
-    let segment_id = match decimal_i64("segment_id", &input.segment_id) {
-        Ok(segment_id) => segment_id,
-        Err(error) => return mcp_error(error),
-    };
-    let row_ordinal = match decimal_u64("row_ordinal", &input.row_ordinal) {
-        Ok(row_ordinal) => row_ordinal,
-        Err(error) => return mcp_error(error),
-    };
-    let at = match decimal_i64("at", &input.at) {
-        Ok(at) => at,
-        Err(error) => return mcp_error(error),
-    };
-    let type_id = match decimal_u32("type_id", &input.type_id) {
-        Ok(type_id) => type_id,
-        Err(error) => return mcp_error(error),
+    let locator = match DetailLocator::from_detail_ref(&input.detail_ref) {
+        Ok(locator) => locator,
+        Err(_error) => return mcp_error("invalid detail_ref"),
     };
 
     let request = SnapshotRequest {
-        segment_id,
-        at,
-        sections: vec![input.section.clone()],
+        segment_id: locator.segment_id,
+        at: locator.at,
+        sections: vec![locator.section.clone()],
         fields: Vec::new(),
         by: Vec::new(),
         direction: Order::Asc,
@@ -58,40 +43,45 @@ pub(crate) fn call(
         first_match: false,
         text: None,
         filters: Vec::new(),
-        type_id: Some(type_id),
+        type_id: Some(locator.type_id),
         row_ordinal: None,
     };
     let prepared = match snapshot::prepare(&config.data_root, request, None) {
         Ok(prepared) => prepared,
-        Err(error) => return super::semantics::storage_error(&error),
+        Err(_error) => return mcp_error("detail_ref does not identify one recorded row"),
     };
     let Prepared::Snapshot(prepared) = prepared else {
         return mcp_error(
             "internal error: snapshot preparation returned an unexpected response type",
         );
     };
-    let row = match prepared.fetch_identity_row(row_ordinal, &input.identity, &|| cancelled()) {
+    let row = match prepared
+        .fetch_identity_row(locator.row_ordinal, &locator.identity, &|| cancelled())
+    {
         Ok(row) => row,
-        Err(error) => return super::semantics::storage_error(&error),
+        Err(_error) => return mcp_error("detail_ref does not identify one recorded row"),
     };
     let Some(mut row) = row else {
-        return mcp_error(format!(
-            "no recorded row matched segment_id={segment_id}, section={:?}, type_id={type_id}, at={at}, row_ordinal={row_ordinal}",
-            input.section,
-        ));
+        return mcp_error("detail_ref does not identify one recorded row");
     };
     // Keep event-code labels identical between list and exact-row reads.
     if let Value::Object(fields) = &mut row {
-        label_event_fields(&input.section, fields);
-        if let Err(error) = normalize_detail_text(&input.section, fields) {
+        fields.remove("segment_id");
+        fields.remove("type_id");
+        fields.remove("row_ordinal");
+        fields.remove("row_key");
+        fields.remove("identity");
+        fields.remove("detail_locator");
+        label_event_fields(&locator.section, fields);
+        if let Err(error) = normalize_detail_text(&locator.section, fields) {
             return mcp_error(error);
         }
     }
     mcp_structured(
         row,
         format!(
-            "Returned one {} row at the requested locator.",
-            input.section
+            "Returned one {} row for the requested detail reference.",
+            locator.section
         ),
     )
 }
@@ -128,53 +118,6 @@ fn stable_text(value: Value) -> Result<Value, &'static str> {
             }))
         }
         _ => Err("expected a UTF-8 string"),
-    }
-}
-
-/// Accepts a JSON integer or decimal string.
-fn decimal_i64(field: &str, value: &Value) -> Result<i64, String> {
-    match value {
-        Value::String(text) => text
-            .parse()
-            .map_err(|error| format!("{field} is not a valid integer: {text:?} ({error})")),
-        Value::Number(number) => number
-            .as_i64()
-            .ok_or_else(|| format!("{field} does not fit in a 64-bit signed integer")),
-        other => Err(format!(
-            "{field} must be a JSON integer or a decimal string, got {other}"
-        )),
-    }
-}
-
-/// Accepts a non-negative JSON integer or decimal string.
-fn decimal_u64(field: &str, value: &Value) -> Result<u64, String> {
-    match value {
-        Value::String(text) => text.parse().map_err(|error| {
-            format!("{field} is not a valid non-negative integer: {text:?} ({error})")
-        }),
-        Value::Number(number) => number
-            .as_u64()
-            .ok_or_else(|| format!("{field} does not fit in a 64-bit unsigned integer")),
-        other => Err(format!(
-            "{field} must be a JSON integer or a decimal string, got {other}"
-        )),
-    }
-}
-
-/// Accepts `type_id` in the number-or-decimal-string form emitted by find
-/// tools.
-fn decimal_u32(field: &str, value: &Value) -> Result<u32, String> {
-    match value {
-        Value::String(text) => text.parse().map_err(|error| {
-            format!("{field} is not a valid non-negative integer: {text:?} ({error})")
-        }),
-        Value::Number(number) => number
-            .as_u64()
-            .and_then(|number| u32::try_from(number).ok())
-            .ok_or_else(|| format!("{field} does not fit in a 32-bit unsigned integer")),
-        other => Err(format!(
-            "{field} must be a JSON integer or a decimal string, got {other}"
-        )),
     }
 }
 

@@ -33,6 +33,50 @@ fn structured(result: rmcp::model::CallToolResult) -> Value {
     result.structured_content.expect("structured content")
 }
 
+fn assert_no_storage_coordinates(value: &Value) {
+    match value {
+        Value::Object(object) => {
+            for field in [
+                "detail_locator",
+                "type_id",
+                "segment_id",
+                "row_ordinal",
+                "row_key",
+            ] {
+                assert!(
+                    !object.contains_key(field),
+                    "public MCP value exposed {field}: {value:#?}",
+                );
+            }
+            for child in object.values() {
+                assert_no_storage_coordinates(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                assert_no_storage_coordinates(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn detail(config: &Config, row: &Value) -> Value {
+    assert_no_storage_coordinates(row);
+    let detail_ref = row["detail_ref"]
+        .as_str()
+        .filter(|detail_ref| !detail_ref.is_empty())
+        .expect("opaque detail_ref");
+    let result = super::row_detail::call(
+        config,
+        arguments(&json!({"detail_ref": detail_ref})),
+        &|| false,
+    );
+    let detail = structured(result);
+    assert_no_storage_coordinates(&detail);
+    detail
+}
+
 #[test]
 fn process_time_selects_rows_without_exposing_internal_sample_metadata() {
     let mut fixture = Fixture::new();
@@ -293,10 +337,8 @@ fn a_predecessor_before_the_current_window_still_feeds_rates() {
         &|| false,
     ));
     assert_eq!(process["rows"][0]["read_bytes"], 5.0);
-    assert_eq!(
-        process["rows"][0]["detail_locator"]["segment_id"],
-        CURRENT_SEGMENT.to_string()
-    );
+    let process_detail = detail(&config, &process["rows"][0]);
+    assert_eq!(process_detail["at"], CURRENT.to_string());
 
     let table = structured(super::postgresql::call_tables(
         &config,
@@ -312,7 +354,6 @@ fn a_predecessor_before_the_current_window_still_feeds_rates() {
 
 #[test]
 fn finder_chooses_the_latest_actual_sample_across_overlapping_segments() {
-    const FIRST_SEGMENT: i64 = 1_709_164_800_000_000;
     const SECOND_SEGMENT: i64 = 1_709_164_800_001_000;
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(300, 101, 60, "later")]);
@@ -328,10 +369,9 @@ fn finder_chooses_the_latest_actual_sample_across_overlapping_segments() {
         &|| false,
     ));
     assert_eq!(result["rows"][0]["comm"], "later");
-    assert_eq!(
-        result["rows"][0]["detail_locator"]["segment_id"],
-        FIRST_SEGMENT.to_string()
-    );
+    let detail = detail(&config, &result["rows"][0]);
+    assert_eq!(detail["at"], "300");
+    assert_eq!(detail["comm"], "later");
 }
 
 #[test]

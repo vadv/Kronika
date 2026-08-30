@@ -1155,17 +1155,18 @@ NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
 does not lose precision. A blob value carries the stored bytes and the recorded
 `full_len`, `truncated` and `hash` metadata.
 
-Mass MCP results tied to a physical row, ranked entity, or event contain compact
-identifiers, metrics, bounded labels and an exact `detail_locator`; relation
-aggregates with no single physical row omit it. These results do not inline
-query text, plans, command lines, log messages or similar stored payloads.
-`kronika_get_row_detail` is the sole MCP
-transition to the complete stored row. A locator carries the complete opaque
-registry identity of its row; dictionary-backed identity members use the exact
-stored string/blob ID and do not reveal the payload. Its `row_ordinal` is only
-a physical hint. If finalizing an active WAL reorders rows, row detail resolves
-the same `(segment_id, type_id, at, identity)` and reports the new ordinal; a
-missing, altered or non-unique identity is an error, never another row. Each
+Mass MCP results tied to a recorded row, ranked entity, or event contain compact
+identifiers, metrics, bounded labels and one server-produced opaque
+`detail_ref`; relation aggregates with no single recorded row omit it. These
+results do not inline query text, plans, command lines, log messages or similar
+stored payloads. The calling model copies `detail_ref` unchanged and never
+parses, constructs, alters or combines it. `kronika_get_row_detail` accepts only
+that reference and is the sole MCP transition to the complete stored row. The
+server privately binds the stateless, versioned reference to the complete
+stable logical identity and treats its ordering information only as a hint. If
+finishing active data reorders rows, row detail resolves the exact same logical
+identity and returns the same row. A missing, altered or non-unique identity is
+an error, never another row. Each
 potentially large text field in that response has one stable object shape:
 `stored_text`, decimal `full_len`, `truncated`, and `sha256`. These fields
 preserve collector-side truncation facts; a short untruncated value uses

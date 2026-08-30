@@ -77,7 +77,7 @@ fn errors_keep_weighted_counts_minutes_shared_values_and_one_locator() {
     assert_number(duplicate.minutes[2], 3.0);
     assert_number(duplicate.minutes[30], 5.0);
     assert_eq!(duplicate.detail_locator.section, "pg_log_errors");
-    assert_eq!(duplicate.detail_locator.row_ordinal, json!("1"));
+    assert_eq!(duplicate.detail_locator.row_ordinal, 1);
     assert_eq!(
         duplicate.detail_locator.identity["pattern"],
         json!("duplicate key")
@@ -160,7 +160,7 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
         .expect("slow group");
     assert_number(slow.count, 4.0);
     assert_eq!(slow.label.as_deref(), Some("select ?"));
-    assert_eq!(slow.detail_locator.row_ordinal, json!("1"));
+    assert_eq!(slow.detail_locator.row_ordinal, 1);
     assert_eq!(
         slow.stat,
         EventStat::Slow {
@@ -304,7 +304,7 @@ fn checkpoints_locks_and_lifecycle_keep_exact_episode_rules() {
         .find(|entry| entry.key == "locks:583")
         .expect("waiting episode");
     assert_number(waiting.count, 2.0);
-    assert_eq!(waiting.detail_locator.row_ordinal, json!("5"));
+    assert_eq!(waiting.detail_locator.row_ordinal, 5);
     assert_eq!(
         waiting.stat,
         EventStat::Locks {
@@ -462,13 +462,9 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
     assert_eq!(
         occurrences
             .iter()
-            .map(|row| row
-                .detail_locator
-                .row_ordinal
-                .as_str()
-                .expect("string ordinal"))
+            .map(|row| row.detail_locator.row_ordinal)
             .collect::<Vec<_>>(),
-        ["0", "1", "2"]
+        [0, 1, 2]
     );
     assert!(!occurrences[0].fields.contains_key("statement"));
     assert!(!occurrences[2].fields.contains_key("sample"));
@@ -523,7 +519,7 @@ fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].label.as_deref(), Some("large"));
     assert_number(groups[0].count, 5.0);
-    assert_eq!(groups[0].detail_locator.row_ordinal, json!("1"));
+    assert_eq!(groups[0].detail_locator.row_ordinal, 1);
     let serialized = serde_json::to_value(&groups[0]).expect("group wire");
     assert!(serialized.get("text").is_none());
     assert!(serialized.get("rows").is_none());

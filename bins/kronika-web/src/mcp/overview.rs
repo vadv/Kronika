@@ -4,7 +4,8 @@ use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
 use crate::api::heatmap::{
-    HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, NormalizedRanking, prepare_batch,
+    HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, NormalizedRanking,
+    prepare_batch,
 };
 use crate::config::Config;
 use crate::route::MAX_QUERY_BYTES;
@@ -74,7 +75,7 @@ pub(crate) fn call(
         Ok(prepared) => prepared,
         Err(error) => {
             return mcp_error_indexed_with(
-                error.to_string(),
+                super::semantics::coordinate_free_error(error.to_string()),
                 error.ranking_index(),
                 error.valid_options().to_vec(),
             );
@@ -84,21 +85,49 @@ pub(crate) fn call(
         Ok(result) => result,
         Err(error) => {
             return mcp_error_indexed_with(
-                error.to_string(),
+                super::semantics::coordinate_free_error(error.to_string()),
                 error.ranking_index(),
                 error.valid_options().to_vec(),
             );
         }
     };
     let returned = result.results.len();
-    let structured = match serde_json::to_value(result) {
+    let structured = match public_result(&result) {
         Ok(value) => value,
-        Err(error) => return mcp_error(format!("could not encode overview result: {error}")),
+        Err(_error) => return mcp_error("could not produce detail_ref"),
     };
     mcp_structured(
         structured,
         format!("Returned {returned} ordered stored-data rankings."),
     )
+}
+
+fn public_result(result: &HeatmapBatchResult) -> Result<Value, String> {
+    let mut structured = serde_json::to_value(result).map_err(|error| error.to_string())?;
+    let results = structured["results"]
+        .as_array_mut()
+        .ok_or_else(|| "overview results are not an array".to_owned())?;
+    if results.len() != result.results.len() {
+        return Err("overview result count changed during encoding".to_owned());
+    }
+    for (typed, encoded) in result.results.iter().zip(results) {
+        let entities = encoded["entities"]
+            .as_array_mut()
+            .ok_or_else(|| "overview entities are not an array".to_owned())?;
+        if entities.len() != typed.entities.len() {
+            return Err("overview entity count changed during encoding".to_owned());
+        }
+        for (typed, encoded) in typed.entities.iter().zip(entities) {
+            let object = encoded
+                .as_object_mut()
+                .ok_or_else(|| "overview entity is not an object".to_owned())?;
+            if object.remove("type_id").is_none() {
+                return Err("overview entity has no internal layout".to_owned());
+            }
+            super::semantics::set_detail_ref(encoded, typed.detail_locator.detail_ref()?)?;
+        }
+    }
+    Ok(structured)
 }
 
 fn check_request_budget(arguments: &Map<String, Value>) -> Result<(), (usize, String)> {

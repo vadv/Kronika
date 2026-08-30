@@ -1,7 +1,12 @@
 use kronika_reader::{Cell, Row};
 use serde_json::{Map, Value, json};
 
-use super::{detail_locator, identity, identity_columns, is_detail_text, validate};
+use base64::Engine as _;
+
+use super::{
+    DETAIL_REF_MAX_ENCODED_BYTES, DETAIL_REF_VERSION, DetailLocator, detail_locator,
+    encode_payload, identity, identity_columns, is_detail_text, validate,
+};
 
 fn row(type_id: u32, values: &[(&str, Cell)]) -> Row {
     let contract = kronika_registry::contract(type_id).expect("registered fixture type");
@@ -109,7 +114,7 @@ fn validation_requires_every_exact_member_and_rejects_extras() {
 }
 
 #[test]
-fn detail_locator_is_the_complete_nested_row_detail_input() {
+fn internal_http_locator_serialization_stays_typed_and_exact() {
     let identity = Map::from_iter([("pid".to_owned(), json!("42"))]);
     let locator = serde_json::to_value(detail_locator("os_process", 7, 11, 1_100_001, 3, identity))
         .expect("locator JSON");
@@ -125,6 +130,88 @@ fn detail_locator_is_the_complete_nested_row_detail_input() {
             "identity": { "pid": "42" },
         })
     );
+}
+
+fn process_locator() -> DetailLocator {
+    detail_locator(
+        "os_process",
+        7,
+        11,
+        1_100_001,
+        3,
+        Map::from_iter([("pid".to_owned(), json!("42"))]),
+    )
+}
+
+#[test]
+fn detail_ref_round_trips_the_complete_internal_locator() {
+    let locator = process_locator();
+    let detail_ref = locator.detail_ref().expect("detail_ref");
+    assert_eq!(
+        DetailLocator::from_detail_ref(&detail_ref).expect("decoded detail_ref"),
+        locator,
+    );
+    assert!(!detail_ref.contains('{'));
+    assert!(!detail_ref.contains('"'));
+}
+
+#[test]
+fn detail_ref_rejects_malformed_and_oversized_input_before_decode() {
+    assert!(DetailLocator::from_detail_ref("not+base64").is_err());
+    assert!(DetailLocator::from_detail_ref("").is_err());
+    assert!(DetailLocator::from_detail_ref(&"A".repeat(DETAIL_REF_MAX_ENCODED_BYTES + 1)).is_err());
+}
+
+#[test]
+fn detail_ref_rejects_an_unsupported_version() {
+    let locator = process_locator();
+    let payload = serde_json::to_vec(&(
+        DETAIL_REF_VERSION + 1,
+        locator.section,
+        locator.segment_id,
+        locator.at,
+        locator.type_id,
+        locator.row_ordinal,
+        locator.identity,
+    ))
+    .expect("payload");
+    assert!(DetailLocator::from_detail_ref(&encode_payload(payload)).is_err());
+}
+
+#[test]
+fn detail_ref_rejects_numeric_overflow() {
+    for payload in [
+        br#"[1,"os_process",9223372036854775808,11,1100001,3,{"pid":"42"}]"#.to_vec(),
+        br#"[1,"os_process",7,9223372036854775808,1100001,3,{"pid":"42"}]"#.to_vec(),
+        br#"[1,"os_process",7,11,4294967296,3,{"pid":"42"}]"#.to_vec(),
+        br#"[1,"os_process",7,11,1100001,18446744073709551616,{"pid":"42"}]"#.to_vec(),
+    ] {
+        assert!(DetailLocator::from_detail_ref(&encode_payload(payload)).is_err());
+    }
+}
+
+#[test]
+fn detail_ref_rejects_modified_payload_bytes() {
+    let detail_ref = process_locator().detail_ref().expect("detail_ref");
+    let mut bytes = super::URL_SAFE_NO_PAD
+        .decode(detail_ref)
+        .expect("encoded detail_ref");
+    bytes[0] ^= 1;
+    let modified = super::URL_SAFE_NO_PAD.encode(bytes);
+    assert!(DetailLocator::from_detail_ref(&modified).is_err());
+}
+
+#[test]
+fn detail_ref_rejects_noncanonical_and_invalid_logical_payloads() {
+    let noncanonical = encode_payload(br#"[1, "os_process",7,11,1100001,3,{"pid":"42"}]"#.to_vec());
+    assert!(DetailLocator::from_detail_ref(&noncanonical).is_err());
+
+    let wrong_section =
+        encode_payload(br#"[1,"pg_stat_activity",7,11,1100001,3,{"pid":"42"}]"#.to_vec());
+    assert!(DetailLocator::from_detail_ref(&wrong_section).is_err());
+
+    let incomplete_identity = encode_payload(br#"[1,"os_process",7,11,1100001,3,{}]"#.to_vec());
+    assert!(DetailLocator::from_detail_ref(&incomplete_identity).is_err());
 }
 
 #[test]

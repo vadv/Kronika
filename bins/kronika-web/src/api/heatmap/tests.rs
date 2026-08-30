@@ -728,15 +728,15 @@ fn assert_statement_ranking(item: &super::result::HeatmapItemResult, field: &str
         assert_eq!(entity.labels["usename"], "fixture_role");
         assert!(!entity.labels.contains_key("query"));
         assert_eq!(entity.detail_locator.section, "pg_stat_statements");
-        assert_eq!(entity.detail_locator.segment_id, json!(HOUR.to_string()));
-        assert_eq!(entity.detail_locator.at, json!("200"));
+        assert_eq!(entity.detail_locator.segment_id, HOUR);
+        assert_eq!(entity.detail_locator.at, 200);
         assert_eq!(
             entity.detail_locator.type_id,
-            json!(PgStatStatementsV2::CONTRACT.type_id.get().to_string())
+            PgStatStatementsV2::CONTRACT.type_id.get()
         );
         assert_eq!(
             entity.detail_locator.row_ordinal,
-            json!((query_id * 2 + 1).to_string())
+            u64::try_from(query_id * 2 + 1).expect("fixture ordinal")
         );
         assert_eq!(
             entity.detail_locator.identity["queryid"],

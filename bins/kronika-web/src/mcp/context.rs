@@ -1,4 +1,4 @@
-//! `kronika_get_context`: physical section layouts found in recorded segments.
+//! `kronika_get_context`: logical product sections found in recorded segments.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -31,7 +31,9 @@ pub(crate) fn call(
         config.synthetic_demo,
     ) {
         Ok(prepared) => prepared,
-        Err(error) => return mcp_error(error.to_string()),
+        Err(error) => {
+            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
+        }
     };
     let mut sections = prepared.recorded_sections();
     let range = match exclusive_recorded_range(prepared.recorded_range()) {
@@ -57,7 +59,7 @@ pub(crate) fn call(
             );
         }
     }
-    let summary = format!("{} physical section layouts recorded", sections.len());
+    let summary = format!("{} logical product sections recorded", sections.len());
     mcp_structured(
         json!({
             "recorded_from": range.map(|(from, _to)| DecimalI64(from)),

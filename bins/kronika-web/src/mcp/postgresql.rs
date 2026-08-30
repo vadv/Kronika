@@ -2,7 +2,7 @@
 
 use kronika_reader::Reader;
 use rmcp::model::CallToolResult;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::api::snapshot;
 use crate::api::snapshot::PlainRowOut;
@@ -307,11 +307,15 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
         Err(error) => return finder_storage_error(surface.logical_name(), &error),
     };
     let row_count = result.rows.len();
-    let rows: Vec<Value> = result
+    let rows: Vec<Value> = match result
         .rows
         .into_iter()
         .map(|row| finder_plain_row_to_json(surface.logical_name(), row))
-        .collect();
+        .collect()
+    {
+        Ok(rows) => rows,
+        Err(_error) => return mcp_error("could not produce detail_ref"),
+    };
     let summary = finder_summary(surface.logical_name(), row_count, result.truncated);
     let output = finder_output(rows, result.truncated);
     mcp_structured(output, summary)
@@ -417,34 +421,35 @@ pub(crate) fn call_plans(
     call_plain(config, query, cancelled)
 }
 
-/// Keeps compact fields in mass finder output and replaces flat physical
-/// coordinates with the ready row-detail input.
-fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
+/// Keeps compact fields in mass finder output and appends its detail reference.
+fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Value, String> {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    let locator = crate::api::row_key::detail_locator(
+    let detail_ref = crate::api::row_key::detail_locator(
         logical_name,
         row.segment_id,
         row.at,
         row.type_id,
         row.row_ordinal,
         row.identity,
-    );
+    )
+    .detail_ref()?;
     object.retain(|field, _value| !crate::api::row_key::is_detail_text(logical_name, field));
-    object.insert("detail_locator".to_owned(), json!(locator));
-    Value::Object(object)
+    object.insert("detail_ref".to_owned(), Value::String(detail_ref));
+    Ok(Value::Object(object))
 }
 
-/// Flattens projected fields and appends the shared ready detail locator.
-pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
+/// Flattens projected fields and appends the shared opaque detail reference.
+pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Value, String> {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    let locator = crate::api::row_key::detail_locator(
+    let detail_ref = crate::api::row_key::detail_locator(
         logical_name,
         row.segment_id,
         row.at,
         row.type_id,
         row.row_ordinal,
         row.identity,
-    );
-    object.insert("detail_locator".to_owned(), json!(locator));
-    Value::Object(object)
+    )
+    .detail_ref()?;
+    object.insert("detail_ref".to_owned(), Value::String(detail_ref));
+    Ok(Value::Object(object))
 }

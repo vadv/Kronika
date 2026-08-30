@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use super::catalog::{GetInstanceInput, SettingsScopeInput};
 use super::postgresql::{plain_row_to_json, plain_rows};
-use super::semantics::mcp_structured;
+use super::semantics::{mcp_error, mcp_structured};
 use crate::api::snapshot::PlainRowOut;
 use crate::config::Config;
 
@@ -67,16 +67,25 @@ pub(crate) fn call(
 
     // The newest recorded host row: layouts can each contribute their latest
     // observation, so pick the most recent by the row's own `at`.
-    let host_row = host
+    let host_row = match host
         .rows
         .into_iter()
         .max_by_key(|row| row.at)
-        .map(|row| plain_row_to_json("instance_metadata", row));
+        .map(|row| plain_row_to_json("instance_metadata", row))
+        .transpose()
+    {
+        Ok(row) => row,
+        Err(_error) => return mcp_error("could not produce detail_ref"),
+    };
     let (selected, defaults_omitted) = select_settings(settings.rows, input.settings);
-    let selected = selected
+    let selected = match selected
         .into_iter()
         .map(|row| plain_row_to_json("pg_settings", row))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(rows) => rows,
+        Err(_error) => return mcp_error("could not produce detail_ref"),
+    };
     let row_count = selected.len();
     let summary = format!(
         "Returned {} and {row_count} recorded pg_settings row{}.",
@@ -101,9 +110,7 @@ pub(crate) fn call(
     };
     match serde_json::to_value(output) {
         Ok(output) => mcp_structured(output, summary),
-        Err(error) => {
-            super::semantics::mcp_error(format!("instance result encoding failed: {error}"))
-        }
+        Err(error) => mcp_error(format!("instance result encoding failed: {error}")),
     }
 }
 

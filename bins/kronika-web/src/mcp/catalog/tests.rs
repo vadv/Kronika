@@ -18,6 +18,28 @@ const FINDER_TOOLS: [&str; 9] = [
     FIND_PROCESSES_TOOL,
 ];
 
+const FORBIDDEN_PUBLIC_FIELDS: [&str; 5] = [
+    "detail_locator",
+    "type_id",
+    "segment_id",
+    "row_ordinal",
+    "row_key",
+];
+
+fn assert_no_internal_coordinates(label: &str, value: &serde_json::Value) {
+    let encoded = serde_json::to_string(value).expect("encode public schema");
+    for field in FORBIDDEN_PUBLIC_FIELDS {
+        assert!(
+            !encoded.contains(field),
+            "{label} exposes internal field {field}: {encoded}"
+        );
+    }
+    assert!(
+        !encoded.contains("DetailLocator"),
+        "{label} retains the internal DetailLocator definition: {encoded}"
+    );
+}
+
 #[test]
 fn catalog_has_exactly_fourteen_tools() {
     let catalog = tools();
@@ -105,11 +127,15 @@ fn overview_output_schema_is_rankings_only() {
     ] {
         assert!(!encoded.contains(&format!("\"{removed}\"")), "{removed}");
     }
-    assert!(encoded.contains("\"detail_locator\""), "missing locator");
+    assert!(encoded.contains("\"detail_ref\""), "missing detail_ref");
+    let entity = &schema["$defs"]["HeatmapEntity"];
+    assert_eq!(entity["properties"]["detail_ref"]["type"], "string");
+    assert!(entity["properties"].get("identity").is_some());
+    assert_no_internal_coordinates("overview output", &schema);
 }
 
 #[test]
-fn mass_event_schema_has_compact_locators_without_embedded_raw_rows() {
+fn mass_event_schema_has_opaque_detail_refs_without_embedded_raw_rows() {
     let events = tools()
         .into_iter()
         .find(|tool| tool.name.as_ref() == FIND_EVENTS_TOOL)
@@ -118,14 +144,21 @@ fn mass_event_schema_has_compact_locators_without_embedded_raw_rows() {
         .expect("serialize Events schema");
     let encoded = serde_json::to_string(&schema).expect("encode Events schema");
 
-    assert!(encoded.contains("\"detail_locator\""), "missing locator");
+    assert!(encoded.contains("\"detail_ref\""), "missing detail_ref");
     assert!(encoded.contains("\"label\""), "missing bounded group label");
+    for definition in ["EventGroup", "EventOccurrence"] {
+        assert_eq!(
+            schema["$defs"][definition]["properties"]["detail_ref"]["type"], "string",
+            "{definition}.detail_ref"
+        );
+    }
     for removed in ["\"text\"", "\"rows\"", "EventDataRow"] {
         assert!(
             !encoded.contains(removed),
             "Events schema retained raw mass field {removed}"
         );
     }
+    assert_no_internal_coordinates("Events output", &schema);
 }
 
 #[test]
@@ -366,38 +399,32 @@ fn finder_schemas_expose_optional_time_and_the_exact_runtime_envelope() {
 }
 
 #[test]
-fn detail_locator_schema_and_descriptions_match_the_nested_transition() {
+fn row_detail_accepts_only_one_opaque_string() {
     let catalog = tools();
     let detail = catalog
         .iter()
         .find(|tool| tool.name.as_ref() == GET_ROW_DETAIL_TOOL)
         .expect("row detail tool");
+    assert_eq!(detail.input_schema["type"], "object");
     assert_eq!(detail.input_schema["additionalProperties"], false);
-    let required = detail.input_schema["required"]
-        .as_array()
-        .expect("detail required fields");
-    for field in [
-        "section",
-        "segment_id",
-        "at",
-        "type_id",
-        "row_ordinal",
-        "identity",
-    ] {
-        assert!(
-            required.iter().any(|candidate| candidate == field),
-            "{field}"
-        );
-    }
-    assert!(
-        detail.input_schema["properties"]["identity"]["type"] == "object"
-            || detail.input_schema["properties"]["identity"]["$ref"].is_string()
+    assert_eq!(
+        detail.input_schema["required"],
+        serde_json::json!(["detail_ref"])
     );
+    let properties = detail.input_schema["properties"]
+        .as_object()
+        .expect("detail input properties");
+    assert_eq!(properties.len(), 1);
+    assert_eq!(properties["detail_ref"]["type"], "string");
+    assert_eq!(properties["detail_ref"]["minLength"], 1);
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));
-    assert!(description.contains("never construct, guess, remove, or modify"));
-    assert!(description.contains("physical hint"));
-    assert!(!description.contains("plain strings"));
+    assert!(description.contains("never construct, inspect, guess, or modify"));
+    assert!(description.contains("copy it unchanged"));
+    assert_no_internal_coordinates(
+        "row detail input",
+        &serde_json::Value::Object(detail.input_schema.as_ref().clone()),
+    );
 
     for name in [
         FIND_POSTGRESQL_ACTIVITY_TOOL,
@@ -415,8 +442,29 @@ fn detail_locator_schema_and_descriptions_match_the_nested_transition() {
         assert!(
             tool.description
                 .as_deref()
-                .is_some_and(|description| description.contains("detail_locator")),
-            "{name} must advertise the nested transition"
+                .is_some_and(|description| description.contains("detail_ref")),
+            "{name} must advertise detail_ref"
         );
+    }
+}
+
+#[test]
+fn tools_list_exposes_no_internal_coordinate_names() {
+    for tool in tools() {
+        let input = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+        assert_no_internal_coordinates(&format!("{} input", tool.name), &input);
+        if let Some(output) = tool.output_schema.as_ref() {
+            let output = serde_json::Value::Object(output.as_ref().clone());
+            assert_no_internal_coordinates(&format!("{} output", tool.name), &output);
+        }
+
+        let description = tool.description.as_deref().unwrap_or_default();
+        for field in FORBIDDEN_PUBLIC_FIELDS {
+            assert!(
+                !description.contains(field),
+                "{} description exposes internal field {field}: {description}",
+                tool.name
+            );
+        }
     }
 }

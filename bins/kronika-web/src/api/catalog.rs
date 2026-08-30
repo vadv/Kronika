@@ -132,54 +132,65 @@ impl PreparedCatalog {
         Ok(())
     }
 
-    /// Physical section layouts recorded in the selected segments. Rows and
-    /// bytes are summed by `type_id`; output fields match `/api/catalog`
-    /// section entries, minus store-internal `dict.*` layouts, plus each
-    /// layout's registry columns (name, class, unit) and identity.
+    /// Logical product sections recorded in the selected segments.
     pub(crate) fn recorded_sections(&self) -> Vec<Value> {
-        let mut totals: BTreeMap<u32, SegmentSection> = BTreeMap::new();
+        let mut totals = BTreeMap::<
+            &'static str,
+            (
+                u64,
+                u64,
+                Option<&'static str>,
+                BTreeMap<&'static str, (&'static str, Option<&'static str>)>,
+            ),
+        >::new();
         for segment in &self.listing.segments {
             for section in segment.sections() {
-                totals
-                    .entry(section.type_id)
-                    .and_modify(|total| {
-                        total.rows += section.rows;
-                        total.bytes += section.bytes;
-                    })
-                    .or_insert(*section);
+                let Some(logical_name) = logical_section_name(section.type_id) else {
+                    continue;
+                };
+                if logical_name.starts_with("dict.") {
+                    continue;
+                }
+                let Some(contract) = kronika_registry::contract(section.type_id) else {
+                    continue;
+                };
+                let (rows, bytes, _source_family, fields) =
+                    totals.entry(logical_name).or_insert_with(|| {
+                        (
+                            0,
+                            0,
+                            source_bit(section.type_id).and_then(source_name),
+                            BTreeMap::new(),
+                        )
+                    });
+                *rows = rows.saturating_add(section.rows);
+                *bytes = bytes.saturating_add(section.bytes);
+                for column in contract.columns {
+                    fields.entry(column.name).or_insert_with(|| {
+                        (
+                            column.class.code(),
+                            column.unit.map(kronika_registry::Unit::code),
+                        )
+                    });
+                }
             }
         }
-        let sections: Vec<SegmentSection> = totals
-            .into_values()
-            .filter(|section| {
-                !logical_section_name(section.type_id).is_some_and(|name| name.starts_with("dict."))
+        totals
+            .into_iter()
+            .map(|(logical_name, (rows, bytes, source_family, fields))| {
+                json!({
+                    "logical_name": logical_name,
+                    "source_family": source_family,
+                    "rows": rows.to_string(),
+                    "bytes": bytes.to_string(),
+                    "fields": fields.into_iter().map(|(name, (class, unit))| json!({
+                        "name": name,
+                        "class": class,
+                        "unit": unit,
+                    })).collect::<Vec<_>>(),
+                })
             })
-            .collect();
-        let mut values = section_values(&sections);
-        for (value, section) in values.iter_mut().zip(&sections) {
-            let Some(contract) = kronika_registry::contract(section.type_id) else {
-                continue;
-            };
-            let Value::Object(object) = value else {
-                continue;
-            };
-            object.insert("identity".to_owned(), json!(contract.identity.to_vec()));
-            object.insert(
-                "fields".to_owned(),
-                contract
-                    .columns
-                    .iter()
-                    .map(|column| {
-                        json!({
-                            "name": column.name,
-                            "class": column.class.code(),
-                            "unit": column.unit.map(kronika_registry::Unit::code),
-                        })
-                    })
-                    .collect(),
-            );
-        }
-        values
+            .collect()
     }
 
     /// The first and last recorded timestamps across every segment, Unix

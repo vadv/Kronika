@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::api::events::{EventsRepresentation, EventsResult};
 use crate::api::heatmap::{DEFAULT_TOP, HeatmapBatchResult, MAX_TOP};
@@ -41,7 +42,7 @@ pub(crate) struct OverviewInput {
     pub(crate) from: TimeSpecInput,
     pub(crate) to: TimeSpecInput,
     /// Ordered nonempty recipes. Exact duplicates are returned in place.
-    #[schemars(length(min = 1))]
+    #[schemars(length(min = 1, max = 8192))]
     pub(crate) rankings: Vec<OverviewRankingInput>,
 }
 
@@ -436,8 +437,14 @@ pub(crate) struct ProcessesInput {
     pub(crate) limit: u32,
 }
 
-/// Exact physical locator. Copy a result's `detail_locator` object unchanged.
-pub(crate) type RowDetailInput = crate::api::row_key::DetailLocator;
+/// Opaque reference emitted by a result that supports full row detail.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RowDetailInput {
+    /// Copy one server-produced `detail_ref` string unchanged.
+    #[schemars(length(min = 1))]
+    pub(crate) detail_ref: String,
+}
 
 /// Reads selected recorded event sections over a half-open time window.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -498,9 +505,9 @@ fn overview_tool() -> Tool {
          (default 25, maximum 500). Fields are summed per row before ranking. \
          Results retain request order and duplicate recipes. Counter totals \
          are whole-window non-negative deltas; gauge totals are window \
-         maxima. Every entity includes its named identity, compact automatic \
-         labels for compatible recorded layouts, and a ready `detail_locator` \
-         to copy unchanged into `kronika_get_row_detail`; \
+         maxima. Every entity includes its named product identity, compact automatic \
+         labels for compatible recorded layouts, and a server-produced `detail_ref` \
+         string to copy unchanged into `kronika_get_row_detail`; \
          an unavailable label is null. Query text, plans, command lines, and log \
          payloads are returned only by `kronika_get_row_detail`. Coverage reports \
          data/no_data state and the in-window row count. Timestamps, identifiers, \
@@ -510,29 +517,27 @@ fn overview_tool() -> Tool {
          it does not change pre-ranking scan state.",
         schema_object::<OverviewInput>(),
     )
-    .with_output_schema::<HeatmapBatchResult>()
+    .with_raw_output_schema(opaque_output_schema::<HeatmapBatchResult>(true))
 }
 
 fn context_tool() -> Tool {
     Tool::new(
         GET_CONTEXT_TOOL,
-        "Lists physical section layouts found across all stored segments; \
+        "Lists logical product sections found across all stored segments; \
          it does not inspect the live host or database. Top-level \
          `recorded_from` is the inclusive first stored timestamp and \
          `recorded_to` is the exclusive upper bound one microsecond after the \
          last stored timestamp. Both are decimal-string Unix microseconds \
          accepted unchanged by MCP `from`, `to`, and `at` inputs — an \
          empty answer elsewhere may just mean the window fell outside \
-         them. Each `sections` item contains `logical_name`, \
-         `physical_name`, decimal-string `type_id`, `rows`, `bytes`, its \
-         `identity` column names, and `fields` — every column's `name`, \
-         `class`, and `unit`. A `cumulative` column is a monotonic \
+         them. Each `sections` item contains `logical_name`, `source_family`, \
+         decimal-string `rows` and `bytes`, and `fields` — every public \
+         column's `name`, `class`, and `unit`. A `cumulative` column is a monotonic \
          counter that `find_*` rows return as a per-second rate under \
          the raw column name and `kronika_overview` ranks as a \
          whole-window delta; a `gauge` is an instantaneous value. \
-         `implementation` and `source_family` may be null. Rows and \
-         bytes are summed separately for each physical `type_id` across \
-         segments, so one logical name may appear more than once. \
+         `source_family` may be null. Rows and bytes are summed for each \
+         logical product section across recorded layouts and segments. \
          Store-internal `dict.*` layouts are omitted. The full answer \
          is tens of kilobytes — read it once per session, or pass \
          `section` to keep one section's layouts only.",
@@ -569,8 +574,8 @@ fn instance_tool() -> Tool {
              whether exact `source=default` rows were excluded, and \
              `settings_request_all` is the arguments object for requesting \
              all settings. Settings selection is complete or the call fails; \
-             it is never cut to a row prefix. Every physical host or settings \
-             row carries one nested `detail_locator` accepted unchanged by \
+             it is never cut to a row prefix. Every host or settings row carries \
+             one server-produced `detail_ref` string to copy unchanged into \
              `kronika_get_row_detail`.",
         schema_object::<GetInstanceInput>(),
     )
@@ -648,30 +653,25 @@ fn tail_tools() -> [Tool; 3] {
              Unrecorded `/proc/PID/io` fields are null. Returns `{rows, truncated}`. \
              `truncated` means matching rows were omitted by `limit`, and no continuation \
              cursor is returned. Command lines are available only through \
-             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
-             object to that tool unchanged.",
+             `kronika_get_row_detail`; copy a row's `detail_ref` string \
+             unchanged into that tool.",
             schema_object::<ProcessesInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
         Tool::new(
             GET_ROW_DETAIL_TOOL,
-            "Returns the full rendered stored row addressed by a `detail_locator` \
-             from a mass result. Pass that nested object as this tool's complete \
-             arguments without conversion: never construct, guess, remove, or \
-             modify any member. Its coordinates accept JSON integers or decimal \
-             strings. `identity` is the complete opaque registry identity of the \
-             stored row; its dictionary IDs identify full stored strings/blobs \
-             without exposing those payloads. `row_ordinal` is only a physical \
-             hint. When active-WAL finalization reorders rows, this tool resolves \
-             the same `(segment_id,type_id,at,identity)` and returns its new \
-             ordinal; a missing, altered, or non-unique identity is an \
-             explicit error and can never select a different row. \
+            "Returns the full rendered stored row addressed by a server-produced \
+             `detail_ref` from a mass result. Pass only that string as \
+             `{detail_ref: string}` and copy it unchanged; never construct, \
+             inspect, guess, or modify it. The reference remains valid when \
+             active recorded data is finalized and reordered. An invalid, stale, \
+             or ambiguous reference is rejected and can never select a different row. \
              `pg_store_plans.calls` remains the exact stored count and \
              adds `calls_per_second`; other cumulative columns are rendered as \
              interval rates rather than stored counter values. Missing, \
              unavailable, or underivable values are null. Plain timestamped \
              sections, event sections, and physical relation rows from Overview \
-             are supported; aggregated relation finder rows have no locator. \
+             are supported; aggregated relation finder rows have no detail reference. \
              Recognized event \
              codes receive the same `<field>_label` siblings as \
              `kronika_find_events`; the find-only `source` field is not part of \
@@ -691,9 +691,9 @@ fn tail_tools() -> [Tool; 3] {
              `[from,to)` without a live query. `groups` (default) returns the \
              same ordered server-grouped entries as the web Events console. \
              Groups contain structural summaries, a short bounded label when \
-             available, and one `detail_locator`, but no raw text or nested \
+             available, and one `detail_ref` string, but no raw text or nested \
              source rows. `occurrences` returns structural fields, known code \
-             labels, and a `detail_locator`, with raw payloads available only \
+             labels, and a `detail_ref` string, with raw payloads available only \
              through `kronika_get_row_detail`. Sources are ordered, repeated names are \
              deduplicated, and an empty array returns no items. `limit` is \
              applied after the complete merge or grouping. Returns a tagged \
@@ -703,7 +703,7 @@ fn tail_tools() -> [Tool; 3] {
              `now`, and `now-N{us,ms,s,m,h,d,w}`.",
             schema_object::<EventsInput>(),
         )
-        .with_output_schema::<EventsResult>(),
+        .with_raw_output_schema(opaque_output_schema::<EventsResult>(false)),
     ]
 }
 
@@ -723,8 +723,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              layout. Returns `{rows, truncated}`. `truncated` means matching rows \
              were omitted by `limit`, and no continuation \
              cursor is returned. Query text is available only through \
-             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
-             object to that tool unchanged.",
+             `kronika_get_row_detail`; copy a row's `detail_ref` string \
+             unchanged into that tool.",
             schema_object::<ActivityInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -741,8 +741,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              field. Returns `{rows, truncated}`. `truncated` means matching \
              rows were omitted by `limit`, and no continuation \
              cursor is returned. Query text is available only through \
-             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
-             object to that tool unchanged.",
+             `kronika_get_row_detail`; copy a row's `detail_ref` string \
+             unchanged into that tool.",
             schema_object::<LocksInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -758,8 +758,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              fields are null. Empty rows mean no vacuum observation exists \
              in the internal selection window. Returns `{rows, truncated}`. \
              `truncated` means matching rows were omitted by `limit`, and no continuation \
-             cursor is returned. Pass a row's nested `detail_locator` object to \
-             `kronika_get_row_detail` unchanged.",
+             cursor is returned. Copy a row's `detail_ref` string unchanged into \
+             `kronika_get_row_detail`.",
             schema_object::<VacuumInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -776,9 +776,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              or after counter rollback; absent or null fields are null. Returns \
              `{rows, truncated}`. `truncated` means matching rows were omitted by \
              `limit`, and no continuation \
-             cursor is returned. \
-             Pass a row's nested `detail_locator` object to \
-             `kronika_get_row_detail` unchanged.",
+             cursor is returned. Copy a row's `detail_ref` string unchanged into \
+             `kronika_get_row_detail`.",
             schema_object::<DatabasesInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -808,8 +807,8 @@ fn ratio_tools() -> [Tool; 2] {
              rollback. Returns `{rows, truncated}`. `truncated` means matching \
              rows were omitted by `limit`, and no continuation \
              cursor is returned. Query text is available only through \
-             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
-             object to that tool unchanged.",
+             `kronika_get_row_detail`; copy a row's `detail_ref` string \
+             unchanged into that tool.",
             schema_object::<StatementsInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -833,8 +832,7 @@ fn ratio_tools() -> [Tool; 2] {
              by `limit`, and no continuation \
              cursor is returned. \
              Plan text is available only through `kronika_get_row_detail`; \
-             pass a row's nested `detail_locator` object to that tool \
-             unchanged.",
+             copy a row's `detail_ref` string unchanged into that tool.",
             schema_object::<PlansInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -860,6 +858,61 @@ fn output_schema_object<T: JsonSchema>() -> Arc<JsonObject> {
     let value = serde_json::to_value(schema).expect("schema serializes to JSON");
     let object = value.as_object().expect("schema is a JSON object").clone();
     Arc::new(object)
+}
+
+/// Adapts shared HTTP schemas to the opaque MCP detail boundary.
+fn opaque_output_schema<T: JsonSchema>(hide_layout: bool) -> Arc<JsonObject> {
+    let generator = schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator();
+    let schema = generator.into_root_schema_for::<T>();
+    let mut value = serde_json::to_value(schema).expect("schema serializes to JSON");
+    if let Some(definitions) = value.get_mut("$defs").and_then(Value::as_object_mut) {
+        definitions.remove("DetailLocator");
+    }
+    rewrite_detail_schema(&mut value, hide_layout);
+    let object = value.as_object().expect("schema is a JSON object").clone();
+    Arc::new(object)
+}
+
+fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {
+    match value {
+        Value::Object(object) => {
+            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+                if properties.remove("detail_locator").is_some() {
+                    properties.insert(
+                        "detail_ref".to_owned(),
+                        json!({
+                            "description": "Opaque server-produced row-detail reference; copy it unchanged.",
+                            "type": "string",
+                        }),
+                    );
+                }
+                if hide_layout {
+                    properties.remove("type_id");
+                }
+            }
+            if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
+                for name in required.iter_mut() {
+                    if name == "detail_locator" {
+                        *name = json!("detail_ref");
+                    }
+                }
+                if hide_layout {
+                    required.retain(|name| name != "type_id");
+                }
+            }
+            for child in object.values_mut() {
+                rewrite_detail_schema(child, hide_layout);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                rewrite_detail_schema(child, hide_layout);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

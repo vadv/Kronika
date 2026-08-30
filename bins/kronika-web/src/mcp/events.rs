@@ -38,7 +38,9 @@ pub(crate) fn call(
         MAX_EVENTS_WINDOW_MICROS,
     ) {
         Ok(range) => range,
-        Err(error) => return mcp_error(error.to_string()),
+        Err(error) => {
+            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
+        }
     };
     let query = match crate::api::events::EventsQuery::normalize(
         range,
@@ -53,13 +55,45 @@ pub(crate) fn call(
         .and_then(|prepared| prepared.execute(&|| cancelled()))
     {
         Ok(result) => result,
-        Err(error) => return mcp_error(error.to_string()),
+        Err(error) => {
+            return mcp_error(super::semantics::coordinate_free_error(error.to_string()));
+        }
     };
     let summary = summary(&result);
-    match serde_json::to_value(result) {
+    match public_result(&result) {
         Ok(value) => mcp_structured(value, summary),
-        Err(error) => mcp_error(format!("encode events result: {error}")),
+        Err(_error) => mcp_error("could not produce detail_ref"),
     }
+}
+
+fn public_result(result: &EventsResult) -> Result<Value, String> {
+    let (key, refs) = match result {
+        EventsResult::Groups { groups, .. } => (
+            "groups",
+            groups
+                .iter()
+                .map(|group| group.detail_locator.detail_ref())
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        EventsResult::Occurrences { occurrences, .. } => (
+            "occurrences",
+            occurrences
+                .iter()
+                .map(|occurrence| occurrence.detail_locator.detail_ref())
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    };
+    let mut structured = serde_json::to_value(result).map_err(|error| error.to_string())?;
+    let items = structured[key]
+        .as_array_mut()
+        .ok_or_else(|| "events items are not an array".to_owned())?;
+    if items.len() != refs.len() {
+        return Err("events item count changed during encoding".to_owned());
+    }
+    for (item, detail_ref) in items.iter_mut().zip(refs) {
+        super::semantics::set_detail_ref(item, detail_ref)?;
+    }
+    Ok(structured)
 }
 
 fn summary(result: &EventsResult) -> String {

@@ -86,30 +86,34 @@ fn call_with(
     };
 
     let row_count = result.rows.len();
-    let rows: Vec<Value> = result.rows.into_iter().map(row_to_json).collect();
+    let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
+        Ok(rows) => rows,
+        Err(_error) => return super::semantics::mcp_error("could not produce detail_ref"),
+    };
     let summary = finder_summary("process", row_count, result.truncated);
     let output = finder_output(rows, result.truncated);
     mcp_structured(output, summary)
 }
 
 /// Keeps compact fields, overwrites `pid`/`ppid` from the typed identity, and
-/// appends the ready row-detail input.
-fn row_to_json(row: ProcessRowOut) -> Value {
+/// appends the opaque row-detail reference.
+fn row_to_json(row: ProcessRowOut) -> Result<Value, String> {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("pid".to_owned(), json!(row.pid));
     object.insert(
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
-    let locator = crate::api::row_key::detail_locator(
+    let detail_ref = crate::api::row_key::detail_locator(
         LOGICAL_NAME,
         row.segment_id,
         row.at,
         row.type_id,
         row.row_ordinal,
         row.identity,
-    );
+    )
+    .detail_ref()?;
     object.retain(|field, _| !crate::api::row_key::is_detail_text(LOGICAL_NAME, field));
-    object.insert("detail_locator".to_owned(), json!(locator));
-    Value::Object(object)
+    object.insert("detail_ref".to_owned(), Value::String(detail_ref));
+    Ok(Value::Object(object))
 }
