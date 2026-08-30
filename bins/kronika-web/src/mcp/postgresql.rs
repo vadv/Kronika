@@ -313,7 +313,7 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
     let rows: Vec<Value> = result
         .rows
         .into_iter()
-        .map(|row| plain_row_to_json(surface.logical_name(), row))
+        .map(|row| finder_plain_row_to_json(surface.logical_name(), row))
         .collect();
     let summary = finder_summary(surface.logical_name(), row_count, result.truncated);
     let output = match finder_output(rows, result.truncated) {
@@ -423,8 +423,25 @@ pub(crate) fn call_plans(
     call_plain(config, query, cancelled)
 }
 
+/// Keeps compact fields in mass finder output and replaces flat physical
+/// coordinates with the ready row-detail input.
+fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
+    let mut object: Map<String, Value> = row.fields.into_iter().collect();
+    let locator = crate::api::row_key::detail_locator(
+        logical_name,
+        row.segment_id,
+        row.at,
+        row.type_id,
+        row.row_ordinal,
+        &object,
+    );
+    object.retain(|field, _value| !crate::api::row_key::is_detail_text(logical_name, field));
+    object.insert("detail_locator".to_owned(), json!(locator));
+    Value::Object(object)
+}
+
 /// Flattens projected fields and appends `row_key` plus the decimal-string
-/// locator fields accepted by `kronika_get_row_detail`.
+/// locator fields used by the unchanged instance result.
 pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     crate::api::row_key::attach(logical_name, &mut object);

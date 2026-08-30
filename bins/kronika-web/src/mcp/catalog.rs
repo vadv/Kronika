@@ -436,30 +436,8 @@ pub(crate) struct ProcessesInput {
     pub(crate) limit: u32,
 }
 
-/// Exact physical locator. Every numeric field accepts a JSON integer or a
-/// decimal string; copy decimal strings from a find result without conversion.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct RowDetailInput {
-    /// Recorded logical section. Plain timestamped and event sections are
-    /// accepted. `pg_stat_user_tables` and `pg_stat_user_indexes` are rejected
-    /// because their find results aggregate physical rows.
-    pub(crate) section: String,
-    /// Signed 64-bit recorded segment ID, as a JSON integer or decimal string.
-    pub(crate) segment_id: serde_json::Value,
-    /// Signed 64-bit row timestamp in Unix microseconds, as a JSON integer or
-    /// decimal string.
-    pub(crate) at: serde_json::Value,
-    /// Unsigned 32-bit physical layout ID, as a JSON integer or decimal string.
-    pub(crate) type_id: serde_json::Value,
-    /// Unsigned 64-bit physical row position within the section, as a JSON
-    /// integer or decimal string.
-    pub(crate) row_ordinal: serde_json::Value,
-    /// The identifying value copied verbatim from the find row's `row_key`
-    /// field. Required for rows that carry one; a mismatch reports a stale
-    /// locator instead of returning another row.
-    #[serde(default)]
-    pub(crate) row_key: Option<serde_json::Value>,
-}
+/// Exact physical locator. Copy a result's `detail_locator` object unchanged.
+pub(crate) type RowDetailInput = crate::api::row_key::DetailLocator;
 
 /// Reads selected recorded event sections over a half-open time window.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -478,7 +456,7 @@ pub(crate) struct EventsInput {
     /// Exclusive end in the same time grammar. `to` must be at least `from`, and
     /// `to - from` must not exceed 3,600,000,000 microseconds (one hour).
     pub(crate) to: TimeSpecInput,
-    /// Server-grouped console entries (default) or raw stored occurrences.
+    /// Server-grouped console entries (default) or compact stored occurrences.
     #[serde(default = "default_events_representation")]
     pub(crate) representation: EventsRepresentation,
     /// Maximum combined rows to return, from 1 through 5,000.
@@ -520,10 +498,12 @@ fn overview_tool() -> Tool {
          (default 25, maximum 500). Fields are summed per row before ranking. \
          Results retain request order and duplicate recipes. Counter totals \
          are whole-window non-negative deltas; gauge totals are window \
-         maxima. Every entity includes its named identity and the full \
-         automatic label set for compatible recorded layouts; an unavailable \
-         label is null. Coverage reports data/no_data state and the in-window row \
-         count. Timestamps, identifiers, and counts that may exceed safe JSON \
+         maxima. Every entity includes its named identity, compact automatic \
+         labels for compatible recorded layouts, and a ready `detail_locator`; \
+         an unavailable label is null. Query text, plans, command lines, and log \
+         payloads are returned only by `kronika_get_row_detail`. Coverage reports \
+         data/no_data state and the in-window row count. Timestamps, identifiers, \
+         and counts that may exceed safe JSON \
          integer precision are decimal strings. A request-budget refusal names \
          `ranking_index`. `top` bounds returned identities; \
          it does not change pre-ranking scan state.",
@@ -667,27 +647,26 @@ fn tail_tools() -> [Tool; 3] {
              usable predecessor or across a PID start-time change. \
              Unrecorded `/proc/PID/io` fields are null. Returns `{rows, truncated}`. \
              `truncated` means matching rows were omitted by `limit`, and no continuation \
-             cursor is returned. Each row \
-             has decimal-string `segment_id`, `type_id`, `row_ordinal`, and \
-             `at` accepted unchanged by `kronika_get_row_detail`.",
+             cursor is returned. Command lines are available only through \
+             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
+             object to that tool unchanged.",
             schema_object::<ProcessesInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
         Tool::new(
             GET_ROW_DETAIL_TOOL,
-            "Returns the rendered row addressed by exact physical locator \
-             (`section`, `segment_id`, `at`, `type_id`, `row_ordinal`) from any \
-             stored segment. Locator fields accept JSON integers or decimal \
-             strings; copy the strings from a `find_*` row to avoid precision \
-             loss. `row_key` is the row's identifying value, copied verbatim \
-             from the find row: `queryid` (pg_stat_statements), `planid` \
+            "Returns the full rendered stored row addressed by a `detail_locator` \
+             from a mass result. Pass that nested object as this tool's complete \
+             arguments without conversion. Its physical coordinates accept JSON \
+             integers or decimal strings. `row_key` is the row's identifying \
+             value carried inside the locator: `queryid` (pg_stat_statements), `planid` \
              (pg_store_plans), `pid` (pg_stat_activity, \
              pg_stat_progress_vacuum, pg_locks, pg_log_lock_waits, \
              os_process), `datid` (pg_stat_database), `name` (pg_settings), \
              `pattern` (pg_log_errors, pg_log_slow_queries), `phase` \
              (pg_log_checkpoints), `relation` (pg_log_autovacuum), \
              `size_bytes` (pg_log_temp_files), `kind` (pg_log_lifecycle), \
-             `text` (pgbouncer_events). Rows keep their ordinal only while a \
+             or a SHA-256 digest of `text` (pgbouncer_events). Rows keep their ordinal only while a \
              segment stays active; after finalization the same ordinal can \
              hold another row, and the `row_key` check answers that with an \
              error. The check pins the object, not its binding: columns like \
@@ -704,9 +683,9 @@ fn tail_tools() -> [Tool; 3] {
              missing or mismatched locator returns an error. Recognized event \
              codes receive the same `<field>_label` siblings as \
              `kronika_find_events`; the find-only `source` field is not part of \
-             the stored row and is not returned here. Text values under 4 KiB \
-             arrive as plain strings; from 4 KiB up they arrive as \
-             `{stored_text, full_len, truncated, sha256}`, where `truncated` \
+             the stored row and is not returned here. Every designated long-text \
+             field has the stable `{stored_text, full_len, truncated, sha256}` \
+             shape regardless of stored length. `truncated` \
              marks the cut at the storage's own text ceiling (1 MiB by \
              default). A marker such as \
              `<truncated>` inside the text itself is the source's cut — \
@@ -718,9 +697,12 @@ fn tail_tools() -> [Tool; 3] {
             FIND_EVENTS_TOOL,
             "Reads stored PostgreSQL and PgBouncer events in half-open \
              `[from,to)` without a live query. `groups` (default) returns the \
-             same ordered server-grouped entries as the web Events console; \
-             `occurrences` returns raw stored rows, labels, row keys, and exact \
-             decimal-string locators. Sources are ordered, repeated names are \
+             same ordered server-grouped entries as the web Events console. \
+             Groups contain structural summaries, a short bounded label when \
+             available, and one `detail_locator`, but no raw text or nested \
+             source rows. `occurrences` returns structural fields, known code \
+             labels, and a `detail_locator`, with raw payloads available only \
+             through `kronika_get_row_detail`. Sources are ordered, repeated names are \
              deduplicated, and an empty array returns no items. `limit` is \
              applied after the complete merge or grouping. Returns a tagged \
              `{representation, groups|occurrences, truncated}` result without \
@@ -738,8 +720,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
     [
         Tool::new(
             FIND_POSTGRESQL_ACTIVITY_TOOL,
-            "Finds stored PostgreSQL backend activity, state, waits, query \
-             text, and transaction-age fields at optional `at`; when omitted, \
+            "Finds stored PostgreSQL backend activity, state, waits, query IDs, \
+             and transaction-age fields at optional `at`; when omitted, \
              `at` is the store-wide last recorded timestamp. It does not \
              query PostgreSQL. Filters are ANDed before sorting and `limit`; \
              omitted filters match all. XID ages are counts; `backend_start`, \
@@ -748,9 +730,9 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              applicable, a null recording, or a field absent from the physical \
              layout. Returns `{rows, truncated}`. `truncated` means matching rows \
              were omitted by `limit`, and no continuation \
-             cursor is returned. Each row has decimal-string `segment_id`, \
-             `type_id`, `row_ordinal`, and `at` accepted unchanged by \
-             `kronika_get_row_detail`.",
+             cursor is returned. Query text is available only through \
+             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
+             object to that tool unchanged.",
             schema_object::<ActivityInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -766,9 +748,9 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              microseconds. Null denotes an inapplicable, null, or unavailable \
              field. Returns `{rows, truncated}`. `truncated` means matching \
              rows were omitted by `limit`, and no continuation \
-             cursor is returned. Each row has \
-             decimal-string `segment_id`, `type_id`, `row_ordinal`, and `at` \
-             accepted unchanged by `kronika_get_row_detail`.",
+             cursor is returned. Query text is available only through \
+             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
+             object to that tool unchanged.",
             schema_object::<LocksInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -784,9 +766,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              fields are null. Empty rows mean no vacuum observation exists \
              in the internal selection window. Returns `{rows, truncated}`. \
              `truncated` means matching rows were omitted by `limit`, and no continuation \
-             cursor is returned. Each row has decimal-string `segment_id`, `type_id`, \
-             `row_ordinal`, and `at` accepted unchanged by \
-             `kronika_get_row_detail`.",
+             cursor is returned. Pass a row's nested `detail_locator` object to \
+             `kronika_get_row_detail` unchanged.",
             schema_object::<VacuumInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -804,8 +785,8 @@ fn postgresql_plain_tools() -> [Tool; 4] {
              `{rows, truncated}`. `truncated` means matching rows were omitted by \
              `limit`, and no continuation \
              cursor is returned. \
-             Each row has decimal-string locator fields accepted unchanged \
-             by `kronika_get_row_detail`.",
+             Pass a row's nested `detail_locator` object to \
+             `kronika_get_row_detail` unchanged.",
             schema_object::<DatabasesInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -834,8 +815,9 @@ fn ratio_tools() -> [Tool; 2] {
              rate operands are also null without a usable predecessor or after \
              rollback. Returns `{rows, truncated}`. `truncated` means matching \
              rows were omitted by `limit`, and no continuation \
-             cursor is returned. Locator fields are decimal strings accepted \
-             by `kronika_get_row_detail`.",
+             cursor is returned. Query text is available only through \
+             `kronika_get_row_detail`; pass a row's nested `detail_locator` \
+             object to that tool unchanged.",
             schema_object::<StatementsInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),
@@ -858,8 +840,9 @@ fn ratio_tools() -> [Tool; 2] {
              `{rows, truncated}`. `truncated` means matching rows were omitted \
              by `limit`, and no continuation \
              cursor is returned. \
-             Locator fields are decimal strings accepted by \
-             `kronika_get_row_detail`.",
+             Plan text is available only through `kronika_get_row_detail`; \
+             pass a row's nested `detail_locator` object to that tool \
+             unchanged.",
             schema_object::<PlansInput>(),
         )
         .with_raw_output_schema(output_schema_object::<FinderOutput>()),

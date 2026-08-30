@@ -1,6 +1,6 @@
 use serde_json::{Map, Value, json};
 
-use super::{attach, discriminator, matches, verify};
+use super::{attach, detail_locator, discriminator, is_detail_text, matches, verify};
 
 #[test]
 fn every_locator_emitting_section_names_its_discriminator() {
@@ -107,4 +107,91 @@ fn matching_bridges_numbers_and_decimal_strings() {
     assert!(!matches(&json!("101"), &json!(102)));
     assert!(!matches(&json!("alpha"), &json!("beta")));
     assert!(!matches(&Value::Null, &json!(101)));
+}
+
+#[test]
+fn detail_locator_is_the_complete_nested_row_detail_input() {
+    let fields = serde_json::json!({"pid": 42, "cmdline": "private --argument"})
+        .as_object()
+        .expect("fields")
+        .clone();
+    let locator = serde_json::to_value(detail_locator("os_process", 7, 11, 1_100_001, 3, &fields))
+        .expect("locator JSON");
+
+    assert_eq!(
+        locator,
+        json!({
+            "section": "os_process",
+            "segment_id": "7",
+            "at": "11",
+            "type_id": "1100001",
+            "row_ordinal": "3",
+            "row_key": 42,
+        })
+    );
+}
+
+#[test]
+fn detail_text_policy_is_section_aware() {
+    for (section, field) in [
+        ("os_process", "cmdline"),
+        ("pg_stat_activity", "query"),
+        ("pg_locks", "query"),
+        ("pg_stat_statements", "query"),
+        ("pg_store_plans", "plan"),
+        ("pg_log_errors", "sample"),
+        ("pg_log_errors", "detail"),
+        ("pg_log_errors", "hint"),
+        ("pg_log_errors", "context"),
+        ("pg_log_errors", "statement"),
+        ("pg_log_slow_queries", "sample"),
+        ("pg_log_checkpoints", "reason"),
+        ("pg_log_lock_waits", "detail"),
+        ("pg_log_lock_waits", "context"),
+        ("pg_log_lock_waits", "statement"),
+        ("pg_log_temp_files", "statement"),
+        ("pg_log_lifecycle", "message"),
+        ("pg_log_lifecycle", "query_detail"),
+        ("pgbouncer_events", "text"),
+    ] {
+        assert!(is_detail_text(section, field), "{section}.{field}");
+    }
+    for (section, field) in [
+        ("pg_log_errors", "pattern"),
+        ("pg_log_slow_queries", "pattern"),
+        ("pg_settings", "context"),
+        ("pg_stat_io", "context"),
+        ("pg_stat_activity", "queryid"),
+    ] {
+        assert!(!is_detail_text(section, field), "{section}.{field}");
+    }
+}
+
+#[test]
+fn raw_text_discriminator_is_hashed_and_still_verifies() {
+    let raw = json!("closing because: private connection details");
+    let mut fields = Map::new();
+    fields.insert("text".to_owned(), raw.clone());
+    attach("pgbouncer_events", &mut fields);
+
+    let key = fields["row_key"].as_str().expect("hashed key");
+    assert!(key.starts_with("sha256:"));
+    assert_eq!(key.len(), "sha256:".len() + 64);
+    assert!(!key.contains("private"));
+    assert_eq!(
+        verify("pgbouncer_events", "text", fields.get("row_key"), &raw,),
+        Ok(())
+    );
+
+    let rendered_truncated = json!({
+        "representation": "text",
+        "stored_text": "stored prefix",
+        "full_len": "99",
+        "truncated": true,
+        "sha256": "full-value-digest",
+    });
+    let mut fields = Map::new();
+    fields.insert("text".to_owned(), rendered_truncated);
+    attach("pgbouncer_events", &mut fields);
+    assert_eq!(fields["row_key"], "sha256:full-value-digest");
 }

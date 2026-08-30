@@ -95,9 +95,8 @@ fn call_with(
     mcp_structured(output, summary)
 }
 
-/// Flattens projected fields, overwrites `pid`/`ppid` from the typed
-/// identity, and appends `row_key` plus the decimal-string locator fields
-/// accepted by `kronika_get_row_detail`.
+/// Keeps compact fields, overwrites `pid`/`ppid` from the typed identity, and
+/// appends the ready row-detail input.
 fn row_to_json(row: ProcessRowOut) -> Value {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
     object.insert("pid".to_owned(), json!(row.pid));
@@ -105,10 +104,15 @@ fn row_to_json(row: ProcessRowOut) -> Value {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
-    crate::api::row_key::attach("os_process", &mut object);
-    object.insert("segment_id".to_owned(), json!(row.segment_id.to_string()));
-    object.insert("type_id".to_owned(), json!(row.type_id.to_string()));
-    object.insert("row_ordinal".to_owned(), json!(row.row_ordinal.to_string()));
-    object.insert("at".to_owned(), json!(row.at.to_string()));
+    let locator = crate::api::row_key::detail_locator(
+        LOGICAL_NAME,
+        row.segment_id,
+        row.at,
+        row.type_id,
+        row.row_ordinal,
+        &object,
+    );
+    object.remove("cmdline");
+    object.insert("detail_locator".to_owned(), json!(locator));
     Value::Object(object)
 }

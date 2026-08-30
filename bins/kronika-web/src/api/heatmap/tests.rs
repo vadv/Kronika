@@ -256,23 +256,69 @@ fn high_cardinality_statement_rankings_share_identity_labels_and_one_scan() {
 }
 
 #[test]
+fn statement_overview_omits_query_and_keeps_the_latest_locator_in_one_scan() {
+    let fixture = statement_fixture(2);
+    let prepared = prepare_batch(
+        fixture.root.path(),
+        statement_batch(&[statement_ranking("total_exec_time", 1)]),
+    )
+    .expect("prepare statement ranking");
+    let result = prepared
+        .execute(&|| false)
+        .expect("execute statement ranking");
+    let encoded = serde_json::to_string(&result).expect("serialize statement ranking");
+    let entity = &result.results[0].entities[0];
+
+    assert_eq!(prepared.row_visits(), 4);
+    assert_eq!(prepared.retained_identities(), 2);
+    assert_eq!(prepared.retained_label_slots(), 12);
+    assert!(!encoded.contains("statement-"));
+    assert_eq!(entity.identity["query_id"], "1");
+    assert!(!entity.labels.contains_key("query"));
+    assert_eq!(
+        serde_json::to_value(&entity.detail_locator).expect("serialize detail locator"),
+        json!({
+            "section": "pg_stat_statements",
+            "segment_id": HOUR.to_string(),
+            "at": "200",
+            "type_id": PgStatStatementsV2::CONTRACT.type_id.get().to_string(),
+            "row_ordinal": "3",
+            "row_key": "1",
+        })
+    );
+}
+
+#[test]
 fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
     let mut fixture = ActiveStatementFixture::new();
     fixture.append(1, 10.0);
     let query = statement_batch(&[statement_ranking("total_exec_time", 1)]);
-    let captured = prepare_batch(fixture.root.path(), query.clone()).expect("captured prepare");
+    let captured_prepared =
+        prepare_batch(fixture.root.path(), query.clone()).expect("captured prepare");
 
     fixture.append(2, 100.0);
-    let captured = captured.execute(&|| false).expect("captured execution");
+    let captured = captured_prepared
+        .execute(&|| false)
+        .expect("captured execution");
+    assert_eq!(captured_prepared.row_visits(), 2);
     assert_eq!(captured.results[0].entities[0].identity["query_id"], "1");
-    assert_eq!(captured.results[0].entities[0].labels["query"], "active-1");
+    assert!(!captured.results[0].entities[0].labels.contains_key("query"));
+    assert_eq!(
+        captured.results[0].entities[0].detail_locator.row_key,
+        Some(json!("1"))
+    );
 
-    let current = prepare_batch(fixture.root.path(), query)
-        .expect("current prepare")
+    let current_prepared = prepare_batch(fixture.root.path(), query).expect("current prepare");
+    let current = current_prepared
         .execute(&|| false)
         .expect("current execution");
+    assert_eq!(current_prepared.row_visits(), 4);
     assert_eq!(current.results[0].entities[0].identity["query_id"], "2");
-    assert_eq!(current.results[0].entities[0].labels["query"], "active-2");
+    assert!(!current.results[0].entities[0].labels.contains_key("query"));
+    assert_eq!(
+        current.results[0].entities[0].detail_locator.row_key,
+        Some(json!("2"))
+    );
 }
 
 #[test]
@@ -617,7 +663,10 @@ fn statement_label_count() -> usize {
         logical_section_name(contract.type_id.get()) == Some("pg_stat_statements")
     }) {
         for column in contract.columns {
-            if column.class == ColumnClass::Label && !labels.contains(&column.name) {
+            if column.class == ColumnClass::Label
+                && !crate::api::row_key::is_detail_text("pg_stat_statements", column.name)
+                && !labels.contains(&column.name)
+            {
                 labels.push(column.name);
             }
         }
@@ -673,7 +722,22 @@ fn assert_statement_ranking(item: &super::result::HeatmapItemResult, field: &str
         assert!(entity.labels["toplevel"].is_null());
         assert_eq!(entity.labels["datname"], "fixture_db");
         assert_eq!(entity.labels["usename"], "fixture_role");
-        assert_eq!(entity.labels["query"], format!("statement-{query_id}"));
+        assert!(!entity.labels.contains_key("query"));
+        assert_eq!(entity.detail_locator.section, "pg_stat_statements");
+        assert_eq!(entity.detail_locator.segment_id, json!(HOUR.to_string()));
+        assert_eq!(entity.detail_locator.at, json!("200"));
+        assert_eq!(
+            entity.detail_locator.type_id,
+            json!(PgStatStatementsV2::CONTRACT.type_id.get().to_string())
+        );
+        assert_eq!(
+            entity.detail_locator.row_ordinal,
+            json!((query_id * 2 + 1).to_string())
+        );
+        assert_eq!(
+            entity.detail_locator.row_key,
+            Some(json!(query_id.to_string()))
+        );
     }
 }
 

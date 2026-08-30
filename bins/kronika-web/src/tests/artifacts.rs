@@ -439,6 +439,30 @@ impl Fixture {
             .expect("append process gauge fixture");
     }
 
+    pub(crate) fn append_process_cmdline(&mut self, ts: i64, pid: i32, cmdline: &str) {
+        let mut interner = Interner::new(DictLimits::default());
+        let comm = StrId(interner.intern(b"fixture").expect("intern comm").get());
+        let cmdline = StrId(
+            interner
+                .intern(cmdline.as_bytes())
+                .expect("intern command line")
+                .get(),
+        );
+        let dictionary = dict::encode(interner.window()).expect("encode process dictionary");
+        let mut row = process(ts, None, comm);
+        row.pid = pid;
+        row.cmdline = Some(cmdline);
+        let mut buffers = SectionBuffers::new();
+        buffers.push(row).expect("process row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process row")
+            .expect("nonempty process row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process row");
+    }
+
     pub(crate) fn append_process_counter_rows(&mut self, rows: &[(i64, Option<i64>)]) {
         self.append_finding_rows(rows, &[]);
     }
@@ -5999,7 +6023,11 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     assert_eq!(
         occurrences
             .iter()
-            .map(|record| record["at"].as_str().expect("event timestamp"))
+            .map(|record| {
+                record["detail_locator"]["at"]
+                    .as_str()
+                    .expect("event timestamp")
+            })
             .collect::<Vec<_>>(),
         (from..from + 3)
             .map(|at| at.to_string())
@@ -6008,7 +6036,11 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     assert_eq!(
         occurrences
             .iter()
-            .map(|record| record["row_ordinal"].as_str().expect("row ordinal"))
+            .map(|record| {
+                record["detail_locator"]["row_ordinal"]
+                    .as_str()
+                    .expect("row ordinal")
+            })
             .collect::<Vec<_>>(),
         ["1", "2", "3"]
     );
@@ -6017,6 +6049,16 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
             .iter()
             .all(|record| record.get("next_from").is_none())
     );
+    for occurrence in &occurrences {
+        assert_eq!(occurrence["source"], "pg_log_errors");
+        assert_eq!(occurrence["source_file"], "fixture");
+        assert_eq!(occurrence["pattern"], "fixture");
+        assert!(occurrence.get("sample").is_none());
+        assert!(occurrence.get("segment_id").is_none());
+        assert!(occurrence.get("row_ordinal").is_none());
+        assert_eq!(occurrence["detail_locator"]["section"], "pg_log_errors");
+        assert_eq!(occurrence["detail_locator"]["row_key"], "fixture");
+    }
 
     let target = format!(
         "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=5000"
@@ -6025,7 +6067,11 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     let timestamps = full
         .iter()
         .filter(|record| record["record"] == "event_occurrence")
-        .map(|record| record["at"].as_str().expect("event timestamp"))
+        .map(|record| {
+            record["detail_locator"]["at"]
+                .as_str()
+                .expect("event timestamp")
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         timestamps,

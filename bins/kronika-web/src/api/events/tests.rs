@@ -11,17 +11,16 @@ use crate::api::time::TimeRange;
 
 const HOUR: i64 = 1_780_000_000_000_000;
 
-fn row(source: EventSource, ordinal: u64, minute: i64, values: Value) -> EventDataRow {
+fn row(_source: EventSource, ordinal: u64, minute: i64, values: Value) -> EventDataRow {
     let Value::Object(values) = values else {
         panic!("fixture values must be an object");
     };
     EventDataRow {
-        segment_id: "7".to_owned(),
-        logical_name: source.as_str().to_owned(),
-        type_id: "2000001".to_owned(),
-        ordinal: ordinal.to_string(),
+        segment_id: 7,
+        type_id: 2_000_001,
+        row_ordinal: ordinal,
         timestamp: HOUR + minute * 60_000_000,
-        values: values.into_iter().collect(),
+        values,
     }
 }
 
@@ -34,7 +33,7 @@ fn assert_number(actual: f64, expected: f64) {
 }
 
 #[test]
-fn errors_keep_weighted_counts_minutes_shared_values_and_stable_members() {
+fn errors_keep_weighted_counts_minutes_shared_values_and_one_locator() {
     let entries = grouped(HashMap::from([(
         EventSource::Errors,
         vec![
@@ -63,18 +62,16 @@ fn errors_keep_weighted_counts_minutes_shared_values_and_stable_members() {
     assert_eq!(fatal.tier, EventTier::Critical);
     let duplicate = entries
         .iter()
-        .find(|entry| entry.text.as_deref() == Some("duplicate key"))
+        .find(|entry| entry.label.as_deref() == Some("duplicate key"))
         .expect("duplicate group");
     assert_number(duplicate.count, 8.0);
     assert_number(duplicate.minutes[2], 3.0);
     assert_number(duplicate.minutes[30], 5.0);
+    assert_eq!(duplicate.detail_locator.section, "pg_log_errors");
+    assert_eq!(duplicate.detail_locator.row_ordinal, json!("1"));
     assert_eq!(
-        duplicate
-            .rows
-            .iter()
-            .map(|row| row.ordinal.as_str())
-            .collect::<Vec<_>>(),
-        ["1", "0"]
+        duplicate.detail_locator.row_key,
+        Some(json!("duplicate key"))
     );
     let EventStat::Errors {
         database,
@@ -91,6 +88,10 @@ fn errors_keep_weighted_counts_minutes_shared_values_and_stable_members() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one regression covers the three compact-label grouping products"
+)]
 fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
     let entries = grouped(HashMap::from([
         (
@@ -156,7 +157,8 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
         .find(|entry| entry.section == "pg_log_slow_queries")
         .expect("slow group");
     assert_number(slow.count, 4.0);
-    assert_eq!(slow.text.as_deref(), Some("select 2"));
+    assert_eq!(slow.label.as_deref(), Some("select ?"));
+    assert_eq!(slow.detail_locator.row_ordinal, json!("1"));
     assert_eq!(
         slow.stat,
         EventStat::Slow {
@@ -184,6 +186,21 @@ fn slow_autovacuum_and_pgbouncer_match_the_client_reducers() {
         .find(|entry| entry.section == "pgbouncer_events")
         .expect("pool group");
     assert_number(pool.count, 2.0);
+    assert_eq!(pool.label, None);
+    assert!(!pool.key.contains("server login failed"));
+    assert!(pool.key.starts_with("pgbouncer:2:sha256:"));
+    assert!(
+        pool.detail_locator
+            .row_key
+            .as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|key| key.starts_with("sha256:"))
+    );
+    assert!(
+        !serde_json::to_string(pool)
+            .expect("pool wire")
+            .contains("server login failed")
+    );
     assert_eq!(
         pool.stat,
         EventStat::Pgbouncer {
@@ -312,14 +329,7 @@ fn checkpoints_locks_and_lifecycle_keep_exact_episode_rules() {
         .find(|entry| entry.key == "locks:583")
         .expect("waiting episode");
     assert_number(waiting.count, 2.0);
-    assert_eq!(
-        waiting
-            .rows
-            .iter()
-            .map(|row| row.ordinal.as_str())
-            .collect::<Vec<_>>(),
-        ["5", "6", "7"]
-    );
+    assert_eq!(waiting.detail_locator.row_ordinal, json!("5"));
     assert_eq!(
         waiting.stat,
         EventStat::Locks {
@@ -348,7 +358,12 @@ fn checkpoints_locks_and_lifecycle_keep_exact_episode_rules() {
     assert_eq!(
         entries
             .iter()
-            .find(|entry| entry.text.as_deref() == Some("crash"))
+            .find(|entry| {
+                matches!(
+                    entry.stat,
+                    EventStat::Lifecycle { lifecycle, .. } if lifecycle == 0.0
+                )
+            })
             .expect("crash")
             .tier,
         EventTier::Critical
@@ -417,7 +432,7 @@ fn normalization_defaults_deduplicates_and_rejects_temp_files_for_groups() {
 }
 
 #[test]
-fn occurrences_keep_source_and_physical_ties_then_limit_without_continuation() {
+fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
     let query = EventsQuery {
         range: TimeRange {
             from: HOUR,
@@ -443,11 +458,19 @@ fn occurrences_keep_source_and_physical_ties_then_limit_without_continuation() {
         &query,
         vec![
             vec![
-                stored(0, HOUR + 1, json!({ "size_bytes": "9" })),
+                stored(
+                    0,
+                    HOUR + 1,
+                    json!({ "size_bytes": "9", "statement": "raw temp statement" }),
+                ),
                 stored(1, HOUR + 1, json!({ "size_bytes": "10" })),
             ],
             vec![
-                stored(2, HOUR + 1, json!({ "severity": 1, "pattern": "boom" })),
+                stored(
+                    2,
+                    HOUR + 1,
+                    json!({ "severity": 1, "pattern": "boom", "sample": "raw error sample" }),
+                ),
                 stored(3, HOUR + 2, json!({ "severity": 1, "pattern": "later" })),
             ],
         ],
@@ -463,16 +486,27 @@ fn occurrences_keep_source_and_physical_ties_then_limit_without_continuation() {
     assert_eq!(
         occurrences
             .iter()
-            .map(|row| row.row_ordinal.as_str())
+            .map(|row| row
+                .detail_locator
+                .row_ordinal
+                .as_str()
+                .expect("string ordinal"))
             .collect::<Vec<_>>(),
         ["0", "1", "2"]
     );
-    assert_eq!(occurrences[0].fields.get("row_key"), Some(&json!("9")));
+    assert!(!occurrences[0].fields.contains_key("statement"));
+    assert!(!occurrences[2].fields.contains_key("sample"));
+    assert_eq!(occurrences[2].fields.get("pattern"), Some(&json!("boom")));
+    assert_eq!(occurrences[0].detail_locator.row_key, Some(json!("9")));
     let wire = serde_json::to_value(EventsResult::Occurrences {
         occurrences,
         truncated,
     })
     .expect("wire result");
+    let first = &wire["occurrences"][0];
+    assert!(first.get("segment_id").is_none());
+    assert!(first.get("row_key").is_none());
+    assert_eq!(first["detail_locator"]["segment_id"], "7");
     assert!(wire.get("has_more").is_none());
     assert!(wire.get("next_from").is_none());
 }
@@ -514,9 +548,12 @@ fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
     };
     assert!(truncated);
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].text.as_deref(), Some("large"));
+    assert_eq!(groups[0].label.as_deref(), Some("large"));
     assert_number(groups[0].count, 5.0);
-    assert_eq!(groups[0].rows.len(), 2);
+    assert_eq!(groups[0].detail_locator.row_ordinal, json!("1"));
+    let serialized = serde_json::to_value(&groups[0]).expect("group wire");
+    assert!(serialized.get("text").is_none());
+    assert!(serialized.get("rows").is_none());
     let wire = serde_json::to_value(result).expect("wire result");
     assert!(wire.get("has_more").is_none());
     assert!(wire.get("next_from").is_none());

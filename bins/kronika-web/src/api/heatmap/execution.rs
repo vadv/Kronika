@@ -15,6 +15,7 @@ use super::result::{
     HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
 };
 use crate::api::render::{cell, record};
+use crate::api::row_key;
 use crate::api::{ApiError, CachePolicy, ResponseMeta};
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
 type RenderedIds = HashMap<(usize, u64), Value>;
@@ -621,7 +622,10 @@ fn validate_item(
     let mut label_seen = HashSet::new();
     for contract in contracts {
         for column in contract.columns {
-            if column.class == ColumnClass::Label && label_seen.insert(column.name) {
+            if column.class == ColumnClass::Label
+                && !row_key::is_detail_text(&ranking.section, column.name)
+                && label_seen.insert(column.name)
+            {
                 labels.push(column.name.to_owned());
             }
         }
@@ -641,6 +645,7 @@ struct PhysicalPlan {
     timestamp: &'static str,
     projection: Vec<&'static str>,
     labels: Vec<Option<&'static str>>,
+    locator_key: Option<&'static str>,
     bindings: Vec<Binding>,
     first_index: usize,
 }
@@ -679,6 +684,9 @@ fn physical_plans(
                 .map(|name| contract.column(name).map(|column| column.name))
                 .collect::<Vec<_>>();
             projection.extend(labels.iter().flatten().copied());
+            let locator_key = row_key::discriminator(&shared.name)
+                .and_then(|name| contract.column(name).map(|column| column.name));
+            projection.extend(locator_key);
             let mut bindings = Vec::new();
             let mut first_index = usize::MAX;
             for (accumulator, spec) in specs.iter().enumerate() {
@@ -730,6 +738,7 @@ fn physical_plans(
                 timestamp,
                 projection,
                 labels,
+                locator_key,
                 bindings,
                 first_index,
             });
@@ -756,6 +765,7 @@ fn scan_plan(
     #[cfg(test)] row_visits: &std::sync::atomic::AtomicU64,
 ) -> Result<(), HeatmapError> {
     let take = usize::try_from(plan.rows).unwrap_or(usize::MAX);
+    let segment_id = segment.id();
     let mut visited = 0_usize;
     let mut failure = None;
     segment
@@ -789,12 +799,14 @@ fn scan_plan(
             }
             let entity = match sections[plan.section].observe(
                 segment_slot,
+                segment_id,
                 plan.type_id,
                 plan.contract,
                 &row,
                 ordinal,
                 timestamp,
                 &plan.labels,
+                plan.locator_key,
             ) {
                 Ok(entity) => entity,
                 Err(error) => {
@@ -855,6 +867,59 @@ struct SharedEntity {
     identity_segment: usize,
     identity: Box<[Cell]>,
     labels: Box<[Option<StoredLabel>]>,
+    locator: StoredLocator,
+}
+
+struct StoredLocator {
+    segment_slot: usize,
+    segment_id: i64,
+    timestamp: i64,
+    ordinal: u64,
+    row_key: Option<Cell>,
+}
+
+impl StoredLocator {
+    fn from_row(
+        segment_slot: usize,
+        segment_id: i64,
+        timestamp: i64,
+        ordinal: u64,
+        row: &Row,
+        locator_key: Option<&str>,
+    ) -> Self {
+        Self {
+            segment_slot,
+            segment_id,
+            timestamp,
+            ordinal,
+            row_key: locator_key
+                .and_then(|name| row.get(name))
+                .filter(|value| !matches!(value, Cell::Null))
+                .cloned(),
+        }
+    }
+
+    fn observe(
+        &mut self,
+        segment_slot: usize,
+        segment_id: i64,
+        timestamp: i64,
+        ordinal: u64,
+        row: &Row,
+        locator_key: Option<&str>,
+    ) {
+        if (timestamp, segment_slot, ordinal) < (self.timestamp, self.segment_slot, self.ordinal) {
+            return;
+        }
+        *self = Self::from_row(
+            segment_slot,
+            segment_id,
+            timestamp,
+            ordinal,
+            row,
+            locator_key,
+        );
+    }
 }
 
 struct IndexedSection<'a> {
@@ -903,12 +968,14 @@ impl SharedSection {
     fn observe(
         &mut self,
         segment_slot: usize,
+        segment_id: i64,
         type_id: u32,
         contract: &'static kronika_registry::TypeContract,
         row: &Row,
         ordinal: u64,
         timestamp: i64,
         labels: &[Option<&'static str>],
+        locator_key: Option<&'static str>,
     ) -> Result<EntityId, HeatmapError> {
         self.identity_scratch.clear();
         self.identity_scratch.extend(
@@ -919,6 +986,14 @@ impl SharedSection {
         );
         raw_key_into(&mut self.key_scratch, type_id, &self.identity_scratch);
         let entity = if let Some(entity) = self.by_raw_key.get(self.key_scratch.as_str()).copied() {
+            self.entities[entity.index()].locator.observe(
+                segment_slot,
+                segment_id,
+                timestamp,
+                ordinal,
+                row,
+                locator_key,
+            );
             entity
         } else {
             let raw_key: Box<str> = self.key_scratch.clone().into_boxed_str();
@@ -937,6 +1012,14 @@ impl SharedSection {
                 identity_segment: segment_slot,
                 identity: self.identity_scratch.clone().into_boxed_slice(),
                 labels: vec![None; self.label_count].into_boxed_slice(),
+                locator: StoredLocator::from_row(
+                    segment_slot,
+                    segment_id,
+                    timestamp,
+                    ordinal,
+                    row,
+                    locator_key,
+                ),
             });
             entity
         };
@@ -1319,6 +1402,15 @@ impl Accumulator {
                         );
                     }
                 }
+                if let Some(value) = &state.locator.row_key {
+                    reserve_id(
+                        value,
+                        state.locator.segment_slot,
+                        retained,
+                        retained_indices,
+                        self.first_index,
+                    );
+                }
             }
         });
     }
@@ -1498,13 +1590,20 @@ impl Accumulator {
                 }
             }
             let shared = &section.entities[row.entity.index()];
+            let labels = labels_object(
+                spec,
+                &shared.labels,
+                &self.label_slots,
+                dictionary,
+                self.first_index,
+            )?;
             entities.push(HeatmapEntity {
                 type_id: shared.type_id,
                 identity: identity_object(shared.type_id, row.identity_values),
-                labels: labels_object(
-                    spec,
-                    &shared.labels,
-                    &self.label_slots,
+                labels,
+                detail_locator: render_detail_locator(
+                    &spec.query.ranking.section,
+                    shared,
                     dictionary,
                     self.first_index,
                 )?,
@@ -1751,6 +1850,30 @@ fn labels_object(
             Ok((name.clone(), value))
         })
         .collect()
+}
+
+fn render_detail_locator(
+    section: &str,
+    entity: &SharedEntity,
+    dictionary: &RenderedIds,
+    index: usize,
+) -> Result<row_key::DetailLocator, HeatmapError> {
+    let locator = &entity.locator;
+    let mut fields = serde_json::Map::new();
+    if let (Some(name), Some(value)) = (row_key::discriminator(section), locator.row_key.as_ref()) {
+        fields.insert(
+            name.to_owned(),
+            render_cell(value, locator.segment_slot, dictionary, index)?,
+        );
+    }
+    Ok(row_key::detail_locator(
+        section,
+        locator.segment_id,
+        locator.timestamp,
+        entity.type_id,
+        locator.ordinal,
+        &fields,
+    ))
 }
 
 fn render_cells(

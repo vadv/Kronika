@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 
 use super::query::{Plan, plans, streaming_chunk_dictionary, validate_row_dictionary};
 use super::render::{cell, record};
+use super::row_key::{self, DetailLocator};
 use super::time::TimeRange;
 use super::{ApiError, CachePolicy, ResponseMeta, log_warnings, weak_etag};
 use crate::route::{DataRequest, Filter, SegmentRequest};
@@ -102,11 +103,10 @@ impl EventSource {
             .find(|source| source.as_str() == name)
     }
 
-    const fn fields(self) -> &'static [&'static str] {
+    const fn group_fields(self) -> &'static [&'static str] {
         match self {
             Self::Errors => &[
-                "severity", "category", "sqlstate", "pattern", "count", "sample", "database",
-                "username",
+                "severity", "category", "sqlstate", "pattern", "count", "database", "username",
             ],
             Self::Checkpoints => &[
                 "phase",
@@ -130,14 +130,79 @@ impl EventSource {
                 "tuples_dead_not_removable",
                 "elapsed_ms",
             ],
-            Self::SlowQueries => &[
+            Self::SlowQueries => &["pattern", "count", "max_duration_ms", "total_duration_ms"],
+            Self::LockWaits => &["kind", "pid", "lock_target", "duration_ms", "holding_pids"],
+            Self::Lifecycle => &["kind", "pid", "signal", "shutdown_mode"],
+            Self::Pgbouncer => &["level", "database", "text"],
+            Self::TempFiles => &[],
+        }
+    }
+
+    const fn occurrence_fields(self) -> &'static [&'static str] {
+        match self {
+            Self::Errors => &[
+                "system_identifier",
+                "source_file",
+                "severity",
+                "category",
+                "sqlstate",
                 "pattern",
-                "sample",
+                "count",
+                "database",
+                "username",
+            ],
+            Self::Checkpoints => &[
+                "system_identifier",
+                "source_file",
+                "phase",
+                "seconds_apart",
+                "buffers_written",
+                "write_ms",
+                "sync_ms",
+                "total_ms",
+                "distance_kb",
+                "estimate_kb",
+                "wal_added",
+                "wal_removed",
+                "wal_recycled",
+                "sync_files",
+                "longest_sync_ms",
+                "average_sync_ms",
+            ],
+            Self::Autovacuum => &[
+                "system_identifier",
+                "source_file",
+                "kind",
+                "relation",
+                "index_scans",
+                "pages_removed",
+                "pages_remaining",
+                "tuples_removed",
+                "tuples_remaining",
+                "tuples_dead_not_removable",
+                "elapsed_ms",
+                "buffer_hits",
+                "buffer_misses",
+                "buffer_dirtied",
+                "avg_read_rate_mbs",
+                "avg_write_rate_mbs",
+                "cpu_user_ms",
+                "cpu_system_ms",
+                "wal_records",
+                "wal_fpi",
+                "wal_bytes",
+            ],
+            Self::SlowQueries => &[
+                "system_identifier",
+                "source_file",
+                "pattern",
                 "count",
                 "max_duration_ms",
                 "total_duration_ms",
             ],
             Self::LockWaits => &[
+                "system_identifier",
+                "source_file",
                 "kind",
                 "pid",
                 "lock_mode",
@@ -145,18 +210,25 @@ impl EventSource {
                 "duration_ms",
                 "holding_pids",
                 "wait_queue",
-                "statement",
             ],
+            Self::TempFiles => &["system_identifier", "source_file", "path", "size_bytes"],
             Self::Lifecycle => &[
+                "system_identifier",
+                "source_file",
                 "kind",
                 "pid",
                 "signal",
                 "shutdown_mode",
-                "message",
-                "query_detail",
             ],
-            Self::Pgbouncer => &["level", "database", "username", "host", "text"],
-            Self::TempFiles => &[],
+            Self::Pgbouncer => &[
+                "source_file",
+                "level",
+                "database",
+                "username",
+                "host",
+                // The raw discriminator is hashed into the locator, then removed.
+                "text",
+            ],
         }
     }
 }
@@ -276,15 +348,13 @@ impl EventsResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EventDataRow {
-    pub(crate) segment_id: String,
-    pub(crate) logical_name: String,
-    pub(crate) type_id: String,
-    pub(crate) ordinal: String,
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
     pub(crate) timestamp: i64,
-    pub(crate) values: BTreeMap<String, Value>,
+    pub(crate) values: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -301,13 +371,14 @@ pub(crate) struct EventGroup {
     pub(crate) key: String,
     pub(crate) section: String,
     pub(crate) tier: EventTier,
-    pub(crate) text: Option<String>,
+    pub(crate) label: Option<String>,
     pub(crate) count: f64,
     pub(crate) first_ts: i64,
     pub(crate) last_ts: i64,
     pub(crate) minutes: Vec<f64>,
     pub(crate) stat: EventStat,
-    pub(crate) rows: Vec<EventDataRow>,
+    #[serde(rename = "detail_locator")]
+    pub(crate) detail_locator: DetailLocator,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -372,10 +443,7 @@ pub(crate) struct EventOccurrence {
     #[serde(flatten)]
     pub(crate) fields: Map<String, Value>,
     pub(crate) source: String,
-    pub(crate) segment_id: String,
-    pub(crate) type_id: String,
-    pub(crate) row_ordinal: String,
-    pub(crate) at: String,
+    pub(crate) detail_locator: DetailLocator,
 }
 
 pub(crate) struct PreparedEvents {
@@ -444,9 +512,9 @@ impl PreparedEvents {
                     segment_ref.id(),
                     source.as_str(),
                     if self.query.representation == EventsRepresentation::Groups {
-                        source.fields()
+                        source.group_fields()
                     } else {
-                        &[]
+                        source.occurrence_fields()
                     },
                     &[],
                     self.query.range,
@@ -699,16 +767,14 @@ fn groups_result(
         .copied()
         .zip(by_source)
         .map(|(source, rows)| {
-            let logical_name = source.as_str().to_owned();
             let rows = rows
                 .into_iter()
                 .map(|row| EventDataRow {
-                    segment_id: row.segment_id.to_string(),
-                    logical_name: logical_name.clone(),
-                    type_id: row.type_id.to_string(),
-                    ordinal: row.row_ordinal.to_string(),
+                    segment_id: row.segment_id,
+                    type_id: row.type_id,
+                    row_ordinal: row.row_ordinal,
                     timestamp: row.at,
-                    values: row.fields,
+                    values: row.fields.into_iter().collect(),
                 })
                 .collect();
             (source, rows)
@@ -727,18 +793,23 @@ fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<StoredEventRow>>) 
         .zip(by_source)
         .flat_map(|(source, rows)| {
             rows.into_iter().map(|row| {
-                let mut fields = row.fields.into_iter().collect();
+                let mut fields: Map<String, Value> = row.fields.into_iter().collect();
+                let detail_locator = row_key::detail_locator(
+                    source.as_str(),
+                    row.segment_id,
+                    row.at,
+                    row.type_id,
+                    row.row_ordinal,
+                    &fields,
+                );
+                fields.retain(|field, _| !row_key::is_detail_text(source.as_str(), field));
                 label_event_fields(source.as_str(), &mut fields);
-                super::row_key::attach(source.as_str(), &mut fields);
                 (
                     row.at,
                     EventOccurrence {
                         fields,
                         source: source.as_str().to_owned(),
-                        segment_id: row.segment_id.to_string(),
-                        type_id: row.type_id.to_string(),
-                        row_ordinal: row.row_ordinal.to_string(),
-                        at: row.at.to_string(),
+                        detail_locator,
                     },
                 )
             })

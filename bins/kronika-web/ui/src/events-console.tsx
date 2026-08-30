@@ -1,16 +1,14 @@
 import { ChevronRight, CircleAlert, HardDrive, Lock, Network, Power, Recycle, Timer, type LucideIcon } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
-import { acceptResponse, loadSnapshot, type DataRow } from "./api"
 import { useDisplayTime } from "./display-time-context"
-import { EVENT_TIERS, type EventEntry, type EventStat, type EventTier } from "./events-groups"
-import { categoryLabel, eventValue } from "./events-format"
+import { EVENT_TIERS, type EventEntry, type EventTier } from "./events-groups"
+import { categoryLabel } from "./events-format"
 import type { Translate } from "./help"
-import { compact, humanDuration, rawText, type Locale } from "./model"
+import { compact, humanDuration, type Locale } from "./model"
 
 const MINUTE_US = 60_000_000
 const TIER_ROWS = 100
-const RAW_PAGE = 20
 
 const TIER_DOT: Readonly<Record<EventTier, string>> = {
   critical: "bg-bad",
@@ -85,7 +83,7 @@ export function entryTitle(entry: EventEntry, t: Translate, locale: Locale): str
     if (stat.lifecycle === 1) return t("events.entry.lifecycle.shutdown", { mode: stat.mode ?? "?" })
     return t("events.entry.lifecycle.ready")
   }
-  return entry.text ?? ""
+  return entry.label ?? sectionLabel(entry.section, t)
 }
 
 function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string | null {
@@ -110,7 +108,6 @@ function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string 
     })
   }
   if (stat.kind === "pg.locks" && stat.targets.length > 0) return stat.targets.join(" · ")
-  if (stat.kind === "pg.lifecycle") return entry.text
   return null
 }
 
@@ -197,7 +194,7 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
   const chips = entryChips(entry, t, locale)
   const critical = entry.tier === "critical"
   const Icon = SECTION_ICONS[entry.section] ?? CircleAlert
-  const recorded = entry.text !== null && title === entry.text
+  const recorded = entry.label !== null && title === entry.label
   const moments = entry.firstTs === entry.lastTs
     ? time.timestamp(entry.firstTs)
     : `${time.timestamp(entry.firstTs)}–${time.timestamp(entry.lastTs)}`
@@ -228,38 +225,25 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
       <span className="max-[760px]:hidden"><EventStrip entry={entry} hour={hour} onCursor={onCursor} t={t} /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
-    {expanded && <EventEntryDetail entry={entry} locale={locale} onCursor={onCursor} t={t} />}
+    {expanded && <EventEntryDetail entry={entry} locale={locale} t={t} />}
   </div>
 }
 
-function EventEntryDetail({ entry, locale, onCursor, t }: {
+function EventEntryDetail({ entry, locale, t }: {
   readonly entry: EventEntry
   readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
   readonly t: Translate
 }) {
-  const [shown, setShown] = useState(RAW_PAGE)
-  useEffect(() => setShown(RAW_PAGE), [entry.key])
   const note = GROUPED_NOTES[entry.stat.kind]
   const facts = entryFacts(entry, locale, t)
   return <div className="grid gap-2 border-t border-line2 bg-s2 px-[9px] py-[9px]" data-testid="event-entry-detail">
-    {entry.stat.kind === "pg.errors" && <ErrorSample row={entry.rows[0]} t={t} />}
-    {entry.stat.kind === "pg.locks" && <LockWaiters entry={entry} locale={locale} t={t} />}
     {facts.length > 0 && <div className="flex flex-wrap gap-1.5" data-testid="event-entry-facts">
       {facts.map(([label, shownValue]) => <span className="flex items-baseline gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1" key={label}>
         <span className="text-xs text-fg3">{label}</span>
         <strong className="font-mono text-xs font-medium tabular-nums text-fg">{shownValue}</strong>
       </span>)}
     </div>}
-    <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
-      {entry.rows.slice(0, shown).map((row) => <RawRow key={`${row.segmentId}:${row.typeId}:${row.ordinal}`} locale={locale} onCursor={onCursor} row={row} stat={entry.stat} t={t} />)}
-    </div>
-    <div className="flex items-center justify-between gap-2">
-      {entry.rows.length > shown
-        ? <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" onClick={() => setShown((current) => current + RAW_PAGE)} type="button">{t("events.raw.more", { count: entry.rows.length - shown })}</button>
-        : <span />}
-      {note !== undefined && <p className="text-right text-xs text-fg3">{t(note)}</p>}
-    </div>
+    {note !== undefined && <p className="text-right text-xs text-fg3">{t(note)}</p>}
   </div>
 }
 
@@ -309,154 +293,6 @@ function entryFacts(entry: EventEntry, locale: Locale, t: Translate): readonly (
     ]
   }
   return stat.database === null ? [] : [[field("database"), stat.database]]
-}
-
-// Load large text fields only for an expanded entry.
-const ERROR_TEXT_FIELDS = ["detail", "hint", "context", "statement"]
-
-function ErrorSample({ row, t }: { readonly row: DataRow | undefined; readonly t: Translate }) {
-  const [texts, setTexts] = useState<DataRow | null>(null)
-  useEffect(() => {
-    setTexts(null)
-    if (row === undefined) return
-    const controller = new AbortController()
-    acceptResponse(
-      loadSnapshot(
-        row.segmentId,
-        row.timestamp,
-        [{ section: row.logicalName, fields: ERROR_TEXT_FIELDS, typeId: row.typeId }],
-        controller.signal,
-        undefined,
-        { typeId: row.typeId, rowOrdinal: row.ordinal, fullText: true },
-      ),
-      controller.signal,
-      (page) => setTexts(page.sections[row.logicalName]?.[0] ?? null),
-    )
-    return () => controller.abort()
-  }, [row])
-  if (row === undefined) return null
-  const values = { ...row.values, ...(texts?.values ?? {}) }
-  const parts = (["sample", "detail", "hint", "context", "statement"] as const)
-    .flatMap((field) => {
-      const content = rawText(values[field] ?? null)
-      return content === null || content === "" ? [] : [[field, content] as const]
-    })
-  if (parts.length === 0) return null
-  return <div className="grid gap-1.5">
-    {parts.map(([field, content]) => <div key={field}>
-      <small className="block text-xs text-fg3">{t(`events.field.${field}`)}</small>
-      <div className="mt-[2px] max-h-[160px] overflow-auto rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1.5 font-mono text-xs leading-[1.5] text-fg2 [overflow-wrap:anywhere] whitespace-pre-wrap">{content}</div>
-    </div>)}
-  </div>
-}
-
-function LockWaiters({ entry, locale, t }: {
-  readonly entry: EventEntry
-  readonly locale: Locale
-  readonly t: Translate
-}) {
-  const waiters = useMemo(() => {
-    const byPid = new Map<string, { readonly pid: string; maxMs: number | null; mode: string | null; target: string | null; statement: string | null }>()
-    for (const row of entry.rows) {
-      const pid = rawText(row.values.pid ?? null) ?? "?"
-      const duration = row.values.duration_ms
-      const ms = typeof duration === "number" ? duration : null
-      const current = byPid.get(pid)
-      if (current === undefined) {
-        byPid.set(pid, {
-          pid,
-          maxMs: ms,
-          mode: rawText(row.values.lock_mode ?? null),
-          target: rawText(row.values.lock_target ?? null),
-          statement: rawText(row.values.statement ?? null),
-        })
-      } else {
-        if (ms !== null && (current.maxMs === null || ms > current.maxMs)) current.maxMs = ms
-        if (current.statement === null) current.statement = rawText(row.values.statement ?? null)
-      }
-    }
-    return [...byPid.values()].sort((left, right) => (right.maxMs ?? 0) - (left.maxMs ?? 0))
-  }, [entry.rows])
-  return <div className="grid gap-1" data-testid="lock-waiters">
-    <p className="text-xs text-fg3">{t("events.holder.missing")}</p>
-    <div className="grid gap-px overflow-hidden rounded-[var(--radius-sm)] border border-line2 bg-s1">
-      {waiters.map((waiter) => <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-baseline gap-2 px-2 py-1" key={waiter.pid}>
-        <span className="rounded-[var(--radius-xs)] bg-s3 px-1 font-mono text-xs tabular-nums text-fg2">pid {waiter.pid}</span>
-        <span className="whitespace-nowrap font-mono text-xs tabular-nums text-fg">{waiter.maxMs === null ? "—" : humanDuration(waiter.maxMs, locale)}</span>
-        <span className="truncate text-xs text-fg2">
-          {waiter.mode !== null && <span className="text-fg3">{waiter.mode} · </span>}
-          {waiter.target !== null && <span className="text-fg3">{waiter.target}</span>}
-          {waiter.statement !== null && <span className="font-mono"> · {waiter.statement}</span>}
-        </span>
-      </div>)}
-    </div>
-  </div>
-}
-
-function RawRow({ locale, onCursor, row, stat, t }: {
-  readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
-  readonly row: DataRow
-  readonly stat: EventStat
-  readonly t: Translate
-}) {
-  const time = useDisplayTime()
-  const parts = rawParts(row, stat, locale, t)
-  return <button
-    className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2.5 border-0 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-s3"
-    data-testid="event-raw-row"
-    onClick={() => onCursor(row.timestamp)}
-    type="button"
-  >
-    <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(row.timestamp)}</time>
-    <span className="truncate font-mono text-xs text-fg2">{parts.join(" · ")}</span>
-  </button>
-}
-
-function rawParts(row: DataRow, stat: EventStat, locale: Locale, t: Translate): readonly string[] {
-  const cell = (field: string) => row.values[field] ?? null
-  const shownText = (field: string) => rawText(cell(field))
-  const shownValue = (field: string) => eventValue({ logicalName: row.logicalName }, field, cell(field), locale, t)
-  if (stat.kind === "pg.errors") {
-    const count = shownText("count")
-    return [
-      ...(count === null || count === "1" ? [] : [`×${count}`]),
-      ...(shownText("sample") === null ? [] : [shownText("sample") ?? ""]),
-    ]
-  }
-  if (stat.kind === "pg.slow") {
-    return [`×${shownText("count") ?? "1"}`, shownValue("max_duration_ms")]
-  }
-  if (stat.kind === "pg.autovacuum") {
-    return [
-      shownValue("elapsed_ms"),
-      ...(shownText("tuples_removed") === null ? [] : [`${t("events.field.tuples_removed")}: ${shownValue("tuples_removed")}`]),
-    ]
-  }
-  if (stat.kind === "pg.checkpoints" || stat.kind === "pg.checkpoint_warning") {
-    return [
-      shownValue("phase"),
-      ...(shownText("reason") === null ? [] : [shownText("reason") ?? ""]),
-      ...(shownText("buffers_written") === null ? [] : [`${t("events.field.buffers_written")}: ${shownValue("buffers_written")}`]),
-      ...(shownText("sync_ms") === null ? [] : [`sync ${shownValue("sync_ms")}`]),
-      ...(shownText("seconds_apart") === null ? [] : [`${shownText("seconds_apart")} s`]),
-    ]
-  }
-  if (stat.kind === "pg.locks") {
-    return [
-      shownValue("kind"),
-      `pid ${shownText("pid") ?? "?"}`,
-      ...(shownText("duration_ms") === null ? [] : [shownValue("duration_ms")]),
-      ...(shownText("statement") === null ? [] : [shownText("statement") ?? ""]),
-    ]
-  }
-  if (stat.kind === "pg.lifecycle") {
-    return [shownText("message") ?? "", ...(shownText("query_detail") === null ? [] : [shownText("query_detail") ?? ""])]
-  }
-  return [
-    ...(shownText("username") === null ? [] : [shownText("username") ?? ""]),
-    ...(shownText("host") === null ? [] : [shownText("host") ?? ""]),
-  ]
 }
 
 export function EventTierSection({ entries, expandedKey, filtered, hour, locale, onCursor, onToggle, t, tier }: {

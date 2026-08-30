@@ -294,7 +294,7 @@ fn a_predecessor_before_the_current_window_still_feeds_rates() {
     ));
     assert_eq!(process["rows"][0]["read_bytes"], 5.0);
     assert_eq!(
-        process["rows"][0]["segment_id"],
+        process["rows"][0]["detail_locator"]["segment_id"],
         CURRENT_SEGMENT.to_string()
     );
 
@@ -328,7 +328,10 @@ fn finder_chooses_the_latest_actual_sample_across_overlapping_segments() {
         &|| false,
     ));
     assert_eq!(result["rows"][0]["comm"], "later");
-    assert_eq!(result["rows"][0]["segment_id"], FIRST_SEGMENT.to_string());
+    assert_eq!(
+        result["rows"][0]["detail_locator"]["segment_id"],
+        FIRST_SEGMENT.to_string()
+    );
 }
 
 #[test]

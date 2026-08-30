@@ -633,13 +633,12 @@ test("event groups use one half-open request and validate the server-owned shape
       { record: "events", representation: "groups", truncated: false },
       {
         record: "event_group", key: "slow:select ?", section: "pg_log_slow_queries", tier: "notable",
-        text: "select 1", count: 2, firstTs: START + 180_000_000, lastTs: START + 180_000_000,
+        label: "select ?", count: 2, firstTs: START + 180_000_000, lastTs: START + 180_000_000,
         minutes, stat: { kind: "pg.slow", maxMs: 800, totalMs: 1_200, thresholdMs: 500 },
-        rows: [{
-          segmentId: "7", logicalName: "pg_log_slow_queries", typeId: "2004001", ordinal: "3",
-          timestamp: START + 180_000_000,
-          values: { pattern: "select ?", sample: "select 1", count: 2, max_duration_ms: 800, total_duration_ms: 1_200 },
-        }],
+        detail_locator: {
+          section: "pg_log_slow_queries", segment_id: "7", at: String(START + 180_000_000),
+          type_id: "2004001", row_ordinal: "3", row_key: "select ?",
+        },
       },
     ])
   }
@@ -656,15 +655,19 @@ test("event groups use one half-open request and validate the server-owned shape
     assert.equal(request?.searchParams.get("limit"), "5000")
     assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
     assert.equal(groups[0]?.stat.kind, "pg.slow")
-    assert.equal(groups[0]?.rows[0]?.values.sample, "select 1")
+    assert.equal(groups[0]?.label, "select ?")
+    assert.equal(groups[0]?.detailLocator.row_ordinal, "3")
 
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
-      { record: "event_group", minutes: [] },
+      {
+        record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
+        count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
+      },
     ])
     await assert.rejects(
       api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
-      /event tier is invalid|event minutes are invalid/,
+      /event detail locator/,
     )
   } finally {
     globalThis.fetch = originalFetch

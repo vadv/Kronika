@@ -392,8 +392,9 @@ the numeric category only on a `pg_log_errors` locator.
 
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 a grouped operator event: it has no finding locator and does not appear in
-grouped Events or on the shared timeline. Raw temporary-file rows remain
-available through Events occurrences and ordinary history and row reads.
+grouped Events or on the shared timeline. Events occurrences expose its compact
+structural fields and an exact detail locator; the complete stored row remains
+available through row detail and ordinary history reads.
 `pgbouncer_events` likewise has no finding locator or timeline mark, but its
 rows do reach grouped Events.
 
@@ -475,10 +476,11 @@ equivalent counter delta and observed duration, plus the last gauge sample.
 Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
-and similar display values would duplicate the largest fields in the segment.
-A heatmap that needs these labels selects a raw projection before execution and
-retains compact label references while decoding the selected rows. Ranking does
-not start a later read for its winners.
+and similar payloads would duplicate the largest fields in the segment.
+Overview excludes those payloads from automatic labels, retains the other
+compact labels while decoding each selected row once, and retains the winning
+entity's exact detail locator in that pass. A caller requests the complete row
+explicitly through row detail; ranking does not start a later read.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
 browser revalidates against, so the file has to hold it rather than have web
@@ -652,16 +654,19 @@ the browser use the same typed result; the browser renders server order and has
 no second grouping reducer.
 
 Each group shows its recorded key, count, per-minute occurrences, first and
-last times, and one sample. Expanding a group shows its stream-specific columns
-and source rows. The separate occurrence representation retains every stored
-field, known code labels, the row key, and physical locators. It also admits
-raw `pg_log_temp_files`, which has no grouped representation. Both forms report
-truncation after the global limit and have no continuation cursor.
+last times, structural statistics, and one exact detail locator. Groups do not
+embed sample text or their source rows. The separate occurrence representation
+contains compact structural fields, known code labels, and an exact detail
+locator; it also admits `pg_log_temp_files`, which has no grouped
+representation. The complete stored row is returned only by row detail. Both
+forms report truncation only when the global limit excludes matching entries
+and have no continuation cursor.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
-normalized pattern and retain the slowest sample. Autovacuum and autoanalyze
-group by relation. Checkpoints form one group with timed and requested counts.
-PgBouncer events group by level and message. Lifecycle records remain separate.
+normalized pattern, and their detail locator identifies the slowest occurrence.
+Autovacuum and autoanalyze group by relation. Checkpoints form one group with
+timed and requested counts. PgBouncer events group by level and message.
+Lifecycle records remain separate.
 
 Lock waits group by recorded `holding_pids`. Acquired rows have no holder list;
 they join waiting rows with the same pid and target, and unmatched rows form a
@@ -1139,6 +1144,14 @@ Potentially large textual section responses are streamable, for example as
 NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
 does not lose precision. A blob value carries the stored bytes and the recorded
 `full_len`, `truncated` and `hash` metadata.
+
+Mass MCP results contain compact identifiers, metrics, bounded labels and an
+exact `detail_locator`; they do not inline query text, plans, command lines, log
+messages or similar stored payloads. `kronika_get_row_detail` is the sole MCP
+transition to the complete stored row. Each potentially large text field in
+that response has one stable object shape: `stored_text`, decimal `full_len`,
+`truncated`, and `sha256`. These fields preserve collector-side truncation
+facts; a short untruncated value uses `truncated: false` and `sha256: null`.
 
 The common MCP `from`, `to`, and `at` time inputs accept Unix microseconds as a
 JSON integer or canonical signed decimal-string `i64`, as well as the documented

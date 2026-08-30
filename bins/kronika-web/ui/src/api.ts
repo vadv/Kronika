@@ -8,7 +8,7 @@ import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
-import type { EventEntry, EventStat, EventTier } from "./events-groups"
+import type { DetailLocator, EventEntry, EventStat, EventTier } from "./events-groups"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -550,35 +550,31 @@ function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
   if (tier !== "critical" && tier !== "notable" && tier !== "routine") throw new Error("event tier is invalid")
   const minutes = numberArray(record["minutes"], "event minutes")
   if (minutes.length !== 60) throw new Error("event minutes are invalid")
-  const rows = record["rows"]
-  if (!Array.isArray(rows)) throw new Error("event rows are invalid")
   return {
     key: requiredText(record["key"], "event key"),
     section: requiredText(record["section"], "event section"),
     tier: tier satisfies EventTier,
-    text: nullableText(record["text"], "event text"),
+    label: nullableText(record["label"], "event label"),
     count: finiteNumber(record["count"], "event count"),
     firstTs: integer(record["firstTs"], "event first timestamp"),
     lastTs: integer(record["lastTs"], "event last timestamp"),
     minutes,
     stat: eventStat(record["stat"]),
-    rows: rows.map(eventRow),
+    detailLocator: detailLocator(record["detail_locator"]),
   }
 }
 
-function eventRow(value: unknown): DataRow {
-  const row = strictRecord(value, "event row")
-  const values = strictRecord(row["values"], "event values")
-  for (const [name, cell] of Object.entries(values)) {
-    if (!validCell(cell)) throw new Error(`event value ${name} is invalid`)
-  }
+function detailLocator(value: unknown): DetailLocator {
+  const locator = strictRecord(value, "event detail locator")
+  const rowKey = locator["row_key"]
+  if (rowKey !== undefined && !validCell(rowKey)) throw new Error("event detail row key is invalid")
   return {
-    segmentId: requiredText(row["segmentId"], "event segment id"),
-    logicalName: requiredText(row["logicalName"], "event logical name"),
-    typeId: requiredText(row["typeId"], "event type id"),
-    ordinal: requiredText(row["ordinal"], "event row ordinal"),
-    timestamp: integer(row["timestamp"], "event row timestamp"),
-    values: values as Readonly<Record<string, Cell>>,
+    section: requiredText(locator["section"], "event detail section"),
+    segment_id: requiredText(locator["segment_id"], "event detail segment id"),
+    at: requiredText(locator["at"], "event detail timestamp"),
+    type_id: requiredText(locator["type_id"], "event detail type id"),
+    row_ordinal: requiredText(locator["row_ordinal"], "event detail row ordinal"),
+    ...(rowKey === undefined ? {} : { row_key: rowKey }),
   }
 }
 

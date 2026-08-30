@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::query::NormalizedRanking;
+use crate::api::row_key::DetailLocator;
 
 pub(crate) type NamedValues = BTreeMap<String, Value>;
 
@@ -62,6 +63,7 @@ pub(crate) struct HeatmapEntity {
     pub(crate) type_id: u32,
     pub(crate) identity: NamedValues,
     pub(crate) labels: NamedValues,
+    pub(crate) detail_locator: DetailLocator,
     pub(crate) total: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]

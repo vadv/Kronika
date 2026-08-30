@@ -26,7 +26,6 @@ const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
 const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 const SLOW_PATTERN = 'SELECT "bulkoperations_bulktask"."id" FROM "bulkoperations_bulktask" WHERE "bulkoperations_bulktask"."status" = ? AND "bulkoperations_bulktask"."tenant_partition_with_a_deliberately_long_identifier" = ?'
-const SLOW_QUERY = `${SLOW_PATTERN.replaceAll("?", "'pending'")} ORDER BY "bulkoperations_bulktask"."created_at" DESC LIMIT 250`
 
 
 const ZONE_VALUE = `document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value")`
@@ -2364,7 +2363,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
   }
 })
 
-test("the slow-query detail keeps readable labels and human event time", { timeout: 60_000 }, async () => {
+test("the slow-query group keeps readable compact labels and human event time", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: false }
   const requests = []
@@ -2434,7 +2433,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await settleLayout(cdp)
     const title = await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]').textContent`)
-    assert.equal(title, SLOW_QUERY)
+    assert.equal(title, SLOW_PATTERN)
     const entryText = await cdp.evaluate(`document.querySelector('[data-testid="event-entry"]').textContent`)
     assert.match(entryText, /3 раз/)
     assert.match(entryText, /6,29 с/)
@@ -2452,8 +2451,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.ok(landscape.chips.every(({ gap }) => gap >= 0 && gap <= 12), JSON.stringify(landscape.chips))
     assert.equal(landscape.chips.every(({ sameRow }) => sameRow), true, JSON.stringify(landscape.chips))
     assert.ok(landscape.chips.every(({ height }) => height <= 28), JSON.stringify(landscape.chips))
-    assert.match(landscape.raw, /×3/)
-    assert.match(landscape.raw, /6,29 с/)
+    assert.equal(landscape.rawRows, 0)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
 
@@ -4312,20 +4310,16 @@ function slowQueryEventRecords() {
       key: `slow:${SLOW_PATTERN}`,
       section: "pg_log_slow_queries",
       tier: "notable",
-      text: SLOW_QUERY,
+      label: SLOW_PATTERN,
       count: 3,
       firstTs: AT,
       lastTs: AT,
       minutes,
       stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
-      rows: [{
-        segmentId: SEGMENT,
-        logicalName: "pg_log_slow_queries",
-        typeId: "2004001",
-        ordinal: "3",
-        timestamp: AT,
-        values: { pattern: SLOW_PATTERN, sample: SLOW_QUERY, count: 3, max_duration_ms: 6_290, total_duration_ms: 12_580 },
-      }],
+      detail_locator: {
+        section: "pg_log_slow_queries", segment_id: SEGMENT, at: String(AT),
+        type_id: "2004001", row_ordinal: "3", row_key: SLOW_PATTERN,
+      },
     },
   ]
 }
@@ -4348,7 +4342,7 @@ function expansionGeometryExpression() {
       chips,
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      raw: document.querySelector('[data-testid="event-raw-row"]')?.textContent ?? "",
+      rawRows: document.querySelectorAll('[data-testid="event-raw-row"]').length,
       scrollWidth: document.documentElement.scrollWidth,
       text: document.querySelector('[data-testid="events-console"]')?.textContent ?? "",
     }

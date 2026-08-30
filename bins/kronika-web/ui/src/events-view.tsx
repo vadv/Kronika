@@ -106,7 +106,7 @@ export function EventsView({
     const title = entryTitle(entry, t, locale)
     const category = "category" in entry.stat ? entry.stat.category : null
     const fields: Readonly<Record<string, readonly string[]>> = {
-      text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
+      text: [title, sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
       kind: [entry.tier],
       source: [sectionLabel(entry.section, t), entry.section],
       category: category === null ? [] : [categoryLabel(category, t)],
@@ -407,9 +407,9 @@ function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry |
 }
 
 function entryContains(entry: EventEntry, finding: Finding): boolean {
-  return entry.rows.some((row) => row.segmentId === finding.segmentId
-    && row.typeId === finding.typeId
-    && row.ordinal === finding.rowOrdinal)
+  return entry.detailLocator.segment_id === finding.segmentId
+    && entry.detailLocator.type_id === finding.typeId
+    && entry.detailLocator.row_ordinal === finding.rowOrdinal
 }
 
 interface StreamState {

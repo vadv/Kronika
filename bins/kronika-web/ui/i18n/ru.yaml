@@ -1558,8 +1558,6 @@ events.grouped.checkpoints: "Все записи checkpoint за час объе
 events.grouped.locks: "Сгруппировано по записанным PID держателей"
 events.grouped.lifecycle: "Одна строка на запись жизненного цикла"
 events.grouped.pgbouncer: "Сгруппировано по уровню и сообщению"
-events.holder.missing: "В журнале нет SQL-оператора держателя"
-events.raw.more: "Показать ещё {count} строк"
 events.field.holding_pids: "Holder PIDs"
 events.field.wait_queue: "Wait queue"
 events.marks: "Отметки порогов"

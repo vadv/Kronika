@@ -26,6 +26,29 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
     })
 }
 
+fn assert_detail_locator(row: &serde_json::Value, section: &str, detail_only_fields: &[&str]) {
+    let row = row.as_object().expect("finder row object");
+    for field in detail_only_fields {
+        assert!(
+            !row.contains_key(*field),
+            "mass row exposed {section}.{field}"
+        );
+    }
+    for flat in ["segment_id", "at", "type_id", "row_ordinal", "row_key"] {
+        assert!(!row.contains_key(flat), "mass row retained flat {flat}");
+    }
+    let locator = row["detail_locator"]
+        .as_object()
+        .expect("nested detail locator");
+    assert_eq!(locator["section"], section);
+    for coordinate in ["segment_id", "at", "type_id", "row_ordinal"] {
+        assert!(
+            locator[coordinate].is_string(),
+            "{coordinate} decimal string"
+        );
+    }
+}
+
 fn streamed(prepared: crate::api::Prepared) -> Vec<serde_json::Value> {
     let mut records = Vec::new();
     prepared
@@ -250,11 +273,24 @@ fn overview_returns_the_five_statement_rankings_in_one_ordered_batch() {
                 .as_array()
                 .expect("entities")
                 .iter()
-                .all(|entity| entity["labels"].get("query").is_some()
+                .all(|entity| entity["labels"].get("query").is_none()
                     && entity["labels"].get("datname").is_some()
-                    && entity["labels"].get("usename").is_some())
+                    && entity["labels"].get("usename").is_some()
+                    && entity["detail_locator"]["section"] == "pg_stat_statements")
         );
     }
+    let locator = results[0]["entities"][0]["detail_locator"]
+        .as_object()
+        .expect("Overview detail locator")
+        .clone();
+    let detail = crate::mcp::row_detail::call(&config, locator, &|| false);
+    assert_eq!(detail.is_error, Some(false));
+    let detail = detail.structured_content.expect("statement detail");
+    assert!(detail["query"]["stored_text"].is_string());
+    assert_eq!(
+        detail["query"].as_object().map(serde_json::Map::len),
+        Some(4)
+    );
 }
 
 #[test]
@@ -829,10 +865,7 @@ fn find_postgresql_activity_ranks_and_filters() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["pid"], 10_000);
     assert_eq!(rows[0]["state"], "idle");
-    assert!(rows[0]["segment_id"].is_string());
-    assert!(rows[0]["type_id"].is_string());
-    assert!(rows[0]["row_ordinal"].is_string());
-    assert!(rows[0]["at"].is_string());
+    assert_detail_locator(&rows[0], "pg_stat_activity", &["query"]);
     assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
@@ -935,10 +968,7 @@ fn find_postgresql_locks_ranks_and_filters() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["pid"], 702);
     assert_eq!(rows[1]["pid"], 701);
-    assert!(rows[0]["segment_id"].is_string());
-    assert!(rows[0]["type_id"].is_string());
-    assert!(rows[0]["row_ordinal"].is_string());
-    assert!(rows[0]["at"].is_string());
+    assert_detail_locator(&rows[0], "pg_locks", &["query"]);
     assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
@@ -992,10 +1022,7 @@ fn find_postgresql_vacuum_ranks_and_filters() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["pid"], 502);
     assert_eq!(rows[1]["pid"], 501);
-    assert!(rows[0]["segment_id"].is_string());
-    assert!(rows[0]["type_id"].is_string());
-    assert!(rows[0]["row_ordinal"].is_string());
-    assert!(rows[0]["at"].is_string());
+    assert_detail_locator(&rows[0], "pg_stat_progress_vacuum", &[]);
     assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
@@ -1047,10 +1074,7 @@ fn find_postgresql_databases_ranks_and_filters() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["datid"], 73);
     assert_eq!(rows[0]["datname"], "db");
-    assert!(rows[0]["segment_id"].is_string());
-    assert!(rows[0]["type_id"].is_string());
-    assert!(rows[0]["row_ordinal"].is_string());
-    assert!(rows[0]["at"].is_string());
+    assert_detail_locator(&rows[0], "pg_stat_database", &[]);
     assert_eq!(structured["truncated"], false);
 
     let matching_arguments = serde_json::json!({
@@ -1143,10 +1167,7 @@ fn find_postgresql_statements_computes_derived_ratio_fields() {
     assert_close(&one["derived_wal_per_call"], 10.0);
     assert_close(&one["derived_plan_time_fraction"], 0.5);
     assert_close(&one["derived_cv"], 0.9);
-    assert!(one["segment_id"].is_string());
-    assert!(one["type_id"].is_string());
-    assert!(one["row_ordinal"].is_string());
-    assert!(one["at"].is_string());
+    assert_detail_locator(one, "pg_stat_statements", &["query"]);
 
     let two = row("2");
     assert_close(&two["derived_mean_exec_ms_per_call"], 15.0);
@@ -1238,6 +1259,7 @@ fn find_postgresql_plans_computes_derived_ratio_fields() {
     };
 
     let one = row("1");
+    assert_detail_locator(one, "pg_store_plans", &["plan"]);
     assert_close(&one["derived_mean_exec_ms_per_call"], 10.0);
     assert_close(&one["derived_rows_per_call"], 10.0);
     assert_close(&one["derived_blocks_per_call"], 10.0);
@@ -1358,6 +1380,7 @@ fn find_processes_ranks_and_filters() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["pid"], 101);
     assert_eq!(rows[1]["pid"], 102);
+    assert_detail_locator(&rows[0], "os_process", &["cmdline"]);
     assert_eq!(structured["truncated"], false);
 
     let filtered_arguments = serde_json::json!({
@@ -1493,7 +1516,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
         "at": at,
         "type_id": type_id,
         "row_ordinal": 0,
-        "row_key": listing_row["row_key"],
+        "row_key": listing_row["detail_locator"]["row_key"],
     })
     .as_object()
     .expect("object")
@@ -1513,8 +1536,7 @@ fn get_row_detail_agrees_with_find_processes_for_the_same_physical_row() {
 
 #[test]
 fn get_row_detail_chains_directly_from_a_find_processes_locator() {
-    // The `find_processes` locator fields are valid `get_row_detail` arguments
-    // without conversion.
+    // The nested locator is the complete `get_row_detail` arguments object.
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
     fixture.finish();
@@ -1537,27 +1559,71 @@ fn get_row_detail_chains_directly_from_a_find_processes_locator() {
     assert_eq!(listing_rows.len(), 1);
     let listing_row = listing_rows[0].clone();
 
-    let detail_arguments = serde_json::json!({
-        "section": "os_process",
-        "segment_id": listing_row["segment_id"],
-        "at": listing_row["at"],
-        "type_id": listing_row["type_id"],
-        "row_ordinal": listing_row["row_ordinal"],
-        "row_key": listing_row["row_key"],
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let detail_arguments = listing_row["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
     let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
     assert_eq!(detail_row["pid"], listing_row["pid"]);
     assert_eq!(detail_row["rmem_kb"], listing_row["rmem_kb"]);
-    assert_eq!(detail_row["segment_id"], listing_row["segment_id"]);
-    assert_eq!(detail_row["type_id"], listing_row["type_id"]);
-    assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
-    assert_eq!(detail_row["at"], listing_row["at"]);
+    let locator = &listing_row["detail_locator"];
+    assert_eq!(detail_row["segment_id"], locator["segment_id"]);
+    assert_eq!(detail_row["type_id"], locator["type_id"]);
+    assert_eq!(detail_row["row_ordinal"], locator["row_ordinal"]);
+    assert_eq!(detail_row["at"], locator["at"]);
+    assert_eq!(
+        detail_row["cmdline"],
+        json!({
+            "stored_text": "beta",
+            "full_len": "4",
+            "truncated": false,
+            "sha256": null,
+        })
+    );
+}
+
+#[test]
+fn get_row_detail_preserves_truncated_blob_text_facts_in_the_stable_shape() {
+    let cmdline = "x".repeat(kronika_format::DEFAULT_TRUNCATE_LIMIT + 17);
+    let mut fixture = Fixture::new();
+    fixture.append_process_cmdline(100, 101, &cmdline);
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let found = crate::mcp::processes::call(
+        &config,
+        json!({"filters": [], "limit": 1})
+            .as_object()
+            .expect("arguments")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(found.is_error, Some(false));
+    let found = &found.structured_content.expect("finder result")["rows"][0];
+    assert_detail_locator(found, "os_process", &["cmdline"]);
+    let detail = crate::mcp::row_detail::call(
+        &config,
+        found["detail_locator"]
+            .as_object()
+            .expect("detail locator")
+            .clone(),
+        &|| false,
+    );
+    assert_eq!(detail.is_error, Some(false));
+    let detail = detail.structured_content.expect("detail row");
+    let text = detail["cmdline"].as_object().expect("stable text object");
+    assert_eq!(text.len(), 4);
+    assert_eq!(
+        text["stored_text"].as_str().map(str::len),
+        Some(kronika_format::DEFAULT_TRUNCATE_LIMIT)
+    );
+    assert_eq!(text["full_len"], cmdline.len().to_string());
+    assert_eq!(text["truncated"], true);
+    assert_eq!(text["sha256"].as_str().map(str::len), Some(64));
+    assert!(!text.contains_key("representation"));
 }
 
 #[test]
@@ -1629,7 +1695,7 @@ fn get_row_detail_rejects_malformed_arguments_without_panicking() {
 }
 
 #[test]
-fn find_events_returns_rows_with_source_and_locator_fields() {
+fn find_events_returns_structural_fields_with_one_nested_locator() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.append_log_error(200);
@@ -1659,16 +1725,27 @@ fn find_events_returns_rows_with_source_and_locator_fields() {
     assert_eq!(structured["truncated"], false);
     for row in rows {
         assert_eq!(row["source"], "pg_log_errors");
+        assert_eq!(row["source_file"], "fixture");
+        assert_eq!(row["pattern"], "fixture");
+        assert!(row.get("sample").is_none());
+        assert!(row.get("segment_id").is_none());
+        assert!(row.get("row_key").is_none());
+        let locator = &row["detail_locator"];
+        assert_eq!(locator["section"], "pg_log_errors");
         assert!(
-            row["segment_id"].is_string(),
+            locator["segment_id"].is_string(),
             "segment_id is a decimal string"
         );
-        assert!(row["type_id"].is_string(), "type_id is a decimal string");
         assert!(
-            row["row_ordinal"].is_string(),
+            locator["type_id"].is_string(),
+            "type_id is a decimal string"
+        );
+        assert!(
+            locator["row_ordinal"].is_string(),
             "row_ordinal is a decimal string"
         );
-        assert!(row["at"].is_string(), "at is a decimal string");
+        assert!(locator["at"].is_string(), "at is a decimal string");
+        assert_eq!(locator["row_key"], "fixture");
         assert_eq!(row["category"], 8);
     }
 }
@@ -1701,6 +1778,11 @@ fn find_events_default_and_explicit_groups_are_identical() {
     assert_eq!(structured["representation"], "groups");
     assert_eq!(structured["groups"].as_array().expect("groups").len(), 1);
     assert!(structured.get("occurrences").is_none());
+    let group = &structured["groups"][0];
+    assert_eq!(group["label"], "fixture");
+    assert!(group.get("text").is_none());
+    assert!(group.get("rows").is_none());
+    assert_eq!(group["detail_locator"]["section"], "pg_log_errors");
 
     let http = streamed(fixture.prepare(
         "/api/events?from=0&to=1000&source=pg_log_errors&representation=groups&limit=10",
@@ -1793,7 +1875,7 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
     let ordered_ats: Vec<i64> = rows
         .iter()
         .map(|row| {
-            row["at"]
+            row["detail_locator"]["at"]
                 .as_str()
                 .expect("at is a decimal string")
                 .parse()
@@ -1813,6 +1895,17 @@ fn find_events_sorts_returned_candidates_by_timestamp() {
         sources,
         vec!["pg_log_errors", "pgbouncer_events", "pgbouncer_events"]
     );
+    for row in rows
+        .iter()
+        .filter(|row| row["source"] == "pgbouncer_events")
+    {
+        assert!(row.get("text").is_none());
+        assert!(
+            row["detail_locator"]["row_key"]
+                .as_str()
+                .is_some_and(|key| key.starts_with("sha256:"))
+        );
+    }
 }
 
 #[test]
@@ -2104,30 +2197,31 @@ fn get_row_detail_refuses_a_row_key_of_another_row() {
         .iter()
         .find(|row| row["queryid"] == "2")
         .expect("queryid 2");
-    assert_eq!(one["row_key"], "1");
+    assert_eq!(one["detail_locator"]["row_key"], "1");
 
     let locator = |row_key: &serde_json::Value| {
-        serde_json::json!({
-            "section": "pg_stat_statements",
-            "segment_id": one["segment_id"],
-            "at": one["at"],
-            "type_id": one["type_id"],
-            "row_ordinal": one["row_ordinal"],
-            "row_key": row_key,
-        })
-        .as_object()
-        .expect("object")
-        .clone()
+        let mut locator = one["detail_locator"]
+            .as_object()
+            .expect("detail locator")
+            .clone();
+        locator.insert("row_key".to_owned(), row_key.clone());
+        locator
     };
 
-    let same = crate::mcp::row_detail::call(&config, locator(&one["row_key"]), &|| false);
+    let same =
+        crate::mcp::row_detail::call(&config, locator(&one["detail_locator"]["row_key"]), &|| {
+            false
+        });
     assert_eq!(same.is_error, Some(false));
     assert_eq!(
         same.structured_content.expect("structured content")["queryid"],
         "1"
     );
 
-    let swapped = crate::mcp::row_detail::call(&config, locator(&two["row_key"]), &|| false);
+    let swapped =
+        crate::mcp::row_detail::call(&config, locator(&two["detail_locator"]["row_key"]), &|| {
+            false
+        });
     assert_eq!(swapped.is_error, Some(true));
     let message = swapped.content[0]
         .as_text()
@@ -2139,7 +2233,7 @@ fn get_row_detail_refuses_a_row_key_of_another_row() {
         "the mismatch names itself and the way out: {message}"
     );
 
-    let mut absent = locator(&one["row_key"]);
+    let mut absent = locator(&one["detail_locator"]["row_key"]);
     absent.remove("row_key");
     let missing = crate::mcp::row_detail::call(&config, absent, &|| false);
     assert_eq!(missing.is_error, Some(true));
@@ -2156,8 +2250,7 @@ fn get_row_detail_refuses_a_row_key_of_another_row() {
 
 #[test]
 fn get_row_detail_chains_directly_from_a_find_events_locator() {
-    // The `find_events` locator fields are valid `get_row_detail` arguments
-    // without conversion.
+    // The nested locator is the complete `get_row_detail` arguments object.
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.finish();
@@ -2182,26 +2275,25 @@ fn get_row_detail_chains_directly_from_a_find_events_locator() {
     assert_eq!(listing_rows.len(), 1);
     let listing_row = listing_rows[0].clone();
 
-    let detail_arguments = serde_json::json!({
-        "section": "pg_log_errors",
-        "segment_id": listing_row["segment_id"],
-        "at": listing_row["at"],
-        "type_id": listing_row["type_id"],
-        "row_ordinal": listing_row["row_ordinal"],
-        "row_key": listing_row["row_key"],
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let detail_arguments = listing_row["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
     let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
     let detail_row = detail.structured_content.expect("structured content");
     assert_eq!(detail_row["category"], listing_row["category"]);
-    assert_eq!(detail_row["segment_id"], listing_row["segment_id"]);
-    assert_eq!(detail_row["type_id"], listing_row["type_id"]);
-    assert_eq!(detail_row["row_ordinal"], listing_row["row_ordinal"]);
-    assert_eq!(detail_row["at"], listing_row["at"]);
+    let locator = &listing_row["detail_locator"];
+    assert_eq!(detail_row["segment_id"], locator["segment_id"]);
+    assert_eq!(detail_row["type_id"], locator["type_id"]);
+    assert_eq!(detail_row["row_ordinal"], locator["row_ordinal"]);
+    assert_eq!(detail_row["at"], locator["at"]);
+    assert_eq!(detail_row["sample"]["stored_text"], "fixture");
+    assert_eq!(
+        detail_row["sample"].as_object().map(serde_json::Map::len),
+        Some(4)
+    );
 }
 
 #[test]
@@ -2225,17 +2317,10 @@ fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
     let listing_row =
         listing.structured_content.expect("structured content")["occurrences"][0].clone();
 
-    let detail_arguments = serde_json::json!({
-        "section": "pg_log_errors",
-        "segment_id": listing_row["segment_id"],
-        "at": listing_row["at"],
-        "type_id": listing_row["type_id"],
-        "row_ordinal": listing_row["row_ordinal"],
-        "row_key": listing_row["row_key"],
-    })
-    .as_object()
-    .expect("object")
-    .clone();
+    let detail_arguments = listing_row["detail_locator"]
+        .as_object()
+        .expect("detail locator")
+        .clone();
     let detail = crate::mcp::row_detail::call(&config, detail_arguments, &|| false);
 
     assert_eq!(detail.is_error, Some(false));
@@ -2297,7 +2382,7 @@ async fn find_events_end_to_end_through_the_real_transport() {
         assert_eq!(row["source"], "pg_log_errors");
         assert_eq!(row["category"], 8);
         assert!(
-            row["segment_id"].is_string(),
+            row["detail_locator"]["segment_id"].is_string(),
             "segment_id is a decimal string"
         );
     }
@@ -2710,7 +2795,7 @@ fn find_events_reports_truncation_across_segments() {
         .expect("occurrences array");
     assert_eq!(
         rows.iter()
-            .map(|row| row["at"].as_str().expect("at"))
+            .map(|row| row["detail_locator"]["at"].as_str().expect("at"))
             .collect::<Vec<_>>(),
         vec!["100", "200"]
     );
@@ -3028,7 +3113,7 @@ fn find_events_does_not_truncate_for_matches_past_the_exclusive_window() {
         .expect("occurrences array");
     assert_eq!(
         rows.iter()
-            .map(|row| row["at"].as_str().expect("at"))
+            .map(|row| row["detail_locator"]["at"].as_str().expect("at"))
             .collect::<Vec<_>>(),
         vec!["100", "200"]
     );

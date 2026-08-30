@@ -1,7 +1,7 @@
 //! `kronika_get_row_detail`: one recorded row addressed by its physical locator.
 
 use rmcp::model::CallToolResult;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::api::Prepared;
 use crate::api::snapshot;
@@ -22,7 +22,7 @@ pub(crate) fn call(
         Err(error) => {
             return super::semantics::invalid_arguments(
                 super::catalog::GET_ROW_DETAIL_TOOL,
-                "section, segment_id, at, type_id, and row_ordinal are required; row_key comes from the find row",
+                "pass one complete detail_locator object from a mass result",
                 error,
             );
         }
@@ -94,6 +94,9 @@ pub(crate) fn call(
     // Keep event-code labels identical between list and exact-row reads.
     if let Value::Object(fields) = &mut row {
         label_event_fields(&input.section, fields);
+        if let Err(error) = normalize_detail_text(&input.section, fields) {
+            return mcp_error(error);
+        }
     }
     mcp_structured(
         row,
@@ -102,6 +105,41 @@ pub(crate) fn call(
             input.section
         ),
     )
+}
+
+fn normalize_detail_text(section: &str, fields: &mut Map<String, Value>) -> Result<(), String> {
+    for (field, value) in fields {
+        if crate::api::row_key::is_detail_text(section, field) && !value.is_null() {
+            *value = stable_text(std::mem::take(value)).map_err(|error| {
+                format!("internal error: {section}.{field} is not stored text: {error}")
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn stable_text(value: Value) -> Result<Value, &'static str> {
+    match value {
+        Value::String(stored_text) => Ok(json!({
+            "full_len": stored_text.len().to_string(),
+            "sha256": null,
+            "stored_text": stored_text,
+            "truncated": false,
+        })),
+        Value::Object(object) if object.get("representation") == Some(&json!("text")) => {
+            let stored_text = object.get("stored_text").ok_or("missing stored_text")?;
+            let full_len = object.get("full_len").ok_or("missing full_len")?;
+            let truncated = object.get("truncated").ok_or("missing truncated")?;
+            let sha256 = object.get("sha256").ok_or("missing sha256")?;
+            Ok(json!({
+                "full_len": full_len,
+                "sha256": sha256,
+                "stored_text": stored_text,
+                "truncated": truncated,
+            }))
+        }
+        _ => Err("expected a UTF-8 string"),
+    }
 }
 
 /// Accepts a JSON integer or decimal string.

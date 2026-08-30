@@ -105,6 +105,27 @@ fn overview_output_schema_is_rankings_only() {
     ] {
         assert!(!encoded.contains(&format!("\"{removed}\"")), "{removed}");
     }
+    assert!(encoded.contains("\"detail_locator\""), "missing locator");
+}
+
+#[test]
+fn mass_event_schema_has_compact_locators_without_embedded_raw_rows() {
+    let events = tools()
+        .into_iter()
+        .find(|tool| tool.name.as_ref() == FIND_EVENTS_TOOL)
+        .expect("Events tool");
+    let schema = serde_json::to_value(events.output_schema.as_ref().expect("Events output schema"))
+        .expect("serialize Events schema");
+    let encoded = serde_json::to_string(&schema).expect("encode Events schema");
+
+    assert!(encoded.contains("\"detail_locator\""), "missing locator");
+    assert!(encoded.contains("\"label\""), "missing bounded group label");
+    for removed in ["\"text\"", "\"rows\"", "EventDataRow"] {
+        assert!(
+            !encoded.contains(removed),
+            "Events schema retained raw mass field {removed}"
+        );
+    }
 }
 
 #[test]
@@ -341,5 +362,49 @@ fn finder_schemas_expose_optional_time_and_the_exact_runtime_envelope() {
                 "{name} advertises obsolete {obsolete}"
             );
         }
+    }
+}
+
+#[test]
+fn detail_locator_schema_and_descriptions_match_the_nested_transition() {
+    let catalog = tools();
+    let detail = catalog
+        .iter()
+        .find(|tool| tool.name.as_ref() == GET_ROW_DETAIL_TOOL)
+        .expect("row detail tool");
+    assert_eq!(detail.input_schema["additionalProperties"], false);
+    let required = detail.input_schema["required"]
+        .as_array()
+        .expect("detail required fields");
+    for field in ["section", "segment_id", "at", "type_id", "row_ordinal"] {
+        assert!(
+            required.iter().any(|candidate| candidate == field),
+            "{field}"
+        );
+    }
+    assert!(!required.iter().any(|candidate| candidate == "row_key"));
+    let description = detail.description.as_deref().expect("detail description");
+    assert!(description.contains("{stored_text, full_len, truncated, sha256}"));
+    assert!(!description.contains("plain strings"));
+
+    for name in [
+        FIND_POSTGRESQL_ACTIVITY_TOOL,
+        FIND_POSTGRESQL_LOCKS_TOOL,
+        FIND_POSTGRESQL_VACUUM_TOOL,
+        FIND_POSTGRESQL_DATABASES_TOOL,
+        FIND_POSTGRESQL_STATEMENTS_TOOL,
+        FIND_POSTGRESQL_PLANS_TOOL,
+        FIND_PROCESSES_TOOL,
+    ] {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("{name} tool"));
+        assert!(
+            tool.description
+                .as_deref()
+                .is_some_and(|description| description.contains("detail_locator")),
+            "{name} must advertise the nested transition"
+        );
     }
 }

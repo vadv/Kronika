@@ -1,4 +1,4 @@
-import type { DataRow } from "./api"
+import type { Cell } from "./api"
 
 export type EventTier = "critical" | "notable" | "routine"
 
@@ -15,15 +15,24 @@ export type EventStat =
   | { readonly kind: "pg.lifecycle"; readonly lifecycle: number; readonly pid: number | null; readonly signal: number | null; readonly mode: string | null }
   | { readonly kind: "pgbouncer.events"; readonly level: number; readonly database: string | null }
 
+export interface DetailLocator {
+  readonly section: string
+  readonly segment_id: string
+  readonly at: string
+  readonly type_id: string
+  readonly row_ordinal: string
+  readonly row_key?: Cell
+}
+
 export interface EventEntry {
   readonly key: string
   readonly section: string
   readonly tier: EventTier
-  readonly text: string | null
+  readonly label: string | null
   readonly count: number
   readonly firstTs: number
   readonly lastTs: number
   readonly minutes: readonly number[]
   readonly stat: EventStat
-  readonly rows: readonly DataRow[]
+  readonly detailLocator: DetailLocator
 }

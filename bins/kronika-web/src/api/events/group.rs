@@ -61,6 +61,17 @@ pub(super) fn group_events(
             .then_with(|| right.last_ts.cmp(&left.last_ts))
             .then_with(|| collator.compare(&left.key, &right.key))
     });
+    for entry in &mut entries {
+        if let EventStat::Pgbouncer { level, .. } = &entry.stat {
+            let digest = entry
+                .detail_locator
+                .row_key
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or("missing");
+            entry.key = format!("pgbouncer:{level}:{digest}");
+        }
+    }
     Ok(entries)
 }
 
@@ -93,7 +104,7 @@ fn group_errors(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
             .map(|row| number(row, "count").unwrap_or(1.0))
             .collect();
         let severity = number(first, "severity").unwrap_or(0.0);
-        let entry_text = text(first, "pattern");
+        let label = text(first, "pattern");
         let category = number(first, "category");
         let sqlstate = text(first, "sqlstate");
         let database = shared(&members, "database");
@@ -101,12 +112,12 @@ fn group_errors(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
         build(
             format!("errors:{key}"),
             EventSource::Errors,
-            members,
+            &members,
             from,
             Some(&weights),
             None,
             error_tier(severity),
-            entry_text,
+            label,
             EventStat::Errors {
                 severity,
                 category,
@@ -137,24 +148,33 @@ fn group_slow(rows: Vec<EventDataRow>, from: i64, threshold_ms: Option<f64>) -> 
                     chosen
                 }
             });
-            let entry_text = text(slowest, "sample").or_else(|| Some(key.clone()));
             let max_ms = number(slowest, "max_duration_ms").unwrap_or(0.0);
             let total_ms = sum(&members, "total_duration_ms").unwrap_or(0.0);
-            build(
+            let representative = super::row_key::detail_locator(
+                EventSource::SlowQueries.as_str(),
+                slowest.segment_id,
+                slowest.timestamp,
+                slowest.type_id,
+                slowest.row_ordinal,
+                &slowest.values,
+            );
+            let mut group = build(
                 format!("slow:{key}"),
                 EventSource::SlowQueries,
-                members,
+                &members,
                 from,
                 Some(&weights),
                 None,
                 EventTier::Notable,
-                entry_text,
+                Some(key),
                 EventStat::Slow {
                     max_ms,
                     total_ms,
                     threshold_ms,
                 },
-            )
+            );
+            group.detail_locator = representative;
+            group
         })
         .collect()
 }
@@ -171,7 +191,7 @@ fn group_autovacuum(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
     .map(|(key, members)| {
         let first = &members[0];
         let last = &members[members.len() - 1];
-        let entry_text = text(first, "relation");
+        let label = text(first, "relation");
         let analyze = number(first, "kind") == Some(1.0);
         let runs = members.len();
         let total_ms = sum(&members, "elapsed_ms");
@@ -180,12 +200,12 @@ fn group_autovacuum(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
         build(
             format!("autovacuum:{key}"),
             EventSource::Autovacuum,
-            members,
+            &members,
             from,
             None,
             None,
             EventTier::Routine,
-            entry_text,
+            label,
             EventStat::Autovacuum {
                 analyze,
                 runs,
@@ -234,7 +254,7 @@ fn group_checkpoints(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
         entries.push(build(
             "checkpoints".to_owned(),
             EventSource::Checkpoints,
-            ordinary,
+            &ordinary,
             from,
             None,
             Some(count_number(count)),
@@ -254,7 +274,7 @@ fn group_checkpoints(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
         entries.push(build(
             "checkpoints:warning".to_owned(),
             EventSource::Checkpoints,
-            warnings,
+            &warnings,
             from,
             None,
             None,
@@ -304,12 +324,12 @@ fn group_locks(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
             let waits = members.len();
             members.extend(attached.remove(&key).unwrap_or_default());
             members.sort_by_key(|row| row.timestamp);
-            lock_group(key, waits, false, members, from)
+            lock_group(key, waits, false, &members, from)
         })
         .collect::<Vec<_>>();
     if !leftovers.is_empty() {
         let waits = leftovers.len();
-        entries.push(lock_group(String::new(), waits, true, leftovers, from));
+        entries.push(lock_group(String::new(), waits, true, &leftovers, from));
     }
     entries
 }
@@ -318,7 +338,7 @@ fn lock_group(
     key: String,
     waits: usize,
     acquired: bool,
-    members: Vec<EventDataRow>,
+    members: &[EventDataRow],
     from: i64,
 ) -> EventGroup {
     let waiters = members
@@ -333,7 +353,7 @@ fn lock_group(
             targets.push(target);
         }
     }
-    let max_ms = max(&members, "duration_ms");
+    let max_ms = max(members, "duration_ms");
     build(
         format!("locks:{}", if acquired { "acquired" } else { &key }),
         EventSource::LockWaits,
@@ -358,19 +378,18 @@ fn group_lifecycle(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
         .enumerate()
         .map(|(index, row)| {
             let lifecycle = number(&row, "kind").unwrap_or(0.0);
-            let entry_text = text(&row, "message");
             let pid = number(&row, "pid");
             let signal = number(&row, "signal");
             let mode = text(&row, "shutdown_mode");
             build(
-                format!("lifecycle:{index}:{}", row.ordinal),
+                format!("lifecycle:{index}:{}", row.row_ordinal),
                 EventSource::Lifecycle,
-                vec![row],
+                std::slice::from_ref(&row),
                 from,
                 None,
                 None,
                 lifecycle_tier(lifecycle),
-                entry_text,
+                None,
                 EventStat::Lifecycle {
                     lifecycle,
                     pid,
@@ -394,17 +413,16 @@ fn group_pgbouncer(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
     .map(|(key, members)| {
         let first = &members[0];
         let level = number(first, "level").unwrap_or(3.0);
-        let entry_text = text(first, "text");
         let database = shared(&members, "database");
         build(
             format!("pgbouncer:{key}"),
             EventSource::Pgbouncer,
-            members,
+            &members,
             from,
             None,
             None,
             pgbouncer_tier(level),
-            entry_text,
+            None,
             EventStat::Pgbouncer { level, database },
         )
     })
@@ -437,14 +455,23 @@ fn grouped(
 fn build(
     key: String,
     source: EventSource,
-    members: Vec<EventDataRow>,
+    members: &[EventDataRow],
     from: i64,
     weights: Option<&[f64]>,
     count: Option<f64>,
     tier: EventTier,
-    text: Option<String>,
+    label: Option<String>,
     stat: EventStat,
 ) -> EventGroup {
+    let representative = &members[0];
+    let detail_locator = super::row_key::detail_locator(
+        source.as_str(),
+        representative.segment_id,
+        representative.timestamp,
+        representative.type_id,
+        representative.row_ordinal,
+        &representative.values,
+    );
     let mut minutes = vec![0.0; MINUTE_COLUMNS];
     let mut first_ts = i64::MAX;
     let mut last_ts = i64::MIN;
@@ -467,7 +494,7 @@ fn build(
         key,
         section: source.as_str().to_owned(),
         tier,
-        text,
+        label,
         count: count.unwrap_or_else(|| {
             weights.map_or_else(
                 || count_number(members.len()),
@@ -478,7 +505,7 @@ fn build(
         last_ts,
         minutes,
         stat,
-        rows: members,
+        detail_locator,
     }
 }
 
