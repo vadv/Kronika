@@ -41,6 +41,43 @@ async function switchZone(cdp, zone) {
   await cdp.evaluate(`document.querySelector('[data-testid="timezone-option-${zone}"]').click()`)
 }
 
+async function clickCenter(cdp, selector) {
+  const point = await cdp.evaluate(`(() => {
+    const bounds = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect()
+    return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+  })()`)
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point })
+  await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 1, clickCount: 1, type: "mousePressed", ...point })
+  await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 0, clickCount: 1, type: "mouseReleased", ...point })
+}
+
+async function controlKey(cdp, key, code, windowsVirtualKeyCode) {
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 })
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers: 2, windowsVirtualKeyCode })
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers: 2, windowsVirtualKeyCode })
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 })
+}
+
+async function pasteClipboard(cdp) {
+  const selector = '[data-testid="clipboard-paste-target"]'
+  await cdp.evaluate(`(() => {
+    const target = document.createElement("textarea")
+    target.dataset.testid = "clipboard-paste-target"
+    target.setAttribute("aria-label", "clipboard verification target")
+    target.style.cssText = "position:fixed;bottom:0;left:0;opacity:0;pointer-events:none"
+    document.querySelector('[data-testid="mcp-panel"]').append(target)
+    target.focus({ preventScroll: true })
+  })()`)
+  await controlKey(cdp, "v", "KeyV", 86)
+  await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value !== ""`, "the system clipboard paste")
+  return cdp.evaluate(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)})
+    const value = target.value
+    target.remove()
+    return value
+  })()`)
+}
+
 test("the first Process table does not wait for lanes, summary, or enrichment", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -300,7 +337,7 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
   }
 })
 
-test("the MCP drawer is modal and restores keyboard focus in RU and EN", { timeout: 60_000 }, async () => {
+test("the MCP drawer copies exactly through real legacy behavior and restores modal focus", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: true }
@@ -339,9 +376,9 @@ test("the MCP drawer is modal and restores keyboard focus in RU and EN", { timeo
   })
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("MCP modal server has no TCP address")
-  const origin = `http://127.0.0.1:${address.port}`
+  const origin = `http://clipboard.test:${address.port}`
   const profile = await mkdtemp(join(tmpdir(), "b-"))
-  const browser = launchBrowser(profile)
+  const browser = launchBrowser(profile, ["--host-resolver-rules=MAP clipboard.test 127.0.0.1", "--no-proxy-server"])
   let socket
   try {
     const debugPort = await browserDebugPort(profile, browser)
@@ -357,6 +394,7 @@ test("the MCP drawer is modal and restores keyboard focus in RU and EN", { timeo
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=disk` })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the Process table behind the MCP modal", 15_000)
     assert.equal(requests.filter(({ path }) => path === "/api/mcp-access").length, 0)
+    assert.deepEqual(await cdp.evaluate(`({ clipboard: typeof navigator.clipboard, secure: isSecureContext })`), { clipboard: "undefined", secure: false })
 
     for (const locale of ["ru", "en"]) {
       await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
@@ -408,6 +446,102 @@ test("the MCP drawer is modal and restores keyboard focus in RU and EN", { timeo
         await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", modifiers: 8, windowsVirtualKeyCode: 9 })
         await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", modifiers: 8, windowsVirtualKeyCode: 9 })
         assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="mcp-panel"]').contains(document.activeElement)`), true, `${locale} ${viewport.width}px Shift-Tab containment`)
+
+        const copyMode = locale === "ru" && viewport.width === 360
+          ? "legacy"
+          : locale === "ru" && viewport.width === 1280
+            ? "blocked"
+          : locale === "en" && viewport.width === 1280
+              ? "legacy"
+              : null
+        if (copyMode !== null) {
+          await cdp.evaluate(`document.querySelector('[data-testid="mcp-tab-codex"]').click()`)
+          await cdp.waitFor(`document.querySelector('[data-testid="mcp-panel"] pre') !== null`, `${copyMode} Codex prompt`)
+          const setup = await cdp.evaluate(`(() => {
+            const prompt = document.querySelector('[data-testid="mcp-panel"] pre').textContent
+            globalThis.__copyEvent = null
+            globalThis.__copyObserver = (event) => {
+              globalThis.__copyEvent = {
+                activeIsTarget: document.activeElement === event.target,
+                defaultPrevented: event.defaultPrevented,
+                targetIsTextarea: event.target instanceof HTMLTextAreaElement,
+                text: event.clipboardData?.getData("text/plain") ?? null,
+                trusted: event.isTrusted,
+              }
+            }
+            document.addEventListener("copy", globalThis.__copyObserver, { once: true })
+            ${copyMode === "blocked" ? `Object.defineProperty(document, "execCommand", { configurable: true, value: () => false })` : ""}
+            return { prompt }
+          })()`)
+          const copySelector = '[data-testid="mcp-panel"] button[aria-label$="Codex CLI"]'
+          await clickCenter(cdp, copySelector)
+          if (copyMode === "blocked") {
+            await cdp.waitFor(`document.querySelector('[data-testid="manual-copy-fallback"]') !== null`, "the selected-text manual fallback")
+          } else {
+            await cdp.waitFor(`document.querySelector(${JSON.stringify(copySelector)}).textContent.trim() === ${JSON.stringify(locale === "ru" ? "Скопировано" : "Copied")}`, `${copyMode} exact copied state`)
+          }
+          const outcome = await cdp.evaluate(`(async () => {
+            ${copyMode === "blocked" ? "delete document.execCommand" : ""}
+            if (${JSON.stringify(copyMode)} !== "blocked") document.removeEventListener("copy", globalThis.__copyObserver)
+            const area = document.querySelector('[data-testid="manual-copy-text"]')
+            const fallback = document.querySelector('[data-testid="manual-copy-fallback"]')
+            const button = document.querySelector(${JSON.stringify(copySelector)})
+            const fallbackBounds = fallback?.getBoundingClientRect() ?? null
+            return {
+              activeIsArea: document.activeElement === area,
+              activeIsButton: document.activeElement === button,
+              buttonText: button.textContent.trim(),
+              copyEvent: globalThis.__copyEvent,
+              fallbackInsideModal: fallback === null ? null : document.querySelector('[data-testid="mcp-panel"]').contains(fallback),
+              fallbackVisible: fallbackBounds === null ? null : fallbackBounds.width > 0 && fallbackBounds.height > 0
+                && fallbackBounds.left >= 0 && fallbackBounds.right <= innerWidth
+                && fallbackBounds.top >= 0 && fallbackBounds.bottom <= innerHeight,
+              instruction: fallback?.querySelector('[role="alert"]')?.textContent ?? null,
+              readOnly: area?.readOnly ?? null,
+              selected: area === null ? null : area.value.slice(area.selectionStart, area.selectionEnd),
+              selectionEnd: area?.selectionEnd ?? null,
+              selectionStart: area?.selectionStart ?? null,
+              value: area?.value ?? null,
+            }
+          })()`)
+          if (copyMode === "blocked") {
+            assert.equal(outcome.copyEvent, null, JSON.stringify(outcome))
+            assert.equal(outcome.buttonText, locale === "ru" ? "Копировать" : "Copy", JSON.stringify(outcome))
+            assert.equal(outcome.fallbackInsideModal, true, JSON.stringify(outcome))
+            assert.equal(outcome.fallbackVisible, true, JSON.stringify(outcome))
+            assert.match(outcome.instruction, /Ctrl\+C/)
+            assert.equal(outcome.readOnly, true, JSON.stringify(outcome))
+            assert.equal(outcome.activeIsArea, true, JSON.stringify(outcome))
+            assert.equal(outcome.value, setup.prompt)
+            assert.equal(outcome.selected, setup.prompt)
+            assert.equal(outcome.selectionStart, 0)
+            assert.equal(outcome.selectionEnd, setup.prompt.length)
+            await controlKey(cdp, "c", "KeyC", 67)
+            const manualCopy = await cdp.evaluate(`(() => {
+              document.removeEventListener("copy", globalThis.__copyObserver)
+              return globalThis.__copyEvent
+            })()`)
+            assert.deepEqual(manualCopy, {
+              activeIsTarget: true,
+              defaultPrevented: false,
+              targetIsTextarea: true,
+              text: "",
+              trusted: true,
+            })
+            assert.equal(await pasteClipboard(cdp), setup.prompt)
+          } else {
+            assert.deepEqual(outcome.copyEvent, {
+              activeIsTarget: true,
+              defaultPrevented: true,
+              targetIsTextarea: true,
+              text: setup.prompt,
+              trusted: true,
+            })
+            assert.equal(outcome.activeIsButton, true, JSON.stringify(outcome))
+            assert.equal(outcome.fallbackInsideModal, null, JSON.stringify(outcome))
+            assert.equal(await pasteClipboard(cdp), setup.prompt)
+          }
+        }
         await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
         await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
         await cdp.waitFor(`document.querySelector('[data-testid="mcp-panel"]') === null`, `${locale} ${viewport.width}px MCP Escape`)
@@ -6173,7 +6307,7 @@ async function waitForRequests(predicate) {
   throw new Error("timed out waiting for request")
 }
 
-function launchBrowser(profile) {
+function launchBrowser(profile, arguments_ = []) {
   const executable = browserExecutable()
   const browser = spawn(executable, [
     "--headless",
@@ -6189,6 +6323,7 @@ function launchBrowser(profile) {
     "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
+    ...arguments_,
     "about:blank",
   ], { stdio: ["ignore", "ignore", "pipe"] })
   browser.diagnostics = ""

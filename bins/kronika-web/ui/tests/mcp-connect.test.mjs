@@ -28,7 +28,7 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   assert.match(panel, /onClick=\{\(\) => \{ setClient\(candidate\.label\); setCopied\(false\) \}\}/)
   // Copying must go through the shared helper: plain-http origins have no
   // navigator.clipboard, and the raw optional chain swallowed the click.
-  assert.match(panel, /void copyText\(prompt\)\.then\(setCopied\)/)
+  assert.match(panel, /void copyText\(prompt, t\("clipboard\.manual"\)\)\.then\(setCopied\)/)
   assert.match(panel, /selected\.builder\(url, auth, t, database\)/)
   // The Authorization value comes from the server, through the session
   // fetch wrapper that keeps UI 401s challenge-free.

@@ -65,7 +65,7 @@ function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: numb
   const time = useDisplayTime()
   const timestamp = raw ?? asNumber(cell ?? null)
   if (timestamp === null || timestamp === undefined) return <>—</>
-  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-fg4 hover:text-accent3" onClick={() => void copyText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-fg4 hover:text-accent3" onClick={() => void copyText(String(timestamp), t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate): ReactNode {

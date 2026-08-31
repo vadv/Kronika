@@ -83,7 +83,7 @@ export function McpPanel({ database, onClose, t }: {
         <section className="mt-3">
           <p className="mb-1 mt-0 text-xs text-fg4">{t(selected.sectionKey)}</p>
           <pre className="m-0 select-all whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-line3 bg-s2 p-2 text-xs leading-[1.5] text-fg2">{prompt}</pre>
-          <button aria-label={`${t("mcp.copy")} — ${selected.label}`} className="mt-2 inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 py-1.5 text-sm font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(prompt).then(setCopied)} type="button">{copied ? <Check aria-hidden="true" size={14} /> : <Copy aria-hidden="true" size={14} />}{t(copied ? "mcp.copied" : "mcp.copy")}</button>
+          <button aria-label={`${t("mcp.copy")} — ${selected.label}`} className="mt-2 inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2 py-1.5 text-sm font-medium text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(prompt, t("clipboard.manual")).then(setCopied)} type="button">{copied ? <Check aria-hidden="true" size={14} /> : <Copy aria-hidden="true" size={14} />}{t(copied ? "mcp.copied" : "mcp.copy")}</button>
         </section>
       )}
       <p className="mt-3 text-xs text-fg4">{t("mcp.docs")}</p>

@@ -1169,7 +1169,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     </section></InspectorChartPortal>}
     {section === "pg_store_plans"
       ? <PlanTextBlocks cursor={cursor} plan={wholeText} revision={historyRevision} row={row} segments={segments} t={t} />
-      : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
+      : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(exactText, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
     <DetailList>{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{detailValue(column)}</DetailRow>)}</DetailList>
     {backendPid !== null && <InspectorRelatedPortal id="os_process" identity={`backend:${rowKey(row)}`} label={t("pg.related.process_tab")}>
       <ProcessFacts locale={locale} process={backendProcess} processTime={backendProcess?.timestamp ?? null} t={t} />
@@ -1477,7 +1477,7 @@ export function display(cell: ReturnType<typeof value>, column: EntityColumn, lo
 
 function TimestampValue({ t, timestamp }: { readonly t: Translate; readonly timestamp: number }) {
   const time = useDisplayTime()
-  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void copyText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void copyText(String(timestamp), t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function groupSections(rows: readonly DataRow[]): readonly [string, readonly DataRow[]][] {

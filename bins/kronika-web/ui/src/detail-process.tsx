@@ -31,7 +31,7 @@ export function ProcessFacts({ locale, process, processTime, t }: {
   return <section className="p-3" data-testid="backend-process-panel">
     <section className="flex items-center gap-1.5 border-y border-line2 bg-s1 px-1.5 py-[5px]" title={commandPath}>
       <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm leading-[1.5] text-fg">{command}</code>
-      <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(command)} type="button"><Copy aria-hidden="true" size={12} /></button>
+      <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(command, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button>
     </section>
     <DetailList>
       <DetailRow term={<LabelHelp helpKey="detail.pg_snapshot.help" labelKey="detail.pg_snapshot.label" t={t} />} valueClassName="text-sm">{processTime === null ? "—" : time.timestamp(processTime)}</DetailRow>
