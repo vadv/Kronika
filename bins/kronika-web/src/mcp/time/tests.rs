@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use crate::api::time::SnapshotPoint;
-use crate::mcp::semantics::DecimalI64;
 
 use super::{
     TimeSpecInput, resolve_bounded_range, resolve_point, resolve_range, resolve_range_with,
@@ -63,7 +62,7 @@ fn resolves_integer_rfc3339_and_relative_forms() {
 #[test]
 fn decimal_string_outputs_round_trip_as_time_inputs() {
     for timestamp in [i64::MIN, -1, 0, 1, i64::MAX] {
-        let output = serde_json::to_value(DecimalI64(timestamp)).expect("decimal-string output");
+        let output = serde_json::Value::String(timestamp.to_string());
         let input: TimeSpecInput = serde_json::from_value(output).expect("time input");
         assert_eq!(input.resolve(7), Ok(timestamp));
     }

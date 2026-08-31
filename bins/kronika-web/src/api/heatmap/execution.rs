@@ -1653,7 +1653,6 @@ impl Accumulator {
                 self.first_index,
             )?;
             entities.push(HeatmapEntity {
-                type_id: shared.type_id,
                 identity: identity_object(shared.type_id, row.identity_values),
                 labels,
                 detail_locator: row_key::detail_locator(
@@ -2273,6 +2272,7 @@ fn emit_http(
         }
     } else {
         for entity in &item.entities {
+            let type_id = entity.detail_locator.type_id;
             let labels: Vec<Value> = grid
                 .label_names
                 .iter()
@@ -2281,8 +2281,8 @@ fn emit_http(
             if cancelled()
                 || !emit(record(json!({
                     "record": "heatmap_row",
-                    "type_id": entity.type_id.to_string(),
-                    "identity": http_identity(entity.type_id, &entity.identity),
+                    "type_id": type_id.to_string(),
+                    "identity": http_identity(type_id, &entity.identity),
                     "labels": labels,
                     "total": entity.total,
                     "cells": entity.cells,

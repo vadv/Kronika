@@ -138,7 +138,7 @@ fn encode_payload(mut payload: Vec<u8>) -> String {
     URL_SAFE_NO_PAD.encode(payload)
 }
 
-fn serialize_decimal<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+pub(super) fn serialize_decimal<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     T: std::fmt::Display,
     S: serde::Serializer,

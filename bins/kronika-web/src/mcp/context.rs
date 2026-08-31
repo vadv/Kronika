@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use crate::config::Config;
 use crate::route::Window;
 
-use super::semantics::{DecimalI64, mcp_error, mcp_structured, storage_error};
+use super::semantics::{mcp_error, mcp_structured, storage_error};
 
 pub(crate) fn call(
     config: &Config,
@@ -60,8 +60,8 @@ pub(crate) fn call(
     let summary = format!("{} logical product sections recorded", sections.len());
     mcp_structured(
         json!({
-            "recorded_from": range.map(|(from, _to)| DecimalI64(from)),
-            "recorded_to": range.map(|(_from, to)| DecimalI64(to)),
+            "recorded_from": range.map(|(from, _to)| from.to_string()),
+            "recorded_to": range.map(|(_from, to)| to.to_string()),
             "sections": sections,
         }),
         summary,

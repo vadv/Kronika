@@ -42,20 +42,6 @@ pub(crate) fn set_detail_ref(value: &mut Value, detail_ref: String) -> Result<()
     Ok(())
 }
 
-/// Serializes every `i64` as decimal text so JSON clients retain exact 64-bit
-/// values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DecimalI64(pub(crate) i64);
-
-impl Serialize for DecimalI64 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
 /// Returns an in-band tool execution error. The text is mirrored into
 /// `structuredContent` as `{"record":"error","message":…}`, so a client
 /// reading only the structure sees the error instead of an empty result.

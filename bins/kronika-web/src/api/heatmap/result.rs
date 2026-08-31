@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::query::NormalizedRanking;
-use crate::api::row_key::DetailLocator;
+use crate::api::row_key::{DetailLocator, serialize_decimal};
 
 pub(crate) type NamedValues = BTreeMap<String, Value>;
 
@@ -30,10 +30,10 @@ pub(crate) struct HeatmapItemResult {
     pub(crate) entities: Vec<HeatmapEntity>,
     pub(crate) totals_total: Option<f64>,
     pub(crate) others_total: Option<f64>,
-    #[serde(serialize_with = "serialize_u64")]
+    #[serde(serialize_with = "serialize_decimal")]
     #[schemars(with = "String")]
     pub(crate) entity_count: u64,
-    #[serde(serialize_with = "serialize_u64")]
+    #[serde(serialize_with = "serialize_decimal")]
     #[schemars(with = "String")]
     pub(crate) out_of_order: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,16 +51,13 @@ pub(crate) enum CoverageState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapCoverage {
     pub(crate) state: CoverageState,
-    #[serde(serialize_with = "serialize_u64")]
+    #[serde(serialize_with = "serialize_decimal")]
     #[schemars(with = "String")]
     pub(crate) window_rows: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapEntity {
-    #[serde(serialize_with = "serialize_u32")]
-    #[schemars(with = "String")]
-    pub(crate) type_id: u32,
     pub(crate) identity: NamedValues,
     pub(crate) labels: NamedValues,
     pub(crate) detail_locator: DetailLocator,
@@ -82,10 +79,10 @@ pub(crate) struct HeatmapGrid {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct HeatmapInterval {
-    #[serde(serialize_with = "serialize_i64")]
+    #[serde(serialize_with = "serialize_decimal")]
     #[schemars(with = "String")]
     pub(crate) start: i64,
-    #[serde(serialize_with = "serialize_i64")]
+    #[serde(serialize_with = "serialize_decimal")]
     #[schemars(with = "String")]
     pub(crate) end: i64,
 }
@@ -102,39 +99,6 @@ pub(crate) struct HeatmapGroup {
 pub(crate) struct HeatmapBand {
     pub(crate) total: Option<f64>,
     pub(crate) cells: Vec<Option<f64>>,
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde serialize_with passes the field by reference"
-)]
-fn serialize_i64<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&value.to_string())
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde serialize_with passes the field by reference"
-)]
-fn serialize_u32<S>(value: &u32, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&value.to_string())
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde serialize_with passes the field by reference"
-)]
-fn serialize_u64<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&value.to_string())
 }
 
 #[expect(

@@ -119,12 +119,6 @@ fn public_result(result: &HeatmapBatchResult) -> Result<Value, String> {
             return Err("overview entity count changed during encoding".to_owned());
         }
         for (typed, encoded) in typed.entities.iter().zip(entities) {
-            let object = encoded
-                .as_object_mut()
-                .ok_or_else(|| "overview entity is not an object".to_owned())?;
-            if object.remove("type_id").is_none() {
-                return Err("overview entity has no internal layout".to_owned());
-            }
             super::semantics::set_detail_ref(encoded, typed.detail_locator.detail_ref()?)?;
         }
     }

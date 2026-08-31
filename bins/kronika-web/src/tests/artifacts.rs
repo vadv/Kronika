@@ -3418,7 +3418,10 @@ fn shared_heatmap_result_keeps_one_convention_for_gauge_totals() {
     assert_eq!(ranking.totals_total, Some(50.0));
     assert_eq!(ranking.others_total, Some(30.0));
     let winner = &ranking.entities[0];
-    assert_eq!(winner.type_id, OsProcess::CONTRACT.type_id.get());
+    assert_eq!(
+        winner.detail_locator.type_id,
+        OsProcess::CONTRACT.type_id.get()
+    );
     assert_eq!(winner.identity["pid"], serde_json::json!(101));
 }
 
