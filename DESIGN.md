@@ -1135,7 +1135,11 @@ sample exists. An hour holds one fewer span than it holds samples, so an edge
 column reads only when a recorded span reaches into it.
 
 Ranking uses the whole requested window and does not change with the number of
-columns. HTTP heatmaps and MCP overview rankings normalize into one ordered
+columns. MCP Overview expands each ranking's `fields` into independent result
+positions in ranking-item order then field order. Repeated fields and duplicate
+rankings remain in place. Each result identifies one section, exactly one field,
+and its unit; its `top` applies independently. Overview fields are never added
+together. HTTP heatmaps and the expanded MCP results normalize into one ordered
 batch query and one typed result. The planner combines each physical layout's
 needed metric, identity, group, and automatic label fields before reading it.
 Each selected physical row and dictionary body is decoded at most once for the

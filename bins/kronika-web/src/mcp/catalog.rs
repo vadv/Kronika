@@ -41,7 +41,8 @@ pub(crate) struct OverviewInput {
     /// fixed-duration `now-N` expression.
     pub(crate) from: TimeSpecInput,
     pub(crate) to: TimeSpecInput,
-    /// Ordered nonempty recipes. Exact duplicates are returned in place.
+    /// Ordered nonempty ranking groups. Each field expands to an independent
+    /// result position; exact duplicates remain in place.
     #[schemars(length(min = 1))]
     pub(crate) rankings: Vec<OverviewRankingInput>,
 }
@@ -52,9 +53,9 @@ pub(crate) struct OverviewRankingInput {
     /// Recorded logical section. `kronika_get_context` lists valid names.
     #[schemars(length(min = 1, max = 128))]
     pub(crate) section: String,
-    /// One to four distinct numeric fields. All must be cumulative counters
-    /// or all gauges. Kronika sums the listed fields before ranking;
-    /// repeated names are rejected. Use fields with compatible units.
+    /// One to four numeric fields. Each field is ranked independently in the
+    /// listed order, repeated names remain in place, and every emitted result
+    /// identifies the section, one field, and its exact unit.
     #[schemars(length(min = 1, max = 4))]
     pub(crate) fields: Vec<String>,
     /// Number of ranked identities to return, from 1 through 500. Defaults to
@@ -503,10 +504,11 @@ fn overview_tool() -> Tool {
          `from` and `to` accept a JSON integer or canonical signed \
          decimal-string i64 Unix-microsecond timestamp, RFC 3339 with `Z` or a numeric UTC offset, `now`, or \
          `now-N{us,ms,s,m,h,d,w}`. One clock anchor resolves the whole call. \
-         Each recipe contains one logical section, one to four distinct \
-         numeric fields of one class and exact unit, and optional `top` \
-         (default 25, maximum 500). Fields are summed per row before ranking. \
-         Results retain request order and duplicate recipes. Counter totals \
+         Each ranking contains one logical section, one to four numeric fields, \
+         and optional `top` (default 25, maximum 500). Every field produces an \
+         independent result in ranking order then field order; repeated fields \
+         and rankings remain in place, and `top` applies to each field separately. \
+         Every result identifies its section, single field, and exact unit. Counter totals \
          are whole-window non-negative deltas; gauge totals are window \
          maxima. Every entity includes its named product identity, compact automatic \
          labels when available in stored data, and a server-produced `detail_ref` \

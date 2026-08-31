@@ -4,7 +4,7 @@ use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
 use crate::api::heatmap::{
-    HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView,
+    HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView, MAX_FIELDS,
     NormalizedRanking, prepare_batch,
 };
 use crate::config::Config;
@@ -39,7 +39,7 @@ pub(crate) fn call(
         Err(error) => {
             return invalid_arguments(
                 OVERVIEW_TOOL,
-                "from, to, and a nonempty rankings array are required; each ranking contains section, 1-4 fields, and optional top",
+                "from, to, and a nonempty rankings array are required; each ranking contains section, 1-4 independently ranked fields, and optional top",
                 error,
             );
         }
@@ -51,8 +51,15 @@ pub(crate) fn call(
         Ok(range) => range,
         Err(error) => return mcp_error_indexed(format!("rankings[0]: {error}"), 0),
     };
-    let mut items = Vec::with_capacity(input.rankings.len());
+    let mut items = Vec::new();
+    let mut source_indices = Vec::new();
     for (index, ranking) in input.rankings.into_iter().enumerate() {
+        if !(1..=MAX_FIELDS).contains(&ranking.fields.len()) {
+            return mcp_error_indexed(
+                format!("rankings[{index}]: fields must contain 1 to {MAX_FIELDS} names"),
+                index,
+            );
+        }
         let top = match usize::try_from(ranking.top) {
             Ok(top) => top,
             Err(_error) => {
@@ -62,22 +69,25 @@ pub(crate) fn call(
                 );
             }
         };
-        items.push(HeatmapItemQuery {
-            ranking: NormalizedRanking {
-                section: ranking.section,
-                fields: ranking.fields,
-                top,
-            },
-            view: HeatmapView::RankingOnly,
-        });
+        for field in ranking.fields {
+            items.push(HeatmapItemQuery {
+                ranking: NormalizedRanking {
+                    section: ranking.section.clone(),
+                    fields: vec![field],
+                    top,
+                },
+                view: HeatmapView::RankingOnly,
+            });
+            source_indices.push(index);
+        }
     }
     let prepared = match prepare_batch(&config.data_root, HeatmapBatchQuery { range, items }) {
         Ok(prepared) => prepared,
-        Err(error) => return heatmap_error(error),
+        Err(error) => return heatmap_error(error, &source_indices),
     };
     let result = match prepared.execute(&|| cancelled()) {
         Ok(result) => result,
-        Err(error) => return heatmap_error(error),
+        Err(error) => return heatmap_error(error, &source_indices),
     };
     let returned = result.results.len();
     let structured = match public_result(&result) {
@@ -90,8 +100,12 @@ pub(crate) fn call(
     )
 }
 
-fn heatmap_error(error: HeatmapError) -> CallToolResult {
-    let ranking_index = error.ranking_index();
+fn heatmap_error(error: HeatmapError, source_indices: &[usize]) -> CallToolResult {
+    let expanded_index = error.ranking_index();
+    let ranking_index = source_indices
+        .get(expanded_index)
+        .copied()
+        .unwrap_or(expanded_index);
     let valid_options = error.valid_options().to_vec();
     let api_error = error.into_api();
     let message = super::semantics::storage_error_message(&api_error);

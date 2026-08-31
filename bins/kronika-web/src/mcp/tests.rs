@@ -230,6 +230,8 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
     assert!(overview["outputSchema"].is_object());
     let overview_description = overview["description"].as_str().expect("description");
     assert!(!overview_description.contains("working"));
+    assert!(overview_description.contains("independent result"));
+    assert!(!overview_description.contains("summed per row"));
     assert!(overview_description.contains("does not change pre-ranking scan state"));
     let events = tools
         .iter()
@@ -824,7 +826,7 @@ fn overview_reports_the_index_for_each_invalid_top_shape() {
 }
 
 #[test]
-fn overview_unknown_section_and_field_return_indexed_known_options() {
+fn overview_unknown_section_and_expanded_field_return_source_indices() {
     let config = test_config(std::env::temp_dir());
     let unknown_section = json!({
         "from": 100,
@@ -855,7 +857,7 @@ fn overview_unknown_section_and_field_return_indexed_known_options() {
         "to": 400,
         "rankings": [
             {"section": "os_mountinfo", "fields": ["total_bytes"], "top": 1},
-            {"section": "os_mountinfo", "fields": ["missing"], "top": 1},
+            {"section": "os_mountinfo", "fields": ["total_bytes", "missing"], "top": 1},
         ],
     })
     .as_object()
@@ -941,7 +943,7 @@ fn overview_request_budget_is_exact_and_names_the_crossing_item() {
 }
 
 #[tokio::test]
-async fn overview_end_to_end_through_the_real_transport() {
+async fn overview_field_expansion_runs_through_the_real_transport() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
     fixture.finish();
@@ -958,7 +960,7 @@ async fn overview_end_to_end_through_the_real_transport() {
                 "to": 400,
                 "rankings": [{
                     "section": "os_process",
-                    "fields": ["rmem_kb"],
+                    "fields": ["rmem_kb", "num_threads"],
                     "top": 2,
                 }],
             }
@@ -984,7 +986,15 @@ async fn overview_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
-    let ranking = &decoded["result"]["structuredContent"]["results"][0];
+    let results = decoded["result"]["structuredContent"]["results"]
+        .as_array()
+        .expect("results array");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["ranking"]["fields"], json!(["rmem_kb"]));
+    assert_eq!(results[0]["unit"], "kibibytes");
+    assert_eq!(results[1]["ranking"]["fields"], json!(["num_threads"]));
+    assert_eq!(results[1]["unit"], "count");
+    let ranking = &results[0];
     let entities = ranking["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
@@ -2733,25 +2743,73 @@ fn more_than_eight_filters_are_rejected() {
 }
 
 #[test]
-fn overview_rejects_duplicate_fields_and_a_reversed_window() {
-    let config = test_config(std::env::temp_dir());
-
-    let duplicated = serde_json::json!({
-        "from": 0,
-        "to": 100,
-        "rankings": [{
-            "section": "os_process",
-            "fields": ["rmem_kb", "rmem_kb"],
-            "top": 5,
-        }],
+fn overview_preserves_field_order_duplicates_and_independent_top_without_summing() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = serde_json::json!({
+        "from": 100,
+        "to": 201,
+        "rankings": [
+            {
+                "section": "pg_stat_statements",
+                "fields": ["local_blks_hit", "calls", "local_blks_hit"],
+                "top": 1,
+            },
+            {
+                "section": "pg_stat_statements",
+                "fields": ["calls"],
+                "top": 2,
+            },
+        ],
     })
     .as_object()
     .expect("object")
     .clone();
-    let result = crate::mcp::overview::call(&config, duplicated, &|| false);
-    assert_eq!(result.is_error, Some(true));
-    let message = result.content[0].as_text().expect("text").text.clone();
-    assert!(message.contains("rankings[0]"), "{message}");
+
+    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let results = structured["results"].as_array().expect("results");
+    assert_eq!(results.len(), 4);
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result["ranking"]["fields"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!(["local_blks_hit"]),
+            json!(["calls"]),
+            json!(["local_blks_hit"]),
+            json!(["calls"]),
+        ],
+    );
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result["ranking"]["top"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(1), json!(1), json!(1), json!(2)],
+    );
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result["entities"].as_array().expect("entities").len())
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 2],
+    );
+    assert_eq!(results[0]["entities"][0]["identity"]["query_id"], "2");
+    assert_eq!(results[0]["entities"][0]["total"], 40.0);
+    assert_eq!(results[1]["entities"][0]["identity"]["query_id"], "1");
+    assert_eq!(results[1]["entities"][0]["total"], 10.0);
+    assert_eq!(results[2], results[0]);
+}
+
+#[test]
+fn overview_rejects_a_reversed_window() {
+    let config = test_config(std::env::temp_dir());
 
     let reversed = serde_json::json!({
         "from": 100,
@@ -2769,6 +2827,35 @@ fn overview_rejects_duplicate_fields_and_a_reversed_window() {
     assert_eq!(result.is_error, Some(true));
     let message = result.content[0].as_text().expect("text").text.clone();
     assert!(message.contains("rankings[0]"), "{message}");
+}
+
+#[test]
+fn overview_enforces_source_field_count_at_runtime() {
+    let config = test_config(std::env::temp_dir());
+    for fields in [json!([]), json!(["a", "b", "c", "d", "e"])] {
+        let arguments = json!({
+            "from": 0,
+            "to": 100,
+            "rankings": [
+                {"section": "os_process", "fields": ["rmem_kb"], "top": 1},
+                {"section": "os_process", "fields": fields, "top": 1},
+            ],
+        })
+        .as_object()
+        .expect("object")
+        .clone();
+
+        let result = crate::mcp::overview::call(&config, arguments, &|| false);
+
+        assert_eq!(result.is_error, Some(true));
+        let message = &result.content[0].as_text().expect("text").text;
+        assert!(message.contains("rankings[1]"), "{message}");
+        assert!(message.contains("1 to 4"), "{message}");
+        assert_eq!(
+            result.structured_content.expect("structured error")["ranking_index"],
+            1,
+        );
+    }
 }
 
 #[test]
@@ -3157,31 +3244,55 @@ fn get_instance_returns_more_than_five_thousand_settings_without_prefix_cutoff()
 }
 
 #[test]
-fn overview_rejects_fields_with_different_units() {
-    let mut fixture = Fixture::new();
-    fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture")]);
-    fixture.finish();
-
-    let config = test_config(fixture.root().to_path_buf());
+fn overview_reproduced_mixed_unit_request_returns_five_ordered_results() {
+    let empty_root = tempfile::tempdir().expect("empty data root");
+    let config = test_config(empty_root.path().to_path_buf());
     let arguments = serde_json::json!({
         "from": 0,
         "to": 1_000,
-        "rankings": [{
-            "section": "os_process",
-            "fields": ["rmem_kb", "num_threads"],
-            "top": 5,
-        }],
+        "rankings": [
+            {"section": "pg_log_errors", "fields": ["count"], "top": 1},
+            {
+                "section": "pg_log_slow_queries",
+                "fields": ["total_duration_ms", "count"],
+                "top": 2,
+            },
+            {
+                "section": "pg_log_autovacuum",
+                "fields": ["pages_removed", "elapsed_ms"],
+                "top": 3,
+            },
+        ],
     })
     .as_object()
     .expect("object")
     .clone();
 
     let result = crate::mcp::overview::call(&config, arguments, &|| false);
-    assert_eq!(result.is_error, Some(true));
-    let message = result.content[0].as_text().expect("text").text.clone();
-    assert!(
-        message.contains("different units"),
-        "unexpected message: {message}"
+
+    assert_eq!(result.is_error, Some(false));
+    let structured = result.structured_content.expect("structured content");
+    let results = structured["results"].as_array().expect("results");
+    assert_eq!(results.len(), 5);
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| {
+                json!({
+                    "section": result["ranking"]["section"],
+                    "fields": result["ranking"]["fields"],
+                    "top": result["ranking"]["top"],
+                    "unit": result["unit"],
+                })
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"section": "pg_log_errors", "fields": ["count"], "top": 1, "unit": "count"}),
+            json!({"section": "pg_log_slow_queries", "fields": ["total_duration_ms"], "top": 2, "unit": "milliseconds"}),
+            json!({"section": "pg_log_slow_queries", "fields": ["count"], "top": 2, "unit": "count"}),
+            json!({"section": "pg_log_autovacuum", "fields": ["pages_removed"], "top": 3, "unit": "pages"}),
+            json!({"section": "pg_log_autovacuum", "fields": ["elapsed_ms"], "top": 3, "unit": "milliseconds"}),
+        ],
     );
 }
 

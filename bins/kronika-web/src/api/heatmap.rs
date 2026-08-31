@@ -6,8 +6,8 @@ mod result;
 
 pub(crate) use execution::{HeatmapError, PreparedHeatmap, prepare, prepare_batch};
 pub(crate) use query::{
-    DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapRequest, HeatmapView, MAX_TOP,
-    NormalizedRanking,
+    DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapRequest, HeatmapView, MAX_FIELDS,
+    MAX_TOP, NormalizedRanking,
 };
 pub(crate) use result::HeatmapBatchResult;
 

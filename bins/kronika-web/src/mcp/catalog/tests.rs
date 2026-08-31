@@ -147,8 +147,18 @@ fn overview_schema_exposes_the_ordered_batch_and_nested_top_cap() {
     assert!(ranking_required.contains(&serde_json::json!("section")));
     assert!(ranking_required.contains(&serde_json::json!("fields")));
     assert!(!ranking_required.contains(&serde_json::json!("top")));
+    let fields = &ranking["properties"]["fields"];
+    assert_eq!(fields["minItems"], 1);
+    assert_eq!(fields["maxItems"], 4);
+    assert!(fields.get("uniqueItems").is_none());
     assert_eq!(ranking["properties"]["top"]["default"], 25);
     assert_eq!(ranking["properties"]["top"]["maximum"], 500);
+    let description = overview.description.as_ref().expect("description");
+    assert!(description.contains("independent result"));
+    assert!(description.contains("field order"));
+    for removed in ["distinct numeric", "compatible unit", "Fields are summed"] {
+        assert!(!description.contains(removed), "{removed}");
+    }
 }
 
 #[test]
@@ -184,6 +194,15 @@ fn overview_output_schema_is_rankings_only() {
         assert!(!encoded.contains(&format!("\"{removed}\"")), "{removed}");
     }
     assert!(encoded.contains("\"detail_ref\""), "missing detail_ref");
+    let fields = &schema["$defs"]["NormalizedRanking"]["properties"]["fields"];
+    assert_eq!(fields["minItems"], 1);
+    assert_eq!(fields["maxItems"], 1);
+    assert!(
+        schema["$defs"]["HeatmapItemResult"]["properties"]
+            .get("unit")
+            .is_some(),
+        "missing result unit",
+    );
     let entity = &schema["$defs"]["HeatmapEntity"];
     assert_eq!(entity["properties"]["detail_ref"]["type"], "string");
     assert!(entity["properties"].get("identity").is_some());

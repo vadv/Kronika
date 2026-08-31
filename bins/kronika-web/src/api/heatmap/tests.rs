@@ -441,6 +441,28 @@ fn invalid_item_reports_its_zero_based_index_and_returns_no_prefix() {
 }
 
 #[test]
+fn ranking_only_items_require_one_field_before_execution() {
+    let query = HeatmapBatchQuery {
+        range: TimeRange::new(HOUR, HOUR + 1).expect("range"),
+        items: vec![HeatmapItemQuery {
+            ranking: NormalizedRanking {
+                section: "os_mountinfo".to_owned(),
+                fields: vec!["total_bytes".to_owned(), "free_bytes".to_owned()],
+                top: 1,
+            },
+            view: HeatmapView::RankingOnly,
+        }],
+    };
+
+    let error = prepare_batch(&std::env::temp_dir(), query)
+        .err()
+        .expect("multi-field ranking-only item");
+
+    assert_eq!(error.ranking_index(), 0);
+    assert!(error.to_string().contains("exactly one field"));
+}
+
+#[test]
 fn legacy_prepare_preserves_specific_api_errors() {
     let request = |section: &str, fields: &[&str], to| HeatmapRequest {
         from: HOUR,

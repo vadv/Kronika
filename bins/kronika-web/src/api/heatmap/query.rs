@@ -23,6 +23,7 @@ pub(crate) struct HeatmapItemQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub(crate) struct NormalizedRanking {
     pub(crate) section: String,
+    #[schemars(length(min = 1, max = 1))]
     pub(crate) fields: Vec<String>,
     pub(crate) top: usize,
 }

@@ -499,12 +499,22 @@ fn validate_item(
             "section",
         ));
     }
-    if !(1..=MAX_FIELDS).contains(&ranking.fields.len()) {
-        return Err(HeatmapError::invalid_parameter(
-            index,
-            format!("fields must contain 1 to {MAX_FIELDS} names"),
-            "field",
-        ));
+    match item.view {
+        HeatmapView::RankingOnly if ranking.fields.len() != 1 => {
+            return Err(HeatmapError::invalid_parameter(
+                index,
+                "an Overview result must contain exactly one field",
+                "field",
+            ));
+        }
+        HeatmapView::Grid { .. } if !(1..=MAX_FIELDS).contains(&ranking.fields.len()) => {
+            return Err(HeatmapError::invalid_parameter(
+                index,
+                format!("fields must contain 1 to {MAX_FIELDS} names"),
+                "field",
+            ));
+        }
+        HeatmapView::RankingOnly | HeatmapView::Grid { .. } => {}
     }
     let mut seen = HashSet::new();
     for field in &ranking.fields {
