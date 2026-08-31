@@ -17,9 +17,7 @@ fn half_open_range_accepts_empty_and_excludes_end() {
         i128::from(i64::MAX) - i128::from(i64::MIN)
     );
     assert_eq!(
-        TimeRange::new(9, 7)
-            .expect_err("reversed range")
-            .to_string(),
+        TimeRange::new(9, 7).expect_err("reversed range"),
         "from (9) must not be after to (7)"
     );
     assert!(TimeRange::bounded(7, 10, 2).is_err());

@@ -886,16 +886,16 @@ fn rewrite_detail_schema(value: &mut Value) {
             if object.get("format").and_then(Value::as_str) == Some("uint") {
                 object.remove("format");
             }
-            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
-                if properties.remove("detail_locator").is_some() {
-                    properties.insert(
-                        "detail_ref".to_owned(),
-                        json!({
-                            "description": "Opaque server-produced row-detail reference; copy it unchanged.",
-                            "type": "string",
-                        }),
-                    );
-                }
+            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut)
+                && properties.remove("detail_locator").is_some()
+            {
+                properties.insert(
+                    "detail_ref".to_owned(),
+                    json!({
+                        "description": "Opaque server-produced row-detail reference; copy it unchanged.",
+                        "type": "string",
+                    }),
+                );
             }
             if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
                 for name in required.iter_mut() {
