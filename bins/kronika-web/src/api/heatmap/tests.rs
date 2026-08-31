@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_cpu::OsCpu;
@@ -295,17 +297,26 @@ fn statement_overview_omits_query_and_keeps_the_latest_locator_in_one_scan() {
 #[test]
 fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
     let mut fixture = ActiveStatementFixture::new();
-    fixture.append(1, 10.0);
+    fixture.append(1, 10.0, "captured_db");
     let query = statement_batch(&[statement_ranking("total_exec_time", 1)]);
     let captured_prepared =
         prepare_batch(fixture.root.path(), query.clone()).expect("captured prepare");
 
-    fixture.append(2, 100.0);
+    fixture.append(2, 100.0, "current_db");
     let captured = captured_prepared
         .execute(&|| false)
         .expect("captured execution");
     assert_eq!(captured_prepared.row_visits(), 2);
+    assert_eq!(captured_prepared.selected_segments(), 1);
+    assert_eq!(captured_prepared.scan_segment_opens(), 1);
+    assert_eq!(captured_prepared.dictionary_segment_opens(), 1);
+    assert_eq!(captured_prepared.open_segment_handles(), 0);
+    assert_eq!(captured_prepared.peak_open_segment_handles(), 1);
     assert_eq!(captured.results[0].entities[0].identity["query_id"], "1");
+    assert_eq!(
+        captured.results[0].entities[0].labels["datname"],
+        "captured_db"
+    );
     assert!(!captured.results[0].entities[0].labels.contains_key("query"));
     assert_eq!(
         captured.results[0].entities[0].detail_locator.identity["queryid"],
@@ -317,12 +328,155 @@ fn prepared_statement_ranking_keeps_its_captured_active_prefix() {
         .execute(&|| false)
         .expect("current execution");
     assert_eq!(current_prepared.row_visits(), 4);
+    assert_eq!(current_prepared.selected_segments(), 1);
+    assert_eq!(current_prepared.scan_segment_opens(), 1);
+    assert_eq!(current_prepared.dictionary_segment_opens(), 1);
+    assert_eq!(current_prepared.open_segment_handles(), 0);
+    assert_eq!(current_prepared.peak_open_segment_handles(), 1);
     assert_eq!(current.results[0].entities[0].identity["query_id"], "2");
+    assert_eq!(
+        current.results[0].entities[0].labels["datname"],
+        "current_db"
+    );
     assert!(!current.results[0].entities[0].labels.contains_key("query"));
     assert_eq!(
         current.results[0].entities[0].detail_locator.identity["queryid"],
         json!("2")
     );
+}
+
+#[test]
+fn finished_segments_drop_before_winner_dictionary_resolution() {
+    const FINISHED_SEGMENTS: usize = 1_025;
+
+    let fixture = finished_statement_fixture(FINISHED_SEGMENTS);
+    let range_end = HOUR
+        + i64::try_from(FINISHED_SEGMENTS)
+            .expect("segment count fits i64")
+            .saturating_mul(2);
+    let prepared = prepare_batch(
+        fixture.root.path(),
+        HeatmapBatchQuery {
+            range: TimeRange::new(HOUR, range_end).expect("finished segment range"),
+            items: vec![statement_ranking("total_exec_time", 1)],
+        },
+    )
+    .expect("prepare finished segments");
+    assert_eq!(prepared.selected_segments(), FINISHED_SEGMENTS as u64);
+
+    let execute_started = std::time::Instant::now();
+    let result = prepared
+        .execute(&|| false)
+        .expect("execute finished segments");
+    let execute_elapsed = execute_started.elapsed();
+    let item = &result.results[0];
+    let entity = &item.entities[0];
+    let last = FINISHED_SEGMENTS - 1;
+    let last_timestamp = HOUR
+        + i64::try_from(last)
+            .expect("last segment index fits i64")
+            .saturating_mul(2);
+
+    assert_eq!(item.coverage.window_rows, (FINISHED_SEGMENTS * 2) as u64);
+    assert_eq!(item.entity_count, FINISHED_SEGMENTS as u64);
+    assert_eq!(item.entities.len(), 1);
+    assert_eq!(
+        entity.total,
+        Some(f64::from(
+            u32::try_from(FINISHED_SEGMENTS).expect("finished segment count fits f64")
+        ))
+    );
+    assert_eq!(entity.identity["query_id"], last.to_string());
+    assert_eq!(entity.labels["datname"], format!("database-{last}"));
+    assert_eq!(entity.labels["usename"], format!("role-{last}"));
+    assert!(!entity.labels.contains_key("query"));
+    assert_eq!(
+        serde_json::to_value(&entity.detail_locator).expect("serialize detail locator"),
+        json!({
+            "section": "pg_stat_statements",
+            "segment_id": last_timestamp.to_string(),
+            "at": (last_timestamp + 1).to_string(),
+            "type_id": PgStatStatementsV2::CONTRACT.type_id.get().to_string(),
+            "row_ordinal": "1",
+            "identity": {
+                "queryid": last.to_string(),
+                "userid": "72",
+                "dbid": "73",
+            },
+        })
+    );
+    let detail_ref = entity.detail_locator.detail_ref().expect("detail ref");
+    assert_eq!(
+        crate::api::row_key::DetailLocator::from_detail_ref(&detail_ref)
+            .expect("decode detail ref"),
+        entity.detail_locator
+    );
+    assert_eq!(prepared.row_visits(), (FINISHED_SEGMENTS * 2) as u64);
+    assert_eq!(prepared.scan_segment_opens(), FINISHED_SEGMENTS as u64);
+    assert_eq!(prepared.dictionary_segment_opens(), 1);
+    assert_eq!(prepared.open_segment_handles(), 0);
+    assert_eq!(prepared.peak_open_segment_handles(), 1);
+    eprintln!(
+        "heatmap_fd_bounded selected_segments={} scan_segment_opens={} dictionary_segment_opens={} peak_open_segment_handles={} execute_elapsed_us={}",
+        prepared.selected_segments(),
+        prepared.scan_segment_opens(),
+        prepared.dictionary_segment_opens(),
+        prepared.peak_open_segment_handles(),
+        execute_elapsed.as_micros(),
+    );
+}
+
+#[test]
+fn cancelled_execution_releases_its_open_segment() {
+    let fixture = finished_statement_fixture(1);
+    let prepared = prepare_batch(
+        fixture.root.path(),
+        HeatmapBatchQuery {
+            range: TimeRange::new(fixture.timestamp, fixture.timestamp + 2).expect("range"),
+            items: vec![statement_ranking("total_exec_time", 1)],
+        },
+    )
+    .expect("prepare");
+    let cancelled = Cell::new(false);
+
+    let error = prepared
+        .execute(&|| cancelled.replace(true))
+        .expect_err("cancellation must stop execution");
+
+    assert_eq!(error.ranking_index(), 0);
+    assert!(error.to_string().contains("request cancelled"));
+    assert_eq!(prepared.scan_segment_opens(), 1);
+    assert_eq!(prepared.dictionary_segment_opens(), 0);
+    assert_eq!(prepared.open_segment_handles(), 0);
+    assert_eq!(prepared.peak_open_segment_handles(), 1);
+}
+
+#[test]
+fn unresolved_dictionary_value_releases_its_open_finished_segment() {
+    let fixture = finished_statement_fixture_with_unresolved_label(1, true);
+    let prepared = prepare_batch(
+        fixture.root.path(),
+        HeatmapBatchQuery {
+            range: TimeRange::new(fixture.timestamp, fixture.timestamp + 2).expect("range"),
+            items: vec![statement_ranking("total_exec_time", 1)],
+        },
+    )
+    .expect("prepare");
+
+    let error = prepared
+        .execute(&|| false)
+        .expect_err("unresolved dictionary value must stop execution");
+
+    assert_eq!(error.ranking_index(), 0);
+    assert!(
+        error
+            .to_string()
+            .contains("unresolved dictionary id 999999")
+    );
+    assert_eq!(prepared.scan_segment_opens(), 1);
+    assert_eq!(prepared.dictionary_segment_opens(), 1);
+    assert_eq!(prepared.open_segment_handles(), 0);
+    assert_eq!(prepared.peak_open_segment_handles(), 1);
 }
 
 #[test]
@@ -626,9 +780,14 @@ impl ActiveStatementFixture {
         }
     }
 
-    fn append(&mut self, query_id: usize, total_exec_time: f64) {
+    fn append(&mut self, query_id: usize, total_exec_time: f64, database: &str) {
         let mut interner = Interner::new(DictLimits::default());
-        let datname = StrId(interner.intern(b"active_db").expect("database label").get());
+        let datname = StrId(
+            interner
+                .intern(database.as_bytes())
+                .expect("database label")
+                .get(),
+        );
         let usename = StrId(interner.intern(b"active_role").expect("role label").get());
         let query = StrId(
             interner
@@ -890,6 +1049,77 @@ fn mount_fixture(rows: i32) -> MountFixture {
             Some(i64::from(index)),
         )
     }))
+}
+
+fn finished_statement_fixture(segments: usize) -> MountFixture {
+    finished_statement_fixture_with_unresolved_label(segments, false)
+}
+
+fn finished_statement_fixture_with_unresolved_label(
+    segments: usize,
+    unresolved_label: bool,
+) -> MountFixture {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    for offset in 0..segments {
+        let offset_i64 = i64::try_from(offset).expect("segment offset fits i64");
+        let timestamp = HOUR + offset_i64.saturating_mul(2);
+        let address = SegmentAddress::new(SegmentId::new(timestamp).expect("segment id"))
+            .expect("segment address");
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = if unresolved_label && offset + 1 == segments {
+            StrId(999_999)
+        } else {
+            StrId(
+                interner
+                    .intern(format!("database-{offset}").as_bytes())
+                    .expect("database")
+                    .get(),
+            )
+        };
+        let usename = StrId(
+            interner
+                .intern(format!("role-{offset}").as_bytes())
+                .expect("role")
+                .get(),
+        );
+        let query = StrId(
+            interner
+                .intern(format!("statement-{offset}").as_bytes())
+                .expect("query")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(statement_row(timestamp, offset, datname, usename, query))
+            .expect("baseline statement");
+        let mut current = statement_row(timestamp + 1, offset, datname, usename, query);
+        current.total_exec_time =
+            f64::from(u32::try_from(offset + 1).expect("fixture total fits f64"));
+        buffers.push(current).expect("current statement");
+        let dictionary = dict::encode(interner.window()).expect("dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode")
+            .expect("nonempty statement part");
+        journal
+            .append(address.id, &part)
+            .expect("append statement part");
+        write_segment(&journal, &owner, address).expect("finish segment");
+        if offset + 1 < segments {
+            journal.reset().expect("reset journal");
+        }
+    }
+    drop(journal);
+    drop(owner);
+    MountFixture {
+        root,
+        timestamp: HOUR,
+    }
 }
 
 fn labelled_mount_fixture() -> MountFixture {

@@ -178,6 +178,48 @@ pub(crate) struct PreparedHeatmapBatch {
     retained_label_slots: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     metric_fold_slots: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    scan_segment_opens: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    dictionary_segment_opens: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    open_segment_handles: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    peak_open_segment_handles: std::sync::atomic::AtomicU64,
+}
+
+/// Test-only lifetime probe for one opened reader segment.
+///
+/// A finished `Segment` owns its file descriptor, so keeping this wrapper in
+/// scope measures the maximum simultaneous finished descriptors exercised by
+/// a batch. The production path opens the same `Segment` directly.
+#[cfg(test)]
+struct TrackedSegment<'a> {
+    segment: Option<Segment>,
+    open_segment_handles: &'a std::sync::atomic::AtomicU64,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TrackedSegment<'_> {
+    type Target = Segment;
+
+    fn deref(&self) -> &Self::Target {
+        let Some(segment) = self.segment.as_ref() else {
+            unreachable!("tracked segment is not available during dereference");
+        };
+        segment
+    }
+}
+
+#[cfg(test)]
+impl Drop for TrackedSegment<'_> {
+    fn drop(&mut self) {
+        drop(self.segment.take());
+        let previous = self
+            .open_segment_handles
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        debug_assert!(previous > 0, "opened segment lifetime underflow");
+    }
 }
 
 #[derive(Clone)]
@@ -248,6 +290,14 @@ pub(crate) fn prepare_batch(
         retained_label_slots: std::sync::atomic::AtomicU64::new(0),
         #[cfg(test)]
         metric_fold_slots: std::sync::atomic::AtomicU64::new(0),
+        #[cfg(test)]
+        scan_segment_opens: std::sync::atomic::AtomicU64::new(0),
+        #[cfg(test)]
+        dictionary_segment_opens: std::sync::atomic::AtomicU64::new(0),
+        #[cfg(test)]
+        open_segment_handles: std::sync::atomic::AtomicU64::new(0),
+        #[cfg(test)]
+        peak_open_segment_handles: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
@@ -291,6 +341,65 @@ impl PreparedHeatmapBatch {
         )
     }
 
+    #[cfg(not(test))]
+    fn open_for_scan(&self, segment_ref: &SegmentRef) -> Result<Segment, HeatmapError> {
+        self.reader
+            .open_segment(segment_ref)
+            .map_err(|error| HeatmapError::storage(0, error))
+    }
+
+    #[cfg(test)]
+    fn open_for_scan(&self, segment_ref: &SegmentRef) -> Result<TrackedSegment<'_>, HeatmapError> {
+        let segment = self
+            .reader
+            .open_segment(segment_ref)
+            .map_err(|error| HeatmapError::storage(0, error))?;
+        Ok(self.track_segment(segment, &self.scan_segment_opens))
+    }
+
+    #[cfg(not(test))]
+    fn open_for_dictionary(
+        &self,
+        segment_ref: &SegmentRef,
+        ranking_index: usize,
+    ) -> Result<Segment, HeatmapError> {
+        self.reader
+            .open_segment(segment_ref)
+            .map_err(|error| HeatmapError::storage(ranking_index, error))
+    }
+
+    #[cfg(test)]
+    fn open_for_dictionary(
+        &self,
+        segment_ref: &SegmentRef,
+        ranking_index: usize,
+    ) -> Result<TrackedSegment<'_>, HeatmapError> {
+        let segment = self
+            .reader
+            .open_segment(segment_ref)
+            .map_err(|error| HeatmapError::storage(ranking_index, error))?;
+        Ok(self.track_segment(segment, &self.dictionary_segment_opens))
+    }
+
+    #[cfg(test)]
+    fn track_segment(
+        &self,
+        segment: Segment,
+        opens: &std::sync::atomic::AtomicU64,
+    ) -> TrackedSegment<'_> {
+        opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let open = self
+            .open_segment_handles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        self.peak_open_segment_handles
+            .fetch_max(open, std::sync::atomic::Ordering::Relaxed);
+        TrackedSegment {
+            segment: Some(segment),
+            open_segment_handles: &self.open_segment_handles,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one captured batch owns scan and dictionary resolution"
@@ -317,41 +426,38 @@ impl PreparedHeatmapBatch {
                 &section_specs[accumulator_sections[accumulator]],
             ));
         }
-        let mut opened_segments = Vec::with_capacity(self.segments.len());
         let mut rendered_ids = RenderedIds::new();
 
         for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
             if cancelled() {
                 return Err(HeatmapError::storage(0, "request cancelled"));
             }
-            let segment = self
-                .reader
-                .open_segment(segment_ref)
-                .map_err(|error| HeatmapError::storage(0, error))?;
-            let plans = physical_plans(
-                &segment,
-                &self.unique,
-                &section_specs,
-                &accumulator_sections,
-            );
-            for plan in plans {
-                scan_plan(
+            {
+                let segment = self.open_for_scan(segment_ref)?;
+                let plans = physical_plans(
                     &segment,
-                    segment_slot,
-                    &plan,
-                    self.query.range,
-                    &mut accumulators,
-                    &mut sections,
-                    cancelled,
-                    #[cfg(test)]
-                    &self.row_visits,
-                )?;
+                    &self.unique,
+                    &section_specs,
+                    &accumulator_sections,
+                );
+                for plan in plans {
+                    scan_plan(
+                        &segment,
+                        segment_slot,
+                        &plan,
+                        self.query.range,
+                        &mut accumulators,
+                        &mut sections,
+                        cancelled,
+                        #[cfg(test)]
+                        &self.row_visits,
+                    )?;
+                }
             }
-            opened_segments.push(segment);
         }
 
-        let mut retained_ids = vec![HashSet::new(); opened_segments.len()];
-        let mut retained_indices = vec![Vec::new(); opened_segments.len()];
+        let mut retained_ids = vec![HashSet::new(); self.segments.len()];
+        let mut retained_indices = vec![Vec::new(); self.segments.len()];
         let indexed_sections = sections
             .iter()
             .map(SharedSection::indexed)
@@ -363,7 +469,8 @@ impl PreparedHeatmapBatch {
                 &mut retained_indices,
             );
         }
-        for (segment_slot, ((segment, ids), indexed_ids)) in opened_segments
+        for (segment_slot, ((segment_ref, ids), indexed_ids)) in self
+            .segments
             .iter()
             .zip(&retained_ids)
             .zip(&retained_indices)
@@ -378,13 +485,16 @@ impl PreparedHeatmapBatch {
                     "retained dictionary IDs have no dependent ranking",
                 ));
             };
-            let dictionary = segment
-                .dictionary_once_for(ids)
-                .map_err(|error| HeatmapError::storage(index, error))?;
-            for (id, index) in indexed_ids {
-                let value = cell(&Cell::StrId(*id), &dictionary)
-                    .map_err(|error| HeatmapError::storage(*index, error))?;
-                rendered_ids.insert((segment_slot, *id), value);
+            {
+                let segment = self.open_for_dictionary(segment_ref, index)?;
+                let dictionary = segment
+                    .dictionary_once_for(ids)
+                    .map_err(|error| HeatmapError::storage(index, error))?;
+                for (id, index) in indexed_ids {
+                    let value = cell(&Cell::StrId(*id), &dictionary)
+                        .map_err(|error| HeatmapError::storage(*index, error))?;
+                    rendered_ids.insert((segment_slot, *id), value);
+                }
             }
         }
 
@@ -2359,6 +2469,30 @@ impl PreparedHeatmapBatch {
 
     pub(crate) fn metric_fold_slots(&self) -> u64 {
         self.metric_fold_slots
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn selected_segments(&self) -> u64 {
+        u64::try_from(self.segments.len()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn scan_segment_opens(&self) -> u64 {
+        self.scan_segment_opens
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn dictionary_segment_opens(&self) -> u64 {
+        self.dictionary_segment_opens
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn open_segment_handles(&self) -> u64 {
+        self.open_segment_handles
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn peak_open_segment_handles(&self) -> u64 {
+        self.peak_open_segment_handles
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
