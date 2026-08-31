@@ -330,13 +330,6 @@ impl EventsResult {
             Self::Groups { truncated, .. } | Self::Occurrences { truncated, .. } => *truncated,
         }
     }
-
-    pub(crate) const fn len(&self) -> usize {
-        match self {
-            Self::Groups { groups, .. } => groups.len(),
-            Self::Occurrences { occurrences, .. } => occurrences.len(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

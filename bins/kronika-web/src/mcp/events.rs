@@ -3,7 +3,7 @@
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
-use crate::api::events::{EventsRepresentation, EventsResult, MAX_EVENTS_WINDOW_MICROS};
+use crate::api::events::{EventsResult, MAX_EVENTS_WINDOW_MICROS};
 use crate::config::Config;
 
 use super::catalog::{EventsInput, FIND_EVENTS_TOOL};
@@ -56,9 +56,8 @@ pub(crate) fn call(
         Ok(result) => result,
         Err(error) => return storage_error(&error),
     };
-    let summary = summary(&result);
     match public_result(&result) {
-        Ok(value) => mcp_structured(value, summary),
+        Ok(value) => mcp_structured(value),
         Err(_error) => mcp_error("could not produce detail_ref"),
     }
 }
@@ -91,21 +90,4 @@ fn public_result(result: &EventsResult) -> Result<Value, String> {
         super::semantics::set_detail_ref(item, detail_ref)?;
     }
     Ok(structured)
-}
-
-fn summary(result: &EventsResult) -> String {
-    let item = match result.representation() {
-        EventsRepresentation::Groups => "group",
-        EventsRepresentation::Occurrences => "occurrence",
-    };
-    format!(
-        "Returned {} event {item}{}{}.",
-        result.len(),
-        if result.len() == 1 { "" } else { "s" },
-        if result.truncated() {
-            "; result truncated to limit"
-        } else {
-            ""
-        },
-    )
 }

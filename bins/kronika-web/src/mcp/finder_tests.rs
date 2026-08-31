@@ -305,9 +305,10 @@ fn finder_results_truncate_without_a_continuation_contract() {
 
     let result = super::processes::call(&config, arguments(&json!({ "limit": 1 })), &|| false);
     assert_eq!(result.is_error, Some(false));
-    let summary = &result.content[0].as_text().expect("summary").text;
-    assert_eq!(summary, "Returned 1 recorded process row; truncated.");
+    let content: Value = serde_json::from_str(&result.content[0].as_text().expect("JSON").text)
+        .expect("content JSON");
     let output = result.structured_content.expect("structured content");
+    assert_eq!(content, output);
     assert_eq!(output["truncated"], true);
     assert_eq!(output["rows"].as_array().expect("rows").len(), 1);
     for obsolete in ["has_more", "next_from", "next_cursor", "cursor"] {

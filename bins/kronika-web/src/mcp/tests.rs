@@ -75,6 +75,25 @@ fn assert_no_detail_ref_property(value: &serde_json::Value) {
     }
 }
 
+fn assert_json_content_matches_structured(result: &rmcp::model::CallToolResult) {
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(result.content.len(), 1);
+    let text = &result.content[0].as_text().expect("JSON text").text;
+    let content: serde_json::Value = serde_json::from_str(text).expect("content JSON");
+    assert_eq!(Some(&content), result.structured_content.as_ref());
+}
+
+fn assert_wire_json_content_matches_structured(response: &serde_json::Value) {
+    let content = response["result"]["content"]
+        .as_array()
+        .expect("wire content");
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], "text");
+    let text = content[0]["text"].as_str().expect("wire JSON text");
+    let parsed: serde_json::Value = serde_json::from_str(text).expect("wire content JSON");
+    assert_eq!(parsed, response["result"]["structuredContent"]);
+}
+
 fn assert_detail_ref(row: &serde_json::Value, section: &str, detail_only_fields: &[&str]) {
     let row = row.as_object().expect("finder row object");
     for field in detail_only_fields {
@@ -308,14 +327,15 @@ fn assert_public_tool_contract(tools: &[serde_json::Value]) {
     }
     assert_tool_descriptions(tools);
     for tool in tools {
-        if let Some(output_schema) = tool.get("outputSchema") {
-            assert_eq!(
-                output_schema["type"],
-                json!("object"),
-                "{} outputSchema.type",
-                tool["name"]
-            );
-        }
+        let output_schema = tool
+            .get("outputSchema")
+            .unwrap_or_else(|| panic!("{} is missing outputSchema", tool["name"]));
+        assert_eq!(
+            output_schema["type"],
+            json!("object"),
+            "{} outputSchema.type",
+            tool["name"]
+        );
     }
     assert_opaque_tool_contract(tools);
     let overview = tools
@@ -1387,6 +1407,7 @@ async fn find_postgresql_activity_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    assert_wire_json_content_matches_structured(&decoded);
     let rows = decoded["result"]["structuredContent"]["rows"]
         .as_array()
         .expect("rows array");
@@ -1888,6 +1909,7 @@ async fn find_processes_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    assert_wire_json_content_matches_structured(&decoded);
     let rows = decoded["result"]["structuredContent"]["rows"]
         .as_array()
         .expect("rows array");
@@ -2760,6 +2782,7 @@ async fn find_events_end_to_end_through_the_real_transport() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    assert_wire_json_content_matches_structured(&decoded);
     let rows = decoded["result"]["structuredContent"]["occurrences"]
         .as_array()
         .expect("rows array");
@@ -3078,12 +3101,14 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "fixture"), (300, 101, 10, "fixture")]);
     fixture.append_log_error(200);
+    fixture.append_instance_facts();
+    fixture.append_postgres_setting("work_mem", "4096", "configuration file");
     fixture.finish();
     let config = test_config(fixture.root().to_path_buf());
 
-    let context = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false)
-        .structured_content
-        .expect("context output");
+    let context_result = crate::mcp::context::call(&config, serde_json::Map::new(), &|| false);
+    assert_json_content_matches_structured(&context_result);
+    let context = context_result.structured_content.expect("context output");
     assert!(context["recorded_from"].is_string());
     assert!(context["recorded_to"].is_string());
     let overview = crate::mcp::overview::call(
@@ -3098,7 +3123,7 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
         .clone(),
         &|| false,
     );
-    assert_eq!(overview.is_error, Some(false));
+    assert_json_content_matches_structured(&overview);
     let overview = overview.structured_content.expect("overview output");
     let overview_item = &overview["results"][0];
     assert_eq!(overview_item["coverage"]["state"], "data");
@@ -3116,7 +3141,7 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
         .clone(),
         &|| false,
     );
-    assert_eq!(events.is_error, Some(false));
+    assert_json_content_matches_structured(&events);
     assert_eq!(
         events.structured_content.expect("events output")["occurrences"]
             .as_array()
@@ -3131,10 +3156,21 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
             .clone(),
         &|| false,
     );
-    assert_eq!(finder.is_error, Some(false));
+    assert_json_content_matches_structured(&finder);
     let finder = finder.structured_content.expect("finder output");
     assert_eq!(finder["rows"].as_array().map(Vec::len), Some(1));
     assert!(finder.get("as_of").is_none());
+    let detail = crate::mcp::row_detail::call(
+        &config,
+        json!({"detail_ref": finder["rows"][0]["detail_ref"]})
+            .as_object()
+            .expect("detail arguments")
+            .clone(),
+        &|| false,
+    );
+    assert_json_content_matches_structured(&detail);
+    let instance = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
+    assert_json_content_matches_structured(&instance);
     let replay = crate::mcp::overview::call(
         &config,
         json!({
@@ -3147,7 +3183,7 @@ fn decimal_time_outputs_reenter_every_shared_time_input() {
         .clone(),
         &|| false,
     );
-    assert_eq!(replay.is_error, Some(false));
+    assert_json_content_matches_structured(&replay);
 }
 
 #[test]
@@ -3288,11 +3324,11 @@ fn get_instance_returns_host_facts_and_postgresql_settings() {
     let result = crate::mcp::instance::call(&config, serde_json::Map::new(), &|| false);
 
     assert_eq!(result.is_error, Some(false));
-    assert_eq!(
-        result.content[0].as_text().expect("text").text,
-        "Returned recorded host facts and 1 recorded pg_settings row."
-    );
+    let content: serde_json::Value =
+        serde_json::from_str(&result.content[0].as_text().expect("JSON").text)
+            .expect("content JSON");
     let structured = result.structured_content.expect("structured content");
+    assert_eq!(content, structured);
     let host = structured["host"].as_object().expect("host object");
     // `row_record` renders 64-bit integers as decimal strings.
     assert_eq!(host["clock_ticks_per_sec"], "100");

@@ -23,7 +23,7 @@ use super::catalog::{
 };
 use super::filter::{FilterInput, build_search};
 use super::semantics::{
-    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_error, mcp_structured,
+    bounded_limit, finder_output, finder_storage_error, mcp_error, mcp_structured,
 };
 use super::time::{TimeSpecInput, resolve_point};
 
@@ -101,15 +101,13 @@ fn call(
         Err(error) => return finder_storage_error(kind.logical_name(), &error),
     };
 
-    let row_count = result.rows.len();
     let rows: Vec<Value> = result
         .rows
         .into_iter()
         .map(|row| row_to_json(row, kind, group))
         .collect();
-    let summary = finder_summary(kind.logical_name(), row_count, result.truncated);
     let output = finder_output(rows, result.truncated);
-    mcp_structured(output, summary)
+    mcp_structured(output)
 }
 
 fn finder_point(tool: &str, at: Option<&TimeSpecInput>) -> Result<SnapshotPoint, CallToolResult> {
@@ -306,7 +304,6 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
         Ok(result) => result,
         Err(error) => return finder_storage_error(surface.logical_name(), &error),
     };
-    let row_count = result.rows.len();
     let rows: Vec<Value> = match result
         .rows
         .into_iter()
@@ -316,9 +313,8 @@ fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool)
         Ok(rows) => rows,
         Err(_error) => return mcp_error("could not produce detail_ref"),
     };
-    let summary = finder_summary(surface.logical_name(), row_count, result.truncated);
     let output = finder_output(rows, result.truncated);
-    mcp_structured(output, summary)
+    mcp_structured(output)
 }
 
 pub(super) fn plain_rows(

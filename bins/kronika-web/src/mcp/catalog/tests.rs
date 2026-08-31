@@ -80,6 +80,22 @@ fn catalog_has_exactly_fourteen_tools() {
 }
 
 #[test]
+fn every_tool_publishes_an_object_output_schema() {
+    for tool in tools() {
+        let output = tool
+            .output_schema
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} output schema", tool.name));
+        assert_eq!(
+            output.get("type"),
+            Some(&serde_json::json!("object")),
+            "{}",
+            tool.name
+        );
+    }
+}
+
+#[test]
 fn public_schemas_omit_uint_format_and_keep_nonnegative_integer_bounds() {
     let catalog = tools();
     for tool in &catalog {
@@ -89,13 +105,12 @@ fn public_schemas_omit_uint_format_and_keep_nonnegative_integer_bounds() {
                 .expect("encode input schema")
                 .contains("\"format\":\"uint\"")
         );
-        if let Some(output) = tool.output_schema.as_ref() {
-            assert!(
-                !serde_json::to_string(output)
-                    .expect("encode output schema")
-                    .contains("\"format\":\"uint\"")
-            );
-        }
+        let output = tool.output_schema.as_ref().expect("output schema");
+        assert!(
+            !serde_json::to_string(output)
+                .expect("encode output schema")
+                .contains("\"format\":\"uint\"")
+        );
     }
 
     for (tool_name, fields) in [
@@ -365,6 +380,28 @@ fn context_and_instance_schemas_stay_closed_objects() {
 }
 
 #[test]
+fn recorded_sections_output_schema_matches_the_stable_catalog_envelope() {
+    let tool = tools()
+        .into_iter()
+        .find(|tool| tool.name.as_ref() == GET_CONTEXT_TOOL)
+        .expect("recorded-sections tool");
+    let output = tool.output_schema.as_ref().expect("output schema");
+    assert_eq!(output["type"], "object");
+    assert_eq!(output["additionalProperties"], false);
+    assert_eq!(
+        output["required"],
+        serde_json::json!(["recorded_from", "recorded_to", "sections"])
+    );
+    let section = &output["$defs"]["RecordedSectionOutput"];
+    assert_eq!(section["additionalProperties"], false);
+    assert_eq!(section["properties"]["rows"]["type"], "string");
+    assert_eq!(section["properties"]["bytes"]["type"], "string");
+    let field = &output["$defs"]["RecordedFieldOutput"];
+    assert_eq!(field["additionalProperties"], false);
+    assert_eq!(field["properties"]["name"]["type"], "string");
+}
+
+#[test]
 fn instance_schema_exposes_scope_default_and_complete_typed_result() {
     let tool = tools()
         .into_iter()
@@ -506,6 +543,18 @@ fn row_detail_accepts_only_one_opaque_string() {
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));
     assert!(description.contains("Pass a reference"));
+    let output = detail.output_schema.as_ref().expect("detail output schema");
+    assert_eq!(output["type"], "object");
+    assert!(
+        output["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("Property names") && text.contains("stored_text"))
+    );
+    assert!(
+        output["additionalProperties"]["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("full_len") && text.contains("sha256"))
+    );
     assert_no_internal_coordinates(
         "row detail input",
         &serde_json::Value::Object(detail.input_schema.as_ref().clone()),
@@ -517,10 +566,14 @@ fn tools_list_exposes_no_internal_coordinate_names() {
     for tool in tools() {
         let input = serde_json::Value::Object(tool.input_schema.as_ref().clone());
         assert_no_internal_coordinates(&format!("{} input", tool.name), &input);
-        if let Some(output) = tool.output_schema.as_ref() {
-            let output = serde_json::Value::Object(output.as_ref().clone());
-            assert_no_internal_coordinates(&format!("{} output", tool.name), &output);
-        }
+        let output = serde_json::Value::Object(
+            tool.output_schema
+                .as_ref()
+                .expect("output schema")
+                .as_ref()
+                .clone(),
+        );
+        assert_no_internal_coordinates(&format!("{} output", tool.name), &output);
 
         let description = tool.description.as_deref().unwrap_or_default();
         for field in FORBIDDEN_PUBLIC_FIELDS {

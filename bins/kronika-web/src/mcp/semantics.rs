@@ -22,14 +22,6 @@ pub(crate) fn finder_output(rows: Vec<Value>, truncated: bool) -> Value {
     serde_json::json!(FinderOutput { rows, truncated })
 }
 
-pub(crate) fn finder_summary(noun: &str, row_count: usize, truncated: bool) -> String {
-    let suffix = if truncated { "; truncated" } else { "" };
-    format!(
-        "Returned {row_count} recorded {noun} row{}{suffix}.",
-        if row_count == 1 { "" } else { "s" }
-    )
-}
-
 /// Replaces an internal HTTP row locator with its public MCP reference.
 pub(crate) fn set_detail_ref(value: &mut Value, detail_ref: String) -> Result<(), String> {
     let object = value
@@ -178,12 +170,9 @@ pub(crate) fn arguments_within_budget(arguments: &Map<String, Value>) -> bool {
     serde_json::to_writer(&mut budget, arguments).is_ok()
 }
 
-/// Places data in `structuredContent` with the summary as the only text
-/// content, built without `CallToolResult::structured`'s eager JSON mirror.
-pub(crate) fn mcp_structured(value: Value, summary: impl Into<String>) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![ContentBlock::text(summary.into())]);
-    result.structured_content = Some(value);
-    result
+/// Places the same complete JSON value in `content` and `structuredContent`.
+pub(crate) fn mcp_structured(value: Value) -> CallToolResult {
+    CallToolResult::structured(value)
 }
 
 #[cfg(test)]

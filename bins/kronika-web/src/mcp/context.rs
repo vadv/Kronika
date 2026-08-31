@@ -57,15 +57,11 @@ pub(crate) fn call(
             );
         }
     }
-    let summary = format!("{} logical product sections recorded", sections.len());
-    mcp_structured(
-        json!({
-            "recorded_from": range.map(|(from, _to)| from.to_string()),
-            "recorded_to": range.map(|(_from, to)| to.to_string()),
-            "sections": sections,
-        }),
-        summary,
-    )
+    mcp_structured(json!({
+        "recorded_from": range.map(|(from, _to)| from.to_string()),
+        "recorded_to": range.map(|(_from, to)| to.to_string()),
+        "sections": sections,
+    }))
 }
 
 fn exclusive_recorded_range(range: Option<(i64, i64)>) -> Result<Option<(i64, i64)>, &'static str> {

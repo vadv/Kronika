@@ -35,20 +35,33 @@ fn bounded_limit_rejects_zero_and_values_above_the_cap() {
 }
 
 #[test]
-fn mcp_structured_keeps_the_summary_out_of_the_structured_content_and_vice_versa() {
-    let result = mcp_structured(
-        serde_json::json!({ "sections": ["os_process"] }),
-        "1 section",
-    );
+fn mcp_structured_mirrors_complete_json_without_losing_wide_integers() {
+    let expected = serde_json::json!({
+        "sections": ["os_process"],
+        "unsigned": u64::MAX,
+        "signed": i64::MIN,
+    });
+    let result = mcp_structured(expected.clone());
     assert_eq!(result.is_error, Some(false));
-    assert_eq!(
-        result.structured_content,
-        Some(serde_json::json!({ "sections": ["os_process"] }))
-    );
+    assert_eq!(result.structured_content, Some(expected.clone()));
     assert_eq!(result.content.len(), 1);
+    let text = &result.content[0].as_text().expect("JSON text").text;
     assert_eq!(
-        result.content[0].as_text().map(|text| text.text.as_str()),
-        Some("1 section")
+        serde_json::from_str::<serde_json::Value>(text).expect("content JSON"),
+        expected
+    );
+}
+
+#[test]
+fn mcp_structured_has_no_artificial_result_size_cap() {
+    let expected = serde_json::json!({"text": "x".repeat(8 * 1024 * 1024 + 1)});
+    let result = mcp_structured(expected.clone());
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(result.structured_content, Some(expected.clone()));
+    let text = &result.content[0].as_text().expect("JSON text").text;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text).expect("content JSON"),
+        expected
     );
 }
 

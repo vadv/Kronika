@@ -38,13 +38,7 @@ pub(crate) fn call(
     let Some(row) = row else {
         return mcp_error("detail_ref does not identify one recorded row");
     };
-    mcp_structured(
-        Value::Object(row.fields),
-        format!(
-            "Returned one {} row for the requested detail reference.",
-            row.section
-        ),
-    )
+    mcp_structured(Value::Object(row.fields))
 }
 
 #[cfg(test)]

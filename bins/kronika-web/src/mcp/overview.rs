@@ -89,15 +89,11 @@ pub(crate) fn call(
         Ok(result) => result,
         Err(error) => return heatmap_error(error, &source_indices),
     };
-    let returned = result.results.len();
     let structured = match public_result(&result) {
         Ok(value) => value,
         Err(_error) => return mcp_error("could not produce detail_ref"),
     };
-    mcp_structured(
-        structured,
-        format!("Returned {returned} ordered stored-data rankings."),
-    )
+    mcp_structured(structured)
 }
 
 fn heatmap_error(error: HeatmapError, source_indices: &[usize]) -> CallToolResult {

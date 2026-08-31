@@ -11,9 +11,7 @@ use crate::route::MAX_SNAPSHOT_PAGE_SIZE;
 
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
-use super::semantics::{
-    bounded_limit, finder_output, finder_storage_error, finder_summary, mcp_structured,
-};
+use super::semantics::{bounded_limit, finder_output, finder_storage_error, mcp_structured};
 use super::time::resolve_point;
 
 const LOGICAL_NAME: &str = "os_process";
@@ -85,14 +83,12 @@ fn call_with(
         Err(error) => return finder_storage_error(LOGICAL_NAME, &error),
     };
 
-    let row_count = result.rows.len();
     let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
         Ok(rows) => rows,
         Err(_error) => return super::semantics::mcp_error("could not produce detail_ref"),
     };
-    let summary = finder_summary("process", row_count, result.truncated);
     let output = finder_output(rows, result.truncated);
-    mcp_structured(output, summary)
+    mcp_structured(output)
 }
 
 /// Keeps compact fields, overwrites `pid`/`ppid` from the typed identity, and

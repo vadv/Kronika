@@ -82,6 +82,46 @@ pub(crate) struct GetContextInput {
     pub(crate) section: Option<String>,
 }
 
+/// Stable catalog envelope returned by `kronika_list_recorded_sections`.
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct RecordedSectionsOutput {
+    /// Earliest recorded timestamp as decimal Unix microseconds, or null when
+    /// the store is empty.
+    recorded_from: Option<String>,
+    /// Exclusive upper bound as decimal Unix microseconds, or null when the
+    /// store is empty.
+    recorded_to: Option<String>,
+    /// Recorded logical sections in stable name order.
+    sections: Vec<RecordedSectionOutput>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct RecordedSectionOutput {
+    /// Logical section name accepted by section-aware tools.
+    logical_name: String,
+    /// Recorded source family, or null when the registry has none.
+    source_family: Option<String>,
+    /// Recorded row count as an exact decimal integer string.
+    rows: String,
+    /// Recorded encoded byte count as an exact decimal integer string.
+    bytes: String,
+    /// Public fields in stable name order.
+    fields: Vec<RecordedFieldOutput>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct RecordedFieldOutput {
+    /// Public field name.
+    name: String,
+    /// Metric class such as `counter`, `gauge`, or `identity`.
+    class: String,
+    /// Field unit, or null when the field has no unit.
+    unit: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SettingsScopeInput {
@@ -531,6 +571,7 @@ fn context_tool() -> Tool {
          their class and unit. Pass `section` to return one section.",
         schema_object::<GetContextInput>(),
     )
+    .with_raw_output_schema(output_schema_object::<RecordedSectionsOutput>())
 }
 
 /// Instance metadata tool.
@@ -587,7 +628,8 @@ fn tail_tools() -> [Tool; 3] {
              emitted by Kronika unchanged. Long text is returned as \
              `{stored_text, full_len, truncated, sha256}`.",
             schema_object::<RowDetailInput>(),
-        ),
+        )
+        .with_raw_output_schema(row_detail_output_schema()),
         Tool::new(
             FIND_EVENTS_TOOL,
             "Finds recorded PostgreSQL and PgBouncer events in the half-open \
@@ -682,6 +724,23 @@ fn output_schema_object<T: JsonSchema>() -> Arc<JsonObject> {
     let value = serde_json::to_value(schema).expect("schema serializes to JSON");
     let object = value.as_object().expect("schema is a JSON object").clone();
     Arc::new(object)
+}
+
+/// Row fields depend on the referenced section, so only the common envelope
+/// and long-text representation can be described statically.
+fn row_detail_output_schema() -> Arc<JsonObject> {
+    Arc::new(
+        json!({
+            "type": "object",
+            "description": "One recorded row. Property names and scalar value types depend on the section. Long text values are objects with stored_text, full_len, truncated, and sha256.",
+            "additionalProperties": {
+                "description": "A stored row field. Long text uses {stored_text:string, full_len:decimal-string, truncated:boolean, sha256:string|null}."
+            }
+        })
+        .as_object()
+        .expect("row-detail output schema is an object")
+        .clone(),
+    )
 }
 
 /// Adapts shared HTTP schemas to the opaque MCP detail boundary.

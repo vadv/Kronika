@@ -87,15 +87,6 @@ pub(crate) fn call(
         Err(_error) => return mcp_error("could not produce detail_ref"),
     };
     let row_count = selected.len();
-    let summary = format!(
-        "Returned {} and {row_count} recorded pg_settings row{}.",
-        if host_row.is_some() {
-            "recorded host facts"
-        } else {
-            "no recorded host facts"
-        },
-        if row_count == 1 { "" } else { "s" },
-    );
     let output = InstanceOutput {
         host: host_row,
         host_as_of: host.as_of.map(|at| at.to_string()),
@@ -109,7 +100,7 @@ pub(crate) fn call(
         },
     };
     match serde_json::to_value(output) {
-        Ok(output) => mcp_structured(output, summary),
+        Ok(output) => mcp_structured(output),
         Err(_error) => mcp_error("could not encode instance result"),
     }
 }
