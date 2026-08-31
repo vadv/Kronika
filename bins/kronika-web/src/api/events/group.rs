@@ -59,9 +59,9 @@ impl Summary {
         }
     }
 
-    fn observe_first(&mut self, row: EventDataRow, from: i64, weight: f64) {
+    fn observe_first(&mut self, row: &EventDataRow, from: i64, weight: f64) {
         self.observe_values(row.timestamp, from, weight);
-        if same_locator(&self.representative, &row) {
+        if same_locator(&self.representative, row) {
             self.duplicate_representative = true;
         }
     }
@@ -117,10 +117,6 @@ impl Summary {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the arguments mirror the compact EventGroup contract"
-    )]
     fn finish(
         self,
         key: String,
@@ -187,9 +183,9 @@ impl SharedText {
         }
     }
 
-    fn observe(&mut self, value: Option<String>) {
+    fn observe(&mut self, value: Option<&str>) {
         if let Self::Value(shared) = self
-            && value.as_deref() != Some(shared.as_str())
+            && value != Some(shared.as_str())
         {
             *self = Self::Mixed;
         }
@@ -340,8 +336,10 @@ impl EventGroups {
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let state = entry.get_mut();
-                state.database.observe(text(&row, "database"));
-                state.username.observe(text(&row, "username"));
+                let database = text(&row, "database");
+                let username = text(&row, "username");
+                state.database.observe(database.as_deref());
+                state.username.observe(username.as_deref());
                 state
                     .summary
                     .observe_earliest(row, order, self.from, weight);
@@ -411,7 +409,7 @@ impl EventGroups {
             let seconds_apart = number(&row, "seconds_apart");
             if let Some(state) = &mut self.checkpoint_warnings {
                 state.seconds_apart = min_optional(state.seconds_apart, seconds_apart);
-                state.summary.observe_first(row, self.from, 1.0);
+                state.summary.observe_first(&row, self.from, 1.0);
             } else {
                 self.checkpoint_warnings = Some(WarningState {
                     summary: Summary::new(row, order, self.from, 1.0, 0.0),
@@ -439,7 +437,7 @@ impl EventGroups {
             state.timed += timed;
             state.max_sync_ms = max_optional(state.max_sync_ms, sync_ms);
             add_optional(&mut state.buffers, buffers);
-            state.summary.observe_first(row, self.from, 1.0);
+            state.summary.observe_first(&row, self.from, 1.0);
         } else {
             self.checkpoints = Some(CheckpointState {
                 summary: Summary::new(row, order, self.from, 1.0, 0.0),
@@ -529,7 +527,8 @@ impl EventGroups {
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let state = entry.get_mut();
-                state.database.observe(text(&row, "database"));
+                let database = text(&row, "database");
+                state.database.observe(database.as_deref());
                 state.summary.observe_earliest(row, order, self.from, 1.0);
             }
         }
@@ -537,124 +536,22 @@ impl EventGroups {
 
     pub(super) fn finish(self, threshold_ms: Option<f64>) -> Result<Vec<EventGroup>, ApiError> {
         let mut entries = Vec::with_capacity(self.retained_rows());
-        for (key, state) in self.errors {
-            let severity = number(&state.summary.representative, "severity").unwrap_or(0.0);
-            let category = number(&state.summary.representative, "category");
-            let sqlstate = text(&state.summary.representative, "sqlstate");
-            let label = text(&state.summary.representative, "pattern");
-            entries.push(state.summary.finish(
-                format!("errors:{key}"),
-                EventSource::Errors,
-                None,
-                error_tier(severity),
-                label,
-                EventStat::Errors {
-                    severity,
-                    category,
-                    sqlstate,
-                    database: state.database.finish(),
-                    username: state.username.finish(),
-                },
-            )?);
-        }
-        for (key, state) in self.slow {
-            let max_ms = number(&state.summary.representative, "max_duration_ms").unwrap_or(0.0);
-            entries.push(state.summary.finish(
-                format!("slow:{key}"),
-                EventSource::SlowQueries,
-                None,
-                EventTier::Notable,
-                Some(key),
-                EventStat::Slow {
-                    max_ms,
-                    total_ms: state.total_ms,
-                    threshold_ms,
-                },
-            )?);
-        }
-        for (key, state) in self.autovacuum {
-            let analyze = number(&state.summary.representative, "kind") == Some(1.0);
-            let label = text(&state.summary.representative, "relation");
-            entries.push(state.summary.finish(
-                format!("autovacuum:{key}"),
-                EventSource::Autovacuum,
-                None,
-                EventTier::Routine,
-                label,
-                EventStat::Autovacuum {
-                    analyze,
-                    runs: state.runs,
-                    total_ms: state.total_ms,
-                    tuples_removed: state.tuples_removed,
-                    tuples_dead: state.tuples_dead,
-                },
-            )?);
-        }
-        if let Some(state) = self.checkpoints {
-            let count = state.starts.max(state.completes);
-            entries.push(state.summary.finish(
-                "checkpoints".to_owned(),
-                EventSource::Checkpoints,
-                Some(count_number(count)),
-                EventTier::Routine,
-                None,
-                EventStat::Checkpoints {
-                    completes: state.completes,
-                    timed: state.timed,
-                    requested: state.starts - state.timed,
-                    max_sync_ms: state.max_sync_ms,
-                    buffers: state.buffers,
-                },
-            )?);
-        }
-        if let Some(state) = self.checkpoint_warnings {
-            entries.push(state.summary.finish(
-                "checkpoints:warning".to_owned(),
-                EventSource::Checkpoints,
-                None,
-                EventTier::Notable,
-                None,
-                EventStat::CheckpointWarning {
-                    seconds_apart: state.seconds_apart,
-                },
-            )?);
-        }
-        for (holders, state) in self.locks {
-            entries.push(state.finish(holders, false)?);
-        }
-        if let Some(state) = self.standalone_acquired {
-            entries.push(state.finish(String::new(), true)?);
-        }
-        for state in self.lifecycle {
-            let row_ordinal = state.summary.representative.row_ordinal;
-            entries.push(state.summary.finish(
-                format!("lifecycle:{}:{row_ordinal}", state.index),
-                EventSource::Lifecycle,
-                None,
-                lifecycle_tier(state.lifecycle),
-                None,
-                EventStat::Lifecycle {
-                    lifecycle: state.lifecycle,
-                    pid: state.pid,
-                    signal: state.signal,
-                    mode: state.mode,
-                },
-            )?);
-        }
-        for (key, state) in self.pgbouncer {
-            let level = number(&state.summary.representative, "level").unwrap_or(3.0);
-            entries.push(state.summary.finish(
-                format!("pgbouncer:{key}"),
-                EventSource::Pgbouncer,
-                None,
-                pgbouncer_tier(level),
-                None,
-                EventStat::Pgbouncer {
-                    level,
-                    database: state.database.finish(),
-                },
-            )?);
-        }
+        finish_primary_groups(
+            &mut entries,
+            self.errors,
+            self.slow,
+            self.autovacuum,
+            threshold_ms,
+        )?;
+        finish_other_groups(
+            &mut entries,
+            self.checkpoints,
+            self.checkpoint_warnings,
+            self.locks,
+            self.standalone_acquired,
+            self.lifecycle,
+            self.pgbouncer,
+        )?;
 
         let collator = event_collator()?;
         entries.sort_by(|left, right| {
@@ -690,6 +587,146 @@ impl EventGroups {
             + self.lifecycle.len()
             + self.pgbouncer.len()
     }
+}
+
+fn finish_primary_groups(
+    entries: &mut Vec<EventGroup>,
+    errors: HashMap<String, ErrorState>,
+    slow: HashMap<String, SlowState>,
+    autovacuum: HashMap<String, AutovacuumState>,
+    threshold_ms: Option<f64>,
+) -> Result<(), ApiError> {
+    for (key, state) in errors {
+        let severity = number(&state.summary.representative, "severity").unwrap_or(0.0);
+        let category = number(&state.summary.representative, "category");
+        let sqlstate = text(&state.summary.representative, "sqlstate");
+        let label = text(&state.summary.representative, "pattern");
+        entries.push(state.summary.finish(
+            format!("errors:{key}"),
+            EventSource::Errors,
+            None,
+            error_tier(severity),
+            label,
+            EventStat::Errors {
+                severity,
+                category,
+                sqlstate,
+                database: state.database.finish(),
+                username: state.username.finish(),
+            },
+        )?);
+    }
+    for (key, state) in slow {
+        let max_ms = number(&state.summary.representative, "max_duration_ms").unwrap_or(0.0);
+        entries.push(state.summary.finish(
+            format!("slow:{key}"),
+            EventSource::SlowQueries,
+            None,
+            EventTier::Notable,
+            Some(key),
+            EventStat::Slow {
+                max_ms,
+                total_ms: state.total_ms,
+                threshold_ms,
+            },
+        )?);
+    }
+    for (key, state) in autovacuum {
+        let analyze = number(&state.summary.representative, "kind") == Some(1.0);
+        let label = text(&state.summary.representative, "relation");
+        entries.push(state.summary.finish(
+            format!("autovacuum:{key}"),
+            EventSource::Autovacuum,
+            None,
+            EventTier::Routine,
+            label,
+            EventStat::Autovacuum {
+                analyze,
+                runs: state.runs,
+                total_ms: state.total_ms,
+                tuples_removed: state.tuples_removed,
+                tuples_dead: state.tuples_dead,
+            },
+        )?);
+    }
+    Ok(())
+}
+
+fn finish_other_groups(
+    entries: &mut Vec<EventGroup>,
+    checkpoints: Option<CheckpointState>,
+    checkpoint_warnings: Option<WarningState>,
+    locks: HashMap<String, LockState>,
+    standalone_acquired: Option<LockState>,
+    lifecycle: Vec<LifecycleState>,
+    pgbouncer: HashMap<String, PgbouncerState>,
+) -> Result<(), ApiError> {
+    if let Some(state) = checkpoints {
+        let count = state.starts.max(state.completes);
+        entries.push(state.summary.finish(
+            "checkpoints".to_owned(),
+            EventSource::Checkpoints,
+            Some(count_number(count)),
+            EventTier::Routine,
+            None,
+            EventStat::Checkpoints {
+                completes: state.completes,
+                timed: state.timed,
+                requested: state.starts - state.timed,
+                max_sync_ms: state.max_sync_ms,
+                buffers: state.buffers,
+            },
+        )?);
+    }
+    if let Some(state) = checkpoint_warnings {
+        entries.push(state.summary.finish(
+            "checkpoints:warning".to_owned(),
+            EventSource::Checkpoints,
+            None,
+            EventTier::Notable,
+            None,
+            EventStat::CheckpointWarning {
+                seconds_apart: state.seconds_apart,
+            },
+        )?);
+    }
+    for (holders, state) in locks {
+        entries.push(state.finish(holders, false)?);
+    }
+    if let Some(state) = standalone_acquired {
+        entries.push(state.finish(String::new(), true)?);
+    }
+    for state in lifecycle {
+        let row_ordinal = state.summary.representative.row_ordinal;
+        entries.push(state.summary.finish(
+            format!("lifecycle:{}:{row_ordinal}", state.index),
+            EventSource::Lifecycle,
+            None,
+            lifecycle_tier(state.lifecycle),
+            None,
+            EventStat::Lifecycle {
+                lifecycle: state.lifecycle,
+                pid: state.pid,
+                signal: state.signal,
+                mode: state.mode,
+            },
+        )?);
+    }
+    for (key, state) in pgbouncer {
+        let level = number(&state.summary.representative, "level").unwrap_or(3.0);
+        entries.push(state.summary.finish(
+            format!("pgbouncer:{key}"),
+            EventSource::Pgbouncer,
+            None,
+            pgbouncer_tier(level),
+            None,
+            EventStat::Pgbouncer {
+                level,
+                database: state.database.finish(),
+            },
+        )?);
+    }
+    Ok(())
 }
 
 impl LockState {
@@ -877,7 +914,7 @@ pub(super) struct SlowThreshold {
 }
 
 impl SlowThreshold {
-    pub(super) fn observe(&mut self, row: EventDataRow) {
+    pub(super) fn observe(&mut self, row: &EventDataRow) {
         let order = RowOrder {
             timestamp: row.timestamp,
             encounter: self.encounter,
@@ -979,7 +1016,7 @@ pub(super) fn group_events(
             ) {
                 rows.sort_by_key(|row| row.timestamp);
             }
-            for row in rows.drain(..) {
+            for row in rows {
                 groups.observe(source, row);
             }
         }
@@ -991,7 +1028,7 @@ pub(super) fn group_events(
 pub(super) fn slow_threshold_ms(rows: &[EventDataRow]) -> Option<f64> {
     let mut threshold = SlowThreshold::default();
     for row in rows {
-        threshold.observe(row.clone());
+        threshold.observe(row);
     }
     threshold.finish()
 }

@@ -682,6 +682,66 @@ fn lock_acquisitions_follow_the_latest_waiter_under_input_permutations() {
 }
 
 #[test]
+fn lock_acquisitions_use_physical_wait_order_at_equal_timestamps() {
+    let wait = |ordinal, holders| {
+        row(
+            ordinal,
+            10,
+            json!({
+                "kind": 0,
+                "pid": 7,
+                "lock_target": "relation 9",
+                "holding_pids": holders,
+                "duration_ms": ordinal,
+            }),
+        )
+    };
+    let acquired = row(
+        9,
+        10,
+        json!({
+            "kind": 1,
+            "pid": 7,
+            "lock_target": "relation 9",
+            "duration_ms": 999,
+        }),
+    );
+    let attached_max = |rows: Vec<EventDataRow>, key: &str| {
+        let entries = grouped(HashMap::from([(EventSource::LockWaits, rows)]));
+        let group = entries
+            .iter()
+            .find(|group| group.key == key)
+            .expect("lock group");
+        let EventStat::Locks { max_ms, .. } = &group.stat else {
+            panic!("lock stat");
+        };
+        *max_ms
+    };
+
+    assert_eq!(
+        attached_max(
+            vec![wait(1, "11"), wait(2, "22"), acquired.clone()],
+            "locks:22"
+        ),
+        Some(999.0)
+    );
+    assert_eq!(
+        attached_max(
+            vec![wait(2, "22"), wait(1, "11"), acquired.clone()],
+            "locks:11"
+        ),
+        Some(999.0)
+    );
+    assert_eq!(
+        attached_max(
+            vec![acquired, wait(1, "11"), wait(2, "22")],
+            "locks:acquired"
+        ),
+        Some(999.0)
+    );
+}
+
+#[test]
 fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
     let query = EventsQuery {
         range: TimeRange {

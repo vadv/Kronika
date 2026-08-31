@@ -592,7 +592,7 @@ impl PreparedEvents {
             }
             if needs_threshold {
                 let mut observe = |row| {
-                    threshold.observe(row);
+                    threshold.observe(&row);
                     Ok(())
                 };
                 collect_section(
@@ -886,6 +886,23 @@ fn groups_result(
     threshold_ms: Option<f64>,
 ) -> Result<EventsResult, ApiError> {
     let mut groups = groups.finish(threshold_ms)?;
+    let mut seen = HashSet::new();
+    for group in &groups {
+        let locator = &group.detail_locator;
+        let identity = serde_json::to_string(&locator.identity)?;
+        if !seen.insert((
+            locator.section.as_str(),
+            locator.segment_id,
+            locator.type_id,
+            locator.at,
+            identity,
+        )) {
+            return Err(ApiError::BadLocator(format!(
+                "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
+                locator.section, locator.at, locator.segment_id,
+            )));
+        }
+    }
     let truncated = groups.len() > query.limit;
     groups.truncate(query.limit);
     Ok(EventsResult::Groups { groups, truncated })
