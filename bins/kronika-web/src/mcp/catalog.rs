@@ -520,7 +520,7 @@ fn overview_tool() -> Tool {
          it does not change pre-ranking scan state.",
         schema_object::<OverviewInput>(),
     )
-    .with_raw_output_schema(opaque_output_schema::<HeatmapBatchResult>(true))
+    .with_raw_output_schema(opaque_output_schema::<HeatmapBatchResult>())
 }
 
 fn context_tool() -> Tool {
@@ -706,7 +706,7 @@ fn tail_tools() -> [Tool; 3] {
              `now`, and `now-N{us,ms,s,m,h,d,w}`.",
             schema_object::<EventsInput>(),
         )
-        .with_raw_output_schema(opaque_output_schema::<EventsResult>(false)),
+        .with_raw_output_schema(opaque_output_schema::<EventsResult>()),
     ]
 }
 
@@ -865,7 +865,7 @@ fn output_schema_object<T: JsonSchema>() -> Arc<JsonObject> {
 }
 
 /// Adapts shared HTTP schemas to the opaque MCP detail boundary.
-fn opaque_output_schema<T: JsonSchema>(hide_layout: bool) -> Arc<JsonObject> {
+fn opaque_output_schema<T: JsonSchema>() -> Arc<JsonObject> {
     let generator = schemars::generate::SchemaSettings::draft2020_12()
         .for_serialize()
         .into_generator();
@@ -874,13 +874,13 @@ fn opaque_output_schema<T: JsonSchema>(hide_layout: bool) -> Arc<JsonObject> {
     if let Some(definitions) = value.get_mut("$defs").and_then(Value::as_object_mut) {
         definitions.remove("DetailLocator");
     }
-    rewrite_detail_schema(&mut value, hide_layout);
+    rewrite_detail_schema(&mut value);
     let object = value.as_object_mut().expect("schema is a JSON object");
     object.insert("type".to_owned(), json!("object"));
     Arc::new(object.clone())
 }
 
-fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {
+fn rewrite_detail_schema(value: &mut Value) {
     match value {
         Value::Object(object) => {
             if object.get("format").and_then(Value::as_str) == Some("uint") {
@@ -896,9 +896,6 @@ fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {
                         }),
                     );
                 }
-                if hide_layout {
-                    properties.remove("type_id");
-                }
             }
             if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
                 for name in required.iter_mut() {
@@ -906,17 +903,14 @@ fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {
                         *name = json!("detail_ref");
                     }
                 }
-                if hide_layout {
-                    required.retain(|name| name != "type_id");
-                }
             }
             for child in object.values_mut() {
-                rewrite_detail_schema(child, hide_layout);
+                rewrite_detail_schema(child);
             }
         }
         Value::Array(values) => {
             for child in values {
-                rewrite_detail_schema(child, hide_layout);
+                rewrite_detail_schema(child);
             }
         }
         _ => {}
