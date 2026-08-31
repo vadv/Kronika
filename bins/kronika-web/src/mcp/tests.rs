@@ -687,10 +687,43 @@ fn overview_window_outside_the_recorded_range_is_no_data() {
 }
 
 #[test]
-fn overview_rejects_malformed_arguments_without_panicking() {
+fn tools_reject_malformed_arguments_without_panicking() {
+    use super::catalog::{
+        FIND_EVENTS_TOOL, FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL,
+        FIND_POSTGRESQL_LOCKS_TOOL, FIND_POSTGRESQL_PLANS_TOOL, FIND_POSTGRESQL_STATEMENTS_TOOL,
+        FIND_POSTGRESQL_TABLES_TOOL, FIND_POSTGRESQL_VACUUM_TOOL, FIND_PROCESSES_TOOL,
+        GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
+    };
+    use super::{events, overview, postgresql, processes, row_detail};
+
+    type Handler = fn(
+        &Config,
+        serde_json::Map<String, serde_json::Value>,
+        &dyn Fn() -> bool,
+    ) -> rmcp::model::CallToolResult;
+
     let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::overview::call(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
+    let handlers: [(&str, Handler); 11] = [
+        (OVERVIEW_TOOL, overview::call),
+        (FIND_POSTGRESQL_TABLES_TOOL, postgresql::call_tables),
+        (FIND_POSTGRESQL_ACTIVITY_TOOL, postgresql::call_activity),
+        (FIND_POSTGRESQL_LOCKS_TOOL, postgresql::call_locks),
+        (FIND_POSTGRESQL_VACUUM_TOOL, postgresql::call_vacuum),
+        (FIND_POSTGRESQL_DATABASES_TOOL, postgresql::call_databases),
+        (FIND_POSTGRESQL_STATEMENTS_TOOL, postgresql::call_statements),
+        (FIND_POSTGRESQL_PLANS_TOOL, postgresql::call_plans),
+        (FIND_PROCESSES_TOOL, processes::call),
+        (GET_ROW_DETAIL_TOOL, row_detail::call),
+        (FIND_EVENTS_TOOL, events::call),
+    ];
+    for (tool, handler) in handlers {
+        let result = handler(&config, serde_json::Map::new(), &|| false);
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "{tool} accepted malformed arguments"
+        );
+    }
 }
 
 #[test]
@@ -1012,13 +1045,6 @@ fn find_postgresql_tables_ranks_and_filters() {
 }
 
 #[test]
-fn find_postgresql_tables_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_tables(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
-}
-
-#[test]
 fn find_postgresql_tables_rejects_a_limit_above_the_snapshot_page_size_cap() {
     let config = test_config(std::env::temp_dir());
     let arguments = serde_json::json!({
@@ -1142,13 +1168,6 @@ fn find_postgresql_activity_ranks_and_filters() {
     assert_eq!(filtered_rows[0]["pid"], 10_000);
 }
 
-#[test]
-fn find_postgresql_activity_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_activity(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
-}
-
 #[tokio::test]
 async fn find_postgresql_activity_end_to_end_through_the_real_transport() {
     let mut fixture = Fixture::new();
@@ -1247,13 +1266,6 @@ fn find_postgresql_locks_ranks_and_filters() {
 }
 
 #[test]
-fn find_postgresql_locks_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_locks(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
-}
-
-#[test]
 fn find_postgresql_vacuum_ranks_and_filters() {
     let mut fixture = Fixture::new();
     fixture.append_postgres_vacuum_rows(&[
@@ -1299,13 +1311,6 @@ fn find_postgresql_vacuum_ranks_and_filters() {
         .clone();
     assert_eq!(filtered_rows.len(), 1);
     assert_eq!(filtered_rows[0]["pid"], 501);
-}
-
-#[test]
-fn find_postgresql_vacuum_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_vacuum(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
@@ -1369,13 +1374,6 @@ fn find_postgresql_databases_ranks_and_filters() {
         .expect("rows array")
         .clone();
     assert!(below_threshold_rows.is_empty());
-}
-
-#[test]
-fn find_postgresql_databases_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_databases(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 /// Checks a JSON number within `1e-9`; composed ratios divide previously
@@ -1482,14 +1480,6 @@ fn find_postgresql_statements_nulls_derived_fields_without_a_predecessor() {
             "{field} must be null without a predecessor snapshot"
         );
     }
-}
-
-#[test]
-fn find_postgresql_statements_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result =
-        crate::mcp::postgresql::call_statements(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
@@ -1612,13 +1602,6 @@ fn find_postgresql_plans_computes_plan_time_fraction_on_the_vadv_layout() {
 }
 
 #[test]
-fn find_postgresql_plans_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::postgresql::call_plans(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
-}
-
-#[test]
 fn find_processes_ranks_and_filters() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
@@ -1659,13 +1642,6 @@ fn find_processes_ranks_and_filters() {
     let filtered_rows = filtered_structured["rows"].as_array().expect("rows array");
     assert_eq!(filtered_rows.len(), 1);
     assert_eq!(filtered_rows[0]["pid"], 102);
-}
-
-#[test]
-fn find_processes_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::processes::call(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
@@ -1914,13 +1890,6 @@ fn get_row_detail_rejects_the_old_structured_locator_input() {
         message,
         "invalid arguments: pass only one copied detail_ref string"
     );
-}
-
-#[test]
-fn get_row_detail_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::row_detail::call(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
@@ -2354,13 +2323,6 @@ fn find_events_rejects_an_unknown_source_name() {
             "pgbouncer_events"
         ])
     );
-}
-
-#[test]
-fn find_events_rejects_malformed_arguments_without_panicking() {
-    let config = test_config(std::env::temp_dir());
-    let result = crate::mcp::events::call(&config, serde_json::Map::new(), &|| false);
-    assert_eq!(result.is_error, Some(true));
 }
 
 #[test]
