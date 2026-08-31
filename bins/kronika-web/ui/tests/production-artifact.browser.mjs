@@ -1046,6 +1046,11 @@ test("the production artifact preserves wire keys and exact finding page state",
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ record: "instance_label", database: "artifact_db" }))
+      return
+    }
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
@@ -1744,7 +1749,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       search: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-label") ?? "",
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
     }))()`)
-    assert.match(preview.chip, /Query 9007199254740991 · operators · reporterShow all/)
+    assert.match(preview.chip, /Query ID 9007199254740991 · operators · reporterShow all/)
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
     assert.match(preview.search, /Search rows/)
@@ -2121,15 +2126,20 @@ test("the production artifact preserves wire keys and exact finding page state",
         const value = cell.querySelector('strong')
         const dot = cell.querySelector('.label-help')
         if (label === null || value === null) return []
+        const dotBounds = dot?.getBoundingClientRect()
+        const valueBounds = value.getBoundingClientRect()
         return [{
           clipped: label.scrollWidth > label.clientWidth || value.scrollWidth > value.clientWidth,
           label: label.textContent,
-          under: dot === null ? false : dot.getBoundingClientRect().left < value.getBoundingClientRect().right - .5,
+          under: dotBounds === undefined ? false : dotBounds.right > valueBounds.left + .5
+            && dotBounds.left < valueBounds.right - .5 && dotBounds.bottom > valueBounds.top + .5
+            && dotBounds.top < valueBounds.bottom - .5,
           value: value.textContent,
         }]
       })
-      const network = document.querySelector('[data-testid="use-row-network"] .use-cell > span > span')
-      return { cells, network: network?.textContent ?? null, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
+      const network = [...document.querySelectorAll('[data-testid="use-row-network"] .use-cell .label-help > span')]
+        .map((label) => label.textContent).join(" · ")
+      return { cells, network, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
     })()`)
     // A cell that prints two readings must name both: labelled "RX" over
     // "884 B/s · 888 B/s", the second number has no name.
@@ -4714,28 +4724,33 @@ async function settleLayout(cdp) {
 async function assertCompactTimelineContained(cdp, followingSelector, label) {
   for (const width of [800, 1280]) {
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
-    await settleLayout(cdp)
-    const pointer = await cdp.evaluate(`(() => {
-      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
-      return { x: plot.right - 1, y: plot.top + plot.height / 2 }
-    })()`)
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...pointer })
-    const geometry = await cdp.evaluate(`(() => {
-      const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top } }
-      const figure = document.querySelector('[data-testid="hour-timeline"]')
-      const shell = figure.closest('.timeline-shell')
-      const plot = figure.querySelector('.u-over')
-      const cursor = figure.querySelector('.u-cursor-x')
-      return {
-        axes: [...figure.querySelectorAll('.u-axis')].map(bounds),
-        cursor: cursor === null ? null : bounds(cursor),
-        figure: { ...bounds(figure), height: figure.getBoundingClientRect().height },
-        following: bounds(document.querySelector(${JSON.stringify(followingSelector)})),
-        plot: bounds(plot),
-        rightReserve: figure.getBoundingClientRect().right - plot.getBoundingClientRect().right,
-        shell: bounds(shell),
-      }
-    })()`)
+    let geometry = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await settleLayout(cdp)
+      const pointer = await cdp.evaluate(`(() => {
+        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
+        return { x: plot.right - 1, y: plot.top + plot.height / 2 }
+      })()`)
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...pointer })
+      await delay(50)
+      geometry = await cdp.evaluate(`(() => {
+        const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top } }
+        const figure = document.querySelector('[data-testid="hour-timeline"]')
+        const shell = figure.closest('.timeline-shell')
+        const plot = figure.querySelector('.u-over')
+        const cursor = figure.querySelector('.u-cursor-x')
+        return {
+          axes: [...figure.querySelectorAll('.u-axis')].map(bounds),
+          cursor: cursor === null ? null : bounds(cursor),
+          figure: { ...bounds(figure), height: figure.getBoundingClientRect().height },
+          following: bounds(document.querySelector(${JSON.stringify(followingSelector)})),
+          plot: bounds(plot),
+          rightReserve: figure.getBoundingClientRect().right - plot.getBoundingClientRect().right,
+          shell: bounds(shell),
+        }
+      })()`)
+      if (geometry.cursor !== null && geometry.cursor.bottom > geometry.cursor.top) break
+    }
     assert.ok(geometry.figure.height >= 92 && geometry.figure.height <= 96, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
     for (const axis of geometry.axes) {
       assert.ok(axis.left >= geometry.figure.left - 1 && axis.right <= geometry.figure.right + 1
