@@ -415,9 +415,7 @@ impl ReplayAppend<'_> {
                 &flushed,
             )
             .expect("append retained PostgreSQL batch");
-            let retry = finished
-                .iter()
-                .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+            let retry = finished.iter().any(|(_, reason)| *reason == "journal-full");
             for (path, reason) in finished {
                 self.report.paths.push(path);
                 *self.report.close_reasons.entry(reason).or_default() += 1;
@@ -520,7 +518,7 @@ fn assert_plan_rows(segment: &kronika_reader::Segment, seen: &mut usize) -> usiz
 }
 
 #[test]
-fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
+fn statement_sql_timestamp_survives_source_batches_in_one_active_segment() {
     let directory = tempfile::tempdir().expect("create statement timestamp directory");
     let writer = owner(directory.path());
     let mut journal =
@@ -570,7 +568,6 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
             .all(|row| row.get("ts") == Some(&Cell::Ts(BASE_TS)))
     );
 
-    segment.force_format_limit();
     let second_batch = PgBatch::Statements(StatementsVersion::V6, vec![last]);
     let outcome = append_pending_pg_batch(
         &mut journal,
@@ -583,17 +580,14 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         &mut segment,
         &mut scheduler,
     )
-    .expect("rotate and append the remaining natural SQL timestamp row");
-    assert_eq!(outcome.written.len(), 1);
+    .expect("append the remaining natural SQL timestamp row");
+    assert!(outcome.written.is_empty());
 
-    let reader = Reader::open(directory.path()).expect("open rotated statement reader");
-    let listing = reader
-        .segments(..)
-        .expect("list rotated statement segments");
+    let reader = Reader::open(directory.path()).expect("open statement reader");
+    let listing = reader.segments(..).expect("list statement segments");
     assert!(listing.warnings.is_empty());
-    assert_eq!(listing.segments.len(), 2);
-    assert_eq!(listing.segments[0].kind(), SegmentKind::Finished);
-    assert_eq!(listing.segments[1].kind(), SegmentKind::Active);
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(listing.segments[0].kind(), SegmentKind::Active);
     let mut query_ids = Vec::new();
     let mut segment_rows = Vec::new();
     for reference in &listing.segments {
@@ -612,7 +606,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
             query_ids.push(*query_id);
         }
     }
-    assert_eq!(segment_rows, [BATCH_ROWS, 1]);
+    assert_eq!(segment_rows, [BATCH_ROWS + 1]);
     query_ids.sort_unstable();
     assert_eq!(
         query_ids,
@@ -1108,7 +1102,7 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
             high_cardinality: false,
             all_layouts: false,
             max_raw_wal_bytes: 9_000_000,
-            max_peak_wal_bytes: 2_500_000,
+            max_peak_wal_bytes: 9_000_000,
             max_zms_bytes: 2_800_000,
             max_cpu_ticks: 1_800,
             max_peak_rss_kib: 96 * 1_024,
@@ -1198,6 +1192,11 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
         assert!(report.segments > 0);
         assert!(report.raw_wal_bytes >= report.peak_wal_bytes);
         assert!(report.zms_bytes > 0);
+        if spec.name == "stress_shared" {
+            assert_eq!(report.segments, 1);
+            assert_eq!(report.peak_wal_bytes, report.raw_wal_bytes);
+            assert!(report.zms_bytes.saturating_mul(8) < report.raw_wal_bytes);
+        }
         assert!(
             report.raw_wal_bytes <= spec.max_raw_wal_bytes,
             "{} raw WAL bytes {} exceed {}",
@@ -1389,7 +1388,7 @@ fn append_relation_cost_batch(
                 .expect("append relation cost window");
         let retry = completed
             .iter()
-            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+            .any(|(_, reason)| *reason == "journal-full");
         paths.extend(completed.into_iter().map(|(path, _reason)| path));
         if retry {
             assert_eq!(attempt, 0, "a fresh segment accepts the relation batch");

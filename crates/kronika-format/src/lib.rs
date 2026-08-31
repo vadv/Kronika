@@ -33,8 +33,8 @@ use proptest as _;
 use tempfile as _;
 
 pub use catalog::{
-    Catalog, CatalogLayoutError, CatalogView, DecodeError, ENTRY_LEN, Entry, META_LEN,
-    TAIL_INDEX_LEN, TailIndex, validate_catalog_layout,
+    Catalog, CatalogLayoutError, CatalogView, DecodeError, ENTRY_LEN, Entry,
+    MAX_PHYSICAL_SECTION_BYTES, META_LEN, TAIL_INDEX_LEN, TailIndex, validate_catalog_layout,
 };
 pub use crc::{Crc32c, crc32c};
 pub use dictionary::{

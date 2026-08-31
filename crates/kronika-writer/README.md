@@ -11,8 +11,8 @@ data-directory grammar.
 ## Collection window
 
 `SectionBuffers::push<T: Section>` stores rows by registered type. A type buffer
-stops at `MAX_SECTION_ROWS` and returns the rejected row so the caller can flush
-and retry without loss. `flush` encodes data sections in type-id order, appends
+stops at `SECTION_WRITE_BATCH_ROWS` and returns the rejected row so the caller
+can flush and retry without loss. `flush` encodes data sections in type-id order, appends
 dictionary sections, derives the catalog time range, and returns one ZMS part.
 A successful flush empties the row buffers.
 
@@ -81,11 +81,11 @@ repeated dictionary records are deduplicated; conflicting values, metadata, or
 placement fail the write.
 
 Final bodies use Parquet 1.0, PLAIN values, RLE levels, and Zstd level 6, with
-dictionary encoding, statistics, and offset indexes disabled. Collector
-admission checks aggregate rows, `List<i32>` child values, dictionary rows and
-stored bytes, a one-page PLAIN value budget per physical column, and the 8 MiB
-encoded-body cap before append. `write_segment` checks the same limits again
-while decoding and encoding.
+dictionary encoding, statistics, and offset indexes disabled. Collection
+windows are appended without a projected final-section admission check.
+`write_segment` validates catalog field widths, decoded work and arithmetic,
+allows multiple Parquet pages, and checks the actual body against the 1 GiB
+version-1 envelope.
 
 `write_segment` writes the coalesced bodies and end catalog to a temporary file
 in the segment's UTC day. ZMS publication synchronizes the file, adds the

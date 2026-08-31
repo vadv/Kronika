@@ -13,7 +13,7 @@ use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{Crc32c, DictLimits, EntrySnapshot, Placement, SegmentDicts};
 use kronika_registry::{
     CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, FinalPlainColumnSize, MAX_SECTION_BYTES,
-    MAX_SECTION_ROWS, final_single_batch_plain_body_bound,
+    MAX_SECTION_ROWS, SECTION_WRITE_BATCH_ROWS, final_single_batch_plain_body_bound,
 };
 use parquet::arrow::arrow_writer::{
     ArrowColumnWriter, ArrowWriterOptions, compute_leaves, get_column_writers,
@@ -32,7 +32,7 @@ static DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(3).expect("zstd level 3 is valid"),
         ))
-        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_max_row_group_size(SECTION_WRITE_BATCH_ROWS)
         .set_dictionary_enabled(false)
         .set_created_by(String::new())
         .build()
@@ -46,9 +46,9 @@ static FINAL_DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(kronika_registry::FINAL_ZSTD_LEVEL).expect("zstd level 6 is valid"),
         ))
-        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_max_row_group_size(SECTION_WRITE_BATCH_ROWS)
         .set_data_page_size_limit(1024 * 1024)
-        .set_data_page_row_count_limit(MAX_SECTION_ROWS)
+        .set_data_page_row_count_limit(SECTION_WRITE_BATCH_ROWS)
         .set_write_batch_size(FINAL_DICT_WRITE_BATCH_ROWS)
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
@@ -190,7 +190,7 @@ pub fn validate_dict_limits_for_write(limits: DictLimits) -> Result<(), CodecErr
 /// # Errors
 ///
 /// Returns [`CodecError`] when row arithmetic overflows or the conservative
-/// multi-page body bound crosses 8 MiB.
+/// multi-page body bound crosses the version-1 section envelope.
 pub fn final_dictionary_body_bound(
     placement: Placement,
     rows: usize,
@@ -211,16 +211,8 @@ pub fn final_dictionary_body_bound(
         .and_then(|offsets| offsets.checked_add(stored_bytes))
         .ok_or_else(&too_large)?;
     let mut columns = vec![
-        FinalPlainColumnSize::new("str_id", ids, 0),
-        FinalPlainColumnSize::new(
-            if placement == Placement::Strings {
-                "bytes"
-            } else {
-                "stored_bytes"
-            },
-            binary,
-            0,
-        ),
+        FinalPlainColumnSize::new(ids, 0),
+        FinalPlainColumnSize::new(binary, 0),
     ];
     if placement == Placement::Blobs {
         let full_len = rows.checked_mul(8).ok_or_else(&too_large)?;
@@ -233,9 +225,9 @@ pub fn final_dictionary_body_bound(
                 max: MAX_SECTION_BYTES,
             })?;
         columns.extend([
-            FinalPlainColumnSize::new("full_len", full_len, 0),
-            FinalPlainColumnSize::new("truncated", rows, 0),
-            FinalPlainColumnSize::new("full_sha256", sha, sha_levels),
+            FinalPlainColumnSize::new(full_len, 0),
+            FinalPlainColumnSize::new(rows, 0),
+            FinalPlainColumnSize::new(sha, sha_levels),
         ]);
     }
     let pages_per_column = rows.div_ceil(FINAL_DICT_WRITE_BATCH_ROWS).max(1);

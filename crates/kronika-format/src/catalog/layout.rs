@@ -2,7 +2,7 @@
 
 use super::{
     Catalog, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Error, MAGIC, MAX_PHYSICAL_SECTION_BYTES,
-    MAX_PHYSICAL_SECTION_ROWS, fmt,
+    fmt,
 };
 
 /// Why a decoded catalog is not the canonical physical section layout.
@@ -87,12 +87,6 @@ pub fn validate_catalog_layout(
             return Err(CatalogLayoutError::entry(
                 entry.type_id,
                 "body length is above the physical cap",
-            ));
-        }
-        if entry.rows > MAX_PHYSICAL_SECTION_ROWS {
-            return Err(CatalogLayoutError::entry(
-                entry.type_id,
-                "row count is above the physical cap",
             ));
         }
         if entry.offset != expected_offset {

@@ -241,6 +241,52 @@ fn streamed_record_batches_preserve_finished_bytes_with_ties() {
 }
 
 #[test]
+fn reordered_finalizer_accepts_more_than_one_internal_write_batch() {
+    const ROWS: usize = 65_537;
+    const SPLIT: usize = 32_768;
+
+    let make_rows = |range: std::ops::Range<usize>| {
+        range
+            .map(|value| OsLoadavg {
+                ts: Ts(i64::try_from(value).expect("test timestamp fits i64")),
+                load1: f64::from(u32::try_from(value).expect("test load fits u32")),
+                load5: 2.0,
+                load15: 0.5,
+                running: 2,
+                total: 345,
+                scope: 0,
+            })
+            .collect::<Vec<_>>()
+    };
+    let high_rows = make_rows(SPLIT..ROWS);
+    let low_rows = make_rows(0..SPLIT);
+    let bodies = [
+        Bytes::from(OsLoadavg::encode(&high_rows).expect("encode high timestamp range")),
+        Bytes::from(OsLoadavg::encode(&low_rows).expect("encode low timestamp range")),
+    ];
+    let mut finished = Vec::new();
+    encode_final_sections_to(
+        OsLoadavg::CONTRACT.type_id.get(),
+        &[
+            u32::try_from(high_rows.len()).expect("high range row count fits u32"),
+            u32::try_from(low_rows.len()).expect("low range row count fits u32"),
+        ],
+        &mut finished,
+        |index| Ok::<_, CodecError>(bodies[index].clone()),
+    )
+    .expect("reorder more than one internal write batch");
+
+    let decoded = OsLoadavg::decode(VerifiedSection::for_test(Bytes::from(finished)))
+        .expect("decode reordered final section");
+    assert_eq!(decoded.len(), ROWS);
+    assert_eq!(decoded.first().map(|row| row.ts), Some(Ts(0)));
+    assert_eq!(
+        decoded.last().map(|row| row.ts),
+        Some(Ts(i64::try_from(ROWS - 1).expect("test timestamp fits i64")))
+    );
+}
+
+#[test]
 fn cpufreq_sections_preserve_finished_bytes_and_bound_metadata() {
     let bodies = (0..360_i64)
         .map(|tick| {

@@ -1498,6 +1498,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "kronika-derive",
+ "kronika-format",
  "parquet",
  "serde_json",
  "thrift",

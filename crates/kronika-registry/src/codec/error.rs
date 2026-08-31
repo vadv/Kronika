@@ -36,15 +36,6 @@ pub enum CodecError {
         /// The enforced cap.
         max: usize,
     },
-    /// A final PLAIN column would cross the one-page value budget.
-    PlainPageTooLarge {
-        /// Registry or dictionary column name.
-        name: &'static str,
-        /// Worst-case PLAIN value bytes.
-        len: usize,
-        /// Largest admitted value byte count.
-        max: usize,
-    },
     /// Parquet metadata declares more decoded column bytes than the work cap.
     DecodedSectionTooLarge {
         /// Aggregate uncompressed column bytes.
@@ -156,10 +147,6 @@ impl fmt::Display for CodecError {
             Self::SectionTooLarge { len, max } => {
                 write!(f, "section is {len} bytes, above the cap of {max}")
             }
-            Self::PlainPageTooLarge { name, len, max } => write!(
-                f,
-                "PLAIN column {name:?} needs {len} value bytes, above the one-page cap of {max}"
-            ),
             Self::DecodedSectionTooLarge { len, max } => write!(
                 f,
                 "section declares {len} decoded bytes, above the work cap of {max}"
@@ -218,7 +205,6 @@ impl Error for CodecError {
             | Self::InvalidRowCount { .. }
             | Self::RowCountMismatch { .. }
             | Self::SectionTooLarge { .. }
-            | Self::PlainPageTooLarge { .. }
             | Self::DecodedSectionTooLarge { .. }
             | Self::TooManyRowGroups { .. }
             | Self::InvalidPageLayout

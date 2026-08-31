@@ -282,25 +282,25 @@ segments use different writer profiles:
 
 - a collection-window body uses Zstd level 3 and sorts snapshot rows by the
   registry key and dictionary rows by `str_id`;
-- a final body uses Parquet 1.0, one row group, PLAIN values, RLE
-  levels, and Zstd level 6; Parquet dictionary encoding, statistics, and offset
-  indexes are disabled;
+- a final body uses Parquet 1.0, PLAIN values, RLE levels, and Zstd level 6;
+  Parquet may split it into multiple pages or row groups, while dictionary
+  encoding, statistics, and offset indexes are disabled;
 - canonical data rows use the registry key followed by every remaining column
   as a deterministic total order; normalized dictionary rows use `str_id`;
-- a final body is limited to 65,536 rows and 8 MiB, while decode admission also
-  limits a body to 16 row groups and 128 MiB of aggregate decoded work;
+- the catalog's `u32` row field bounds a section's rows; encoded and aggregate
+  decoded section work are each bounded by the 1 GiB version-1 envelope;
 - redundant Arrow schema metadata is omitted and `created_by` is empty.
 
-Before a window is appended, segment admission accumulates rows,
-`List<i32>` child values, dictionary rows, and stored dictionary bytes. It also
-checks the final one-page PLAIN profile for every physical column. For column
-`i`, let `V_i` be worst-case PLAIN value bytes and `L_i` be level bytes:
+Collection windows are validated independently and appended without projecting
+the size of a future coalesced section. Segment rollover follows the configured
+journal byte threshold after a successful append, or age. The finalizer checks
+catalog field widths, aggregate decoded work, arithmetic, and the actual encoded
+body against the version-1 envelope. Its conservative bound accounts for all
+data pages and their framing:
 
 ```text
-V_i < 1 MiB
-page_i = V_i + L_i
-body_bound = 64 KiB + sum(zstd_bound(page_i) + 4 KiB)
-body_bound <= 8 MiB
+body_bound = 64 KiB + sum(zstd_bound(page_inputs_i) + page_count_i * 4 KiB)
+body_bound <= 1 GiB
 ```
 
 For the pinned Zstandard contract:
@@ -311,8 +311,8 @@ zstd_bound(n) = n + floor(n / 256)
 ```
 
 The 4 KiB term bounds each page header and column-chunk metadata; 64 KiB bounds
-Parquet file framing. `write_segment` recomputes these bounds as it decodes each
-part and checks the actual encoded body against 8 MiB.
+Parquet file framing. `write_segment` recomputes the multi-page bound as it
+decodes each part and checks the actual encoded body against 1 GiB.
 
 Omitting the embedded Arrow schema removes a duplicate logical schema from
 every body; the exact saving depends on the section contract. The native
@@ -504,11 +504,11 @@ finished_zms_bytes     = B_out + 32*K + 44
 journal_minus_finished = (B_in - B_out) + 32*(N_in - K) + 60*P - 8
 ```
 
-Every final body is at most 8 MiB, so the container also has the bound:
+Every final body is at most 1 GiB, so the container also has the bound:
 
 ```text
-B_out <= 8 MiB * K
-finished_zms_bytes <= (8 MiB + 32) * K + 44
+B_out <= 1 GiB * K
+finished_zms_bytes <= (1 GiB + 32) * K + 44
 ```
 
 `K` has no repeated `type_id`. The size equations include Parquet re-encoding,

@@ -2,7 +2,7 @@ use kronika_format::{crc32c, validate_part};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::pg_locks::PgLocksV2;
-use kronika_registry::{Bytes, MAX_SECTION_ROWS, StrId, Ts, VerifiedSection, decode_any};
+use kronika_registry::{Bytes, SECTION_WRITE_BATCH_ROWS, StrId, Ts, VerifiedSection, decode_any};
 
 use super::SectionBuffers;
 
@@ -201,7 +201,7 @@ fn flush_summary_includes_dictionary_sections() {
 #[test]
 fn push_bounces_a_row_when_the_type_buffer_is_full() {
     let mut buffers = SectionBuffers::new();
-    for _ in 0..MAX_SECTION_ROWS {
+    for _ in 0..SECTION_WRITE_BATCH_ROWS {
         buffers.push(loadavg(0)).expect("under the cap");
     }
     // A full buffer holds one section's worth; the next row comes back for

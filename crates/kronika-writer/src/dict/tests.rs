@@ -2,7 +2,7 @@ use arrow_array::{Array as _, BinaryArray, BooleanArray, FixedSizeBinaryArray, U
 use kronika_format::{DictLimits, Placement, crc32c};
 use kronika_registry::{
     Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES, MAX_SECTION_BYTES,
-    MAX_SECTION_ROWS, plain_parquet_decode_profile,
+    SECTION_WRITE_BATCH_ROWS, plain_parquet_decode_profile,
 };
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::basic::Encoding;
@@ -24,9 +24,10 @@ fn write_compatible_limits_are_validated_at_configuration() {
         .expect("collector limits fit the final body budget");
     validate_dict_limits_for_write(DictLimits::default())
         .expect("the default one MiB prefix fits one best-effort data page");
-    let oversized = DictLimits::new(4096, 8 * 1024 * 1024)
+    let former_section_limit = DictLimits::new(4096, 8 * 1024 * 1024)
         .expect("dictionary limit fits the aggregate interner cap");
-    assert!(validate_dict_limits_for_write(oversized).is_err());
+    validate_dict_limits_for_write(former_section_limit)
+        .expect("the former eight MiB section limit is not a writer rejection boundary");
 }
 
 #[test]
@@ -41,7 +42,10 @@ fn final_dictionary_spans_bounded_plain_pages() {
         1
     );
     assert_eq!(ROWS.div_ceil(FINAL_DICT_WRITE_BATCH_ROWS), 2);
-    assert_eq!(MAX_SECTION_ROWS.div_ceil(FINAL_DICT_WRITE_BATCH_ROWS), 64);
+    assert_eq!(
+        SECTION_WRITE_BATCH_ROWS.div_ceil(FINAL_DICT_WRITE_BATCH_ROWS),
+        64
+    );
 
     let mut interner = Interner::new(DictLimits::new(4096, 4096).expect("limits"));
     for index in 0..ROWS {

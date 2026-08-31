@@ -187,16 +187,18 @@ fn canonical_layout_rejects_flags_caps_and_noncontiguous_bodies() {
     flagged.entries[0].flags = 1;
     assert!(validate_catalog_layout(&flagged, 5).is_err());
 
-    let mut too_many_rows = layout_catalog(vec![layout_entry(1_006_001, 4, 1)]);
-    too_many_rows.entries[0].rows = MAX_PHYSICAL_SECTION_ROWS + 1;
-    assert!(validate_catalog_layout(&too_many_rows, 5).is_err());
-
     let oversized = layout_catalog(vec![layout_entry(
         1_006_001,
         4,
         MAX_PHYSICAL_SECTION_BYTES + 1,
     )]);
     assert!(validate_catalog_layout(&oversized, 4 + MAX_PHYSICAL_SECTION_BYTES + 1).is_err());
+
+    let boundary = layout_catalog(vec![layout_entry(1_006_001, 4, MAX_PHYSICAL_SECTION_BYTES)]);
+    assert_eq!(
+        validate_catalog_layout(&boundary, 4 + MAX_PHYSICAL_SECTION_BYTES),
+        Ok(())
+    );
 
     let short = layout_catalog(vec![layout_entry(1_006_001, 5, 1)]);
     assert!(validate_catalog_layout(&short, 6).is_err());

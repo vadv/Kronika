@@ -4,7 +4,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 
 use kronika_format::{PartMeta, SectionInput, build_part};
-use kronika_registry::{CodecError, MAX_SECTION_ROWS, Section};
+use kronika_registry::{CodecError, SECTION_WRITE_BATCH_ROWS, Section};
 
 /// Buffered rows for one section type.
 trait TypeBuffer: Any {
@@ -134,7 +134,7 @@ impl SectionBuffers {
             .downcast_mut::<RowBuffer<T>>()
             .expect("a type_id maps to exactly one Section type")
             .rows;
-        if rows.len() >= MAX_SECTION_ROWS {
+        if rows.len() >= SECTION_WRITE_BATCH_ROWS {
             return Err(row);
         }
         rows.push(row);

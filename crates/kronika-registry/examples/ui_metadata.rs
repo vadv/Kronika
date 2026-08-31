@@ -8,6 +8,7 @@ use arrow_schema as _;
 use arrow_select as _;
 use bytes as _;
 use kronika_derive as _;
+use kronika_format as _;
 use kronika_registry::{logical_section_name, registry};
 use parquet as _;
 use serde_json::json;

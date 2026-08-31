@@ -10,43 +10,20 @@ use kronika_reader::{Cell, Reader, Resolved, SegmentKind};
 use kronika_registry::os_cgroup_cpu::OsCgroupCpuV2;
 use kronika_registry::os_cgroup_memory::OsCgroupMemoryV2;
 use kronika_registry::os_loadavg::OsLoadavg;
-use kronika_registry::{
-    CodecError, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, StrId, Ts,
-    final_data_body_bound,
-};
+use kronika_registry::{DICT_STRINGS_TYPE_ID, SECTION_WRITE_BATCH_ROWS, Section, StrId, Ts};
 use kronika_source_os::PasswdSnapshot;
-use kronika_writer::{
-    FlushSummary, FlushedPart, Interner, Journal, JournalConfig, SectionBuffers,
-    SectionFlushSummary,
-};
+use kronika_writer::{FlushedPart, Interner, Journal, JournalConfig, SectionBuffers};
 
 use crate::config::Config;
 use crate::scheduler::Intervals;
 
-use super::admission::{AdmissionError, SegmentAdmission};
 use super::open::{open_collector_journal, write_recovered_journal};
-use super::{SegmentState, append_window_and_maybe_close, close_open_segment, encode_window};
-
-fn data_summary(type_id: u32, rows: usize, list_i32_child_value_count: usize) -> FlushSummary {
-    FlushSummary {
-        sections: vec![SectionFlushSummary {
-            type_id,
-            rows: u32::try_from(rows).expect("test row count fits u32"),
-            body_bytes: 1,
-            list_i32_child_value_count,
-        }],
-        part_bytes: 1,
-    }
-}
+use super::{
+    SegmentState, append_window_and_maybe_close, close_open_segment, close_reason, encode_window,
+};
 
 fn empty_interner() -> Interner {
     Interner::new(DictLimits::new(8, 64).expect("test dictionary limits are valid"))
-}
-
-fn interner(blob_threshold: usize, value: &[u8]) -> Interner {
-    let mut interner = Interner::new(DictLimits::new(blob_threshold, 64).expect("valid limits"));
-    interner.intern(value).expect("test value interns");
-    interner
 }
 
 fn loadavg(ts: i64) -> OsLoadavg {
@@ -181,233 +158,6 @@ fn segment_path(owner: &WriterOwner, ts: i64) -> std::path::PathBuf {
     owner.root().diagnostic_file_path(address, FileKind::Zms)
 }
 
-fn max_admitted_rows(type_id: u32) -> usize {
-    let mut low = 0;
-    let mut high = MAX_SECTION_ROWS + 1;
-    while low + 1 < high {
-        let middle = low + (high - low) / 2;
-        if final_data_body_bound(type_id, middle, 0).is_ok() {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    assert!(low > 0, "the test type admits at least one row");
-    assert!(final_data_body_bound(type_id, low, 0).is_ok());
-    assert!(final_data_body_bound(type_id, low + 1, 0).is_err());
-    low
-}
-
-#[test]
-fn admission_deduplicates_exact_dictionary_values() {
-    let type_id = OsLoadavg::CONTRACT.type_id.get();
-    let mut interner = interner(8, b"same");
-    let mut admission = SegmentAdmission::default();
-
-    let delta = admission
-        .assess(&data_summary(type_id, 1, 0), &interner)
-        .expect("first window fits");
-    admission.commit(delta);
-    let stats_after_first = interner.stats();
-    interner
-        .flush_window(|_| Ok::<(), ()>(()))
-        .expect("flush first window");
-    interner.intern(b"same").expect("repeat interns");
-    let delta = admission
-        .assess(&data_summary(type_id, 1, 0), &interner)
-        .expect("the repeated value and second data row fit");
-    admission.commit(delta);
-
-    assert_eq!(interner.stats(), stats_after_first);
-    assert!(interner.window().is_empty());
-    assert_eq!(
-        admission.data_by_type[&type_id].rows, 2,
-        "both data rows are admitted"
-    );
-}
-
-#[test]
-fn dictionary_columns_can_span_final_pages() {
-    let limits = DictLimits::new(FINAL_DATA_PAGE_BYTES, FINAL_DATA_PAGE_BYTES)
-        .expect("test dictionary limits are valid");
-    let mut interner = Interner::new(limits);
-    let string = vec![b'x'; FINAL_DATA_PAGE_BYTES - 5];
-    interner.intern(&string).expect("large string fits");
-    interner
-        .intern_blob(b"blob")
-        .expect("small forced blob fits");
-    let admission = SegmentAdmission::default();
-    let summary = FlushSummary {
-        sections: Vec::new(),
-        part_bytes: 0,
-    };
-    admission
-        .assess(&summary, &interner)
-        .expect("a full strings value page does not consume the blobs value page");
-    interner
-        .flush_window(|_| Ok::<(), ()>(()))
-        .expect("flush the admitted values");
-
-    interner
-        .intern(b"new")
-        .expect("the window cap still has room");
-    admission
-        .assess(&summary, &interner)
-        .expect("the cumulative strings dictionary may use another final page");
-    SegmentAdmission::assess_window(&summary, &interner)
-        .expect("the new segment checks only the current window dictionary");
-}
-
-#[test]
-fn admission_accepts_multi_page_truncated_blob_hashes_until_the_row_cap() {
-    let mut interner = Interner::new(DictLimits::new(1, 1).expect("valid limits"));
-    for value in 0..MAX_SECTION_ROWS {
-        let value = u32::try_from(value).expect("test row fits u32");
-        interner
-            .intern(&value.to_le_bytes())
-            .expect("unique truncated blob interns");
-    }
-    let summary = FlushSummary {
-        sections: Vec::new(),
-        part_bytes: 0,
-    };
-    let admission = SegmentAdmission::default();
-    admission
-        .assess(&summary, &interner)
-        .expect("the maximum dictionary rows and hashes fit multiple pages");
-
-    interner
-        .intern(
-            &u32::try_from(MAX_SECTION_ROWS)
-                .expect("row cap fits u32")
-                .to_le_bytes(),
-        )
-        .expect("the dictionary window still has room");
-    assert!(matches!(
-        admission.assess(&summary, &interner),
-        Err(AdmissionError::Codec(CodecError::TooManyRows { .. }))
-    ));
-}
-
-#[test]
-fn admission_projects_section_descriptors_against_the_format_cap() {
-    let type_id = OsLoadavg::CONTRACT.type_id.get();
-    let interner = empty_interner();
-    let admission = SegmentAdmission {
-        descriptors: MAX_SECTION_ROWS,
-        ..SegmentAdmission::default()
-    };
-    assert!(matches!(
-        admission.assess(&data_summary(type_id, 1, 0), &interner),
-        Err(AdmissionError::Capacity {
-            resource: "section descriptors",
-            projected,
-            max: MAX_SECTION_ROWS,
-        }) if projected == MAX_SECTION_ROWS + 1
-    ));
-}
-
-#[test]
-fn format_capacity_crossing_writes_accumulated_segment_before_append() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
-    let config = test_config(dir.path());
-    let mut segment = SegmentState::default();
-    let first = flushed_window(100);
-    let incoming = flushed_window(200);
-
-    assert!(
-        append_window_and_maybe_close(
-            &mut journal,
-            &owner,
-            &config,
-            &mut segment,
-            100,
-            false,
-            &first,
-        )
-        .expect("append first")
-        .is_empty()
-    );
-    let type_id = first.summary.sections[0].type_id;
-    segment
-        .admission
-        .data_by_type
-        .get_mut(&type_id)
-        .expect("first row was admitted")
-        .rows = max_admitted_rows(type_id);
-
-    let finished = append_window_and_maybe_close(
-        &mut journal,
-        &owner,
-        &config,
-        &mut segment,
-        200,
-        false,
-        &incoming,
-    )
-    .expect("capacity crossing writes the accumulated segment");
-
-    assert_eq!(finished.len(), 1);
-    assert_eq!(finished[0].1, "format-limit");
-    let old = fs::read(&finished[0].0).expect("read finished old segment");
-    let old_catalog = validate_part(&old).expect("old segment is canonical");
-    assert_eq!(old_catalog.entries.len(), 1);
-    assert_eq!(old_catalog.entries[0].rows, 1);
-    assert_eq!(old_catalog.min_ts, 100);
-    assert!(
-        journal.parts().is_empty(),
-        "the next cycle opens a new segment"
-    );
-    assert_eq!(segment.first_ts(), None);
-    assert_eq!(segment.admission, SegmentAdmission::default());
-}
-
-#[test]
-fn intrinsically_oversized_window_preserves_active_journal_and_admission() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("active.wal");
-    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
-    let config = test_config(dir.path());
-    let mut segment = SegmentState::default();
-    let first = flushed_window(100);
-    append_window_and_maybe_close(
-        &mut journal,
-        &owner,
-        &config,
-        &mut segment,
-        100,
-        false,
-        &first,
-    )
-    .expect("append first");
-    let bytes_before = fs::read(&path).expect("snapshot active.wal");
-    let first_before = segment.first_ts();
-    let admission_before = segment.admission.clone();
-    let dictionary_before = segment.interner.stats();
-    let mut oversized = flushed_window(200);
-    oversized.summary.sections[0].rows =
-        u32::try_from(MAX_SECTION_ROWS + 1).expect("row count fits u32");
-
-    let err = append_window_and_maybe_close(
-        &mut journal,
-        &owner,
-        &config,
-        &mut segment,
-        200,
-        false,
-        &oversized,
-    )
-    .expect_err("one oversized window is rejected");
-    assert!(format!("{err:#}").contains("one collection window exceeds finished segment limits"));
-    assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
-    assert_eq!(segment.first_ts(), first_before);
-    assert_eq!(segment.admission, admission_before);
-    assert_eq!(segment.interner.stats(), dictionary_before);
-    assert_eq!(journal.parts().len(), 1);
-    assert!(!segment_path(&owner, 100).exists());
-}
-
 #[test]
 fn journal_full_writes_accumulated_segment_and_defers_window() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -442,7 +192,126 @@ fn journal_full_writes_accumulated_segment_and_defers_window() {
     assert_eq!(finished[0].1, "journal-full");
     assert!(journal.parts().is_empty());
     assert_eq!(segment.first_ts(), None);
-    assert_eq!(segment.admission, SegmentAdmission::default());
+}
+
+#[test]
+fn configured_size_closes_only_after_the_valid_frame_is_appended() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = test_config(dir.path());
+    config.segment_max_bytes = 1;
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let mut segment = SegmentState::default();
+    let window = flushed_window(100);
+
+    let finished = append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        100,
+        false,
+        &window,
+    )
+    .expect("append first and only then close for size");
+
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0].1, "size");
+    assert!(journal.parts().is_empty());
+    let reader = Reader::open(dir.path()).expect("open production reader");
+    let listing = reader.segments(..).expect("list size-closed segment");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 1);
+    let stored = reader
+        .open_segment(&listing.segments[0])
+        .expect("open size-closed segment");
+    assert_eq!(stored.rows_of(OsLoadavg::CONTRACT.type_id.get()), Some(1));
+}
+
+#[test]
+fn configured_sixty_four_mib_boundary_is_exact() {
+    const LIMIT: u64 = 64 * 1024 * 1024;
+    let limit_bytes = usize::try_from(LIMIT).expect("64 MiB fits usize");
+
+    assert_eq!(close_reason(false, limit_bytes - 1, LIMIT, false), None);
+    assert_eq!(close_reason(false, limit_bytes, LIMIT, false), Some("size"));
+    assert_eq!(
+        close_reason(false, limit_bytes + 1, LIMIT, false),
+        Some("size")
+    );
+}
+
+#[test]
+fn aggregate_rows_cross_internal_batches_without_early_rotation() {
+    const FIRST_TS: i64 = 1_700_000_000_000_000;
+    const TOTAL_ROWS: usize = SECTION_WRITE_BATCH_ROWS + 1;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = test_config(dir.path());
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let mut segment = SegmentState::default();
+    let mut first_buffers = SectionBuffers::new();
+    for row in 0..SECTION_WRITE_BATCH_ROWS {
+        first_buffers
+            .push(loadavg(
+                FIRST_TS + i64::try_from(row).expect("test row fits i64"),
+            ))
+            .expect("one internal batch fits");
+    }
+    let first = encode_window(first_buffers, segment.interner()).expect("encode first batch");
+    assert!(
+        append_window_and_maybe_close(
+            &mut journal,
+            &owner,
+            &config,
+            &mut segment,
+            FIRST_TS,
+            false,
+            &first,
+        )
+        .expect("append first batch")
+        .is_empty()
+    );
+
+    let second = flushed_window(
+        FIRST_TS + i64::try_from(SECTION_WRITE_BATCH_ROWS).expect("batch rows fit i64"),
+    );
+    assert!(
+        append_window_and_maybe_close(
+            &mut journal,
+            &owner,
+            &config,
+            &mut segment,
+            FIRST_TS + 1,
+            false,
+            &second,
+        )
+        .expect("append row beyond one internal batch")
+        .is_empty()
+    );
+    assert_eq!(journal.parts().len(), 2);
+
+    let path = close_open_segment(&mut journal, &owner, &mut segment, "test-end")
+        .expect("finish aggregate section");
+    let finished = fs::read(&path).expect("read finished segment");
+    let catalog = validate_part(&finished).expect("finished segment is canonical");
+    let entry = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.type_id == OsLoadavg::CONTRACT.type_id.get())
+        .expect("loadavg section is present");
+    assert_eq!(entry.rows as usize, TOTAL_ROWS);
+
+    let reader = Reader::open(dir.path()).expect("open production reader");
+    let listing = reader.segments(..).expect("list finished segment");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 1);
+    let stored = reader
+        .open_segment(&listing.segments[0])
+        .expect("open finished segment");
+    let rows = stored
+        .rows(OsLoadavg::CONTRACT.type_id.get())
+        .expect("decode aggregate section");
+    assert_eq!(rows.len(), TOTAL_ROWS);
 }
 
 #[test]
@@ -465,7 +334,6 @@ fn invalid_part_at_journal_cap_is_transactional() {
     .expect("append first");
     let bytes_before = fs::read(&path).expect("snapshot active.wal");
     let first_before = segment.first_ts();
-    let admission_before = segment.admission.clone();
     let dictionary_before = segment.interner.stats();
     let invalid = FlushedPart {
         body: b"not a ZMS part".to_vec(),
@@ -485,7 +353,6 @@ fn invalid_part_at_journal_cap_is_transactional() {
 
     assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
     assert_eq!(segment.first_ts(), first_before);
-    assert_eq!(segment.admission, admission_before);
     assert_eq!(segment.interner.stats(), dictionary_before);
     assert_eq!(journal.parts().len(), 1);
     assert!(!segment_path(&owner, 100).exists());
@@ -607,7 +474,6 @@ fn failed_close_drops_segment_memory_and_preserves_the_journal() {
         .expect_err("a conflicting destination stops close");
 
     assert!(segment.is_empty());
-    assert_eq!(segment.admission, SegmentAdmission::default());
     assert_eq!(segment.interner.stats(), DictStats::default());
     assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
     assert_eq!(journal.parts().len(), 1);

@@ -22,12 +22,6 @@ const PG_ARCHIVER_TYPE_ID: u32 = 1_008_001;
 const PG_SETTINGS_TYPE_ID: u32 = 1_019_001;
 const TEST_JOURNAL_MAX: usize = 64 * 1024;
 
-#[derive(Clone, Copy)]
-enum Pressure {
-    Format,
-    Journal,
-}
-
 fn config(root: &Path, journal_max_bytes: u64) -> Config {
     Config {
         out_dir: root.to_path_buf(),
@@ -129,14 +123,11 @@ fn settings_row() -> SettingsRow {
     }
 }
 
-fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
+fn assert_retained_batch_moves_to_fresh_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut segment = SegmentState::default();
     let first = first_window(&segment);
-    let max = match pressure {
-        Pressure::Format => JournalConfig::default().max_journal_len,
-        Pressure::Journal => TEST_JOURNAL_MAX,
-    };
+    let max = TEST_JOURNAL_MAX;
     let owner = owner(dir.path());
     let mut journal = Journal::open(
         &owner,
@@ -157,10 +148,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
         &first,
     )
     .expect("append old segment row");
-    match pressure {
-        Pressure::Format => segment.force_format_limit(),
-        Pressure::Journal => fill_journal_to_pressure(&mut journal, &first, max),
-    }
+    fill_journal_to_pressure(&mut journal, &first, max);
 
     let mut scheduler = Scheduler::new(Intervals::default());
     let outcome = append_pending_window(
@@ -224,13 +212,8 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
 }
 
 #[test]
-fn format_limit_retains_and_reencodes_the_exact_log_batch() {
-    assert_retained_batch_moves_to_fresh_segment(Pressure::Format);
-}
-
-#[test]
 fn journal_full_retains_and_reencodes_the_exact_log_batch() {
-    assert_retained_batch_moves_to_fresh_segment(Pressure::Journal);
+    assert_retained_batch_moves_to_fresh_segment();
 }
 
 #[test]
@@ -274,14 +257,11 @@ fn a_fresh_log_window_append_failure_is_fatal() {
     assert!(journal.parts().is_empty());
 }
 
-fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
+fn assert_pg_batch_moves_to_fresh_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut segment = SegmentState::default();
     let first = first_window(&segment);
-    let max = match pressure {
-        Pressure::Format => JournalConfig::default().max_journal_len,
-        Pressure::Journal => TEST_JOURNAL_MAX,
-    };
+    let max = TEST_JOURNAL_MAX;
     let owner = owner(dir.path());
     let mut journal = Journal::open(
         &owner,
@@ -302,10 +282,7 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
         &first,
     )
     .expect("append old segment row");
-    match pressure {
-        Pressure::Format => segment.force_format_limit(),
-        Pressure::Journal => fill_journal_to_pressure(&mut journal, &first, max),
-    }
+    fill_journal_to_pressure(&mut journal, &first, max);
 
     let mut scheduler = Scheduler::new(Intervals::default());
     let outcome = append_pending_pg_batch(
@@ -350,13 +327,8 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
 }
 
 #[test]
-fn format_limit_retains_and_reencodes_the_exact_postgres_batch() {
-    assert_pg_batch_moves_to_fresh_segment(Pressure::Format);
-}
-
-#[test]
 fn journal_full_retains_and_reencodes_the_exact_postgres_batch() {
-    assert_pg_batch_moves_to_fresh_segment(Pressure::Journal);
+    assert_pg_batch_moves_to_fresh_segment();
 }
 
 #[test]

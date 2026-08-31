@@ -10,6 +10,7 @@ use thrift::protocol::{
 use crate::codec::MAX_LIST_I32_VALUES_PER_SECTION;
 use crate::{
     CodecError, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS,
+    SECTION_WRITE_BATCH_ROWS,
 };
 
 mod metadata;
@@ -19,7 +20,7 @@ use metadata::{parse_footer, validate_file_metadata};
 use thrift_input::{BoundedCompactInput, compact_type, invalid_data};
 const MAGIC: &[u8; 4] = b"PAR1";
 const MAX_THRIFT_NESTING: usize = 16;
-const MAX_THRIFT_ITEMS: usize = MAX_SECTION_ROWS;
+const MAX_THRIFT_ITEMS: usize = SECTION_WRITE_BATCH_ROWS;
 
 /// Exact bounded work declared by a validated Parquet section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

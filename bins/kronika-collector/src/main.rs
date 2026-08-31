@@ -446,9 +446,7 @@ fn append_pending_pg_batch(
             Err(failure) => return Err(pg_append_error(failure)),
         };
         append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
-        let retry = finished
-            .iter()
-            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+        let retry = finished.iter().any(|(_, reason)| *reason == "journal-full");
         for (dest, reason) in finished {
             sched.mark_segment_opened();
             announce(&format!("wrote {} reason={reason}", dest.display()));
@@ -720,9 +718,7 @@ fn append_pending_window(
             &flushed,
         ) {
             Ok(finished) => {
-                let retry = finished
-                    .iter()
-                    .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+                let retry = finished.iter().any(|(_, reason)| *reason == "journal-full");
                 for (dest, reason) in finished {
                     sched.mark_segment_opened();
                     announce(&format!("wrote {} reason={reason}", dest.display()));

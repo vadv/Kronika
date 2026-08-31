@@ -4,35 +4,27 @@ use crate::logging::{
     summary_rows,
 };
 use anyhow::{Context, Result};
-use kronika_format::{DictStats, Placement};
 use kronika_layout::{FileKind, SegmentAddress, SegmentId, WriterOwner};
-use kronika_registry::{
-    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_ROWS, final_data_body_bound,
-};
 use kronika_writer::{
-    FlushSummary, FlushedPart, Interner, Journal, JournalConfig, JournalError, SectionBuffers,
-    dict, write_segment,
+    FlushedPart, Interner, Journal, JournalConfig, JournalError, SectionBuffers, dict,
+    write_segment,
 };
-use std::collections::BTreeMap;
-use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::os_sources::UserReferences;
 
-mod admission;
 mod open;
 
-use admission::{AdmissionDelta, SegmentAdmission};
 pub(crate) use open::open_collector_journal;
 
-/// Failure while admitting, appending, or closing one collection window.
+/// Failure while appending or closing one collection window.
 #[derive(Debug)]
 pub(crate) enum AppendWindowError {
     /// The segment could not be written or its journal could not be reset.
     Close(anyhow::Error),
-    /// The incoming window could not be admitted or appended safely.
+    /// The incoming window could not be appended safely.
     Other(anyhow::Error),
 }
 
@@ -66,7 +58,6 @@ impl From<anyhow::Error> for AppendWindowError {
 pub(crate) struct SegmentState {
     first_id: Option<SegmentId>,
     opened_at: Option<Instant>,
-    admission: SegmentAdmission,
     interner: Interner,
     users: UserReferences,
     pg_settings_present: bool,
@@ -77,7 +68,6 @@ impl Default for SegmentState {
         Self {
             first_id: None,
             opened_at: None,
-            admission: SegmentAdmission::default(),
             interner: Interner::new(kronika_format::DictLimits::default()),
             users: UserReferences::default(),
             pg_settings_present: false,
@@ -146,11 +136,6 @@ impl SegmentState {
             Some(id) => Some(id.get()),
             None => None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn force_format_limit(&mut self) {
-        self.admission.descriptors = MAX_SECTION_ROWS;
     }
 }
 
@@ -288,46 +273,6 @@ fn log_close_failure(
     );
 }
 
-fn prepare_window_admission(
-    journal: &mut Journal,
-    owner: &WriterOwner,
-    segment: &mut SegmentState,
-    flushed: &FlushedPart,
-    finished: &mut Vec<(PathBuf, &'static str)>,
-) -> Result<Option<AdmissionDelta>, AppendWindowError> {
-    match segment
-        .admission
-        .assess(&flushed.summary, &segment.interner)
-    {
-        Ok(delta) => Ok(Some(delta)),
-        Err(err) if err.is_capacity() && segment.first_id.is_some() => {
-            // Prove that the incoming window fits by itself before publishing
-            // the accumulated journal. The caller recollects it immediately
-            // with the new segment's dictionary and metadata.
-            SegmentAdmission::assess_window(&flushed.summary, &segment.interner)
-                .context("one collection window exceeds finished segment limits")?;
-            log_event(
-                LogLevel::Warn,
-                "segment_admission_full",
-                &[
-                    field("journal_bytes", journal.bytes()),
-                    field("journal_parts", journal.parts().len()),
-                    field("error", &err),
-                ],
-            );
-            finished.push((
-                close_open_segment(journal, owner, segment, "format-limit")
-                    .map_err(AppendWindowError::Close)?,
-                "format-limit",
-            ));
-            Ok(None)
-        }
-        Err(err) => Err(anyhow::Error::new(err)
-            .context("reject the window before journal append")
-            .into()),
-    }
-}
-
 pub(crate) fn append_window_and_maybe_close(
     journal: &mut Journal,
     owner: &WriterOwner,
@@ -338,11 +283,6 @@ pub(crate) fn append_window_and_maybe_close(
     flushed: &FlushedPart,
 ) -> Result<Vec<(PathBuf, &'static str)>, AppendWindowError> {
     let mut finished = Vec::new();
-    let Some(admission) =
-        prepare_window_admission(journal, owner, segment, flushed, &mut finished)?
-    else {
-        return Ok(finished);
-    };
     let segment_id = match segment.first_id {
         Some(segment_id) => segment_id,
         None => SegmentId::new(ts).context("collection timestamp is outside the layout range")?,
@@ -369,8 +309,6 @@ pub(crate) fn append_window_and_maybe_close(
             );
         }
         Err(JournalError::Full { len, max }) if segment.first_id.is_some() => {
-            SegmentAdmission::assess_window(&flushed.summary, &segment.interner)
-                .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
                 "journal_full",
@@ -407,7 +345,6 @@ pub(crate) fn append_window_and_maybe_close(
                 .into());
         }
     }
-    segment.admission.commit(admission);
     let now = Instant::now();
     let active_id = journal
         .segment_id()
@@ -430,4 +367,4 @@ pub(crate) fn append_window_and_maybe_close(
 }
 
 #[cfg(test)]
-mod admission_tests;
+mod tests;
