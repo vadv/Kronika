@@ -15,7 +15,7 @@ use hyper::header::{CACHE_CONTROL, HeaderValue, VARY};
 use hyper::{Request, Response};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
+    CacheScope, CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -63,7 +63,9 @@ impl ServerHandler for KronikaMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(catalog::tools())))
+        std::future::ready(Ok(ListToolsResult::with_all_items(catalog::tools())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
     }
 
     fn call_tool(

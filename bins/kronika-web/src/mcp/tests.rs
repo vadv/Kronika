@@ -188,6 +188,8 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
         .expect("body")
         .to_bytes();
     let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
+    assert_eq!(decoded["result"]["ttlMs"], json!(0));
+    assert_eq!(decoded["result"]["cacheScope"], json!("private"));
     let tools = decoded["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools
         .iter()
