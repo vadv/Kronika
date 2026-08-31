@@ -12,67 +12,809 @@ use super::{
 };
 use crate::api::ApiError;
 
-pub(super) fn group_events(
-    mut streams: HashMap<EventSource, Vec<EventDataRow>>,
-    from: i64,
-    threshold_ms: Option<f64>,
-) -> Result<Vec<EventGroup>, ApiError> {
-    let mut entries = Vec::new();
-    entries.extend(group_errors(
-        streams.remove(&EventSource::Errors).unwrap_or_default(),
-        from,
-    ));
-    entries.extend(group_slow(
-        streams
-            .remove(&EventSource::SlowQueries)
-            .unwrap_or_default(),
-        from,
-        threshold_ms,
-    ));
-    entries.extend(group_autovacuum(
-        streams.remove(&EventSource::Autovacuum).unwrap_or_default(),
-        from,
-    ));
-    entries.extend(group_checkpoints(
-        streams
-            .remove(&EventSource::Checkpoints)
-            .unwrap_or_default(),
-        from,
-    ));
-    entries.extend(group_locks(
-        streams.remove(&EventSource::LockWaits).unwrap_or_default(),
-        from,
-    ));
-    entries.extend(group_lifecycle(
-        streams.remove(&EventSource::Lifecycle).unwrap_or_default(),
-        from,
-    ));
-    entries.extend(group_pgbouncer(
-        streams.remove(&EventSource::Pgbouncer).unwrap_or_default(),
-        from,
-    ));
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RowOrder {
+    timestamp: i64,
+    encounter: u64,
+}
 
-    let collator = event_collator()?;
-    entries.sort_by(|left, right| {
-        tier_order(left.tier)
-            .cmp(&tier_order(right.tier))
-            .then_with(|| right.count.total_cmp(&left.count))
-            .then_with(|| right.last_ts.cmp(&left.last_ts))
-            .then_with(|| collator.compare(&left.key, &right.key))
-            .then_with(|| left.key.cmp(&right.key))
-    });
-    for entry in &mut entries {
-        if let EventStat::Pgbouncer { level, .. } = &entry.stat {
-            let digest = entry
-                .detail_locator
-                .identity
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("missing");
-            entry.key = format!("pgbouncer:{level}:{digest}");
+struct Summary {
+    representative: EventDataRow,
+    representative_order: RowOrder,
+    representative_score: f64,
+    duplicate_representative: bool,
+    first_ts: i64,
+    last_ts: i64,
+    minutes: Vec<f64>,
+    count: f64,
+}
+
+impl Summary {
+    fn new(row: EventDataRow, order: RowOrder, from: i64, weight: f64, score: f64) -> Self {
+        let timestamp = row.timestamp;
+        let mut summary = Self {
+            representative: row,
+            representative_order: order,
+            representative_score: score,
+            duplicate_representative: false,
+            first_ts: timestamp,
+            last_ts: timestamp,
+            minutes: vec![0.0; MINUTE_COLUMNS],
+            count: 0.0,
+        };
+        summary.add_minute(timestamp, from, weight);
+        summary.count = weight;
+        summary
+    }
+
+    fn observe_earliest(&mut self, row: EventDataRow, order: RowOrder, from: i64, weight: f64) {
+        self.observe_values(row.timestamp, from, weight);
+        if same_locator(&self.representative, &row) {
+            self.duplicate_representative = true;
+        }
+        if order < self.representative_order {
+            self.representative = row;
+            self.representative_order = order;
+            self.duplicate_representative = false;
         }
     }
-    Ok(entries)
+
+    fn observe_first(&mut self, row: EventDataRow, from: i64, weight: f64) {
+        self.observe_values(row.timestamp, from, weight);
+        if same_locator(&self.representative, &row) {
+            self.duplicate_representative = true;
+        }
+    }
+
+    fn observe_physical(&mut self, row: EventDataRow, order: RowOrder, from: i64, weight: f64) {
+        self.observe_values(row.timestamp, from, weight);
+        if same_locator(&self.representative, &row) {
+            self.duplicate_representative = true;
+        }
+        if order.encounter < self.representative_order.encounter {
+            self.representative = row;
+            self.representative_order = order;
+            self.duplicate_representative = false;
+        }
+    }
+
+    fn observe_scored(
+        &mut self,
+        row: EventDataRow,
+        order: RowOrder,
+        from: i64,
+        weight: f64,
+        score: f64,
+    ) {
+        self.observe_values(row.timestamp, from, weight);
+        if same_locator(&self.representative, &row) {
+            self.duplicate_representative = true;
+        }
+        let score_order = score.total_cmp(&self.representative_score);
+        if score_order.is_gt() || (score_order.is_eq() && order < self.representative_order) {
+            self.representative = row;
+            self.representative_order = order;
+            self.representative_score = score;
+            self.duplicate_representative = false;
+        }
+    }
+
+    fn observe_values(&mut self, timestamp: i64, from: i64, weight: f64) {
+        self.first_ts = self.first_ts.min(timestamp);
+        self.last_ts = self.last_ts.max(timestamp);
+        self.count += weight;
+        self.add_minute(timestamp, from, weight);
+    }
+
+    fn add_minute(&mut self, timestamp: i64, from: i64, weight: f64) {
+        if let Some(delta) = timestamp.checked_sub(from) {
+            let bucket = delta.div_euclid(MINUTE_MICROS);
+            if let Ok(bucket) = usize::try_from(bucket)
+                && let Some(slot) = self.minutes.get_mut(bucket)
+            {
+                *slot += weight;
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments mirror the compact EventGroup contract"
+    )]
+    fn finish(
+        self,
+        key: String,
+        source: EventSource,
+        count: Option<f64>,
+        tier: EventTier,
+        label: Option<String>,
+        stat: EventStat,
+    ) -> Result<EventGroup, ApiError> {
+        if self.duplicate_representative {
+            return Err(non_unique_locator(source, &self.representative));
+        }
+        let representative_ts = self.representative.timestamp;
+        let detail_locator = super::row_key::detail_locator(
+            source.as_str(),
+            self.representative.segment_id,
+            representative_ts,
+            self.representative.type_id,
+            self.representative.row_ordinal,
+            self.representative.identity,
+        );
+        Ok(EventGroup {
+            key,
+            section: source.as_str().to_owned(),
+            tier,
+            label,
+            count: count.unwrap_or(self.count),
+            first_ts: self.first_ts,
+            last_ts: self.last_ts,
+            representative_ts,
+            minutes: self.minutes,
+            stat,
+            detail_locator,
+        })
+    }
+}
+
+fn same_locator(left: &EventDataRow, right: &EventDataRow) -> bool {
+    left.segment_id == right.segment_id
+        && left.type_id == right.type_id
+        && left.timestamp == right.timestamp
+        && left.identity == right.identity
+}
+
+fn non_unique_locator(source: EventSource, row: &EventDataRow) -> ApiError {
+    ApiError::BadLocator(format!(
+        "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
+        source.as_str(),
+        row.timestamp,
+        row.segment_id,
+    ))
+}
+
+enum SharedText {
+    Value(String),
+    Mixed,
+}
+
+impl SharedText {
+    fn new(value: Option<String>) -> Self {
+        match value {
+            Some(value) if !value.is_empty() => Self::Value(value),
+            _ => Self::Mixed,
+        }
+    }
+
+    fn observe(&mut self, value: Option<String>) {
+        if let Self::Value(shared) = self
+            && value.as_deref() != Some(shared.as_str())
+        {
+            *self = Self::Mixed;
+        }
+    }
+
+    fn finish(self) -> Option<String> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Mixed => None,
+        }
+    }
+}
+
+struct ErrorState {
+    summary: Summary,
+    database: SharedText,
+    username: SharedText,
+}
+
+struct SlowState {
+    summary: Summary,
+    total_ms: f64,
+}
+
+struct AutovacuumState {
+    summary: Summary,
+    runs: usize,
+    total_ms: Option<f64>,
+    tuples_removed: Option<f64>,
+    last_order: RowOrder,
+    tuples_dead: Option<f64>,
+}
+
+struct CheckpointState {
+    summary: Summary,
+    starts: usize,
+    completes: usize,
+    timed: usize,
+    max_sync_ms: Option<f64>,
+    buffers: Option<f64>,
+}
+
+struct WarningState {
+    summary: Summary,
+    seconds_apart: Option<f64>,
+}
+
+#[derive(Clone)]
+struct WaitMatch {
+    order: RowOrder,
+    holders: String,
+}
+
+struct LockState {
+    summary: Summary,
+    waits: usize,
+    waiters: HashSet<String>,
+    targets: HashMap<String, RowOrder>,
+    max_ms: Option<f64>,
+}
+
+struct LifecycleState {
+    index: usize,
+    summary: Summary,
+    lifecycle: f64,
+    pid: Option<f64>,
+    signal: Option<f64>,
+    mode: Option<String>,
+}
+
+struct PgbouncerState {
+    summary: Summary,
+    database: SharedText,
+}
+
+pub(super) struct EventGroups {
+    from: i64,
+    encounter: u64,
+    errors: HashMap<String, ErrorState>,
+    slow: HashMap<String, SlowState>,
+    autovacuum: HashMap<String, AutovacuumState>,
+    checkpoints: Option<CheckpointState>,
+    checkpoint_warnings: Option<WarningState>,
+    locks: HashMap<String, LockState>,
+    latest_waits: HashMap<String, WaitMatch>,
+    standalone_acquired: Option<LockState>,
+    lifecycle: Vec<LifecycleState>,
+    pgbouncer: HashMap<String, PgbouncerState>,
+}
+
+impl EventGroups {
+    pub(super) fn new(from: i64) -> Self {
+        Self {
+            from,
+            encounter: 0,
+            errors: HashMap::new(),
+            slow: HashMap::new(),
+            autovacuum: HashMap::new(),
+            checkpoints: None,
+            checkpoint_warnings: None,
+            locks: HashMap::new(),
+            latest_waits: HashMap::new(),
+            standalone_acquired: None,
+            lifecycle: Vec::new(),
+            pgbouncer: HashMap::new(),
+        }
+    }
+
+    pub(super) fn observe(&mut self, source: EventSource, row: EventDataRow) {
+        let order = RowOrder {
+            timestamp: row.timestamp,
+            encounter: self.encounter,
+        };
+        self.encounter = self.encounter.saturating_add(1);
+        self.observe_at(source, row, order);
+    }
+
+    fn observe_at(&mut self, source: EventSource, row: EventDataRow, order: RowOrder) {
+        match source {
+            EventSource::Errors => self.observe_error(row, order),
+            EventSource::SlowQueries => self.observe_slow(row, order),
+            EventSource::Autovacuum => self.observe_autovacuum(row, order),
+            EventSource::Checkpoints => self.observe_checkpoint(row, order),
+            EventSource::LockWaits => self.observe_lock(row, order),
+            EventSource::Lifecycle => self.observe_lifecycle(row, order),
+            EventSource::Pgbouncer => self.observe_pgbouncer(row, order),
+            EventSource::TempFiles => {}
+        }
+    }
+
+    fn observe_error(&mut self, row: EventDataRow, order: RowOrder) {
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}",
+            text(&row, "severity").unwrap_or_default(),
+            text(&row, "category").unwrap_or_default(),
+            text(&row, "pattern").unwrap_or_default()
+        );
+        let weight = number(&row, "count").unwrap_or(1.0);
+        match self.errors.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let database = SharedText::new(text(&row, "database"));
+                let username = SharedText::new(text(&row, "username"));
+                entry.insert(ErrorState {
+                    summary: Summary::new(row, order, self.from, weight, 0.0),
+                    database,
+                    username,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let state = entry.get_mut();
+                state.database.observe(text(&row, "database"));
+                state.username.observe(text(&row, "username"));
+                state
+                    .summary
+                    .observe_earliest(row, order, self.from, weight);
+            }
+        }
+    }
+
+    fn observe_slow(&mut self, row: EventDataRow, order: RowOrder) {
+        let key = text(&row, "pattern").unwrap_or_default();
+        let weight = number(&row, "count").unwrap_or(1.0);
+        let score = number(&row, "max_duration_ms").unwrap_or(0.0);
+        let duration = number(&row, "total_duration_ms").unwrap_or(0.0);
+        match self.slow.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(SlowState {
+                    summary: Summary::new(row, order, self.from, weight, score),
+                    total_ms: duration,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let state = entry.get_mut();
+                state.total_ms += duration;
+                state
+                    .summary
+                    .observe_scored(row, order, self.from, weight, score);
+            }
+        }
+    }
+
+    fn observe_autovacuum(&mut self, row: EventDataRow, order: RowOrder) {
+        let key = format!(
+            "{}\u{1f}{}",
+            text(&row, "kind").unwrap_or_default(),
+            text(&row, "relation").unwrap_or_default()
+        );
+        let elapsed_ms = number(&row, "elapsed_ms");
+        let tuples_removed = number(&row, "tuples_removed");
+        let tuples_dead = number(&row, "tuples_dead_not_removable");
+        match self.autovacuum.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(AutovacuumState {
+                    summary: Summary::new(row, order, self.from, 1.0, 0.0),
+                    runs: 1,
+                    total_ms: elapsed_ms,
+                    tuples_removed,
+                    last_order: order,
+                    tuples_dead,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let state = entry.get_mut();
+                state.runs += 1;
+                add_optional(&mut state.total_ms, elapsed_ms);
+                add_optional(&mut state.tuples_removed, tuples_removed);
+                if order >= state.last_order {
+                    state.last_order = order;
+                    state.tuples_dead = tuples_dead;
+                }
+                state.summary.observe_earliest(row, order, self.from, 1.0);
+            }
+        }
+    }
+
+    fn observe_checkpoint(&mut self, row: EventDataRow, order: RowOrder) {
+        let phase = number(&row, "phase");
+        if phase == Some(2.0) {
+            let seconds_apart = number(&row, "seconds_apart");
+            if let Some(state) = &mut self.checkpoint_warnings {
+                state.seconds_apart = min_optional(state.seconds_apart, seconds_apart);
+                state.summary.observe_first(row, self.from, 1.0);
+            } else {
+                self.checkpoint_warnings = Some(WarningState {
+                    summary: Summary::new(row, order, self.from, 1.0, 0.0),
+                    seconds_apart,
+                });
+            }
+            return;
+        }
+
+        let starts = usize::from(phase == Some(0.0));
+        let completes = usize::from(phase == Some(1.0));
+        let timed = usize::from(
+            phase == Some(0.0)
+                && text(&row, "reason").is_some_and(|reason| reason.contains("time")),
+        );
+        let sync_ms = (phase == Some(1.0))
+            .then(|| number(&row, "sync_ms"))
+            .flatten();
+        let buffers = (phase == Some(1.0))
+            .then(|| number(&row, "buffers_written"))
+            .flatten();
+        if let Some(state) = &mut self.checkpoints {
+            state.starts += starts;
+            state.completes += completes;
+            state.timed += timed;
+            state.max_sync_ms = max_optional(state.max_sync_ms, sync_ms);
+            add_optional(&mut state.buffers, buffers);
+            state.summary.observe_first(row, self.from, 1.0);
+        } else {
+            self.checkpoints = Some(CheckpointState {
+                summary: Summary::new(row, order, self.from, 1.0, 0.0),
+                starts,
+                completes,
+                timed,
+                max_sync_ms: sync_ms,
+                buffers,
+            });
+        }
+    }
+
+    fn observe_lock(&mut self, row: EventDataRow, order: RowOrder) {
+        if number(&row, "kind") == Some(0.0) {
+            let holders = text(&row, "holding_pids").unwrap_or_default();
+            let join = lock_join(&row);
+            self.observe_waiting_lock(holders.clone(), row, order);
+            let candidate = WaitMatch { order, holders };
+            match self.latest_waits.entry(join) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if candidate.order > entry.get().order {
+                        entry.insert(candidate);
+                    }
+                }
+            }
+            return;
+        }
+
+        let join = lock_join(&row);
+        let holders = self
+            .latest_waits
+            .get(&join)
+            .filter(|candidate| candidate.order <= order)
+            .map(|candidate| candidate.holders.clone());
+        if let Some(holders) = holders {
+            if let Some(state) = self.locks.get_mut(&holders) {
+                state.observe(row, order, self.from, false, true);
+            }
+        } else if let Some(state) = &mut self.standalone_acquired {
+            state.observe(row, order, self.from, false, false);
+        } else {
+            self.standalone_acquired = Some(LockState::new(row, order, self.from, false));
+        }
+    }
+
+    fn observe_waiting_lock(&mut self, holders: String, row: EventDataRow, order: RowOrder) {
+        if let Some(state) = self.locks.get_mut(&holders) {
+            state.observe(row, order, self.from, true, true);
+        } else {
+            self.locks
+                .insert(holders, LockState::new(row, order, self.from, true));
+        }
+    }
+
+    fn observe_lifecycle(&mut self, row: EventDataRow, order: RowOrder) {
+        let lifecycle = number(&row, "kind").unwrap_or(0.0);
+        let pid = number(&row, "pid");
+        let signal = number(&row, "signal");
+        let mode = text(&row, "shutdown_mode");
+        let index = self.lifecycle.len();
+        self.lifecycle.push(LifecycleState {
+            index,
+            summary: Summary::new(row, order, self.from, 1.0, 0.0),
+            lifecycle,
+            pid,
+            signal,
+            mode,
+        });
+    }
+
+    fn observe_pgbouncer(&mut self, row: EventDataRow, order: RowOrder) {
+        let key = format!(
+            "{}\u{1f}{}",
+            text(&row, "level").unwrap_or_default(),
+            text(&row, "text").unwrap_or_default()
+        );
+        match self.pgbouncer.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let database = SharedText::new(text(&row, "database"));
+                entry.insert(PgbouncerState {
+                    summary: Summary::new(row, order, self.from, 1.0, 0.0),
+                    database,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let state = entry.get_mut();
+                state.database.observe(text(&row, "database"));
+                state.summary.observe_earliest(row, order, self.from, 1.0);
+            }
+        }
+    }
+
+    pub(super) fn finish(self, threshold_ms: Option<f64>) -> Result<Vec<EventGroup>, ApiError> {
+        let mut entries = Vec::with_capacity(self.retained_rows());
+        for (key, state) in self.errors {
+            let severity = number(&state.summary.representative, "severity").unwrap_or(0.0);
+            let category = number(&state.summary.representative, "category");
+            let sqlstate = text(&state.summary.representative, "sqlstate");
+            let label = text(&state.summary.representative, "pattern");
+            entries.push(state.summary.finish(
+                format!("errors:{key}"),
+                EventSource::Errors,
+                None,
+                error_tier(severity),
+                label,
+                EventStat::Errors {
+                    severity,
+                    category,
+                    sqlstate,
+                    database: state.database.finish(),
+                    username: state.username.finish(),
+                },
+            )?);
+        }
+        for (key, state) in self.slow {
+            let max_ms = number(&state.summary.representative, "max_duration_ms").unwrap_or(0.0);
+            entries.push(state.summary.finish(
+                format!("slow:{key}"),
+                EventSource::SlowQueries,
+                None,
+                EventTier::Notable,
+                Some(key),
+                EventStat::Slow {
+                    max_ms,
+                    total_ms: state.total_ms,
+                    threshold_ms,
+                },
+            )?);
+        }
+        for (key, state) in self.autovacuum {
+            let analyze = number(&state.summary.representative, "kind") == Some(1.0);
+            let label = text(&state.summary.representative, "relation");
+            entries.push(state.summary.finish(
+                format!("autovacuum:{key}"),
+                EventSource::Autovacuum,
+                None,
+                EventTier::Routine,
+                label,
+                EventStat::Autovacuum {
+                    analyze,
+                    runs: state.runs,
+                    total_ms: state.total_ms,
+                    tuples_removed: state.tuples_removed,
+                    tuples_dead: state.tuples_dead,
+                },
+            )?);
+        }
+        if let Some(state) = self.checkpoints {
+            let count = state.starts.max(state.completes);
+            entries.push(state.summary.finish(
+                "checkpoints".to_owned(),
+                EventSource::Checkpoints,
+                Some(count_number(count)),
+                EventTier::Routine,
+                None,
+                EventStat::Checkpoints {
+                    completes: state.completes,
+                    timed: state.timed,
+                    requested: state.starts - state.timed,
+                    max_sync_ms: state.max_sync_ms,
+                    buffers: state.buffers,
+                },
+            )?);
+        }
+        if let Some(state) = self.checkpoint_warnings {
+            entries.push(state.summary.finish(
+                "checkpoints:warning".to_owned(),
+                EventSource::Checkpoints,
+                None,
+                EventTier::Notable,
+                None,
+                EventStat::CheckpointWarning {
+                    seconds_apart: state.seconds_apart,
+                },
+            )?);
+        }
+        for (holders, state) in self.locks {
+            entries.push(state.finish(holders, false)?);
+        }
+        if let Some(state) = self.standalone_acquired {
+            entries.push(state.finish(String::new(), true)?);
+        }
+        for state in self.lifecycle {
+            let row_ordinal = state.summary.representative.row_ordinal;
+            entries.push(state.summary.finish(
+                format!("lifecycle:{}:{row_ordinal}", state.index),
+                EventSource::Lifecycle,
+                None,
+                lifecycle_tier(state.lifecycle),
+                None,
+                EventStat::Lifecycle {
+                    lifecycle: state.lifecycle,
+                    pid: state.pid,
+                    signal: state.signal,
+                    mode: state.mode,
+                },
+            )?);
+        }
+        for (key, state) in self.pgbouncer {
+            let level = number(&state.summary.representative, "level").unwrap_or(3.0);
+            entries.push(state.summary.finish(
+                format!("pgbouncer:{key}"),
+                EventSource::Pgbouncer,
+                None,
+                pgbouncer_tier(level),
+                None,
+                EventStat::Pgbouncer {
+                    level,
+                    database: state.database.finish(),
+                },
+            )?);
+        }
+
+        let collator = event_collator()?;
+        entries.sort_by(|left, right| {
+            tier_order(left.tier)
+                .cmp(&tier_order(right.tier))
+                .then_with(|| right.count.total_cmp(&left.count))
+                .then_with(|| right.last_ts.cmp(&left.last_ts))
+                .then_with(|| collator.compare(&left.key, &right.key))
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        for entry in &mut entries {
+            if let EventStat::Pgbouncer { level, .. } = &entry.stat {
+                let digest = entry
+                    .detail_locator
+                    .identity
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing");
+                entry.key = format!("pgbouncer:{level}:{digest}");
+            }
+        }
+        Ok(entries)
+    }
+
+    pub(super) fn retained_rows(&self) -> usize {
+        self.errors.len()
+            + self.slow.len()
+            + self.autovacuum.len()
+            + usize::from(self.checkpoints.is_some())
+            + usize::from(self.checkpoint_warnings.is_some())
+            + self.locks.len()
+            + usize::from(self.standalone_acquired.is_some())
+            + self.lifecycle.len()
+            + self.pgbouncer.len()
+    }
+}
+
+impl LockState {
+    fn new(row: EventDataRow, order: RowOrder, from: i64, waiting: bool) -> Self {
+        let mut waiters = HashSet::new();
+        waiters.insert(text(&row, "pid").unwrap_or_default());
+        let mut targets = HashMap::new();
+        if let Some(target) = text(&row, "lock_target")
+            && !target.is_empty()
+        {
+            targets.insert(
+                target,
+                if waiting {
+                    order
+                } else {
+                    RowOrder {
+                        timestamp: 0,
+                        encounter: order.encounter,
+                    }
+                },
+            );
+        }
+        Self {
+            max_ms: number(&row, "duration_ms"),
+            summary: Summary::new(row, order, from, 1.0, 0.0),
+            waits: usize::from(waiting),
+            waiters,
+            targets,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        row: EventDataRow,
+        order: RowOrder,
+        from: i64,
+        waiting: bool,
+        chronological: bool,
+    ) {
+        self.waits += usize::from(waiting);
+        self.waiters.insert(text(&row, "pid").unwrap_or_default());
+        if let Some(target) = text(&row, "lock_target")
+            && !target.is_empty()
+        {
+            let target_order = if chronological {
+                order
+            } else {
+                RowOrder {
+                    timestamp: 0,
+                    encounter: order.encounter,
+                }
+            };
+            self.targets
+                .entry(target)
+                .and_modify(|existing| *existing = (*existing).min(target_order))
+                .or_insert(target_order);
+        }
+        self.max_ms = max_optional(self.max_ms, number(&row, "duration_ms"));
+        if chronological {
+            self.summary.observe_earliest(row, order, from, 1.0);
+        } else {
+            self.summary.observe_physical(row, order, from, 1.0);
+        }
+    }
+
+    fn finish(self, holders: String, acquired: bool) -> Result<EventGroup, ApiError> {
+        let mut targets = self.targets.into_iter().collect::<Vec<_>>();
+        targets.sort_by_key(|(_target, order)| *order);
+        let targets = targets.into_iter().map(|(target, _order)| target).collect();
+        let count = if acquired {
+            self.summary.count
+        } else {
+            count_number(self.waits.max(1))
+        };
+        self.summary.finish(
+            format!("locks:{}", if acquired { "acquired" } else { &holders }),
+            EventSource::LockWaits,
+            Some(count),
+            EventTier::Notable,
+            None,
+            EventStat::Locks {
+                holders: (!holders.is_empty()).then_some(holders),
+                acquired,
+                waiters: self.waiters.len(),
+                max_ms: self.max_ms,
+                targets,
+            },
+        )
+    }
+}
+
+fn lock_join(row: &EventDataRow) -> String {
+    format!(
+        "{}\u{1f}{}",
+        text(row, "pid").unwrap_or_default(),
+        text(row, "lock_target").unwrap_or_default()
+    )
+}
+
+fn add_optional(total: &mut Option<f64>, value: Option<f64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0.0) + value);
+    }
+}
+
+fn max_optional(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left.total_cmp(&right).is_lt() {
+            right
+        } else {
+            left
+        }),
+        (left, right) => left.or(right),
+    }
+}
+
+fn min_optional(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left.total_cmp(&right).is_gt() {
+            right
+        } else {
+            left
+        }),
+        (left, right) => left.or(right),
+    }
 }
 
 pub(super) fn event_collator() -> Result<CollatorBorrowed<'static>, ApiError> {
@@ -87,410 +829,8 @@ pub(super) fn event_collator() -> Result<CollatorBorrowed<'static>, ApiError> {
     })
 }
 
-fn group_errors(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    grouped(rows, |row| {
-        format!(
-            "{}\u{1f}{}\u{1f}{}",
-            text(row, "severity").unwrap_or_default(),
-            text(row, "category").unwrap_or_default(),
-            text(row, "pattern").unwrap_or_default()
-        )
-    })
-    .into_iter()
-    .map(|(key, members)| {
-        let first = &members[0];
-        let weights: Vec<f64> = members
-            .iter()
-            .map(|row| number(row, "count").unwrap_or(1.0))
-            .collect();
-        let severity = number(first, "severity").unwrap_or(0.0);
-        let label = text(first, "pattern");
-        let category = number(first, "category");
-        let sqlstate = text(first, "sqlstate");
-        let database = shared(&members, "database");
-        let username = shared(&members, "username");
-        build(
-            format!("errors:{key}"),
-            EventSource::Errors,
-            &members,
-            from,
-            Some(&weights),
-            None,
-            error_tier(severity),
-            label,
-            EventStat::Errors {
-                severity,
-                category,
-                sqlstate,
-                database,
-                username,
-            },
-        )
-    })
-    .collect()
-}
-
-fn group_slow(rows: Vec<EventDataRow>, from: i64, threshold_ms: Option<f64>) -> Vec<EventGroup> {
-    grouped(rows, |row| text(row, "pattern").unwrap_or_default())
-        .into_iter()
-        .map(|(key, mut members)| {
-            members.sort_by(|left, right| {
-                number(right, "max_duration_ms")
-                    .unwrap_or(0.0)
-                    .total_cmp(&number(left, "max_duration_ms").unwrap_or(0.0))
-            });
-            let slowest = &members[0];
-            let weights: Vec<f64> = members
-                .iter()
-                .map(|row| number(row, "count").unwrap_or(1.0))
-                .collect();
-            let max_ms = number(slowest, "max_duration_ms").unwrap_or(0.0);
-            let total_ms = sum(&members, "total_duration_ms").unwrap_or(0.0);
-            build(
-                format!("slow:{key}"),
-                EventSource::SlowQueries,
-                &members,
-                from,
-                Some(&weights),
-                None,
-                EventTier::Notable,
-                Some(key),
-                EventStat::Slow {
-                    max_ms,
-                    total_ms,
-                    threshold_ms,
-                },
-            )
-        })
-        .collect()
-}
-
-fn group_autovacuum(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    grouped(rows, |row| {
-        format!(
-            "{}\u{1f}{}",
-            text(row, "kind").unwrap_or_default(),
-            text(row, "relation").unwrap_or_default()
-        )
-    })
-    .into_iter()
-    .map(|(key, members)| {
-        let first = &members[0];
-        let last = &members[members.len() - 1];
-        let label = text(first, "relation");
-        let analyze = number(first, "kind") == Some(1.0);
-        let runs = members.len();
-        let total_ms = sum(&members, "elapsed_ms");
-        let tuples_removed = sum(&members, "tuples_removed");
-        let tuples_dead = number(last, "tuples_dead_not_removable");
-        build(
-            format!("autovacuum:{key}"),
-            EventSource::Autovacuum,
-            &members,
-            from,
-            None,
-            None,
-            EventTier::Routine,
-            label,
-            EventStat::Autovacuum {
-                analyze,
-                runs,
-                total_ms,
-                tuples_removed,
-                tuples_dead,
-            },
-        )
-    })
-    .collect()
-}
-
-fn group_checkpoints(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    let (warnings, ordinary): (Vec<_>, Vec<_>) = rows
-        .into_iter()
-        .partition(|row| number(row, "phase") == Some(2.0));
-    let mut entries = Vec::new();
-    if !ordinary.is_empty() {
-        let starts = ordinary
-            .iter()
-            .filter(|row| number(row, "phase") == Some(0.0))
-            .count();
-        let completes = ordinary
-            .iter()
-            .filter(|row| number(row, "phase") == Some(1.0))
-            .count();
-        let timed = ordinary
-            .iter()
-            .filter(|row| {
-                number(row, "phase") == Some(0.0)
-                    && text(row, "reason").is_some_and(|reason| reason.contains("time"))
-            })
-            .count();
-        let count = starts.max(completes);
-        let max_sync_ms = ordinary
-            .iter()
-            .filter(|row| number(row, "phase") == Some(1.0))
-            .filter_map(|row| number(row, "sync_ms"))
-            .max_by(f64::total_cmp);
-        let mut buffer_values = ordinary
-            .iter()
-            .filter(|row| number(row, "phase") == Some(1.0))
-            .filter_map(|row| number(row, "buffers_written"))
-            .peekable();
-        let buffers = buffer_values.peek().is_some().then(|| buffer_values.sum());
-        entries.push(build(
-            "checkpoints".to_owned(),
-            EventSource::Checkpoints,
-            &ordinary,
-            from,
-            None,
-            Some(count_number(count)),
-            EventTier::Routine,
-            None,
-            EventStat::Checkpoints {
-                completes,
-                timed,
-                requested: starts - timed,
-                max_sync_ms,
-                buffers,
-            },
-        ));
-    }
-    if !warnings.is_empty() {
-        let seconds_apart = min(&warnings, "seconds_apart");
-        entries.push(build(
-            "checkpoints:warning".to_owned(),
-            EventSource::Checkpoints,
-            &warnings,
-            from,
-            None,
-            None,
-            EventTier::Notable,
-            None,
-            EventStat::CheckpointWarning { seconds_apart },
-        ));
-    }
-    entries
-}
-
-fn group_locks(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    let (waits, acquired): (Vec<_>, Vec<_>) = rows
-        .into_iter()
-        .partition(|row| number(row, "kind") == Some(0.0));
-    let episodes = grouped(waits, |row| text(row, "holding_pids").unwrap_or_default());
-    let mut waiter_of = HashMap::new();
-    for (key, members) in &episodes {
-        for row in members {
-            waiter_of.insert(
-                format!(
-                    "{}\u{1f}{}",
-                    text(row, "pid").unwrap_or_default(),
-                    text(row, "lock_target").unwrap_or_default()
-                ),
-                key.clone(),
-            );
-        }
-    }
-    let mut attached: HashMap<String, Vec<EventDataRow>> = HashMap::new();
-    let mut leftovers = Vec::new();
-    for row in acquired {
-        let join = format!(
-            "{}\u{1f}{}",
-            text(&row, "pid").unwrap_or_default(),
-            text(&row, "lock_target").unwrap_or_default()
-        );
-        if let Some(key) = waiter_of.get(&join) {
-            attached.entry(key.clone()).or_default().push(row);
-        } else {
-            leftovers.push(row);
-        }
-    }
-    let mut entries = episodes
-        .into_iter()
-        .map(|(key, mut members)| {
-            let waits = members.len();
-            members.extend(attached.remove(&key).unwrap_or_default());
-            members.sort_by_key(|row| row.timestamp);
-            lock_group(key, waits, false, &members, from)
-        })
-        .collect::<Vec<_>>();
-    if !leftovers.is_empty() {
-        let waits = leftovers.len();
-        entries.push(lock_group(String::new(), waits, true, &leftovers, from));
-    }
-    entries
-}
-
-fn lock_group(
-    key: String,
-    waits: usize,
-    acquired: bool,
-    members: &[EventDataRow],
-    from: i64,
-) -> EventGroup {
-    let waiters = members
-        .iter()
-        .map(|row| text(row, "pid").unwrap_or_default())
-        .collect::<HashSet<_>>()
-        .len();
-    let mut targets = Vec::new();
-    let mut seen_targets = HashSet::new();
-    for target in members.iter().filter_map(|row| text(row, "lock_target")) {
-        if !target.is_empty() && seen_targets.insert(target.clone()) {
-            targets.push(target);
-        }
-    }
-    let max_ms = max(members, "duration_ms");
-    build(
-        format!("locks:{}", if acquired { "acquired" } else { &key }),
-        EventSource::LockWaits,
-        members,
-        from,
-        None,
-        Some(count_number(waits.max(1))),
-        EventTier::Notable,
-        None,
-        EventStat::Locks {
-            holders: (!key.is_empty()).then_some(key),
-            acquired,
-            waiters,
-            max_ms,
-            targets,
-        },
-    )
-}
-
-fn group_lifecycle(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    rows.into_iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let lifecycle = number(&row, "kind").unwrap_or(0.0);
-            let pid = number(&row, "pid");
-            let signal = number(&row, "signal");
-            let mode = text(&row, "shutdown_mode");
-            build(
-                format!("lifecycle:{index}:{}", row.row_ordinal),
-                EventSource::Lifecycle,
-                std::slice::from_ref(&row),
-                from,
-                None,
-                None,
-                lifecycle_tier(lifecycle),
-                None,
-                EventStat::Lifecycle {
-                    lifecycle,
-                    pid,
-                    signal,
-                    mode,
-                },
-            )
-        })
-        .collect()
-}
-
-fn group_pgbouncer(rows: Vec<EventDataRow>, from: i64) -> Vec<EventGroup> {
-    grouped(rows, |row| {
-        format!(
-            "{}\u{1f}{}",
-            text(row, "level").unwrap_or_default(),
-            text(row, "text").unwrap_or_default()
-        )
-    })
-    .into_iter()
-    .map(|(key, members)| {
-        let first = &members[0];
-        let level = number(first, "level").unwrap_or(3.0);
-        let database = shared(&members, "database");
-        build(
-            format!("pgbouncer:{key}"),
-            EventSource::Pgbouncer,
-            &members,
-            from,
-            None,
-            None,
-            pgbouncer_tier(level),
-            None,
-            EventStat::Pgbouncer { level, database },
-        )
-    })
-    .collect()
-}
-
-fn grouped(
-    mut rows: Vec<EventDataRow>,
-    key_of: impl Fn(&EventDataRow) -> String,
-) -> Vec<(String, Vec<EventDataRow>)> {
-    rows.sort_by_key(|row| row.timestamp);
-    let mut groups: HashMap<String, Vec<EventDataRow>> = HashMap::new();
-    for row in rows {
-        groups.entry(key_of(&row)).or_default().push(row);
-    }
-    groups.into_iter().collect()
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the argument list mirrors the deliberately compact EventGroup contract"
-)]
-fn build(
-    key: String,
-    source: EventSource,
-    members: &[EventDataRow],
-    from: i64,
-    weights: Option<&[f64]>,
-    count: Option<f64>,
-    tier: EventTier,
-    label: Option<String>,
-    stat: EventStat,
-) -> EventGroup {
-    let representative = &members[0];
-    let detail_locator = super::row_key::detail_locator(
-        source.as_str(),
-        representative.segment_id,
-        representative.timestamp,
-        representative.type_id,
-        representative.row_ordinal,
-        representative.identity.clone(),
-    );
-    let mut minutes = vec![0.0; MINUTE_COLUMNS];
-    let mut first_ts = i64::MAX;
-    let mut last_ts = i64::MIN;
-    for (index, row) in members.iter().enumerate() {
-        if let Some(delta) = row.timestamp.checked_sub(from) {
-            let bucket = delta.div_euclid(MINUTE_MICROS);
-            if let Ok(bucket) = usize::try_from(bucket)
-                && let Some(slot) = minutes.get_mut(bucket)
-            {
-                *slot += weights
-                    .and_then(|weights| weights.get(index))
-                    .copied()
-                    .unwrap_or(1.0);
-            }
-        }
-        first_ts = first_ts.min(row.timestamp);
-        last_ts = last_ts.max(row.timestamp);
-    }
-    EventGroup {
-        key,
-        section: source.as_str().to_owned(),
-        tier,
-        label,
-        count: count.unwrap_or_else(|| {
-            weights.map_or_else(
-                || count_number(members.len()),
-                |weights| weights.iter().sum(),
-            )
-        }),
-        first_ts,
-        last_ts,
-        representative_ts: representative.timestamp,
-        minutes,
-        stat,
-        detail_locator,
-    }
-}
-
 fn text(row: &EventDataRow, field: &str) -> Option<String> {
-    raw_text(row.values.get(field).unwrap_or(&Value::Null))
+    row.values.get(field).and_then(raw_text)
 }
 
 fn raw_text(value: &Value) -> Option<String> {
@@ -522,40 +862,6 @@ fn number(row: &EventDataRow, field: &str) -> Option<f64> {
     parsed.is_finite().then_some(parsed)
 }
 
-fn shared(members: &[EventDataRow], field: &str) -> Option<String> {
-    let (first, rest) = members.split_first()?;
-    let shared = text(first, field).unwrap_or_default();
-    if shared.is_empty() {
-        return None;
-    }
-    rest.iter()
-        .all(|row| text(row, field).unwrap_or_default() == shared)
-        .then_some(shared)
-}
-
-fn sum(members: &[EventDataRow], field: &str) -> Option<f64> {
-    let mut values = members
-        .iter()
-        .filter_map(|row| number(row, field))
-        .peekable();
-    values.peek()?;
-    Some(values.sum())
-}
-
-fn max(members: &[EventDataRow], field: &str) -> Option<f64> {
-    members
-        .iter()
-        .filter_map(|row| number(row, field))
-        .max_by(f64::total_cmp)
-}
-
-fn min(members: &[EventDataRow], field: &str) -> Option<f64> {
-    members
-        .iter()
-        .filter_map(|row| number(row, field))
-        .min_by(f64::total_cmp)
-}
-
 #[expect(
     clippy::cast_precision_loss,
     reason = "the wire contract is a JavaScript number and event counts use that representation"
@@ -564,34 +870,49 @@ const fn count_number(value: usize) -> f64 {
     value as f64
 }
 
-pub(super) fn slow_threshold_ms(rows: &[EventDataRow]) -> Option<f64> {
-    let row = rows
-        .iter()
-        .filter(|row| {
-            row.values.get("name").and_then(raw_text).as_deref()
-                == Some("log_min_duration_statement")
-        })
-        .reduce(|chosen, row| {
-            if row.timestamp > chosen.timestamp {
-                row
-            } else {
-                chosen
-            }
-        })?;
-    let setting = row
-        .values
-        .get("setting")
-        .and_then(raw_text)?
-        .parse::<f64>()
-        .ok()?;
-    if !setting.is_finite() || setting < 0.0 {
-        return None;
+#[derive(Default)]
+pub(super) struct SlowThreshold {
+    latest: Option<(RowOrder, Option<f64>)>,
+    encounter: u64,
+}
+
+impl SlowThreshold {
+    pub(super) fn observe(&mut self, row: EventDataRow) {
+        let order = RowOrder {
+            timestamp: row.timestamp,
+            encounter: self.encounter,
+        };
+        self.encounter = self.encounter.saturating_add(1);
+        if row.values.get("name").and_then(raw_text).as_deref()
+            != Some("log_min_duration_statement")
+        {
+            return;
+        }
+        let setting = row
+            .values
+            .get("setting")
+            .and_then(raw_text)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(
+                |setting| match row.values.get("unit").and_then(raw_text).as_deref() {
+                    Some("s") => setting * 1_000.0,
+                    Some("min") => setting * 60_000.0,
+                    _ => setting,
+                },
+            );
+        if self
+            .latest
+            .as_ref()
+            .is_none_or(|(latest, _value)| order.timestamp > latest.timestamp)
+        {
+            self.latest = Some((order, setting));
+        }
     }
-    Some(match row.values.get("unit").and_then(raw_text).as_deref() {
-        Some("s") => setting * 1_000.0,
-        Some("min") => setting * 60_000.0,
-        _ => setting,
-    })
+
+    pub(super) fn finish(self) -> Option<f64> {
+        self.latest.and_then(|(_order, value)| value)
+    }
 }
 
 const fn tier_order(tier: EventTier) -> u8 {
@@ -623,4 +944,54 @@ fn pgbouncer_tier(code: f64) -> EventTier {
         1.0 | 2.0 => EventTier::Notable,
         _ => EventTier::Routine,
     }
+}
+
+#[cfg(test)]
+pub(super) fn group_events(
+    mut streams: HashMap<EventSource, Vec<EventDataRow>>,
+    from: i64,
+    threshold_ms: Option<f64>,
+) -> Result<Vec<EventGroup>, ApiError> {
+    let mut groups = EventGroups::new(from);
+    for source in EventSource::GROUPS {
+        let mut rows = streams.remove(&source).unwrap_or_default();
+        if source == EventSource::LockWaits {
+            let mut indexed = rows.into_iter().enumerate().collect::<Vec<_>>();
+            indexed.sort_by_key(|(encounter, row)| (row.timestamp, *encounter));
+            for (encounter, row) in indexed {
+                let timestamp = row.timestamp;
+                groups.observe_at(
+                    source,
+                    row,
+                    RowOrder {
+                        timestamp,
+                        encounter: u64::try_from(encounter).unwrap_or(u64::MAX),
+                    },
+                );
+            }
+        } else {
+            if matches!(
+                source,
+                EventSource::Errors
+                    | EventSource::SlowQueries
+                    | EventSource::Autovacuum
+                    | EventSource::Pgbouncer
+            ) {
+                rows.sort_by_key(|row| row.timestamp);
+            }
+            for row in rows.drain(..) {
+                groups.observe(source, row);
+            }
+        }
+    }
+    groups.finish(threshold_ms)
+}
+
+#[cfg(test)]
+pub(super) fn slow_threshold_ms(rows: &[EventDataRow]) -> Option<f64> {
+    let mut threshold = SlowThreshold::default();
+    for row in rows {
+        threshold.observe(row.clone());
+    }
+    threshold.finish()
 }

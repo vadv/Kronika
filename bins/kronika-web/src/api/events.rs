@@ -1,6 +1,6 @@
 //! Shared recorded-event query, decoding, grouping, and result contract.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
@@ -19,6 +19,8 @@ mod group;
 
 #[cfg(test)]
 use group::event_collator;
+use group::{EventGroups, SlowThreshold};
+#[cfg(test)]
 use group::{group_events, slow_threshold_ms};
 
 pub(crate) const MAX_EVENTS_WINDOW_MICROS: i64 = 3_600_000_000;
@@ -439,6 +441,84 @@ pub(crate) struct PreparedEvents {
     meta: ResponseMeta,
 }
 
+struct RetainedOccurrence {
+    source: EventSource,
+    row: EventDataRow,
+}
+
+struct OccurrenceAccumulator {
+    limit: usize,
+    encounters: Vec<u64>,
+    rows: BTreeMap<(i64, usize, u64), RetainedOccurrence>,
+}
+
+impl OccurrenceAccumulator {
+    fn new(query: &EventsQuery) -> Self {
+        Self {
+            limit: query.limit,
+            encounters: vec![0; query.sources.len()],
+            rows: BTreeMap::new(),
+        }
+    }
+
+    fn observe(&mut self, source_rank: usize, source: EventSource, row: EventDataRow) {
+        let encounter = self.encounters[source_rank];
+        self.encounters[source_rank] = encounter.saturating_add(1);
+        let key = (row.timestamp, source_rank, encounter);
+        let capacity = self.limit.saturating_add(1);
+        if self.rows.len() == capacity {
+            if self
+                .rows
+                .last_key_value()
+                .is_some_and(|(last, _row)| key >= *last)
+            {
+                return;
+            }
+            self.rows.pop_last();
+        }
+        self.rows.insert(key, RetainedOccurrence { source, row });
+    }
+
+    fn finish(self) -> Result<EventsResult, ApiError> {
+        let mut seen = HashSet::new();
+        for retained in self.rows.values() {
+            let row = &retained.row;
+            let identity = serde_json::to_string(&row.identity)?;
+            if !seen.insert((
+                retained.source,
+                row.segment_id,
+                row.type_id,
+                row.timestamp,
+                identity,
+            )) {
+                return Err(ApiError::BadLocator(format!(
+                    "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
+                    retained.source.as_str(),
+                    row.timestamp,
+                    row.segment_id,
+                )));
+            }
+        }
+
+        let truncated = self.rows.len() > self.limit;
+        let occurrences = self
+            .rows
+            .into_values()
+            .take(self.limit)
+            .map(|retained| occurrence(retained.source, retained.row))
+            .collect();
+        Ok(EventsResult::Occurrences {
+            occurrences,
+            truncated,
+        })
+    }
+
+    #[cfg(test)]
+    fn retained_rows(&self) -> usize {
+        self.rows.len()
+    }
+}
+
 pub(crate) fn prepare(root: &Path, query: EventsQuery) -> Result<PreparedEvents, ApiError> {
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(query.range.from..query.range.to_exclusive)?;
@@ -474,15 +554,17 @@ impl PreparedEvents {
     }
 
     pub(crate) fn execute(self, cancelled: &impl Fn() -> bool) -> Result<EventsResult, ApiError> {
-        let mut by_source: Vec<Vec<EventDataRow>> = self
-            .query
-            .sources
-            .iter()
-            .map(|_source| Vec::new())
-            .collect();
+        match self.query.representation {
+            EventsRepresentation::Groups => self.execute_groups(cancelled),
+            EventsRepresentation::Occurrences => self.execute_occurrences(cancelled),
+        }
+    }
+
+    fn execute_groups(self, cancelled: &impl Fn() -> bool) -> Result<EventsResult, ApiError> {
+        let mut groups = EventGroups::new(self.query.range.from);
         let needs_threshold = self.query.representation == EventsRepresentation::Groups
             && self.query.sources.contains(&EventSource::SlowQueries);
-        let mut settings = Vec::new();
+        let mut threshold = SlowThreshold::default();
 
         for segment_ref in &self.segments {
             if cancelled() {
@@ -492,23 +574,27 @@ impl PreparedEvents {
                 continue;
             }
             let segment = self.reader.open_segment(segment_ref)?;
-            for (source, rows) in self.query.sources.iter().zip(by_source.iter_mut()) {
+            for source in &self.query.sources {
+                let mut observe = |row| {
+                    groups.observe(*source, row);
+                    Ok(())
+                };
                 collect_section(
                     &segment,
                     segment_ref.id(),
                     source.as_str(),
-                    if self.query.representation == EventsRepresentation::Groups {
-                        source.group_fields()
-                    } else {
-                        source.occurrence_fields()
-                    },
+                    source.group_fields(),
                     &[],
                     self.query.range,
-                    rows,
+                    &mut observe,
                     cancelled,
                 )?;
             }
             if needs_threshold {
+                let mut observe = |row| {
+                    threshold.observe(row);
+                    Ok(())
+                };
                 collect_section(
                     &segment,
                     segment_ref.id(),
@@ -519,7 +605,7 @@ impl PreparedEvents {
                         value: "log_min_duration_statement".to_owned(),
                     }],
                     self.query.range,
-                    &mut settings,
+                    &mut observe,
                     cancelled,
                 )?;
             }
@@ -527,15 +613,40 @@ impl PreparedEvents {
         if cancelled() {
             return Err(ApiError::Cancelled);
         }
-        validate_locator_uniqueness(&self.query, &by_source)?;
+        groups_result(&self.query, groups, threshold.finish())
+    }
 
-        let result = match self.query.representation {
-            EventsRepresentation::Groups => {
-                groups_result(&self.query, by_source, slow_threshold_ms(&settings))?
+    fn execute_occurrences(self, cancelled: &impl Fn() -> bool) -> Result<EventsResult, ApiError> {
+        let mut occurrences = OccurrenceAccumulator::new(&self.query);
+        for segment_ref in &self.segments {
+            if cancelled() {
+                return Err(ApiError::Cancelled);
             }
-            EventsRepresentation::Occurrences => occurrences_result(&self.query, by_source),
-        };
-        Ok(result)
+            if !carries_selected(segment_ref, &self.query.sources, false) {
+                continue;
+            }
+            let segment = self.reader.open_segment(segment_ref)?;
+            for (source_rank, source) in self.query.sources.iter().copied().enumerate() {
+                let mut observe = |row| {
+                    occurrences.observe(source_rank, source, row);
+                    Ok(())
+                };
+                collect_section(
+                    &segment,
+                    segment_ref.id(),
+                    source.as_str(),
+                    source.occurrence_fields(),
+                    &[],
+                    self.query.range,
+                    &mut observe,
+                    cancelled,
+                )?;
+            }
+        }
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        occurrences.finish()
     }
 
     pub(crate) fn stream(
@@ -558,27 +669,6 @@ impl PreparedEvents {
             EventsResult::Occurrences { occurrences, .. } => emit_occurrences(occurrences, emit),
         }
     }
-}
-
-fn validate_locator_uniqueness(
-    query: &EventsQuery,
-    by_source: &[Vec<EventDataRow>],
-) -> Result<(), ApiError> {
-    for (source, rows) in query.sources.iter().zip(by_source) {
-        let mut seen = HashSet::new();
-        for row in rows {
-            let identity = serde_json::to_string(&row.identity)?;
-            if !seen.insert((row.segment_id, row.type_id, row.timestamp, identity)) {
-                return Err(ApiError::BadLocator(format!(
-                    "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
-                    source.as_str(),
-                    row.timestamp,
-                    row.segment_id,
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn emit_groups(
@@ -651,7 +741,7 @@ fn collect_section(
     fields: &[&str],
     filters: &[Filter],
     range: TimeRange,
-    output: &mut Vec<EventDataRow>,
+    output: &mut impl FnMut(EventDataRow) -> Result<(), ApiError>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     let request = DataRequest {
@@ -680,7 +770,7 @@ fn collect_plan(
     segment_id: i64,
     plan: &Plan,
     range: TimeRange,
-    output: &mut Vec<EventDataRow>,
+    output: &mut impl FnMut(EventDataRow) -> Result<(), ApiError>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
     if !plan.applies() {
@@ -751,7 +841,7 @@ fn append_chunk(
     plan: &Plan,
     timestamp_column: &str,
     chunk: &mut Vec<(u64, Row)>,
-    output: &mut Vec<EventDataRow>,
+    output: &mut impl FnMut(EventDataRow) -> Result<(), ApiError>,
 ) -> Result<(), ApiError> {
     let dictionary = streaming_chunk_dictionary(segment, chunk)?;
     for (ordinal, row) in chunk.drain(..) {
@@ -778,71 +868,57 @@ fn append_chunk(
                     .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?,
             );
         }
-        output.push(EventDataRow {
+        output(EventDataRow {
             segment_id,
             type_id: plan.type_id,
             row_ordinal: ordinal,
             timestamp: *at,
             identity,
             values,
-        });
+        })?;
     }
     Ok(())
 }
 
 fn groups_result(
     query: &EventsQuery,
-    by_source: Vec<Vec<EventDataRow>>,
+    groups: EventGroups,
     threshold_ms: Option<f64>,
 ) -> Result<EventsResult, ApiError> {
-    let streams: HashMap<EventSource, Vec<EventDataRow>> =
-        query.sources.iter().copied().zip(by_source).collect();
-    let mut groups = group_events(streams, query.range.from, threshold_ms)?;
+    let mut groups = groups.finish(threshold_ms)?;
     let truncated = groups.len() > query.limit;
     groups.truncate(query.limit);
     Ok(EventsResult::Groups { groups, truncated })
 }
 
-fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<EventDataRow>>) -> EventsResult {
-    let mut occurrences: Vec<(i64, EventOccurrence)> = query
-        .sources
-        .iter()
-        .zip(by_source)
-        .flat_map(|(source, rows)| {
-            rows.into_iter().map(|row| {
-                let mut fields = row.values;
-                let detail_locator = row_key::detail_locator(
-                    source.as_str(),
-                    row.segment_id,
-                    row.timestamp,
-                    row.type_id,
-                    row.row_ordinal,
-                    row.identity,
-                );
-                fields.retain(|field, _| !row_key::is_detail_text(source.as_str(), field));
-                label_event_fields(source.as_str(), &mut fields);
-                (
-                    row.timestamp,
-                    EventOccurrence {
-                        fields,
-                        source: source.as_str().to_owned(),
-                        detail_locator,
-                    },
-                )
-            })
-        })
-        .collect();
-    occurrences.sort_by_key(|(at, _)| *at);
-    let truncated = occurrences.len() > query.limit;
-    occurrences.truncate(query.limit);
-    let occurrences = occurrences
-        .into_iter()
-        .map(|(_, occurrence)| occurrence)
-        .collect();
-    EventsResult::Occurrences {
-        occurrences,
-        truncated,
+fn occurrence(source: EventSource, row: EventDataRow) -> EventOccurrence {
+    let mut fields = row.values;
+    let detail_locator = row_key::detail_locator(
+        source.as_str(),
+        row.segment_id,
+        row.timestamp,
+        row.type_id,
+        row.row_ordinal,
+        row.identity,
+    );
+    fields.retain(|field, _| !row_key::is_detail_text(source.as_str(), field));
+    label_event_fields(source.as_str(), &mut fields);
+    EventOccurrence {
+        fields,
+        source: source.as_str().to_owned(),
+        detail_locator,
     }
+}
+
+#[cfg(test)]
+fn occurrences_result(query: &EventsQuery, by_source: Vec<Vec<EventDataRow>>) -> EventsResult {
+    let mut occurrences = OccurrenceAccumulator::new(query);
+    for (source_rank, (source, rows)) in query.sources.iter().copied().zip(by_source).enumerate() {
+        for row in rows {
+            occurrences.observe(source_rank, source, row);
+        }
+    }
+    occurrences.finish().expect("valid occurrence fixture")
 }
 
 pub(crate) fn label_event_fields(section: &str, fields: &mut Map<String, Value>) {

@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use serde_json::{Map, Value, json};
 
 use super::{
-    EventDataRow, EventSource, EventStat, EventTier, EventsQuery, EventsQueryError,
-    EventsRepresentation, EventsResult, event_collator, group_events, groups_result,
-    label_event_fields, occurrences_result, slow_threshold_ms,
+    EventDataRow, EventGroups, EventSource, EventStat, EventTier, EventsQuery, EventsQueryError,
+    EventsRepresentation, EventsResult, OccurrenceAccumulator, event_collator, group_events,
+    groups_result, label_event_fields, occurrences_result, slow_threshold_ms,
 };
 use crate::api::time::TimeRange;
 
@@ -518,6 +518,170 @@ fn occurrences_keep_structural_fields_and_nested_locators_then_limit() {
 }
 
 #[test]
+fn occurrences_retain_only_limit_plus_one_and_match_the_materialized_order() {
+    let query = EventsQuery {
+        range: TimeRange {
+            from: HOUR,
+            to_exclusive: HOUR + 1_000_000,
+        },
+        sources: vec![EventSource::Errors, EventSource::TempFiles],
+        representation: EventsRepresentation::Occurrences,
+        limit: 7,
+    };
+    let mut accumulator = OccurrenceAccumulator::new(&query);
+    let mut expected = Vec::new();
+    let mut source_encounters = [0_u64; 2];
+    let mut peak = 0;
+    for index in 0_u64..20_000 {
+        let source_rank = usize::from(index % 2 != 0);
+        let encounter = source_encounters[source_rank];
+        source_encounters[source_rank] += 1;
+        let timestamp = HOUR + i64::try_from((20_000 - index) % 113).expect("small timestamp");
+        let source = query.sources[source_rank];
+        let event = row(index, 0, json!({ "sequence": index }));
+        let event = EventDataRow { timestamp, ..event };
+        expected.push((timestamp, source_rank, encounter, index));
+        accumulator.observe(source_rank, source, event);
+        peak = peak.max(accumulator.retained_rows());
+    }
+    expected.sort_by_key(|(timestamp, source_rank, encounter, _ordinal)| {
+        (*timestamp, *source_rank, *encounter)
+    });
+    let expected = expected
+        .into_iter()
+        .take(query.limit)
+        .map(|(_timestamp, _source_rank, _encounter, ordinal)| ordinal)
+        .collect::<Vec<_>>();
+
+    let result = accumulator.finish().expect("unique retained locators");
+    let EventsResult::Occurrences {
+        occurrences,
+        truncated,
+    } = result
+    else {
+        panic!("occurrences");
+    };
+    assert!(truncated);
+    assert_eq!(peak, query.limit + 1);
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|event| event.detail_locator.row_ordinal)
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[test]
+fn occurrences_reject_a_non_unique_retained_locator_without_unbounded_rows() {
+    let query = EventsQuery {
+        range: TimeRange {
+            from: HOUR,
+            to_exclusive: HOUR + 10,
+        },
+        sources: vec![EventSource::Errors],
+        representation: EventsRepresentation::Occurrences,
+        limit: 1,
+    };
+    let duplicate = row(0, 0, json!({ "severity": 0, "pattern": "same" }));
+    let mut accumulator = OccurrenceAccumulator::new(&query);
+    accumulator.observe(0, EventSource::Errors, duplicate.clone());
+    accumulator.observe(
+        0,
+        EventSource::Errors,
+        EventDataRow {
+            row_ordinal: 1,
+            ..duplicate
+        },
+    );
+
+    assert!(matches!(
+        accumulator.finish(),
+        Err(crate::api::ApiError::BadLocator(_))
+    ));
+}
+
+#[test]
+fn groups_retain_one_row_per_group_at_high_cardinality() {
+    let mut accumulator = EventGroups::new(HOUR);
+    for ordinal in 0_u64..20_000 {
+        accumulator.observe(
+            EventSource::Errors,
+            row(
+                ordinal,
+                i64::try_from(ordinal % 60).expect("minute"),
+                json!({
+                    "severity": 0,
+                    "category": 1,
+                    "pattern": "same",
+                    "count": 1,
+                    "sample": ordinal,
+                }),
+            ),
+        );
+        assert_eq!(accumulator.retained_rows(), 1);
+    }
+
+    let groups = accumulator.finish(None).expect("one exact group");
+    assert_eq!(groups.len(), 1);
+    assert_number(groups[0].count, 20_000.0);
+    assert_number(groups[0].minutes.iter().sum(), 20_000.0);
+}
+
+#[test]
+fn lock_acquisitions_follow_the_latest_waiter_under_input_permutations() {
+    let rows = vec![
+        row(
+            1,
+            10,
+            json!({ "kind": 0, "pid": 7, "lock_target": "relation 9", "holding_pids": "11", "duration_ms": 10 }),
+        ),
+        row(
+            2,
+            15,
+            json!({ "kind": 1, "pid": 7, "lock_target": "relation 9", "duration_ms": 110 }),
+        ),
+        row(
+            3,
+            20,
+            json!({ "kind": 0, "pid": 7, "lock_target": "relation 9", "holding_pids": "22", "duration_ms": 20 }),
+        ),
+        row(
+            4,
+            25,
+            json!({ "kind": 1, "pid": 7, "lock_target": "relation 9", "duration_ms": 220 }),
+        ),
+    ];
+    let expected = grouped(HashMap::from([(EventSource::LockWaits, rows.clone())]));
+    for permutation in [
+        rows.iter().cloned().rev().collect::<Vec<_>>(),
+        vec![
+            rows[2].clone(),
+            rows[0].clone(),
+            rows[3].clone(),
+            rows[1].clone(),
+        ],
+    ] {
+        assert_eq!(
+            grouped(HashMap::from([(EventSource::LockWaits, permutation)])),
+            expected
+        );
+    }
+    let holders = |key: &str| {
+        let group = expected
+            .iter()
+            .find(|group| group.key == key)
+            .expect("holder group");
+        let EventStat::Locks { max_ms, .. } = group.stat else {
+            panic!("lock group");
+        };
+        max_ms
+    };
+    assert_eq!(holders("locks:11"), Some(110.0));
+    assert_eq!(holders("locks:22"), Some(220.0));
+}
+
+#[test]
 fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
     let query = EventsQuery {
         range: TimeRange {
@@ -536,16 +700,15 @@ fn group_limit_is_global_after_full_grouping_and_has_no_continuation() {
         identity: object(json!({ "severity": 0, "pattern": pattern, "count": count })),
         values: object(json!({ "severity": 0, "pattern": pattern, "count": count })),
     };
-    let result = groups_result(
-        &query,
-        vec![vec![
-            stored(0, HOUR, "small", 1),
-            stored(1, HOUR + 1, "large", 2),
-            stored(2, HOUR + 2, "large", 3),
-        ]],
-        None,
-    )
-    .expect("groups");
+    let mut accumulator = EventGroups::new(HOUR);
+    for row in [
+        stored(0, HOUR, "small", 1),
+        stored(1, HOUR + 1, "large", 2),
+        stored(2, HOUR + 2, "large", 3),
+    ] {
+        accumulator.observe(EventSource::Errors, row);
+    }
+    let result = groups_result(&query, accumulator, None).expect("groups");
     let EventsResult::Groups { groups, truncated } = &result else {
         panic!("groups");
     };
