@@ -2815,6 +2815,11 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ record: "instance_label", database: "artifact_db" }))
+      return
+    }
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("group") ? aggregateRelationHistoryRecords(url) : timelineRecords(HOUR))
@@ -2913,7 +2918,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       chip: document.querySelector('[data-testid="search-chips"]')?.textContent ?? "",
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     }))()`)
-    assert.match(narrowComparison.chip, /Размер · > 100 MB/)
+    assert.match(narrowComparison.chip, /Size · > 100 MB/)
     assert.match(narrowComparison.chip, /OR/)
     assert.equal(narrowComparison.overflow, false)
     await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
@@ -4930,6 +4935,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ record: "instance_label", database: "artifact_db" }))
+      return
+    }
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
