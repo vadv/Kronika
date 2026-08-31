@@ -30,6 +30,9 @@ printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
 учётными данными в публичные репозитории; у каждого клиента есть вариант
 с переменной окружения.
 
+Локализованный готовый промпт для подключения выдаёт панель MCP в
+верхней панели `kronika-web`: выберите в ней нужный клиент.
+
 ## Claude Code
 
 Проверено вживую на v2.1.228. Нативная поддержка удалённых HTTP-серверов —
@@ -70,20 +73,6 @@ claude mcp add --transport http kronika <URL> \
 `KRONIKA_BASIC=<BASE64>` перед запуском — `${VAR}` и `${VAR:-default}`
 раскрываются внутри `url` и `headers`.
 
-Промпт, которым работающая сессия Claude Code подключает себя сама —
-подставьте три значения и вставьте текст в чат:
-
-```text
-Добавь MCP-сервер Kronika в мою конфигурацию Claude Code. Выполни:
-
-claude mcp add --transport http --scope user kronika <URL> \
-  --header "Authorization: Basic $(printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n')"
-
-Затем выполни `claude mcp list` и убедись, что запись kronika
-показывает "Connected". Инструменты появятся в следующей сессии;
-точка входа — kronika_get_context.
-```
-
 Интерфейс custom-коннекторов Claude Desktop отвергает не-`https://` URL
 (issue anthropics/claude-ai-mcp#9, закрыт как not planned) — там нужен
 [мост mcp-remote](#запасной-путь-мост-mcp-remote).
@@ -115,26 +104,6 @@ Codex. `codex mcp add kronika --url <URL>` создаёт запись, но ф�
 заголовков не имеет — допишите `http_headers` вручную.
 `--bearer-token-env-var` не выражает Basic-аутентификацию: он всегда шлёт
 `Bearer <token>`.
-
-Промпт, которым работающая сессия Codex подключает себя сама —
-подставьте значения и вставьте текст в чат:
-
-```text
-Добавь MCP-сервер Kronika в мою конфигурацию Codex: в
-~/.codex/config.toml замени целиком таблицу [mcp_servers.kronika], если
-она уже есть, иначе допиши
-
-[mcp_servers.kronika]
-url = "<URL>"
-http_headers = { "Authorization" = "Basic <BASE64>" }
-
-где <BASE64> — вывод команды:
-printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
-
-Затем выполни `codex mcp get kronika` и покажи мне разобранную запись.
-Инструменты загрузятся в следующей сессии; точка входа —
-kronika_get_context.
-```
 
 Проверка: `codex mcp get kronika` печатает разобранную запись с
 замаскированным значением заголовка. В интерактивном TUI первый вызов
@@ -175,31 +144,6 @@ Cursor, затем включите сервер тумблером на стр�
 headless `cursor-agent` есть описанные на форуме ошибки с игнорированием
 auth-заголовков из `mcp.json`, поэтому документированный путь —
 десктопный IDE.
-
-Промпт для агента самого Cursor — подставьте значения и вставьте текст
-в чат:
-
-```text
-Создай или обнови .cursor/mcp.json в этом проекте, чтобы он содержал:
-
-{
-  "mcpServers": {
-    "kronika": {
-      "url": "<URL>",
-      "headers": {
-        "Authorization": "Basic <BASE64>"
-      }
-    }
-  }
-}
-
-где <BASE64> — вывод команды:
-printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
-
-Объедини с серверами, уже описанными в файле. Когда закончишь, напомни
-мне перезапустить Cursor и включить kronika тумблером на странице
-Customize; точка входа — kronika_get_context.
-```
 
 ## Запасной путь: мост mcp-remote
 

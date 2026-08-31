@@ -30,6 +30,9 @@ get` prints it back unmasked). Keep configs with real credentials out of
 public repositories; each client has an environment-variable form for
 that.
 
+For a localized, ready-to-paste setup prompt, open the MCP panel in
+`kronika-web`'s top bar and choose the client there.
+
 ## Claude Code
 
 Verified live on v2.1.228. Native remote HTTP support exists since v1.0.27.
@@ -69,20 +72,6 @@ credential out of the file, write
 `KRONIKA_BASIC=<BASE64>` before launching — `${VAR}` and `${VAR:-default}`
 expand inside `url` and `headers`.
 
-A prompt that makes a running Claude Code session connect itself —
-substitute the three placeholders and paste it into the chat:
-
-```text
-Add the Kronika MCP server to my Claude Code configuration. Run:
-
-claude mcp add --transport http --scope user kronika <URL> \
-  --header "Authorization: Basic $(printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n')"
-
-Then run `claude mcp list` and confirm the kronika entry reports
-"Connected". Its tools appear in my next session; kronika_get_context
-is the entry point.
-```
-
 Claude Desktop's custom-connector UI rejects non-`https://` URLs (issue
 anthropics/claude-ai-mcp#9, closed as not planned) — use the
 [mcp-remote bridge](#fallback-the-mcp-remote-bridge) there.
@@ -112,25 +101,6 @@ with `KRONIKA_AUTH="Basic <BASE64>"` exported in the environment Codex is
 launched from. `codex mcp add kronika --url <URL>` scaffolds the entry but
 has no header flag — add `http_headers` by hand. `--bearer-token-env-var`
 cannot express Basic auth: it always sends `Bearer <token>`.
-
-A prompt that makes a running Codex session connect itself — substitute
-the placeholders and paste it into the chat:
-
-```text
-Add the Kronika MCP server to my Codex configuration: in
-~/.codex/config.toml, replace the whole [mcp_servers.kronika] table if
-one exists, otherwise append
-
-[mcp_servers.kronika]
-url = "<URL>"
-http_headers = { "Authorization" = "Basic <BASE64>" }
-
-where <BASE64> is the output of:
-printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
-
-Then run `codex mcp get kronika` and show me the parsed entry. The
-tools load in my next session; kronika_get_context is the entry point.
-```
 
 Check with `codex mcp get kronika` — it prints the parsed entry with the
 header value masked. In the interactive TUI, the first tool call asks for
@@ -170,31 +140,6 @@ working setup lists the server's tools under Available Tools. This section
 follows the official documentation, not a live run; the headless
 `cursor-agent` CLI has forum-reported bugs ignoring `mcp.json` auth
 headers, so the desktop IDE is the documented path.
-
-A prompt for Cursor's own agent — substitute the placeholders and paste
-it into the chat:
-
-```text
-Create or update .cursor/mcp.json in this project so it contains:
-
-{
-  "mcpServers": {
-    "kronika": {
-      "url": "<URL>",
-      "headers": {
-        "Authorization": "Basic <BASE64>"
-      }
-    }
-  }
-}
-
-where <BASE64> is the output of:
-printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
-
-Merge with any servers already in the file. When done, remind me to
-restart Cursor and enable kronika with its toggle on the Customize
-page; kronika_get_context is the entry point.
-```
 
 ## Fallback: the mcp-remote bridge
 
