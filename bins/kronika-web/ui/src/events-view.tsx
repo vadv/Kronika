@@ -4,7 +4,7 @@ import { Diamond, TriangleAlert } from "lucide-react"
 
 import { acceptResponse, loadEventGroups, type Finding, type HourData } from "./api"
 import { useDisplayTime } from "./display-time-context"
-import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
+import { EventTierSection, MinuteStrip, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
 import { MINUTE_COLUMNS, type EventEntry } from "./events-groups"
 import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
@@ -371,7 +371,13 @@ export function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFindin
         </small>
       </span>
       <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(group.findings.length, locale)}</span>
-      <span className="max-[760px]:hidden"><MarkStrip group={group} hour={hour} onCursor={onCursor} t={t} /></span>
+      <span className="max-[760px]:hidden"><MinuteStrip
+        fill={group.kind === "spike" ? "fill-warn" : "fill-bad"}
+        hour={hour}
+        minutes={group.minutes}
+        onCursor={onCursor}
+        t={t}
+      /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]">
@@ -391,41 +397,6 @@ export function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFindin
       {group.findings.length > shown && <button className="mt-1.5 cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" onClick={() => setShown((current) => current + MARK_ROWS)} type="button">{t("events.marks.more", { count: group.findings.length - shown })}</button>}
     </div>}
   </div>
-}
-
-function MarkStrip({ group, hour, onCursor, t }: {
-  readonly group: MarkGroup
-  readonly hour: number
-  readonly onCursor: (timestamp: number) => void
-  readonly t: Translate
-}) {
-  const peak = Math.max(...group.minutes, 1)
-  const columns = group.minutes.length
-  return <button
-    aria-label={t("events.strip")}
-    className="block h-[24px] w-[120px] flex-none cursor-pointer rounded-[var(--radius-xs)] border-0 bg-transparent p-0 transition-colors hover:bg-s2"
-    onClick={(event) => {
-      event.stopPropagation()
-      const bounds = event.currentTarget.getBoundingClientRect()
-      const minute = Math.min(columns - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
-      onCursor(hour + minute * 60_000_000)
-    }}
-    tabIndex={-1}
-    type="button"
-  >
-    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 24`}>
-      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="23.5" y2="23.5" />
-      {group.minutes.map((count, minute) => count === 0 ? null : <rect
-        className={group.kind === "spike" ? "fill-warn" : "fill-bad"}
-        height={Math.max(2, Math.round((count / peak) * 21))}
-        key={minute}
-        rx="0.5"
-        width="1.6"
-        x={minute * 2 + 0.2}
-        y={23 - Math.max(2, Math.round((count / peak) * 21))}
-      />)}
-    </svg>
-  </button>
 }
 
 export function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {

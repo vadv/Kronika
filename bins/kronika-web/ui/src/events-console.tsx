@@ -143,19 +143,20 @@ export function entryChips(entry: EventEntry, t: Translate, locale: Locale = "en
   return []
 }
 
-export function EventStrip({ entry, hour, onCursor, t }: {
-  readonly entry: EventEntry
+export function MinuteStrip({ fill, hour, minutes, onCursor, t, testId }: {
+  readonly fill: string
   readonly hour: number
+  readonly minutes: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly t: Translate
+  readonly testId?: string
 }) {
-  const peak = Math.max(...entry.minutes, 1)
-  const columns = entry.minutes.length
-  const fill = entry.tier === "critical" ? "fill-bad" : "fill-accent3"
+  const peak = Math.max(...minutes, 1)
+  const columns = minutes.length
   return <button
     aria-label={t("events.strip")}
     className="block h-[24px] w-[120px] flex-none cursor-pointer rounded-[var(--radius-xs)] border-0 bg-transparent p-0 transition-colors hover:bg-s2"
-    data-testid="event-strip"
+    data-testid={testId}
     onClick={(event) => {
       event.stopPropagation()
       const bounds = event.currentTarget.getBoundingClientRect()
@@ -167,7 +168,7 @@ export function EventStrip({ entry, hour, onCursor, t }: {
   >
     <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 24`}>
       <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="23.5" y2="23.5" />
-      {entry.minutes.map((count, minute) => count === 0 ? null : <rect
+      {minutes.map((count, minute) => count === 0 ? null : <rect
         className={fill}
         height={Math.max(2, Math.round((count / peak) * 21))}
         key={minute}
@@ -233,7 +234,14 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
         </span>
       </span>
       <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(entry.count, locale)}</span>
-      <span className="max-[760px]:hidden"><EventStrip entry={entry} hour={hour} onCursor={onCursor} t={t} /></span>
+      <span className="max-[760px]:hidden"><MinuteStrip
+        fill={entry.tier === "critical" ? "fill-bad" : "fill-accent3"}
+        hour={hour}
+        minutes={entry.minutes}
+        onCursor={onCursor}
+        t={t}
+        testId="event-strip"
+      /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <EventEntryDetail
