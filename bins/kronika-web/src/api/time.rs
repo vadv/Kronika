@@ -8,9 +8,11 @@ pub(crate) struct TimeRange {
 }
 
 impl TimeRange {
-    pub(crate) const fn new(from: i64, to_exclusive: i64) -> Result<Self, ReversedTimeRange> {
+    pub(crate) fn new(from: i64, to_exclusive: i64) -> Result<Self, String> {
         if from > to_exclusive {
-            return Err(ReversedTimeRange { from, to_exclusive });
+            return Err(format!(
+                "from ({from}) must not be after to ({to_exclusive})"
+            ));
         }
         Ok(Self { from, to_exclusive })
     }
@@ -24,7 +26,7 @@ impl TimeRange {
                 "window too wide: to - from is {width} microseconds, the limit is {max_width} microseconds"
             ));
         }
-        Self::new(from, to_exclusive).map_err(|error| error.to_string())
+        Self::new(from, to_exclusive)
     }
 
     pub(crate) const fn contains(self, timestamp: i64) -> bool {
@@ -42,24 +44,6 @@ pub(crate) enum SnapshotPoint {
     LatestRecorded,
     At(i64),
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReversedTimeRange {
-    from: i64,
-    to_exclusive: i64,
-}
-
-impl std::fmt::Display for ReversedTimeRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "from ({}) must not be after to ({})",
-            self.from, self.to_exclusive
-        )
-    }
-}
-
-impl std::error::Error for ReversedTimeRange {}
 
 #[cfg(test)]
 mod tests;

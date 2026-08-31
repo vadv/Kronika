@@ -651,17 +651,7 @@ fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
 }
 
 fn owned_bounds<R: RangeBounds<i64>>(range: &R) -> (Bound<i64>, Bound<i64>) {
-    let start = match range.start_bound() {
-        Bound::Included(value) => Bound::Included(*value),
-        Bound::Excluded(value) => Bound::Excluded(*value),
-        Bound::Unbounded => Bound::Unbounded,
-    };
-    let end = match range.end_bound() {
-        Bound::Included(value) => Bound::Included(*value),
-        Bound::Excluded(value) => Bound::Excluded(*value),
-        Bound::Unbounded => Bound::Unbounded,
-    };
-    (start, end)
+    (range.start_bound().cloned(), range.end_bound().cloned())
 }
 
 #[cfg(test)]
