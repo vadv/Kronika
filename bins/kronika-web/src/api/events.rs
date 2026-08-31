@@ -367,6 +367,7 @@ pub(crate) struct EventGroup {
     pub(crate) count: f64,
     pub(crate) first_ts: i64,
     pub(crate) last_ts: i64,
+    pub(crate) representative_ts: i64,
     pub(crate) minutes: Vec<f64>,
     pub(crate) stat: EventStat,
     #[serde(rename = "detail_locator")]
@@ -560,10 +561,8 @@ impl PreparedEvents {
             return Ok(());
         }
         match result {
-            EventsResult::Groups { groups, .. } => emit_items("event_group", groups, emit),
-            EventsResult::Occurrences { occurrences, .. } => {
-                emit_items("event_occurrence", occurrences, emit)
-            }
+            EventsResult::Groups { groups, .. } => emit_groups(groups, emit),
+            EventsResult::Occurrences { occurrences, .. } => emit_occurrences(occurrences, emit),
         }
     }
 }
@@ -578,7 +577,7 @@ fn validate_locator_uniqueness(
             let identity = serde_json::to_string(&row.identity)?;
             if !seen.insert((row.segment_id, row.type_id, row.timestamp, identity)) {
                 return Err(ApiError::BadLocator(format!(
-                    "cannot emit detail_locator: {} has a non-unique identity at timestamp {} in segment {}",
+                    "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
                     source.as_str(),
                     row.timestamp,
                     row.segment_id,
@@ -589,25 +588,55 @@ fn validate_locator_uniqueness(
     Ok(())
 }
 
-fn emit_items<T: Serialize>(
-    record_name: &str,
-    items: Vec<T>,
+fn emit_groups(
+    groups: Vec<EventGroup>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
 ) -> Result<(), ApiError> {
-    for item in items {
-        let mut value = serde_json::to_value(item)?;
-        let Value::Object(ref mut object) = value else {
-            return Err(ApiError::Unreadable(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "event item did not serialize as an object",
-            ))));
-        };
-        object.insert("record".to_owned(), json!(record_name));
+    for group in groups {
+        let value = public_item("event_group", &group, &group.detail_locator)?;
         if !emit(record(value)?) {
             break;
         }
     }
     Ok(())
+}
+
+fn emit_occurrences(
+    occurrences: Vec<EventOccurrence>,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+) -> Result<(), ApiError> {
+    for occurrence in occurrences {
+        let value = public_item("event_occurrence", &occurrence, &occurrence.detail_locator)?;
+        if !emit(record(value)?) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn public_item<T: Serialize>(
+    record_name: &str,
+    item: &T,
+    locator: &DetailLocator,
+) -> Result<Value, ApiError> {
+    let mut value = serde_json::to_value(item)?;
+    let Value::Object(ref mut object) = value else {
+        return Err(ApiError::Unreadable(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "event item did not serialize as an object",
+        ))));
+    };
+    if object.remove("detail_locator").is_none() {
+        return Err(ApiError::BadLocator(
+            "event item has no detail locator".to_owned(),
+        ));
+    }
+    object.insert(
+        "detail_ref".to_owned(),
+        Value::String(locator.detail_ref().map_err(ApiError::BadLocator)?),
+    );
+    object.insert("record".to_owned(), json!(record_name));
+    Ok(value)
 }
 
 fn carries_selected(segment: &SegmentRef, sources: &[EventSource], settings: bool) -> bool {

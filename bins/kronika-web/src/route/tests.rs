@@ -726,6 +726,33 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
 }
 
 #[test]
+fn row_detail_accepts_one_bounded_opaque_reference() {
+    assert_eq!(
+        parse("/api/row-detail", Some("detail_ref=opaque_-ref")),
+        Ok(Route::RowDetail("opaque_-ref".to_owned()))
+    );
+    for query in ["", "detail_ref=", "detail_ref=one&detail_ref=two"] {
+        assert_eq!(
+            parse("/api/row-detail", Some(query)),
+            Err(RouteError::BadParameter("detail_ref".to_owned())),
+            "{query}",
+        );
+    }
+    assert_eq!(
+        parse("/api/row-detail", Some("detail_ref=one&segment_id=7")),
+        Err(RouteError::BadParameter("segment_id".to_owned()))
+    );
+    let oversized = format!(
+        "detail_ref={}",
+        "A".repeat(crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES + 1)
+    );
+    assert_eq!(
+        parse("/api/row-detail", Some(&oversized)),
+        Err(RouteError::BadParameter("detail_ref".to_owned()))
+    );
+}
+
+#[test]
 fn the_directly_answered_api_routes_take_no_query() {
     assert_eq!(parse("/api/mcp-access", None), Ok(Route::McpAccess));
     assert_eq!(parse("/api/instance-label", None), Ok(Route::InstanceLabel));

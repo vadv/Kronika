@@ -4,6 +4,7 @@ use crate::api::events::{
     EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
 };
 pub(crate) use crate::api::heatmap::HeatmapRequest;
+use crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES;
 use crate::api::time::TimeRange;
 
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -41,6 +42,8 @@ pub(crate) enum Route {
     Heatmap(HeatmapRequest),
     /// Recorded event groups or physical occurrences over one window.
     Events(EventsQuery),
+    /// One exact stored row addressed by an opaque reference.
+    RowDetail(String),
     /// The MCP connection material for the authenticated operator.
     McpAccess,
     /// The largest recorded database, naming the instance.
@@ -203,6 +206,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
     if path == "/api/events" {
         return parse_events(query).map(Route::Events);
+    }
+    if path == "/api/row-detail" {
+        return parse_row_detail(query).map(Route::RowDetail);
     }
     if path == "/api/mcp-access" {
         if !query.is_empty() {
@@ -548,6 +554,25 @@ fn parse_events(query: &str) -> Result<EventsQuery, RouteError> {
             RouteError::BadParameter("source".to_owned())
         }
     })
+}
+
+fn parse_row_detail(query: &str) -> Result<String, RouteError> {
+    let mut detail_ref = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "detail_ref"
+                if detail_ref.is_none()
+                    && !value.is_empty()
+                    && value.len() <= DETAIL_REF_MAX_ENCODED_BYTES =>
+            {
+                detail_ref = Some(value);
+            }
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    detail_ref.ok_or_else(|| RouteError::BadParameter("detail_ref".to_owned()))
 }
 
 fn bounded(name: &str, value: &str, cap: usize) -> Result<usize, RouteError> {

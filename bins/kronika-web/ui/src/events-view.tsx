@@ -158,12 +158,18 @@ export function EventsView({
       </header>
       {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} marks={markGroups} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
+      {events.truncated && <EventsIncompleteNotice locale={locale} t={t} />}
       <div className={`${digest === MARKS_TILE ? "" : "max-[520px]:min-h-0 min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
         {digest === MARKS_TILE && <p className="table-empty" role="status">{t("events.marks.only")}</p>}
         {digest !== MARKS_TILE && <>
         {visible === null && events.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
         {visible === null && !events.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
-        {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
+        {visible !== null && visible.length === 0 && <EventsEmptyState
+          filtered={pattern !== "" || scope !== null}
+          onClear={() => { onPattern(""); onShowAll() }}
+          t={t}
+          truncated={events.truncated}
+        />}
         {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
           entries={tierEntries}
           expandedKey={expandedKey}
@@ -180,6 +186,26 @@ export function EventsView({
       </div>
     </section>
   </>
+}
+
+export function EventsIncompleteNotice({ locale, t }: {
+  readonly locale: Locale
+  readonly t: Translate
+}) {
+  return <p className="m-0 border-b border-line2 bg-warn/10 px-[9px] py-2 text-xs leading-[1.45] text-warn" data-testid="events-truncated" role="status">
+    {t("events.console.truncated", { limit: new Intl.NumberFormat(locale).format(5000) })}
+  </p>
+}
+
+export function EventsEmptyState({ filtered, onClear, t, truncated }: {
+  readonly filtered: boolean
+  readonly onClear: () => void
+  readonly t: Translate
+  readonly truncated: boolean
+}) {
+  return <div className="table-empty flex items-center gap-2.5">{filtered
+    ? <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={onClear} type="button">{t("filter.clear")}</button></>
+    : t(truncated ? "events.console.truncated_none" : "events.console.empty")}</div>
 }
 
 interface DigestTile {
@@ -403,9 +429,9 @@ function MarkStrip({ group, hour, onCursor, t }: {
 }
 
 export function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
-  return entries.find((entry) => entry.detailLocator.segment_id === finding.segmentId
-    && entry.detailLocator.type_id === finding.typeId
-    && entry.detailLocator.row_ordinal === finding.rowOrdinal) ?? null
+  const matches = entries.filter((entry) => entry.section === finding.logicalName
+    && entry.representativeTs === finding.timestamp)
+  return matches.length === 1 ? matches[0] ?? null : null
 }
 
 export function entryInScope(entry: EventEntry, scope: readonly Finding[]): boolean {
@@ -415,6 +441,7 @@ export function entryInScope(entry: EventEntry, scope: readonly Finding[]): bool
 interface StreamState {
   readonly key: string
   readonly rows: readonly EventEntry[] | null
+  readonly truncated: boolean
   readonly loading: boolean
   readonly failed: boolean
 }
@@ -427,11 +454,11 @@ function useEventGroups(data: HourData, hour: number, revision: number, onReady:
     .filter((source) => data.availableSections.includes(source))
     .join(",")
   const key = `${hour}:${wanted}`
-  const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false, failed: false })
+  const [state, setState] = useState<StreamState>({ key: "", rows: null, truncated: false, loading: false, failed: false })
   const lastRead = useRef({ key: "", at: 0 })
   useEffect(() => {
     if (wanted === "") {
-      setState({ key, rows: [], loading: false, failed: false })
+      setState({ key, rows: [], truncated: false, loading: false, failed: false })
       onReady()
       return
     }
@@ -440,16 +467,17 @@ function useEventGroups(data: HourData, hour: number, revision: number, onReady:
     lastRead.current = { key, at: now }
     setState((current) => current.key === key
       ? { ...current, loading: true }
-      : { key, rows: null, loading: true, failed: false })
+      : { key, rows: null, truncated: false, loading: true, failed: false })
     const controller = new AbortController()
     const load = loadEventGroups(hour, wanted.split(","), controller.signal)
     acceptResponse(
       load,
       controller.signal,
-      (rows) => {
+      (result) => {
         setState({
           key,
-          rows,
+          rows: result.rows,
+          truncated: result.truncated,
           loading: false,
           failed: false,
         })

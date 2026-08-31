@@ -13,15 +13,6 @@ export type EventStat =
   | { readonly kind: "pg.lifecycle"; readonly lifecycle: number; readonly pid: number | null; readonly signal: number | null; readonly mode: string | null }
   | { readonly kind: "pgbouncer.events"; readonly level: number; readonly database: string | null }
 
-export interface DetailLocator {
-  readonly section: string
-  readonly segment_id: string
-  readonly at: string
-  readonly type_id: string
-  readonly row_ordinal: string
-  readonly identity: Readonly<Record<string, unknown>>
-}
-
 export interface EventEntry {
   readonly key: string
   readonly section: string
@@ -32,5 +23,6 @@ export interface EventEntry {
   readonly lastTs: number
   readonly minutes: readonly number[]
   readonly stat: EventStat
-  readonly detailLocator: DetailLocator
+  readonly detailRef: string
+  readonly representativeTs: number
 }

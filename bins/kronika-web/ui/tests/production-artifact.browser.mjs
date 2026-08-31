@@ -28,6 +28,8 @@ const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
 const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 const SLOW_PATTERN = 'SELECT "bulkoperations_bulktask"."id" FROM "bulkoperations_bulktask" WHERE "bulkoperations_bulktask"."status" = ? AND "bulkoperations_bulktask"."tenant_partition_with_a_deliberately_long_identifier" = ?'
+const SLOW_DETAIL_REF = "evt_01K3K7NE2W4VQ9HAG6YCTB8RFS"
+const SLOW_STORED_TEXT = `${SLOW_PATTERN} /* exact representative occurrence */`
 
 
 const ZONE_VALUE = `document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value")`
@@ -2372,13 +2374,14 @@ test("the minified artifact restores and clears its opaque browser session", { t
   }
 })
 
-test("the slow-query group keeps readable compact labels and human event time", { timeout: 60_000 }, async () => {
+test("the slow-query group loads one opaque representative detail and preserves incomplete results", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: false }
   const requests = []
+  let heldDetail = null
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
-    requests.push(url)
+    requests.push(requestRecord(request, url))
     if (url.pathname === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       response.end(html)
@@ -2404,6 +2407,10 @@ test("the slow-query group keeps readable compact labels and human event time", 
     }
     if (url.pathname === "/api/events") {
       ndjson(response, slowQueryEventRecords())
+      return
+    }
+    if (url.pathname === "/api/row-detail") {
+      heldDetail = response
       return
     }
     if (url.pathname === "/api/hour") {
@@ -2435,13 +2442,37 @@ test("the slow-query group keeps readable compact labels and human event time", 
     trackPage(socket, origin, page)
     await enablePage(cdp)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 1280 })
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
+    const initialAt = EVENT_SCOPE_AT
+    const matchingFind = "source:pg_log_slow_queries"
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${initialAt}&view=events&find=${encodeURIComponent(matchingFind)}` })
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
     await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the slow-query entry")
     await cdp.waitFor(`document.querySelector('[data-marker-count="2"]') !== null`, "the non-representative event marker")
-    await cdp.evaluate(`document.querySelector('[data-marker-count="2"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the non-representative event scope")
+    await cdp.waitFor(`document.querySelector('[data-testid="events-truncated"]') !== null`, "the incomplete Events notice")
+    await waitForRequests(() => requests.filter(({ path }) => path.startsWith("/api/")).length >= 4)
+    await delay(200)
+
+    const initialApi = requests.filter(({ path }) => path.startsWith("/api/"))
+    assert.equal(initialApi.length, 4, JSON.stringify(initialApi, null, 2))
+    assert.equal(initialApi.filter(({ path }) => path === "/api/events").length, 1)
+    assert.equal(initialApi.filter(({ path }) => path === "/api/row-detail").length, 0)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="events-console"]').textContent.includes(${JSON.stringify(SLOW_STORED_TEXT)})`), false)
+    assert.deepEqual(await cdp.evaluate(`(() => {
+      const url = new URL(location.href)
+      return { at: url.searchParams.get("at"), find: url.searchParams.get("find"), view: url.searchParams.get("view") }
+    })()`), { at: String(initialAt), find: matchingFind, view: "events" })
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /result is incomplete/)
+
+    const pressEnter = async () => {
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", nativeVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", nativeVirtualKeyCode: 13, windowsVirtualKeyCode: 13 })
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').focus()`)
+    await pressEnter()
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-facts"]') !== null`, "the keyboard-expanded slow-query group")
+    assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 0)
+
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await settleLayout(cdp)
     const title = await cdp.evaluate(`document.querySelector('[data-testid="event-entry-title"]').textContent`)
@@ -2450,8 +2481,7 @@ test("the slow-query group keeps readable compact labels and human event time", 
     assert.match(entryText, /3 раз/)
     assert.match(entryText, /6,29 с/)
     assert.match(entryText, /12,6 с/)
-    await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-facts"]') !== null`, "the slow-query expansion")
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /результат неполный/)
     await settleLayout(cdp)
 
     const landscape = await cdp.evaluate(expansionGeometryExpression())
@@ -2467,17 +2497,96 @@ test("the slow-query group keeps readable compact labels and human event time", 
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"]') === null`), true)
 
+    await cdp.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="event-representative-detail"]')
+      window.__eventRepresentativeButton = button
+      button.focus()
+    })()`)
+    await pressEnter()
+    await waitForRequests(() => requests.some(({ path }) => path === "/api/row-detail"))
+    await cdp.waitFor(`document.querySelector('[data-testid="event-representative-detail"]')?.dataset.detailStatus === "loading"`, "the held representative detail")
+    const detailRequests = requests.filter(({ path }) => path === "/api/row-detail")
+    assert.equal(detailRequests.length, 1)
+    assert.equal(detailRequests[0]?.method, "GET")
+    const detailQuery = new URLSearchParams(detailRequests[0]?.query)
+    assert.deepEqual([...detailQuery.keys()], ["detail_ref"])
+    assert.equal(detailQuery.get("detail_ref"), SLOW_DETAIL_REF)
+    assert.deepEqual(await cdp.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="event-representative-detail"]')
+      const url = new URL(location.href)
+      return {
+        ariaDisabled: button.getAttribute("aria-disabled"),
+        at: url.searchParams.get("at"),
+        busy: button.getAttribute("aria-busy"),
+        disabled: button.disabled,
+        focused: document.activeElement === button,
+        sameButton: window.__eventRepresentativeButton === button,
+        status: button.dataset.detailStatus,
+      }
+    })()`), { ariaDisabled: "true", at: String(initialAt), busy: "true", disabled: false, focused: true, sameButton: true, status: "loading" })
+
+    ndjson(heldDetail, slowQueryDetailRecords())
+    heldDetail = null
+    await cdp.waitFor(`document.querySelector('[data-testid="event-representative-detail"]')?.dataset.detailStatus === "loaded"`, "the representative detail")
+    assert.deepEqual(await cdp.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="event-representative-detail"]')
+      const occurrence = document.querySelector('[data-testid="event-representative-occurrence"]')
+      const url = new URL(location.href)
+      return {
+        at: url.searchParams.get("at"),
+        focused: document.activeElement === button,
+        sameButton: window.__eventRepresentativeButton === button,
+        storedText: occurrence.querySelector("pre").textContent,
+      }
+    })()`), { at: String(initialAt), focused: true, sameButton: true, storedText: SLOW_STORED_TEXT })
+
+    await cdp.evaluate(`document.querySelector('[data-testid="event-entry"] > button').focus()`)
+    await pressEnter()
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-detail"]') === null`, "the collapsed slow-query group")
+    await pressEnter()
+    await cdp.waitFor(`document.querySelector('[data-testid="event-representative-detail"]')?.dataset.detailStatus === "loaded"`, "the cached representative detail")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-representative-detail"]')?.textContent.includes("Go to recorded time") === true`, "the English cached detail")
+    assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 1)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="event-representative-detail"]').focus()`)
+    await pressEnter()
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === ${JSON.stringify(String(AT))}`, "the exact representative timestamp")
+    assert.deepEqual(await cdp.evaluate(`(() => {
+      const url = new URL(location.href)
+      return { at: url.searchParams.get("at"), find: url.searchParams.get("find"), view: url.searchParams.get("view") }
+    })()`), { at: String(AT), find: matchingFind, view: "events" })
+    assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 1)
+
+    await cdp.evaluate(`document.querySelector('[data-marker-count="2"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the non-representative event scope")
+
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
     const narrow = await cdp.evaluate(expansionGeometryExpression())
     assert.equal(narrow.innerWidth, 480)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
     assert.equal(narrow.chips.every(({ gap, sameRow }) => sameRow && gap >= 0 && gap <= 12), true, JSON.stringify(narrow.chips))
-    assert.equal(requests.filter((url) => url.pathname === "/api/events").length, 1)
-    assert.equal(requests.filter((url) => url.pathname === "/api/hour" && url.searchParams.has("section")).length, 0)
+
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 1280 })
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="events-console"] input[type="search"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "text:never-present")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "text:never-present" && document.querySelector('[data-testid="event-entry"]') === null`, "the filtered incomplete Events result")
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /результат неполный/)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /result is incomplete/)
+    assert.equal(requests.filter(({ path }) => path === "/api/events").length, 1)
+    assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("section")).length, 0)
+    assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 1)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
+    heldDetail?.destroy()
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
@@ -4326,7 +4435,7 @@ function slowQueryEventRecords() {
   minutes[Math.floor((AT - HOUR) / 60_000_000)] = 1
   minutes[Math.floor((EVENT_SCOPE_AT - HOUR) / 60_000_000)] = 2
   return [
-    { record: "events", representation: "groups", truncated: false },
+    { record: "events", representation: "groups", truncated: true },
     {
       record: "event_group",
       key: `slow:${SLOW_PATTERN}`,
@@ -4338,12 +4447,26 @@ function slowQueryEventRecords() {
       lastTs: EVENT_SCOPE_AFTER,
       minutes,
       stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
-      detail_locator: {
-        section: "pg_log_slow_queries", segment_id: SEGMENT, at: String(AT),
-        type_id: "2004001", row_ordinal: "3", identity: { pattern: SLOW_PATTERN },
-      },
+      detail_ref: SLOW_DETAIL_REF,
+      representativeTs: AT,
     },
   ]
+}
+
+function slowQueryDetailRecords() {
+  return [{
+    record: "row_detail",
+    section: "pg_log_slow_queries",
+    at: String(AT),
+    fields: {
+      sample: {
+        stored_text: SLOW_STORED_TEXT,
+        full_len: String(SLOW_STORED_TEXT.length),
+        truncated: false,
+        sha256: null,
+      },
+    },
+  }]
 }
 
 function expansionGeometryExpression() {

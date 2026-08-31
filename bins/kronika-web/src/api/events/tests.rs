@@ -364,6 +364,40 @@ fn en_us_key_order_matches_the_javascript_locale_compare_golden() {
 }
 
 #[test]
+fn canonically_equal_event_keys_use_lexical_secondary_order() {
+    let collator = event_collator().expect("compiled en-US collation data");
+    assert_eq!(collator.compare("á", "a\u{301}"), std::cmp::Ordering::Equal);
+
+    let entries = grouped(HashMap::from([(
+        EventSource::Errors,
+        vec![
+            row(
+                7,
+                4,
+                json!({ "severity": 0, "category": 1, "pattern": "á", "count": 1 }),
+            ),
+            row(
+                8,
+                4,
+                json!({ "severity": 0, "category": 1, "pattern": "a\u{301}", "count": 1 }),
+            ),
+        ],
+    )]));
+
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (
+                entry.label.as_deref().expect("error pattern"),
+                entry.detail_locator.row_ordinal,
+                entry.count,
+            ))
+            .collect::<Vec<_>>(),
+        [("a\u{301}", 8, 1.0), ("á", 7, 1.0)]
+    );
+}
+
+#[test]
 fn normalization_defaults_deduplicates_and_rejects_temp_files_for_groups() {
     let range = TimeRange {
         from: HOUR,

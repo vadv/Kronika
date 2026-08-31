@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -8,6 +9,8 @@ import { build } from "esbuild"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 
+import { parseDictionary } from "../scripts/i18n.mjs"
+import { interpolate } from "../src/model.ts"
 import { registryPlugin } from "./import-module.mjs"
 
 const directory = dirname(fileURLToPath(import.meta.url))
@@ -29,7 +32,7 @@ const compiled = await build({
     typeId: "1005004",
   }])],
   stdin: {
-    contents: 'export { entryInScope, entryOf, groupMarks, MarkGroupRow } from "../src/events-view.tsx"',
+    contents: 'export { entryInScope, entryOf, EventsEmptyState, EventsIncompleteNotice, groupMarks, MarkGroupRow } from "../src/events-view.tsx"; export { eventDetailTexts, EventEntryRow } from "../src/events-console.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -50,6 +53,10 @@ const translations = {
 }
 const t = (key) => translations[key] ?? key
 const hour = Date.UTC(2026, 7, 23, 9) * 1_000
+
+function dictionaryTranslate(dictionary) {
+  return (key, slots = {}) => interpolate(dictionary[key] ?? key, slots)
+}
 
 function finding(fieldOrdinal, rowOrdinal = "7") {
   return {
@@ -101,14 +108,8 @@ test("Events groups repeated crossings before rendering metric metadata", () => 
 test("Events scopes compact groups by source without treating one locator as a member list", () => {
   const entry = {
     section: "pg_log_errors",
-    detailLocator: {
-      section: "pg_log_errors",
-      segment_id: "segment-a",
-      at: String(hour),
-      type_id: "2001001",
-      row_ordinal: "1",
-      identity: { pattern: "opaque-17" },
-    },
+    detailRef: "opaque-a",
+    representativeTs: hour,
   }
   const representative = {
     category: null,
@@ -129,4 +130,79 @@ test("Events scopes compact groups by source without treating one locator as a m
   assert.equal(events.entryInScope(entry, [sameSourceThreshold, otherSource, threshold]), false)
   assert.equal(events.entryOf([entry], representative), entry)
   assert.equal(events.entryOf([entry], otherMember), null)
+  assert.equal(events.entryOf([entry, { ...entry, detailRef: "opaque-b" }], representative), null)
+})
+
+test("expanded Events group exposes one keyboard action without embedding stored text", () => {
+  const entry = {
+    key: "error:fixture",
+    section: "pg_log_errors",
+    tier: "notable",
+    label: "fixture pattern",
+    count: 2,
+    firstTs: hour,
+    lastTs: hour,
+    minutes: Array.from({ length: 60 }, (_, index) => index === 0 ? 2 : 0),
+    stat: { kind: "pg.errors", severity: 0, category: 8, sqlstate: "28P01", database: "db", username: "role" },
+    detailRef: "opaque-a",
+    representativeTs: hour,
+  }
+  const originalFetch = globalThis.fetch
+  let fetches = 0
+  globalThis.fetch = async () => {
+    fetches += 1
+    throw new Error("expanded group fetched detail eagerly")
+  }
+  try {
+    const markup = renderToStaticMarkup(createElement(events.EventEntryRow, {
+      entry,
+      expanded: true,
+      hour,
+      locale: "en",
+      onCursor() {},
+      onToggle() {},
+      t,
+    }))
+    assert.match(markup, /data-testid="event-representative-detail"/)
+    assert.match(markup, /type="button"/)
+    assert.doesNotMatch(markup, /exact stored sample/)
+    assert.equal(fetches, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(events.eventDetailTexts({
+    sample: { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null },
+    count: "2",
+  }), [{ field: "sample", fullLen: "19", storedText: "exact stored sample", truncated: false }])
+})
+
+test("Events keeps the localized incomplete notice beside a filtered zero state", async () => {
+  const dictionaries = await Promise.all(["en", "ru"].map(async (locale) => parseDictionary(
+    await readFile(new URL(`../i18n/${locale}.yaml`, import.meta.url), "utf8"),
+    `${locale}.yaml`,
+  )))
+  const expected = [
+    "Only the first 5,000 groups are available; this result is incomplete.",
+    "Доступны только первые 5 000 групп; результат неполный.",
+  ]
+  for (const [index, locale] of ["en", "ru"].entries()) {
+    const translate = dictionaryTranslate(dictionaries[index])
+    const markup = renderToStaticMarkup(createElement("section", null,
+      createElement(events.EventsIncompleteNotice, { locale, t: translate }),
+      createElement(events.EventsEmptyState, { filtered: true, onClear() {}, t: translate, truncated: true }),
+    ))
+    assert.match(markup, /data-testid="events-truncated"/)
+    assert.ok(markup.includes(expected[index]))
+    assert.ok(markup.includes(dictionaries[index]["filter.none"]))
+    assert.match(markup, /data-testid="events-clear-filter"/)
+
+    const unfiltered = renderToStaticMarkup(createElement(events.EventsEmptyState, {
+      filtered: false,
+      onClear() {},
+      t: translate,
+      truncated: true,
+    }))
+    assert.ok(unfiltered.includes(dictionaries[index]["events.console.truncated_none"]))
+  }
 })

@@ -8,7 +8,7 @@ import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
-import type { DetailLocator, EventEntry, EventStat, EventTier } from "./events-groups"
+import type { EventEntry, EventStat, EventTier } from "./events-groups"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -526,7 +526,7 @@ export async function loadEventGroups(
   selectedHour: number,
   sources: readonly string[],
   signal: AbortSignal,
-): Promise<readonly EventEntry[]> {
+): Promise<{ readonly rows: readonly EventEntry[]; readonly truncated: boolean }> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
   const query = [
@@ -542,7 +542,7 @@ export async function loadEventGroups(
     throw new Error("events header is invalid")
   }
   if (items.some((record) => record.record !== "event_group")) throw new Error("events item is invalid")
-  return items.map(eventGroup)
+  return { rows: items.map(eventGroup), truncated: header["truncated"] }
 }
 
 function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
@@ -550,6 +550,8 @@ function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
   if (tier !== "critical" && tier !== "notable" && tier !== "routine") throw new Error("event tier is invalid")
   const minutes = numberArray(record["minutes"], "event minutes")
   if (minutes.length !== 60) throw new Error("event minutes are invalid")
+  const detailRef = record["detail_ref"]
+  if (typeof detailRef !== "string" || detailRef === "") throw new Error("event detail reference is invalid")
   return {
     key: requiredText(record["key"], "event key"),
     section: requiredText(record["section"], "event section"),
@@ -560,19 +562,31 @@ function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
     lastTs: integer(record["lastTs"], "event last timestamp"),
     minutes,
     stat: eventStat(record["stat"]),
-    detailLocator: detailLocator(record["detail_locator"]),
+    detailRef,
+    representativeTs: integer(record["representativeTs"], "event representative timestamp"),
   }
 }
 
-function detailLocator(value: unknown): DetailLocator {
-  const locator = strictRecord(value, "event detail locator")
+export interface EventRowDetail {
+  readonly section: string
+  readonly at: number
+  readonly fields: Readonly<Record<string, Cell>>
+}
+
+export async function loadEventRowDetail(detailRef: string, signal: AbortSignal): Promise<EventRowDetail> {
+  signal.throwIfAborted()
+  const path = `/api/row-detail?detail_ref=${encodeURIComponent(detailRef)}`
+  const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${path}`)
+  const records = await readNdjson(response, path, signal)
+  const [record] = records
+  if (records.length !== 1 || record?.record !== "row_detail") throw new Error("event row detail is invalid")
+  const fields = strictRecord(record["fields"], "event row detail fields")
+  if (!Object.values(fields).every(validCell)) throw new Error("event row detail field is invalid")
   return {
-    section: requiredText(locator["section"], "event detail section"),
-    segment_id: requiredText(locator["segment_id"], "event detail segment id"),
-    at: requiredText(locator["at"], "event detail timestamp"),
-    type_id: requiredText(locator["type_id"], "event detail type id"),
-    row_ordinal: requiredText(locator["row_ordinal"], "event detail row ordinal"),
-    identity: strictRecord(locator["identity"], "event detail identity"),
+    section: requiredText(record["section"], "event row detail section"),
+    at: integer(record["at"], "event row detail timestamp"),
+    fields: fields as Readonly<Record<string, Cell>>,
   }
 }
 

@@ -626,20 +626,16 @@ test("event groups use one half-open request and validate the server-owned shape
   const originalFetch = globalThis.fetch
   let request: URL | null = null
   const minutes = Array.from({ length: 60 }, () => 0)
-  const identity = { pattern: "opaque-17", tuple: ["1", "2"] }
   minutes[3] = 2
   globalThis.fetch = async (input) => {
     request = new URL(String(input), "http://kronika.invalid")
     return ndjson([
-      { record: "events", representation: "groups", truncated: false },
+      { record: "events", representation: "groups", truncated: true },
       {
         record: "event_group", key: "slow:select ?", section: "pg_log_slow_queries", tier: "notable",
         label: "select ?", count: 2, firstTs: START + 180_000_000, lastTs: START + 180_000_000,
         minutes, stat: { kind: "pg.slow", maxMs: 800, totalMs: 1_200, thresholdMs: 500 },
-        detail_locator: {
-          section: "pg_log_slow_queries", segment_id: "7", at: String(START + 180_000_000),
-          type_id: "2004001", row_ordinal: "3", identity,
-        },
+        detail_ref: "opaque-ref", representativeTs: START + 180_000_000,
       },
     ])
   }
@@ -655,26 +651,65 @@ test("event groups use one half-open request and validate the server-owned shape
     assert.equal(request?.searchParams.get("representation"), "groups")
     assert.equal(request?.searchParams.get("limit"), "5000")
     assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
-    assert.equal(groups[0]?.stat.kind, "pg.slow")
-    assert.equal(groups[0]?.label, "select ?")
-    assert.equal(groups[0]?.detailLocator.row_ordinal, "3")
-    assert.deepEqual(groups[0]?.detailLocator.identity, identity)
+    assert.equal(groups.truncated, true)
+    assert.equal(groups.rows[0]?.stat.kind, "pg.slow")
+    assert.equal(groups.rows[0]?.label, "select ?")
+    assert.equal(groups.rows[0]?.detailRef, "opaque-ref")
+    assert.equal(groups.rows[0]?.representativeTs, START + 180_000_000)
 
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
       {
         record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
         count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
-        detail_locator: {
-          section: "pg_log_errors", segment_id: "7", at: String(START),
-          type_id: "2001001", row_ordinal: "1",
-        },
+        detail_ref: "", representativeTs: START,
       },
     ])
     await assert.rejects(
       api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
-      /event detail identity/,
+      /event detail reference/,
     )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("event representative detail uses one opaque bounded request", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const requested: URL[] = []
+  globalThis.fetch = async (input) => {
+    requested.push(new URL(String(input), "http://kronika.invalid"))
+    return ndjson([{
+      record: "row_detail",
+      section: "pg_log_errors",
+      at: START + 180_000_000,
+      fields: {
+        sample: { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null },
+      },
+    }])
+  }
+  try {
+    const detail = await api.loadEventRowDetail("opaque+/= ref", new AbortController().signal)
+    assert.equal(requested.length, 1)
+    assert.equal(requested[0]?.pathname, "/api/row-detail")
+    assert.equal(requested[0]?.searchParams.get("detail_ref"), "opaque+/= ref")
+    assert.deepEqual([...requested[0]?.searchParams.keys() ?? []], ["detail_ref"])
+    assert.equal(detail.section, "pg_log_errors")
+    assert.equal(detail.at, START + 180_000_000)
+    assert.deepEqual(detail.fields.sample, { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null })
+
+    let failedRequests = 0
+    globalThis.fetch = async () => {
+      failedRequests += 1
+      throw new TypeError("detail transport failed")
+    }
+    await assert.rejects(
+      api.loadEventRowDetail("opaque-ref", new AbortController().signal),
+      /detail transport failed/,
+    )
+    assert.equal(failedRequests, 1)
   } finally {
     globalThis.fetch = originalFetch
   }

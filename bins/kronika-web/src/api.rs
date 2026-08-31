@@ -18,6 +18,7 @@ mod hour;
 mod index;
 mod query;
 mod render;
+pub(crate) mod row_detail;
 pub(crate) mod row_key;
 mod rows;
 pub(crate) mod snapshot;
@@ -89,6 +90,7 @@ pub(crate) enum Prepared {
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
     Events(events::PreparedEvents),
+    RowDetail(row_detail::PreparedRowDetail),
     Empty(ResponseMeta),
 }
 
@@ -104,6 +106,7 @@ impl Prepared {
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
             Self::Events(prepared) => prepared.meta(),
+            Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -123,6 +126,7 @@ impl Prepared {
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Events(prepared) => prepared.stream(emit, cancelled),
+            Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -265,6 +269,9 @@ pub(crate) fn prepare_with_demo(
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
         Route::Events(request) => events::prepare(root, request).map(Prepared::Events),
+        Route::RowDetail(detail_ref) => {
+            row_detail::prepare(root, &detail_ref).map(Prepared::RowDetail)
+        }
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }

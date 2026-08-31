@@ -393,9 +393,8 @@ the numeric category only on a `pg_log_errors` locator.
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
 a grouped operator event: it has no finding locator and does not appear in
 grouped Events or on the shared timeline. Events occurrences expose its compact
-structural fields; HTTP retains an internal typed row address, while MCP exposes
-only an opaque `detail_ref`. The complete stored row remains available through
-row detail and ordinary history reads.
+structural fields; HTTP and MCP expose only an opaque `detail_ref`. The complete
+stored row remains available through row detail and ordinary history reads.
 `pgbouncer_events` likewise has no finding locator or timeline mark, but its
 rows do reach grouped Events.
 
@@ -653,24 +652,26 @@ Rust. One executor pins the reader and catalog segment set, opens each selected
 segment once, and reads the selected event sections plus the internal
 `pg_settings` threshold input. It forms complete groups and their global order
 before applying the result limit. `GET /api/events`, the MCP Events tool, and
-the browser share this execution and product ordering. The HTTP result retains
-the browser's internal typed row address; a thin MCP boundary replaces it with
-one server-produced opaque `detail_ref` that the calling model only copies
-unchanged. The browser renders server order and has no second grouping reducer.
+the browser share this execution, product ordering, and server-produced opaque
+`detail_ref`. Neither public transport exposes physical storage coordinates.
+The browser renders server order and has no second grouping reducer.
 
 Each group shows its recorded key, count, per-minute occurrences, first and
 last times, and structural statistics. Groups do not embed sample text or their
 source rows. The separate occurrence representation contains compact
 structural fields and known code labels; it also admits `pg_log_temp_files`,
-which has no grouped representation. HTTP groups and occurrences retain one
-internal typed row address for browser behavior, while their MCP forms expose
-only `detail_ref`. The complete stored row is returned only by row detail. Both
-forms report truncation only when the global limit excludes matching entries
-and have no continuation cursor.
+which has no grouped representation. HTTP and MCP groups and occurrences expose
+only `detail_ref`. The complete stored row is returned only by row detail. The
+browser starts that one exact read only from an explicit representative
+occurrence action; expanding a group performs no read. Both forms report
+truncation only when the global limit excludes matching entries and have no
+continuation cursor. The browser keeps that incomplete-result notice visible
+while local filters narrow the returned groups.
 
 A timeline cluster narrows the grouped console by the event sources it
-represents. A group's single representative internal row address is used only
-for an exact auto-expansion match; it is not a list of the group's member rows.
+represents. A group's representative timestamp is used for auto-expansion only
+when it identifies one returned group for that source; it is not a list of the
+group's member rows.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern, and their representative row is the slowest occurrence.
@@ -1161,12 +1162,13 @@ does not lose precision. A blob value carries the stored bytes and the recorded
 
 Mass MCP results tied to a recorded row, ranked entity, or event contain compact
 identifiers, metrics, bounded labels and one server-produced opaque
-`detail_ref`; relation aggregates with no single recorded row omit it. These
-results do not inline query text, plans, command lines, log messages or similar
-stored payloads. The calling model copies `detail_ref` unchanged and never
-parses, constructs, alters or combines it. `kronika_get_row_detail` accepts only
-that reference and is the sole MCP transition to the complete stored row. The
-server privately binds the stateless, versioned reference to the complete
+`detail_ref`; relation aggregates with no single recorded row omit it. Grouped
+Events HTTP results follow the same compact-reference rule. These results do not
+inline query text, plans, command lines, log messages or similar stored
+payloads. Clients copy `detail_ref` unchanged and never parse, construct, alter
+or combine it. `/api/row-detail` and `kronika_get_row_detail` accept only that
+reference and are the browser and MCP transitions to the complete stored row.
+The server privately binds the stateless, versioned reference to the complete
 stable logical identity and treats its ordering information only as a hint. If
 finishing active data reorders rows, row detail resolves the exact same logical
 identity and returns the same row. A missing, altered or non-unique identity is

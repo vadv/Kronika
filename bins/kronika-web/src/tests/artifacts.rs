@@ -2313,6 +2313,14 @@ fn stream(prepared: Prepared) -> Result<Vec<Value>, ApiError> {
         .collect())
 }
 
+fn event_detail(fixture: &Fixture, item: &Value) -> Value {
+    let detail_ref = item["detail_ref"].as_str().expect("opaque detail ref");
+    let target = format!("/api/row-detail?detail_ref={detail_ref}");
+    let mut records = stream(fixture.prepare(&target, None)).expect("stream row detail");
+    assert_eq!(records.len(), 1);
+    records.remove(0)
+}
+
 fn prepare_result(fixture: &Fixture, target: &str) -> Result<Prepared, ApiError> {
     let (path, query) = target
         .split_once('?')
@@ -6094,29 +6102,18 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
         .iter()
         .filter(|record| record["record"] == "event_occurrence")
         .collect::<Vec<_>>();
+    let details = occurrences
+        .iter()
+        .map(|occurrence| event_detail(&fixture, occurrence))
+        .collect::<Vec<_>>();
     assert_eq!(
-        occurrences
+        details
             .iter()
-            .map(|record| {
-                record["detail_locator"]["at"]
-                    .as_str()
-                    .expect("event timestamp")
-            })
+            .map(|record| record["at"].as_str().expect("event timestamp"))
             .collect::<Vec<_>>(),
         (from..from + 3)
             .map(|at| at.to_string())
             .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        occurrences
-            .iter()
-            .map(|record| {
-                record["detail_locator"]["row_ordinal"]
-                    .as_str()
-                    .expect("row ordinal")
-            })
-            .collect::<Vec<_>>(),
-        ["1", "2", "3"]
     );
     assert!(
         limited
@@ -6130,13 +6127,26 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
         assert!(occurrence.get("sample").is_none());
         assert!(occurrence.get("segment_id").is_none());
         assert!(occurrence.get("row_ordinal").is_none());
-        assert_eq!(occurrence["detail_locator"]["section"], "pg_log_errors");
-        let identity = occurrence["detail_locator"]["identity"]
-            .as_object()
-            .expect("complete event identity");
-        assert_eq!(identity.len(), 14);
-        assert!(identity["pattern"].is_string());
-        assert_ne!(identity["pattern"], "fixture");
+        assert!(occurrence.get("type_id").is_none());
+        assert!(occurrence.get("detail_locator").is_none());
+        assert!(
+            occurrence["detail_ref"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+    for detail in &details {
+        assert_eq!(detail["record"], "row_detail");
+        assert_eq!(detail["section"], "pg_log_errors");
+        assert_eq!(detail["fields"]["sample"]["stored_text"], "fixture");
+        assert_eq!(detail["fields"]["sample"]["truncated"], false);
+        for hidden in ["segment_id", "type_id", "row_ordinal", "detail_locator"] {
+            assert!(detail.get(hidden).is_none(), "detail exposed {hidden}");
+            assert!(
+                detail["fields"].get(hidden).is_none(),
+                "fields exposed {hidden}"
+            );
+        }
     }
 
     let target = format!(
@@ -6146,11 +6156,8 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     let timestamps = full
         .iter()
         .filter(|record| record["record"] == "event_occurrence")
-        .map(|record| {
-            record["detail_locator"]["at"]
-                .as_str()
-                .expect("event timestamp")
-        })
+        .map(|record| event_detail(&fixture, record))
+        .map(|record| record["at"].as_str().expect("event timestamp").to_owned())
         .collect::<Vec<_>>();
     assert_eq!(
         timestamps,

@@ -59,6 +59,7 @@ pub(super) fn group_events(
             .then_with(|| right.count.total_cmp(&left.count))
             .then_with(|| right.last_ts.cmp(&left.last_ts))
             .then_with(|| collator.compare(&left.key, &right.key))
+            .then_with(|| left.key.cmp(&right.key))
     });
     for entry in &mut entries {
         if let EventStat::Pgbouncer { level, .. } = &entry.stat {
@@ -419,18 +420,11 @@ fn grouped(
     key_of: impl Fn(&EventDataRow) -> String,
 ) -> Vec<(String, Vec<EventDataRow>)> {
     rows.sort_by_key(|row| row.timestamp);
-    let mut groups: Vec<(String, Vec<EventDataRow>)> = Vec::new();
-    let mut positions: HashMap<String, usize> = HashMap::new();
+    let mut groups: HashMap<String, Vec<EventDataRow>> = HashMap::new();
     for row in rows {
-        let key = key_of(&row);
-        if let Some(index) = positions.get(&key).copied() {
-            groups[index].1.push(row);
-        } else {
-            positions.insert(key.clone(), groups.len());
-            groups.push((key, vec![row]));
-        }
+        groups.entry(key_of(&row)).or_default().push(row);
     }
-    groups
+    groups.into_iter().collect()
 }
 
 #[expect(
@@ -488,6 +482,7 @@ fn build(
         }),
         first_ts,
         last_ts,
+        representative_ts: representative.timestamp,
         minutes,
         stat,
         detail_locator,

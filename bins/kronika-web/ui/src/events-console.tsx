@@ -1,6 +1,7 @@
 import { ChevronRight, CircleAlert, HardDrive, Lock, Network, Power, Recycle, Timer, type LucideIcon } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
+import { loadEventRowDetail, type Cell, type EventRowDetail } from "./api"
 import { useDisplayTime } from "./display-time-context"
 import { EVENT_TIERS, type EventEntry, type EventTier } from "./events-groups"
 import { categoryLabel } from "./events-format"
@@ -188,6 +189,16 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
   readonly onToggle: () => void
   readonly t: Translate
 }) {
+  const request = useRef<AbortController | null>(null)
+  const [detail, setDetail] = useState<EventRowDetail | null>(null)
+  const [detailStatus, setDetailStatus] = useState<"idle" | "loading" | "failed">("idle")
+  useEffect(() => {
+    request.current?.abort()
+    request.current = null
+    setDetail(null)
+    setDetailStatus("idle")
+    return () => request.current?.abort()
+  }, [entry.detailRef])
   const time = useDisplayTime()
   const title = entryTitle(entry, t, locale)
   const subtitle = entrySubtitle(entry, t, locale)
@@ -225,17 +236,53 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
       <span className="max-[760px]:hidden"><EventStrip entry={entry} hour={hour} onCursor={onCursor} t={t} /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
-    {expanded && <EventEntryDetail entry={entry} locale={locale} t={t} />}
+    {expanded && <EventEntryDetail
+      detail={detail}
+      detailStatus={detailStatus}
+      entry={entry}
+      locale={locale}
+      onCursor={onCursor}
+      onDetail={() => {
+        if (detailStatus !== "idle" || detail !== null || request.current !== null) return
+        const controller = new AbortController()
+        request.current = controller
+        setDetailStatus("loading")
+        void loadEventRowDetail(entry.detailRef, controller.signal).then((loaded) => {
+          if (controller.signal.aborted) return
+          request.current = null
+          if (loaded.section !== entry.section || loaded.at !== entry.representativeTs) {
+            setDetailStatus("failed")
+            return
+          }
+          setDetail(loaded)
+          setDetailStatus("idle")
+        }).catch((error: unknown) => {
+          if (controller.signal.aborted) return
+          request.current = null
+          console.error("event detail load failed", error)
+          setDetailStatus("failed")
+        })
+      }}
+      t={t}
+    />}
   </div>
 }
 
-function EventEntryDetail({ entry, locale, t }: {
+function EventEntryDetail({ detail, detailStatus, entry, locale, onCursor, onDetail, t }: {
+  readonly detail: EventRowDetail | null
+  readonly detailStatus: "idle" | "loading" | "failed"
   readonly entry: EventEntry
   readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly onDetail: () => void
   readonly t: Translate
 }) {
+  const time = useDisplayTime()
   const note = GROUPED_NOTES[entry.stat.kind]
   const facts = entryFacts(entry, locale, t)
+  const actionLabel = detail !== null
+    ? t("events.detail.recorded_at")
+    : t(detailStatus === "loading" ? "events.detail.loading" : "events.detail.open")
   return <div className="grid gap-2 border-t border-line2 bg-s2 px-[9px] py-[9px]" data-testid="event-entry-detail">
     {facts.length > 0 && <div className="flex flex-wrap gap-1.5" data-testid="event-entry-facts">
       {facts.map(([label, shownValue]) => <span className="flex items-baseline gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1" key={label}>
@@ -243,8 +290,50 @@ function EventEntryDetail({ entry, locale, t }: {
         <strong className="font-mono text-xs font-medium tabular-nums text-fg">{shownValue}</strong>
       </span>)}
     </div>}
+    <button
+      aria-busy={detailStatus === "loading" || undefined}
+      aria-disabled={detail === null && detailStatus !== "idle" || undefined}
+      className="w-fit cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s1 px-2.5 py-1.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3 aria-disabled:cursor-wait aria-disabled:opacity-70"
+      data-detail-status={detail === null ? detailStatus : "loaded"}
+      data-testid="event-representative-detail"
+      onClick={detail === null ? onDetail : () => onCursor(detail.at)}
+      type="button"
+    ><span aria-live="polite" data-testid={detailStatus === "loading" ? "event-detail-loading" : undefined}>{actionLabel}</span> · <time className="font-mono tabular-nums">{time.timestamp(detail?.at ?? entry.representativeTs)}</time></button>
+    {detailStatus === "failed" && <p className="m-0 text-xs text-bad" data-testid="event-detail-error" role="alert">{t("events.detail.error")}</p>}
+    {detail !== null && <RepresentativeDetail detail={detail} t={t} />}
     {note !== undefined && <p className="text-right text-xs text-fg3">{t(note)}</p>}
   </div>
+}
+
+export interface EventDetailText {
+  readonly field: string
+  readonly fullLen: string
+  readonly storedText: string
+  readonly truncated: boolean
+}
+
+export function eventDetailTexts(fields: Readonly<Record<string, Cell>>): readonly EventDetailText[] {
+  return Object.entries(fields).flatMap(([field, cell]) => {
+    if (cell === null || typeof cell !== "object" || Array.isArray(cell)) return []
+    const value = cell as Readonly<Record<string, unknown>>
+    if (typeof value.stored_text !== "string" || typeof value.full_len !== "string" || typeof value.truncated !== "boolean") return []
+    return [{ field, fullLen: value.full_len, storedText: value.stored_text, truncated: value.truncated }]
+  })
+}
+
+function RepresentativeDetail({ detail, t }: {
+  readonly detail: EventRowDetail
+  readonly t: Translate
+}) {
+  const texts = eventDetailTexts(detail.fields)
+  return <section className="grid gap-2 rounded-[var(--radius-sm)] border border-line2 bg-s1 p-2" data-testid="event-representative-occurrence">
+    {texts.length === 0 && <p className="m-0 text-xs text-fg3">{t("events.detail.no_text")}</p>}
+    {texts.map((text) => <div className="grid gap-1" key={text.field}>
+      <small className="text-xs text-fg3">{t(`events.field.${text.field}`)}</small>
+      <pre aria-label={t(`events.field.${text.field}`)} className="m-0 max-h-[180px] overflow-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-line2 bg-s2 px-2 py-1.5 font-mono text-xs leading-[1.5] text-fg2 [overflow-wrap:anywhere]" tabIndex={0}>{text.storedText}</pre>
+      {text.truncated && <small className="text-xs text-warn">{t("events.detail.text_truncated", { length: text.fullLen })}</small>}
+    </div>)}
+  </section>
 }
 
 function entryFacts(entry: EventEntry, locale: Locale, t: Translate): readonly (readonly [string, string])[] {
