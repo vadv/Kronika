@@ -74,7 +74,7 @@ fn resolve_range_with(
     let now = clock()?;
     let from = from.resolve(now)?;
     let to = to.resolve(now)?;
-    TimeRange::new(from, to).map_err(|error| TimeSpecError(error.to_string()))
+    TimeRange::new(from, to).map_err(TimeSpecError)
 }
 
 fn resolve_expression(expression: &str, now: i64) -> Result<i64, TimeSpecError> {
