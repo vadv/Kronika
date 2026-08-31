@@ -470,6 +470,11 @@ impl EventGroups {
         }
 
         let join = lock_join(&row);
+        if let Some(state) = &mut self.standalone_acquired
+            && same_locator(&state.summary.representative, &row)
+        {
+            state.summary.duplicate_representative = true;
+        }
         let holders = self
             .latest_waits
             .get(&join)

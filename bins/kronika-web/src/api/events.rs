@@ -444,6 +444,7 @@ pub(crate) struct PreparedEvents {
 struct RetainedOccurrence {
     source: EventSource,
     row: EventDataRow,
+    duplicate_locator: bool,
 }
 
 struct OccurrenceAccumulator {
@@ -465,6 +466,20 @@ impl OccurrenceAccumulator {
         let encounter = self.encounters[source_rank];
         self.encounters[source_rank] = encounter.saturating_add(1);
         let key = (row.timestamp, source_rank, encounter);
+        let mut duplicate_locator = false;
+        for retained in self
+            .rows
+            .range_mut((row.timestamp, source_rank, 0)..=(row.timestamp, source_rank, u64::MAX))
+            .map(|(_key, retained)| retained)
+        {
+            if retained.row.segment_id == row.segment_id
+                && retained.row.type_id == row.type_id
+                && retained.row.identity == row.identity
+            {
+                retained.duplicate_locator = true;
+                duplicate_locator = true;
+            }
+        }
         let capacity = self.limit.saturating_add(1);
         if self.rows.len() == capacity {
             if self
@@ -476,21 +491,20 @@ impl OccurrenceAccumulator {
             }
             self.rows.pop_last();
         }
-        self.rows.insert(key, RetainedOccurrence { source, row });
+        self.rows.insert(
+            key,
+            RetainedOccurrence {
+                source,
+                row,
+                duplicate_locator,
+            },
+        );
     }
 
     fn finish(self) -> Result<EventsResult, ApiError> {
-        let mut seen = HashSet::new();
-        for retained in self.rows.values() {
+        for retained in self.rows.values().take(self.limit) {
             let row = &retained.row;
-            let identity = serde_json::to_string(&row.identity)?;
-            if !seen.insert((
-                retained.source,
-                row.segment_id,
-                row.type_id,
-                row.timestamp,
-                identity,
-            )) {
+            if retained.duplicate_locator {
                 return Err(ApiError::BadLocator(format!(
                     "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
                     retained.source.as_str(),

@@ -2709,6 +2709,37 @@ fn find_events_refuses_to_emit_a_ref_for_a_non_unique_identity() {
 }
 
 #[test]
+fn find_events_rejects_a_retained_identity_duplicated_after_the_limit() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error_count(100, 1);
+    fixture.append_log_error_count(100, 2);
+    fixture.append_log_error_count(100, 1);
+    let config = test_config(fixture.root().to_path_buf());
+    let arguments = json!({
+        "sources": ["pg_log_errors"],
+        "from": 0,
+        "to": 1_000,
+        "representation": "occurrences",
+        "limit": 1,
+    })
+    .as_object()
+    .expect("arguments")
+    .clone();
+
+    let result = crate::mcp::events::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    let message = &result.content[0].as_text().expect("error").text;
+    assert_eq!(message, "could not produce detail_ref");
+    if let Some(body) = &result.structured_content {
+        assert_no_detail_ref_property(body);
+    }
+    for forbidden in FORBIDDEN_COORDINATE_KEYS {
+        assert!(!message.contains(forbidden), "error exposed {forbidden}");
+    }
+}
+
+#[test]
 fn get_row_detail_labels_the_same_numeric_codes_find_events_does() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);

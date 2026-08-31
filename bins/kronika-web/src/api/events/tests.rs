@@ -602,6 +602,41 @@ fn occurrences_reject_a_non_unique_retained_locator_without_unbounded_rows() {
 }
 
 #[test]
+fn occurrences_reject_a_retained_locator_duplicated_by_a_discarded_row() {
+    let query = EventsQuery {
+        range: TimeRange {
+            from: HOUR,
+            to_exclusive: HOUR + 10,
+        },
+        sources: vec![EventSource::Errors],
+        representation: EventsRepresentation::Occurrences,
+        limit: 1,
+    };
+    let duplicate = row(0, 0, json!({ "pattern": "same" }));
+    let mut accumulator = OccurrenceAccumulator::new(&query);
+    accumulator.observe(0, EventSource::Errors, duplicate.clone());
+    accumulator.observe(
+        0,
+        EventSource::Errors,
+        row(1, 0, json!({ "pattern": "other" })),
+    );
+    accumulator.observe(
+        0,
+        EventSource::Errors,
+        EventDataRow {
+            row_ordinal: 2,
+            ..duplicate
+        },
+    );
+
+    assert_eq!(accumulator.retained_rows(), query.limit + 1);
+    assert!(matches!(
+        accumulator.finish(),
+        Err(crate::api::ApiError::BadLocator(_))
+    ));
+}
+
+#[test]
 fn groups_retain_one_row_per_group_at_high_cardinality() {
     let mut accumulator = EventGroups::new(HOUR);
     for ordinal in 0_u64..20_000 {
@@ -739,6 +774,85 @@ fn lock_acquisitions_use_physical_wait_order_at_equal_timestamps() {
         ),
         Some(999.0)
     );
+}
+
+#[test]
+fn lock_groups_reject_a_standalone_locator_duplicated_after_a_wait() {
+    let query = EventsQuery {
+        range: TimeRange {
+            from: HOUR,
+            to_exclusive: HOUR + 1,
+        },
+        sources: vec![EventSource::LockWaits],
+        representation: EventsRepresentation::Groups,
+        limit: 1,
+    };
+    let acquired = row(
+        0,
+        0,
+        json!({
+            "kind": 1,
+            "pid": 7,
+            "lock_target": "relation 9",
+            "duration_ms": 10,
+        }),
+    );
+    let mut accumulator = EventGroups::new(HOUR);
+    accumulator.observe(EventSource::LockWaits, acquired.clone());
+    accumulator.observe(
+        EventSource::LockWaits,
+        row(
+            1,
+            0,
+            json!({
+                "kind": 0,
+                "pid": 7,
+                "lock_target": "relation 9",
+                "holding_pids": "11",
+                "duration_ms": 5,
+            }),
+        ),
+    );
+    accumulator.observe(
+        EventSource::LockWaits,
+        EventDataRow {
+            row_ordinal: 2,
+            ..acquired
+        },
+    );
+
+    assert!(matches!(
+        groups_result(&query, accumulator, None),
+        Err(crate::api::ApiError::BadLocator(_))
+    ));
+}
+
+#[test]
+fn group_limit_does_not_hide_a_non_unique_lifecycle_locator() {
+    let query = EventsQuery {
+        range: TimeRange {
+            from: HOUR,
+            to_exclusive: HOUR + 1,
+        },
+        sources: vec![EventSource::Lifecycle],
+        representation: EventsRepresentation::Groups,
+        limit: 1,
+    };
+    let duplicate = row(0, 0, json!({ "kind": 2, "pid": 7 }));
+    let mut accumulator = EventGroups::new(HOUR);
+    accumulator.observe(EventSource::Lifecycle, duplicate.clone());
+    accumulator.observe(
+        EventSource::Lifecycle,
+        EventDataRow {
+            row_ordinal: 1,
+            ..duplicate
+        },
+    );
+
+    assert!(matches!(
+        groups_result(&query, accumulator, None),
+        Err(crate::api::ApiError::BadLocator(_))
+    ));
 }
 
 #[test]
