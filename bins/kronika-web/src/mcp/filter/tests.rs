@@ -133,6 +133,15 @@ fn contains_on_an_identifier_field_is_rejected() {
 }
 
 #[test]
+fn contains_builds_a_literal_substring_value() {
+    let filters = vec![scalar("state", Op::Contains, json!("idle*?"))];
+    let search = build_search("os_process", &filters)
+        .expect("valid filter")
+        .expect("search");
+    assert_eq!(search.clauses[0].value, SearchValue::contains("idle*?"));
+}
+
+#[test]
 fn a_negative_quantity_value_is_rejected() {
     let filters = vec![scalar("rss", Op::Gt, json!(-1))];
     let error = build_search("os_process", &filters)

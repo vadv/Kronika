@@ -4506,6 +4506,14 @@ impl GlobPattern {
         Self(raw.chars().map(GlobToken::Literal).collect())
     }
 
+    fn contains(raw: &str) -> Self {
+        let mut tokens = Vec::with_capacity(raw.chars().count() + 2);
+        tokens.push(GlobToken::Star);
+        tokens.extend(raw.chars().map(GlobToken::Literal));
+        tokens.push(GlobToken::Star);
+        Self(tokens)
+    }
+
     fn new(raw: &str) -> Self {
         let mut tokens = vec![GlobToken::Star];
         for character in raw.chars() {

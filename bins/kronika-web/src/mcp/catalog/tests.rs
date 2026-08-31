@@ -40,6 +40,20 @@ fn assert_no_internal_coordinates(label: &str, value: &serde_json::Value) {
     );
 }
 
+fn find_property<'a>(value: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    match value {
+        serde_json::Value::Object(object) => object
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|properties| properties.get(name))
+            .or_else(|| object.values().find_map(|child| find_property(child, name))),
+        serde_json::Value::Array(values) => {
+            values.iter().find_map(|child| find_property(child, name))
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn catalog_has_exactly_fourteen_tools() {
     let catalog = tools();
@@ -63,6 +77,48 @@ fn catalog_has_exactly_fourteen_tools() {
             FIND_EVENTS_TOOL,
         ]
     );
+}
+
+#[test]
+fn public_schemas_omit_uint_format_and_keep_nonnegative_integer_bounds() {
+    let catalog = tools();
+    for tool in &catalog {
+        let input = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+        assert!(
+            !serde_json::to_string(&input)
+                .expect("encode input schema")
+                .contains("\"format\":\"uint\"")
+        );
+        if let Some(output) = tool.output_schema.as_ref() {
+            assert!(
+                !serde_json::to_string(output)
+                    .expect("encode output schema")
+                    .contains("\"format\":\"uint\"")
+            );
+        }
+    }
+
+    for (tool_name, fields) in [
+        (OVERVIEW_TOOL, &["top"][..]),
+        (
+            FIND_EVENTS_TOOL,
+            &["runs", "completes", "timed", "requested", "waiters"][..],
+        ),
+    ] {
+        let schema = catalog
+            .iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .and_then(|tool| tool.output_schema.as_ref())
+            .unwrap_or_else(|| panic!("{tool_name} output schema"));
+        let schema = serde_json::Value::Object(schema.as_ref().clone());
+        for field in fields {
+            let property = find_property(&schema, field)
+                .unwrap_or_else(|| panic!("{tool_name}.{field} schema"));
+            assert_eq!(property["type"], "integer", "{tool_name}.{field}");
+            assert_eq!(property["minimum"], 0, "{tool_name}.{field}");
+            assert!(property.get("format").is_none(), "{tool_name}.{field}");
+        }
+    }
 }
 
 #[test]

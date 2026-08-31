@@ -586,6 +586,14 @@ fn glob_supports_substrings_wildcards_literals_and_unicode_case() {
 }
 
 #[test]
+fn literal_substring_pattern_does_not_expand_wildcards() {
+    let pattern = GlobPattern::contains("A*?");
+    assert!(pattern.matches("prefix a*? suffix"));
+    assert!(!pattern.matches("prefix ab suffix"));
+    assert!(!pattern.matches("prefix axy suffix"));
+}
+
+#[test]
 fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
     let parsed = StructuredSearch::parse(
         r#"query_id:-912345 and db:"Sales \"East\"""#,

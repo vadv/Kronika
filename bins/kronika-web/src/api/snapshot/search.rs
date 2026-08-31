@@ -76,6 +76,12 @@ impl SearchValue {
         Self::Pattern(GlobPattern::new(raw))
     }
 
+    /// Builds a case-insensitive literal substring pattern for typed MCP
+    /// filters. Unlike the text DSL, `*` and `?` have no wildcard meaning.
+    pub(crate) fn contains(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::contains(raw))
+    }
+
     /// Wrap raw text in an anchored, literal-only pattern: whole-value,
     /// case-insensitive equality — no substring behavior, `*`/`?` taken
     /// literally. The text DSL cannot express this; the typed MCP filter

@@ -297,12 +297,12 @@ fn invalid_value(field: &str) -> Refusal {
     ))
 }
 
-/// `eq` on a string field builds an anchored whole-value pattern;
-/// `contains` builds the substring pattern the text DSL uses. Both are
-/// case-insensitive — the distinction is anchoring, not case.
+/// String matching is case-insensitive. `eq` is whole-value and `contains`
+/// is a literal substring, while the text DSL retains its glob syntax.
 fn search_value(field: &SearchField, op: Op, value: &FilterAtom) -> Option<SearchValue> {
     match (field.kind, op) {
         (SearchFieldKind::String, Op::Eq) => value.text().map(SearchValue::exact),
+        (SearchFieldKind::String, Op::Contains) => value.text().map(SearchValue::contains),
         (SearchFieldKind::String, _) => value.text().map(SearchValue::pattern),
         (SearchFieldKind::Identifier { signed }, _) => identifier_value(value, signed),
         (SearchFieldKind::Quantity(_), _) => quantity_value(value),

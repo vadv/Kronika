@@ -883,6 +883,9 @@ fn opaque_output_schema<T: JsonSchema>(hide_layout: bool) -> Arc<JsonObject> {
 fn rewrite_detail_schema(value: &mut Value, hide_layout: bool) {
     match value {
         Value::Object(object) => {
+            if object.get("format").and_then(Value::as_str) == Some("uint") {
+                object.remove("format");
+            }
             if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
                 if properties.remove("detail_locator").is_some() {
                     properties.insert(
