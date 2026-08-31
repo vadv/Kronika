@@ -45,10 +45,11 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: true }
-  const held = { companion: null, lanes: null, page: null, summary: null }
+  const held = { companion: null, label: null, lanes: null, page: null, summary: null }
   const requested = {}
   const waitForRequest = (name) => new Promise((resolve) => { requested[name] = resolve })
   const companionRequest = waitForRequest("companion")
+  const labelRequest = waitForRequest("label")
   const lanesRequest = waitForRequest("lanes")
   const pageRequest = waitForRequest("page")
   const summaryRequest = waitForRequest("summary")
@@ -85,8 +86,8 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/instance-label") {
-      response.writeHead(200, { "Content-Type": "application/json" })
-      response.end('{"database":"artifact_db"}')
+      held.label = response
+      requested.label()
       return
     }
     if (url.pathname === "/api/hour") {
@@ -149,14 +150,47 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
 
     await pageRequest
     await companionRequest
+    assert.equal(requests.filter(({ path }) => path === "/api/instance-label").length, 0)
     assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("part") === "lanes"), false)
     assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_process_summary"), false)
 
     ndjson(held.page, snapshotRecords())
     held.page = null
     await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the first Process table", 15_000)
+    await labelRequest
     await lanesRequest
     await summaryRequest
+    const beforeLabel = await cdp.evaluate(`(() => {
+      const rect = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width } }
+      return {
+        at: new URL(location.href).searchParams.get("at"),
+        heading: document.querySelector(".topbar h1").textContent,
+        rows: document.querySelectorAll('[data-testid="process-table"] .entity-row').length,
+        table: rect(document.querySelector('[data-testid="process-table"]')),
+        topbar: rect(document.querySelector(".topbar")),
+      }
+    })()`)
+    assert.equal(beforeLabel.heading, "KRONIKA")
+    assert.equal(beforeLabel.at, String(AT))
+    assert.ok(beforeLabel.rows > 10, JSON.stringify(beforeLabel))
+    held.label.writeHead(200, { "Content-Type": "application/json" })
+    held.label.end('{"database":"artifact_db"}')
+    held.label = null
+    await cdp.waitFor(`document.querySelector('.topbar h1')?.textContent === "KRONIKA — artifact_db"`, "the deferred instance label")
+    const afterLabel = await cdp.evaluate(`(() => {
+      const rect = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width } }
+      return {
+        at: new URL(location.href).searchParams.get("at"),
+        table: rect(document.querySelector('[data-testid="process-table"]')),
+        topbar: rect(document.querySelector(".topbar")),
+      }
+    })()`)
+    assert.equal(afterLabel.at, beforeLabel.at)
+    for (const key of ["bottom", "height", "left", "right", "top", "width"]) {
+      assert.ok(Math.abs(afterLabel.table[key] - beforeLabel.table[key]) <= .5, `${key}: ${JSON.stringify({ beforeLabel, afterLabel })}`)
+      assert.ok(Math.abs(afterLabel.topbar[key] - beforeLabel.topbar[key]) <= .5, `${key}: ${JSON.stringify({ beforeLabel, afterLabel })}`)
+    }
+    assert.equal(requests.filter(({ path }) => path === "/api/instance-label").length, 1)
     const firstScreen = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       rows: document.querySelectorAll('[data-testid="process-table"] .entity-row').length,
@@ -254,10 +288,137 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
     assert.equal(treeQuery.getAll("section").includes("instance_metadata"), true)
     assert.deepEqual(treeQuery.getAll("field"), [])
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AFTER_AT))
+    assert.equal(requests.filter(({ path }) => path === "/api/instance-label").length, 1)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
     for (const response of Object.values(held)) response?.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
+test("the MCP drawer is modal and restores keyboard focus in RU and EN", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const page = { errors: [], external: [], responses: [] }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"database":"artifact_db"}')
+      return
+    }
+    if (url.pathname === "/api/mcp-access") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"authorization":null}')
+      return
+    }
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("section") === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
+      return ndjson(response, timelineRecords(HOUR, true))
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("MCP modal server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=disk` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the Process table behind the MCP modal", 15_000)
+    assert.equal(requests.filter(({ path }) => path === "/api/mcp-access").length, 0)
+
+    for (const locale of ["ru", "en"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${locale} MCP locale`)
+      for (const viewport of [{ height: 800, width: 360 }, { height: 900, width: 1280 }]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: viewport.height, mobile: false, width: viewport.width })
+        await settleLayout(cdp)
+        const openedBefore = requests.filter(({ path }) => path === "/api/mcp-access").length
+        await cdp.evaluate(`document.querySelector('[data-testid="mcp-trigger"]').focus({ preventScroll: true })`)
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", nativeVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", nativeVirtualKeyCode: 13, windowsVirtualKeyCode: 13 })
+        await cdp.waitFor(`document.querySelector('[data-testid="mcp-panel"]')?.matches(':modal') === true`, `${locale} ${viewport.width}px modal MCP drawer`)
+        await waitForRequests(() => requests.filter(({ path }) => path === "/api/mcp-access").length === openedBefore + 1)
+        const geometry = await cdp.evaluate(`(() => {
+          const dialog = document.querySelector('[data-testid="mcp-panel"]')
+          const bounds = dialog.getBoundingClientRect()
+          const title = document.getElementById(dialog.getAttribute("aria-labelledby"))
+          return {
+            activeInside: dialog.contains(document.activeElement),
+            activeIsClose: document.activeElement === dialog.querySelector("button"),
+            ariaModal: dialog.getAttribute("aria-modal"),
+            bottom: bounds.bottom,
+            documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+            height: bounds.height,
+            labelled: title !== null && title.textContent.trim() !== "",
+            left: bounds.left,
+            modal: dialog.matches(":modal"),
+            right: bounds.right,
+            role: dialog.getAttribute("role"),
+            top: bounds.top,
+            viewport: { height: innerHeight, width: innerWidth },
+            width: bounds.width,
+          }
+        })()`)
+        assert.equal(geometry.modal, true, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.ariaModal, "true", `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.role, "dialog", `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.labelled, true, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.activeInside, true, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.activeIsClose, true, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.equal(geometry.documentOverflow, false, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.ok(geometry.left >= -1 && geometry.right <= geometry.viewport.width + 1, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+        assert.ok(Math.abs(geometry.top) <= 1 && Math.abs(geometry.bottom - geometry.viewport.height) <= 1, `${locale} ${viewport.width}: ${JSON.stringify(geometry)}`)
+
+        assert.equal(await cdp.evaluate(`(() => { document.querySelector('[data-testid="mcp-trigger"]').focus(); return document.querySelector('[data-testid="mcp-panel"]').contains(document.activeElement) })()`), true, `${locale} ${viewport.width}px outside focus rejection`)
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 })
+        assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="mcp-panel"]').contains(document.activeElement)`), true, `${locale} ${viewport.width}px Tab containment`)
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", modifiers: 8, windowsVirtualKeyCode: 9 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", modifiers: 8, windowsVirtualKeyCode: 9 })
+        assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="mcp-panel"]').contains(document.activeElement)`), true, `${locale} ${viewport.width}px Shift-Tab containment`)
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.waitFor(`document.querySelector('[data-testid="mcp-panel"]') === null`, `${locale} ${viewport.width}px MCP Escape`)
+        await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="mcp-trigger"]')`, `${locale} ${viewport.width}px MCP opener restore`)
+        assert.equal(requests.filter(({ path }) => path === "/api/mcp-access").length, openedBefore + 1)
+      }
+    }
+    assert.equal(requests.filter(({ path }) => path === "/api/mcp-access").length, 4)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
@@ -394,7 +555,15 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       return ndjson(response, records)
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
-      return ndjson(response, url.searchParams.getAll("section").includes("pg_stat_statements") ? statementRecords(true) : snapshotRecords())
+      const sections = url.searchParams.getAll("section")
+      if (sections.includes("pg_store_plans")) return ndjson(response, planRecords())
+      const statements = sections.includes("pg_stat_statements")
+      return ndjson(response, statements
+        ? statementRecords(true).map((record) => record.record !== "row" ? record : {
+            ...record,
+            values: record.values.map((stored, index) => index === 1 ? "101" : stored),
+          })
+        : snapshotRecords())
     }
     response.writeHead(404)
     response.end()
@@ -477,6 +646,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
 
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
+    const statementSnapshotsBeforeActivity = requests.filter(({ path }) => path.includes("/snapshot")).length
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
@@ -494,7 +664,12 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(ledger.others, /1/)
     assert.equal(ledger.cells, 6)
     assert.ok(ledger.help >= 3)
-    assert.deepEqual(ledger.labels, ["Query ID 101", "Query ID 102"])
+    assert.deepEqual(ledger.labels, ["select artifact_exact_context", "Query ID 102"])
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian Activity previews")
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title"))`), ["select artifact_exact_context", "Query ID 102"])
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English Activity previews")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
@@ -509,6 +684,28 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the restored default cut")
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the ledger collapsed again")
+    assert.equal(requests.filter(({ path }) => path.includes("/snapshot")).length, statementSnapshotsBeforeActivity)
+    assert.equal(requests.filter(({ path, query }) => path.includes("/snapshot") && new URLSearchParams(query).get("first_match") === "1").length, 0)
+
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Plans")).click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-plans-table"] .entity-row').length === 1`, "the Plans table behind Activity", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-pg_store_plans"] [data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed Plan Activity ledger")
+    const planSnapshotsBeforeActivity = requests.filter(({ path }) => path.includes("/snapshot")).length
+    const planHeatmapsBeforeActivity = requests.filter(({ path, query }) => path === "/api/heatmap" && new URLSearchParams(query).get("section") === "pg_store_plans").length
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-pg_store_plans"] [data-testid="activity-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_store_plans"] [data-testid="activity-row"]').length === 2`, "the ranked Plan Activity ledger", 15_000)
+    const planLabels = await cdp.evaluate(`[...document.querySelectorAll('[data-testid="activity-pg_store_plans"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title"))`)
+    assert.deepEqual(planLabels, [VADV_TEXT_PLAN.replace(/\s+/g, " ").trim().slice(0, 240), "Plan ID 78"])
+    assert.equal(requests.filter(({ path }) => path.includes("/snapshot")).length, planSnapshotsBeforeActivity)
+    assert.equal(requests.filter(({ path, query }) => path === "/api/heatmap" && new URLSearchParams(query).get("section") === "pg_store_plans").length, planHeatmapsBeforeActivity + 1)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian Plan Activity previews")
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="activity-pg_store_plans"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title"))`), planLabels)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English Plan Activity previews")
+    assert.equal(requests.filter(({ path }) => path.includes("/snapshot")).length, planSnapshotsBeforeActivity)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Statements")).click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the Statements table after Plan Activity")
     const browserMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
@@ -5772,14 +5969,22 @@ function answerHeatmap(url, response) {
     end: String(from + Math.floor(((index + 1) * span) / columns) - 1),
   }))
   const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
+  const identities = section === "pg_store_plans"
+    ? [
+        { identity: ["10", "20", "42", "77", "42"], total: 120, typeId: "1004001" },
+        { identity: ["10", "20", "43", "78", "43"], total: 60, typeId: "1004001" },
+      ]
+    : [
+        { identity: ["101", "10", "5", "true"], total: 120, typeId: "1002006" },
+        { identity: ["102", "10", "5", "true"], total: 60, typeId: "1002006" },
+      ]
   return ndjson(response, [
     {
       record: "heatmap", from: String(from), to: String(to), section,
       fields: url.searchParams.getAll("field"), class: "cumulative", labels,
       top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
     },
-    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labelValues, total: 120, cells },
-    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labelValues, total: 60, cells },
+    ...identities.map(({ identity, total, typeId }) => ({ record: "heatmap_row", type_id: typeId, identity, labels: labelValues, total, cells })),
     { record: "heatmap_band", band: "totals", total: 200, cells },
     { record: "heatmap_band", band: "others", total: 20, cells },
   ])

@@ -91,3 +91,7 @@ export const CGROUP_IO_CUTS: readonly ActivityCut[] = [
   { id: "cg_rios", fields: ["rios"], kind: "count" },
   { id: "cg_wios", fields: ["wios"], kind: "count" },
 ]
+
+export function activityPreview(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 240)
+}

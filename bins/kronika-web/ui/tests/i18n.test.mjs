@@ -158,7 +158,10 @@ test("RU keeps technical labels in English and localizes help", async () => {
     .map(([, value]) => value)
     .join("\n")
   assert.doesNotMatch(technicalScope, /бэкенд|кортеж|вакуум|очистк|контрольн\S*\s+точ|PSI CPU|PSI I\/O|последовательн\S*\s+скан|сканирован\S*\s+индекс/iu)
-  assert.match(activitySource, /`Query ID \$\{queryId \?\? "—"\}`/)
+  assert.equal(russian["pg.detail.query"], english["pg.detail.query"])
+  assert.equal(russian["pg.detail.plan"], english["pg.detail.plan"])
+  assert.match(activitySource, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
+  assert.match(activitySource, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
   assert.doesNotMatch(activitySource, /`queryid /)
 })
 

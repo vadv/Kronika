@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 
 import { copyText } from "./clipboard"
 import type { Translate } from "./help"
@@ -17,6 +17,10 @@ export function McpPanel({ database, onClose, t }: {
   readonly onClose: () => void
   readonly t: Translate
 }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const titleId = useId()
   const [auth, setAuth] = useState<Auth | null>(null)
   const [client, setClient] = useState<(typeof CLIENTS)[number]["label"]>("Claude Code")
   const [copied, setCopied] = useState(false)
@@ -40,18 +44,33 @@ export function McpPanel({ database, onClose, t }: {
       .catch(() => setAuth({ kind: "placeholder" }))
     return () => controller.abort()
   }, [])
+  useLayoutEffect(() => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement) opener.current = active
+    dialog.current?.showModal()
+    closeButton.current?.focus({ preventScroll: true })
+    return () => {
+      if (dialog.current?.open) dialog.current.close()
+      const target = opener.current
+      requestAnimationFrame(() => {
+        if (target?.isConnected) target.focus({ preventScroll: true })
+      })
+    }
+  }, [])
+
+  const dismiss = () => onClose()
 
   const url = `${window.location.origin}/mcp`
   const selected = CLIENTS.find((candidate) => candidate.label === client) ?? CLIENTS[0]
   const prompt = auth === null ? null : selected.builder(url, auth, t, database)
   return (
-    <aside aria-label={t("mcp.title")} className="fixed bottom-0 right-0 top-0 z-[100] w-[min(92vw,430px)] max-w-[430px] overflow-auto border-l border-line4 bg-s1 p-[18px] shadow-[-20px_0_50px_var(--color-shadow-a)]" data-testid="mcp-panel">
+    <dialog aria-labelledby={titleId} aria-modal="true" className="mcp-dialog fixed bottom-0 left-auto right-0 top-0 z-[100] m-0 h-auto max-h-none w-[min(92vw,430px)] max-w-[430px] overflow-auto border-0 border-l border-line4 bg-s1 p-[18px] text-fg shadow-[-20px_0_50px_var(--color-shadow-a)]" data-testid="mcp-panel" onCancel={(event) => { event.preventDefault(); dismiss() }} onKeyDown={(event) => event.stopPropagation()} ref={dialog} role="dialog">
       <div className="flex items-center justify-between">
         <div>
           <p className="m-0 text-xs text-fg4">MCP</p>
-          <h2>{t("mcp.title")}</h2>
+          <h2 id={titleId}>{t("mcp.title")}</h2>
         </div>
-        <button aria-label={t("mcp.close")} className="icon-button" onClick={onClose} type="button">×</button>
+        <button aria-label={t("mcp.close")} className="icon-button" onClick={dismiss} ref={closeButton} type="button">×</button>
       </div>
       <p className="border border-line3 bg-s2 p-2 text-sm text-accent2">{t("mcp.endpoint")}: <code>{url}</code></p>
       {auth !== null && <p className="text-sm leading-[1.6] text-fg3">{t(credentialsKey(auth))}</p>}
@@ -68,6 +87,6 @@ export function McpPanel({ database, onClose, t }: {
         </section>
       )}
       <p className="mt-3 text-xs text-fg4">{t("mcp.docs")}</p>
-    </aside>
+    </dialog>
   )
 }

@@ -89,7 +89,7 @@ mcp.prompt.codex.verify: "Затем выполни `codex mcp get {name}` и п
 mcp.prompt.cursor.intro: "Создай или обнови .cursor/mcp.json в этом проекте, чтобы он содержал:"
 mcp.prompt.cursor.verify: "Объедини с серверами, уже описанными в файле. Когда закончишь, напомни мне перезапустить Cursor и включить {name} тумблером на странице Customize; точка входа — kronika_get_context."
 mcp.prompt.base64: "где <BASE64> — вывод команды:"
-mcp.docs: "Подробности по клиентам и запасной путь mcp-remote: docs/mcp-clients.md в репозитории."
+mcp.docs: "Подробности по клиентам и запасной путь mcp-remote: docs/mcp-clients.ru.md в репозитории."
 common.theme.switch: "Тема"
 common.theme.dark: "Тёмная"
 common.theme.light: "Светлая"

@@ -8,11 +8,11 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
     readFile(new URL("../src/mcp-connect.tsx", import.meta.url), "utf8"),
   ])
   assert.match(app, /data-testid="mcp-trigger"/)
-  // Opening one side panel closes the other: two full-height asides overlap.
+  // Opening one full-height surface closes the other.
   assert.match(app, /setMcpOpen\(\(current\) => !current\);?\s*setHelpOpen\(false\)/)
   assert.match(app, /setHelpOpen\(\(current\) => !current\);?\s*setMcpOpen\(false\)/)
-  // The keyboard path holds the same invariant: Esc closes both panels and
-  // "?" never opens help underneath an open MCP panel.
+  // The app-level keyboard fallback closes both panels when neither modal
+  // owns the event.
   assert.match(app, /event\.key === "\?"(?:(?!event\.key)[\s\S])*?setMcpOpen\(false\)/)
   assert.match(app, /event\.key === "Escape"(?:(?!event\.key)[\s\S])*?setMcpOpen\(false\)/)
   assert.match(app, /\{mcpOpen && <McpPanel/)
@@ -38,6 +38,20 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   assert.match(panel, /catch\(\(\) => setAuth\(\{ kind: "placeholder" \}\)\)/)
 })
 
+test("the MCP drawer is a native modal that owns focus and Escape", async () => {
+  const panel = await readFile(new URL("../src/mcp-connect.tsx", import.meta.url), "utf8")
+  assert.match(panel, /<dialog aria-labelledby=\{titleId\} aria-modal="true"/)
+  assert.match(panel, /<h2 id=\{titleId\}>/)
+  assert.match(panel, /role="dialog"/)
+  assert.match(panel, /dialog\.current\?\.showModal\(\)/)
+  assert.match(panel, /closeButton\.current\?\.focus\(\{ preventScroll: true \}\)/)
+  assert.match(panel, /onCancel=\{\(event\) => \{ event\.preventDefault\(\); dismiss\(\) \}\}/)
+  assert.match(panel, /onKeyDown=\{\(event\) => event\.stopPropagation\(\)\}/)
+  assert.match(panel, /if \(target\?\.isConnected\) target\.focus\(\{ preventScroll: true \}\)/)
+  assert.doesNotMatch(panel, /querySelectorAll/)
+  assert.doesNotMatch(panel, /<aside/)
+})
+
 test("every client prompt carries the endpoint, wrap-safe base64, and the entry point", async () => {
   const panel = await readFile(new URL("../src/mcp-prompts.ts", import.meta.url), "utf8")
   // tr -d keeps long credentials from folding a newline into the header:
@@ -53,9 +67,11 @@ test("every client prompt carries the endpoint, wrap-safe base64, and the entry 
   const english = await readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8")
   assert.match(english, /replace the whole \[mcp_servers\.\{name\}\] table/)
   assert.match(english, /kronika_get_context is the entry point/)
+  assert.match(english, /mcp\.docs: .*docs\/mcp-clients\.md/)
   const russian = await readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8")
   assert.match(russian, /замени целиком таблицу \[mcp_servers\.\{name\}\]/)
   assert.match(russian, /точка входа — kronika_get_context/)
+  assert.match(russian, /mcp\.docs: .*docs\/mcp-clients\.ru\.md/)
 })
 
 test("no component calls navigator.clipboard directly", async () => {

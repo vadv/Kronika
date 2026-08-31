@@ -198,17 +198,8 @@ function App({ locale, onLocale, t }: {
 }) {
   const time = useDisplayTime()
   const [database, setDatabase] = useState<string | null>(null)
-  useEffect(() => {
-    const controller = new AbortController()
-    apiFetch("/api/instance-label", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return
-        const body: { database?: string | null } = await response.json()
-        if (typeof body.database === "string" && body.database !== "") setDatabase(body.database)
-      })
-      .catch(() => {})
-    return () => controller.abort()
-  }, [])
+  const instanceLabelRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => instanceLabelRequest.current?.abort(), [])
   useEffect(() => {
     document.title = database === null ? "Kronika" : `${database} — Kronika`
     return () => {
@@ -682,6 +673,19 @@ function App({ locale, onLocale, t }: {
     return () => controller.abort()
   }, [backgroundReadyHour, backgroundTimeline, hour])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
+  useEffect(() => {
+    if (instanceLabelRequest.current !== null || hour === null || !refreshReady
+      || backgroundReadyHour !== hour || foregroundReadyKey.current !== foregroundKey) return
+    const controller = new AbortController()
+    instanceLabelRequest.current = controller
+    apiFetch("/api/instance-label", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return
+        const body: { database?: string | null } = await response.json()
+        if (typeof body.database === "string" && body.database !== "") setDatabase(body.database)
+      })
+      .catch(() => {})
+  }, [backgroundReadyHour, foregroundKey, hour, refreshReady])
   useEffect(() => hour === null || !refreshReady || refreshing
     ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
   const denseMetadata = currentData.snapshotRows[0]

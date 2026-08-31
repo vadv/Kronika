@@ -2,11 +2,11 @@ import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
-import { loadHeatmap } from "./api"
+import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
+import { loadHeatmap, type DataRow } from "./api"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
-import { humanBytes, humanDuration, measure, rawText, type Locale } from "./model"
+import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
 import { canonicalSearch } from "./search"
 import type { RelatedNavigation } from "./statement-navigation"
 
@@ -240,15 +240,17 @@ const PLAN_KEYS: LedgerKeys = { title: "activity.plans", bands: "activity.plans"
 const TABLE_KEYS: LedgerKeys = { title: "activity.tables", bands: "activity.tables" }
 const INDEX_KEYS: LedgerKeys = { title: "activity.indexes", bands: "activity.indexes" }
 
-export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, t }: {
+export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, rows, t }: {
   readonly blockSize: number | null
   readonly cursor: number
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onRelated: (target: RelatedNavigation) => void
+  readonly rows: readonly DataRow[]
   readonly t: Translate
 }) {
+  const texts = useMemo(() => statementTextsByQueryId(rows), [rows])
   const drill = (row: HeatmapViewRow) => {
     const queryId = rowQueryId(row)
     if (queryId === null) return
@@ -265,8 +267,9 @@ export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, 
 
   const label = (row: HeatmapViewRow): RowLabel => {
     const queryId = rowQueryId(row)
+    const text = queryId === null ? undefined : texts.get(queryId)
     return {
-      text: `Query ID ${queryId ?? "—"}`,
+      text: text === undefined ? t("pg.detail.query", { id: queryId ?? "—" }) : activityPreview(text),
       // Query identity includes role, database, and top-level status.
       prefix: identityPrefix(row, row.identity[3] === "false" ? t("activity.nested") : null),
     }
@@ -275,15 +278,17 @@ export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, 
   return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
 }
 
-export function PlansActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, t }: {
+export function PlansActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, rows, t }: {
   readonly blockSize: number | null
   readonly cursor: number
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onRelated: (target: RelatedNavigation) => void
+  readonly rows: readonly DataRow[]
   readonly t: Translate
 }) {
+  const texts = useMemo(() => planTextsByPlanId(rows), [rows])
   const drill = (row: HeatmapViewRow) => {
     const planId = row.identity[3]
     if (planId == null || planId === "0") return
@@ -292,8 +297,9 @@ export function PlansActivity({ blockSize, cursor, hour, locale, onCursor, onRel
   }
   const label = (row: HeatmapViewRow): RowLabel => {
     const planId = row.identity[3]
+    const text = planId == null ? undefined : texts.get(planId)
     return {
-      text: `Plan ID ${planId ?? "—"}`,
+      text: text === undefined ? t("pg.detail.plan", { id: planId ?? "—" }) : activityPreview(text),
       prefix: identityPrefix(row, null),
     }
   }
@@ -432,6 +438,25 @@ function identityPrefix(row: HeatmapViewRow, marker: string | null): string | nu
 function rowQueryId(row: HeatmapViewRow): string | null {
   const stored = row.identity[0]
   return stored == null || stored === "0" ? null : stored
+}
+
+function textsById(rows: readonly DataRow[], idField: string, textField: string): ReadonlyMap<string, string> {
+  const texts = new Map<string, string>()
+  for (const row of rows) {
+    const id = rawText(value(row, idField))
+    const text = rawText(value(row, textField))
+    if (id === null || text === null || text.trim() === "" || texts.has(id)) continue
+    texts.set(id, text)
+  }
+  return texts
+}
+
+export function statementTextsByQueryId(rows: readonly DataRow[]): ReadonlyMap<string, string> {
+  return textsById(rows, "queryid", "query")
+}
+
+export function planTextsByPlanId(rows: readonly DataRow[]): ReadonlyMap<string, string> {
+  return textsById(rows, "planid", "plan")
 }
 
 function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {

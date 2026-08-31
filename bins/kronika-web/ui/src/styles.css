@@ -368,6 +368,8 @@
   html { overflow-anchor: none; }
   body { background: var(--color-bg); min-height: 100vh; min-width: 320px; }
 }
+
+.mcp-dialog::backdrop { background: var(--color-shadow-a); }
 @layer base {
   button:focus-visible { outline: 2px solid var(--color-accent); }
   h1, h2 { color: var(--color-fg-hi); font-weight: 600; margin: 0; }

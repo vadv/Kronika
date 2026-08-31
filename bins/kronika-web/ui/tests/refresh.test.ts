@@ -199,6 +199,24 @@ test("first table settlement gates slow hour products without gating Process row
   assert.match(app, /\.\.\.\(lens === "tree" \? \[\{ section: "os_meminfo" \}\] : \[\]\)/)
 })
 
+test("the instance label waits for one settled foreground table", async () => {
+  const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  const ready = app.indexOf('const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"')
+  const requested = app.indexOf("instanceLabelRequest.current = controller")
+  const fetch = app.indexOf('apiFetch("/api/instance-label"')
+  assert.ok(ready >= 0)
+  assert.ok(requested > ready)
+  assert.ok(fetch > requested)
+  assert.doesNotMatch(app.slice(0, ready), /apiFetch\("\/api\/instance-label"/)
+
+  const gate = app.slice(app.lastIndexOf("useEffect(() => {", fetch), requested)
+  assert.match(gate, /instanceLabelRequest\.current !== null/)
+  assert.match(gate, /!refreshReady/)
+  assert.match(gate, /backgroundReadyHour !== hour/)
+  assert.match(gate, /foregroundReadyKey\.current !== foregroundKey/)
+  assert.match(app.slice(fetch, app.indexOf("const denseMetadata", fetch)), /\}, \[backgroundReadyHour, foregroundKey, hour, refreshReady\]\)/)
+})
+
 function fakeVisibility(initial: boolean) {
   const listeners = new Set<() => void>()
   return {
