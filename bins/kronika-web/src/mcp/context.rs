@@ -1,4 +1,4 @@
-//! `kronika_get_context`: logical product sections found in recorded segments.
+//! `kronika_list_recorded_sections`: logical product sections in recorded data.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};

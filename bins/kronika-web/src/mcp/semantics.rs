@@ -103,7 +103,8 @@ pub(crate) fn storage_error(error: &crate::api::ApiError) -> CallToolResult {
     );
     let mut message = storage_error_message(error);
     if hinted {
-        message.push_str("; kronika_get_context lists recorded sections and their fields");
+        message
+            .push_str("; kronika_list_recorded_sections lists recorded sections and their fields");
     }
     mcp_error(message)
 }
@@ -142,7 +143,7 @@ pub(crate) fn finder_storage_error(
 ) -> CallToolResult {
     if matches!(error, crate::api::ApiError::NoSuchColumn(_)) {
         return mcp_error(format!(
-            "no such sort field for {logical_name}; kronika_get_context lists the section's fields"
+            "no such sort field for {logical_name}; kronika_list_recorded_sections lists the section's fields"
         ));
     }
     storage_error(error)

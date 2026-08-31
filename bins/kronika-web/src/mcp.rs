@@ -55,7 +55,10 @@ struct KronikaMcp {
 impl ServerHandler for KronikaMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("kronika", env!("CARGO_PKG_VERSION")))
+            .with_server_info(
+                Implementation::new("kronika", env!("CARGO_PKG_VERSION")).with_title("Kronika"),
+            )
+            .with_instructions(catalog::SERVER_INSTRUCTIONS)
     }
 
     fn list_tools(

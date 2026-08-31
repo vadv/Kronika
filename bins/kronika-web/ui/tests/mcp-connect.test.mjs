@@ -52,7 +52,7 @@ test("the MCP drawer is a native modal that owns focus and Escape", async () => 
   assert.doesNotMatch(panel, /<aside/)
 })
 
-test("every client prompt carries the endpoint, wrap-safe base64, and the entry point", async () => {
+test("every client prompt carries the endpoint and wrap-safe base64", async () => {
   const panel = await readFile(new URL("../src/mcp-prompts.ts", import.meta.url), "utf8")
   // tr -d keeps long credentials from folding a newline into the header:
   // once in the placeholder claude command, once in the shared recipe.
@@ -66,11 +66,9 @@ test("every client prompt carries the endpoint, wrap-safe base64, and the entry 
   assert.match(connect, /selected\.builder\(url, auth, t, database\)/)
   const english = await readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8")
   assert.match(english, /replace the whole \[mcp_servers\.\{name\}\] table/)
-  assert.match(english, /kronika_get_context is the entry point/)
   assert.match(english, /mcp\.docs: .*docs\/mcp-clients\.md/)
   const russian = await readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8")
   assert.match(russian, /замени целиком таблицу \[mcp_servers\.\{name\}\]/)
-  assert.match(russian, /точка входа — kronika_get_context/)
   assert.match(russian, /mcp\.docs: .*docs\/mcp-clients\.ru\.md/)
 })
 

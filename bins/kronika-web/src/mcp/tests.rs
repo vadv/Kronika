@@ -160,6 +160,88 @@ fn assert_opaque_tool_contract(tools: &[serde_json::Value]) {
     );
 }
 
+async fn rpc_response(
+    config: Arc<Config>,
+    body: serde_json::Value,
+    protocol_version: Option<&str>,
+    mcp_method: Option<&str>,
+) -> serde_json::Value {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("http://kronika.test/mcp")
+        .header(HOST, "kronika.test")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream");
+    if let Some(protocol_version) = protocol_version {
+        builder = builder.header("MCP-Protocol-Version", protocol_version);
+    }
+    if let Some(mcp_method) = mcp_method {
+        builder = builder.header("Mcp-Method", mcp_method);
+    }
+    let request = builder
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&body).expect("json"),
+        )))
+        .expect("request");
+    let response = response(config, request).await;
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    serde_json::from_slice(&bytes).expect("json-rpc response")
+}
+
+#[tokio::test]
+async fn initialize_and_discover_publish_the_same_server_instructions() {
+    let expected = crate::mcp::catalog::SERVER_INSTRUCTIONS;
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        let response = rpc_response(
+            test_config(std::env::temp_dir()),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": version,
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "1.0"}
+                }
+            }),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response["result"]["instructions"], expected, "{version}");
+        assert_eq!(response["result"]["serverInfo"]["name"], "kronika");
+        assert_eq!(response["result"]["serverInfo"]["title"], "Kronika");
+    }
+
+    let response = rpc_response(
+        test_config(std::env::temp_dir()),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        }),
+        Some("2026-07-28"),
+        Some("server/discover"),
+    )
+    .await;
+    assert_eq!(response["result"]["instructions"], expected);
+    assert_eq!(
+        response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "kronika"
+    );
+}
+
 #[tokio::test]
 async fn tools_list_returns_the_fourteen_tool_catalog() {
     let body = json!({
@@ -198,8 +280,8 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
     assert_eq!(
         names,
         vec![
-            "kronika_overview",
-            "kronika_get_context",
+            "kronika_rank_metrics",
+            "kronika_list_recorded_sections",
             "kronika_get_instance",
             "kronika_find_postgresql_tables",
             "kronika_find_postgresql_indexes",
@@ -214,6 +296,17 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
             "kronika_find_events",
         ]
     );
+    assert_public_tool_contract(tools);
+}
+
+fn assert_public_tool_contract(tools: &[serde_json::Value]) {
+    for old_name in ["kronika_overview", "kronika_get_context"] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == old_name),
+            "obsolete tool remains published: {old_name}"
+        );
+    }
+    assert_tool_descriptions(tools);
     for tool in tools {
         if let Some(output_schema) = tool.get("outputSchema") {
             assert_eq!(
@@ -227,14 +320,14 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
     assert_opaque_tool_contract(tools);
     let overview = tools
         .iter()
-        .find(|tool| tool["name"] == "kronika_overview")
+        .find(|tool| tool["name"] == "kronika_rank_metrics")
         .expect("Overview tool");
     assert!(overview["outputSchema"].is_object());
     let overview_description = overview["description"].as_str().expect("description");
     assert!(!overview_description.contains("working"));
-    assert!(overview_description.contains("independent result"));
+    assert!(overview_description.contains("separate result"));
     assert!(!overview_description.contains("summed per row"));
-    assert!(overview_description.contains("does not change pre-ranking scan state"));
+    assert!(!overview_description.contains("scan state"));
     let events = tools
         .iter()
         .find(|tool| tool["name"] == "kronika_find_events")
@@ -252,6 +345,80 @@ async fn tools_list_returns_the_fourteen_tool_catalog() {
         events_schema["properties"]["sources"]["type"],
         json!(["array", "null"])
     );
+}
+
+fn assert_tool_descriptions(tools: &[serde_json::Value]) {
+    for (name, required_text) in [
+        (
+            "kronika_rank_metrics",
+            "Each requested field produces a separate result",
+        ),
+        (
+            "kronika_list_recorded_sections",
+            "Lists the recorded time bounds",
+        ),
+        ("kronika_get_instance", "latest recorded host metadata"),
+        (
+            "kronika_find_postgresql_tables",
+            "Filters are applied before aggregation",
+        ),
+        (
+            "kronika_find_postgresql_indexes",
+            "Filters are applied before aggregation",
+        ),
+        ("kronika_find_postgresql_activity", "including state, waits"),
+        ("kronika_find_postgresql_locks", "direct blocker PIDs"),
+        ("kronika_find_postgresql_vacuum", "dead-tuple storage"),
+        ("kronika_find_postgresql_databases", "Missing predecessors"),
+        (
+            "kronika_find_postgresql_statements",
+            "Derived fields expose per-call values",
+        ),
+        (
+            "kronika_find_postgresql_plans",
+            "`calls_per_second` is its interval rate",
+        ),
+        (
+            "kronika_find_processes",
+            "compatible observations of the same process",
+        ),
+        (
+            "kronika_get_row_detail",
+            "{stored_text, full_len, truncated, sha256}",
+        ),
+        ("kronika_find_events", "`groups` returns merged summaries"),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .expect("named tool");
+        assert!(
+            tool["description"]
+                .as_str()
+                .is_some_and(|description| description.contains(required_text)),
+            "{name} description"
+        );
+    }
+    for forbidden in [
+        "entry point",
+        "read it once per session",
+        "web Events console",
+        "request-budget refusal",
+        "pre-ranking scan",
+        "text ceiling",
+        "max_plan_length",
+        "WAL finalization",
+    ] {
+        for tool in tools {
+            assert!(
+                !tool["description"]
+                    .as_str()
+                    .is_some_and(|description| description.contains(forbidden)),
+                "{} description contains {forbidden}",
+                tool["name"]
+            );
+        }
+    }
 }
 
 #[test]
@@ -956,7 +1123,7 @@ async fn overview_field_expansion_runs_through_the_real_transport() {
         "id": 1,
         "method": "tools/call",
         "params": {
-            "name": "kronika_overview",
+            "name": "kronika_rank_metrics",
             "arguments": {
                 "from": 100,
                 "to": 400,
@@ -3375,37 +3542,29 @@ fn context_and_instance_reject_unexpected_arguments() {
 }
 
 #[tokio::test]
-async fn an_unknown_tool_name_is_a_protocol_error_not_a_tool_result() {
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": 9,
-        "method": "tools/call",
-        "params": {"name": "kronika_made_up", "arguments": {}}
-    });
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("http://kronika.test/mcp")
-        .header(HOST, "kronika.test")
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json, text/event-stream")
-        .body(Full::new(Bytes::from(
-            serde_json::to_vec(&body).expect("json"),
-        )))
-        .expect("request");
-
-    let response = response(test_config(std::env::temp_dir()), request).await;
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc response");
-    assert!(
-        decoded["error"].is_object(),
-        "expected top-level error: {decoded}"
-    );
-    assert!(decoded["result"].is_null(), "expected no result: {decoded}");
+async fn unknown_and_obsolete_tool_names_are_protocol_errors() {
+    for name in ["kronika_made_up", "kronika_overview", "kronika_get_context"] {
+        let decoded = rpc_response(
+            test_config(std::env::temp_dir()),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": {}}
+            }),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            decoded["error"].is_object(),
+            "expected top-level error for {name}: {decoded}"
+        );
+        assert!(
+            decoded["result"].is_null(),
+            "expected no result for {name}: {decoded}"
+        );
+    }
 }
 
 #[test]

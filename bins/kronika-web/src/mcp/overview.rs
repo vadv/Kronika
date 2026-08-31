@@ -1,4 +1,4 @@
-//! `kronika_overview`: thin MCP adapter for the shared Heatmap batch.
+//! `kronika_rank_metrics`: thin MCP adapter for the shared Heatmap batch.
 
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};

@@ -154,8 +154,8 @@ fn overview_schema_exposes_the_ordered_batch_and_nested_top_cap() {
     assert_eq!(ranking["properties"]["top"]["default"], 25);
     assert_eq!(ranking["properties"]["top"]["maximum"], 500);
     let description = overview.description.as_ref().expect("description");
-    assert!(description.contains("independent result"));
-    assert!(description.contains("field order"));
+    assert!(description.contains("separate result"));
+    assert!(description.contains("request order"));
     for removed in ["distinct numeric", "compatible unit", "Fields are summed"] {
         assert!(!description.contains(removed), "{removed}");
     }
@@ -505,33 +505,11 @@ fn row_detail_accepts_only_one_opaque_string() {
     );
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));
-    assert!(description.contains("never construct, inspect, guess, or modify"));
-    assert!(description.contains("copy it unchanged"));
+    assert!(description.contains("Pass a reference"));
     assert_no_internal_coordinates(
         "row detail input",
         &serde_json::Value::Object(detail.input_schema.as_ref().clone()),
     );
-
-    for name in [
-        FIND_POSTGRESQL_ACTIVITY_TOOL,
-        FIND_POSTGRESQL_LOCKS_TOOL,
-        FIND_POSTGRESQL_VACUUM_TOOL,
-        FIND_POSTGRESQL_DATABASES_TOOL,
-        FIND_POSTGRESQL_STATEMENTS_TOOL,
-        FIND_POSTGRESQL_PLANS_TOOL,
-        FIND_PROCESSES_TOOL,
-    ] {
-        let tool = catalog
-            .iter()
-            .find(|tool| tool.name.as_ref() == name)
-            .unwrap_or_else(|| panic!("{name} tool"));
-        assert!(
-            tool.description
-                .as_deref()
-                .is_some_and(|description| description.contains("detail_ref")),
-            "{name} must advertise detail_ref"
-        );
-    }
 }
 
 #[test]

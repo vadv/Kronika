@@ -92,20 +92,23 @@ fn a_missing_section_or_column_error_names_the_listing_tool() {
     let section = storage_error(&ApiError::NoSuchSection);
     let message = section.content[0].as_text().expect("text").text.clone();
     assert!(
-        message.contains("kronika_get_context lists recorded sections"),
+        message.contains("kronika_list_recorded_sections lists recorded sections"),
         "{message}"
     );
 
     let column = storage_error(&ApiError::NoSuchColumn("rss".to_owned()));
     let message = column.content[0].as_text().expect("text").text.clone();
-    assert!(message.contains("kronika_get_context"), "{message}");
+    assert!(
+        message.contains("kronika_list_recorded_sections"),
+        "{message}"
+    );
 
     let unreadable = storage_error(&ApiError::Unreadable(Box::new(std::io::Error::other(
         "broken",
     ))));
     let message = unreadable.content[0].as_text().expect("text").text.clone();
     assert!(
-        !message.contains("kronika_get_context"),
+        !message.contains("kronika_list_recorded_sections"),
         "an unreadable store has no listing to point at: {message}"
     );
 }
