@@ -5,7 +5,6 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { build } from "esbuild"
-import { gunzipSync } from "node:zlib"
 import { gzip } from "pako"
 
 import { dictionaryModule } from "./i18n.mjs"
@@ -108,7 +107,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
             namespace: "kronika-empty-fixture",
           }))
           context.onLoad({ filter: /.*/, namespace: "kronika-empty-fixture" }, () => ({
-            contents: "export const bundledFixtureHour=()=>null;export const bundledFixtureRange=()=>null",
+            contents: "export const bundledFixtureHeatmapRecords=()=>null;export const bundledFixtureHour=()=>null;export const bundledFixtureRange=()=>null",
             loader: "ts",
           }))
         }
@@ -148,8 +147,17 @@ async function fontFaces() {
 }
 
 async function fixtureScript() {
-  const compressed = await readFile(join(uiDirectory, "fixtures/real-hour.json.gz"))
-  const raw = gunzipSync(compressed).toString("utf8")
+  const generated = join(temporary, "real-hour-with-heatmaps.json")
+  execFileSync(
+    "cargo",
+    [`+${rustToolchain}`, "test", "--locked", "--quiet", "--target", rustHost, "-p", "kronika-web", "api::heatmap::real_fixture::export_real_hour_heatmaps", "--", "--ignored", "--exact"],
+    {
+      cwd: repository,
+      stdio: "pipe",
+      env: { ...process.env, CARGO_TERM_COLOR: "never", KRONIKA_REAL_HEATMAP_OUTPUT: generated },
+    },
+  )
+  const raw = await readFile(generated, "utf8")
   JSON.parse(raw)
   const safe = raw.replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")
   return `globalThis.__KRONIKA_REAL_HOUR__=${safe};`

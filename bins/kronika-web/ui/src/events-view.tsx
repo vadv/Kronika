@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Diamond, TriangleAlert } from "lucide-react"
 
-import { acceptResponse, loadSeries, type DataRow, type Finding, type HourData } from "./api"
+import { acceptResponse, loadEventGroups, type Finding, type HourData } from "./api"
 import { useDisplayTime } from "./display-time-context"
-import { EventTierSection, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
+import { EventTierSection, MinuteStrip, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
-import { MINUTE_COLUMNS, groupEvents, type EventEntry } from "./events-groups"
+import { MINUTE_COLUMNS, type EventEntry } from "./events-groups"
 import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
@@ -19,18 +19,10 @@ const MARK_ROWS = 120
 // The digest tile that selects the threshold band instead of a log stream.
 const MARKS_TILE = "marks"
 
-const EVENT_STREAMS: readonly { readonly section: string; readonly fields: readonly string[]; readonly where?: Readonly<Record<string, string>> }[] = [
-  { section: "pg_log_errors", fields: ["severity", "category", "sqlstate", "pattern", "count", "sample", "database", "username"] },
-  { section: "pg_log_checkpoints", fields: ["phase", "reason", "seconds_apart", "buffers_written", "write_ms", "sync_ms", "total_ms", "distance_kb", "wal_added", "wal_removed", "wal_recycled", "sync_files"] },
-  { section: "pg_log_autovacuum", fields: ["kind", "relation", "tuples_removed", "tuples_remaining", "tuples_dead_not_removable", "elapsed_ms"] },
-  { section: "pg_log_slow_queries", fields: ["pattern", "sample", "count", "max_duration_ms", "total_duration_ms"] },
-  { section: "pg_log_lock_waits", fields: ["kind", "pid", "lock_mode", "lock_target", "duration_ms", "holding_pids", "wait_queue", "statement"] },
-  { section: "pg_log_lifecycle", fields: ["kind", "pid", "signal", "shutdown_mode", "message", "query_detail"] },
-  { section: "pgbouncer_events", fields: ["level", "database", "username", "host", "text"] },
-  // What the server calls slow: the entries exist because a statement crossed
-  // this recorded setting, so the console says the setting out loud.
-  { section: "pg_settings", fields: ["name", "setting", "unit"], where: { name: "log_min_duration_statement" } },
-]
+const EVENT_SOURCES = [
+  "pg_log_errors", "pg_log_checkpoints", "pg_log_autovacuum", "pg_log_slow_queries",
+  "pg_log_lock_waits", "pg_log_lifecycle", "pgbouncer_events",
+] as const
 
 export function EventsView({
   cursor,
@@ -43,6 +35,7 @@ export function EventsView({
   onFinding,
   onOpenChart,
   onPattern,
+  onReady,
   onShowAll,
   onSelectedLane,
   revision,
@@ -62,6 +55,7 @@ export function EventsView({
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
   readonly onPattern: (pattern: string) => void
+  readonly onReady: () => void
   readonly onShowAll: () => void
   readonly onSelectedLane: (lane: string) => void
   readonly revision: number
@@ -71,8 +65,8 @@ export function EventsView({
   readonly selectedLane: string
   readonly t: Translate
 }) {
-  const streams = useEventStreams(data, hour, revision)
-  const entries = useMemo(() => streams.rows === null ? null : groupEvents(streams.rows, hour), [hour, streams.rows])
+  const events = useEventGroups(data, hour, revision, onReady)
+  const entries = events.rows
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
   const selectedEntry = useMemo(() => selected === null || entries === null ? null : entryOf(entries, selected), [entries, selected])
@@ -101,7 +95,7 @@ export function EventsView({
   const scoped = useMemo(() => {
     if (entries === null) return null
     if (scope === null) return entries
-    return entries.filter((entry) => scope.some((finding) => entryContains(entry, finding)))
+    return entries.filter((entry) => entryInScope(entry, scope))
   }, [entries, scope])
   const chosen = useMemo(() => {
     if (scoped === null || digest === null) return scoped
@@ -112,7 +106,7 @@ export function EventsView({
     const title = entryTitle(entry, t, locale)
     const category = "category" in entry.stat ? entry.stat.category : null
     const fields: Readonly<Record<string, readonly string[]>> = {
-      text: [title, entry.text ?? "", sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
+      text: [title, sectionLabel(entry.section, t), ...entryChips(entry, t).map((chip) => chip.label)],
       kind: [entry.tier],
       source: [sectionLabel(entry.section, t), entry.section],
       category: category === null ? [] : [categoryLabel(category, t)],
@@ -131,7 +125,7 @@ export function EventsView({
   const markGroups = useMemo(() => groupMarks(marks, hour, t), [hour, marks, t])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
-  const busy = loading || streams.loading
+  const busy = loading || events.loading
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
     {markGroups.length > 0 && (digest === null || digest === MARKS_TILE)
@@ -164,12 +158,18 @@ export function EventsView({
       </header>
       {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} marks={markGroups} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
+      {events.truncated && <EventsIncompleteNotice locale={locale} t={t} />}
       <div className={`${digest === MARKS_TILE ? "" : "max-[520px]:min-h-0 min-h-[390px] "}${busy && visible !== null ? "animate-pulse opacity-55" : ""}`} data-loading={busy || undefined} ref={list}>
         {digest === MARKS_TILE && <p className="table-empty" role="status">{t("events.marks.only")}</p>}
         {digest !== MARKS_TILE && <>
-        {visible === null && streams.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
-        {visible === null && !streams.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
-        {visible !== null && visible.length === 0 && <div className="table-empty flex items-center gap-2.5">{pattern === "" && scope === null ? t("events.console.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => { onPattern(""); onShowAll() }} type="button">{t("filter.clear")}</button></>}</div>}
+        {visible === null && events.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
+        {visible === null && !events.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
+        {visible !== null && visible.length === 0 && <EventsEmptyState
+          filtered={pattern !== "" || scope !== null}
+          onClear={() => { onPattern(""); onShowAll() }}
+          t={t}
+          truncated={events.truncated}
+        />}
         {visible !== null && tiersOf(visible).map(([tier, tierEntries]) => <EventTierSection
           entries={tierEntries}
           expandedKey={expandedKey}
@@ -186,6 +186,26 @@ export function EventsView({
       </div>
     </section>
   </>
+}
+
+export function EventsIncompleteNotice({ locale, t }: {
+  readonly locale: Locale
+  readonly t: Translate
+}) {
+  return <p className="m-0 border-b border-line2 bg-warn/10 px-[9px] py-2 text-xs leading-[1.45] text-warn" data-testid="events-truncated" role="status">
+    {t("events.console.truncated", { limit: new Intl.NumberFormat(locale).format(5000) })}
+  </p>
+}
+
+export function EventsEmptyState({ filtered, onClear, t, truncated }: {
+  readonly filtered: boolean
+  readonly onClear: () => void
+  readonly t: Translate
+  readonly truncated: boolean
+}) {
+  return <div className="table-empty flex items-center gap-2.5">{filtered
+    ? <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={onClear} type="button">{t("filter.clear")}</button></>
+    : t(truncated ? "events.console.truncated_none" : "events.console.empty")}</div>
 }
 
 interface DigestTile {
@@ -351,7 +371,13 @@ export function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFindin
         </small>
       </span>
       <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(group.findings.length, locale)}</span>
-      <span className="max-[760px]:hidden"><MarkStrip group={group} hour={hour} onCursor={onCursor} t={t} /></span>
+      <span className="max-[760px]:hidden"><MinuteStrip
+        fill={group.kind === "spike" ? "fill-warn" : "fill-bad"}
+        hour={hour}
+        minutes={group.minutes}
+        onCursor={onCursor}
+        t={t}
+      /></span>
       <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <div className="border-t border-line2 bg-s2 px-[9px] py-[7px]">
@@ -373,54 +399,20 @@ export function MarkGroupRow({ expanded, group, hour, locale, onCursor, onFindin
   </div>
 }
 
-function MarkStrip({ group, hour, onCursor, t }: {
-  readonly group: MarkGroup
-  readonly hour: number
-  readonly onCursor: (timestamp: number) => void
-  readonly t: Translate
-}) {
-  const peak = Math.max(...group.minutes, 1)
-  const columns = group.minutes.length
-  return <button
-    aria-label={t("events.strip")}
-    className="block h-[24px] w-[120px] flex-none cursor-pointer rounded-[var(--radius-xs)] border-0 bg-transparent p-0 transition-colors hover:bg-s2"
-    onClick={(event) => {
-      event.stopPropagation()
-      const bounds = event.currentTarget.getBoundingClientRect()
-      const minute = Math.min(columns - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * columns)))
-      onCursor(hour + minute * 60_000_000)
-    }}
-    tabIndex={-1}
-    type="button"
-  >
-    <svg aria-hidden="true" className="block h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${columns * 2} 24`}>
-      <line className="stroke-line2" strokeWidth="1" x1="0" x2={columns * 2} y1="23.5" y2="23.5" />
-      {group.minutes.map((count, minute) => count === 0 ? null : <rect
-        className={group.kind === "spike" ? "fill-warn" : "fill-bad"}
-        height={Math.max(2, Math.round((count / peak) * 21))}
-        key={minute}
-        rx="0.5"
-        width="1.6"
-        x={minute * 2 + 0.2}
-        y={23 - Math.max(2, Math.round((count / peak) * 21))}
-      />)}
-    </svg>
-  </button>
+export function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
+  const matches = entries.filter((entry) => entry.section === finding.logicalName
+    && entry.representativeTs === finding.timestamp)
+  return matches.length === 1 ? matches[0] ?? null : null
 }
 
-function entryOf(entries: readonly EventEntry[], finding: Finding): EventEntry | null {
-  return entries.find((entry) => entryContains(entry, finding)) ?? null
-}
-
-function entryContains(entry: EventEntry, finding: Finding): boolean {
-  return entry.rows.some((row) => row.segmentId === finding.segmentId
-    && row.typeId === finding.typeId
-    && row.ordinal === finding.rowOrdinal)
+export function entryInScope(entry: EventEntry, scope: readonly Finding[]): boolean {
+  return scope.some((finding) => finding.kind === "event" && finding.logicalName === entry.section)
 }
 
 interface StreamState {
   readonly key: string
-  readonly rows: Readonly<Record<string, readonly DataRow[]>> | null
+  readonly rows: readonly EventEntry[] | null
+  readonly truncated: boolean
   readonly loading: boolean
   readonly failed: boolean
 }
@@ -428,17 +420,17 @@ interface StreamState {
 // Live-hour revisions are frequent; full log sections refresh at most once per minute.
 const STREAM_REFRESH_MIN_MS = 60_000
 
-function useEventStreams(data: HourData, hour: number, revision: number): StreamState {
-  const wanted = EVENT_STREAMS
-    .filter((stream) => data.availableSections.includes(stream.section))
-    .map((stream) => stream.section)
+function useEventGroups(data: HourData, hour: number, revision: number, onReady: () => void): StreamState {
+  const wanted = EVENT_SOURCES
+    .filter((source) => data.availableSections.includes(source))
     .join(",")
   const key = `${hour}:${wanted}`
-  const [state, setState] = useState<StreamState>({ key: "", rows: null, loading: false, failed: false })
+  const [state, setState] = useState<StreamState>({ key: "", rows: null, truncated: false, loading: false, failed: false })
   const lastRead = useRef({ key: "", at: 0 })
   useEffect(() => {
     if (wanted === "") {
-      setState({ key, rows: {}, loading: false, failed: false })
+      setState({ key, rows: [], truncated: false, loading: false, failed: false })
+      onReady()
       return
     }
     const now = Date.now()
@@ -446,28 +438,31 @@ function useEventStreams(data: HourData, hour: number, revision: number): Stream
     lastRead.current = { key, at: now }
     setState((current) => current.key === key
       ? { ...current, loading: true }
-      : { key, rows: null, loading: true, failed: false })
+      : { key, rows: null, truncated: false, loading: true, failed: false })
     const controller = new AbortController()
-    const streams = EVENT_STREAMS.filter((stream) => wanted.split(",").includes(stream.section))
-    const loads = Promise.all(streams.map((stream) => loadSeries(hour, stream.section, stream.where ?? {}, stream.fields, controller.signal)))
+    const load = loadEventGroups(hour, wanted.split(","), controller.signal)
     acceptResponse(
-      loads,
+      load,
       controller.signal,
-      (loaded) => setState({
-        key,
-        rows: Object.fromEntries(streams.map((stream, index) => [stream.section, loaded[index] ?? []])),
-        loading: false,
-        failed: false,
-      }),
+      (result) => {
+        setState({
+          key,
+          rows: result.rows,
+          truncated: result.truncated,
+          loading: false,
+          failed: false,
+        })
+        onReady()
+      },
       () => {
         lastRead.current = { key: "", at: 0 }
         setState((current) => ({ ...current, key, loading: false, failed: true }))
       },
     )
-    loads.catch((error: unknown) => {
-      if (!controller.signal.aborted) console.error("events streams load failed", error)
+    load.catch((error: unknown) => {
+      if (!controller.signal.aborted) console.error("events load failed", error)
     })
     return () => controller.abort()
-  }, [hour, key, revision, wanted])
+  }, [hour, key, onReady, revision, wanted])
   return state
 }

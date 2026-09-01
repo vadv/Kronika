@@ -124,3 +124,35 @@ fn rejects_changed_type_without_baseline() {
         Err(vec![LintError::MissingBaseline { type_id: 1_002_001 }])
     );
 }
+
+#[test]
+fn only_audited_singleton_layouts_have_an_empty_identity() {
+    let singleton = crate::registry()
+        .iter()
+        .filter(|contract| {
+            !contract.deprecated
+                && contract.semantics != Semantics::EventStream
+                && contract.identity.is_empty()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        singleton
+            .iter()
+            .map(|contract| contract.type_id.get())
+            .collect::<Vec<_>>(),
+        [
+            1_021_001, 1_021_002, 1_103_001, 1_104_001, 1_105_001, 1_106_001, 1_110_001, 1_111_001,
+            1_205_001, 1_116_001, 1_118_001, 1_119_001, 1_120_001, 1_008_001, 1_006_001, 1_006_002,
+            1_015_001, 1_016_001, 1_017_001, 1_017_002, 1_007_001, 1_007_002, 1_020_001,
+        ],
+    );
+    for contract in singleton {
+        assert_eq!(
+            contract.sort_key,
+            ["ts"],
+            "type_id {} ({}) has no identity",
+            contract.type_id.get(),
+            contract.name,
+        );
+    }
+}

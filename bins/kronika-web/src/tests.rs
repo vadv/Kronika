@@ -7,15 +7,15 @@ use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    RequestTarget, SingleHeader, authorization, if_none_match_values, response_from_meta,
-    route_request, route_request_at, session_response,
+    RequestError, RequestTarget, SingleHeader, authorization, if_none_match_values,
+    response_from_meta, route_request, route_request_at, session_response,
 };
 use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
 use crate::config::Account;
 use crate::encoding::{AcceptedEncodings, ContentCoding};
 
-mod artifacts;
+pub(crate) mod artifacts;
 mod multi_layout;
 
 const AUTHORIZATION: &str = "Basic ZGJhOnNlY3JldA==";
@@ -81,6 +81,54 @@ fn session_route_response(
     }
 }
 
+#[test]
+fn the_instance_label_names_the_largest_recorded_database() {
+    let mut fixture = artifacts::Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100, 1, 11, 0, "small", "public", "t1", None, None, 100, None,
+        ),
+        (100, 2, 21, 0, "big", "public", "t2", None, None, 900, None),
+    ]);
+    fixture.finish();
+    assert_eq!(
+        crate::largest_database(fixture.root()),
+        Some("big".to_owned())
+    );
+    let empty = artifacts::Fixture::new();
+    assert_eq!(crate::largest_database(empty.root()), None);
+
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::instance_label_body(Some("big"))).expect("json");
+    assert_eq!(body["record"], "instance_label");
+    assert_eq!(body["database"], "big");
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::instance_label_body(None)).expect("json");
+    assert!(body["database"].is_null());
+}
+
+#[test]
+fn the_day_cache_header_overrides_no_store() {
+    let cached = crate::day_cached_private(crate::json_response(StatusCode::OK, "{}".to_owned()));
+    assert_eq!(
+        cached.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static(
+            "private,max-age=86400"
+        ))
+    );
+    assert_eq!(
+        cached.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Cookie"
+        ))
+    );
+    let plain = crate::json_response(StatusCode::OK, "{}".to_owned());
+    assert_eq!(
+        plain.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static("private,no-store"))
+    );
+}
+
 fn request_cookie(set_cookie: &str) -> &str {
     set_cookie.split(';').next().expect("request cookie")
 }
@@ -93,7 +141,14 @@ fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
 
 #[test]
 fn authentication_is_mandatory_and_central() {
-    for target in ["/api", "/api/", "/api/catalog", "/api/not-a-resource"] {
+    for target in [
+        "/api",
+        "/api/",
+        "/api/catalog",
+        "/api/mcp-access",
+        "/api/instance-label",
+        "/api/not-a-resource",
+    ] {
         let response = route_request(&account(), &public_request(Method::GET, target))
             .expect_err("missing credentials")
             .response();
@@ -326,6 +381,30 @@ fn expired_cookie_is_rejected_without_implicit_cleanup() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(!response.headers().contains_key(SET_COOKIE));
     assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+}
+
+#[test]
+fn mcp_request_with_a_well_formed_origin_is_rejected() {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(hyper::header::ORIGIN, "https://example.com")
+        .body(())
+        .expect("request");
+    let target = route_request_at(&account(), &request, 0);
+    assert!(matches!(target, Err(RequestError::OriginNotAllowed)));
+}
+
+#[test]
+fn mcp_request_with_no_origin_and_valid_auth_reaches_the_mcp_target() {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(hyper::header::AUTHORIZATION, AUTHORIZATION)
+        .body(())
+        .expect("request");
+    let target = route_request_at(&account(), &request, 0);
+    assert!(matches!(target, Ok(RequestTarget::Mcp)));
 }
 
 #[test]
@@ -772,4 +851,26 @@ async fn changed_source_replay_is_bounded_and_does_not_repeat_refusals() {
         refused_attempts.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
+}
+
+#[test]
+fn mcp_access_body_carries_the_basic_value_only_when_authentication_is_on() {
+    let config = |authentication_required| crate::config::Config {
+        data_root: std::path::PathBuf::from("/nonexistent"),
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: account(),
+        authentication_required,
+        cookie_secure: false,
+        sources: crate::config::SOURCE_OS,
+        synthetic_demo: false,
+    };
+
+    let with_auth: serde_json::Value =
+        serde_json::from_str(&crate::mcp_access_body(&config(true))).expect("json");
+    assert_eq!(with_auth["record"], "mcp_access");
+    assert_eq!(with_auth["authorization"], AUTHORIZATION);
+
+    let open: serde_json::Value =
+        serde_json::from_str(&crate::mcp_access_body(&config(false))).expect("json");
+    assert!(open["authorization"].is_null());
 }

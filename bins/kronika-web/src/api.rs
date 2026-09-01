@@ -10,20 +10,26 @@ use sha2::{Digest as _, Sha256};
 use crate::encoding::etag_matches;
 use crate::route::{ActiveCursor, Route};
 
-mod catalog;
-mod heatmap;
-mod history;
+pub(crate) mod catalog;
+pub(crate) mod events;
+pub(crate) mod heatmap;
+pub(crate) mod history;
 mod hour;
 mod index;
 mod query;
 mod render;
+pub(crate) mod row_detail;
+pub(crate) mod row_key;
 mod rows;
-mod snapshot;
+pub(crate) mod snapshot;
+pub(crate) mod time;
 
 #[cfg(test)]
 pub(crate) use hour::process_summary::{
     operations as process_summary_operations, reset_operations as reset_process_summary_operations,
 };
+#[cfg(test)]
+pub(crate) use hour::{operations as hour_operations, reset_operations as reset_hour_operations};
 #[cfg(test)]
 pub(crate) use snapshot::{
     context_operations, first_match_rows, history_operations, page_operations,
@@ -83,6 +89,8 @@ pub(crate) enum Prepared {
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
+    Events(events::PreparedEvents),
+    RowDetail(row_detail::PreparedRowDetail),
     Empty(ResponseMeta),
 }
 
@@ -97,6 +105,8 @@ impl Prepared {
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
+            Self::Events(prepared) => prepared.meta(),
+            Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -115,6 +125,8 @@ impl Prepared {
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
+            Self::Events(prepared) => prepared.stream(emit, cancelled),
+            Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -126,8 +138,11 @@ pub(crate) enum ApiError {
     NoSuchSegment,
     NoSuchSection,
     NoSuchColumn(String),
+    MixedUnits(String),
     BadFilter(String),
     BadCursor,
+    BadLocator(String),
+    Cancelled,
     Unreadable(Box<dyn Error + Send + Sync>),
 }
 
@@ -135,8 +150,12 @@ impl ApiError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
             Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_) | Self::BadFilter(_) | Self::BadCursor => StatusCode::BAD_REQUEST,
-            Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NoSuchColumn(_)
+            | Self::MixedUnits(_)
+            | Self::BadFilter(_)
+            | Self::BadCursor
+            | Self::BadLocator(_) => StatusCode::BAD_REQUEST,
+            Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -145,15 +164,20 @@ impl ApiError {
             Self::NoSuchSegment => "no_such_segment",
             Self::NoSuchSection => "no_such_section",
             Self::NoSuchColumn(_) => "no_such_column",
+            Self::MixedUnits(_) => "mixed_units",
             Self::BadFilter(_) => "bad_filter",
             Self::BadCursor => "bad_cursor",
+            Self::BadLocator(_) => "bad_locator",
+            Self::Cancelled => "cancelled",
             Self::Unreadable(_) => "unreadable",
         }
     }
 
     pub(crate) fn parameter(&self) -> Option<&str> {
         match self {
-            Self::NoSuchColumn(column) | Self::BadFilter(column) => Some(column),
+            Self::NoSuchColumn(column) | Self::MixedUnits(column) | Self::BadFilter(column) => {
+                Some(column)
+            }
             _ => None,
         }
     }
@@ -181,8 +205,11 @@ impl std::fmt::Display for ApiError {
             Self::NoSuchSegment => write!(f, "no such segment"),
             Self::NoSuchSection => write!(f, "no such logical section"),
             Self::NoSuchColumn(column) => write!(f, "no such column {column:?}"),
+            Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
             Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
             Self::BadCursor => write!(f, "invalid page cursor"),
+            Self::BadLocator(message) => message.fmt(f),
+            Self::Cancelled => write!(f, "request cancelled"),
             Self::Unreadable(error) => error.fmt(f),
         }
     }
@@ -241,11 +268,17 @@ pub(crate) fn prepare_with_demo(
         Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
+        Route::Events(request) => events::prepare(root, request).map(Prepared::Events),
+        Route::RowDetail(detail_ref) => {
+            row_detail::prepare(root, &detail_ref).map(Prepared::RowDetail)
+        }
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+        // Answered directly in `main.rs`.
+        Route::McpAccess | Route::InstanceLabel => return Err(ApiError::NoSuchSection),
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {

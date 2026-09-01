@@ -135,17 +135,26 @@ one of these, the answer is no, and the reason is this paragraph.
 
 ### Banned words
 
-Three words are banned in code, comments, logs, commit messages, and docs,
-because each one drags the machinery above back in behind it:
+The following terms are banned in code, comments, logs, commit messages, and
+documentation because they name the excluded machinery:
 
 | Banned | Use instead |
 |--------|-------------|
 | seal, sealing | write, close |
 | evidence, proof | damaged, broken |
 | gap | (nothing — do not name the concept) |
+| confidence | (nothing — state the number, not a confidence in it) |
+| anomaly, anomaly score | (nothing — do not name the concept) |
+| diagnosis, diagnose | what happened, what changed |
+| causal, caused by | coincided with, alongside |
+| recommend, should | (nothing — state the fact, not the action) |
+| root cause | (nothing — do not name the concept) |
 
 Write plainly. The collector writes a segment. A corrupt journal part is
 damaged and gets set aside. Two snapshots an hour apart are two snapshots.
+MCP tools read Kronika recordings and return recorded or computed values. They
+do not query the monitored host or PostgreSQL, interpret the values, or
+prescribe action.
 
 ## Where the collector is running
 
@@ -382,11 +391,12 @@ physical `type_id` already identifies the event class. HTTP and dump expose
 the numeric category only on a `pg_log_errors` locator.
 
 `pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
-an operator event: it has no finding locator and does not appear in Events or
-on the shared timeline. Raw temporary-file rows remain available through
-ordinary history and row reads. `pgbouncer_events` likewise has no finding
-locator and no timeline mark, but its rows do reach the Events console through
-ordinary row reads.
+a grouped operator event: it has no finding locator and does not appear in
+grouped Events or on the shared timeline. Events occurrences expose its compact
+structural fields; HTTP and MCP expose only an opaque `detail_ref`. The complete
+stored row remains available through row detail and ordinary history reads.
+`pgbouncer_events` likewise has no finding locator or timeline mark, but its
+rows do reach grouped Events.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,
@@ -430,6 +440,21 @@ the valid prefix of `active.wal`. Finished segments are immutable and
 browser-cacheable. Web revalidates the catalog and refreshes append-only active
 resources when a user requests current data.
 
+### Current-state finders
+
+The nine MCP current-state finders share one snapshot selector and the existing
+snapshot compute and search paths. Omitted `at` resolves once to the last
+timestamp in the whole captured store. The selector then uses the section's
+internal current-sample window at or before that point; an old sparse section
+does not become the present merely because it has no newer row. No usable row
+in the window produces an empty `rows` array.
+
+Structured filters are ANDed. `in` is one predicate with at most eight exact
+values and stays inside the same row scan. MCP finder results are bounded with
+`truncated` and have no continuation cursor. This does not change HTTP snapshot
+pagination: its existing page cursor and row representation remain the public
+contract.
+
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An
@@ -451,9 +476,11 @@ equivalent counter delta and observed duration, plus the last gauge sample.
 Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
-and similar display values would duplicate the largest fields in the segment.
-After a heatmap selects identities, projected raw reads supply query text,
-plans, command lines, and other large labels only for those identities.
+and similar payloads would duplicate the largest fields in the segment.
+Overview excludes those payloads from automatic labels, retains the other
+compact labels while decoding each selected row once, and retains the winning
+entity's exact detail locator in that pass. A caller requests the complete row
+explicitly through row detail; ranking does not start a later read.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
 browser revalidates against, so the file has to hold it rather than have web
@@ -592,10 +619,12 @@ a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
 that cell sets — because a correct filter at a silent moment reads as a wrong
 filter; a row with a reading at the cursor leaves the cursor where the reader
-put it. Query text is loaded separately for ranked statements
-when the current table page does not contain it. Tables and indexes use twelve
-cells for their five-minute cadence. Gauge metrics rank by the window maximum
-and display values rather than rates.
+put it. Only compact identities and allowed display labels travel with ranked
+entities in the heatmap response. Query text, plans, command lines, log or
+sample text, statements, context, hints, detail payloads, and similar stored
+data do not; the complete row remains on its owning point/detail path. Tables
+and indexes use twelve cells for their five-minute cadence.
+Gauge metrics rank by the window maximum and display values rather than rates.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -618,15 +647,37 @@ cross-day comparison, shows the full date. One contextual formatter owns this
 presentation, while stored instants, addresses, joins and copied exact values
 remain unchanged.
 
-Events reads the hour's log sections through ordinary row reads. Each group
-shows its recorded key, count, per-minute occurrences, first and last times,
-and one sample. Expanding a group shows its stream-specific columns and source
-rows.
+Events resolves the selected hour as a half-open `[from, to)` product query in
+Rust. One executor pins the reader and catalog segment set, opens each selected
+segment once, and reads the selected event sections plus the internal
+`pg_settings` threshold input. It forms complete groups and their global order
+before applying the result limit. `GET /api/events`, the MCP Events tool, and
+the browser share this execution, product ordering, and server-produced opaque
+`detail_ref`. Neither public transport exposes physical storage coordinates.
+The browser renders server order and has no second grouping reducer.
+
+Each group shows its recorded key, count, per-minute occurrences, first and
+last times, and structural statistics. Groups do not embed sample text or their
+source rows. The separate occurrence representation contains compact
+structural fields and known code labels; it also admits `pg_log_temp_files`,
+which has no grouped representation. HTTP and MCP groups and occurrences expose
+only `detail_ref`. The complete stored row is returned only by row detail. The
+browser starts that one exact read only from an explicit representative
+occurrence action; expanding a group performs no read. Both forms report
+truncation only when the global limit excludes matching entries and have no
+continuation cursor. The browser keeps that incomplete-result notice visible
+while local filters narrow the returned groups.
+
+A timeline cluster narrows the grouped console by the event sources it
+represents. A group's representative timestamp is used for auto-expansion only
+when it identifies one returned group for that source; it is not a list of the
+group's member rows.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
-normalized pattern and retain the slowest sample. Autovacuum and autoanalyze
-group by relation. Checkpoints form one group with timed and requested counts.
-PgBouncer events group by level and message. Lifecycle records remain separate.
+normalized pattern, and their representative row is the slowest occurrence.
+Autovacuum and autoanalyze group by relation. Checkpoints form one group with
+timed and requested counts. PgBouncer events group by level and message.
+Lifecycle records remain separate.
 
 Lock waits group by recorded `holding_pids`. Acquired rows have no holder list;
 they join waiting rows with the same pid and target, and unmatched rows form a
@@ -756,7 +807,16 @@ screen. An explicit control on the Inspector expands its chart across the
 viewport below the top bar; Escape or the same control restores the docked
 width. While the hour itself loads, the
 workspace paints its own shape — the timeline band, one status line carrying
-the received bytes and elapsed time, and table rows — not a modal card. Charts
+the received bytes and elapsed time, and table rows — not a modal card.
+
+The first usable object screen publishes its table after the lightweight hour
+base and the first cursor snapshot. It never waits for timeline lanes,
+Process-summary, or health context from metadata. While those products load,
+the timeline remains exactly 124 px high and the exact URL `at` does not move.
+Each background response is applied whole; an error leaves the working table
+and its prior data on screen.
+
+Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. Their required horizontal rail does not create
@@ -1040,8 +1100,9 @@ the catalog. `listSeries` discovers identities and applies exact label filters.
 The other calls request every intersecting segment and combine finished and
 active representations by `SegmentId`. `heatmap` asks the server for ranked
 identities, interval cells, and last-seen labels. The bundled-fixture build
-derives the same response shape from embedded rows. Health is an ordinary
-indexed time series available through `history` and section indexes.
+runs the same Rust product executor and embeds its exact response; JavaScript
+only decodes it. Health is an ordinary indexed time series available through
+`history` and section indexes.
 
 History can select several fields and series. The client requests every segment
 that intersects the window. Neither client nor server applies an implicit limit
@@ -1074,17 +1135,27 @@ sample exists. An hour holds one fewer span than it holds samples, so an edge
 column reads only when a recorded span reaches into it.
 
 Ranking uses the whole requested window and does not change with the number of
-columns. The first pass scans the whole window and selects the top K identities.
-Later passes allocate cells only for bounded batches of ranked identities or
-groups until K results are emitted. The requested K limits the returned
-identities, not the work needed to rank them. A counter ranks by its
-whole-window delta and a gauge by its whole-window maximum. A band total uses
-the sum for counters and the maximum for gauges. The response also carries a
-totals band containing the per-column sum of every entity and an others band
-equal to totals minus the ranked rows.
-Long ranges use segment-grain `.idx` for fields in the summary allowlist.
-Other fields, sub-segment resolution and partial boundary segments use
-projected raw samples.
+columns. MCP Overview expands each ranking's `fields` into independent result
+positions in ranking-item order then field order. Repeated fields and duplicate
+rankings remain in place. Each result identifies one section, exactly one field,
+and its unit; its `top` applies independently. Overview fields are never added
+together. HTTP heatmaps and the expanded MCP results normalize into one ordered
+batch query and one typed result. The planner combines each physical layout's
+needed metric, identity, group, and automatic label fields before reading it.
+Each selected physical row and dictionary body is decoded at most once for the
+batch and feeds every applicable ranking during that pass; cells and compact
+label references needed for the result are retained then. Rankings for one
+logical section share one section-owned identity index, compact identity cells,
+and latest automatic-label references; only the metric fold is ranking-local.
+The requested K limits the returned identities, not scan admission or the work
+needed to rank them. A counter ranks by its whole-window delta and a gauge by
+its whole-window maximum. A band total uses the sum for counters and the maximum
+for gauges. The response also carries a totals band containing the per-column
+sum of every entity and an others band equal to totals minus the ranked rows.
+Coverage contains only `state` (`data` or `no_data`) and decimal
+`window_rows`; it does not claim segment, field, or completeness coverage. The
+redundant `os_cpu` aggregate identity whose `cpu_id` is exactly `-1` is excluded
+from ranking, while recorded per-CPU identities remain.
 
 ### Representations
 
@@ -1092,6 +1163,36 @@ Potentially large textual section responses are streamable, for example as
 NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
 does not lose precision. A blob value carries the stored bytes and the recorded
 `full_len`, `truncated` and `hash` metadata.
+
+Mass MCP results tied to a recorded row, ranked entity, or event contain compact
+identifiers, metrics, bounded labels and one server-produced opaque
+`detail_ref`; relation aggregates with no single recorded row omit it. Grouped
+Events HTTP results follow the same compact-reference rule. These results do not
+inline query text, plans, command lines, log messages or similar stored
+payloads. Clients copy `detail_ref` unchanged and never parse, construct, alter
+or combine it. `/api/row-detail` and `kronika_get_row_detail` accept only that
+reference and are the browser and MCP transitions to the complete stored row.
+The server privately binds the stateless, versioned reference to the complete
+stable logical identity and treats its ordering information only as a hint. If
+finishing active data reorders rows, row detail resolves the exact same logical
+identity and returns the same row. A missing, altered or non-unique identity is
+an error, never another row. Each
+potentially large text field in that response has one stable object shape:
+`stored_text`, decimal `full_len`, `truncated`, and `sha256`. These fields
+preserve collector-side truncation facts; a short untruncated value uses
+`truncated: false` and `sha256: null`.
+
+Finder, Events, and Overview requests retain an exact 65,536-byte ceiling on
+their encoded arguments. Their structured results have no encoded-size cap and
+produce no size-limit error or size-reduction advice; the documented product
+row, group, and ranking limits remain the only result bounds.
+
+The common MCP `from`, `to`, and `at` time inputs accept Unix microseconds as a
+JSON integer or canonical signed decimal-string `i64`, as well as the documented
+RFC 3339, `now`, and fixed relative forms. Decimal-string `recorded_from`,
+the inclusive first stored timestamp, and `recorded_to`, the checked exclusive
+upper bound one microsecond after the last stored timestamp, can be passed to
+those inputs unchanged.
 
 The server returns codes and data: unit and kind names, logical section names,
 physical layouts, column names and unix times. It reads no `Accept-Language`,
@@ -1114,9 +1215,12 @@ Each finished per-section derived index has a stable URL and, because a
 finished segment cannot change, uses
 `Cache-Control: private, max-age=31536000, immutable` with the `ETag` from the
 `.idx` checksum. A browser that does revalidate gets `304 Not Modified` with no
-body. Active resources use `Cache-Control: private, no-store`. Basic
-authentication keeps all of these representations out of public and shared
-caches.
+body. Active resources use `Cache-Control: private, no-store`. The instance
+label answer uses `Cache-Control: private, max-age=86400` when a label
+exists — deriving it reads the newest relation snapshot, and a day-old
+name is acceptable; an absent label stays `no-store`, so a fresh
+install picks its name up on the next page load. Basic authentication
+keeps all of these representations out of public and shared caches.
 
 An active cursor is `(segment_id, wal_position)`, where `wal_position` is the
 committed end of the valid WAL prefix. It is never a metric timestamp, so rows

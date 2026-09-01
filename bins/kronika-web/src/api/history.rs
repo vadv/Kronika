@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
-use kronika_reader::{Cell, Row, Segment, SegmentKind};
-use serde_json::json;
+use kronika_reader::{Cell, Row, Segment, SegmentKind, SegmentRef};
+use serde_json::{Value, json};
 
 use super::query::{Plan, apply_tail, plans, streaming_chunk_dictionary, validate_row_dictionary};
 use super::render::{cell, projected_layout, record};
@@ -153,9 +153,7 @@ impl PreparedHistory {
                 {
                     return true;
                 }
-                let value = point
-                    .value
-                    .map_or(serde_json::Value::Null, |value| json!(value));
+                let value = point.value.map_or(Value::Null, |value| json!(value));
                 let values = vec![value; plan.field_count];
                 match record(json!({
                     "record": "row",
@@ -181,10 +179,7 @@ impl PreparedHistory {
     }
 }
 
-fn health_plan(
-    request: &DataRequest,
-    tail: Option<&kronika_reader::SegmentRef>,
-) -> Result<HealthPlan, ApiError> {
+fn health_plan(request: &DataRequest, tail: Option<&SegmentRef>) -> Result<HealthPlan, ApiError> {
     for field in &request.fields {
         if field != "health" {
             return Err(ApiError::NoSuchColumn(field.clone()));
@@ -231,17 +226,14 @@ fn emit_chunk(
             .identity
             .iter()
             .map(|name| {
-                row.get(name).map_or(Ok(serde_json::Value::Null), |value| {
-                    cell(value, &dictionary)
-                })
+                row.get(name)
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let timestamp = plan
             .timestamp
             .and_then(|name| row.get(name))
-            .map_or(Ok(serde_json::Value::Null), |value| {
-                cell(value, &dictionary)
-            })?;
+            .map_or(Ok(Value::Null), |value| cell(value, &dictionary))?;
         let values = plan
             .fields
             .iter()
@@ -249,9 +241,7 @@ fn emit_chunk(
                 field
                     .column
                     .and_then(|name| row.get(name))
-                    .map_or(Ok(serde_json::Value::Null), |value| {
-                        cell(value, &dictionary)
-                    })
+                    .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
         if !emit(record(json!({

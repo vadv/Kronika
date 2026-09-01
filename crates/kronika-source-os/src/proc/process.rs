@@ -11,6 +11,7 @@ pub use crate::proc::stat::ParseError;
 
 mod model;
 mod parse;
+mod process_io;
 mod sections;
 
 pub use model::{
@@ -18,7 +19,8 @@ pub use model::{
     ProcessRead, ProcessStatusRow,
 };
 pub use parse::{parse_cgroup_path, parse_io, parse_stat, parse_status};
-pub use sections::{to_hot_section, to_status_section};
+pub use process_io::{ProcessIoCredentials, ProcessIoTarget};
+pub use sections::{set_hot_section_io, to_hot_section, to_status_section};
 
 use parse::{
     i8_from_i64, i16_from_i64, i32_from_i64, normalize_cmdline, parse_btime,
@@ -86,8 +88,6 @@ pub struct ProcessReader<'a> {
     rel: String,
     path: PathBuf,
     content: String,
-    own_uid: u32,
-    own_gid: u32,
 }
 
 impl<'a> ProcessReader<'a> {
@@ -99,8 +99,6 @@ impl<'a> ProcessReader<'a> {
             rel: String::with_capacity(32),
             path: PathBuf::new(),
             content: String::with_capacity(2 * 1024),
-            own_uid: rustix::process::getuid().as_raw(),
-            own_gid: rustix::process::getgid().as_raw(),
         }
     }
 
@@ -120,6 +118,25 @@ impl<'a> ProcessReader<'a> {
         ts: i64,
         cgroup_path: Option<String>,
     ) -> Result<ProcessRead, ProcessError> {
+        let mut process = self.read_without_io(pid, facts, ts, cgroup_path)?;
+        let target = ProcessIoTarget::new(pid, process.hot.uid, process.hot.gid);
+        let mut credentials = ProcessIoCredentials::new();
+        credentials.read(self, &[target], |_, io| process.hot.io = Some(io));
+        Ok(process)
+    }
+
+    /// Read one process without `/proc/PID/io` so callers can batch that file
+    /// by filesystem credentials.
+    ///
+    /// # Errors
+    /// Returns [`ProcessError`] under the same conditions as [`Self::read`].
+    pub fn read_without_io(
+        &mut self,
+        pid: i32,
+        facts: ProcessFacts,
+        ts: i64,
+        cgroup_path: Option<String>,
+    ) -> Result<ProcessRead, ProcessError> {
         let stat =
             parse_stat(self.read_required(pid, "stat")?).map_err(|source| ProcessError::Parse {
                 path: format!("{pid}/stat"),
@@ -133,7 +150,6 @@ impl<'a> ProcessReader<'a> {
             }
         })?;
 
-        let io = self.read_io(pid, status.uid, status.gid);
         let rundelay_ns = self.read_schedstat(pid).unwrap_or(0);
         let cmdline = self.read_cmdline(pid);
         let comm = self.read_comm(pid).unwrap_or_else(|| stat.comm.clone());
@@ -175,7 +191,7 @@ impl<'a> ProcessReader<'a> {
             vmem_kb: stat.vsize_bytes / 1024,
             rmem_kb: rss_kb(stat.rss_pages, facts.page_size_bytes),
             vswap_kb: status.vm_swap,
-            io,
+            io: None,
             exit_signal: i32_from_i64(stat.exit_signal),
         };
         let status = ProcessStatusRow {
@@ -211,22 +227,8 @@ impl<'a> ProcessReader<'a> {
         Ok(&self.content)
     }
 
-    fn read_io(&mut self, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
-        if needs_fs_creds((uid, gid), (self.own_uid, self.own_gid)) {
-            return self.read_io_with_fs_creds(pid, uid, gid);
-        }
-        self.read_raw(pid, "io").ok().map(parse_io)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn read_io_with_fs_creds(&mut self, pid: i32, uid: u32, gid: u32) -> Option<ProcIo> {
-        let _guard = FsCredGuard::switch(uid, gid);
-        self.read_raw(pid, "io").ok().map(parse_io)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    const fn read_io_with_fs_creds(&mut self, _pid: i32, _uid: u32, _gid: u32) -> Option<ProcIo> {
-        None
+    fn read_io_raw(&mut self, pid: i32) -> io::Result<ProcIo> {
+        self.read_raw(pid, "io").map(parse_io)
     }
 
     fn read_schedstat(&mut self, pid: i32) -> Option<i64> {
@@ -244,40 +246,6 @@ impl<'a> ProcessReader<'a> {
     fn read_comm(&mut self, pid: i32) -> Option<String> {
         let comm = self.read_raw(pid, "comm").ok()?.trim();
         (!comm.is_empty()).then(|| comm.to_owned())
-    }
-}
-
-/// Whether reading a pid's `io` file needs a filesystem-credential switch
-/// first. A plain read only ever succeeds when our own filesystem
-/// credentials already match the target process, so a same-identity pid can
-/// skip straight to the read instead of paying for a read that is bound to
-/// fail with `EACCES`.
-const fn needs_fs_creds(target: (u32, u32), own: (u32, u32)) -> bool {
-    target.0 != own.0 || target.1 != own.1
-}
-
-#[cfg(target_os = "linux")]
-struct FsCredGuard {
-    uid: nix::unistd::Uid,
-    gid: nix::unistd::Gid,
-}
-
-#[cfg(target_os = "linux")]
-impl FsCredGuard {
-    fn switch(uid: u32, gid: u32) -> Self {
-        let saved_group = nix::unistd::setfsgid(nix::unistd::Gid::from_raw(gid));
-        Self {
-            uid: nix::unistd::setfsuid(nix::unistd::Uid::from_raw(uid)),
-            gid: saved_group,
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for FsCredGuard {
-    fn drop(&mut self) {
-        nix::unistd::setfsuid(self.uid);
-        nix::unistd::setfsgid(self.gid);
     }
 }
 

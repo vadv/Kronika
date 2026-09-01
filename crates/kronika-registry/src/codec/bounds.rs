@@ -2,13 +2,13 @@
 
 use super::{
     CodecError, ColumnType, FINAL_DATA_PAGE_BYTES, FINAL_FILE_FRAMING_BOUND,
-    FINAL_PAGE_FRAMING_BOUND, MAX_LIST_I32_VALUES_PER_SECTION, MAX_SECTION_BYTES, check_row_cap,
+    FINAL_PAGE_FRAMING_BOUND, MAX_LIST_I32_VALUES_PER_SECTION, MAX_SECTION_BYTES,
+    SECTION_WRITE_BATCH_ROWS, check_row_cap,
 };
 
 /// PLAIN value and level bytes for one physical column before Zstandard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinalPlainColumnSize {
-    name: &'static str,
     value_bytes: usize,
     level_bytes: usize,
 }
@@ -16,66 +16,12 @@ pub struct FinalPlainColumnSize {
 impl FinalPlainColumnSize {
     /// Describe one physical PLAIN column for final-body admission.
     #[must_use]
-    pub const fn new(name: &'static str, value_bytes: usize, level_bytes: usize) -> Self {
+    pub const fn new(value_bytes: usize, level_bytes: usize) -> Self {
         Self {
-            name,
             value_bytes,
             level_bytes,
         }
     }
-}
-
-/// Conservative upper bound for one final PLAIN + Zstd Parquet body.
-///
-/// `value_bytes` is also the quantity Parquet 55 uses to decide whether to
-/// flush a PLAIN data page. Keeping it strictly below the configured page size
-/// guarantees that later NULL/list levels cannot create another page. The
-/// body bound uses Zstandard's documented compression bound plus fixed,
-/// deliberately generous page/metadata allowances for the pinned writer.
-/// The encoded body is checked against the same hard cap again after write.
-///
-/// # Errors
-///
-/// Returns [`CodecError::PlainPageTooLarge`] when one value stream cannot stay
-/// on one page, or [`CodecError::SectionTooLarge`] when the conservative final
-/// body bound crosses [`MAX_SECTION_BYTES`].
-pub fn final_plain_body_bound(
-    columns: impl IntoIterator<Item = FinalPlainColumnSize>,
-) -> Result<usize, CodecError> {
-    let mut body = FINAL_FILE_FRAMING_BOUND;
-    for column in columns {
-        if column.value_bytes >= FINAL_DATA_PAGE_BYTES {
-            return Err(CodecError::PlainPageTooLarge {
-                name: column.name,
-                len: column.value_bytes,
-                max: FINAL_DATA_PAGE_BYTES - 1,
-            });
-        }
-        let page = column.value_bytes.checked_add(column.level_bytes).ok_or(
-            CodecError::SectionTooLarge {
-                len: usize::MAX,
-                max: MAX_SECTION_BYTES,
-            },
-        )?;
-        let compressed = zstd_compress_bound(page).ok_or(CodecError::SectionTooLarge {
-            len: usize::MAX,
-            max: MAX_SECTION_BYTES,
-        })?;
-        body = body
-            .checked_add(compressed)
-            .and_then(|bytes| bytes.checked_add(FINAL_PAGE_FRAMING_BOUND))
-            .ok_or(CodecError::SectionTooLarge {
-                len: usize::MAX,
-                max: MAX_SECTION_BYTES,
-            })?;
-    }
-    if body > MAX_SECTION_BYTES {
-        return Err(CodecError::SectionTooLarge {
-            len: body,
-            max: MAX_SECTION_BYTES,
-        });
-    }
-    Ok(body)
 }
 
 /// Conservative body bound for PLAIN columns written in one record batch.
@@ -142,6 +88,7 @@ pub fn final_single_batch_plain_body_bound(
 }
 
 /// The `ZSTD_COMPRESSBOUND` formula from the pinned Zstandard 1.5 contract.
+#[cfg(test)]
 pub(super) fn zstd_compress_bound(src_size: usize) -> Option<usize> {
     let small_input_margin = if src_size < 128 * 1024 {
         ((128 * 1024) - src_size) >> 11
@@ -161,8 +108,8 @@ pub(super) fn zstd_compress_bound(src_size: usize) -> Option<usize> {
 ///
 /// # Errors
 ///
-/// Returns [`CodecError`] for an unknown type, row/list overflow, a value page
-/// above [`FINAL_DATA_PAGE_BYTES`], or an 8 MiB final-body bound breach.
+/// Returns [`CodecError`] for an unknown type, row/list overflow, arithmetic
+/// overflow, or a version-1 final-body bound breach.
 pub fn final_data_body_bound(
     type_id: u32,
     rows: usize,
@@ -195,15 +142,15 @@ pub fn final_data_body_bound(
     }
 
     let mut columns = Vec::with_capacity(contract.columns.len());
+    let mut pages_per_column = rows.div_ceil(SECTION_WRITE_BATCH_ROWS).max(1);
     for column in contract.columns {
         let (value_bytes, level_bytes) = if column.ty == ColumnType::ListI32 {
             let values =
                 list_i32_child_values
                     .checked_mul(4)
-                    .ok_or(CodecError::PlainPageTooLarge {
-                        name: column.name,
+                    .ok_or(CodecError::SectionTooLarge {
                         len: usize::MAX,
-                        max: FINAL_DATA_PAGE_BYTES - 1,
+                        max: MAX_SECTION_BYTES,
                     })?;
             let levels = rows
                 .checked_add(list_i32_child_values)
@@ -231,13 +178,10 @@ pub fn final_data_body_bound(
                 ColumnType::Bool => 1,
                 ColumnType::ListI32 => unreachable!("handled above"),
             };
-            let values = rows
-                .checked_mul(width)
-                .ok_or(CodecError::PlainPageTooLarge {
-                    name: column.name,
-                    len: usize::MAX,
-                    max: FINAL_DATA_PAGE_BYTES - 1,
-                })?;
+            let values = rows.checked_mul(width).ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?;
             let levels = if column.nullable {
                 rows.checked_mul(2)
                     .and_then(|bytes| bytes.checked_add(8))
@@ -250,11 +194,16 @@ pub fn final_data_body_bound(
             };
             (values, levels)
         };
-        columns.push(FinalPlainColumnSize::new(
-            column.name,
-            value_bytes,
-            level_bytes,
-        ));
+        let column_pages = value_bytes
+            .checked_add(level_bytes)
+            .ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?
+            .div_ceil(FINAL_DATA_PAGE_BYTES)
+            .max(1);
+        pages_per_column = pages_per_column.max(column_pages);
+        columns.push(FinalPlainColumnSize::new(value_bytes, level_bytes));
     }
-    final_plain_body_bound(columns)
+    final_single_batch_plain_body_bound(columns, pages_per_column)
 }

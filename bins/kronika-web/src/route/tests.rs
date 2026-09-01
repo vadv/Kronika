@@ -1,8 +1,9 @@
 use super::{
-    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest,
+    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, HeatmapRequest, HourPart,
     MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
     Window, parse,
 };
+use crate::api::events::{EventSource, EventsRepresentation};
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {
@@ -21,6 +22,36 @@ fn catalog_accepts_only_valid_ordered_bounds() {
         parse("/api/catalog", Some("colour=green")),
         Err(RouteError::BadParameter("colour".to_owned()))
     );
+}
+
+#[test]
+fn events_route_is_half_open_deduplicated_and_strict() {
+    let Route::Events(request) = parse(
+        "/api/events",
+        Some("from=10&to=20&representation=occurrences&limit=5&source=pg_log_errors&source=pg_log_temp_files&source=pg_log_errors"),
+    )
+    .expect("events route") else {
+        panic!("events route");
+    };
+    assert_eq!(request.range.from, 10);
+    assert_eq!(request.range.to_exclusive, 20);
+    assert_eq!(request.representation, EventsRepresentation::Occurrences);
+    assert_eq!(
+        request.sources,
+        [EventSource::Errors, EventSource::TempFiles]
+    );
+
+    for query in [
+        "to=20&limit=5",
+        "from=10&limit=5",
+        "from=20&to=10&limit=5",
+        "from=0&to=3600000001&limit=5",
+        "from=10&to=20&limit=0",
+        "from=10&to=20&limit=5&representation=raw",
+        "from=10&to=20&limit=5&source=pg_log_temp_files",
+    ] {
+        assert!(parse("/api/events", Some(query)).is_err(), "{query}");
+    }
 }
 
 #[test]
@@ -99,6 +130,47 @@ fn physical_layout_selection_is_available_to_every_generic_row_resource() {
         hour.series.and_then(|series| series.type_id),
         Some(1_002_002)
     );
+}
+
+#[test]
+fn hour_parts_pin_one_exact_segment_set_and_active_prefix() {
+    let Route::Hour(base) = parse("/api/hour", Some("from=1&to=2&part=base")).expect("hour base")
+    else {
+        panic!("hour route");
+    };
+    assert_eq!(base.part, HourPart::Base);
+    assert_eq!(base.segments, None);
+    assert_eq!(base.active, None);
+
+    let Route::Hour(lanes) = parse(
+        "/api/hour",
+        Some("from=1&to=2&part=lanes&segments=7%2C9&active=9%2C100"),
+    )
+    .expect("pinned hour lanes") else {
+        panic!("hour route");
+    };
+    assert_eq!(lanes.part, HourPart::Lanes);
+    assert_eq!(lanes.segments, Some(vec![7, 9]));
+    assert_eq!(
+        lanes.active,
+        Some(ActiveCursor {
+            segment_id: 9,
+            wal_position: 100,
+        })
+    );
+
+    for query in [
+        "from=1&to=2&part=lanes",
+        "part=lanes&segments=",
+        "from=1&part=lanes&segments=",
+        "from=1&to=2&part=base&segments=7",
+        "from=1&to=2&part=base&active=7,100",
+        "from=1&to=2&part=lanes&segments=7,7",
+        "from=1&to=2&part=combined",
+        "from=1&to=2&section=os_cpu&part=base",
+    ] {
+        assert!(parse("/api/hour", Some(query)).is_err(), "{query}");
+    }
 }
 
 #[test]
@@ -611,7 +683,7 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
         parse(
             "/api/heatmap",
             Some(
-                "from=0&to=3599999999&section=pg_stat_statements&field=wal_bytes&label=datname&label=usename&columns=60&top=25"
+                "from=0&to=3599999999&section=pg_stat_statements&field=wal_bytes&columns=60&top=25"
             ),
         ),
         Ok(Route::Heatmap(HeatmapRequest {
@@ -621,10 +693,16 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
             fields: vec!["wal_bytes".to_owned()],
             columns: 60,
             top: 25,
-            labels: vec!["datname".to_owned(), "usename".to_owned()],
             group: Vec::new(),
             type_id: None,
         }))
+    );
+    assert_eq!(
+        parse(
+            "/api/heatmap",
+            Some("from=0&to=1&section=s&field=f&label=name")
+        ),
+        Err(RouteError::BadParameter("label".to_owned()))
     );
     assert_eq!(
         parse("/api/heatmap", Some("from=0&to=1&section=s")),
@@ -644,5 +722,46 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
     assert_eq!(
         parse("/api/heatmap", Some("from=2&to=1&section=s&field=f")),
         Err(RouteError::BadParameter("from".to_owned()))
+    );
+}
+
+#[test]
+fn row_detail_accepts_one_bounded_opaque_reference() {
+    assert_eq!(
+        parse("/api/row-detail", Some("detail_ref=opaque_-ref")),
+        Ok(Route::RowDetail("opaque_-ref".to_owned()))
+    );
+    for query in ["", "detail_ref=", "detail_ref=one&detail_ref=two"] {
+        assert_eq!(
+            parse("/api/row-detail", Some(query)),
+            Err(RouteError::BadParameter("detail_ref".to_owned())),
+            "{query}",
+        );
+    }
+    assert_eq!(
+        parse("/api/row-detail", Some("detail_ref=one&segment_id=7")),
+        Err(RouteError::BadParameter("segment_id".to_owned()))
+    );
+    let oversized = format!(
+        "detail_ref={}",
+        "A".repeat(crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES + 1)
+    );
+    assert_eq!(
+        parse("/api/row-detail", Some(&oversized)),
+        Err(RouteError::BadParameter("detail_ref".to_owned()))
+    );
+}
+
+#[test]
+fn the_directly_answered_api_routes_take_no_query() {
+    assert_eq!(parse("/api/mcp-access", None), Ok(Route::McpAccess));
+    assert_eq!(parse("/api/instance-label", None), Ok(Route::InstanceLabel));
+    assert_eq!(
+        parse("/api/instance-label", Some("verbose=1")),
+        Err(RouteError::BadParameter("query".to_owned()))
+    );
+    assert_eq!(
+        parse("/api/mcp-access", Some("verbose=1")),
+        Err(RouteError::BadParameter("query".to_owned()))
     );
 }

@@ -73,7 +73,7 @@ export function Timeline({
   readonly primaryLane?: string | undefined
   readonly presentation?: TimelinePresentation | undefined
   readonly selectedLane?: string | undefined
-  readonly shownAt?: number | null
+  readonly shownAt: number | null
   readonly t: Translate
 }) {
   const time = useDisplayTime()
@@ -107,12 +107,13 @@ export function Timeline({
   useEffect(() => {
     if (previousPrimary.current === primaryLane) return
     previousPrimary.current = primaryLane
-    if (lanes.some((lane) => lane.key === primaryLane)) setSelectedLane(primaryLane)
-  }, [lanes, primaryLane])
+    setSelectedLane(primaryLane)
+  }, [primaryLane])
   useEffect(() => {
     if (lanes.some((lane) => lane.key === selectedLane)) return
+    if (controlledLane !== undefined) return
     setSelectedLane(lanes.find((lane) => lane.key === primaryLane)?.key ?? lanes[0]?.key ?? "health")
-  }, [lanes, primaryLane, selectedLane])
+  }, [controlledLane, lanes, primaryLane, selectedLane])
   const selected = lanes.find((lane) => lane.key === selectedLane) ?? lanes[0]
   const laneTimes = useMemo(() => timelineNavigationTimes(lanes), [lanes])
   const cursorTimes = useMemo(
@@ -208,7 +209,7 @@ export function Timeline({
       threshold={threshold}
       variant={presentation}
     />
-    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} t={t} time={time.timestamp} />}
+    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} shownAt={shownAt} t={t} time={time.timestamp} />}
   </section>
 }
 

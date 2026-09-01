@@ -360,6 +360,36 @@ impl Segment {
         }
         Ok(dictionary)
     }
+
+    /// Decode each dictionary body once while retaining only `ids`.
+    ///
+    /// This is intended for product queries that have already collected their
+    /// compact references during the data-row scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dictionary body fails its checksum or codec.
+    pub fn dictionary_once_for(&self, ids: &HashSet<u64>) -> Result<Dictionary, ReaderError> {
+        let mut dictionary = Dictionary::default();
+        if ids.is_empty() {
+            return Ok(dictionary);
+        }
+        match &self.source {
+            Source::Finished { file, catalog } => {
+                decode_once_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
+                    finished_body(file, entry)
+                })?;
+            }
+            Source::Active(snapshot) => {
+                for (part_index, part) in snapshot.parts().iter().enumerate() {
+                    decode_once_dictionary_catalog(&mut dictionary, &part.catalog, ids, |entry| {
+                        active_body(snapshot, part_index, entry)
+                    })?;
+                }
+            }
+        }
+        Ok(dictionary)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -423,6 +453,23 @@ fn decode_selected_dictionary_catalog(
             let type_id = entry.type_id;
             dictionary
                 .decode_selected(type_id, body(entry)?, ids, u64::from(entry.rows))
+                .map_err(|source| ReaderError::Section { type_id, source })?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_once_dictionary_catalog(
+    dictionary: &mut Dictionary,
+    catalog: &Catalog,
+    ids: &HashSet<u64>,
+    mut body: impl FnMut(&Entry) -> Result<VerifiedSection, ReaderError>,
+) -> Result<(), ReaderError> {
+    for entry in &catalog.entries {
+        if matches!(entry.type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
+            let type_id = entry.type_id;
+            dictionary
+                .decode_selected_once(type_id, body(entry)?, ids, u64::from(entry.rows))
                 .map_err(|source| ReaderError::Section { type_id, source })?;
         }
     }

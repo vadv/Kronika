@@ -155,9 +155,10 @@ export function processSummaryReducer(state: ProcessSummaryState, action: Proces
   return { hour: action.hour, history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
 }
 
-export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t }: {
+export function ProcessSummary({ cursor, dispatch, enabled, hour, lens, locale, state, t }: {
   readonly cursor: number
   readonly dispatch: Dispatch<ProcessSummaryAction>
+  readonly enabled: boolean
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
@@ -168,12 +169,13 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
   const history = state.hour === hour ? state.history : []
   const status = state.hour === hour ? state.status : "loading"
   useEffect(() => {
+    if (!enabled || (state.hour === hour && state.status !== "loading")) return
     const controller = new AbortController()
     dispatch({ hour, type: "loading" })
     acceptResponse(loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal), controller.signal,
       (rows) => dispatch({ hour, type: "loaded", rows }), () => dispatch({ hour, type: "error" }))
     return () => controller.abort()
-  }, [hour])
+  }, [enabled, hour])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
   return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden min-[521px]:max-[760px]:flex-wrap min-[521px]:max-[760px]:overflow-visible" data-status={status}>
     {metrics.map((metric) => {

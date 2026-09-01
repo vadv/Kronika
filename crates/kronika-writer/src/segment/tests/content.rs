@@ -39,7 +39,7 @@ fn writes_journal_parts_into_a_readable_segment() {
 }
 
 #[test]
-fn the_aggregate_list_bound_is_checked_before_retaining_the_next_part() {
+fn aggregate_list_values_cross_the_former_row_derived_cap() {
     use kronika_registry::pg_locks::PgLocksV2;
 
     fn wide_lock(ts: i64, pid: i32) -> PgLocksV2 {
@@ -104,22 +104,21 @@ fn the_aggregate_list_bound_is_checked_before_retaining_the_next_part() {
     append_lock_window(&mut journal, 2_000, 100);
     let journal_before = std::fs::read(&journal_path).expect("snapshot journal");
 
-    let err = write_segment(&journal, &owner, address())
-        .expect_err("the aggregate list stream is rejected");
-
-    assert!(matches!(
-        err,
-        WriteError::Codec(kronika_registry::CodecError::TooManyListValues {
-            name: "blocked_by",
-            ..
-        })
-    ));
+    let summary = write_segment(&journal, &owner, address())
+        .expect("the aggregate list stream fits the physical section envelope");
+    assert_eq!(summary.sections, 1);
     assert_eq!(
         std::fs::read(&journal_path).expect("read journal"),
         journal_before
     );
     assert_eq!(journal.parts().len(), 2);
-    assert!(!segment_path.exists());
+    let segment = std::fs::read(&segment_path).expect("read finished segment");
+    let catalog = validate_part(&segment).expect("finished segment validates");
+    let [entry] = catalog.entries.as_slice() else {
+        panic!("the finished segment must coalesce the two lock windows");
+    };
+    assert_eq!(entry.type_id, PgLocksV2::CONTRACT.type_id.get());
+    assert_eq!(entry.rows, 66);
 }
 
 #[test]

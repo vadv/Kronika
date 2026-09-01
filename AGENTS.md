@@ -146,6 +146,10 @@ owner's attention:
 Formats are not findings either, until there is a release. Nothing has shipped,
 so a name, a magic number or a layout that reads wrong gets changed on the spot.
 
+Do not commit coding-agent plans or design drafts, including
+`docs/superpowers/`. Record durable design changes in both `DESIGN.md` and
+`DESIGN.ru.md`.
+
 ## Language
 
 The product is bilingual from the start, `ru` and `en`, with more languages

@@ -4,7 +4,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const events = await importModule(
-  'export { eventValue, formatMetric } from "../src/events-format.ts"; export { findingMetric } from "../src/finding-presentation.ts"',
+  'export { findingMetric } from "../src/finding-presentation.ts"',
   { plugins: [registryPlugin([{
     typeId: "1100001", logicalName: "os_process", identity: ["pid"],
     columns: ["ts", "pid", "starttime", "read_bytes"],
@@ -18,40 +18,14 @@ const events = await importModule(
       ...Array.from({ length: 6 }, (_, i) => `pad${26 + i}`), "sessions_fatal", "sessions_killed"],
   }])] },
 )
-const t = (key) => ({ "unit.ms": " ms", "unit.per_call": "/call", "unit.per_second": "/s" })[key] ?? key
-const finding = { logicalName: "pg_log_slow_queries" }
+const t = (key) => key
 
-test("event metrics use semantic precision for percent, rate, duration, zero and null", () => {
-  assert.equal(events.formatMetric(41.729068244136855, "percent", "en", t), "41.7%")
-  assert.equal(events.formatMetric(41.729068244136855, "percent", "ru", t), "41,7 %")
-  assert.equal(events.formatMetric(4e-7, "percent", "en", t), "<0.1%")
-  assert.equal(events.formatMetric(850, "milliseconds", "en", t), "850 ms")
-  assert.equal(events.formatMetric(850, "milliseconds", "ru", t), "850 мс")
-  assert.equal(events.formatMetric(6_290, "milliseconds", "en", t), "6.29 s")
-  assert.equal(events.formatMetric(6_290, "milliseconds", "ru", t), "6,29 с")
-  assert.equal(events.formatMetric(90_500, "milliseconds", "en", t), "1.51 min")
-  assert.equal(events.formatMetric(90_500, "milliseconds", "ru", t), "1,51 мин")
-  assert.equal(events.formatMetric(0.004, "milliseconds_per_call", "en", t), "4 µs/call")
-  assert.equal(events.formatMetric(0.49, "bytes_per_second", "en", t), "0.49 B/s")
-  assert.equal(events.formatMetric(null, "count", "en", t), "—")
+test("event metric metadata keeps health units and help text", () => {
   const health = events.findingMetric({ fieldOrdinal: 1, kind: "known_bad", logicalName: "health", typeId: "0" }, t)
   assert.equal(health.unit, "percent")
   assert.equal(health.helpKey, "lane.health.overall_health.help")
-  assert.equal(events.formatMetric(0.099, health.unit, "en", t), "<0.1%")
   const cpu = events.findingMetric({ fieldOrdinal: 0, kind: "known_bad", logicalName: "os_cpu", typeId: "1102001" }, t)
   assert.equal(cpu.helpKey, "system.metric.cpu_busy.help")
-})
-
-test("event identity fields remain exact while ordinary readings stay bounded", () => {
-  assert.equal(events.eventValue(finding, "queryid", "9007199254740993", "en", t), "9007199254740993")
-  assert.equal(events.eventValue(finding, "pid", "001234", "en", t), "001234")
-  assert.equal(events.eventValue(finding, "write_ms", 850, "en", t), "850 ms")
-  assert.equal(events.eventValue(finding, "write_ms", 850, "ru", t), "850 мс")
-  assert.equal(events.eventValue(finding, "max_duration_ms", 6_290, "en", t), "6.29 s")
-  assert.equal(events.eventValue(finding, "max_duration_ms", 6_290, "ru", t), "6,29 с")
-  assert.equal(events.eventValue(finding, "elapsed_ms", 90_500, "en", t), "1.51 min")
-  assert.equal(events.eventValue(finding, "elapsed_ms", 90_500, "ru", t), "1,51 мин")
-  assert.equal(events.eventValue(finding, "tiny", 4e-7, "en", t), "4E-7")
 })
 
 test("every known-bad boundary reaches Events with a named source and a stated boundary", () => {

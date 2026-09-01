@@ -1,7 +1,7 @@
 use super::GlobPattern;
 
-pub(super) const SEARCH_MAX_CLAUSES: usize = 8;
-pub(super) const SEARCH_MAX_VALUE_CHARS: usize = 256;
+pub(crate) const SEARCH_MAX_CLAUSES: usize = 8;
+pub(crate) const SEARCH_MAX_VALUE_CHARS: usize = 256;
 const SEARCH_MAX_EXPRESSION_CHARS: usize = 1_024;
 const SEARCH_MAX_GROUP_DEPTH: usize = 4;
 const SEARCH_MAX_TOKENS: usize = 31;
@@ -9,14 +9,14 @@ const SEARCH_MAX_SIGNIFICANT_DIGITS: usize = 38;
 const SEARCH_MAX_FRACTIONAL_DIGITS: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct StructuredSearch {
-    pub(super) expr: Expr,
-    pub(super) clauses: Vec<SearchClause>,
+pub(crate) struct StructuredSearch {
+    pub(crate) expr: Expr,
+    pub(crate) clauses: Vec<SearchClause>,
     canonical: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Expr {
+pub(crate) enum Expr {
     Predicate(SearchClause),
     And(Box<Self>, Box<Self>),
     Or {
@@ -27,33 +27,95 @@ pub(super) enum Expr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SearchClause {
+pub(crate) struct SearchClause {
     canonical: String,
-    pub(super) key: &'static str,
-    pub(super) columns: &'static [&'static str],
-    pub(super) operator: SearchOperator,
-    pub(super) value: SearchValue,
+    pub(crate) key: &'static str,
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) operator: SearchOperator,
+    pub(crate) value: SearchValue,
+}
+
+impl SearchClause {
+    /// Constructs a typed clause for MCP. `canonical` is empty because typed
+    /// MCP searches never bind or resume HTTP cursors.
+    pub(crate) const fn from_parts(
+        key: &'static str,
+        columns: &'static [&'static str],
+        operator: SearchOperator,
+        value: SearchValue,
+    ) -> Self {
+        Self {
+            canonical: String::new(),
+            key,
+            columns,
+            operator,
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SearchOperator {
+pub(crate) enum SearchOperator {
     Colon,
     Greater,
     Less,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SearchValue {
+pub(crate) enum SearchValue {
     Identifier(String),
     Pattern(GlobPattern),
     Quantity(Quantity),
+    AnyOf(Vec<Self>),
+}
+
+impl SearchValue {
+    /// Builds the text parser's case-insensitive substring glob. `*` and `?`
+    /// retain their glob semantics.
+    pub(crate) fn pattern(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::new(raw))
+    }
+
+    /// Builds a case-insensitive literal substring pattern for typed MCP
+    /// filters. Unlike the text DSL, `*` and `?` have no wildcard meaning.
+    pub(crate) fn contains(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::contains(raw))
+    }
+
+    /// Wrap raw text in an anchored, literal-only pattern: whole-value,
+    /// case-insensitive equality — no substring behavior, `*`/`?` taken
+    /// literally. The text DSL cannot express this; the typed MCP filter
+    /// input uses it for its `eq` operator on string fields.
+    pub(crate) fn exact(raw: &str) -> Self {
+        Self::Pattern(GlobPattern::exact(raw))
+    }
+
+    pub(crate) fn same_exact(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Identifier(left), Self::Identifier(right)) => left == right,
+            (Self::Pattern(left), Self::Pattern(right)) => left.same_exact(right),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Quantity {
-    pub(super) numerator: u128,
-    pub(super) denominator: u128,
+pub(crate) struct Quantity {
+    pub(crate) numerator: u128,
+    pub(crate) denominator: u128,
     canonical: String,
+}
+
+impl Quantity {
+    /// Builds a non-negative integer threshold already expressed in the field's
+    /// comparison unit.
+    pub(crate) fn from_integer(value: u128) -> Self {
+        Self {
+            numerator: value,
+            denominator: 1,
+            canonical: value.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,22 +131,22 @@ pub(super) enum QuantityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ResultField {
+pub(crate) struct ResultField {
     pub(super) metric: &'static str,
     pub(super) kind: QuantityKind,
     pub(super) dependencies: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct SearchField {
-    pub(super) key: &'static str,
+pub(crate) struct SearchField {
+    pub(crate) key: &'static str,
     aliases: &'static [&'static str],
-    pub(super) columns: &'static [&'static str],
-    kind: SearchFieldKind,
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) kind: SearchFieldKind,
 }
 
 #[derive(Clone, Copy)]
-enum SearchFieldKind {
+pub(crate) enum SearchFieldKind {
     Identifier { signed: bool },
     String,
     Quantity(ResultField),
@@ -163,6 +225,16 @@ impl StructuredSearch {
         &self.canonical
     }
 
+    /// Constructs a typed MCP search. `canonical` is empty because this path
+    /// never creates or validates an HTTP snapshot cursor.
+    pub(crate) const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
+        Self {
+            expr,
+            clauses,
+            canonical: String::new(),
+        }
+    }
+
     pub(super) fn member_clauses(&self) -> impl Iterator<Item = &SearchClause> {
         self.clauses
             .iter()
@@ -185,7 +257,7 @@ impl StructuredSearch {
         })
     }
 
-    pub(super) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+    pub(crate) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
         evaluate(&self.expr, &mut predicate)
     }
 
@@ -538,6 +610,7 @@ impl<'a> Parser<'a> {
             SearchValue::Identifier(value) => value.clone(),
             SearchValue::Pattern(_) => canonical_value(&value),
             SearchValue::Quantity(quantity) => quantity.canonical.clone(),
+            SearchValue::AnyOf(_) => unreachable!("the text parser does not construct typed sets"),
         };
         let clause = SearchClause {
             canonical: format!("{}{operator_text}{canonical_value}", field.key),
@@ -576,18 +649,22 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
+pub(crate) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
         "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
         "pg_stat_user_indexes" => INDEX_SEARCH_FIELDS,
+        "pg_stat_activity" => ACTIVITY_SEARCH_FIELDS,
+        "pg_locks" => LOCKS_SEARCH_FIELDS,
+        "pg_stat_progress_vacuum" => VACUUM_SEARCH_FIELDS,
+        "pg_stat_database" => DATABASE_SEARCH_FIELDS,
         _ => &[],
     }
 }
 
-pub(super) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
+pub(crate) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
     let field = search_fields(logical_name)
         .iter()
         .find(|field| field.key == key)?;
@@ -926,7 +1003,7 @@ fn canonical_value(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn valid_identifier(value: &str, signed: bool) -> bool {
+pub(crate) fn valid_identifier(value: &str, signed: bool) -> bool {
     if signed {
         if value == "-0" {
             return false;
@@ -1772,5 +1849,120 @@ const PROCESS_SEARCH_FIELDS: &[SearchField] = &[
         QuantityKind::DurationRate,
         "block_io_delay",
         &["blkdelay_ticks", "starttime"],
+    ),
+];
+const ACTIVITY_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &[
+            "query",
+            "application_name",
+            "client_addr",
+            "datname",
+            "usename",
+        ],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+    search_string("application", &["app"], &["application_name"]),
+    search_string("client_addr", &["client"], &["client_addr"]),
+    search_string("backend_type", &[], &["backend_type"]),
+    search_string("state", &[], &["state"]),
+    search_string("wait_event_type", &[], &["wait_event_type"]),
+    search_string("wait_event", &[], &["wait_event"]),
+    search_id("pid", &[], &["pid"], false),
+    search_id("query_id", &[], &["query_id"], true),
+    search_quantity(
+        "backend_xid_age",
+        QuantityKind::Count,
+        "backend_xid_age",
+        &["backend_xid_age"],
+    ),
+    search_quantity(
+        "backend_xmin_age",
+        QuantityKind::Count,
+        "backend_xmin_age",
+        &["backend_xmin_age"],
+    ),
+];
+const LOCKS_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &["query", "datname", "usename", "lock_relname"],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+    search_string("state", &[], &["state"]),
+    search_string("lock_type", &["locktype"], &["lock_locktype"]),
+    search_string("lock_mode", &["mode"], &["lock_mode"]),
+    search_string("table_name", &["table"], &["lock_relname"]),
+    search_id("pid", &[], &["pid"], false),
+];
+const VACUUM_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &["datname", "relname", "schemaname", "phase"],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("schema", &[], &["schemaname"]),
+    search_string("table_name", &["table"], &["relname"]),
+    search_string("phase", &[], &["phase"]),
+    search_string("is_autovacuum", &["autovacuum"], &["is_autovacuum"]),
+    search_id("pid", &[], &["pid"], false),
+    search_quantity(
+        "heap_blks_total",
+        QuantityKind::Count,
+        "heap_blks_total",
+        &["heap_blks_total"],
+    ),
+    search_quantity(
+        "heap_blks_scanned",
+        QuantityKind::Count,
+        "heap_blks_scanned",
+        &["heap_blks_scanned"],
+    ),
+    search_quantity(
+        "heap_blks_vacuumed",
+        QuantityKind::Count,
+        "heap_blks_vacuumed",
+        &["heap_blks_vacuumed"],
+    ),
+];
+const DATABASE_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["datname"]),
+    search_string("database", &["db"], &["datname"]),
+    search_id("datid", &[], &["datid"], false),
+    search_quantity(
+        "numbackends",
+        QuantityKind::Count,
+        "numbackends",
+        &["numbackends"],
+    ),
+    search_quantity(
+        "xact_commit",
+        QuantityKind::Count,
+        "xact_commit",
+        &["xact_commit"],
+    ),
+    search_quantity(
+        "xact_rollback",
+        QuantityKind::Count,
+        "xact_rollback",
+        &["xact_rollback"],
+    ),
+    search_quantity(
+        "deadlocks",
+        QuantityKind::Count,
+        "deadlocks",
+        &["deadlocks"],
+    ),
+    search_quantity(
+        "temp_bytes",
+        QuantityKind::Bytes,
+        "temp_bytes",
+        &["temp_bytes"],
     ),
 ];

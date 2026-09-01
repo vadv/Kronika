@@ -17,6 +17,7 @@ function timeline() {
     findings: [{ timestamp: HOUR + 40, segmentId: "a", logicalName: "health", typeId: "0", rowOrdinal: "0", fieldOrdinal: 0, kind: "spike" as const, category: null }],
     health: [{ timestamp: HOUR + 20 }],
     lanePoints: [{ timestamp: HOUR + 30 }],
+    laneContexts: [],
     lanes: {},
     points: [{ timestamp: HOUR + 25 }],
     segments: [{ id: "a", minTs: HOUR + 10, maxTs: HOUR + 50, sections: [] }],
@@ -157,6 +158,63 @@ test("a failed following-latest refresh restores one committed view before the r
   }
   assert.deepEqual(retry, { cursor: HOUR + 80, data: "B", segments: [{ id: "B" }], timeline: "B" })
   assert.equal(refreshedCursor(a.cursor, false, bTimeline), a.cursor)
+})
+
+test("first table settlement gates slow hour products without gating Process rows", async () => {
+  const [app, api, summary] = await Promise.all([
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/api.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(api, /new URLSearchParams\(\{ part: "base" \}\)/)
+  assert.doesNotMatch(api, /loadHealthMetadata|Promise\.all\(\[\.\.\.evaluations\]/)
+  assert.match(app, /backgroundReadyHour !== backgroundTimeline\.hour/)
+  assert.match(app, /backgroundTimeline\.segments\.length === 0/)
+  assert.match(app, /backgroundTimeline === null \|\| backgroundTimeline\.hour !== hour/)
+  assert.match(app, /backgroundTimelineRef\.current !== backgroundTimeline/)
+  assert.match(app, /const \[snapshotReloadVersion, setSnapshotReloadVersion\] = useState\(0\)/)
+  assert.match(app, /const foregroundAlreadyLoaded = refreshAwaitingSnapshot\.current/)
+  assert.match(app, /if \(!foregroundAlreadyLoaded\) setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
+  assert.match(app, /setBackgroundTimeline\(timeline\)\s+setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
+  const foregroundSnapshotEffect = app.slice(
+    app.indexOf('const [cursorState, setCursorState]'),
+    app.indexOf('if (backgroundTimeline === null || backgroundTimeline.segments.length === 0'),
+  )
+  assert.match(foregroundSnapshotEffect, /\}, \[finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget\]\)/)
+  assert.doesNotMatch(foregroundSnapshotEffect, /\[backgroundTimeline,/)
+  assert.match(app, /enabled=\{processReadyHour === hour && foregroundReadyKey\.current === foregroundKey\}/)
+  assert.match(summary, /if \(!enabled \|\| \(state\.hour === hour && state\.status !== "loading"\)\) return/)
+  assert.match(app, /foregroundReadyKey\.current === foregroundKey \? 250 : 0/)
+  assert.match(app, /foregroundReadyKey\.current = foregroundKey\s+setBackgroundReadyHour\(hour\)\s+if \(visibleSource === "processes"\) setProcessReadyHour\(hour\)/)
+  assert.match(app, /foregroundReadyKey\.current = foregroundKey\s+if \(visibleSource !== "events"\) setBackgroundReadyHour\(hour\)/)
+  const failedPage = app.match(/const failed = \(reason: unknown\) => \{([\s\S]*?)\n          \}/)?.[1] ?? ""
+  assert.doesNotMatch(failedPage, /setBackgroundReadyHour|setProcessReadyHour|foregroundReadyKey/)
+
+  const processFastPath = app.match(/if \(pageCursor === undefined && visibleSource === "processes"\) \{([\s\S]*?)\n          \}/)?.[1] ?? ""
+  assert.ok(processFastPath.indexOf("loaded(incoming, null)") >= 0)
+  assert.ok(processFastPath.indexOf("loaded(incoming, null)") < processFastPath.indexOf("void base.then"))
+  assert.match(processFastPath, /mergeSnapshotData\(current\.data, companion\)/)
+
+  assert.doesNotMatch(app, /fields: \["mem_total"\]/)
+  assert.match(app, /\.\.\.\(lens === "tree" \? \[\{ section: "os_meminfo" \}\] : \[\]\)/)
+})
+
+test("the instance label waits for one settled foreground table", async () => {
+  const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  const ready = app.indexOf('const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"')
+  const requested = app.indexOf("instanceLabelRequest.current = controller")
+  const fetch = app.indexOf('apiFetch("/api/instance-label"')
+  assert.ok(ready >= 0)
+  assert.ok(requested > ready)
+  assert.ok(fetch > requested)
+  assert.doesNotMatch(app.slice(0, ready), /apiFetch\("\/api\/instance-label"/)
+
+  const gate = app.slice(app.lastIndexOf("useEffect(() => {", fetch), requested)
+  assert.match(gate, /instanceLabelRequest\.current !== null/)
+  assert.match(gate, /!refreshReady/)
+  assert.match(gate, /backgroundReadyHour !== hour/)
+  assert.match(gate, /foregroundReadyKey\.current !== foregroundKey/)
+  assert.match(app.slice(fetch, app.indexOf("const denseMetadata", fetch)), /\}, \[backgroundReadyHour, foregroundKey, hour, refreshReady\]\)/)
 })
 
 function fakeVisibility(initial: boolean) {

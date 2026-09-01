@@ -12,26 +12,31 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOw
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
+use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_user::OsUser;
+use kronika_registry::pg_locks::PgLocksV2;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_database::PgStatDatabaseV1;
+use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuumV1;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+use kronika_registry::pgbouncer_events::PgBouncerEvents;
 use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
 use crate::api::{
-    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
-    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
-    reset_page_operations, reset_relation_snapshot_operations,
+    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, hour_operations,
+    page_operations, relation_snapshot_operations, reset_context_operations,
+    reset_first_match_rows, reset_hour_operations, reset_page_operations,
+    reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -39,7 +44,7 @@ use crate::encoding::AcceptedEncodings;
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
 
-type NamedIndexSnapshot<'a> = (
+pub(crate) type NamedIndexSnapshot<'a> = (
     i64,
     u32,
     u32,
@@ -53,7 +58,7 @@ type NamedIndexSnapshot<'a> = (
 
 type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
 
-type PlacedTableSnapshot<'a> = (
+pub(crate) type PlacedTableSnapshot<'a> = (
     i64,
     u32,
     u32,
@@ -81,7 +86,7 @@ type PlacedIndexSnapshot<'a> = (
     i64,
 );
 
-struct Fixture {
+pub(crate) struct Fixture {
     directory: tempfile::TempDir,
     writer: WriterOwner,
     journal: Journal,
@@ -89,7 +94,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let directory = tempfile::tempdir().expect("temporary data root");
         let root = DataRoot::open(directory.path()).expect("open data root");
         let writer = root
@@ -106,7 +111,7 @@ impl Fixture {
         }
     }
 
-    fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         self.directory.path()
     }
 
@@ -122,6 +127,30 @@ impl Fixture {
                 .expect("diskstats row fits");
         }
         self.append(buffers);
+    }
+
+    fn append_resolved_diskstats(&mut self, rows: &[(i64, i32, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let device = StrId(
+            interner
+                .intern(b"fixture-device")
+                .expect("intern fixture device")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, minor, reads) in rows {
+            buffers
+                .push(diskstats_with_device(ts, minor, reads, device))
+                .expect("diskstats row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode fixture device dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode diskstats fixture")
+            .expect("nonempty diskstats fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append diskstats fixture");
     }
 
     fn append_named_diskstats(&mut self, rows: &[(i32, &str)]) {
@@ -283,11 +312,20 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_postgres_health(&mut self, active: u32) {
+    pub(crate) fn append_postgres_health(&mut self, active: u32) {
         self.append_postgres_health_at(100, active);
     }
 
     fn append_postgres_health_at(&mut self, at: i64, active: u32) {
+        self.append_postgres_health_with_interval(at, active, 30);
+    }
+
+    pub(crate) fn append_postgres_health_with_interval(
+        &mut self,
+        at: i64,
+        active: u32,
+        interval_seconds: u64,
+    ) {
         let mut interner = Interner::new(DictLimits::default());
         let active_state = StrId(interner.intern(b"active").expect("active state").get());
         let idle_state = StrId(interner.intern(b"idle").expect("idle state").get());
@@ -310,7 +348,7 @@ impl Fixture {
                 boot_id: StrId(903),
                 btime: Ts(1),
                 postgresql_enabled: true,
-                postgresql_interval_seconds: 30,
+                postgresql_interval_seconds: interval_seconds,
                 postgresql_effective_cpus: Some(2),
             })
             .expect("metadata row fits");
@@ -374,6 +412,62 @@ impl Fixture {
             .expect("append finding rows");
     }
 
+    /// `rows` is `(ts, pid, rmem_kb, comm)`. Multiple samples let gauge window
+    /// maxima differ from last column values; `comm` is the grouping key.
+    pub(crate) fn append_process_gauge_rows(&mut self, rows: &[(i64, i32, i64, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, pid, rmem_kb, comm) in rows {
+            let label = StrId(
+                interner
+                    .intern(comm.as_bytes())
+                    .expect("intern process comm")
+                    .get(),
+            );
+            let mut row = process(ts, None, label);
+            row.pid = pid;
+            row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
+            row.rmem_kb = rmem_kb;
+            buffers.push(row).expect("process gauge row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode process gauge dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process gauge fixture")
+            .expect("nonempty process gauge fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process gauge fixture");
+    }
+
+    pub(crate) fn append_process_cmdline(&mut self, ts: i64, pid: i32, cmdline: &str) {
+        let mut interner = Interner::new(DictLimits::default());
+        let comm = StrId(interner.intern(b"fixture").expect("intern comm").get());
+        let cmdline = StrId(
+            interner
+                .intern(cmdline.as_bytes())
+                .expect("intern command line")
+                .get(),
+        );
+        let dictionary = dict::encode(interner.window()).expect("encode process dictionary");
+        let mut row = process(ts, None, comm);
+        row.pid = pid;
+        row.cmdline = Some(cmdline);
+        let mut buffers = SectionBuffers::new();
+        buffers.push(row).expect("process row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process row")
+            .expect("nonempty process row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process row");
+    }
+
+    pub(crate) fn append_process_counter_rows(&mut self, rows: &[(i64, Option<i64>)]) {
+        self.append_finding_rows(rows, &[]);
+    }
+
     fn append_process_summary_snapshot(
         &mut self,
         ts: i64,
@@ -435,10 +529,12 @@ impl Fixture {
             .expect("append process summary snapshot");
     }
 
+    /// `processes` is `(pid, uid, euid, utime, stime)`; CPU fields populate
+    /// `cpu_time_ticks`.
     fn append_user_processes(
         &mut self,
         ts: i64,
-        processes: &[(i32, u32, u32)],
+        processes: &[(i32, u32, u32, i64, i64)],
         names: &[(u32, &str)],
     ) {
         let mut interner = Interner::new(DictLimits::default());
@@ -449,12 +545,14 @@ impl Fixture {
                 .get(),
         );
         let mut buffers = SectionBuffers::new();
-        for &(pid, uid, euid) in processes {
+        for &(pid, uid, euid, utime, stime) in processes {
             let mut row = process(ts, None, command);
             row.pid = pid;
             row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
             row.uid = uid;
             row.euid = euid;
+            row.utime = utime;
+            row.stime = stime;
             buffers.push(row).expect("process row fits");
         }
         for &(uid, name) in names {
@@ -579,7 +677,7 @@ impl Fixture {
             .expect("append statements");
     }
 
-    fn append_statement_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+    pub(crate) fn append_statement_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(ts, queryid, calls, total_exec_time) in rows {
@@ -671,7 +769,7 @@ impl Fixture {
             .expect("append plans");
     }
 
-    fn append_plan_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+    pub(crate) fn append_plan_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(ts, queryid, calls, total_time) in rows {
@@ -697,7 +795,9 @@ impl Fixture {
             .expect("append boundary plans");
     }
 
-    fn append_ranked_statements(&mut self) {
+    /// At `ts=100` all counters are zero; `ts=200` uses the readings below,
+    /// producing non-null, hand-computable deltas.
+    pub(crate) fn append_ranked_statements(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         let readings = [
@@ -758,7 +858,9 @@ impl Fixture {
             .expect("append ranked statements");
     }
 
-    fn append_ranked_plans(&mut self) {
+    /// Plan-layout counterpart to `append_ranked_statements`, with zero
+    /// predecessors at `ts=100` and current values at `ts=200`.
+    pub(crate) fn append_ranked_plans(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         let readings = [
@@ -797,11 +899,35 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    /// Vadv plan-layout fixture (`type_id` `1_004_001`), whose
+    /// `total_plan_time` makes `derived_plan_time_fraction` non-null.
+    pub(crate) fn append_ranked_vadv_plans(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "ranked vadv plan");
+        let mut buffers = SectionBuffers::new();
+        for ts in [100, 200] {
+            let current = ts == 200;
+            let mut row = store_plan_vadv(ts, label);
+            row.calls = if current { 10 } else { 0 };
+            row.total_time = if current { 100.0 } else { 0.0 };
+            row.total_plan_time = if current { 25.0 } else { 0.0 };
+            buffers.push(row).expect("ranked vadv plan row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("ranked vadv plan dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode ranked vadv plans")
+            .expect("nonempty ranked vadv plans");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append ranked vadv plans");
+    }
+
     fn append_postgres_summary_relations(&mut self) {
         let mut buffers = SectionBuffers::new();
         for (ts, commits, rollbacks) in [(100, 100, 10), (200, 180, 30)] {
             buffers
-                .push(postgres_database(ts, commits, rollbacks))
+                .push(postgres_database(ts, commits, rollbacks, 0))
                 .expect("PostgreSQL database summary row fits");
         }
         for (ts, seq_scan, idx_scan) in [(100, 10, 10), (200, 30, 40)] {
@@ -821,7 +947,211 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_postgres_block_size(&mut self, block_size: u128) {
+    /// `rows` is `(ts, xact_commit, xact_rollback, deadlocks)`, one
+    /// `pg_stat_database` row per timestamp for the same database (`datid`
+    /// 73) — the predecessor/current pair a cumulative-counter rate needs.
+    fn append_postgres_database_rows(&mut self, rows: &[(i64, i64, i64, i64)]) {
+        let mut buffers = SectionBuffers::new();
+        for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
+            buffers
+                .push(postgres_database(ts, xact_commit, xact_rollback, deadlocks))
+                .expect("PostgreSQL database row fits");
+        }
+        self.append(buffers);
+    }
+
+    /// Like `append_postgres_database_rows`, but interns `datname`; full-field
+    /// MCP projections require it.
+    pub(crate) fn append_postgres_database_snapshots(&mut self, rows: &[(i64, i64, i64, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
+            let mut row = postgres_database(ts, xact_commit, xact_rollback, deadlocks);
+            row.datname = Some(datname);
+            buffers.push(row).expect("PostgreSQL database row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode database dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode database fixture")
+            .expect("nonempty database fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append database fixture");
+    }
+
+    /// `rows` is `(ts, pid, state, lock_mode)`. `state` also supplies the
+    /// application, client, and backend-type fixture columns.
+    pub(crate) fn append_postgres_lock_rows(&mut self, rows: &[(i64, i32, &str, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let usename = StrId(interner.intern(b"dba").expect("intern usename").get());
+        let query = StrId(interner.intern(b"SELECT 1").expect("intern query").get());
+        let lock_locktype = StrId(
+            interner
+                .intern(b"relation")
+                .expect("intern lock_locktype")
+                .get(),
+        );
+        let lock_relname = StrId(
+            interner
+                .intern(b"alpha")
+                .expect("intern lock_relname")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, pid, state, lock_mode) in rows {
+            let state_id = StrId(
+                interner
+                    .intern(state.as_bytes())
+                    .expect("intern lock state")
+                    .get(),
+            );
+            let lock_mode_id = StrId(
+                interner
+                    .intern(lock_mode.as_bytes())
+                    .expect("intern lock_mode")
+                    .get(),
+            );
+            buffers
+                .push(PgLocksV2 {
+                    ts: Ts(ts),
+                    pid,
+                    blocked_by: vec![],
+                    datid: 16_384,
+                    datname,
+                    usename: Some(usename),
+                    application_name: state_id,
+                    client_addr: state_id,
+                    backend_type: state_id,
+                    state: Some(state_id),
+                    wait_event_type: None,
+                    wait_event: None,
+                    query,
+                    backend_xid_age: None,
+                    backend_xmin_age: None,
+                    backend_start: Some(Ts(ts)),
+                    xact_start: None,
+                    query_start: None,
+                    state_change: None,
+                    lock_locktype: Some(lock_locktype),
+                    lock_mode: Some(lock_mode_id),
+                    lock_database: Some(16_384),
+                    lock_relation: Some(12_345),
+                    lock_relname: Some(lock_relname),
+                    lock_page: None,
+                    lock_tuple: None,
+                    lock_virtualxid: None,
+                    lock_transactionid: None,
+                    lock_classid: None,
+                    lock_objid: None,
+                    lock_objsubid: None,
+                    lock_target: None,
+                    waitstart: None,
+                })
+                .expect("lock row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode lock dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode lock fixture")
+            .expect("nonempty lock fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append lock fixture");
+    }
+
+    /// `rows` is `(ts, pid, phase, heap_blks_total, heap_blks_scanned,
+    /// heap_blks_vacuumed)`: one backend running `VACUUM` per entry, all on
+    /// the same fixed relation.
+    pub(crate) fn append_postgres_vacuum_rows(&mut self, rows: &[(i64, i32, &str, i64, i64, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let datname = StrId(interner.intern(b"db").expect("intern datname").get());
+        let schemaname = StrId(interner.intern(b"public").expect("intern schemaname").get());
+        let relname = StrId(interner.intern(b"alpha").expect("intern relname").get());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, pid, phase, heap_blks_total, heap_blks_scanned, heap_blks_vacuumed) in rows {
+            let phase_id = StrId(
+                interner
+                    .intern(phase.as_bytes())
+                    .expect("intern phase")
+                    .get(),
+            );
+            buffers
+                .push(PgStatProgressVacuumV1 {
+                    ts: Ts(ts),
+                    pid,
+                    datid: 16_385,
+                    datname,
+                    relid: 16_384,
+                    schemaname: Some(schemaname),
+                    relname: Some(relname),
+                    is_autovacuum: false,
+                    phase: phase_id,
+                    heap_blks_total,
+                    heap_blks_scanned,
+                    heap_blks_vacuumed,
+                    index_vacuum_count: 0,
+                    max_dead_tuples: 0,
+                    num_dead_tuples: 0,
+                })
+                .expect("vacuum row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode vacuum dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode vacuum fixture")
+            .expect("nonempty vacuum fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append vacuum fixture");
+    }
+
+    pub(crate) fn append_instance_facts(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut intern = |value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern instance string")
+                    .get(),
+            )
+        };
+        let hostname = intern("fixture-host");
+        let kernel_version = intern("6.1.0-fixture");
+        let boot_id = intern("boot-fixture");
+        let dictionary = dict::encode(interner.window()).expect("instance dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(100),
+                hostname,
+                kernel_version,
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("instance row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode instance row")
+            .expect("nonempty instance row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append instance row");
+    }
+
+    pub(crate) fn append_postgres_block_size(&mut self, block_size: u128) {
+        self.append_postgres_setting("block_size", &block_size.to_string(), "default");
+    }
+
+    pub(crate) fn append_postgres_setting(&mut self, name: &str, value: &str, source: &str) {
         let mut interner = Interner::new(DictLimits::default());
         let intern = |interner: &mut Interner, value: &str| {
             StrId(
@@ -831,11 +1161,11 @@ impl Fixture {
                     .get(),
             )
         };
-        let name = intern(&mut interner, "block_size");
-        let setting = intern(&mut interner, &block_size.to_string());
+        let name = intern(&mut interner, name);
+        let setting = intern(&mut interner, value);
         let database = intern(&mut interner, "postgres");
         let role = intern(&mut interner, "collector");
-        let source = intern(&mut interner, "default");
+        let source = intern(&mut interner, source);
         let context = intern(&mut interner, "internal");
         let vartype = intern(&mut interner, "integer");
         let mut buffers = SectionBuffers::new();
@@ -867,6 +1197,56 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append block-size setting");
+    }
+
+    pub(crate) fn append_postgres_settings(&mut self, count: usize, value: &str, source: &str) {
+        let mut interner = Interner::new(DictLimits::default());
+        let intern = |interner: &mut Interner, value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern bulk setting")
+                    .get(),
+            )
+        };
+        let setting = intern(&mut interner, value);
+        let database = intern(&mut interner, "postgres");
+        let role = intern(&mut interner, "collector");
+        let source = intern(&mut interner, source);
+        let context = intern(&mut interner, "user");
+        let vartype = intern(&mut interner, "string");
+        let mut buffers = SectionBuffers::new();
+        for index in 0..count {
+            let name = intern(&mut interner, &format!("fixture_setting_{index}"));
+            buffers
+                .push(PgSettings {
+                    ts: Ts(200),
+                    datid: 1,
+                    datname: database,
+                    usesysid: 2,
+                    usename: role,
+                    name,
+                    setting,
+                    unit: None,
+                    source,
+                    sourcefile: None,
+                    sourceline: None,
+                    pending_restart: false,
+                    context,
+                    vartype,
+                    boot_val: Some(setting),
+                    reset_val: Some(setting),
+                })
+                .expect("bulk setting row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("bulk settings dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode bulk settings")
+            .expect("nonempty bulk settings");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append bulk settings");
     }
 
     fn append_vadv_plan_quantities(&mut self) {
@@ -917,7 +1297,10 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_named_table_snapshots(&mut self, rows: &[(i64, u32, u32, i64, &str, &str, &str)]) {
+    pub(crate) fn append_named_table_snapshots(
+        &mut self,
+        rows: &[(i64, u32, u32, i64, &str, &str, &str)],
+    ) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
             interner
@@ -986,7 +1369,7 @@ impl Fixture {
             .expect("append large relation fixture");
     }
 
-    fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
+    pub(crate) fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
         for &(
@@ -1096,7 +1479,7 @@ impl Fixture {
             .expect("append buffered table snapshots");
     }
 
-    fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
+    pub(crate) fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
             interner
@@ -1190,7 +1573,11 @@ impl Fixture {
             .expect("append placed indexes");
     }
 
-    fn append_log_error(&mut self, at: i64) {
+    pub(crate) fn append_log_error(&mut self, at: i64) {
+        self.append_log_error_count(at, 1);
+    }
+
+    pub(crate) fn append_log_error_count(&mut self, at: i64, count: u32) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
         let dictionary = dict::encode(interner.window()).expect("log dictionary");
@@ -1204,7 +1591,7 @@ impl Fixture {
                 category: 8,
                 sqlstate: None,
                 pattern: label,
-                count: 1,
+                count,
                 sample: label,
                 detail: None,
                 hint: None,
@@ -1221,6 +1608,100 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append log row");
+    }
+
+    pub(crate) fn append_pgbouncer_event(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+        let dictionary = dict::encode(interner.window()).expect("pgbouncer dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgBouncerEvents {
+                ts: Ts(at),
+                source_file: label,
+                level: 2,
+                database: None,
+                username: None,
+                host: None,
+                text: label,
+            })
+            .expect("pgbouncer row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode pgbouncer row")
+            .expect("nonempty pgbouncer row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append pgbouncer row");
+    }
+
+    /// Appends one 22-row mount snapshot whose active and finalized ordinals
+    /// deliberately differ for `/pgdata` and `/victim`.
+    pub(crate) fn append_reordering_mount_snapshot(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for minor in 0..20 {
+            let mount = if minor == 18 {
+                "/victim".to_owned()
+            } else {
+                format!("/before-{minor:02}")
+            };
+            let mount_point = fixture_label(&mut interner, &mount);
+            buffers
+                .push(OsMountinfo {
+                    ts: Ts(at),
+                    major: 0,
+                    minor,
+                    mount_point,
+                    root: mount_point,
+                    fstype: fixture_label(&mut interner, "xfs"),
+                    source: fixture_label(&mut interner, "/dev/fixture"),
+                    is_k8s_infra: false,
+                    total_bytes: Some(if minor == 18 { 900 } else { i64::from(minor) }),
+                    free_bytes: None,
+                    total_inodes: None,
+                    available_inodes: None,
+                    scope: 0,
+                })
+                .expect("mount row fits");
+        }
+        for (major, minor, mount, total_bytes) in [(8, 32, "/pgdata", 1_000), (9, 0, "/after", 1)] {
+            let mount_point = if mount == "/pgdata" {
+                StrId(
+                    interner
+                        .intern_blob(mount.as_bytes())
+                        .expect("intern blob-backed mount")
+                        .get(),
+                )
+            } else {
+                fixture_label(&mut interner, mount)
+            };
+            buffers
+                .push(OsMountinfo {
+                    ts: Ts(at),
+                    major,
+                    minor,
+                    mount_point,
+                    root: mount_point,
+                    fstype: fixture_label(&mut interner, "xfs"),
+                    source: fixture_label(&mut interner, "/dev/fixture"),
+                    is_k8s_infra: false,
+                    total_bytes: Some(total_bytes),
+                    free_bytes: None,
+                    total_inodes: None,
+                    available_inodes: None,
+                    scope: 0,
+                })
+                .expect("mount row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("mount dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode mount rows")
+            .expect("nonempty mount rows");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append mount rows");
     }
 
     fn append_log_temp_file(&mut self, at: i64) {
@@ -1264,7 +1745,7 @@ impl Fixture {
             .expect("append temporary-file row");
     }
 
-    fn finish_and_continue(&mut self, segment_id: i64) {
+    pub(crate) fn finish_and_continue(&mut self, segment_id: i64) {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
         self.journal.reset().expect("reset journal");
         self.address = SegmentAddress::new(SegmentId::new(segment_id).expect("segment id"))
@@ -1281,7 +1762,7 @@ impl Fixture {
             .expect("append fixture part");
     }
 
-    fn finish(&self) {
+    pub(crate) fn finish(&self) {
         write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
     }
 
@@ -1289,7 +1770,7 @@ impl Fixture {
         std::fs::write(self.root().join("foreign"), b"fixture").expect("write foreign entry");
     }
 
-    fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
+    pub(crate) fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
         self.prepare_with_sources(target, if_none_match, SOURCES)
     }
 
@@ -1369,7 +1850,12 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
     }
 }
 
-fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDatabaseV1 {
+fn postgres_database(
+    ts: i64,
+    xact_commit: i64,
+    xact_rollback: i64,
+    deadlocks: i64,
+) -> PgStatDatabaseV1 {
     PgStatDatabaseV1 {
         ts: Ts(ts),
         datid: 73,
@@ -1387,7 +1873,7 @@ fn postgres_database(ts: i64, xact_commit: i64, xact_rollback: i64) -> PgStatDat
         conflicts: 0,
         temp_files: 0,
         temp_bytes: 0,
-        deadlocks: 0,
+        deadlocks,
         blk_read_time: 0.0,
         blk_write_time: 0.0,
         stats_reset: None,
@@ -1825,6 +2311,40 @@ fn stream(prepared: Prepared) -> Result<Vec<Value>, ApiError> {
         .iter()
         .map(|record| serde_json::from_slice(record).expect("JSON record"))
         .collect())
+}
+
+fn event_detail(fixture: &Fixture, item: &Value) -> Value {
+    let detail_ref = item["detail_ref"].as_str().expect("opaque detail ref");
+    let target = format!("/api/row-detail?detail_ref={detail_ref}");
+    let mut records = stream(fixture.prepare(&target, None)).expect("stream row detail");
+    assert_eq!(records.len(), 1);
+    records.remove(0)
+}
+
+fn prepare_result(fixture: &Fixture, target: &str) -> Result<Prepared, ApiError> {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    let route = match crate::route::parse(path, query) {
+        Ok(route) => route,
+        Err(error) => panic!("valid fixture route: {error}"),
+    };
+    crate::api::prepare(fixture.root(), SOURCES, route, None)
+}
+
+fn source_flags(records: &[Value], name: &str) -> (bool, bool) {
+    let family = records
+        .iter()
+        .find(|record| record["record"] == "catalog")
+        .and_then(|record| record["source_families"].as_array())
+        .and_then(|families| families.iter().find(|family| family["name"] == name))
+        .expect("source family");
+    (
+        family["present"].as_bool().expect("present flag"),
+        family["metrics_present"]
+            .as_bool()
+            .expect("metrics-present flag"),
+    )
 }
 
 fn row_records(records: &[Value]) -> Vec<&Value> {
@@ -2317,6 +2837,46 @@ fn hour_source_presence_uses_only_rows_inside_the_requested_window() {
 }
 
 #[test]
+fn hour_source_presence_folds_contained_inventory_and_scans_partial_rows() {
+    let mut contained = Fixture::new();
+    contained.append_log_error(100);
+    contained.finish();
+    reset_hour_operations();
+    let records = stream(contained.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("contained source inventory");
+    assert_eq!(source_flags(&records, "postgresql"), (true, false));
+    assert_eq!(
+        hour_operations().1,
+        0,
+        "contained segment needs no row scan"
+    );
+
+    let mut partial = Fixture::new();
+    partial.append_log_error(99);
+    partial.append_log_error(100);
+    partial.finish();
+    reset_hour_operations();
+    let records = stream(partial.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("partial positive source");
+    assert_eq!(source_flags(&records, "postgresql"), (true, false));
+    assert!(hour_operations().1 > 0, "partial segment scans timestamps");
+
+    let mut straddling = Fixture::new();
+    straddling.append_log_error(99);
+    straddling.append_diskstats(&[(100, 0, 1)]);
+    straddling.finish();
+    reset_hour_operations();
+    let records = stream(straddling.prepare("/api/hour?from=100&to=100&part=base", None))
+        .expect("straddling source inventory");
+    assert_eq!(source_flags(&records, "os"), (true, true));
+    assert_eq!(source_flags(&records, "postgresql"), (false, false));
+    assert!(
+        hour_operations().1 > 0,
+        "straddling segment scans timestamps"
+    );
+}
+
+#[test]
 fn postgres_log_rows_do_not_claim_selected_hour_metrics() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
@@ -2640,7 +3200,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 #[test]
 fn finished_browser_resources_are_immutable_and_revalidate_without_a_body() {
     let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.append_resolved_diskstats(&[(100, 0, 1), (200, 0, 2)]);
     fixture.finish();
 
     for target in browser_resource_targets() {
@@ -2758,7 +3318,7 @@ fn matching_finished_snapshot_etag_skips_predecessor_scans() {
 #[test]
 fn active_browser_resources_are_not_reusable() {
     let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 1), (200, 0, 2)]);
+    fixture.append_resolved_diskstats(&[(100, 0, 1), (200, 0, 2)]);
 
     for target in browser_resource_targets() {
         let prepared = fixture.prepare(&target, None);
@@ -2795,6 +3355,74 @@ fn empty_finished_heatmap_has_no_validator() {
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(prepared.meta().etag, None);
+}
+
+// Gauge ranks use window maxima (50/45/30/25/20 for PIDs 101/102/103/105/
+// 104), while one-column bands sum each PID's last value (118 total, 63
+// others). The two conventions disagree on purpose: a `rank_only` that
+// mixed them would fail the assertions below.
+fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
+    [
+        (100, 101, 50, "fixture"),
+        (300, 101, 10, "fixture"),
+        (100, 102, 40, "fixture"),
+        (300, 102, 45, "fixture"),
+        (100, 103, 5, "fixture"),
+        (300, 103, 30, "fixture"),
+        (100, 104, 20, "fixture"),
+        (300, 104, 8, "fixture"),
+        (100, 105, 15, "fixture"),
+        (300, 105, 25, "fixture"),
+    ]
+}
+
+#[test]
+fn shared_heatmap_result_keeps_one_convention_for_gauge_totals() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
+    fixture.finish();
+
+    let request = crate::api::heatmap::HeatmapBatchQuery {
+        range: crate::api::time::TimeRange::new(100, 401).expect("range"),
+        items: vec![crate::api::heatmap::HeatmapItemQuery {
+            ranking: crate::api::heatmap::NormalizedRanking {
+                section: "os_process".to_owned(),
+                fields: vec!["rmem_kb".to_owned()],
+                top: 2,
+            },
+            view: crate::api::heatmap::HeatmapView::RankingOnly,
+        }],
+    };
+
+    let result = crate::api::heatmap::prepare_batch(fixture.root(), request)
+        .expect("prepare")
+        .execute(&|| false)
+        .expect("execute");
+    let ranking = &result.results[0];
+
+    // Every number follows the per-entity window-maximum convention the
+    // entities themselves rank by: totals_total is the largest maximum
+    // across all five entities, others_total the largest across the three
+    // beyond top=2 — never smaller than a member, unlike the streamed
+    // grid's last-value band arithmetic (118/63 on this same fixture).
+    assert_eq!(ranking.entities.len(), 2);
+    assert_eq!(ranking.entity_count, 5);
+    assert_eq!(
+        ranking
+            .entities
+            .iter()
+            .map(|entity| entity.total)
+            .collect::<Vec<_>>(),
+        vec![Some(50.0), Some(45.0)]
+    );
+    assert_eq!(ranking.totals_total, Some(50.0));
+    assert_eq!(ranking.others_total, Some(30.0));
+    let winner = &ranking.entities[0];
+    assert_eq!(
+        winner.detail_locator.type_id,
+        OsProcess::CONTRACT.type_id.get()
+    );
+    assert_eq!(winner.identity["pid"], serde_json::json!(101));
 }
 
 // Each entry differs from its browser_resource_targets peer in one parameter.
@@ -2875,6 +3503,128 @@ fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
     for timestamp in ["100", "200"] {
         assert!(lanes.iter().any(|lane| lane["ts"] == timestamp));
     }
+}
+
+#[test]
+fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health_with_interval(100, 5, 17);
+    fixture.append_diskstats(&[(100, 0, 0), (200, 0, 2)]);
+    let second = SEGMENT_ID + 1;
+    fixture.finish_and_continue(second);
+    fixture.append_postgres_health_with_interval(300, 4, 19);
+    fixture.append_diskstats(&[(300, 0, 4), (400, 0, 8)]);
+    fixture.finish();
+
+    let legacy_prepared = fixture.prepare("/api/hour?from=100&to=400", None);
+    let legacy_etag = legacy_prepared.meta().etag.expect("legacy ETag");
+    let legacy = stream(legacy_prepared).expect("legacy combined hour");
+
+    reset_hour_operations();
+    let base_prepared = fixture.prepare("/api/hour?from=100&to=400&part=base", None);
+    assert_eq!(base_prepared.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(base_prepared.meta().etag, None);
+    let base = stream(base_prepared).expect("lightweight hour base");
+    assert_eq!(hour_operations().0, 0, "base must not collect lanes");
+    assert!(base.iter().all(|record| record["record"] != "lane"));
+    assert!(base.iter().any(|record| record["record"] == "catalog"));
+    assert!(base.iter().any(|record| record["record"] == "point"));
+
+    let lanes_prepared = fixture.prepare(
+        &format!("/api/hour?from=100&to=400&part=lanes&segments={SEGMENT_ID},{second}"),
+        None,
+    );
+    assert_eq!(lanes_prepared.meta().cache, CachePolicy::Immutable);
+    let lanes_etag = lanes_prepared.meta().etag.expect("lanes ETag");
+    assert_ne!(lanes_etag, legacy_etag);
+    let lanes = stream(lanes_prepared).expect("finished pinned lanes");
+    assert_eq!(hour_operations().0, 2, "each segment uses one lane reducer");
+    assert!(
+        lanes
+            .iter()
+            .all(|record| { matches!(record["record"].as_str(), Some("lane_context" | "lane")) })
+    );
+    let contexts = lanes
+        .iter()
+        .filter(|record| record["record"] == "lane_context")
+        .collect::<Vec<_>>();
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(contexts[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(contexts[0]["postgresql_interval_seconds"], "17");
+    assert_eq!(contexts[1]["segment_id"], second.to_string());
+    assert_eq!(contexts[1]["postgresql_interval_seconds"], "19");
+
+    assert_eq!(
+        base,
+        legacy
+            .iter()
+            .filter(|record| record["record"] != "lane")
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .filter(|record| record["record"] == "lane")
+            .collect::<Vec<_>>(),
+        legacy
+            .iter()
+            .filter(|record| record["record"] == "lane")
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn active_hour_lanes_require_the_base_segment_set_and_wal_position() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health_with_interval(100, 5, 17);
+    let position = fixture.position();
+    let base_prepared = fixture.prepare("/api/hour?from=100&to=200&part=base", None);
+    assert_eq!(base_prepared.meta().cache, CachePolicy::NoStore);
+    let base = stream(base_prepared).expect("active hour base");
+    let active = base
+        .iter()
+        .find(|record| record["record"] == "active_segment")
+        .expect("active segment bound");
+    assert_eq!(active["id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["wal_position"], position.to_string());
+    let target = format!(
+        "/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}&active={SEGMENT_ID},{position}"
+    );
+
+    fixture.append_diskstats(&[(150, 0, 1)]);
+    let pinned_prepared = prepare_result(&fixture, &target).expect("valid active pin");
+    assert_eq!(pinned_prepared.meta().cache, CachePolicy::NoStore);
+    let pinned = stream(pinned_prepared).expect("pinned active lanes");
+    assert!(pinned.iter().all(|record| {
+        record["record"] != "lane" || record["lane"] != "disk_busy" || record["ts"] != "150"
+    }));
+    assert!(matches!(
+        prepare_result(
+            &fixture,
+            &format!("/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}")
+        ),
+        Err(ApiError::BadCursor)
+    ));
+    assert!(matches!(
+        prepare_result(
+            &fixture,
+            &format!(
+                "/api/hour?from=100&to=200&part=lanes&segments={SEGMENT_ID}&active={SEGMENT_ID},{}",
+                u64::MAX
+            )
+        ),
+        Err(ApiError::BadCursor)
+    ));
+
+    let next = SEGMENT_ID + 1;
+    fixture.finish_and_continue(next);
+    fixture.append_diskstats(&[(175, 0, 2)]);
+    assert!(matches!(
+        prepare_result(&fixture, &target),
+        Err(ApiError::BadCursor)
+    ));
 }
 
 #[test]
@@ -4253,11 +5003,11 @@ fn process_user_search_filters_the_full_set_and_keeps_real_and_effective_names_d
     let processes = (0..205)
         .map(|pid| {
             if pid == 0 {
-                (pid, 26, 27)
+                (pid, 26, 27, 0, 0)
             } else if pid == 1 {
-                (pid, 9_999, 9_999)
+                (pid, 9_999, 9_999, 0, 0)
             } else {
-                (pid, 1_000, 1_000)
+                (pid, 1_000, 1_000, 0, 0)
             }
         })
         .collect::<Vec<_>>();
@@ -4383,10 +5133,10 @@ fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
 #[test]
 fn process_user_join_uses_the_mapping_from_each_historical_segment() {
     let mut fixture = Fixture::new();
-    fixture.append_user_processes(100, &[(10, 26, 26)], &[(26, "old-name")]);
+    fixture.append_user_processes(100, &[(10, 26, 26, 0, 0)], &[(26, "old-name")]);
     let second_segment = SEGMENT_ID + 1_000;
     fixture.finish_and_continue(second_segment);
-    fixture.append_user_processes(200, &[(10, 26, 26)], &[(26, "new-name")]);
+    fixture.append_user_processes(200, &[(10, 26, 26, 0, 0)], &[(26, "new-name")]);
     fixture.finish();
 
     for (segment, at, expected) in [
@@ -5107,6 +5857,381 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(index_rates["1"], serde_json::json!(0.3));
     assert_eq!(index_rates["2"], serde_json::json!(0.2));
+}
+
+#[test]
+fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and_values() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 0, "db", "public", "alpha"),
+        (200, 1, 11, 30, "db", "public", "alpha"),
+        (100, 1, 12, 0, "db", "public", "beta"),
+        (200, 1, 12, 15, "db", "public", "beta"),
+        (100, 1, 13, 0, "db", "public", "gamma"),
+        (200, 1, 13, 60, "db", "public", "gamma"),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&direction=desc&page_size=200"
+    );
+    let via_http = stream(fixture.prepare(&target, None)).expect("streamed relation page");
+    let http_rows = relation_records(&via_http);
+    assert_eq!(http_rows.len(), 3);
+    let http_page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("relation trailer");
+    assert_eq!(http_page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_user_tables".to_owned()],
+        fields: vec!["seq_scan".to_owned()],
+        by: vec!["seq_scan".to_owned()],
+        direction: crate::route::Order::Desc,
+        group: Some(crate::route::RelationGroup::Object),
+        page_size: Some(200),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let result = prepared
+        .compute_relation_rows(200, &|| false)
+        .expect("compute_relation_rows");
+    assert!(!result.truncated);
+    let rows = result.rows;
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(
+            direct.key.json(
+                crate::api::snapshot::relation::RelationKind::Tables,
+                crate::route::RelationGroup::Object
+            ),
+            http["key"],
+        );
+        let direct_value = direct.metrics["seq_scan"]
+            .as_ref()
+            .map_or(Value::Null, crate::api::snapshot::relation::Metric::json);
+        assert_eq!(direct_value, http["values"]["seq_scan"]);
+    }
+}
+
+#[test]
+fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_virtual_fields() {
+    let mut fixture = Fixture::new();
+    fixture.append_user_processes(
+        100,
+        &[
+            (7, 26, 27, 40, 10),
+            (9, 1_000, 1_000, 5, 5),
+            (3, 26, 26, 0, 0),
+        ],
+        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
+    );
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=ppid&field=user&field=effective_user&field=cpu_time_ticks&by=pid&direction=asc&page_size=10"
+    );
+    let via_http = stream(fixture.prepare(&base, None)).expect("streamed process page");
+    let http_rows = row_records(&via_http);
+    assert_eq!(http_rows.len(), 3);
+    let page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("process page trailer");
+    assert_eq!(page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 100,
+        sections: vec!["os_process".to_owned()],
+        fields: vec![
+            "pid".to_owned(),
+            "ppid".to_owned(),
+            "user".to_owned(),
+            "effective_user".to_owned(),
+            "cpu_time_ticks".to_owned(),
+        ],
+        by: vec!["pid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let result = prepared
+        .compute_process_rows(10, &|| false)
+        .expect("compute_process_rows");
+    assert!(!result.truncated);
+    let rows = result.rows;
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(direct.pid, http["values"][0].as_i64().expect("pid"));
+        assert_eq!(direct.ppid, http["values"][1].as_i64());
+        assert_eq!(direct.fields["pid"], http["values"][0]);
+        assert_eq!(direct.fields["user"], http["values"][2]);
+        assert_eq!(direct.fields["effective_user"], http["values"][3]);
+        assert_eq!(direct.fields["cpu_time_ticks"], http["values"][4]);
+    }
+
+    let by_pid = rows
+        .iter()
+        .map(|row| (row.pid, row))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        by_pid[&7].fields["user"],
+        serde_json::json!("postgres"),
+        "uid 26 resolves through the os_user section fixture wrote"
+    );
+    assert_eq!(
+        by_pid[&7].fields["effective_user"],
+        serde_json::json!("postgres-worker"),
+        "euid 27 resolves separately from uid, so they stay distinct"
+    );
+    assert_eq!(
+        by_pid[&7].fields["cpu_time_ticks"],
+        serde_json::json!("50"),
+        "cpu_time_ticks is utime+stime, rendered as a decimal string"
+    );
+    assert_eq!(by_pid[&9].fields["cpu_time_ticks"], serde_json::json!("10"));
+    assert_eq!(by_pid[&3].fields["cpu_time_ticks"], serde_json::json!("0"));
+}
+
+#[test]
+fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fields() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(3);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&field=pid&field=state&field=datname&field=backend_xid_age&by=pid&direction=asc&page_size=10"
+    );
+    let via_http = stream(fixture.prepare(&base, None)).expect("streamed activity page");
+    let http_rows = row_records(&via_http);
+    assert_eq!(http_rows.len(), 4);
+    let page = via_http
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("activity page trailer");
+    assert_eq!(page["has_more"], false);
+
+    let request = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_activity".to_owned()],
+        fields: vec![
+            "pid".to_owned(),
+            "state".to_owned(),
+            "datname".to_owned(),
+            "backend_xid_age".to_owned(),
+        ],
+        by: vec!["pid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: Some(10),
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let result = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    assert!(!result.truncated);
+    let rows = result.rows;
+    assert_eq!(rows.len(), http_rows.len());
+
+    for (direct, http) in rows.iter().zip(http_rows.iter()) {
+        assert_eq!(direct.fields["pid"], http["values"][0]);
+        assert_eq!(direct.fields["state"], http["values"][1]);
+        assert_eq!(direct.fields["datname"], http["values"][2]);
+        assert_eq!(direct.fields["backend_xid_age"], http["values"][3]);
+        assert_eq!(direct.segment_id.to_string(), http["segment_id"]);
+        assert_eq!(direct.type_id.to_string(), http["type_id"]);
+        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
+        assert_eq!(direct.at.to_string(), http["timestamp"]);
+    }
+}
+
+#[test]
+fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to_exclusive = SEGMENT_ID + 14;
+    fixture.append_log_error(from - 1);
+    for at in from..=to_exclusive {
+        fixture.append_log_error(at);
+    }
+    fixture.append_log_error(to_exclusive + 1);
+    fixture.finish();
+
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=3"
+    );
+    let limited = stream(fixture.prepare(&target, None)).expect("stream event occurrences");
+    assert_eq!(limited[0]["record"], "events");
+    assert_eq!(limited[0]["representation"], "occurrences");
+    assert_eq!(limited[0]["truncated"], true);
+    let occurrences = limited
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .collect::<Vec<_>>();
+    let details = occurrences
+        .iter()
+        .map(|occurrence| event_detail(&fixture, occurrence))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        details
+            .iter()
+            .map(|record| record["at"].as_str().expect("event timestamp"))
+            .collect::<Vec<_>>(),
+        (from..from + 3)
+            .map(|at| at.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        limited
+            .iter()
+            .all(|record| record.get("next_from").is_none())
+    );
+    for occurrence in &occurrences {
+        assert_eq!(occurrence["source"], "pg_log_errors");
+        assert_eq!(occurrence["source_file"], "fixture");
+        assert_eq!(occurrence["pattern"], "fixture");
+        assert!(occurrence.get("sample").is_none());
+        assert!(occurrence.get("segment_id").is_none());
+        assert!(occurrence.get("row_ordinal").is_none());
+        assert!(occurrence.get("type_id").is_none());
+        assert!(occurrence.get("detail_locator").is_none());
+        assert!(
+            occurrence["detail_ref"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+    for detail in &details {
+        assert_eq!(detail["record"], "row_detail");
+        assert_eq!(detail["section"], "pg_log_errors");
+        assert_eq!(detail["fields"]["sample"]["stored_text"], "fixture");
+        assert_eq!(detail["fields"]["sample"]["truncated"], false);
+        for hidden in ["segment_id", "type_id", "row_ordinal", "detail_locator"] {
+            assert!(detail.get(hidden).is_none(), "detail exposed {hidden}");
+            assert!(
+                detail["fields"].get(hidden).is_none(),
+                "fields exposed {hidden}"
+            );
+        }
+    }
+
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=5000"
+    );
+    let full = stream(fixture.prepare(&target, None)).expect("stream full event window");
+    let timestamps = full
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .map(|record| event_detail(&fixture, record))
+        .map(|record| record["at"].as_str().expect("event timestamp").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        timestamps,
+        (from..to_exclusive)
+            .map(|at| at.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(full[0]["truncated"], false);
+}
+
+#[test]
+fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_database_rows(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
+    fixture.finish();
+
+    let base = crate::route::SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: 200,
+        sections: vec!["pg_stat_database".to_owned()],
+        fields: vec!["datid".to_owned(), "deadlocks".to_owned()],
+        by: vec!["datid".to_owned()],
+        direction: crate::route::Order::Asc,
+        group: None,
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+
+    let matching = crate::route::SnapshotRequest {
+        search: Some("deadlocks>0".to_owned()),
+        ..base.clone()
+    };
+    let prepared = crate::api::snapshot::prepare(fixture.root(), matching, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let result = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    assert!(!result.truncated);
+    let rows = result.rows;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the database whose deadlocks rate is above zero matches"
+    );
+    assert_eq!(rows[0].fields["datid"], serde_json::json!(73));
+
+    let below_threshold = crate::route::SnapshotRequest {
+        search: Some("deadlocks>100".to_owned()),
+        ..base
+    };
+    let prepared =
+        crate::api::snapshot::prepare(fixture.root(), below_threshold, None).expect("prepare");
+    let Prepared::Snapshot(prepared) = prepared else {
+        panic!("snapshot request did not prepare a snapshot");
+    };
+    let result = prepared
+        .compute_plain_rows(10, &|| false)
+        .expect("compute_plain_rows");
+    let rows = result.rows;
+    assert!(
+        rows.is_empty(),
+        "a threshold above the observed rate matches nothing"
+    );
 }
 
 #[test]

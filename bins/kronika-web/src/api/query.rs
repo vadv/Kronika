@@ -137,7 +137,7 @@ fn projection(
         .chain(filters.iter().map(TypedFilter::column))
         .collect();
     if history_coordinates {
-        projection.extend(contract.identity.iter().copied());
+        projection.extend(crate::api::row_key::identity_columns(contract));
         projection.extend(timestamp);
     }
     projection.sort_unstable();

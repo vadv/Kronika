@@ -38,7 +38,9 @@ use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
 use kronika_source_os::proc::meminfo::parse_meminfo;
 use kronika_source_os::proc::pressure::parse_pressure;
-use kronika_source_os::proc::process::{ProcessError, ProcessReader, process_facts};
+use kronika_source_os::proc::process::{
+    ProcessError, ProcessIoCredentials, ProcessIoTarget, ProcessReader, process_facts,
+};
 use kronika_source_os::proc::stat::{parse_cpu, parse_stat_misc};
 use kronika_source_os::proc::vmstat::parse_vmstat;
 use kronika_source_os::proc::{
@@ -247,6 +249,7 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,
+    process_io: &mut ProcessIoCredentials,
     interner: &mut Interner,
     users: &mut UserReferences,
     scope: u8,
@@ -310,6 +313,7 @@ pub(crate) fn collect_os_sources(
     let mut process_memberships = cgroup_due.then(|| cgroup::WorkloadMemberships::new(&sys));
     process::collect_process_sections(
         fs,
+        process_io,
         interner,
         users,
         entity_scope,

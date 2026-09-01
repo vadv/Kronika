@@ -22,7 +22,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
 
-use crate::{MAGIC, crc::Crc32c};
+use crate::{MAGIC, MAX_JOURNAL_LEN, crc::Crc32c};
 
 mod decode;
 mod layout;
@@ -118,8 +118,8 @@ pub struct TailIndex {
 
 const DICT_STRINGS_TYPE_ID: u32 = 3_001_001;
 const DICT_BLOBS_TYPE_ID: u32 = 3_002_001;
-const MAX_PHYSICAL_SECTION_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_PHYSICAL_SECTION_ROWS: u32 = 65_536;
+/// Hard version-1 length limit for one finished section body.
+pub const MAX_PHYSICAL_SECTION_BYTES: u64 = MAX_JOURNAL_LEN as u64;
 
 impl TailIndex {
     /// Encode this tail index as its 8-byte on-disk form.

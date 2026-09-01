@@ -157,7 +157,7 @@ pub struct Interner {
     /// (`JournalError::Full`) forces a merge before the journal, and with it
     /// this map, can grow without limit.
     flushed: HashMap<StrId, Flushed>,
-    /// Aggregate for `flushed`, kept so admission scans only the current window.
+    /// Aggregate for values already flushed into the journal.
     flushed_stats: DictStats,
     /// Bytes of strict-hot values inserted into every window.
     ///

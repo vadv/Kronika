@@ -1,13 +1,14 @@
 import { registry } from "kronika:registry"
 
-import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
-import { heatmap, heatmapEntityKey, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
+import { bundledFixtureHeatmapRecords, bundledFixtureHour, bundledFixtureRange } from "./fixture"
+import type { HeatmapBand, HeatmapView, HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 import { canonicalSearch } from "./search"
+import type { EventEntry, EventStat, EventTier } from "./events-groups"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -111,6 +112,10 @@ interface Segment {
   readonly id: string
   readonly min_ts: string
   readonly max_ts: string
+  readonly cursor?: {
+    readonly segment_id: string
+    readonly wal_position: string
+  }
   readonly sections: readonly Section[]
 }
 
@@ -130,6 +135,7 @@ export interface HourData {
   readonly health: readonly DataRow[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts: readonly LaneContext[]
   readonly findings: readonly Finding[]
   readonly findingGroups: readonly FindingGroup[]
 }
@@ -189,6 +195,7 @@ export function mergeSnapshotData(current: HourData, incoming: HourData, appendS
     postgresqlPresent: current.postgresqlPresent === true || incoming.postgresqlPresent === true,
     points: [],
     lanePoints: [],
+    laneContexts: [],
     findings: [],
   })
 }
@@ -200,9 +207,20 @@ export interface LanePoint {
   readonly value: number | null
 }
 
+export interface LaneContext {
+  readonly segmentId: string
+  readonly postgresqlIntervalSeconds: number | null
+}
+
+export interface TimelineLanes {
+  readonly contexts: readonly LaneContext[]
+  readonly points: readonly LanePoint[]
+}
+
 export interface TimelineData {
   readonly hour: number
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts: readonly LaneContext[]
   readonly lanes: Readonly<Record<string, readonly DataRow[]>>
   readonly availableHours: readonly number[]
   readonly segments: readonly SegmentBound[]
@@ -237,6 +255,7 @@ export function hourOf(timeline: TimelineData): HourData {
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
+    laneContexts: timeline.laneContexts,
     findings: timeline.findings,
     findingGroups: timeline.findingGroups,
   })
@@ -261,6 +280,7 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
+    laneContexts: timeline.laneContexts,
     findings: timeline.findings,
     findingGroups: timeline.findingGroups,
   })
@@ -270,6 +290,7 @@ export interface SegmentBound {
   readonly id: string
   readonly minTs: number
   readonly maxTs: number
+  readonly activeWalPosition?: string
   readonly sections: readonly SegmentSection[]
 }
 
@@ -290,7 +311,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
   if (fixture !== null && range !== null) {
     return {
       hour: requested, availableHours: unique([floorHour(range.from), floorHour(range.to)]),
-      segments: [], lanePoints: fixture.lanePoints, lanes: fixture.sections, health: fixture.health, points: fixture.points,
+      segments: [], lanePoints: fixture.lanePoints, laneContexts: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings,
       findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
@@ -299,8 +320,12 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
       postgresqlPresent: fixture.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_")),
     }
   }
-  const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
-  const records = await request(`/api/hour${window}`, signal, onBytes)
+  const query = new URLSearchParams({ part: "base" })
+  if (start !== null) {
+    query.set("from", String(start))
+    query.set("to", String(start + 3_600_000_000 - 1))
+  }
+  const records = await request(`/api/hour?${query}`, signal, onBytes)
   const header = records.find((record) => record.record === "hour")
   const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
@@ -314,12 +339,14 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
       id: segment.id,
       minTs: Number(segment.min_ts),
       maxTs: Number(segment.max_ts),
+      ...(segment.cursor === undefined ? {} : {
+        activeWalPosition: activePosition(segment),
+      }),
       sections: segment["sections"].flatMap((section) => section.logical_name === null ? [] : [{
         logicalName: section.logical_name,
         typeId: section.type_id,
       }]),
     }))
-    .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
   const findingGroups: FindingGroup[] = []
@@ -355,17 +382,9 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
-    } else if (record.record === "lane") {
-      lanePoints.push({
-        segmentId: requiredText(record.segment_id, "lane segment id"),
-        lane: requiredText(record["lane"], "lane name"),
-        timestamp: integer(record.ts, "lane timestamp"),
-        value: record.value === null ? null : finiteNumber(record.value, "lane value"),
-      })
     }
   }
-  const healthMetadata = await loadHealthMetadata(points, signal)
-  lanes[HEALTH] = healthRows(points, healthMetadata) as DataRow[]
+  lanes[HEALTH] = healthRows(points) as DataRow[]
   const resolvedFindingGroups = findingGroups.map((group) => ({
     ...group,
     shown: findings.filter((finding) => finding.segmentId === group.segmentId && finding.typeId === group.typeId).length,
@@ -373,6 +392,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
   return {
     hour,
     lanePoints,
+    laneContexts: [],
     lanes,
     availableHours: ((header?.available_hours ?? []) as readonly string[])
       .map((value) => integer(value, "available hour")),
@@ -386,6 +406,63 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     postgresqlConfigured: sourceConfigured(catalog, "postgresql"),
     postgresqlPresent: sourceMetricsPresent(catalog, "postgresql"),
   }
+}
+
+export async function loadTimelineLanes(
+  timeline: Pick<TimelineData, "hour" | "segments">,
+  signal: AbortSignal,
+): Promise<TimelineLanes> {
+  const fixture = bundledFixtureHour(timeline.hour)
+  if (fixture !== null) return { contexts: [], points: fixture.lanePoints }
+  const query = new URLSearchParams({
+    from: String(timeline.hour),
+    to: String(timeline.hour + 3_600_000_000 - 1),
+    part: "lanes",
+    segments: timeline.segments.map((segment) => segment.id).join(","),
+  })
+  const active = timeline.segments.filter((segment) => segment.activeWalPosition !== undefined)
+  if (active.length > 1) throw new Error("hour base has more than one active segment")
+  const pinned = active[0]
+  if (pinned?.activeWalPosition !== undefined) {
+    query.set("active", `${pinned.id},${pinned.activeWalPosition}`)
+  }
+  const records = await request(`/api/hour?${query}`, signal)
+  const contexts: LaneContext[] = []
+  const points: LanePoint[] = []
+  for (const record of records) {
+    if (record.record === "lane_context") {
+      const seconds = record.postgresql_interval_seconds
+      contexts.push({
+        segmentId: requiredText(record.segment_id, "lane context segment id"),
+        postgresqlIntervalSeconds: seconds === null ? null : integer(seconds, "PostgreSQL interval"),
+      })
+    } else if (record.record === "lane") {
+      points.push({
+        segmentId: requiredText(record.segment_id, "lane segment id"),
+        lane: requiredText(record["lane"], "lane name"),
+        timestamp: integer(record.ts, "lane timestamp"),
+        value: record.value === null ? null : finiteNumber(record.value, "lane value"),
+      })
+    }
+  }
+  return { contexts, points }
+}
+
+export function withTimelineLanes(base: HourData, lanes: TimelineLanes): HourData {
+  return hourData({
+    sections: { ...base.sections, [HEALTH]: healthRows(base.points, lanes.contexts) },
+    rateColumns: base.rateColumns,
+    snapshotRows: base.snapshotRows,
+    availableSections: base.availableSections,
+    syntheticDemo: base.syntheticDemo === true,
+    postgresqlConfigured: base.postgresqlConfigured === true,
+    postgresqlPresent: base.postgresqlPresent === true,
+    points: base.points,
+    lanePoints: lanes.points,
+    laneContexts: lanes.contexts,
+    findings: base.findings,
+    findingGroups: base.findingGroups,
+  })
 }
 
 export async function loadSeries(
@@ -445,11 +522,175 @@ export async function loadSeries(
   return rows
 }
 
+export async function loadEventGroups(
+  selectedHour: number,
+  sources: readonly string[],
+  signal: AbortSignal,
+): Promise<{ readonly rows: readonly EventEntry[]; readonly truncated: boolean }> {
+  signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const query = [
+    `from=${from}`,
+    `to=${from + 3_600_000_000}`,
+    "representation=groups",
+    "limit=5000",
+    ...sources.map((source) => `source=${encodeURIComponent(source)}`),
+  ].join("&")
+  const records = await request(`/api/events?${query}`, signal)
+  const [header, ...items] = records
+  if (header?.record !== "events" || header["representation"] !== "groups" || typeof header["truncated"] !== "boolean") {
+    throw new Error("events header is invalid")
+  }
+  if (items.some((record) => record.record !== "event_group")) throw new Error("events item is invalid")
+  return { rows: items.map(eventGroup), truncated: header["truncated"] }
+}
+
+function eventGroup(record: Readonly<Record<string, unknown>>): EventEntry {
+  const tier = record["tier"]
+  if (tier !== "critical" && tier !== "notable" && tier !== "routine") throw new Error("event tier is invalid")
+  const minutes = numberArray(record["minutes"], "event minutes")
+  if (minutes.length !== 60) throw new Error("event minutes are invalid")
+  const detailRef = record["detail_ref"]
+  if (typeof detailRef !== "string" || detailRef === "") throw new Error("event detail reference is invalid")
+  return {
+    key: requiredText(record["key"], "event key"),
+    section: requiredText(record["section"], "event section"),
+    tier: tier satisfies EventTier,
+    label: nullableText(record["label"], "event label"),
+    count: finiteNumber(record["count"], "event count"),
+    firstTs: integer(record["firstTs"], "event first timestamp"),
+    lastTs: integer(record["lastTs"], "event last timestamp"),
+    minutes,
+    stat: eventStat(record["stat"]),
+    detailRef,
+    representativeTs: integer(record["representativeTs"], "event representative timestamp"),
+  }
+}
+
+export interface EventRowDetail {
+  readonly section: string
+  readonly at: number
+  readonly fields: Readonly<Record<string, Cell>>
+}
+
+export async function loadEventRowDetail(detailRef: string, signal: AbortSignal): Promise<EventRowDetail> {
+  signal.throwIfAborted()
+  const path = `/api/row-detail?detail_ref=${encodeURIComponent(detailRef)}`
+  const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${path}`)
+  const records = await readNdjson(response, path, signal)
+  const [record] = records
+  if (records.length !== 1 || record?.record !== "row_detail") throw new Error("event row detail is invalid")
+  const fields = strictRecord(record["fields"], "event row detail fields")
+  if (!Object.values(fields).every(validCell)) throw new Error("event row detail field is invalid")
+  return {
+    section: requiredText(record["section"], "event row detail section"),
+    at: integer(record["at"], "event row detail timestamp"),
+    fields: fields as Readonly<Record<string, Cell>>,
+  }
+}
+
+function eventStat(value: unknown): EventStat {
+  const stat = strictRecord(value, "event stat")
+  const kind = stat["kind"]
+  if (kind === "pg.errors") return {
+    kind,
+    severity: finiteNumber(stat["severity"], "error severity"),
+    category: nullableNumber(stat["category"], "error category"),
+    sqlstate: nullableText(stat["sqlstate"], "error SQLSTATE"),
+    database: nullableText(stat["database"], "error database"),
+    username: nullableText(stat["username"], "error username"),
+  }
+  if (kind === "pg.slow") return {
+    kind,
+    maxMs: finiteNumber(stat["maxMs"], "slow maximum"),
+    totalMs: finiteNumber(stat["totalMs"], "slow total"),
+    thresholdMs: nullableNumber(stat["thresholdMs"], "slow threshold"),
+  }
+  if (kind === "pg.autovacuum") return {
+    kind,
+    analyze: requiredBoolean(stat["analyze"], "autovacuum analyze"),
+    runs: integer(stat["runs"], "autovacuum runs"),
+    totalMs: nullableNumber(stat["totalMs"], "autovacuum total"),
+    tuplesRemoved: nullableNumber(stat["tuplesRemoved"], "autovacuum removed tuples"),
+    tuplesDead: nullableNumber(stat["tuplesDead"], "autovacuum dead tuples"),
+  }
+  if (kind === "pg.checkpoints") return {
+    kind,
+    completes: integer(stat["completes"], "checkpoint completes"),
+    timed: integer(stat["timed"], "timed checkpoints"),
+    requested: integer(stat["requested"], "requested checkpoints"),
+    maxSyncMs: nullableNumber(stat["maxSyncMs"], "checkpoint maximum sync"),
+    buffers: nullableNumber(stat["buffers"], "checkpoint buffers"),
+  }
+  if (kind === "pg.checkpoint_warning") return {
+    kind,
+    secondsApart: nullableNumber(stat["secondsApart"], "checkpoint warning interval"),
+  }
+  if (kind === "pg.locks") return {
+    kind,
+    holders: nullableText(stat["holders"], "lock holders"),
+    acquired: requiredBoolean(stat["acquired"], "lock acquired"),
+    waiters: integer(stat["waiters"], "lock waiters"),
+    maxMs: nullableNumber(stat["maxMs"], "lock maximum"),
+    targets: textArray(stat["targets"], "lock targets"),
+  }
+  if (kind === "pg.lifecycle") return {
+    kind,
+    lifecycle: finiteNumber(stat["lifecycle"], "lifecycle kind"),
+    pid: nullableNumber(stat["pid"], "lifecycle pid"),
+    signal: nullableNumber(stat["signal"], "lifecycle signal"),
+    mode: nullableText(stat["mode"], "lifecycle mode"),
+  }
+  if (kind === "pgbouncer.events") return {
+    kind,
+    level: finiteNumber(stat["level"], "PgBouncer level"),
+    database: nullableText(stat["database"], "PgBouncer database"),
+  }
+  throw new Error("event stat kind is invalid")
+}
+
+function strictRecord(value: unknown, name: string): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value as Readonly<Record<string, unknown>>
+}
+
+function nullableText(value: unknown, name: string): string | null {
+  if (value === null) return null
+  if (typeof value !== "string") throw new Error(`${name} is invalid`)
+  return value
+}
+
+function nullableNumber(value: unknown, name: string): number | null {
+  return value === null ? null : finiteNumber(value, name)
+}
+
+function requiredBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${name} is invalid`)
+  return value
+}
+
+function numberArray(value: unknown, name: string): readonly number[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value.map((item) => finiteNumber(item, name))
+}
+
+function textArray(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function validCell(value: unknown): value is Cell {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return true
+  if (typeof value === "number") return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every((item) => typeof item === "number" && Number.isFinite(item))
+  return typeof value === "object"
+}
+
 export async function loadHeatmap(
   selectedHour: number,
   section: string,
   fields: readonly string[],
-  labels: readonly string[],
   columns: number,
   top: number,
   signal: AbortSignal,
@@ -458,7 +699,6 @@ export async function loadHeatmap(
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
   const to = from + 3_600_000_000 - 1
-  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, fields, labels, columns, top, group)
   const query = [
     `from=${from}`,
     `to=${to}`,
@@ -466,10 +706,14 @@ export async function loadHeatmap(
     ...fields.map((name) => `field=${encodeURIComponent(name)}`),
     `columns=${columns}`,
     `top=${top}`,
-    ...labels.map((name) => `label=${encodeURIComponent(name)}`),
     ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
   ].join("&")
-  const records = await request(`/api/heatmap?${query}`, signal)
+  const fixtureRange = bundledFixtureRange()
+  const fixture = fixtureRange === null
+    ? null
+    : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group)
+  if (fixtureRange !== null && fixture === null) throw new Error("bundled fixture has no Rust heatmap result")
+  const records = fixture ?? await request(`/api/heatmap?${query}`, signal)
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
     ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
     : []
@@ -479,6 +723,7 @@ export async function loadHeatmap(
     : []
   let cumulative = true
   let intervals: { start: number; end: number }[] = []
+  let labelNames: string[] = []
   let entityCount = 0
   let othersCount = 0
   const rows: HeatmapViewRow[] = []
@@ -489,6 +734,11 @@ export async function loadHeatmap(
       cumulative = record["class"] === "cumulative"
       entityCount = Number(record["entity_count"] ?? 0)
       othersCount = Number(record["others_count"] ?? 0)
+      const names = Array.isArray(record["labels"])
+        ? record["labels"].map((name) => requiredText(name, "heatmap label name"))
+        : []
+      if (new Set(names).size !== names.length) throw new Error("heatmap label names are not unique")
+      labelNames = names
       intervals = Array.isArray(record["intervals"])
         ? record["intervals"].map((interval) => ({
           start: integer((interval as { readonly start: unknown }).start, "heatmap interval start"),
@@ -496,11 +746,12 @@ export async function loadHeatmap(
         }))
         : []
     } else if (record.record === "heatmap_row") {
+      const members = typeof record["members"] === "number" ? record["members"] : null
       rows.push({
         typeId: requiredText(record.type_id, "heatmap row type_id"),
         identity: texts(record["identity"]),
-        labels: texts(record["labels"]),
-        members: typeof record["members"] === "number" ? record["members"] : null,
+        labels: members === null ? namedCells(labelNames, record["labels"]) : {},
+        members,
         total: total(record["total"]),
         cells: cells(record["cells"]),
       })
@@ -513,116 +764,10 @@ export async function loadHeatmap(
   return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
 }
 
-function fixtureHeatmap(
-  from: number,
-  section: string,
-  fields: readonly string[],
-  labels: readonly string[],
-  columns: number,
-  top: number,
-  group?: readonly string[],
-): HeatmapView {
-  const fixture = bundledFixtureHour(from)
-  const rows = fixture === null ? [] : fixture.sections[section] ?? []
-  const cumulative = registry.some((layout) => layout.logicalName === section
-    && (layout.columnMetadata ?? []).some((column) => fields.includes(column.name) && column.class === "cumulative"))
-  const samples: HeatmapSample[] = []
-  const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
-  const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
-  const groupOf = new Map<string, readonly (string | null)[]>()
-  for (const row of rows) {
-    const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
-    if (layout === undefined || layout.logicalName !== section) continue
-    const identity = layout.identity.map((name) => {
-      const stored = row.values[name]
-      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-    })
-    const entity = heatmapEntityKey([row.typeId, ...identity])
-    if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
-    if (group !== undefined && group.length > 0 && !groupOf.has(entity)) {
-      groupOf.set(entity, group.map((name) => {
-        const stored = row.values[name]
-        return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
-      }))
-    }
-    let numeric: number | null = null
-    for (const field of fields) {
-      const raw = row.values[field]
-      const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
-      if (parsed !== null && Number.isFinite(parsed)) numeric = (numeric ?? 0) + parsed
-    }
-    samples.push({ entity, timestamp: row.timestamp, value: numeric })
-    const seen = lastLabels.get(entity)
-    if (seen === undefined || row.timestamp >= seen.ts) {
-      lastLabels.set(entity, {
-        ts: row.timestamp,
-        values: labels.map((name, index) => {
-          const stored = row.values[name]
-          if (stored !== null && stored !== undefined && typeof stored !== "object") return String(stored)
-          return seen?.values[index] ?? null
-        }),
-      })
-    }
-  }
-  if (group === undefined || group.length === 0) {
-    const derived = heatmap(samples, cumulative, from, columns, top)
-    return {
-      cumulative,
-      intervals: [...derived.intervals],
-      rows: derived.rows.map((row) => ({
-        typeId: firstRow.get(row.entity)?.typeId ?? "",
-        identity: firstRow.get(row.entity)?.identity ?? [],
-        labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
-        members: null,
-        total: row.total,
-        cells: row.cells,
-      })),
-      totals: { total: derived.totalsTotal, cells: [...derived.totals] },
-      others: { total: derived.othersTotal, cells: [...derived.others] },
-      othersCount: derived.othersCount,
-      entityCount: derived.entityCount,
-    }
-  }
-  const derived = heatmap(samples, cumulative, from, columns, Number.MAX_SAFE_INTEGER)
-  const grouped = new Map<string, { values: readonly (string | null)[]; members: number; total: number | null; cells: (number | null)[] }>()
-  for (const row of derived.rows) {
-    const values = groupOf.get(row.entity) ?? group.map(() => null)
-    const key = heatmapEntityKey(values)
-    const slot = grouped.get(key) ?? { values, members: 0, total: null, cells: new Array<number | null>(columns).fill(null) }
-    slot.members += 1
-    if (row.total !== null) slot.total = (slot.total ?? 0) + row.total
-    for (const [index, cell] of row.cells.entries()) {
-      if (cell !== null) slot.cells[index] = (slot.cells[index] ?? 0) + cell
-    }
-    grouped.set(key, slot)
-  }
-  const ranked = [...grouped.entries()].sort((left, right) => (right[1].total ?? -1) - (left[1].total ?? -1))
-  const kept = ranked.slice(0, top)
-  const rest = ranked.slice(top)
-  const othersCells = new Array<number | null>(columns).fill(null)
-  let othersTotal: number | null = null
-  for (const [, slot] of rest) {
-    if (slot.total !== null) othersTotal = (othersTotal ?? 0) + slot.total
-    for (const [index, cell] of slot.cells.entries()) {
-      if (cell !== null) othersCells[index] = (othersCells[index] ?? 0) + cell
-    }
-  }
-  return {
-    cumulative,
-    intervals: [...derived.intervals],
-    rows: kept.map(([, slot]) => ({
-      typeId: "0",
-      identity: slot.values,
-      labels: [],
-      members: slot.members,
-      total: slot.total,
-      cells: slot.cells,
-    })),
-    totals: { total: derived.totalsTotal, cells: [...derived.totals] },
-    others: { total: othersTotal, cells: othersCells },
-    othersCount: rest.length,
-    entityCount: grouped.size,
-  }
+function namedCells(names: readonly string[], stored: unknown): Readonly<Record<string, Cell>> {
+  if (!Array.isArray(stored) || stored.length !== names.length) throw new Error("heatmap row labels are invalid")
+  const values = stored
+  return Object.fromEntries(names.map((name, index) => [name, (values[index] ?? null) as Cell]))
 }
 
 export function acceptResponse<T>(promise: Promise<T>, signal: AbortSignal, apply: (value: T) => void, reject?: () => void): void {
@@ -649,7 +794,7 @@ function laneRow(
   }
 }
 
-export function healthRows(points: readonly Point[], metadata: readonly DataRow[] = []): readonly DataRow[] {
+export function healthRows(points: readonly Point[], contexts: readonly LaneContext[] = []): readonly DataRow[] {
   const healthPoints = new Map<string, Point>()
   for (const point of points) {
     if (!HEALTH_SERIES.has(point.series)) continue
@@ -661,10 +806,11 @@ export function healthRows(points: readonly Point[], metadata: readonly DataRow[
   for (const point of stored) {
     if (!segmentOrder.has(point.segmentId)) segmentOrder.set(point.segmentId, segmentOrder.size)
   }
-  const postgresIntervals = new Map(metadata.flatMap((row) => {
-    const seconds = row.values.postgresql_interval_seconds
-    const interval = typeof seconds === "number" ? seconds * 1_000_000 : Number.NaN
-    return Number.isSafeInteger(interval) && interval >= 0 ? [[row.segmentId, interval] as const] : []
+  const postgresIntervals = new Map(contexts.flatMap((context) => {
+    const interval = context.postgresqlIntervalSeconds === null
+      ? Number.NaN
+      : context.postgresqlIntervalSeconds * 1_000_000
+    return Number.isSafeInteger(interval) && interval >= 0 ? [[context.segmentId, interval] as const] : []
   }))
   const postgresSegments = new Set(stored.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
   const osSegments = new Set(stored.filter((point) => point.series === "os_health").map((point) => point.segmentId))
@@ -706,27 +852,6 @@ export function healthRows(points: readonly Point[], metadata: readonly DataRow[
         values,
       }
     })
-}
-
-async function loadHealthMetadata(points: readonly Point[], signal: AbortSignal): Promise<readonly DataRow[]> {
-  const postgresSegments = new Set(points.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
-  const evaluations = new Map<string, number>()
-  for (const point of points) {
-    if (point.series !== "overall_health" || !postgresSegments.has(point.segmentId)) continue
-    evaluations.set(point.segmentId, Math.max(evaluations.get(point.segmentId) ?? Number.MIN_SAFE_INTEGER, point.timestamp))
-  }
-  return (await Promise.all([...evaluations].map(async ([segmentId, at]) => {
-    try {
-      const snapshot = await loadSnapshot(segmentId, at, [{
-        section: "instance_metadata",
-        fields: ["postgresql_interval_seconds"],
-      }], signal)
-      return (snapshot.sections.instance_metadata ?? []).map((row) => ({ ...row, segmentId }))
-    } catch (error) {
-      if (signal.aborted) throw error
-      return []
-    }
-  }))).flat()
 }
 
 const HEALTH_SERIES = new Set(["overall_health", "os_health", "postgres_health"])
@@ -914,6 +1039,7 @@ function hourData(input: {
   readonly postgresqlPresent?: boolean
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
+  readonly laneContexts?: readonly LaneContext[]
   readonly findings: readonly Finding[]
   readonly findingGroups?: readonly FindingGroup[]
 }): HourData {
@@ -925,6 +1051,7 @@ function hourData(input: {
     postgresqlPresent: input.postgresqlPresent ?? false,
     rateColumns: input.rateColumns ?? {},
     snapshotRows: input.snapshotRows ?? [],
+    laneContexts: input.laneContexts ?? [],
     findingGroups: input.findingGroups ?? [],
     processes: rows("os_process"),
     activities: rows("pg_stat_activity"),
@@ -1490,6 +1617,15 @@ function catalogSegments(records: readonly Record<string, unknown>[]): readonly 
   return records.filter(
     (record) => record.record === "finished_segment" || record.record === "active_segment",
   ) as unknown as readonly Segment[]
+}
+
+function activePosition(segment: Segment): string {
+  const cursor = segment.cursor
+  if (cursor === undefined || cursor.segment_id !== segment.id
+    || typeof cursor.wal_position !== "string" || !/^\d+$/.test(cursor.wal_position)) {
+    throw new Error(`active segment ${segment.id} cursor is invalid`)
+  }
+  return cursor.wal_position
 }
 
 function sourceConfigured(header: Record<string, unknown> | undefined, name: string): boolean {

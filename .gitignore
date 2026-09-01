@@ -6,3 +6,6 @@ __pycache__/
 /demo-data/
 /demo-data-*/
 /demo-image.tar
+
+# Local coding-agent plans
+/docs/superpowers/

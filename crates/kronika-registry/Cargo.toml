@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 kronika-derive = { path = "../kronika-derive" }
+kronika-format = { path = "../kronika-format" }
 arrow-array = "55"
 arrow-ord = "55"
 arrow-schema = "55"

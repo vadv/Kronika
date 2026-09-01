@@ -84,8 +84,7 @@ mod error;
 mod finalize;
 
 pub use bounds::{
-    FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound,
-    final_single_batch_plain_body_bound,
+    FinalPlainColumnSize, final_data_body_bound, final_single_batch_plain_body_bound,
 };
 pub(crate) use columns::schema_matches;
 use columns::validate_list_i32_batch;
@@ -100,29 +99,35 @@ use encode::sort_by_sort_key;
 pub use error::CodecError;
 pub use finalize::{encode_final_sections_to, validate_final_section};
 
-/// Maximum rows in one snapshot section.
-///
-/// Encode and decode reject larger sections before materializing rows.
-pub const MAX_SECTION_ROWS: usize = 65_536;
+/// Maximum rows addressable by the version-1 catalog field.
+pub const MAX_SECTION_ROWS: usize = u32::MAX as usize;
 
-/// Maximum accepted section byte length on decode.
+/// Rows retained in one internal writer batch or final Parquet row group.
+pub const SECTION_WRITE_BATCH_ROWS: usize = 65_536;
+
+/// Maximum accepted section byte length under the version-1 container envelope.
 ///
 /// Checked before Parquet metadata is parsed.
-pub const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the one GiB format envelope fits every supported usize"
+)]
+pub const MAX_SECTION_BYTES: usize = kronika_format::MAX_PHYSICAL_SECTION_BYTES as usize;
 
 /// Maximum aggregate uncompressed Parquet column bytes admitted before decode.
-pub const MAX_DECODED_SECTION_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_DECODED_SECTION_BYTES: usize = MAX_SECTION_BYTES;
 
 /// Maximum Parquet row groups accepted in one snapshot section.
 ///
 /// Decode rejects excessive row groups before reading column data.
-pub const MAX_ROW_GROUPS: usize = 16;
+pub const MAX_ROW_GROUPS: usize = MAX_SECTION_ROWS.div_ceil(SECTION_WRITE_BATCH_ROWS);
 
 /// Maximum `List<Int32>` child values accepted in one row.
 pub(crate) const MAX_LIST_I32_VALUES_PER_ROW: usize = 4096;
 
 /// Maximum `List<Int32>` child values accepted in one section.
-pub(crate) const MAX_LIST_I32_VALUES_PER_SECTION: usize = MAX_SECTION_ROWS * 4;
+pub(crate) const MAX_LIST_I32_VALUES_PER_SECTION: usize =
+    MAX_DECODED_SECTION_BYTES / size_of::<i32>();
 
 // ---- Encode shared code ----------------------------------------------------
 
@@ -146,7 +151,7 @@ static WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(3).expect("zstd level 3 is valid"),
         ))
-        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_max_row_group_size(SECTION_WRITE_BATCH_ROWS)
         .set_created_by(String::new())
         .build()
 });
@@ -170,9 +175,9 @@ static FINAL_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(FINAL_ZSTD_LEVEL).expect("zstd level 6 is valid"),
         ))
-        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_max_row_group_size(SECTION_WRITE_BATCH_ROWS)
         .set_data_page_size_limit(FINAL_DATA_PAGE_BYTES)
-        .set_data_page_row_count_limit(MAX_SECTION_ROWS)
+        .set_data_page_row_count_limit(SECTION_WRITE_BATCH_ROWS)
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
         .set_offset_index_disabled(true)
@@ -311,7 +316,7 @@ pub(crate) fn decode_section<Row>(
     section: VerifiedSection,
     mut push_rows: impl FnMut(&RecordBatch, &mut Vec<Row>) -> Result<(), CodecError>,
 ) -> Result<Vec<Row>, CodecError> {
-    let (reader, _row_groups, claimed_rows) = capped_reader(section.into_bytes())?;
+    let (reader, _row_groups, _claimed_rows) = capped_reader(section.into_bytes())?;
     if !schema_matches(&reader.schema(), contract) {
         return Err(CodecError::SchemaMismatch);
     }
@@ -322,8 +327,7 @@ pub(crate) fn decode_section<Row>(
         .map(|column| column.name)
         .collect();
     let mut list_child_values = vec![0_usize; list_columns.len()];
-    // Claimed rows are capped above; typed gather pushes one row per source row.
-    let mut rows = Vec::with_capacity(claimed_rows);
+    let mut rows = Vec::new();
     for batch in reader {
         let batch = batch?;
         if rows.len() + batch.num_rows() > MAX_SECTION_ROWS {
@@ -362,7 +366,7 @@ pub(crate) fn decode_batches(
 ) -> Result<DecodedSection, CodecError> {
     let bytes = section.into_bytes();
     let bytes_in = bytes.len();
-    let (reader, row_groups, claimed_rows) = capped_reader(bytes)?;
+    let (reader, row_groups, _claimed_rows) = capped_reader(bytes)?;
 
     if !schema_matches(&reader.schema(), contract) {
         return Err(CodecError::SchemaMismatch);
@@ -375,7 +379,7 @@ pub(crate) fn decode_batches(
         .map(|column| column.name)
         .collect();
     let mut list_child_values = vec![0_usize; list_columns.len()];
-    let mut batches = Vec::with_capacity(claimed_rows.div_ceil(DECODE_BATCH_SIZE).max(1));
+    let mut batches = Vec::new();
     let mut rows = 0_usize;
     for batch in reader {
         let batch = batch?;

@@ -620,6 +620,101 @@ function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
 
+test("event groups use one half-open request and validate the server-owned shape", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let request: URL | null = null
+  const minutes = Array.from({ length: 60 }, () => 0)
+  minutes[3] = 2
+  globalThis.fetch = async (input) => {
+    request = new URL(String(input), "http://kronika.invalid")
+    return ndjson([
+      { record: "events", representation: "groups", truncated: true },
+      {
+        record: "event_group", key: "slow:select ?", section: "pg_log_slow_queries", tier: "notable",
+        label: "select ?", count: 2, firstTs: START + 180_000_000, lastTs: START + 180_000_000,
+        minutes, stat: { kind: "pg.slow", maxMs: 800, totalMs: 1_200, thresholdMs: 500 },
+        detail_ref: "opaque-ref", representativeTs: START + 180_000_000,
+      },
+    ])
+  }
+  try {
+    const groups = await api.loadEventGroups(
+      START,
+      ["pg_log_errors", "pg_log_slow_queries"],
+      new AbortController().signal,
+    )
+    assert.equal(request?.pathname, "/api/events")
+    assert.equal(request?.searchParams.get("from"), String(START))
+    assert.equal(request?.searchParams.get("to"), String(START + 3_600_000_000))
+    assert.equal(request?.searchParams.get("representation"), "groups")
+    assert.equal(request?.searchParams.get("limit"), "5000")
+    assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
+    assert.equal(groups.truncated, true)
+    assert.equal(groups.rows[0]?.stat.kind, "pg.slow")
+    assert.equal(groups.rows[0]?.label, "select ?")
+    assert.equal(groups.rows[0]?.detailRef, "opaque-ref")
+    assert.equal(groups.rows[0]?.representativeTs, START + 180_000_000)
+
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      {
+        record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
+        count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
+        detail_ref: "", representativeTs: START,
+      },
+    ])
+    await assert.rejects(
+      api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
+      /event detail reference/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("event representative detail uses one opaque bounded request", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const requested: URL[] = []
+  globalThis.fetch = async (input) => {
+    requested.push(new URL(String(input), "http://kronika.invalid"))
+    return ndjson([{
+      record: "row_detail",
+      section: "pg_log_errors",
+      at: START + 180_000_000,
+      fields: {
+        sample: { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null },
+      },
+    }])
+  }
+  try {
+    const detail = await api.loadEventRowDetail("opaque+/= ref", new AbortController().signal)
+    assert.equal(requested.length, 1)
+    assert.equal(requested[0]?.pathname, "/api/row-detail")
+    assert.equal(requested[0]?.searchParams.get("detail_ref"), "opaque+/= ref")
+    assert.deepEqual([...requested[0]?.searchParams.keys() ?? []], ["detail_ref"])
+    assert.equal(detail.section, "pg_log_errors")
+    assert.equal(detail.at, START + 180_000_000)
+    assert.deepEqual(detail.fields.sample, { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null })
+
+    let failedRequests = 0
+    globalThis.fetch = async () => {
+      failedRequests += 1
+      throw new TypeError("detail transport failed")
+    }
+    await assert.rejects(
+      api.loadEventRowDetail("opaque-ref", new AbortController().signal),
+      /detail transport failed/,
+    )
+    assert.equal(failedRequests, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("the bundled review fixture answers detail reads without HTTP", async () => {
   const api = await bundledApi()
   Object.assign(globalThis, { __KRONIKA_REAL_HOUR__: apiFixture() })
@@ -764,15 +859,15 @@ test("the current view replaces every prior snapshot while the hour line remains
   const health = row("health", START + 1)
   const timeline = api.hourOf({
     hour: START, availableHours: [START], segments: [], lanes: { health: [health] }, health: [health],
-    points: [], lanePoints: [], findings: [], availableSections: ["os_process", "pg_stat_activity"],
+    points: [], lanePoints: [], laneContexts: [], findings: [], availableSections: ["os_process", "pg_stat_activity"],
   })
   const processView = api.viewData(timeline, {
     sections: { os_process: [row("os_process", START + 2)] }, availableSections: ["os_process"],
-    points: [], lanePoints: [], findings: [],
+    points: [], lanePoints: [], laneContexts: [], findings: [],
   })
   const activityView = api.viewData(timeline, {
     sections: { pg_stat_activity: [row("pg_stat_activity", START + 3)] }, availableSections: ["pg_stat_activity"],
-    points: [], lanePoints: [], findings: [],
+    points: [], lanePoints: [], laneContexts: [], findings: [],
   })
   assert.equal(processView.processes[0]?.timestamp, START + 2)
   assert.equal(activityView.processes.length, 0)
@@ -785,10 +880,10 @@ test("the timeline carries every finding without per-section index requests", as
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const originalFetch = globalThis.fetch
-  const seen: string[] = []
+  const seen: URL[] = []
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
-    seen.push(url.pathname)
+    seen.push(url)
     return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
       {
@@ -809,7 +904,9 @@ test("the timeline carries every finding without per-section index requests", as
   }
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
-    assert.deepEqual(seen, ["/api/hour"])
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0]?.pathname, "/api/hour")
+    assert.equal(seen[0]?.searchParams.get("part"), "base")
     assert.deepEqual(timeline.findings.map((item) => [item.segmentId, item.logicalName, item.rowOrdinal]), [
       ["7", "os_process", "1"],
       ["7", "pg_stat_activity", "2"],
@@ -821,7 +918,7 @@ test("the timeline carries every finding without per-section index requests", as
   }
 })
 
-test("timeline lanes retain their segment and a recorded null", async () => {
+test("timeline base is lane-free and the atomic background result retains segment and null", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const originalFetch = globalThis.fetch
@@ -840,12 +937,48 @@ test("timeline lanes retain their segment and a recorded null", async () => {
   ])
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
-    assert.deepEqual(timeline.lanePoints, [{ segmentId: "segment-a", lane: "cpu_busy", timestamp: START + 1, value: null }])
+    assert.deepEqual(timeline.lanePoints, [])
+    const lanes = await api.loadTimelineLanes(timeline, new AbortController().signal)
+    assert.deepEqual(lanes.points, [{ segmentId: "segment-a", lane: "cpu_busy", timestamp: START + 1, value: null }])
+    const complete = api.withTimelineLanes(api.hourOf(timeline), lanes)
+    assert.deepEqual(complete.lanePoints, lanes.points)
     assert.deepEqual(timeline.health.map((row) => row.values.overall_health), [null, null])
     assert.deepEqual(timeline.segments[0]?.sections, [{ logicalName: "pg_stat_statements", typeId: "1002002" }])
     assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 0 }), "os_health")
     assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 1 }), "overall_health")
     assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 2 }), null)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("background lanes carry the exact ordered base segments and lossless active WAL pin", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const seen: URL[] = []
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    seen.push(url)
+    if (url.searchParams.get("part") === "lanes") return ndjson([
+      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1) },
+    ])
+    return ndjson([
+      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+      { record: "finished_segment", id: "41", min_ts: String(START), max_ts: String(START + 1), sections: [] },
+      {
+        record: "active_segment", id: "42", min_ts: String(START + 2), max_ts: String(START + 3), sections: [],
+        cursor: { segment_id: "42", wal_position: "18446744073709551615" },
+      },
+    ])
+  }
+  try {
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.equal(timeline.segments[1]?.activeWalPosition, "18446744073709551615")
+    await api.loadTimelineLanes(timeline, new AbortController().signal)
+    const background = seen[1]
+    assert.equal(background?.searchParams.get("segments"), "41,42")
+    assert.equal(background?.searchParams.get("active"), "42,18446744073709551615")
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -882,10 +1015,7 @@ test("health rows align raw PostgreSQL points to stored nonfuture evaluations", 
   const point = (segmentId: string, series: string, timestamp: number, value: number | null) => ({
     identity: {}, logicalName: "health", segmentId, series, timestamp, typeId: "0", value,
   })
-  const metadata = [{
-    logicalName: "instance_metadata", ordinal: "0", segmentId: "a", timestamp: START, typeId: "1000001",
-    values: { postgresql_interval_seconds: 1 },
-  }]
+  const metadata = [{ segmentId: "a", postgresqlIntervalSeconds: 1 }]
   const rows = api.healthRows([
     point("a", "postgres_health", START + 100, 72),
     point("a", "os_health", START + 101, 91),
@@ -929,12 +1059,9 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(`${url.pathname}?${url.searchParams}`)
-    if (url.pathname.includes("/snapshot")) return ndjson([
-      {
-        record: "layout",
-        layout: { type_id: "1000001", logical_name: "instance_metadata", columns: [{ name: "postgresql_interval_seconds" }] },
-      },
-      { record: "row", segment_id: "metadata-source", type_id: "1000001", ordinal: "0", timestamp: String(START), values: [1] },
+    if (url.searchParams.get("part") === "lanes") return ndjson([
+      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1) },
+      { record: "lane_context", segment_id: "a", postgresql_interval_seconds: "1" },
     ])
     return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
@@ -950,14 +1077,22 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
     assert.deepEqual(timeline.health.map((row) => row.values), [
+      { overall_health: null, os_health: null, postgres_health: null },
+      { overall_health: null, os_health: null, postgres_health: null },
+    ])
+    const lanes = await api.loadTimelineLanes(timeline, new AbortController().signal)
+    const complete = api.withTimelineLanes(api.hourOf(timeline), lanes)
+    assert.deepEqual(complete.health.map((row) => row.values), [
       { overall_health: null, os_health: null, postgres_health: 72 },
       { overall_health: null, os_health: null, postgres_health: null },
     ])
     assert.equal(seen.length, 2)
-    const metadata = new URL(seen[1]!, "http://kronika.invalid")
-    assert.equal(metadata.pathname, "/api/segments/a/snapshot")
-    assert.deepEqual(metadata.searchParams.getAll("section"), ["instance_metadata"])
-    assert.deepEqual(metadata.searchParams.getAll("field"), ["postgresql_interval_seconds"])
+    const base = new URL(seen[0]!, "http://kronika.invalid")
+    const background = new URL(seen[1]!, "http://kronika.invalid")
+    assert.equal(base.searchParams.get("part"), "base")
+    assert.equal(background.searchParams.get("part"), "lanes")
+    assert.equal(background.searchParams.get("segments"), "a")
+    assert.equal(seen.some((request) => request.includes("/snapshot")), false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1032,6 +1167,48 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
     section: "pg_stat_activity", typeId: "1001001", fields: ["pid"],
   }])
   assert.deepEqual(exactOldLayout.map((group) => group.anchor.id), ["100"])
+})
+
+test("heatmaps use compact automatic named labels without a label selector", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/heatmap")
+    assert.deepEqual(url.searchParams.getAll("field"), ["total_exec_time"])
+    assert.equal(url.searchParams.has("label"), false)
+    return ndjson([
+      {
+        record: "heatmap", class: "cumulative", entity_count: "1", others_count: "0",
+        labels: ["datname", "usename"],
+        intervals: [{ start: String(START), end: String(START + 3_600_000_000 - 1) }],
+      },
+      {
+        record: "heatmap_row", type_id: "1002002", identity: ["42", "10", "5"],
+        labels: ["app", "reporter"],
+        total: 10, cells: [1],
+      },
+      { record: "heatmap_band", band: "totals", total: 10, cells: [1] },
+      { record: "heatmap_band", band: "others", total: null, cells: [null] },
+    ])
+  }
+  try {
+    const view = await api.loadHeatmap(
+      START,
+      "pg_stat_statements",
+      ["total_exec_time"],
+      1,
+      25,
+      new AbortController().signal,
+    )
+    assert.deepEqual(view.rows[0]?.labels, {
+      datname: "app",
+      usename: "reporter",
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test("related plan query text uses one bounded query-ID-only first match", async () => {

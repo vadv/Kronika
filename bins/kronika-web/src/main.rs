@@ -1,18 +1,16 @@
-//! Serves authenticated, per-segment Kronika resources over HTTP/1.1.
+//! Serves authenticated Kronika HTTP resources and MCP tools over HTTP/1.1.
 //!
-//! Disk, Parquet, index construction, and JSON record production run on Tokio's
-//! blocking pool. Request workers await only metadata and a bounded body
-//! channel. No data or response cache is retained by the process.
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "the registry's arrow/parquet stack pulls duplicate transitive versions outside our control"
-)]
+//! Streamed API reads and response generation, plus MCP tool dispatch, run on
+//! Tokio's blocking pool. The process retains no segment, decoded-data, or
+//! response cache between requests.
 
 mod api;
 mod auth;
 mod body;
+mod budget;
 mod config;
 mod encoding;
+mod mcp;
 mod route;
 mod ui;
 
@@ -27,7 +25,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{
     ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, ETAG, HeaderValue,
-    IF_NONE_MATCH, SET_COOKIE, VARY, WWW_AUTHENTICATE,
+    IF_NONE_MATCH, ORIGIN, SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -92,8 +90,31 @@ async fn answer(
             session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
         }
         RequestTarget::Api { route, accepted } => {
-            streamed(config, route, if_none_match, accepted).await
+            if matches!(route, route::Route::McpAccess) {
+                mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
+            } else if matches!(route, route::Route::InstanceLabel) {
+                match tokio::task::spawn_blocking(move || largest_database(&config.data_root)).await
+                {
+                    Ok(database) => {
+                        let cache_for_a_day = database.is_some();
+                        let response =
+                            json_response(StatusCode::OK, instance_label_body(database.as_deref()));
+                        if cache_for_a_day {
+                            day_cached_private(response)
+                        } else {
+                            response
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("kronika-web: instance label task: {error}");
+                        failed()
+                    }
+                }
+            } else {
+                streamed(config, route, if_none_match, accepted).await
+            }
         }
+        RequestTarget::Mcp => mcp::response(config, request).await,
     })
 }
 
@@ -161,6 +182,15 @@ fn route_request_with_authentication<B>(
         }
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
+    if path == "/mcp" && request.uri().query().is_none() {
+        reject_browser_origin(request.headers())?;
+        if account.is_some_and(|account| !admitted_api(account, request.headers(), now)) {
+            return Err(RequestError::Unauthorized {
+                challenge: !is_ui_request(request.headers()),
+            });
+        }
+        return Ok(RequestTarget::Mcp);
+    }
     if path != "/api" && !path.starts_with("/api/") {
         return Err(RequestError::Route(RouteError::NoSuchPath));
     }
@@ -189,6 +219,7 @@ enum RequestTarget {
         route: route::Route,
         accepted: AcceptedEncodings,
     },
+    Mcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +237,8 @@ enum RequestError {
     MethodNotAllowed(&'static str),
     UiEncodingNotAcceptable,
     ApiEncodingNotAcceptable,
+    InvalidOrigin,
+    OriginNotAllowed,
 }
 
 impl RequestError {
@@ -221,6 +254,8 @@ impl RequestError {
             Self::MethodNotAllowed(allow) => method_not_allowed(allow),
             Self::UiEncodingNotAcceptable => encoding_not_acceptable(false),
             Self::ApiEncodingNotAcceptable => encoding_not_acceptable(true),
+            Self::InvalidOrigin => refused(StatusCode::BAD_REQUEST, "invalid_origin", None),
+            Self::OriginNotAllowed => refused(StatusCode::FORBIDDEN, "origin_not_allowed", None),
         }
     }
 }
@@ -274,6 +309,28 @@ fn admitted_api(account: &config::Account, headers: &HeaderMap, now: u64) -> boo
         SingleHeader::Value(value) => auth::admits_basic(account, Some(value)),
         SingleHeader::Absent => admitted_session(account, headers, now),
         SingleHeader::Invalid => false,
+    }
+}
+
+/// Rejects every `/mcp` request with an `Origin` header. A missing header continues
+/// to authentication; malformed or duplicate headers are bad requests, and valid
+/// browser origins are forbidden.
+fn reject_browser_origin(headers: &HeaderMap) -> Result<(), RequestError> {
+    match unique_header(headers.get_all(ORIGIN).iter()) {
+        SingleHeader::Absent => Ok(()),
+        SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
+        SingleHeader::Value(text) => {
+            let uri: hyper::Uri = text.parse().map_err(|_error| RequestError::InvalidOrigin)?;
+            let well_formed = matches!(uri.scheme_str(), Some("http" | "https"))
+                && uri.authority().is_some()
+                && uri.path() == "/"
+                && uri.query().is_none();
+            if well_formed {
+                Err(RequestError::OriginNotAllowed)
+            } else {
+                Err(RequestError::InvalidOrigin)
+            }
+        }
     }
 }
 
@@ -594,6 +651,86 @@ fn encoding_not_acceptable(api: bool) -> Response<WebBody> {
         ui::set_vary(&mut response);
     }
     response
+}
+
+/// The same `Authorization` value `/mcp` accepts, or null when the server
+/// runs without authentication.
+fn mcp_access_body(config: &Config) -> String {
+    use base64::Engine as _;
+    let authorization = config.authentication_required.then(|| {
+        let credentials = format!("{}:{}", config.account.user, config.account.password);
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(credentials)
+        )
+    });
+    serde_json::json!({ "record": "mcp_access", "authorization": authorization }).to_string()
+}
+
+/// Marks a response reusable by the operator's browser for a day.
+fn day_cached_private(mut response: Response<WebBody>) -> Response<WebBody> {
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private,max-age=86400"),
+    );
+    response
+}
+
+/// `{"record":"instance_label","database":…}`, null without a label.
+fn instance_label_body(database: Option<&str>) -> String {
+    serde_json::json!({
+        "record": "instance_label",
+        "database": database,
+    })
+    .to_string()
+}
+
+/// Operators call an instance by its biggest database, so the label is
+/// the largest database in the newest recorded relation snapshot.
+fn largest_database(root: &std::path::Path) -> Option<String> {
+    match try_largest_database(root) {
+        Ok(database) => database,
+        Err(error) => {
+            eprintln!("kronika-web: instance label: {error}");
+            None
+        }
+    }
+}
+
+fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiError> {
+    use crate::api::snapshot::relation::Metric;
+    let Some((segment_id, at)) = mcp::current_segment(root, "pg_stat_user_tables")? else {
+        return Ok(None);
+    };
+    let request = route::SnapshotRequest {
+        segment_id,
+        at,
+        sections: vec!["pg_stat_user_tables".to_owned()],
+        fields: vec!["displayed_storage_bytes".to_owned()],
+        by: vec!["displayed_storage_bytes".to_owned()],
+        direction: route::Order::Desc,
+        group: Some(route::RelationGroup::Database),
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    };
+    let api::Prepared::Snapshot(prepared) = api::snapshot::prepare(root, request, None)? else {
+        return Ok(None);
+    };
+    let result = prepared.compute_relation_rows(1, &|| false)?;
+    Ok(result
+        .rows
+        .into_iter()
+        .next()
+        .and_then(|row| match row.key.metric("datname") {
+            Some(Metric::Text(name)) => Some(name),
+            _ => None,
+        }))
 }
 
 fn json_response(status: StatusCode, body: String) -> Response<WebBody> {

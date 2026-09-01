@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use kronika_registry::MAX_SECTION_ROWS;
+use kronika_registry::SECTION_WRITE_BATCH_ROWS;
 use kronika_source_log::pgbouncer::PgBouncerLog;
 use kronika_source_log::postgres::{Events, LinePrefix, PgLog};
 use kronika_source_log::{MAX_READ_BYTES, Offsets, pgbouncer};
@@ -328,7 +328,7 @@ impl LogSources {
             let mut event_rows = 0_usize;
             let mut read_failed = false;
             while next_batch_bytes(raw_bytes) != 0 {
-                let batch = match source.log.read_batch(now, MAX_SECTION_ROWS) {
+                let batch = match source.log.read_batch(now, SECTION_WRITE_BATCH_ROWS) {
                     Ok(batch) => batch,
                     Err(error) => {
                         log_collection_failure(PG_LOG_TYPE_ID, format, &error, started.elapsed());
@@ -394,7 +394,7 @@ impl LogSources {
             let mut event_rows = 0_usize;
             let mut read_failed = false;
             while next_batch_bytes(raw_bytes) != 0 {
-                let batch = match log.read_batch(MAX_SECTION_ROWS) {
+                let batch = match log.read_batch(SECTION_WRITE_BATCH_ROWS) {
                     Ok(batch) => batch,
                     Err(error) => {
                         log_collection_failure(

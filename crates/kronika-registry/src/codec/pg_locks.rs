@@ -19,7 +19,8 @@ use crate::{Section, StrId, Ts};
     id = 1_011_002,
     name = "pg_locks",
     semantics = conditional_full,
-    sort_key("pid")
+    sort_key("pid"),
+    identity("pid")
 )]
 pub struct PgLocksV2 {
     /// Snapshot time, unix microseconds (server `statement_timestamp()`).
@@ -131,7 +132,8 @@ pub struct PgLocksV2 {
     id = 1_011_001,
     name = "pg_locks",
     semantics = conditional_full,
-    sort_key("pid")
+    sort_key("pid"),
+    identity("pid")
 )]
 pub struct PgLocksV1 {
     /// Snapshot time, unix microseconds (server `statement_timestamp()`).
@@ -320,6 +322,7 @@ mod tests {
         assert_eq!(c.type_id.get(), 1_011_002);
         assert_eq!(c.columns.len(), 33);
         assert_eq!(c.sort_key, ["pid"]);
+        assert_eq!(c.identity, ["pid"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(
             c.column("blocked_by").map(|col| col.ty),
@@ -358,6 +361,8 @@ mod tests {
         let c = PgLocksV1::CONTRACT;
         assert_eq!(c.type_id.get(), 1_011_001);
         assert_eq!(c.columns.len(), 32);
+        assert_eq!(c.sort_key, ["pid"]);
+        assert_eq!(c.identity, ["pid"]);
         assert!(c.column("waitstart").is_none());
         assert!(c.column("blocked_by").is_some());
         assert_eq!(

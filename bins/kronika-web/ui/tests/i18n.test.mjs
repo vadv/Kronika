@@ -113,9 +113,7 @@ test("RU keeps technical labels in English and localizes help", async () => {
     assert.equal(russian[key], english[key], key)
   }
   assert.equal(english["filter.field.seq_scan_rate.label"], "Seq scan rate")
-  for (const key of ["events.field.holding_pids", "events.field.wait_queue"]) {
-    assert.equal(russian[key], english[key], key)
-  }
+  assert.equal(russian["events.field.holding_pids"], english["events.field.holding_pids"])
   for (const key of Object.keys(english).filter((candidate) =>
     candidate.startsWith("pg.vitals.band.") || (candidate.startsWith("pg.vitals.row.") && !candidate.endsWith(".help")))) {
     assert.equal(russian[key], english[key], key)
@@ -160,7 +158,10 @@ test("RU keeps technical labels in English and localizes help", async () => {
     .map(([, value]) => value)
     .join("\n")
   assert.doesNotMatch(technicalScope, /бэкенд|кортеж|вакуум|очистк|контрольн\S*\s+точ|PSI CPU|PSI I\/O|последовательн\S*\s+скан|сканирован\S*\s+индекс/iu)
-  assert.match(activitySource, /`Query ID \$\{queryId \?\? "—"\}`/)
+  assert.equal(russian["pg.detail.query"], english["pg.detail.query"])
+  assert.equal(russian["pg.detail.plan"], english["pg.detail.plan"])
+  assert.match(activitySource, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
+  assert.match(activitySource, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
   assert.doesNotMatch(activitySource, /`queryid /)
 })
 

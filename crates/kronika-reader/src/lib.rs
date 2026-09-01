@@ -11,6 +11,8 @@ mod dictionary;
 mod error;
 mod segment;
 
+use std::cmp::Reverse;
+use std::collections::BTreeSet;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -158,7 +160,7 @@ pub struct Listing {
 ///
 /// A caller can inspect all recorded time ranges, choose a window, and then
 /// materialize references only for segments that overlap that window.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CatalogDiscovery<'a> {
     reader: &'a Reader,
     scan: kronika_store::LocalScan,
@@ -194,6 +196,128 @@ impl CatalogDiscovery<'_> {
         self.list_segments(range, false, false)
     }
 
+    /// Open section catalogs in `range` and the closest canonical predecessor.
+    ///
+    /// This uses the same captured directory scan as [`Self::ranges`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the captured segment catalog cannot be read.
+    pub fn segments_with_predecessor<R: RangeBounds<i64>>(
+        self,
+        range: R,
+    ) -> Result<Listing, ReaderError> {
+        self.list_segments(range, false, true)
+    }
+
+    /// Open section catalogs in `range` and the closest predecessor carrying
+    /// rows for each requested physical layout.
+    ///
+    /// Compact finished-segment summaries reject sectionless candidates before
+    /// their full catalogs are opened. Positive summary matches are confirmed
+    /// against the catalog, so a Bloom-filter collision cannot hide an older
+    /// compatible predecessor. The active segment is considered from the same
+    /// captured directory scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a selected segment catalog cannot be read safely.
+    pub fn segments_with_predecessors_for<R: RangeBounds<i64>>(
+        self,
+        range: R,
+        type_ids: &[u32],
+    ) -> Result<Listing, ReaderError> {
+        let bounds = owned_bounds(&range);
+        let mut listing = self.clone().list_segments(bounds, false, false)?;
+        let mut remaining = type_ids.iter().copied().collect::<BTreeSet<_>>();
+        if remaining.is_empty() {
+            return Ok(listing);
+        }
+
+        let finished = Arc::clone(&self.scan.finished);
+        let active_id = self.scan.active.first().map(|part| part.segment_id.get());
+        let active_time_bounds = active_bounds(&self.scan.active);
+        let finished_exists = active_id.is_some_and(|active_id| {
+            finished
+                .iter()
+                .any(|unit| unit.address.id.get() == active_id)
+        });
+        let canonical_active = (!finished_exists)
+            .then_some(active_id.zip(active_time_bounds))
+            .flatten();
+        let mut candidates = finished
+            .iter()
+            .enumerate()
+            .filter(|(_index, unit)| before_start(&range, unit.summary.max_ts))
+            .map(|(index, unit)| (unit.summary.max_ts, unit.address.id.get(), Some(index)))
+            .chain(
+                canonical_active
+                    .filter(|(_id, (_min_ts, max_ts))| before_start(&range, *max_ts))
+                    .map(|(id, (_min_ts, max_ts))| (max_ts, id, None)),
+            )
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(max_ts, id, _index)| Reverse((*max_ts, *id)));
+
+        for (_max_ts, _id, finished_index) in candidates {
+            let requested = remaining.iter().copied().collect::<Vec<_>>();
+            let segment = if let Some(index) = finished_index {
+                let unit = &finished[index];
+                if !unit.summary.may_contain_any_nonempty_type(&requested) {
+                    continue;
+                }
+                let file = self.reader.dir.open_finished(unit)?;
+                let catalog = read_catalog(&file)?;
+                self.reader.dir.validate_finished_file(&file, unit)?;
+                let sections = sections_of(std::iter::once(&catalog)).into();
+                SegmentRef {
+                    source: SegmentSource::Finished(unit.clone()),
+                    provenance: Arc::clone(&self.reader.provenance),
+                    segment_id: unit.address.id.get(),
+                    min_ts: unit.summary.min_ts,
+                    max_ts: unit.summary.max_ts,
+                    captured_bytes: unit.identity.len,
+                    sections,
+                }
+            } else {
+                let Some(snapshot) = self.reader.dir.open_active_snapshot(&self.scan)? else {
+                    continue;
+                };
+                let Some((min_ts, max_ts)) = active_time_bounds else {
+                    continue;
+                };
+                let sections =
+                    sections_of(snapshot.parts().iter().map(|part| &part.catalog)).into();
+                SegmentRef {
+                    segment_id: snapshot.segment_id().get(),
+                    source: SegmentSource::Active(snapshot),
+                    provenance: Arc::clone(&self.reader.provenance),
+                    min_ts,
+                    max_ts,
+                    captured_bytes: self.scan.valid_len,
+                    sections,
+                }
+            };
+            let matched = segment
+                .sections()
+                .iter()
+                .filter(|section| section.rows > 0 && remaining.contains(&section.type_id))
+                .map(|section| section.type_id)
+                .collect::<Vec<_>>();
+            if matched.is_empty() {
+                continue;
+            }
+            for type_id in matched {
+                remaining.remove(&type_id);
+            }
+            listing.segments.push(segment);
+            if remaining.is_empty() {
+                break;
+            }
+        }
+        listing.segments.sort_unstable_by_key(SegmentRef::id);
+        Ok(listing)
+    }
+
     fn list_segments<R: RangeBounds<i64>>(
         mut self,
         range: R,
@@ -202,18 +326,34 @@ impl CatalogDiscovery<'_> {
     ) -> Result<Listing, ReaderError> {
         let mut segments = Vec::new();
         let finished = Arc::clone(&self.scan.finished);
+        let active_id = self.scan.active.first().map(|part| part.segment_id.get());
+        let active_time_bounds = active_bounds(&self.scan.active);
+        let finished_exists = active_id.is_some_and(|active_id| {
+            finished
+                .iter()
+                .any(|unit| unit.address.id.get() == active_id)
+        });
+        let canonical_active = (validate_bodies || !finished_exists)
+            .then_some(active_id.zip(active_time_bounds))
+            .flatten();
         let predecessor = include_predecessor
             .then(|| {
                 finished
                     .iter()
                     .filter(|unit| before_start(&range, unit.summary.max_ts))
-                    .max_by_key(|unit| (unit.summary.max_ts, unit.address.id))
-                    .map(|unit| unit.address.id)
+                    .map(|unit| (unit.summary.max_ts, unit.address.id.get()))
+                    .chain(
+                        canonical_active
+                            .filter(|(_id, (_min_ts, max_ts))| before_start(&range, *max_ts))
+                            .map(|(id, (_min_ts, max_ts))| (max_ts, id)),
+                    )
+                    .max()
+                    .map(|(_max_ts, id)| id)
             })
             .flatten();
         for unit in finished.iter().filter(|unit| {
             overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
-                || predecessor == Some(unit.address.id)
+                || predecessor == Some(unit.address.id.get())
         }) {
             if validate_bodies && !self.reader.dir.validate_finished(&mut self.scan, unit)? {
                 continue;
@@ -232,7 +372,6 @@ impl CatalogDiscovery<'_> {
                 sections,
             });
         }
-        let active_id = self.scan.active.first().map(|part| part.segment_id.get());
         let finished_is_canonical = active_id.is_some_and(|active_id| {
             segments
                 .iter()
@@ -240,8 +379,10 @@ impl CatalogDiscovery<'_> {
         });
         let active = if finished_is_canonical {
             None
-        } else if let Some((min_ts, max_ts)) = active_bounds(&self.scan.active)
-            .filter(|&(min_ts, max_ts)| overlaps(&range, min_ts, max_ts))
+        } else if let Some((_id, (min_ts, max_ts))) =
+            canonical_active.filter(|(id, (min_ts, max_ts))| {
+                overlaps(&range, *min_ts, *max_ts) || predecessor == Some(*id)
+            })
         {
             self.reader
                 .dir
@@ -389,7 +530,7 @@ impl Reader {
         })
     }
 
-    /// List segment catalogs in `range` plus the closest finished predecessor.
+    /// List segment catalogs in `range` plus the closest canonical predecessor.
     ///
     /// The predecessor is selected from scan summaries before section catalogs
     /// are opened. This supports bounded counter lookback without opening every
@@ -507,6 +648,10 @@ fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
         Bound::Included(start) => max_ts < *start,
         Bound::Excluded(start) => max_ts <= *start,
     }
+}
+
+fn owned_bounds<R: RangeBounds<i64>>(range: &R) -> (Bound<i64>, Bound<i64>) {
+    (range.start_bound().cloned(), range.end_bound().cloned())
 }
 
 #[cfg(test)]

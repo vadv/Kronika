@@ -1,9 +1,12 @@
 //! Actual segment and physical-section inventory.
 
+use std::collections::BTreeMap;
 use std::ops::Bound::{Included, Unbounded};
 use std::path::Path;
 
-use kronika_reader::{Listing, Reader, SegmentKind, SegmentRef, StoreObject, StoreWarning};
+use kronika_reader::{
+    Listing, Reader, SegmentKind, SegmentRef, SegmentSection, StoreObject, StoreWarning,
+};
 use kronika_registry::{logical_section_name, section_implementation, section_name};
 use serde_json::{Value, json};
 
@@ -21,7 +24,7 @@ pub(crate) struct PreparedCatalog {
     metric_sources: Option<u32>,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     root: &Path,
     window: Window,
     configured_sources: u32,
@@ -128,6 +131,75 @@ impl PreparedCatalog {
         }
         Ok(())
     }
+
+    /// Logical product sections recorded in the selected segments.
+    pub(crate) fn recorded_sections(&self) -> Vec<Value> {
+        let mut totals = BTreeMap::<
+            &'static str,
+            (
+                u64,
+                u64,
+                Option<&'static str>,
+                BTreeMap<&'static str, (&'static str, Option<&'static str>)>,
+            ),
+        >::new();
+        for segment in &self.listing.segments {
+            for section in segment.sections() {
+                let Some(logical_name) = logical_section_name(section.type_id) else {
+                    continue;
+                };
+                if logical_name.starts_with("dict.") {
+                    continue;
+                }
+                let Some(contract) = kronika_registry::contract(section.type_id) else {
+                    continue;
+                };
+                let (rows, bytes, _source_family, fields) =
+                    totals.entry(logical_name).or_insert_with(|| {
+                        (
+                            0,
+                            0,
+                            source_bit(section.type_id).and_then(source_name),
+                            BTreeMap::new(),
+                        )
+                    });
+                *rows = rows.saturating_add(section.rows);
+                *bytes = bytes.saturating_add(section.bytes);
+                for column in contract.columns {
+                    fields.entry(column.name).or_insert_with(|| {
+                        (
+                            column.class.code(),
+                            column.unit.map(kronika_registry::Unit::code),
+                        )
+                    });
+                }
+            }
+        }
+        totals
+            .into_iter()
+            .map(|(logical_name, (rows, bytes, source_family, fields))| {
+                json!({
+                    "logical_name": logical_name,
+                    "source_family": source_family,
+                    "rows": rows.to_string(),
+                    "bytes": bytes.to_string(),
+                    "fields": fields.into_iter().map(|(name, (class, unit))| json!({
+                        "name": name,
+                        "class": class,
+                        "unit": unit,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    }
+
+    /// The first and last recorded timestamps across every segment, Unix
+    /// microseconds, or `None` on an empty store.
+    pub(crate) fn recorded_range(&self) -> Option<(i64, i64)> {
+        let from = self.listing.segments.iter().map(SegmentRef::min_ts).min()?;
+        let to = self.listing.segments.iter().map(SegmentRef::max_ts).max()?;
+        Some((from, to))
+    }
 }
 
 pub(super) fn log_open(
@@ -181,7 +253,7 @@ fn sections(segment: &SegmentRef) -> Vec<Value> {
     section_values(segment.sections())
 }
 
-fn section_values(sections: &[kronika_reader::SegmentSection]) -> Vec<Value> {
+fn section_values(sections: &[SegmentSection]) -> Vec<Value> {
     sections
         .iter()
         .map(|section| {

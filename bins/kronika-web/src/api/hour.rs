@@ -15,7 +15,9 @@ use super::query::plans;
 use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
-use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
+use crate::route::{
+    ActiveCursor, DataRequest, HourPart, HourRequest, SegmentRequest, SeriesRequest, Window,
+};
 
 mod lanes;
 mod postgres_summary;
@@ -28,6 +30,12 @@ const SERIES: &str = "health";
 
 const HOUR: i64 = 3_600_000_000;
 const ALL_SOURCES: u32 = SOURCE_OS | SOURCE_POSTGRESQL;
+
+#[cfg(test)]
+thread_local! {
+    static LANE_OPERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SOURCE_PRESENCE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Default)]
 struct SourcePresence {
@@ -44,6 +52,7 @@ pub(crate) struct PreparedHour {
     window: Window,
     hours: Vec<i64>,
     series: Option<SeriesRequest>,
+    part: HourPart,
     etag: Option<String>,
 }
 
@@ -57,7 +66,11 @@ pub(super) fn prepare(
     let requested = request.window;
     let reader = Reader::open(root)?;
     let discovery = reader.catalog_discovery()?;
-    let hours = hours_of_ranges(discovery.ranges());
+    let hours = if request.part == HourPart::Lanes {
+        Vec::new()
+    } else {
+        hours_of_ranges(discovery.ranges())
+    };
     let window = requested.from.map_or_else(
         || latest_hour(&hours),
         |from| Window {
@@ -80,12 +93,16 @@ pub(super) fn prepare(
         .cloned()
         .collect::<Vec<_>>();
     segments.sort_by_key(SegmentRef::min_ts);
+    if request.part == HourPart::Lanes {
+        let expected = request.segments.as_deref().ok_or(ApiError::BadCursor)?;
+        pin_segments(&mut segments, expected, request.active)?;
+    }
     super::catalog::log_open(segments.len(), &stored.warnings, started);
     let shape = format!(
-        "window={window:?};hours={hours:?};series={:?};sources={configured_sources};demo={synthetic_demo}",
-        request.series
+        "window={window:?};hours={hours:?};series={:?};part={:?};segments={:?};active={:?};sources={configured_sources};demo={synthetic_demo}",
+        request.series, request.part, request.segments, request.active,
     );
-    let etag = if segments.is_empty() {
+    let etag = if request.part == HourPart::Base || segments.is_empty() {
         None
     } else if request.series.is_some() && stored.warnings.is_empty() {
         super::weak_etag(
@@ -100,7 +117,7 @@ pub(super) fn prepare(
     } else {
         None
     };
-    let catalog = request.series.is_none().then(|| {
+    let catalog = (request.series.is_none() && request.part != HourPart::Lanes).then(|| {
         PreparedCatalog::from_listing(
             Listing {
                 segments: segments.clone(),
@@ -120,8 +137,39 @@ pub(super) fn prepare(
         window,
         hours,
         series: request.series,
+        part: request.part,
         etag,
     })
+}
+
+fn pin_segments(
+    segments: &mut [SegmentRef],
+    expected: &[i64],
+    cursor: Option<ActiveCursor>,
+) -> Result<(), ApiError> {
+    if !segments
+        .iter()
+        .map(SegmentRef::id)
+        .eq(expected.iter().copied())
+    {
+        return Err(ApiError::BadCursor);
+    }
+    let active = segments
+        .iter()
+        .position(|segment| segment.kind() == SegmentKind::Active);
+    match (active, cursor) {
+        (None, None) => Ok(()),
+        (Some(_), None) | (None, Some(_)) => Err(ApiError::BadCursor),
+        (Some(index), Some(cursor)) => {
+            if segments[index].id() != cursor.segment_id {
+                return Err(ApiError::BadCursor);
+            }
+            segments[index] = segments[index]
+                .at_active_position(cursor.wal_position)
+                .map_err(|_error| ApiError::BadCursor)?;
+            Ok(())
+        }
+    }
 }
 
 fn overlaps_window(min_ts: i64, max_ts: i64, window: Window) -> bool {
@@ -181,8 +229,11 @@ impl PreparedHour {
     ) -> Result<(), ApiError> {
         let started = std::time::Instant::now();
         let count = self.segments.len();
-        if cancelled()
-            || !emit(record(json!({
+        if cancelled() {
+            return Ok(());
+        }
+        if self.part != HourPart::Lanes
+            && !emit(record(json!({
                 "record": "hour",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
@@ -199,6 +250,7 @@ impl PreparedHour {
             segments,
             window,
             series,
+            part,
             ..
         } = self;
         if let Some(series) = series {
@@ -237,24 +289,22 @@ impl PreparedHour {
             if cancelled() {
                 return Ok(());
             }
-            let mut keys = series_keys(segment, SERIES);
-            keys.extend(series_keys(segment, "pg_stat_activity"));
-            keys.extend(finding_keys(segment));
-            keys.sort_unstable();
-            keys.dedup();
-            let resource = resource_selected(&root, &reader, segment, &keys)?;
-            if !emit(record(json!({
-                "record": "index",
-                "segment": { "id": segment.id().to_string() },
-                "logical_name": SERIES,
-                "checksum": resource.index.checksum.map(|value| format!("{value:08x}")),
-            }))?) {
+            if part != HourPart::Lanes
+                && !emit_index(&root, &reader, segment, window, emit, cancelled)?
+            {
                 return Ok(());
             }
-            if !stream_series(SERIES, resource, Some(window), emit, cancelled)? {
-                return Ok(());
-            }
-            if !emit_lanes(&reader, segment, window, &mut lane_state, emit, cancelled)? {
+            if part != HourPart::Base
+                && !emit_lanes(
+                    &reader,
+                    segment,
+                    window,
+                    &mut lane_state,
+                    part == HourPart::Lanes,
+                    emit,
+                    cancelled,
+                )?
+            {
                 return Ok(());
             }
         }
@@ -266,6 +316,31 @@ impl PreparedHour {
     }
 }
 
+fn emit_index(
+    root: &Path,
+    reader: &Reader,
+    segment: &SegmentRef,
+    window: Window,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    let mut keys = series_keys(segment, SERIES);
+    keys.extend(series_keys(segment, "pg_stat_activity"));
+    keys.extend(finding_keys(segment));
+    keys.sort_unstable();
+    keys.dedup();
+    let resource = resource_selected(root, reader, segment, &keys)?;
+    if !emit(record(json!({
+        "record": "index",
+        "segment": { "id": segment.id().to_string() },
+        "logical_name": SERIES,
+        "checksum": resource.index.checksum.map(|value| format!("{value:08x}")),
+    }))?) {
+        return Ok(false);
+    }
+    stream_series(SERIES, resource, Some(window), emit, cancelled)
+}
+
 fn source_presence(
     reader: &Reader,
     segments: &[SegmentRef],
@@ -273,7 +348,41 @@ fn source_presence(
     cancelled: &impl Fn() -> bool,
 ) -> Result<SourcePresence, ApiError> {
     let mut presence = SourcePresence::default();
-    for segment_ref in segments {
+    for segment_ref in segments
+        .iter()
+        .filter(|segment| window.contains(segment.min_ts()) && window.contains(segment.max_ts()))
+    {
+        if cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
+            break;
+        }
+        for section in segment_ref
+            .sections()
+            .iter()
+            .filter(|section| section.rows > 0)
+        {
+            if presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES {
+                break;
+            }
+            let Some(any) = source_bit(section.type_id) else {
+                continue;
+            };
+            if contract(section.type_id).is_some_and(|contract| {
+                contract
+                    .columns
+                    .iter()
+                    .any(|column| column.class == ColumnClass::Timestamp)
+            }) {
+                presence.any |= any;
+                if let Some(metrics) = metric_source_bit(section.type_id) {
+                    presence.metrics |= metrics;
+                }
+            }
+        }
+    }
+    for segment_ref in segments
+        .iter()
+        .filter(|segment| !window.contains(segment.min_ts()) || !window.contains(segment.max_ts()))
+    {
         if cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
             break;
         }
@@ -309,6 +418,8 @@ fn source_presence(
                 continue;
             };
             let mut found = false;
+            #[cfg(test)]
+            SOURCE_PRESENCE_SCANS.set(SOURCE_PRESENCE_SCANS.get() + 1);
             segment.visit_rows(type_id, &[timestamp.name], 0, usize::MAX, |_ordinal, row| {
                 if cancelled() {
                     return false;
@@ -377,11 +488,24 @@ fn emit_lanes(
     segment_ref: &SegmentRef,
     window: Window,
     state: &mut lanes::State,
+    include_context: bool,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
+    #[cfg(test)]
+    LANE_OPERATIONS.set(LANE_OPERATIONS.get() + 1);
     let segment = reader.open_segment(segment_ref)?;
-    for point in lanes::collect(&segment, window, state)? {
+    let (points, postgresql_interval_seconds) = lanes::collect(&segment, window, state)?;
+    if include_context
+        && !emit(record(json!({
+            "record": "lane_context",
+            "segment_id": segment_ref.id().to_string(),
+            "postgresql_interval_seconds": postgresql_interval_seconds.map(|value| value.to_string()),
+        }))?)
+    {
+        return Ok(false);
+    }
+    for point in points {
         if cancelled()
             || !emit(record(json!({
                 "record": "lane",
@@ -395,4 +519,15 @@ fn emit_lanes(
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_operations() {
+    LANE_OPERATIONS.set(0);
+    SOURCE_PRESENCE_SCANS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn operations() -> (usize, usize) {
+    (LANE_OPERATIONS.get(), SOURCE_PRESENCE_SCANS.get())
 }

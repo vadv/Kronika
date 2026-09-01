@@ -1,7 +1,8 @@
 //! Reads one snapshot and derives counter rates.
 
-mod relation;
-mod search;
+pub(crate) mod relation;
+pub(crate) mod search;
+pub(crate) mod selector;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -23,6 +24,7 @@ use self::search::{
 };
 #[cfg(test)]
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
+use self::selector::FinderResult;
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
@@ -32,10 +34,12 @@ use crate::route::{SeriesRequest, Window};
 pub(crate) struct PreparedSnapshot {
     reader: Reader,
     anchor: SegmentRef,
+    pin_current: bool,
     prior_sources: Vec<SegmentRef>,
     relation_predecessors: Vec<SegmentRef>,
     relation_moments: RetainedRelationMoments,
     at: i64,
+    current_from: Option<i64>,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
     by: Vec<String>,
@@ -312,7 +316,7 @@ impl CachedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GlobPattern(Vec<GlobToken>);
+pub(crate) struct GlobPattern(Vec<GlobToken>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GlobToken {
@@ -480,10 +484,34 @@ pub(super) fn stream_relation_history(
 #[cfg(test)]
 pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     root: &Path,
     request: SnapshotRequest,
     if_none_match: Option<&str>,
+) -> Result<Prepared, ApiError> {
+    let segment_id = request.segment_id;
+    prepare_with(request, if_none_match, true, || {
+        explicit_segment_with_listing(root, segment_id)
+    })
+}
+
+pub(super) fn prepare_selected(
+    reader: Reader,
+    current: SegmentRef,
+    segments: Vec<SegmentRef>,
+    clean: bool,
+    request: SnapshotRequest,
+) -> Result<Prepared, ApiError> {
+    prepare_with(request, None, false, || {
+        Ok((reader, current, segments, clean))
+    })
+}
+
+fn prepare_with(
+    request: SnapshotRequest,
+    if_none_match: Option<&str>,
+    pin_current: bool,
+    selected: impl FnOnce() -> Result<(Reader, SegmentRef, Vec<SegmentRef>, bool), ApiError>,
 ) -> Result<Prepared, ApiError> {
     let cursor = request
         .cursor
@@ -498,8 +526,7 @@ pub(super) fn prepare(
     if request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
     }
-    let (reader, current, segments, clean) =
-        explicit_segment_with_listing(root, request.segment_id)?;
+    let (reader, current, segments, clean) = selected()?;
     let segment_ref = pin(current, parsed)?;
     let meta = snapshot_meta(&request, &segment_ref, &segments, clean);
     let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
@@ -539,6 +566,7 @@ pub(super) fn prepare(
             &segment,
             &sections,
             request.at,
+            pin_current,
         )?
     } else {
         Vec::new()
@@ -562,10 +590,12 @@ pub(super) fn prepare(
     Ok(Prepared::Snapshot(PreparedSnapshot {
         reader,
         anchor: segment_ref,
+        pin_current,
         prior_sources,
         relation_predecessors,
         relation_moments,
         at: request.at,
+        current_from: None,
         sections,
         relation_filters,
         by: request.by,
@@ -1020,6 +1050,33 @@ fn validate_exact_locator(
     Ok(())
 }
 
+/// Keyed rendered process row. Locator fields identify the exact physical row;
+/// `pid` and `ppid` appear both as typed members and in `fields`.
+pub(crate) struct ProcessRowOut {
+    pub(crate) pid: i64,
+    pub(crate) ppid: Option<i64>,
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
+    pub(crate) at: i64,
+    pub(crate) identity: super::row_key::RowIdentity,
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
+/// Keyed rendered `PostgreSQL` row with the exact physical locator used by row
+/// detail.
+pub(crate) struct PlainRowOut {
+    pub(crate) segment_id: i64,
+    pub(crate) type_id: u32,
+    pub(crate) row_ordinal: u64,
+    pub(crate) at: i64,
+    pub(crate) identity: super::row_key::RowIdentity,
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
+type RankedRecord<'a> = (&'a Plan, Value, super::row_key::RowIdentity);
+type RankedLocatorKey = (usize, i64, String);
+
 impl PreparedSnapshot {
     pub(super) fn meta(&self) -> ResponseMeta {
         self.meta.clone()
@@ -1091,7 +1148,7 @@ impl PreparedSnapshot {
             if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
-            if cancelled() || !self.emit_context_rows(context, emit, cancelled)? {
+            if cancelled() || !self.emit_context_rows(context, self.row_ordinal, emit, cancelled)? {
                 return Ok(false);
             }
         }
@@ -1101,12 +1158,11 @@ impl PreparedSnapshot {
     fn emit_context_rows(
         &self,
         context: &PageContext<'_>,
+        row_ordinal: Option<u64>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
-        let (start_row, row_count) = self
-            .row_ordinal
-            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let (start_row, row_count) = row_ordinal.map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         let source = self.reader.open_segment(context.source)?;
         let process_users = ProcessUsers::load(&source, context.plan)?;
         let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
@@ -1251,7 +1307,9 @@ impl PreparedSnapshot {
             if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
-            if cancelled() || !self.emit_context_rows(&context, emit, cancelled)? {
+            if cancelled()
+                || !self.emit_context_rows(&context, self.row_ordinal, emit, cancelled)?
+            {
                 return Ok(false);
             }
         }
@@ -1484,6 +1542,373 @@ impl PreparedSnapshot {
             emit,
         )?;
         Ok(())
+    }
+
+    /// Returns the first `limit` rows from the full sort and whether more
+    /// matched. Supports `os_process` only.
+    pub(crate) fn compute_process_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<FinderResult<ProcessRowOut>, ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        if section.logical_name != "os_process" {
+            return Err(ApiError::NoSuchSection);
+        }
+        let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
+        let rows = records
+            .into_iter()
+            .map(|(plan, record, identity)| process_row_out(plan, record, identity))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
+    }
+
+    /// Returns the first `limit` rows from the full sort for supported
+    /// plain (non-relation) sections.
+    pub(crate) fn compute_plain_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<FinderResult<PlainRowOut>, ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        if !matches!(
+            section.logical_name.as_str(),
+            "pg_stat_activity"
+                | "pg_locks"
+                | "pg_stat_progress_vacuum"
+                | "pg_stat_database"
+                | "pg_stat_statements"
+                | "pg_store_plans"
+                | "pg_settings"
+                | "instance_metadata"
+        ) {
+            return Err(ApiError::NoSuchSection);
+        }
+        let (records, truncated, as_of) = self.ranked_records(limit, cancelled)?;
+        let rows = records
+            .into_iter()
+            .map(|(plan, record, identity)| plain_row_out(plan, record, identity))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
+    }
+
+    /// Ranks one section from the start and renders survivors through
+    /// `row_record`. Callers validate the section name.
+    fn ranked_records(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Vec<RankedRecord<'_>>, bool, Option<i64>), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let contexts = self.page_contexts(section, cancelled)?;
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let as_of = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
+        let process_users = contexts
+            .iter()
+            .map(|context| {
+                let source = self.reader.open_segment(context.source)?;
+                ProcessUsers::load(&source, context.plan)
+                    .map(|users| (context.context_index, users))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut page = PageRows::new(limit.saturating_add(1));
+        let mut eligible = 0_u64;
+        for context in &contexts {
+            self.scan_page(
+                context,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
+                None,
+                &mut page,
+                &mut eligible,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Err(ApiError::Cancelled);
+            }
+        }
+        let mut ranked = page.finish();
+        let has_more = ranked.len() > limit;
+        ranked.truncate(limit);
+        self.validate_ranked_locator_identities(&contexts, &ranked, cancelled)?;
+        let records = self.render_ranked_rows(&contexts, &process_users, ranked)?;
+        Ok((records, has_more, as_of))
+    }
+
+    /// Proves that every bounded finder survivor names one physical row.
+    /// A second minimal projection keeps top-K retention bounded while finding
+    /// a duplicate that appeared anywhere in the selected snapshot.
+    fn validate_ranked_locator_identities(
+        &self,
+        contexts: &[PageContext<'_>],
+        ranked: &[PageRankedRow],
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let mut targets: HashMap<RankedLocatorKey, u8> = HashMap::with_capacity(ranked.len());
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.context_index == ranked.staged.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let (at, identity) = encoded_locator_identity(context.plan, &ranked.staged.row)?;
+            if targets
+                .insert((context.context_index, at, identity), 0)
+                .is_some()
+            {
+                return Err(non_unique_locator(context, at));
+            }
+        }
+        for context in contexts {
+            if !targets
+                .keys()
+                .any(|(context_index, _at, _identity)| *context_index == context.context_index)
+            {
+                continue;
+            }
+            let timestamp = context.plan.timestamp.ok_or(ApiError::BadCursor)?;
+            let mut projection = vec![timestamp];
+            projection.extend(super::row_key::identity_columns(context.plan.contract));
+            let source = self.reader.open_segment(context.source)?;
+            let mut failure = None;
+            #[cfg(test)]
+            PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+            source.visit_rows(
+                context.plan.type_id,
+                &projection,
+                0,
+                usize::MAX,
+                |_ordinal, row| {
+                    if cancelled() {
+                        return false;
+                    }
+                    if !context.window.matches(&row) {
+                        return true;
+                    }
+                    let (at, identity) = match encoded_locator_identity(context.plan, &row) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            failure = Some(error);
+                            return false;
+                        }
+                    };
+                    let Some(count) = targets.get_mut(&(context.context_index, at, identity))
+                    else {
+                        return true;
+                    };
+                    *count = count.saturating_add(1);
+                    if *count > 1 {
+                        failure = Some(non_unique_locator(context, at));
+                        return false;
+                    }
+                    true
+                },
+            )?;
+            if let Some(error) = failure {
+                return Err(error);
+            }
+        }
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        if targets.values().all(|count| *count == 1) {
+            return Ok(());
+        }
+        Err(ApiError::BadLocator(
+            "cannot emit detail_locator: a selected row identity was not found".to_owned(),
+        ))
+    }
+
+    /// Renders ranked rows with the `Plan` needed to re-key positional fields.
+    fn render_ranked_rows<'a>(
+        &self,
+        contexts: &[PageContext<'a>],
+        process_users: &HashMap<usize, ProcessUsers>,
+        ranked: Vec<PageRankedRow>,
+    ) -> Result<Vec<RankedRecord<'a>>, ApiError> {
+        let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
+        for ranked in &ranked {
+            for (_name, value) in ranked.staged.row.iter() {
+                if let Cell::StrId(id) = value {
+                    ids_by_context
+                        .entry(ranked.staged.context_index)
+                        .or_default()
+                        .insert(*id);
+                }
+            }
+        }
+        let dictionaries = contexts
+            .iter()
+            .map(|context| {
+                let ids = ids_by_context
+                    .get(&context.context_index)
+                    .cloned()
+                    .unwrap_or_default();
+                let source = self.reader.open_segment(context.source)?;
+                resolved_dictionary(&source, &ids)
+                    .map(|dictionary| (context.context_index, dictionary))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut records = Vec::with_capacity(ranked.len());
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.context_index == ranked.staged.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let dictionary = dictionaries
+                .get(&context.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let before = context.predecessor(&ranked.staged.row, &ranked.staged.identity);
+            let record = Self::row_record(
+                context.plan,
+                &ranked.staged.row,
+                before,
+                context.elapsed_for(&ranked.staged.row),
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: ranked.staged.ordinal,
+                },
+                dictionary,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
+                self.text,
+            )?;
+            let locator_identity =
+                super::row_key::identity(context.plan.type_id, &ranked.staged.row)
+                    .map_err(|error| row_locator_invalid(&error))?;
+            records.push((context.plan, record, locator_identity));
+        }
+        Ok(records)
+    }
+
+    /// Returns the physical row selected by timestamp and complete identity.
+    /// The supplied ordinal is only a physical hint and may change at finalization.
+    pub(crate) fn fetch_identity_row(
+        &self,
+        ordinal_hint: u64,
+        requested_identity: &super::row_key::RowIdentity,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Value>, ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let [plan] = section.plans.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let Some(timestamp) = plan.timestamp else {
+            return Err(ApiError::BadCursor);
+        };
+        super::row_key::validate(plan.type_id, requested_identity).map_err(ApiError::BadLocator)?;
+        if ordinal_hint >= plan.rows {
+            return Err(ApiError::BadLocator(format!(
+                "invalid detail_locator row_ordinal {ordinal_hint}: type_id {} has {} rows in segment {}",
+                plan.type_id,
+                plan.rows,
+                self.anchor.id(),
+            )));
+        }
+        let source = self.reader.open_segment(&self.anchor)?;
+        let mut projection = vec![timestamp];
+        projection.extend(super::row_key::identity_columns(plan.contract));
+        let mut resolved = None;
+        let mut failure = None;
+        source.visit_rows(
+            plan.type_id,
+            &projection,
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                match locator_matches(plan, timestamp, self.at, requested_identity, &row) {
+                    Ok(false) => true,
+                    Ok(true) if resolved.replace(ordinal).is_none() => true,
+                    Ok(true) => {
+                        failure = Some(ApiError::BadLocator(format!(
+                            "detail_locator identity is not unique for segment_id={}, type_id={}, at={}",
+                            self.anchor.id(),
+                            plan.type_id,
+                            self.at,
+                        )));
+                        false
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        false
+                    }
+                }
+            },
+        )?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let Some(ordinal) = resolved else {
+            return Err(ApiError::BadLocator(format!(
+                "no stored row matches detail_locator segment_id={}, type_id={}, at={} and identity",
+                self.anchor.id(),
+                plan.type_id,
+                self.at,
+            )));
+        };
+        drop(source);
+        let mut facts = HashMap::new();
+        let contexts = if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
+            self.partitioned_contexts(section, cancelled)?
+        } else {
+            self.timed_contexts(section, 0, plan, timestamp, cancelled, &mut facts)?
+        };
+        let Some(context) = contexts.iter().find(|context| {
+            context.source.id() == self.anchor.id() && context.plan.type_id == plan.type_id
+        }) else {
+            return Ok(None);
+        };
+        let mut values = None;
+        let mut emit = |bytes: Vec<u8>| {
+            values = row_values(&bytes);
+            true
+        };
+        self.emit_context_rows(context, Some(ordinal), &mut emit, cancelled)?;
+        let Some(values) = values else {
+            return Ok(None);
+        };
+        if values.len() != plan.fields.len() {
+            return Ok(None);
+        }
+        let mut object: serde_json::Map<String, Value> = plan
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .zip(values)
+            .collect();
+        object.insert("segment_id".to_owned(), json!(self.anchor.id().to_string()));
+        object.insert("type_id".to_owned(), json!(plan.type_id.to_string()));
+        object.insert("row_ordinal".to_owned(), json!(ordinal.to_string()));
+        object.insert("at".to_owned(), json!(self.at.to_string()));
+        Ok(Some(Value::Object(object)))
     }
 
     fn emit_first_match(
@@ -1942,10 +2367,8 @@ impl PreparedSnapshot {
         let anchor = self.reader.open_segment(&self.anchor)?;
         let here = Self::moments(&anchor, plan, timestamp, self.at, cancelled)?;
         drop(anchor);
-        let current = if let Some(here) = here {
-            Some(here.current)
-        } else {
-            let mut fallback = None;
+        let mut current = here.map(|moments| moments.current);
+        if current.is_none() || !self.pin_current {
             for source_ref in &self.prior_sources {
                 if rows_of(source_ref, plan.type_id).is_none() {
                     continue;
@@ -1953,16 +2376,18 @@ impl PreparedSnapshot {
                 let source = self.reader.open_segment(source_ref)?;
                 if let Some(moments) = Self::moments(&source, plan, timestamp, self.at, cancelled)?
                 {
-                    fallback = Some(
-                        fallback.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    current = Some(
+                        current.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
                     );
                 }
             }
-            fallback
-        };
+        }
         let Some(current) = current else {
             return Ok(None);
         };
+        if self.current_from.is_some_and(|from| current < from) {
+            return Ok(None);
+        }
         let mut previous = None;
         if let Some(before) = current.checked_sub(1) {
             for source_index in 0..self.source_count() {
@@ -2053,6 +2478,9 @@ impl PreparedSnapshot {
                 else {
                     continue;
                 };
+                if self.current_from.is_some_and(|from| current.at < from) {
+                    continue;
+                }
                 let moments = PartitionMoments {
                     current,
                     previous: retained
@@ -2685,6 +3113,218 @@ impl PreparedSnapshot {
     }
 }
 
+/// Locator and positional values extracted from `row_record` output.
+struct RowLocator {
+    segment_id: i64,
+    row_ordinal: u64,
+    at: i64,
+    values: Vec<Value>,
+}
+
+fn row_locator_invalid(message: &str) -> ApiError {
+    ApiError::Unreadable(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.to_owned(),
+    )))
+}
+
+fn row_locator(plan: &Plan, mut record: Value) -> Result<RowLocator, ApiError> {
+    let object = record
+        .as_object_mut()
+        .ok_or_else(|| row_locator_invalid("row record is not an object"))?;
+    let Some(Value::Array(values)) = object.remove("values") else {
+        return Err(row_locator_invalid("row record has no values array"));
+    };
+    if values.len() != plan.fields.len() {
+        return Err(row_locator_invalid(
+            "row field count does not match its rendered values",
+        ));
+    }
+    let segment_id = object
+        .remove("segment_id")
+        .and_then(|value| value.as_str()?.parse::<i64>().ok())
+        .ok_or_else(|| row_locator_invalid("row record has no segment_id"))?;
+    let row_ordinal = object
+        .remove("ordinal")
+        .and_then(|value| value.as_str()?.parse::<u64>().ok())
+        .ok_or_else(|| row_locator_invalid("row record has no ordinal"))?;
+    let at = object
+        .remove("timestamp")
+        .and_then(|value| value.as_str()?.parse::<i64>().ok())
+        .ok_or_else(|| row_locator_invalid("row record has no timestamp"))?;
+    Ok(RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    })
+}
+
+/// Re-keys a rendered process row. A missing `pid` is invalid rendered data.
+fn process_row_out(
+    plan: &Plan,
+    record: Value,
+    identity: super::row_key::RowIdentity,
+) -> Result<ProcessRowOut, ApiError> {
+    let RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    } = row_locator(plan, record)?;
+    let mut fields = BTreeMap::new();
+    let mut pid = None;
+    let mut parent = None;
+    for (field, value) in plan.fields.iter().zip(values) {
+        match field.name.as_str() {
+            "pid" => pid = value.as_i64(),
+            "ppid" => parent = value.as_i64(),
+            _ => {}
+        }
+        fields.insert(field.name.clone(), value);
+    }
+    let pid = pid.ok_or_else(|| row_locator_invalid("process row has no pid"))?;
+    Ok(ProcessRowOut {
+        pid,
+        ppid: parent,
+        segment_id,
+        type_id: plan.type_id,
+        row_ordinal,
+        at,
+        identity,
+        fields,
+    })
+}
+
+fn plain_row_out(
+    plan: &Plan,
+    record: Value,
+    identity: super::row_key::RowIdentity,
+) -> Result<PlainRowOut, ApiError> {
+    let RowLocator {
+        segment_id,
+        row_ordinal,
+        at,
+        values,
+    } = row_locator(plan, record)?;
+    let mut fields = BTreeMap::new();
+    for (field, value) in plan.fields.iter().zip(values) {
+        fields.insert(field.name.clone(), value);
+    }
+    if matches!(
+        logical_section_name(plan.type_id),
+        Some("pg_stat_statements" | "pg_store_plans")
+    ) {
+        fields.extend(derived_ratio_fields(&fields));
+    }
+    Ok(PlainRowOut {
+        segment_id,
+        type_id: plan.type_id,
+        row_ordinal,
+        at,
+        identity,
+        fields,
+    })
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn ratio_field(fields: &BTreeMap<String, Value>, names: &[&str]) -> Option<f64> {
+    names
+        .iter()
+        .find_map(|name| fields.get(*name))
+        .and_then(value_as_f64)
+}
+
+fn ratio_sum(fields: &BTreeMap<String, Value>, names: &[&str]) -> Option<f64> {
+    let mut total = 0.0;
+    for name in names {
+        total += ratio_field(fields, &[name])?;
+    }
+    Some(total)
+}
+
+fn ratio_value(numerator: Option<f64>, denominator: Option<f64>) -> Value {
+    match numerator.zip(denominator).map(|(n, d)| n / d) {
+        Some(value) if value.is_finite() => json!(value),
+        _ => Value::Null,
+    }
+}
+
+fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    let calls = ratio_field(fields, &["calls_per_second", "calls"]);
+    let execution = ratio_field(fields, &["total_exec_time", "total_time"]);
+    let hit = ratio_field(fields, &["shared_blks_hit"]);
+    let read = ratio_field(fields, &["shared_blks_read"]);
+    let planning = ratio_field(fields, &["total_plan_time"]);
+    let blocks = ratio_sum(
+        fields,
+        &[
+            "shared_blks_hit",
+            "shared_blks_read",
+            "local_blks_hit",
+            "local_blks_read",
+        ],
+    );
+
+    BTreeMap::from([
+        (
+            "derived_mean_exec_ms_per_call".to_owned(),
+            ratio_value(execution, calls),
+        ),
+        (
+            "derived_rows_per_call".to_owned(),
+            ratio_value(ratio_field(fields, &["rows"]), calls),
+        ),
+        (
+            "derived_blocks_per_call".to_owned(),
+            ratio_value(blocks, calls),
+        ),
+        (
+            "derived_hit_fraction".to_owned(),
+            ratio_value(hit, hit.zip(read).map(|(hit, read)| hit + read)),
+        ),
+        (
+            "derived_wal_per_call".to_owned(),
+            ratio_value(ratio_field(fields, &["wal_bytes"]), calls),
+        ),
+        (
+            "derived_plan_time_fraction".to_owned(),
+            ratio_value(
+                planning,
+                planning
+                    .zip(execution)
+                    .map(|(planning, execution)| planning + execution),
+            ),
+        ),
+        (
+            "derived_cv".to_owned(),
+            ratio_value(
+                ratio_field(fields, &["stddev_exec_time", "stddev_time"]),
+                ratio_field(fields, &["mean_exec_time", "mean_time"]),
+            ),
+        ),
+    ])
+}
+
+/// Extracts values from an internal NDJSON row; malformed internal data returns
+/// `None`.
+fn row_values(bytes: &[u8]) -> Option<Vec<Value>> {
+    let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else {
+        return None;
+    };
+    match object.remove("values") {
+        Some(Value::Array(values)) => Some(values),
+        _ => None,
+    }
+}
+
 impl PageRows {
     const fn new(limit: usize) -> Self {
         Self {
@@ -3286,6 +3926,48 @@ fn search_metric(
         "pg_stat_statements" | "pg_store_plans" => {
             postgres_search_metric(context, row, identity, metric)
         }
+        "pg_stat_activity" => activity_search_metric(row, metric),
+        "pg_stat_progress_vacuum" => vacuum_search_metric(row, metric),
+        "pg_stat_database" => database_search_metric(context, row, identity, metric),
+        _ => None,
+    }
+}
+
+/// Compares recorded xid/xmin-age gauges directly; no predecessor or rate is
+/// used.
+fn activity_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
+    match metric {
+        "backend_xid_age" => gauge_metric(row, "backend_xid_age", 1, 1),
+        "backend_xmin_age" => gauge_metric(row, "backend_xmin_age", 1, 1),
+        _ => None,
+    }
+}
+
+/// Compares recorded heap-block gauges directly; no predecessor or rate is
+/// used.
+fn vacuum_search_metric(row: &Row, metric: &str) -> Option<SearchMetricValue> {
+    match metric {
+        "heap_blks_total" => gauge_metric(row, "heap_blks_total", 1, 1),
+        "heap_blks_scanned" => gauge_metric(row, "heap_blks_scanned", 1, 1),
+        "heap_blks_vacuumed" => gauge_metric(row, "heap_blks_vacuumed", 1, 1),
+        _ => None,
+    }
+}
+
+/// Compares `numbackends` as a recorded gauge and the four cumulative fields
+/// as interval rates.
+fn database_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match metric {
+        "numbackends" => gauge_metric(row, "numbackends", 1, 1),
+        "xact_commit" => rate_metric(context, row, identity, &["xact_commit"], 1, 1),
+        "xact_rollback" => rate_metric(context, row, identity, &["xact_rollback"], 1, 1),
+        "deadlocks" => rate_metric(context, row, identity, &["deadlocks"], 1, 1),
+        "temp_bytes" => rate_metric(context, row, identity, &["temp_bytes"], 1, 1),
         _ => None,
     }
 }
@@ -3738,13 +4420,8 @@ fn search_clause_matches(
     process_users: Option<&ProcessUsers>,
     clause: &SearchClause,
 ) -> bool {
-    if logical_name == "pg_store_plans"
-        && plan.type_id == 1_004_001
-        && clause.key == "query_id"
-        && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
-    {
-        return false;
-    }
+    let excludes_zero_query =
+        logical_name == "pg_store_plans" && plan.type_id == 1_004_001 && clause.key == "query_id";
     if logical_name == "os_process" {
         let name_matches = |uid_column| {
             process_users
@@ -3775,7 +4452,9 @@ fn search_clause_matches(
     columns.iter().any(|column| {
         row.get(column)
             .and_then(|value| searchable_text(value, dictionary))
-            .is_some_and(|text| search_value_matches(&text, &clause.value))
+            .is_some_and(|text| {
+                (!excludes_zero_query || text != "0") && search_value_matches(&text, &clause.value)
+            })
     })
 }
 
@@ -3792,11 +4471,14 @@ fn search_matches(
     })
 }
 
-fn search_value_matches(text: &str, value: &SearchValue) -> bool {
+pub(super) fn search_value_matches(text: &str, value: &SearchValue) -> bool {
     match value {
         SearchValue::Identifier(wanted) => text == wanted,
         SearchValue::Pattern(pattern) => pattern.matches(text),
         SearchValue::Quantity(_) => false,
+        SearchValue::AnyOf(values) => values
+            .iter()
+            .any(|candidate| search_value_matches(text, candidate)),
     }
 }
 fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'a, str>> {
@@ -3817,6 +4499,21 @@ fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'
 }
 
 impl GlobPattern {
+    /// An anchored, literal-only pattern: matches a candidate equal to
+    /// `raw` case-insensitively, never a substring. `*` and `?` are
+    /// literal characters here, not wildcards.
+    fn exact(raw: &str) -> Self {
+        Self(raw.chars().map(GlobToken::Literal).collect())
+    }
+
+    fn contains(raw: &str) -> Self {
+        let mut tokens = Vec::with_capacity(raw.chars().count() + 2);
+        tokens.push(GlobToken::Star);
+        tokens.extend(raw.chars().map(GlobToken::Literal));
+        tokens.push(GlobToken::Star);
+        Self(tokens)
+    }
+
     fn new(raw: &str) -> Self {
         let mut tokens = vec![GlobToken::Star];
         for character in raw.chars() {
@@ -3879,6 +4576,20 @@ impl GlobPattern {
             pattern_index += 1;
         }
         pattern_index == self.0.len()
+    }
+
+    fn same_exact(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&other.0)
+                .all(|(left, right)| match (left, right) {
+                    (GlobToken::Literal(left), GlobToken::Literal(right)) => {
+                        unicode_char_equal(*left, *right)
+                    }
+                    _ => left == right,
+                })
     }
 }
 
@@ -4243,6 +4954,7 @@ fn preceding(
     current: &Segment,
     sections: &[SectionPlans],
     at: i64,
+    pin_current: bool,
 ) -> Result<Vec<SegmentRef>, ApiError> {
     let layouts = sections
         .iter()
@@ -4269,7 +4981,7 @@ fn preceding(
         .keys()
         .map(|type_id| (*type_id, ContributingMoments::default()))
         .collect::<BTreeMap<_, _>>();
-    scan_contributing_moments(current, &layouts, at, true, &mut moments)?;
+    scan_contributing_moments(current, &layouts, at, pin_current, &mut moments)?;
     candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
     for candidate in &candidates {
         if moments.values().all(|samples| {
@@ -4446,7 +5158,7 @@ fn rate(
 }
 
 #[derive(Clone, Copy)]
-enum OrderedNumber {
+pub(crate) enum OrderedNumber {
     Integer(i128),
     Float(f64),
 }
@@ -4555,6 +5267,41 @@ fn row_timestamp(row: &Row, column: &'static str) -> Option<i64> {
         Some(Cell::Ts(stored)) => Some(*stored),
         _other => None,
     }
+}
+
+fn encoded_locator_identity(plan: &Plan, row: &Row) -> Result<(i64, String), ApiError> {
+    let timestamp = plan.timestamp.ok_or(ApiError::BadCursor)?;
+    let at = row_timestamp(row, timestamp).ok_or_else(|| {
+        ApiError::BadLocator(format!(
+            "cannot emit detail_locator: type_id {} row has no timestamp",
+            plan.type_id,
+        ))
+    })?;
+    let identity = super::row_key::identity(plan.type_id, row).map_err(ApiError::BadLocator)?;
+    Ok((at, serde_json::to_string(&identity)?))
+}
+
+fn non_unique_locator(context: &PageContext<'_>, at: i64) -> ApiError {
+    ApiError::BadLocator(format!(
+        "cannot emit detail_locator: {} has a non-unique identity at timestamp {at} in segment {}",
+        context.logical_name,
+        context.source.id(),
+    ))
+}
+
+fn locator_matches(
+    plan: &Plan,
+    timestamp: &'static str,
+    at: i64,
+    requested: &super::row_key::RowIdentity,
+    row: &Row,
+) -> Result<bool, ApiError> {
+    if row_timestamp(row, timestamp) != Some(at) {
+        return Ok(false);
+    }
+    super::row_key::identity(plan.type_id, row)
+        .map(|identity| &identity == requested)
+        .map_err(ApiError::BadLocator)
 }
 
 #[cfg(test)]

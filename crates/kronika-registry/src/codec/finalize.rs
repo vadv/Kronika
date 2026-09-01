@@ -894,18 +894,8 @@ fn decode_projected_column<R: ChunkReader + 'static>(
 fn canonical_locations(
     expected_rows: &[u32],
     order: &UInt32Array,
-) -> Result<Vec<(usize, usize)>, CodecError> {
-    let mut ends = Vec::with_capacity(expected_rows.len());
-    let mut rows = 0_usize;
-    for &additional in expected_rows {
-        rows = rows
-            .checked_add(additional as usize)
-            .ok_or(CodecError::TooManyRows {
-                rows: usize::MAX,
-                max: MAX_SECTION_ROWS,
-            })?;
-        ends.push(rows);
-    }
+) -> Result<Vec<usize>, CodecError> {
+    let rows = aggregate_rows(expected_rows)?;
     if order.len() != rows {
         return Err(CodecError::RowCountMismatch {
             expected: rows as u64,
@@ -917,12 +907,10 @@ fn canonical_locations(
         .iter()
         .map(|&global| {
             let global = global as usize;
-            let source = ends.partition_point(|&end| end <= global);
-            let start = if source == 0 { 0 } else { ends[source - 1] };
-            if source >= expected_rows.len() {
+            if global >= rows {
                 return Err(CodecError::SchemaMismatch);
             }
-            Ok((source, global - start))
+            Ok(global)
         })
         .collect()
 }
@@ -930,23 +918,49 @@ fn canonical_locations(
 fn write_column<W: Write + Send>(
     field: &arrow_schema::FieldRef,
     arrays: Vec<ArrayRef>,
-    locations: Option<&[(usize, usize)]>,
+    locations: Option<&[usize]>,
     column_writers: &mut impl Iterator<Item = ArrowColumnWriter>,
     row_group: &mut SerializedRowGroupWriter<'_, W>,
 ) -> Result<(), CodecError> {
     let mut parquet_writers = None;
     if let Some(locations) = locations {
         let values = arrays.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+        let mut array_ends = Vec::with_capacity(arrays.len());
+        let mut rows = 0_usize;
+        for array in &arrays {
+            rows = rows
+                .checked_add(array.len())
+                .ok_or(CodecError::TooManyRows {
+                    rows: usize::MAX,
+                    max: MAX_SECTION_ROWS,
+                })?;
+            array_ends.push(rows);
+        }
+        if rows != locations.len() {
+            return Err(CodecError::RowCountMismatch {
+                expected: locations.len() as u64,
+                got: rows as u64,
+            });
+        }
         for chunk in locations.chunks(DECODE_BATCH_SIZE) {
-            for &(source, offset) in chunk {
-                if source >= arrays.len() {
+            let mut batch_locations = Vec::with_capacity(chunk.len());
+            for &global in chunk {
+                let source = array_ends.partition_point(|&end| end <= global);
+                let start = if source == 0 {
+                    0
+                } else {
+                    array_ends[source - 1]
+                };
+                if source >= arrays.len() || global < start {
                     return Err(CodecError::SchemaMismatch);
                 }
+                let offset = global - start;
                 if offset >= arrays[source].len() {
                     return Err(CodecError::SchemaMismatch);
                 }
+                batch_locations.push((source, offset));
             }
-            let canonical = interleave(&values, chunk)?;
+            let canonical = interleave(&values, &batch_locations)?;
             write_array(field, &canonical, column_writers, &mut parquet_writers)?;
         }
     } else {

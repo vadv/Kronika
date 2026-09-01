@@ -15,9 +15,10 @@ use super::search::{
 };
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
-    RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    compare_products, compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
-    resolved_dictionary, search_matches, stored_bytes,
+    RelationGroup, SectionPlans, SnapshotCursor, StructuredSearch, add_ordered,
+    compare_page_order_values, compare_products, compare_u128_ratios, counter_delta, identity_of,
+    plans, rate_columns, record, resolved_dictionary, search_matches, stored_bytes,
+    validate_search_projection,
 };
 use crate::api::query;
 use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
@@ -331,7 +332,7 @@ const INDEX_AGGREGATE_FIELDS: &[FieldSpec] = &[
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RelationKind {
+pub(crate) enum RelationKind {
     Tables,
     Indexes,
 }
@@ -352,11 +353,20 @@ impl RelationKind {
         }
     }
 
-    const fn logical_name(self) -> &'static str {
+    pub(crate) const fn logical_name(self) -> &'static str {
         match self {
             Self::Tables => TABLES,
             Self::Indexes => INDEXES,
         }
+    }
+
+    /// Whether `name` is something this kind/group combination can rank
+    /// by: a projected metric field or a group-key identity field. The
+    /// aggregate sort resolves unknown names to "no value", so a caller
+    /// that wants a loud error checks here first.
+    pub(crate) fn sort_field_known(self, group: RelationGroup, name: &str) -> bool {
+        self.fields(group).iter().any(|field| field.name == name)
+            || key_fields(self, group).contains(&name)
     }
 
     fn fields(self, group: RelationGroup) -> Vec<FieldSpec> {
@@ -467,7 +477,7 @@ pub(super) fn snapshot_physical_fields(
     group: RelationGroup,
     fields: &[String],
     by: &[String],
-    search: Option<&super::StructuredSearch>,
+    search: Option<&StructuredSearch>,
 ) -> Result<Vec<String>, ApiError> {
     let kind = RelationKind::from_name(logical_name)?;
     let mut semantic = fields.to_vec();
@@ -518,7 +528,7 @@ pub(super) fn split_filters(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum GroupKey {
+pub(crate) enum GroupKey {
     Database {
         datid: u32,
         datname: String,
@@ -611,7 +621,7 @@ impl GroupKey {
         }))
     }
 
-    fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
+    pub(crate) fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
         match self.clone().for_group(kind, group) {
             Self::Database { datid, datname } => json!({
                 "datid": datid.to_string(),
@@ -722,7 +732,7 @@ impl GroupKey {
         clippy::unnested_or_patterns,
         reason = "each tuple arm keeps the requested field name attached to its variants"
     )]
-    fn metric(&self, name: &str) -> Option<Metric> {
+    pub(crate) fn metric(&self, name: &str) -> Option<Metric> {
         match (self, name) {
             (Self::Database { datid, .. } | Self::Schema { datid, .. }, "datid")
             | (Self::Table { datid, .. } | Self::Index { datid, .. }, "datid") => {
@@ -817,7 +827,7 @@ enum Input {
     reason = "exact rational rates avoid heap allocation and preserve ordering"
 )]
 #[derive(Clone, Copy, Debug)]
-enum RateValue {
+pub(crate) enum RateValue {
     /// A non-negative rate represented exactly as units per microsecond.
     Exact { numerator: u128, denominator: u128 },
     /// Units per microsecond when the input counter is floating point or exact
@@ -1400,7 +1410,7 @@ impl Aggregate {
         &self,
         kind: RelationKind,
         group: RelationGroup,
-        search: Option<&super::StructuredSearch>,
+        search: Option<&StructuredSearch>,
     ) -> bool {
         search.is_none_or(|search| {
             if group == RelationGroup::Object {
@@ -1436,11 +1446,7 @@ impl Aggregate {
                 .get(column)
                 .map(String::as_str)
                 .or_else(|| self.key.search_text(column))
-                .is_some_and(|stored| match &clause.value {
-                    SearchValue::Identifier(wanted) => stored == wanted,
-                    SearchValue::Pattern(pattern) => pattern.matches(stored),
-                    SearchValue::Quantity(_) => false,
-                })
+                .is_some_and(|stored| super::search_value_matches(stored, &clause.value))
         })
     }
 
@@ -1781,7 +1787,7 @@ fn sum_values_neutral(
 }
 
 #[derive(Clone)]
-enum Metric {
+pub(crate) enum Metric {
     Number(OrderedNumber),
     Rate(RateValue),
     RateRatio {
@@ -1885,7 +1891,7 @@ impl Metric {
         Some(ordering)
     }
 
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         match self {
             Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
                 Value::String(value.to_string())
@@ -3168,9 +3174,9 @@ fn process_history_chunk(
     Ok(())
 }
 
-struct RelationRow {
-    key: GroupKey,
-    metrics: BTreeMap<String, Option<Metric>>,
+pub(crate) struct RelationRow {
+    pub(crate) key: GroupKey,
+    pub(crate) metrics: BTreeMap<String, Option<Metric>>,
     source: Source,
     from: Option<i64>,
     to: Option<i64>,
@@ -3320,6 +3326,114 @@ impl PreparedSnapshot {
         }))?);
         Ok(())
     }
+
+    /// Returns the first `limit` aggregates after filter and sort, plus whether
+    /// more matched.
+    pub(crate) fn compute_relation_rows(
+        &self,
+        limit: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<super::selector::FinderResult<RelationRow>, ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let group = self.group.ok_or(ApiError::BadCursor)?;
+        let kind = RelationKind::from_name(&section.logical_name)?;
+        let fields = kind.fields(group);
+        let keys = key_fields(kind, group);
+        for name in &self.by {
+            let semantic = sort_name(name);
+            if !fields.iter().any(|field| field.name == semantic) && !keys.contains(&semantic) {
+                return Err(ApiError::NoSuchColumn(name.clone()));
+            }
+        }
+        let contexts = self.partitioned_contexts(section, cancelled)?;
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let as_of = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
+        let mut aggregates = BTreeMap::<GroupKey, Aggregate>::new();
+        for context in &contexts {
+            if cancelled() {
+                return Err(ApiError::Cancelled);
+            }
+            scan_context(self, kind, group, context, &mut aggregates, cancelled)?;
+        }
+        aggregates.retain(|_key, aggregate| {
+            aggregate.matches_result_search(kind, group, self.search.as_deref())
+        });
+        let order_by = self.by.first().map(|name| sort_name(name));
+        let mut ranked = aggregates
+            .into_values()
+            .map(|aggregate| {
+                let sort = order_by.and_then(|name| {
+                    aggregate
+                        .metric(kind, group, name)
+                        .or_else(|| aggregate.key.metric(name))
+                });
+                (aggregate, sort)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left, left_sort), (right, right_sort)| {
+            compare_relation_order(
+                &left.key,
+                left_sort.as_ref(),
+                &right.key,
+                right_sort.as_ref(),
+                self.direction,
+            )
+        });
+        let truncated = ranked.len() > limit;
+        let rows = ranked
+            .into_iter()
+            .take(limit)
+            .map(|(aggregate, _sort)| {
+                let metrics = self
+                    .relation_fields
+                    .iter()
+                    .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
+                    .collect();
+                RelationRow {
+                    key: aggregate.key,
+                    metrics,
+                    source: aggregate.source,
+                    from: aggregate.from,
+                    to: aggregate.to,
+                }
+            })
+            .collect();
+        Ok(super::selector::FinderResult {
+            rows,
+            truncated,
+            as_of,
+        })
+    }
+
+    /// Applies a typed expression after the grouped-phase and projection
+    /// validation used for parsed HTTP search. `None` leaves the snapshot
+    /// unchanged.
+    pub(crate) fn with_search(
+        mut self,
+        search: Option<StructuredSearch>,
+    ) -> Result<Self, ApiError> {
+        let Some(search) = search else {
+            return Ok(self);
+        };
+        if self
+            .group
+            .is_some_and(|group| group != RelationGroup::Object)
+        {
+            search
+                .validate_grouped_phase()
+                .map_err(|_diagnostic| ApiError::BadFilter("search".to_owned()))?;
+        }
+        validate_search_projection(Some(&search), &self.sections)?;
+        self.search = Some(Box::new(search));
+        Ok(self)
+    }
 }
 
 #[expect(
@@ -3351,7 +3465,10 @@ fn scan_context(
                 true
             },
         )?;
-        if cancelled() || chunk.is_empty() {
+        if cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        if chunk.is_empty() {
             break;
         }
         offset = chunk
@@ -3434,6 +3551,9 @@ fn scan_context(
                     source,
                 )?;
         }
+    }
+    if cancelled() {
+        return Err(ApiError::Cancelled);
     }
     Ok(())
 }
@@ -4183,8 +4303,7 @@ mod tests {
     #[test]
     fn strict_size_comparisons_use_the_authoritative_reducer_and_exact_boundaries() {
         let search = |expression: &str, surface: &str| {
-            super::super::StructuredSearch::parse(expression, surface)
-                .expect("valid size comparison")
+            StructuredSearch::parse(expression, surface).expect("valid size comparison")
         };
         let mut table = aggregate();
         table.gauges.insert(
@@ -4250,7 +4369,7 @@ mod tests {
 
     #[test]
     fn grouped_comparisons_run_after_sum_and_ratio_reducers() {
-        let parsed = super::super::StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
+        let parsed = StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
             .expect("valid grouped comparison");
         let mut group = aggregate();
         group.gauges.insert(
@@ -4281,23 +4400,22 @@ mod tests {
             RelationGroup::Schema,
             Some(&parsed),
         ));
-        let rejected = super::super::StructuredSearch::parse("size>121MB", TABLES)
-            .expect("valid grouped comparison");
+        let rejected =
+            StructuredSearch::parse("size>121MB", TABLES).expect("valid grouped comparison");
         assert!(!group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
             Some(&rejected),
         ));
-        let post_or = super::super::StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
+        let post_or = StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
             .expect("valid post-reducer OR");
         assert!(group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
             Some(&post_or),
         ));
-        let rejected_or =
-            super::super::StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
-                .expect("valid post-reducer OR");
+        let rejected_or = StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
+            .expect("valid post-reducer OR");
         assert!(!group.matches_result_search(
             RelationKind::Tables,
             RelationGroup::Schema,
@@ -4319,8 +4437,8 @@ mod tests {
             ("schema:private OR size>121MB", false),
             ("schema:public AND size>100MB", true),
         ] {
-            let parsed = super::super::StructuredSearch::parse(expression, TABLES)
-                .expect("valid object boolean search");
+            let parsed =
+                StructuredSearch::parse(expression, TABLES).expect("valid object boolean search");
             assert_eq!(
                 object.matches_result_search(
                     RelationKind::Tables,
@@ -4335,9 +4453,8 @@ mod tests {
 
     #[test]
     fn hidden_search_dependencies_are_exact_and_surface_scoped() {
-        let search =
-            super::super::StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
-                .expect("valid hidden comparison fields");
+        let search = StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
+            .expect("valid hidden comparison fields");
         let physical = snapshot_physical_fields(
             TABLES,
             RelationGroup::Tablespace,

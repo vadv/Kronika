@@ -5,7 +5,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const activity = await importModule(
-  'export { cursorColumnOf, intervalInstant, rowPeakColumn } from "../src/activity.tsx"',
+  'export { cursorColumnOf, intervalInstant, planTextsByPlanId, rowPeakColumn, statementTextsByQueryId } from "../src/activity.tsx"; export { activityPreview } from "../src/activity-cuts.ts"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -45,4 +45,33 @@ test("a drill moves the cursor only when the drilled row is silent at it", async
   assert.match(choose, /rowPeakColumn\(row\.cells\)/)
   // The strip's own click uses the same instant, so the two gestures agree.
   assert.match(source, /onCursor\(intervalInstant\(hour, column, columns\)\)/)
+})
+
+test("ranked statement and plan previews use the first nonempty loaded table text", async () => {
+  const row = (logicalName, ordinal, values) => ({ logicalName, ordinal, segmentId: "s", timestamp: HOUR, typeId: "t", values })
+  const statements = activity.statementTextsByQueryId([
+    row("pg_stat_statements", "1", { queryid: "101", query: " \n\t" }),
+    row("pg_stat_statements", "2", { queryid: "101", query: " select  \n  one " }),
+    row("pg_stat_statements", "3", { queryid: "101", query: "ignored later text" }),
+    row("pg_stat_statements", "4", { queryid: "102", query: null }),
+  ])
+  const plans = activity.planTextsByPlanId([
+    row("pg_store_plans", "1", { planid: 201, plan: "  Seq Scan\t on orders  " }),
+    row("pg_store_plans", "2", { planid: 201, plan: "ignored later plan" }),
+  ])
+  assert.deepEqual([...statements], [["101", " select  \n  one "]])
+  assert.deepEqual([...plans], [["201", "  Seq Scan\t on orders  "]])
+  assert.equal(activity.activityPreview(statements.get("101")), "select one")
+  assert.equal(activity.activityPreview(plans.get("201")), "Seq Scan on orders")
+  assert.equal(activity.activityPreview(`select ${"x".repeat(300)}`).length, 240)
+
+  const [source, view] = await Promise.all([
+    readFile(new URL("../src/activity.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(source, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
+  assert.match(source, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
+  assert.doesNotMatch(source, /labelText\(row, "(?:query|plan)"\)|loadRelatedStatementTextRow|first_match/)
+  assert.match(view, /<StatementsActivity[^>]+rows=\{data\.sections\.pg_stat_statements \?\? NO_ROWS\}/)
+  assert.match(view, /<PlansActivity[^>]+rows=\{data\.sections\.pg_store_plans \?\? NO_ROWS\}/)
 })

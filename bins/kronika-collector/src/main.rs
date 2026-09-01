@@ -35,6 +35,7 @@ mod service_sections;
 use anyhow::{Context, Result};
 use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
+use kronika_source_os::proc::process::ProcessIoCredentials;
 use kronika_source_os::{OsScope, ProcFs, detect_container};
 use kronika_source_pg::query::BatchWrite;
 use kronika_writer::{Journal, SectionBuffers};
@@ -166,6 +167,7 @@ async fn run_collector() -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
     let mut sigint = signal(SignalKind::interrupt()).context("install the SIGINT handler")?;
     let mut sched = Scheduler::new(config.intervals);
+    let mut process_io = ProcessIoCredentials::new();
     let mut segment = SegmentState::default();
     let mut rotation = Rotation::new(
         config.retention,
@@ -247,6 +249,7 @@ async fn run_collector() -> Result<()> {
                     &config,
                     in_container,
                     &due,
+                    &mut process_io,
                     &mut segment,
                     &mut sched,
                     &mut pg_telemetry,
@@ -273,6 +276,7 @@ async fn run_collector() -> Result<()> {
                 in_container,
                 &collection_due,
                 opening_settings.as_deref().unwrap_or(&[]),
+                &mut process_io,
                 &mut segment,
                 &mut sched,
                 &mut logs,
@@ -326,6 +330,7 @@ async fn run_pg_collection_cycle(
     config: &Config,
     in_container: bool,
     due: &DueSet,
+    process_io: &mut ProcessIoCredentials,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     telemetry: &mut PgTelemetry,
@@ -349,6 +354,7 @@ async fn run_pg_collection_cycle(
                     &batch,
                     settings.as_deref().unwrap_or(&[]),
                     ts,
+                    process_io,
                     segment,
                     sched,
                 )?;
@@ -390,6 +396,7 @@ fn append_pending_pg_batch(
     batch: &PgBatch,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
+    process_io: &mut ProcessIoCredentials,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
 ) -> std::result::Result<PgPendingOutcome, PgAppendError> {
@@ -410,6 +417,7 @@ fn append_pending_pg_batch(
             config,
             in_container,
             ts,
+            process_io,
         )
         .map_err(|()| {
             PgAppendError::Fatal(anyhow::anyhow!(
@@ -446,9 +454,7 @@ fn append_pending_pg_batch(
             Err(failure) => return Err(pg_append_error(failure)),
         };
         append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
-        let retry = finished
-            .iter()
-            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+        let retry = finished.iter().any(|(_, reason)| *reason == "journal-full");
         for (dest, reason) in finished {
             sched.mark_segment_opened();
             announce(&format!("wrote {} reason={reason}", dest.display()));
@@ -501,6 +507,10 @@ fn pg_append_error(failure: AppendWindowError) -> PgAppendError {
     PgAppendError::Fatal(err.context(context))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the retained batch shares collector-lifetime process access state"
+)]
 fn buffer_pg_batch(
     segment: &mut SegmentState,
     batch: &PgBatch,
@@ -509,6 +519,7 @@ fn buffer_pg_batch(
     config: &Config,
     in_container: bool,
     ts: i64,
+    process_io: &mut ProcessIoCredentials,
 ) -> std::result::Result<BufferedWindow, ()> {
     let fs = ProcFs::from_env();
     let mut buffers = SectionBuffers::new();
@@ -539,6 +550,7 @@ fn buffer_pg_batch(
             let (interner, users) = segment.os_state_mut();
             collect_os_sources(
                 &fs,
+                process_io,
                 interner,
                 users,
                 OsScope::Host.as_u8(),
@@ -575,6 +587,7 @@ fn run_collection_cycle(
     in_container: bool,
     due: &DueSet,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    process_io: &mut ProcessIoCredentials,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     logs: &mut LogSources,
@@ -607,6 +620,7 @@ fn run_collection_cycle(
             rows,
             opening_settings,
             ts,
+            process_io,
             segment,
             sched,
         )?;
@@ -630,6 +644,7 @@ fn run_collection_cycle(
             &LogRows::default(),
             opening_settings,
             ts,
+            process_io,
             segment,
             sched,
         )?;
@@ -667,6 +682,7 @@ fn append_pending_window(
     log_rows: &LogRows,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
+    process_io: &mut ProcessIoCredentials,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
 ) -> Result<PendingWindowOutcome> {
@@ -683,6 +699,7 @@ fn append_pending_window(
             config,
             in_container,
             ts,
+            process_io,
         ) {
             Ok(Some(buffered)) => buffered,
             Ok(None) => {
@@ -720,9 +737,7 @@ fn append_pending_window(
             &flushed,
         ) {
             Ok(finished) => {
-                let retry = finished
-                    .iter()
-                    .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+                let retry = finished.iter().any(|(_, reason)| *reason == "journal-full");
                 for (dest, reason) in finished {
                     sched.mark_segment_opened();
                     announce(&format!("wrote {} reason={reason}", dest.display()));
@@ -780,6 +795,10 @@ fn due_for_window(segment: &SegmentState, due: &DueSet, sched: &mut Scheduler) -
 struct BufferFailure;
 
 /// Read the selected OS sources and add the retained log rows to one window.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one buffered window shares collector-lifetime process access state"
+)]
 fn buffer_window(
     segment: &mut SegmentState,
     due: &DueSet,
@@ -788,6 +807,7 @@ fn buffer_window(
     config: &Config,
     in_container: bool,
     ts: i64,
+    process_io: &mut ProcessIoCredentials,
 ) -> std::result::Result<Option<BufferedWindow>, BufferFailure> {
     let fs = ProcFs::from_env();
     let mut buffers = SectionBuffers::new();
@@ -813,6 +833,7 @@ fn buffer_window(
         let (interner, users) = segment.os_state_mut();
         collect_os_sources(
             &fs,
+            process_io,
             interner,
             users,
             OsScope::Host.as_u8(),

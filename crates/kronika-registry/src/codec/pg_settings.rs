@@ -17,7 +17,8 @@ use crate::{Section, StrId, Ts};
     id = 1_019_001,
     name = "pg_settings",
     semantics = on_change,
-    sort_key("datid", "usesysid", "name")
+    sort_key("datid", "usesysid", "name"),
+    identity("datid", "usesysid", "name")
 )]
 pub struct PgSettings {
     /// Collection time, unix microseconds; one value for all rows of a read.
@@ -103,6 +104,7 @@ mod tests {
         assert_eq!(c.columns.len(), 16);
         assert_eq!(c.semantics, Semantics::OnChange);
         assert_eq!(c.sort_key, ["datid", "usesysid", "name"]);
+        assert_eq!(c.identity, ["datid", "usesysid", "name"]);
         assert_eq!(c.column("datid").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("datname").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("usesysid").map(|col| col.nullable), Some(false));

@@ -1,4 +1,4 @@
-import { Activity, ChartLine, CircleHelp, LogOut, Moon, RotateCw, Sun } from "lucide-react"
+import { Activity, ChartLine, CircleHelp, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { ProcessesActivity } from "./activity"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
@@ -8,6 +8,7 @@ import {
   TIMELINE_REQUESTS,
   acceptResponse,
   loadTimeline,
+  loadTimelineLanes,
   loadSeries,
   hourOf,
   loadSnapshot,
@@ -16,6 +17,7 @@ import {
   snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
+  withTimelineLanes,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   POSTGRESQL_CONTEXT_REQUESTS,
@@ -38,7 +40,8 @@ import { contextualRows, entityContext, findingRoute, type EntityContext } from 
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
-import { HelpPanel, type Translate, LabelHelp } from "./help"
+import { HelpPanel, type Translate } from "./help"
+import { McpPanel } from "./mcp-connect"
 import { MobileControls } from "./mobile-controls"
 import { useHistoryRequest } from "./history-request"
 import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
@@ -54,7 +57,6 @@ import {
   activityFor,
   asNumber,
   floorHour,
-  humanAge,
   interpolate,
   processKey,
   processLens,
@@ -72,7 +74,7 @@ import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, proce
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
-import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
+import { apiFetch, bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
 import type { RelatedNavigation } from "./statement-navigation"
 import {
@@ -90,7 +92,7 @@ type Theme = "dark" | "light"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], syntheticDemo: false, postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  points: [], lanePoints: [], findings: [], findingGroups: [],
+  points: [], lanePoints: [], laneContexts: [], findings: [], findingGroups: [],
 }
 
 interface CurrentSnapshot {
@@ -194,6 +196,15 @@ function App({ locale, onLocale, t }: {
   readonly t: Translate
 }) {
   const time = useDisplayTime()
+  const [database, setDatabase] = useState<string | null>(null)
+  const instanceLabelRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => instanceLabelRequest.current?.abort(), [])
+  useEffect(() => {
+    document.title = database === null ? "Kronika" : `${database} — Kronika`
+    return () => {
+      document.title = "Kronika"
+    }
+  }, [database])
   const opened = useRef(readAddress(window.location.search))
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
@@ -202,6 +213,13 @@ function App({ locale, onLocale, t }: {
   const [cursor, setCursor] = useState(0)
   const followsLatest = useRef(opened.current.at === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
+  const [backgroundTimeline, setBackgroundTimeline] = useState<TimelineData | null>(null)
+  const backgroundTimelineRef = useRef(backgroundTimeline)
+  backgroundTimelineRef.current = backgroundTimeline
+  const [backgroundReadyHour, setBackgroundReadyHour] = useState<number | null>(null)
+  const [snapshotReloadVersion, setSnapshotReloadVersion] = useState(0)
+  const [processReadyHour, setProcessReadyHour] = useState<number | null>(null)
+  const foregroundReadyKey = useRef<string | null>(null)
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
   const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
@@ -247,6 +265,7 @@ function App({ locale, onLocale, t }: {
     setSystemFocus(null)
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -256,8 +275,23 @@ function App({ locale, onLocale, t }: {
   const viewKey = pgSection === "statements" && visibleSource === "postgresql"
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
+  const foregroundView = visibleSource === "processes"
+    ? `${viewKey}:${lens}`
+    : activeRelation ? `${viewKey}:${activeRelationLens}:${relationLevel}` : viewKey
+  const foregroundKey = `${hour ?? "pending"}:${foregroundView}`
+  const eventsReady = useCallback(() => {
+    if (hour === null || visibleSource !== "events") return
+    foregroundReadyKey.current = foregroundKey
+    setBackgroundReadyHour(hour)
+  }, [foregroundKey, hour, visibleSource])
   const viewRequests = useMemo(() => {
-    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }, { section: "os_meminfo", fields: ["mem_total"] }]
+    if (visibleSource === "processes") return [
+      ...TIMELINE_REQUESTS,
+      processRequest(lens),
+      { section: "pg_stat_activity" },
+      { section: "instance_metadata" },
+      ...(lens === "tree" ? [{ section: "os_meminfo" }] : []),
+    ]
     if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
@@ -313,7 +347,6 @@ function App({ locale, onLocale, t }: {
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshFailed, setRefreshFailed] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const refreshAwaitingSnapshot = useRef(false)
   const segmentsRef = useRef(segments)
   segmentsRef.current = segments
@@ -325,11 +358,17 @@ function App({ locale, onLocale, t }: {
   const finishRefresh = useCallback((succeeded: boolean) => {
     if (!refreshRequested.current) return
     const pending = pendingRefresh.current
+    const foregroundAlreadyLoaded = refreshAwaitingSnapshot.current
     if (succeeded && pending !== null) {
       drawn.current = pending.timeline.hour
       setAvailableHours(pending.timeline.availableHours)
       setSegments(pending.timeline.segments)
-      setTimelineData(hourOf(pending.timeline))
+      setTimelineData((current) => withTimelineLanes(hourOf(pending.timeline), {
+        contexts: current.laneContexts,
+        points: current.lanePoints,
+      }))
+      setBackgroundTimeline(pending.timeline)
+      if (!foregroundAlreadyLoaded) setSnapshotReloadVersion((version) => version + 1)
     } else if (pending !== null) {
       setSegments(pending.previousSegments)
       setCursor(pending.previousCursor)
@@ -339,7 +378,6 @@ function App({ locale, onLocale, t }: {
     refreshAwaitingSnapshot.current = false
     setRefreshing(false)
     setRefreshFailed(!succeeded)
-    if (succeeded) setLastUpdated(Date.now() * 1_000)
   }, [])
   const beginRefresh = useCallback(() => {
     if (refreshRequested.current || drawn.current === null || drawn.current !== selectedHour.current) return
@@ -369,6 +407,8 @@ function App({ locale, onLocale, t }: {
     const controller = new AbortController()
     setRefreshFailed(false)
     if (!refresh) {
+      setBackgroundTimeline(null)
+      setBackgroundReadyHour(null)
       setLoading(true)
       setRefreshing(false)
       setError(null)
@@ -400,10 +440,11 @@ function App({ locale, onLocale, t }: {
         setHour(timeline.hour)
         setSegments(timeline.segments)
         setTimelineData(hourOf(timeline))
+        setBackgroundTimeline(timeline)
+        setSnapshotReloadVersion((version) => version + 1)
         setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
         followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
         setCursor(followsLatest.current ? latest : asked ?? latest)
-        setLastUpdated(Date.now() * 1_000)
         setRefreshing(false)
         writeLastLoadSeconds((Date.now() * 1_000 - loadStartedAt) / 1_000_000)
       }
@@ -420,6 +461,8 @@ function App({ locale, onLocale, t }: {
       setHour(fallback)
       setSegments([])
       setTimelineData(EMPTY_DATA)
+      setBackgroundTimeline(null)
+      setBackgroundReadyHour(null)
       setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursor(fallback)
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -465,10 +508,17 @@ function App({ locale, onLocale, t }: {
       if (completesRefresh) finishRefresh(false)
       return
     }
+    if (backgroundTimeline === null || backgroundTimeline.hour !== hour) {
+      setCursorState("loading")
+      setDensePageState("idle")
+      return
+    }
     if (snapshotTarget === null) {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("ready")
       setDensePageState("idle")
+      foregroundReadyKey.current = foregroundKey
+      if (visibleSource !== "events") setBackgroundReadyHour(hour)
       if (completesRefresh) finishRefresh(true)
       return
     }
@@ -508,7 +558,9 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
           setCursorState("ready")
-          setLastUpdated(Date.now() * 1_000)
+          foregroundReadyKey.current = foregroundKey
+          setBackgroundReadyHour(hour)
+          if (visibleSource === "processes") setProcessReadyHour(hour)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
@@ -524,7 +576,7 @@ function App({ locale, onLocale, t }: {
         ? Promise.resolve(EMPTY_DATA)
         : loadOrdinarySnapshot(ordinaryGroups)
           .catch((reason: unknown) => {
-            if (completesRefresh) throw reason
+            if (completesRefresh && visibleSource !== "processes") throw reason
             if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
             return EMPTY_DATA
           })
@@ -544,10 +596,8 @@ function App({ locale, onLocale, t }: {
             ...denseOptions,
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
           }
-          void Promise.all([
-            pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options),
-          ]).then(([companion, incoming]) => {
+          const page = loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options)
+          const loaded = (incoming: HourData, companion: HourData | null) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
               cursor,
@@ -559,10 +609,13 @@ function App({ locale, onLocale, t }: {
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            foregroundReadyKey.current = foregroundKey
+            setBackgroundReadyHour(hour)
+            if (visibleSource === "processes") setProcessReadyHour(hour)
             if (tracksPageSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
-            setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
-          }).catch((reason: unknown) => {
+          }
+          const failed = (reason: unknown) => {
             if (stale()) return
             action.failed = pageCursor
             setDensePageState("error")
@@ -572,15 +625,61 @@ function App({ locale, onLocale, t }: {
             }
             if (completesRefresh && pageCursor === undefined) finishRefresh(false)
             console.error("kronika: snapshot page failed", reason)
-          }).finally(() => { inFlight = false })
+          }
+          if (pageCursor === undefined && visibleSource === "processes") {
+            void page.then((incoming) => {
+              loaded(incoming, null)
+              void base.then((companion) => {
+                if (stale() || companion === EMPTY_DATA) return
+                setCurrentSnapshot((current) => current.target !== snapshotTarget ? current : {
+                  ...current,
+                  data: mergeSnapshotData(current.data, companion),
+                })
+              }).catch((reason: unknown) => {
+                if (!stale()) console.error("kronika: snapshot companion failed", reason)
+              })
+            }).catch(failed).finally(() => { inFlight = false })
+            return
+          }
+          void Promise.all([
+            pageCursor === undefined ? base : Promise.resolve(null),
+            page,
+          ]).then(([companion, incoming]) => loaded(incoming, companion)).catch(failed)
+            .finally(() => { inFlight = false })
         },
       }
       densePage.current = action
       action.load()
-    }, 250)
+    }, foregroundReadyKey.current === foregroundKey ? 250 : 0)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [finishRefresh, hour, snapshotTarget])
+  }, [finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget])
+  useEffect(() => {
+    if (backgroundTimeline === null || backgroundTimeline.segments.length === 0
+      || backgroundReadyHour !== backgroundTimeline.hour
+      || hour !== backgroundTimeline.hour) return
+    const controller = new AbortController()
+    void loadTimelineLanes(backgroundTimeline, controller.signal).then((lanes) => {
+      if (controller.signal.aborted || backgroundTimelineRef.current !== backgroundTimeline) return
+      setTimelineData((current) => withTimelineLanes(current, lanes))
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) console.error("kronika: timeline lanes failed", reason)
+    })
+    return () => controller.abort()
+  }, [backgroundReadyHour, backgroundTimeline, hour])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
+  useEffect(() => {
+    if (instanceLabelRequest.current !== null || hour === null || !refreshReady
+      || backgroundReadyHour !== hour || foregroundReadyKey.current !== foregroundKey) return
+    const controller = new AbortController()
+    instanceLabelRequest.current = controller
+    apiFetch("/api/instance-label", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return
+        const body: { database?: string | null } = await response.json()
+        if (typeof body.database === "string" && body.database !== "") setDatabase(body.database)
+      })
+      .catch(() => {})
+  }, [backgroundReadyHour, foregroundKey, hour, refreshReady])
   useEffect(() => hour === null || !refreshReady || refreshing
     ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
   const denseMetadata = currentData.snapshotRows[0]
@@ -597,8 +696,14 @@ function App({ locale, onLocale, t }: {
     const shortcuts = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (keyboardTargetOwnsArrows(event.target)) return
-      if (event.key === "?") setHelpOpen((current) => !current)
-      if (event.key === "Escape") setHelpOpen(false)
+      if (event.key === "?") {
+        setHelpOpen((current) => !current)
+        setMcpOpen(false)
+      }
+      if (event.key === "Escape") {
+        setHelpOpen(false)
+        setMcpOpen(false)
+      }
     }
     window.addEventListener("keydown", shortcuts)
     return () => window.removeEventListener("keydown", shortcuts)
@@ -873,8 +978,6 @@ function App({ locale, onLocale, t }: {
       ? HELP_EVENTS
       : visibleSource === "processes" ? HELP_PROCESS : HELP_SYSTEM
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
-  const cursorTime = cursor === 0 ? null : time.clock(cursor)
-  const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
   const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
@@ -905,7 +1008,7 @@ function App({ locale, onLocale, t }: {
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
     <header className="topbar [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
-      <h1>{t("app.title")}</h1>
+      <h1>{database === null ? t("app.title") : `${t("app.title")} — ${database}`}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
         <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { navigateSearchSurface(null); setSystemFocus(null); setSelectedKey(null); setInspectorPanel(null); setSource("host") }} type="button">{t("nav.host")}</button>
@@ -916,8 +1019,7 @@ function App({ locale, onLocale, t }: {
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time max-[760px]:order-9">
-        <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
-        {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
+        <span data-testid="cursor-time">{shownAt === null ? "—" : time.clock(shownAt)}</span>
         {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
         {cursorState === "missing" && <span className="cursor-missing ml-2 font-sans text-xs text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
@@ -934,7 +1036,8 @@ function App({ locale, onLocale, t }: {
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
         <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
+        <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
 
@@ -955,7 +1058,7 @@ function App({ locale, onLocale, t }: {
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
+          <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={processReadyHour === hour && foregroundReadyKey.current === foregroundKey} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
           <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
@@ -964,7 +1067,7 @@ function App({ locale, onLocale, t }: {
         </div>
       </>}
       {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
     {inspectorOpen && hour !== null && <Inspector
@@ -990,30 +1093,8 @@ function App({ locale, onLocale, t }: {
     </InspectorPortalProvider>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
+    {mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
   </main></DisplayTimeScope>
-}
-
-function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {
-  return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
-}
-
-function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly clock: string; readonly locale: Locale; readonly t: Translate }) {
-  const [now, setNow] = useState(() => Date.now() * 1_000)
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now() * 1_000), 1_000)
-    return () => clearInterval(timer)
-  }, [])
-  const age = humanAge((now - at) / 1_000_000, locale)
-  return <span className="flex flex-none items-baseline text-xs text-fg4" data-testid="updated-time">
-    <LabelHelp
-      helpKey="refresh.updated"
-      helpText={`${t("refresh.updated")} ${t("refresh.ago", { age })} · ${clock}`}
-      iconOnly
-      labelKey="refresh.updated"
-      t={t}
-      testId="updated-help"
-    />
-  </span>
 }
 
 const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
