@@ -58,7 +58,8 @@ target/x86_64-unknown-linux-musl/release/kronika-web
 Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
 password. For network access, use a TLS-terminating reverse proxy unless you
 explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`. Set
-`KRONIKA_WEB_SOURCES=3` when the collector records PostgreSQL.
+bit 0 in `KRONIKA_WEB_SOURCES` for OS data and bit 1 for PostgreSQL data; set
+both bits (`3`) to expose both.
 
 Collector and web configuration:
 

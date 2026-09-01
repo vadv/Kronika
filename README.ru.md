@@ -58,8 +58,9 @@ target/x86_64-unknown-linux-musl/release/kronika-web
 
 Откройте <http://127.0.0.1:8080/> и войдите как `kronika` с заданным паролем.
 Для доступа по сети используйте обратный прокси с TLS, если только вы явно не
-доверяете этой сети, и задайте `KRONIKA_WEB_COOKIE_SECURE=true`. Если коллектор
-записывает PostgreSQL, укажите `KRONIKA_WEB_SOURCES=3`.
+доверяете этой сети, и задайте `KRONIKA_WEB_COOKIE_SECURE=true`. Бит 0 в
+`KRONIKA_WEB_SOURCES` включает данные OS, бит 1 — PostgreSQL; значение `3`
+включает оба бита.
 
 Настройка коллектора и web:
 

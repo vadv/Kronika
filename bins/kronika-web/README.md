@@ -16,7 +16,7 @@ binds.
 | --- | ---: | --- |
 | `KRONIKA_OUT_DIR` | — | Required data directory. It must contain the collector output and allow web to create and replace `.idx` files and `.kronika-index.owner.lock`. |
 | `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | HTTP listen address. |
-| `KRONIKA_WEB_SOURCES` | — | Required decimal value: `0` = none, `1` = OS, `2` = PostgreSQL, `3` = both. Other values are rejected. |
+| `KRONIKA_WEB_SOURCES` | — | Required decimal bitset. Bit 0 enables OS data; bit 1 enables PostgreSQL data. Unsupported bits are rejected. |
 | `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
 | `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
 | `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
@@ -45,8 +45,8 @@ Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
 password. For network access, use a TLS-terminating reverse proxy unless you
 explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`.
 
-Set `KRONIKA_WEB_SOURCES` to match the recorded data: `1` for host data, `2`
-for PostgreSQL, or `3` for both.
+Set every `KRONIKA_WEB_SOURCES` bit whose data web should expose: bit 0 for OS
+and bit 1 for PostgreSQL. Combine the bits to expose both.
 
 With `KRONIKA_WEB_AUTH=required`, protected requests accept either Basic
 credentials or the browser session cookie issued by `POST /auth/session`.
