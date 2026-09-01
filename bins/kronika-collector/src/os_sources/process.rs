@@ -1,7 +1,7 @@
 use super::{
-    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, ProcessReader,
-    SourceKind, Ts, UserReferences, cgroup, intern_str, log_collection_finish, log_count_degraded,
-    log_degraded, process_facts,
+    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError,
+    ProcessIoCredentials, ProcessIoTarget, ProcessReader, SourceKind, Ts, UserReferences, cgroup,
+    intern_str, log_collection_finish, log_count_degraded, log_degraded, process_facts,
 };
 
 #[allow(
@@ -11,6 +11,7 @@ use super::{
 )]
 pub(super) fn collect_process_sections(
     fs: &ProcFs,
+    process_io: &mut ProcessIoCredentials,
     interner: &mut Interner,
     users: &mut UserReferences,
     scope: u8,
@@ -45,6 +46,7 @@ pub(super) fn collect_process_sections(
             return;
         }
     };
+    process_io.retain_live(&pids);
     let facts = match process_facts(fs) {
         Ok(facts) => facts,
         Err(err) => {
@@ -71,6 +73,7 @@ pub(super) fn collect_process_sections(
     let mut io_nulls = 0_usize;
     let mut mapping_nulls = 0_usize;
     let mut reader = ProcessReader::new(fs);
+    let mut io_targets = Vec::new();
     for pid in pids {
         let cgroup_path = if mapping_due || cgroup_due {
             let membership = reader.cgroup_membership(pid);
@@ -83,18 +86,18 @@ pub(super) fn collect_process_sections(
         } else {
             None
         };
-        let read = match reader.read(pid, facts, ts, cgroup_path) {
+        let read = match reader.read_without_io(pid, facts, ts, cgroup_path) {
             Ok(read) => read,
-            Err(ProcessError::Gone(_)) => continue,
+            Err(ProcessError::Gone(_)) => {
+                process_io.forget(pid);
+                continue;
+            }
             Err(_) => {
                 skipped = skipped.saturating_add(1);
                 continue;
             }
         };
         if hot_due {
-            if read.hot.io.is_none() {
-                io_nulls = io_nulls.saturating_add(1);
-            }
             let Some(comm) = intern_str(interner, hot_type_id, "process", &read.hot.comm) else {
                 skipped = skipped.saturating_add(1);
                 continue;
@@ -109,6 +112,7 @@ pub(super) fn collect_process_sections(
             users.observe(scope, row.uid);
             users.observe(scope, row.euid);
             os.processes.push(row);
+            io_targets.push(ProcessIoTarget::new(pid, read.hot.uid, read.hot.gid));
         }
         if status_due {
             os.process_status
@@ -137,6 +141,12 @@ pub(super) fn collect_process_sections(
                 mapping_nulls = mapping_nulls.saturating_add(1);
             }
         }
+    }
+
+    if hot_due {
+        io_nulls = process_io.read(&mut reader, &io_targets, |index, io| {
+            kronika_source_os::proc::process::set_hot_section_io(&mut os.processes[index], io);
+        });
     }
 
     if skipped > 0 {

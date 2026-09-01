@@ -15,6 +15,7 @@ use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::{DICT_STRINGS_TYPE_ID, PgWalStorage, StrId, Ts, section_name};
 use kronika_source_os::PasswdSnapshot;
 use kronika_source_os::passwd::MAX_PASSWD_BYTES;
+use kronika_source_os::proc::process::ProcessIoCredentials;
 use kronika_source_os::{SysFs, block_topology, cgroup, cpufreq};
 use kronika_source_pg::activity::{ActivityRow, ActivityVersion};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
@@ -526,6 +527,7 @@ fn statement_sql_timestamp_survives_source_batches_in_one_active_segment() {
     let config = config(directory.path(), u64::MAX);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
     let mut rows = (0..=BATCH_ROWS)
         .map(|query_index| {
             let mut row = statement_row(0, query_index);
@@ -545,6 +547,7 @@ fn statement_sql_timestamp_survives_source_batches_in_one_active_segment() {
         &first_batch,
         &[],
         BASE_TS + 10,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     )
@@ -577,6 +580,7 @@ fn statement_sql_timestamp_survives_source_batches_in_one_active_segment() {
         &second_batch,
         &[],
         BASE_TS + 20,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     )

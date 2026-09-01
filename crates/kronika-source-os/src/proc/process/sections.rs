@@ -4,7 +4,7 @@ use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_process_status::OsProcessStatus;
 use kronika_registry::{StrId, Ts};
 
-use super::model::{ProcessHotRow, ProcessStatusRow};
+use super::model::{ProcIo, ProcessHotRow, ProcessStatusRow};
 
 /// Convert the hot row to the registry row after interning strings.
 #[must_use]
@@ -54,6 +54,17 @@ pub fn to_hot_section(
         exit_signal: row.exit_signal,
         scope,
     }
+}
+
+/// Fill the seven nullable I/O counters after their credential-grouped read.
+pub const fn set_hot_section_io(row: &mut OsProcess, io: ProcIo) {
+    row.syscr = Some(io.syscr);
+    row.syscw = Some(io.syscw);
+    row.rchar = Some(io.rchar);
+    row.wchar = Some(io.wchar);
+    row.read_bytes = Some(io.read_bytes);
+    row.write_bytes = Some(io.write_bytes);
+    row.cancelled_write_bytes = Some(io.cancelled_write_bytes);
 }
 
 /// Convert the extended status row to the registry row.

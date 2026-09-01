@@ -52,15 +52,7 @@ fn process_reader_reuses_scratch_without_leaking_optional_content() {
 }
 
 #[test]
-fn needs_fs_creds_only_when_identity_differs() {
-    assert!(!needs_fs_creds((1000, 2000), (1000, 2000)));
-    assert!(needs_fs_creds((1001, 2000), (1000, 2000)));
-    assert!(needs_fs_creds((1000, 2001), (1000, 2000)));
-    assert!(needs_fs_creds((1001, 2001), (1000, 2000)));
-}
-
-#[test]
-fn read_io_reads_directly_when_target_matches_own_identity() {
+fn process_io_cache_reads_and_remembers_the_working_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let process = dir.path().join("3");
     std::fs::create_dir(&process).expect("create process");
@@ -77,8 +69,19 @@ fn read_io_reads_directly_when_target_matches_own_identity() {
 
     let fs = ProcFs::new(dir.path().to_path_buf());
     let mut reader = ProcessReader::new(&fs);
-    let io = reader.read_io(3, identity.0, identity.1);
+    let mut credentials = ProcessIoCredentials::new();
+    let mut io = None;
+    let unavailable = credentials.read(
+        &mut reader,
+        &[ProcessIoTarget::new(3, identity.0, identity.1)],
+        |index, value| {
+            assert_eq!(index, 0);
+            io = Some(value);
+        },
+    );
 
+    assert_eq!(unavailable, 0);
+    assert_eq!(credentials.cached(3), Some(identity));
     assert_eq!(
         io,
         Some(ProcIo {
@@ -91,4 +94,26 @@ fn read_io_reads_directly_when_target_matches_own_identity() {
             cancelled_write_bytes: 0,
         })
     );
+}
+
+#[test]
+fn process_io_cache_evicts_a_disappeared_pid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let process = dir.path().join("4");
+    std::fs::create_dir(&process).expect("create process");
+    std::fs::write(process.join("io"), "read_bytes: 30\n").expect("write io");
+    let identity = (
+        rustix::process::getuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+    );
+    let target = ProcessIoTarget::new(4, identity.0, identity.1);
+    let fs = ProcFs::new(dir.path().to_path_buf());
+    let mut reader = ProcessReader::new(&fs);
+    let mut credentials = ProcessIoCredentials::new();
+
+    assert_eq!(credentials.read(&mut reader, &[target], |_, _| {}), 0);
+    assert_eq!(credentials.cached(4), Some(identity));
+    std::fs::remove_file(process.join("io")).expect("remove io");
+    assert_eq!(credentials.read(&mut reader, &[target], |_, _| {}), 0);
+    assert_eq!(credentials.cached(4), None);
 }

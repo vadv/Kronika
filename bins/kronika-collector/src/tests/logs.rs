@@ -5,6 +5,7 @@ use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_registry::Ts;
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_source_log::pgbouncer::{Event, Level};
+use kronika_source_os::proc::process::ProcessIoCredentials;
 use kronika_source_pg::archiver::ArchiverRow;
 use kronika_source_pg::settings::SettingsRow;
 use kronika_writer::{Journal, JournalConfig, SectionBuffers};
@@ -151,6 +152,7 @@ fn assert_retained_batch_moves_to_fresh_segment() {
     fill_journal_to_pressure(&mut journal, &first, max);
 
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
     let outcome = append_pending_window(
         &mut journal,
         &owner,
@@ -160,6 +162,7 @@ fn assert_retained_batch_moves_to_fresh_segment() {
         &log_rows(),
         &[settings_row()],
         200,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     )
@@ -231,6 +234,7 @@ fn a_fresh_log_window_append_failure_is_fatal() {
     let config = config(dir.path(), JOURNAL_HEADER_LEN as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
 
     let error = match append_pending_window(
         &mut journal,
@@ -241,6 +245,7 @@ fn a_fresh_log_window_append_failure_is_fatal() {
         &log_rows(),
         &[],
         200,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     ) {
@@ -285,6 +290,7 @@ fn assert_pg_batch_moves_to_fresh_segment() {
     fill_journal_to_pressure(&mut journal, &first, max);
 
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
     let outcome = append_pending_pg_batch(
         &mut journal,
         &owner,
@@ -293,6 +299,7 @@ fn assert_pg_batch_moves_to_fresh_segment() {
         &archiver_batch(),
         &[],
         200,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     )
@@ -339,6 +346,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
     let config = config(dir.path(), JournalConfig::default().max_journal_len as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
 
     append_pending_pg_batch(
         &mut journal,
@@ -348,6 +356,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
         &archiver_batch(),
         &[],
         200,
+        &mut process_io,
         &mut segment,
         &mut scheduler,
     )
@@ -362,6 +371,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
             &log_rows(),
             &[],
             ts,
+            &mut process_io,
             &mut segment,
             &mut scheduler,
         )
@@ -410,6 +420,7 @@ fn cached_settings_are_added_once_when_logs_open_a_segment() {
     let config = config(dir.path(), JournalConfig::default().max_journal_len as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut process_io = ProcessIoCredentials::new();
     let settings = [settings_row()];
 
     for ts in [200, 201] {
@@ -422,6 +433,7 @@ fn cached_settings_are_added_once_when_logs_open_a_segment() {
             &log_rows(),
             &settings,
             ts,
+            &mut process_io,
             &mut segment,
             &mut scheduler,
         )
