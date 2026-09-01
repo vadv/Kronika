@@ -58,17 +58,23 @@ fn try_reserve_listing<T>(
 }
 
 fn resource_scan_error(error: io::Error) -> ResourceError {
-    if let Some(LayoutError::TraversalLimitExceeded {
-        kind: LimitKind::MetadataBytes,
-        limit,
-    }) = error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<LayoutError>())
-    {
-        ResourceError::MetadataLimit { limit: *limit }
-    } else {
-        error.into()
-    }
+    let metadata_limit = error.get_ref().and_then(|source| {
+        let mut current: &(dyn std::error::Error + 'static) = source;
+        loop {
+            if let Some(LayoutError::TraversalLimitExceeded {
+                kind: LimitKind::MetadataBytes,
+                limit,
+            }) = current.downcast_ref::<LayoutError>()
+            {
+                return Some(*limit);
+            }
+            current = current.source()?;
+        }
+    });
+    metadata_limit.map_or_else(
+        || error.into(),
+        |limit| ResourceError::MetadataLimit { limit },
+    )
 }
 
 /// POSIX-backed catalog and immutable segment source.

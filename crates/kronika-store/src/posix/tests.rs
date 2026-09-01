@@ -228,4 +228,16 @@ fn posix_maps_only_metadata_traversal_limits_to_the_neutral_limit() {
         resource_scan_error(error),
         crate::ResourceError::MetadataLimit { limit: 17 }
     ));
+
+    let nested = io::Error::new(
+        io::ErrorKind::InvalidData,
+        crate::StoreError::Layout(LayoutError::TraversalLimitExceeded {
+            kind: LimitKind::MetadataBytes,
+            limit: 23,
+        }),
+    );
+    assert!(matches!(
+        resource_scan_error(nested),
+        crate::ResourceError::MetadataLimit { limit: 23 }
+    ));
 }

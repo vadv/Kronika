@@ -361,6 +361,72 @@ fn embedded_product_uses_supplied_identity_and_rejects_foreign_resource() {
 }
 
 #[derive(Debug)]
+struct ChangedAfterCatalogFailure {
+    identity: ResourceIdentity,
+    summary: CatalogSummary,
+}
+
+impl ResourceCatalog for ChangedAfterCatalogFailure {
+    type Resource = ();
+
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        Ok(ResourceListing {
+            resources: vec![SegmentResource::new(
+                self.identity,
+                0,
+                Arc::new(self.summary),
+                (),
+            )],
+            warnings: Vec::new(),
+        })
+    }
+}
+
+impl ImmutableSegmentSource for ChangedAfterCatalogFailure {
+    type Bytes = &'static [u8];
+
+    fn open_resource(
+        &self,
+        _resource: &SegmentResource<Self::Resource>,
+    ) -> Result<Self::Bytes, ResourceError> {
+        Ok(b"")
+    }
+
+    fn validate_opened(
+        &self,
+        _resource: &SegmentResource<Self::Resource>,
+        _bytes: &Self::Bytes,
+    ) -> Result<(), ResourceError> {
+        Err(ResourceError::Changed)
+    }
+}
+
+#[test]
+fn opened_identity_failure_wins_over_catalog_failure() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_static(
+        SegmentId::new(47).expect("segment id"),
+        ZMS,
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let reader = FinishedReader::new(ChangedAfterCatalogFailure {
+        identity: ResourceIdentity::finished(SegmentId::new(47).expect("segment id")),
+        summary,
+    });
+    let listing = reader.resources().expect("resources");
+
+    let error = reader
+        .open_segment(&listing.resources[0])
+        .expect_err("changed identity must replace the catalog error");
+    assert!(matches!(
+        error,
+        ReaderError::Resource(ResourceError::Changed)
+    ));
+}
+
+#[derive(Debug)]
 struct ReverseCatalog {
     summary: CatalogSummary,
     ids: [i64; 2],

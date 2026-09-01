@@ -82,8 +82,9 @@ impl<S: ImmutableSegmentSource> FinishedReader<S> {
         resource: &SegmentResource<S::Resource>,
     ) -> Result<Segment, ReaderError> {
         let bytes = self.source.open_resource(resource)?;
-        let catalog = Arc::new(read_resource_catalog(&bytes)?);
+        let catalog = read_resource_catalog(&bytes);
         self.source.validate_opened(resource, &bytes)?;
+        let catalog = Arc::new(catalog?);
         Ok(Segment::open_finished(
             bytes,
             catalog,
