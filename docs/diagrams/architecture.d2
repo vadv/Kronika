@@ -11,35 +11,40 @@ direction: right
 host: Monitored Linux host {
   pg: PostgreSQL {width: 170}
   pgb: PgBouncer {width: 170}
-  os: OS\n/proc, /sys {width: 170}
+  os: Linux kernel\n/proc, /sys {width: 170}
 
-  collector: kronika-collector\nalways on · peak RSS < 25 MiB {
+  collector: kronika-collector\nalways on {
     style.stroke-width: 3
   }
 
-  pg -> collector: statistics + log
-  pgb -> collector: log
-  os -> collector
+  pg -> collector: metrics + logs\nKRONIKA_PG_DSNS
+  pgb -> collector: logs\nKRONIKA_PGBOUNCER_DSNS
+  os -> collector: metrics
 
-  dir: KRONIKA_OUT_DIR {
-    wal: active.wal\nwhat is being recorded now
+  dir: KRONIKA_OUT_DIR\nPOSIX directory — the only storage today {
+    wal: active.wal\nwhat is being recorded now {
+      shape: page
+    }
     seg: YYYY/MM/DD/N.zms\nself-contained: needs no other file {
+      shape: page
       style.multiple: true
     }
     wal -> seg: closed by size or age
   }
 
   collector -> dir.wal: appends
+
+  web: kronika-web\non demand · read-only\nlistens on KRONIKA_WEB_LISTEN {
+    style.stroke-width: 3
+  }
+
+  dir -> web: reads
 }
 
-web: kronika-web\non demand · read-only {
-  style.stroke-width: 3
+people: People {
+  shape: person
 }
-
-host.dir -> web: reads
-
-people: People\nbrowser
 llm: LLM clients\nClaude Code · Codex · Cursor
 
-web -> people: Web UI
-web -> llm: MCP
+host.web -> people: Web UI
+host.web -> llm: MCP
