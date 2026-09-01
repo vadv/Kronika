@@ -101,7 +101,6 @@ CLI, Cursor и `mcp-remote` описана в
 
 ## Документация
 
-- [DESIGN.ru.md](DESIGN.ru.md) — архитектура и правила продукта.
 - [bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md) — команды
   демо.
 - [docs/mcp-clients.ru.md](docs/mcp-clients.ru.md) — настройка MCP-клиентов.

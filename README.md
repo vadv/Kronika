@@ -97,7 +97,6 @@ Claude Code, Codex CLI, Cursor, and `mcp-remote` setup.
 
 ## Documentation
 
-- [DESIGN.md](DESIGN.md) — architecture and product rules.
 - [bins/kronika-demo/README.md](bins/kronika-demo/README.md) — demo commands.
 - [docs/mcp-clients.md](docs/mcp-clients.md) — MCP client configuration.
 - [docs/type-registry/](docs/type-registry/) — recorded sections and fields:
