@@ -43,9 +43,9 @@ cargo build --release --locked -p kronika-collector -p kronika-web
 машины.
 
 ```sh
-mkdir -p "$HOME/.local/share/kronika"
+sudo install -d -o "$(id -un)" -g "$(id -gn)" /var/lib/kronika
 
-KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+KRONIKA_OUT_DIR=/var/lib/kronika \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 
@@ -54,7 +54,7 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 `.kronika-index.owner.lock`.
 
 ```sh
-KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+KRONIKA_OUT_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
