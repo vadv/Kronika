@@ -4,19 +4,6 @@ import type { Translate } from "./help"
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk" | "tree"
 
-export function shownMoment(
-  sections: Readonly<Record<string, readonly DataRow[]>>,
-  cursor: number,
-): number | null {
-  let latest: number | null = null
-  for (const rows of Object.values(sections)) {
-    for (const row of rows) {
-      if (row.timestamp <= cursor && (latest === null || row.timestamp > latest)) latest = row.timestamp
-    }
-  }
-  return latest
-}
-
 export function processLens(field: string | null): Lens {
   if (["rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt"].includes(field ?? "")) return "memory"
   if (["read_bytes", "write_bytes", "cancelled_write_bytes", "syscr", "syscw", "rchar", "wchar"].includes(field ?? "")) return "disk"

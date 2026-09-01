@@ -10,7 +10,7 @@ import { MINUTE_COLUMNS, type EventEntry } from "./events-groups"
 import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
-import { compact, shownMoment, type Locale } from "./model"
+import { compact, type Locale } from "./model"
 import { evaluateExpr, parseSearch } from "./search"
 import { TableFilter } from "./table-filter"
 import { Timeline } from "./timeline"
@@ -34,6 +34,7 @@ export function EventsView({
   onCursor,
   onFinding,
   onOpenChart,
+  onPreview,
   onPattern,
   onReady,
   onShowAll,
@@ -54,6 +55,7 @@ export function EventsView({
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
+  readonly onPreview?: ((timestamp: number | null) => void) | undefined
   readonly onPattern: (pattern: string) => void
   readonly onReady: () => void
   readonly onShowAll: () => void
@@ -123,11 +125,10 @@ export function EventsView({
     .slice()
     .sort((left, right) => findingOrder(right, left)), [data.findings, scope])
   const markGroups = useMemo(() => groupMarks(marks, hour, t), [hour, marks, t])
-  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
   const busy = loading || events.loading
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} t={t} />
     {markGroups.length > 0 && (digest === null || digest === MARKS_TILE)
       ? <section className="mt-2" data-testid="event-marks">
         <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1">

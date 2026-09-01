@@ -542,9 +542,9 @@ test("dense rows retain the physical server order across layouts", () => {
   assert.deepEqual(decorated.map(({ timestamp }) => timestamp), [200, 100, 100])
 })
 
-test("dense table state names cursor, interval, filter, physical server order, and total count", () => {
+test("dense table state names interval, filter, physical server order, and total count", () => {
   const dictionary = {
-    "pg.table.cursor": "Cursor {time}", "pg.table.interval": "Interval {from} to {to}",
+    "pg.table.interval": "Interval {from} to {to}",
     "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter",
     "pg.table.order": "Order {semantic}; {physical}; {direction}", "pg.table.order_default": "Default order",
     "pg.table.desc": "descending", "pg.table.shown": "Loaded {returned} of {eligible}",
@@ -557,8 +557,7 @@ test("dense table state names cursor, interval, filter, physical server order, a
     hasMore: true, truncated: true, nextCursor: "opaque", pageSize: 200,
     orderBy: ["total_exec_time"], orderDirection: "desc",
     from: 1_800_000_000_000_000, to: 1_800_000_010_000_000,
-  }, 200, 1_800_000_010_000_000, "vacuum*", { column: "execution_ms_per_second", descending: true }, "en", t))
-  assert.match(markup, /Cursor [^<]*\d{2}:\d{2}:\d{2}/)
+  }, 200, "vacuum*", { column: "execution_ms_per_second", descending: true }, "en", t))
   assert.match(markup, /Interval .* to /)
   assert.doesNotMatch(markup, /GMT|UTC/)
   assert.match(markup, /Filter vacuum\*/)
@@ -568,7 +567,7 @@ test("dense table state names cursor, interval, filter, physical server order, a
 
 test("later pages report the accumulated loaded count without inflating the eligible total", () => {
   const dictionary = {
-    "pg.table.cursor": "Cursor {time}", "pg.table.interval": "Interval {from} to {to}",
+    "pg.table.interval": "Interval {from} to {to}",
     "pg.table.interval_unavailable": "No interval",
     "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter",
     "pg.table.order": "Order {semantic}; {physical}; {direction}", "pg.table.order_default": "Default order",
@@ -581,7 +580,7 @@ test("later pages report the accumulated loaded count without inflating the elig
     hasMore: true, truncated: true, nextCursor: "opaque", pageSize: 200,
     orderBy: ["total_time", "total_exec_time"], orderDirection: "desc", from: 1_000_000, to: 4_000_000,
   }
-  const markup = renderToStaticMarkup(helpers.tableState(metadata, 400, 210, "", { column: "execution_ms_per_second", descending: true }, "en", t))
+  const markup = renderToStaticMarkup(helpers.tableState(metadata, 400, "", { column: "execution_ms_per_second", descending: true }, "en", t))
   assert.match(markup, /Loaded 400 of 4,873/)
   assert.match(markup, /total_time, total_exec_time/)
   assert.doesNotMatch(markup, /Loaded 200/)
@@ -631,14 +630,14 @@ test("PostgreSQL detail never opens a row that was not selected", () => {
 
 test("an exact locator preview never inherits settled zero page counts", () => {
   const dictionary = {
-    "pg.table.cursor": "Cursor {time}", "pg.table.focus_loading": "Exact result; page loading",
+    "pg.table.focus_loading": "Exact result; page loading",
     "pg.table.focus_outside": "Exact result outside page", "pg.table.focus_exact": "Exact focused result",
     "pg.table.interval": "Interval {from} to {to}", "pg.table.interval_unavailable": "No interval",
     "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter", "pg.table.order_default": "Default",
     "pg.table.shown": "Loaded {returned} of {eligible}",
   }
   const t = (key, slots = {}) => Object.entries(slots).reduce((text, [name, value]) => text.replace(`{${name}}`, value), dictionary[key] ?? key)
-  const loading = renderToStaticMarkup(helpers.tableState(undefined, 0, 1_800_000_000_000_000, "", undefined, "en", t, undefined, "loading"))
+  const loading = renderToStaticMarkup(helpers.tableState(undefined, 0, "", undefined, "en", t, undefined, "loading"))
   assert.match(loading, /Exact result; page loading/)
   assert.match(loading, /Exact focused result/)
   assert.doesNotMatch(loading, /Loaded 0 of 0/)
@@ -646,7 +645,7 @@ test("an exact locator preview never inherits settled zero page counts", () => {
   const settled = renderToStaticMarkup(helpers.tableState({
     logicalName: "pg_stat_stat_statements", eligible: 1, returned: 1, hasMore: false, truncated: false,
     nextCursor: null, pageSize: 200, orderBy: ["total_exec_time"], orderDirection: "desc", from: 1, to: 2,
-  }, 1, 1_800_000_000_000_000, "", undefined, "en", t))
+  }, 1, "", undefined, "en", t))
   assert.match(settled, /Loaded 1 of 1/)
 })
 

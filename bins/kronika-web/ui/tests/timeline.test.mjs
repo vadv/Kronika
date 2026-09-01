@@ -46,36 +46,35 @@ test("the selected lane draws while one explicit domain owns every shared cursor
   assert.match(timeline, /previousPrimary\.current = primaryLane\s+setSelectedLane\(primaryLane\)/)
 })
 
-test("the timeline names only the actual rendered sample time", () => {
+test("the mobile cursor row keeps navigation and the live reading without a second clock", () => {
   const markup = renderToStaticMarkup(createElement(helpers.CursorRow, {
     cursor: 200,
     cursorTimes: [100, 250, 300],
     onCursor() {},
     reading: "48%",
-    shownAt: 150,
     t: (key) => ({ "hour.cursor_next": "Next", "hour.cursor_previous": "Previous" })[key] ?? key,
-    time: (timestamp) => `T${timestamp}`,
   }))
-  assert.match(markup, /data-testid="cursor-row-time">T150<\/span>/)
-  assert.doesNotMatch(markup, /T200|T250|T300|Cursor|Recorded|Data at/)
-
-  const unavailable = renderToStaticMarkup(createElement(helpers.CursorRow, {
-    cursor: 200,
-    cursorTimes: [100, 250, 300],
-    onCursor() {},
-    reading: "—",
-    shownAt: null,
-    t: (key) => ({ "hour.cursor_next": "Next", "hour.cursor_previous": "Previous" })[key] ?? key,
-    time: (timestamp) => `T${timestamp}`,
-  }))
-  assert.match(unavailable, /data-testid="cursor-row-time">—<\/span>/)
-  assert.doesNotMatch(unavailable, /T100|T200|T250|T300/)
+  assert.match(markup, /48%/)
+  assert.doesNotMatch(markup, /cursor-row-time|T100|T200|T250|T300|Cursor|Recorded|Data at/)
 })
 
-test("the desktop header uses the same actual-sample timestamp presenter", async () => {
+test("the desktop header previews the same cursor without announcing pointer travel", async () => {
   const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
-  assert.match(app, /data-testid="cursor-time">\{shownAt === null \? "—" : time\.clock\(shownAt\)\}<\/span>/)
-  assert.doesNotMatch(app, /time\.clock\(cursor\)|hour\.cursor_label|hour\.recorded_label|UpdatedAge|lastUpdated|updated-help/)
+  assert.match(app, /data-testid="cursor-time" ref=\{cursorClock\}>\{cursor === 0 \? "—" : time\.clock\(cursor\)\}<\/span>/)
+  assert.match(app, /const previewClock = useCallback/)
+  assert.doesNotMatch(app, /aria-live="polite" className="cursor-time|shownAt|hour\.cursor_label|hour\.recorded_label|UpdatedAge|lastUpdated|updated-help/)
+})
+
+test("shared chart movement previews while pointerup alone commits", async () => {
+  const chart = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
+  assert.match(chart, /addEventListener\("pointermove", follow\)/)
+  assert.match(chart, /onPreviewRef\.current\?\.\(timestamp\)/)
+  assert.match(chart, /addEventListener\("pointerleave", clearPreview\)/)
+  assert.match(chart, /addEventListener\("pointercancel", clearPreview\)/)
+  assert.match(chart, /addEventListener\("pointerup", select\)/)
+  const follow = chart.slice(chart.indexOf("const follow ="), chart.indexOf("const select ="))
+  assert.match(follow, /onPreviewRef\.current/)
+  assert.doesNotMatch(follow, /onCursorRef\.current/)
 })
 
 test("one timeline mark stays an unlabeled shape", () => {

@@ -123,6 +123,7 @@ export function UPlotChart({
   isolate,
   locale,
   onCursor,
+  onPreview,
   reading,
   series,
   className,
@@ -130,7 +131,6 @@ export function UPlotChart({
   markerLayer,
   navigationTimestamps,
   onPlotWidth,
-  referenceTimestamp,
   stats = false,
   status,
   testId,
@@ -147,9 +147,9 @@ export function UPlotChart({
   readonly markerLayer?: ReactNode | undefined
   readonly navigationTimestamps?: readonly number[] | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
+  readonly onPreview?: ((timestamp: number | null) => void) | undefined
   readonly onPlotWidth?: ((width: number) => void) | undefined
   readonly reading?: string | undefined
-  readonly referenceTimestamp?: number | undefined
   readonly series: readonly RecordedSeries[]
   readonly stats?: boolean | undefined
   readonly status?: ReactNode | undefined
@@ -165,6 +165,7 @@ export function UPlotChart({
   const host = useRef<HTMLDivElement>(null)
   const plot = useRef<uPlot | null>(null)
   const onCursorRef = useRef(onCursor)
+  const onPreviewRef = useRef(onPreview)
   const onPlotWidthRef = useRef(onPlotWidth)
   const selectedRef = useRef<number | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
@@ -191,6 +192,7 @@ export function UPlotChart({
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
   const keyboardTimestamp = navigationTimes[keyboardIndex] ?? null
   onCursorRef.current = onCursor
+  onPreviewRef.current = onPreview
   onPlotWidthRef.current = onPlotWidth
   selectedRef.current = selected
 
@@ -198,7 +200,8 @@ export function UPlotChart({
     const element = host.current
     if (element === null || frame.timestamps.length === 0) return
     const initialBounds = element.getBoundingClientRect()
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), variant === "preview", markerLayer !== undefined, (chart) => {
+    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), variant === "preview", variant !== "default", markerLayer !== undefined, (chart) => {
+      if (variant !== "default") return
       const index = chart.cursor.idx
       const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
       setHovered(timestamp)
@@ -218,10 +221,44 @@ export function UPlotChart({
     plot.current = chart
     const canvas = chart.root.querySelector("canvas")
     canvas?.setAttribute("aria-hidden", "true")
-    const select = (event: PointerEvent) => {
+    const pointerTimestamp = (clientX: number) => {
       const bounds = chart.over.getBoundingClientRect()
-      const timestamp = nearestRecordedTimestamp(navigationTimes, chart.posToVal(event.clientX - bounds.left, "x"))
-      if (timestamp !== null && timestamp !== selectedRef.current) onCursorRef.current?.(timestamp)
+      return nearestRecordedTimestamp(navigationTimes, chart.posToVal(clientX - bounds.left, "x"))
+    }
+    let pointerFrame = 0
+    let previewed: number | null = null
+    const clearPreview = () => {
+      cancelAnimationFrame(pointerFrame)
+      pointerFrame = 0
+      if (previewed === null) return
+      previewed = null
+      onPreviewRef.current?.(null)
+    }
+    const follow = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return
+      const clientX = event.clientX
+      cancelAnimationFrame(pointerFrame)
+      pointerFrame = requestAnimationFrame(() => {
+        pointerFrame = 0
+        const timestamp = pointerTimestamp(clientX)
+        if (timestamp === null || timestamp === previewed) return
+        previewed = timestamp
+        onPreviewRef.current?.(timestamp)
+      })
+    }
+    const select = (event: PointerEvent) => {
+      cancelAnimationFrame(pointerFrame)
+      pointerFrame = 0
+      const timestamp = pointerTimestamp(event.clientX)
+      if (timestamp !== null) {
+        onCursorRef.current?.(timestamp)
+        if (previewed !== null) previewed = null
+      } else clearPreview()
+    }
+    if (variant !== "default") {
+      chart.over.addEventListener("pointermove", follow)
+      chart.over.addEventListener("pointerleave", clearPreview)
+      chart.over.addEventListener("pointercancel", clearPreview)
     }
     chart.over.addEventListener("pointerup", select)
     let resizeFrame = 0
@@ -238,13 +275,18 @@ export function UPlotChart({
     window.addEventListener("resize", resize)
     return () => {
       cancelAnimationFrame(resizeFrame)
+      cancelAnimationFrame(pointerFrame)
       observer?.disconnect()
       window.removeEventListener("resize", resize)
+      if (variant !== "default") chart.over.removeEventListener("pointermove", follow)
+      if (variant !== "default") chart.over.removeEventListener("pointerleave", clearPreview)
+      if (variant !== "default") chart.over.removeEventListener("pointercancel", clearPreview)
       chart.over.removeEventListener("pointerup", select)
+      clearPreview()
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, frame, hour, locale, markerLayer !== undefined, navigationTimes, referenceTimestamp, themeRevision, threshold, time, variant, visibleSeries])
+  }, [decorations, end, frame, hour, locale, markerLayer !== undefined, navigationTimes, themeRevision, threshold, time, variant, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -254,7 +296,7 @@ export function UPlotChart({
 
   useEffect(() => {
     plot.current?.redraw()
-  }, [frame, referenceTimestamp, selected])
+  }, [frame, selected])
 
   useEffect(() => {
     if (selected === null) return
@@ -311,17 +353,11 @@ export function UPlotChart({
     {/* The 94px preview cannot host a stacked readout: there it collapses to
         one wrapping line pinned inside the figure instead of spilling over
         the controls below. */}
-    {exact !== null && (variant === "preview"
-      ? <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] flex max-w-[calc(100%_-_16px)] flex-wrap items-baseline justify-end gap-x-3 gap-y-px rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+2px)] [&_span]:flex [&_span]:items-baseline [&_span]:gap-1 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time_strong]:!font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
-        <time><strong>{exact.time}</strong></time>
+    {exact !== null && variant === "default" && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
         {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
-      </div>
-      : <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
-        <time><strong>{exact.time}</strong></time>
-        {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
-      </div>)}
+      </div>}
     <input
-      aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
+      aria-label={locale === "ru" ? "Запись графика" : "Chart sample"}
       aria-valuetext={keyboardTimestamp === null ? undefined : navigationSampleText(series, frame, navigationTimes, keyboardTimestamp, locale, time)}
       className="chart-navigator absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)] focus:left-2 focus:z-[9] focus:h-7 focus:w-[min(320px,calc(100%-16px))] focus:[clip-path:none]"
       data-recorded-timestamp={keyboardTimestamp ?? undefined}
@@ -471,10 +507,10 @@ function chartOptions(
   decorations: readonly ChartDecoration[],
   threshold: ChartThreshold | undefined,
   selected: { readonly current: number | null },
-  referenceTimestamp: number | undefined,
   width: number,
   height: number,
   compact: boolean,
+  sharedCursor: boolean,
   markerLane: boolean,
   onHover: (chart: uPlot) => void,
   onGeometry: (chart: uPlot) => void,
@@ -516,15 +552,6 @@ function chartOptions(
     const context = chart.ctx
     const selectedTimestamp = selected.current
     context.save()
-    if (referenceTimestamp !== undefined && referenceTimestamp >= hour && referenceTimestamp < end) {
-      const x = chart.valToPos(referenceTimestamp, "x", true)
-      context.strokeStyle = color("--color-fg4")
-      context.setLineDash([2 * uPlot.pxRatio, 3 * uPlot.pxRatio])
-      context.beginPath()
-      context.moveTo(x, chart.bbox.top)
-      context.lineTo(x, chart.bbox.top + chart.bbox.height)
-      context.stroke()
-    }
     if (selectedTimestamp !== null) {
       const x = chart.valToPos(selectedTimestamp, "x", true)
       context.strokeStyle = color("--color-cursor")
@@ -583,6 +610,7 @@ function chartOptions(
       }),
     ],
     cursor: {
+      show: !sharedCursor,
       dataIdx: (_chart, _seriesIndex, closestIndex) => closestIndex,
       drag: { setScale: false, x: false, y: false },
       move: (chart, left, top) => {
@@ -590,7 +618,7 @@ function chartOptions(
         const timestamp = nearestRecordedTimestamp(frame.timestamps, chart.posToVal(left, "x"))
         return timestamp === null ? [left, top] : [chart.valToPos(timestamp, "x"), top]
       },
-      points: { size: 6 },
+      points: { show: !sharedCursor, size: 6 },
       y: false,
     },
     hooks: { draw: [drawSelection], drawClear: [decorate], ready: [onGeometry], setCursor: [onHover], setSize: [onGeometry] },
@@ -675,4 +703,3 @@ export function navigationSampleText(
 function compactTimePart(output: string): string {
   return output.trim().split(/\s+/)[0] ?? output
 }
-
