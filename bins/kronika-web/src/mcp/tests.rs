@@ -235,6 +235,10 @@ async fn initialize_and_discover_publish_the_same_server_instructions() {
         assert_eq!(response["result"]["instructions"], expected, "{version}");
         assert_eq!(response["result"]["serverInfo"]["name"], "kronika");
         assert_eq!(response["result"]["serverInfo"]["title"], "Kronika");
+        assert_eq!(
+            response["result"]["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     let response = rpc_response(
@@ -257,6 +261,10 @@ async fn initialize_and_discover_publish_the_same_server_instructions() {
     assert_eq!(
         response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
         "kronika"
+    );
+    assert_eq!(
+        response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["version"],
+        env!("CARGO_PKG_VERSION")
     );
 }
 

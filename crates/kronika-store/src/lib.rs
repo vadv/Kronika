@@ -23,8 +23,8 @@
 //! so consumers must refresh instead of treating changed bytes as the original
 //! unit.
 //!
-//! `Kronika` has not had a public release. Journal v1 is its first and only
-//! journal format; there is no alternate-version reader or migration path.
+//! Journal v1 is the journal format shipped in Kronika 1.0.0. There is no
+//! alternate-version reader or migration path.
 
 mod catalog_summary;
 mod local;

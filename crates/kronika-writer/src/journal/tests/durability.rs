@@ -149,7 +149,7 @@ fn fabricated_v2_journal_identities_are_rejected_without_mutation() {
         assert_eq!(
             std::fs::read(&path).unwrap(),
             before,
-            "unsupported pre-release journal identities must not trigger fallback or migration"
+            "unsupported journal identities must not trigger fallback or migration"
         );
     }
 }
