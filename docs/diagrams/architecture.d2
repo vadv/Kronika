@@ -16,66 +16,88 @@ classes: {
       stroke-width: 3
     }
   }
+  invisible: {
+    style: {
+      stroke-width: 0
+      fill: transparent
+    }
+  }
 }
 
-host: Monitored Linux host {
-  pg: PostgreSQL {width: 170}
-  pgb: PgBouncer {width: 170}
-  os: OS\n/proc, /sys {width: 170}
+root: "" {
+  class: invisible
+  grid-columns: 2
+  grid-gap: 120
 
-  collector: kronika-collector {
-    class: kronika-binary
-  }
+  host: Monitored Linux host {
+    grid-columns: 2
+    grid-gap: 100
 
-  pg -> collector: metrics + logs\nKRONIKA_PG_DSNS
-  pgb -> collector: logs\nKRONIKA_PGBOUNCER_DSNS
-  os -> collector: metrics
+    lane: "" {
+      class: invisible
 
-  dir: KRONIKA_OUT_DIR\nPOSIX directory — the only storage today {
-    shape: cylinder
+      pg: PostgreSQL {width: 170}
+      pgb: PgBouncer {width: 170}
+      os: OS\n/proc, /sys {width: 170}
 
-    wal: active.wal\nwhat is being recorded now {
-      shape: page
-    }
-
-    seg: YYYY/MM/DD/N.zms — compressed, self-contained segments {
-      style.multiple: true
-      rows: typed rows\nParquet {
-        shape: page
+      collector: kronika-collector {
+        class: kronika-binary
       }
-      dict: shared text dictionary\nzstd {
-        shape: page
+
+      pg -> collector: metrics + logs\nKRONIKA_PG_DSNS
+      pgb -> collector: logs\nKRONIKA_PGBOUNCER_DSNS
+      os -> collector: metrics
+
+      dir: KRONIKA_OUT_DIR\nPOSIX directory — the only storage today {
+        shape: cylinder
+
+        wal: active.wal\nwhat is being recorded now {
+          shape: page
+        }
+
+        seg: YYYY/MM/DD/N.zms — compressed, self-contained segments {
+          style.multiple: true
+          rows: typed rows\nParquet {
+            shape: page
+          }
+          dict: shared text dictionary\nzstd {
+            shape: page
+          }
+          rows -> dict: text by id
+        }
+
+        idx: YYYY/MM/DD/N.idx\nderived indexes, rebuilt by web {
+          shape: page
+          style.multiple: true
+        }
+
+        wal -> seg: closed by size or age
+        seg -> idx: summaries
       }
-      rows -> dict: text by id
+
+      collector -> dir.wal: appends
     }
 
-    idx: YYYY/MM/DD/N.idx\nderived indexes, rebuilt by web {
-      shape: page
-      style.multiple: true
+    webcol: "" {
+      class: invisible
+      web: kronika-web\nKRONIKA_WEB_LISTEN {
+        class: kronika-binary
+        width: 260
+      }
     }
 
-    wal -> seg: closed by size or age
-    seg -> idx: summaries
+    lane.dir.seg -> webcol.web: reads
+    webcol.web -> lane.dir.idx: builds, rebuilds
   }
 
-  collector -> dir.wal: appends
-
-  web: kronika-web\nKRONIKA_WEB_LISTEN {
-    class: kronika-binary
+  clients: "" {
+    class: invisible
+    grid-columns: 1
+    grid-gap: 60
+    browser: Browser {width: 250}
+    llm: LLM client\nClaude Code · Codex · Cursor {width: 250}
   }
 
-  dir.seg -> web: reads
-  web -> dir.idx: builds, rebuilds
-  dir.idx -> web: {style.opacity: 0}
-  dir -> web: {style.opacity: 0}
+  host.webcol.web -> clients.browser: Web UI
+  host.webcol.web -> clients.llm: MCP
 }
-
-clients: "" {
-  style.stroke-width: 0
-  style.fill: transparent
-  browser: Browser {width: 250}
-  llm: LLM client\nClaude Code · Codex · Cursor {width: 250}
-}
-
-host.web -> clients.browser: Web UI
-host.web -> clients.llm: MCP
