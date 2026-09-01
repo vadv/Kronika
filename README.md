@@ -49,8 +49,8 @@ SQL
 
 This role can read the base PostgreSQL metrics, enumerate databases, inspect
 installed `pg_stat_statements` and `pg_store_plans` extensions, and discover the
-current PostgreSQL log. If your cluster has revoked PostgreSQL's ordinary
-`PUBLIC` privileges, apply the per-database grants described in [PostgreSQL
+current PostgreSQL log. This setup assumes PostgreSQL's standard `pg_catalog`
+access. Restricted database and extension ACLs are covered in [PostgreSQL
 role](bins/kronika-collector/README.md#postgresql-role).
 
 Start the collector. This example collects PostgreSQL and host data; omit the

@@ -92,21 +92,25 @@ GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
 
 `pg_monitor` supplies the settings and statistics access used by the base
 metrics and gives full visibility to `pg_stat_statements` and
-`pg_store_plans`. The explicit `pg_current_logfile()` grant is needed for log
-discovery on PostgreSQL 10 through 16 and is harmless on later releases.
+`pg_store_plans`. The role must inherit this membership because the collector
+does not issue `SET ROLE`. The explicit `pg_current_logfile()` grant is needed
+for log discovery on PostgreSQL 10 through 16 and is harmless on later
+releases.
 
 On an ordinary installation, databases grant `CONNECT` to `PUBLIC`, the
 `public` schema grants `USAGE`, and functions grant `EXECUTE`. The shipped
 extension SQL also grants `SELECT` on the main views and any installed
-`*_info` views. No other grant is needed.
+`*_info` views. The standard read and function-execution access in `pg_catalog`
+must remain; a cluster that revokes it broadly needs its own catalog allowlist.
 
-Object grants are local to one database. If the ordinary privileges have been
-revoked:
+Schema, function, and view grants are local to one database. `CONNECT` is
+granted separately on every database. Add only the privileges the role lacks:
 
 - grant `CONNECT` on every database to inventory;
-- in each extension database, grant `USAGE` on its schema and `EXECUTE` on the
-  installed reader: `pg_stat_statements(boolean)`, one of `pg_store_plans()` or
-  `pg_store_plans(boolean)`, and, for the vadv interface,
+- in each extension database, grant `USAGE` on its schema whenever it is
+  missing, including for an extension in a custom schema, and grant `EXECUTE`
+  on the installed reader: `pg_stat_statements(boolean)`, one of
+  `pg_store_plans()` or `pg_store_plans(boolean)`, and, for the vadv interface,
   `pg_store_plans_get_plan(oid, oid, bigint, bigint)` plus
   `pg_store_plans_textplan(text)`; if an `*_info` view exists, grant `SELECT` on
   the view and `EXECUTE` on its same-named zero-argument function; and
