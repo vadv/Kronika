@@ -27,7 +27,32 @@ process's peak resident set size.
 | `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Write the open segment once the journal holds this many raw bytes. |
 | `KRONIKA_SEGMENT_MAX_AGE_S` | 900 | Write an open segment at this age even if the byte cap was not reached. |
 | `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard cap of `active.wal`. Reaching it writes the open segment early rather than failing the append. |
-| `KRONIKA_RETENTION` | 2 GiB | Rotation target for the whole tree: a byte budget, `auto` (= `auto:80`), or `auto:P` for a used-fraction target of the backing partition. |
+| `KRONIKA_RETENTION` | 2 GiB | Local rotation target: a byte budget, `auto` (= `auto:80`), or `auto:P` for a used-space target on the backing filesystem. |
+
+`KRONIKA_RETENTION` accepts an unsigned decimal byte count or `auto[:P]`. A
+fixed budget must be at least twice `KRONIKA_SEGMENT_MAX_BYTES`; for example,
+`10737418240` sets a 10 GiB budget. Fixed mode counts `active.wal`, finished
+`.zms` files and their `.idx` sidecars, and recognized temporary files.
+`auto:P` instead compares all used bytes on the backing filesystem with `P`
+percent of its capacity, where `P` is from 1 through 99. The percentage applies
+to the entire filesystem, not just Kronika data.
+
+Rotation checks the target after a collection cycle that published one or more
+finished ZMS files and on a one-minute timer; a running collection cycle can
+delay the timer check. Fixed mode also recounts the files once per hour so
+`.idx` files created by web enter the total. Rotation deletes stale writer ZMS
+temporaries, orphan `.idx` files, then finished `.zms` files and their sibling
+`.idx` files from oldest to newest. It never deletes `active.wal`, the newest
+finished segment, or unrelated files. If those remaining files still exceed
+the target, collection continues and logs `rotation_degraded`.
+
+On the current M1 workload with 452 tables and 3,502 indexes, 43 finished ZMS
+files totaled 82,687,221 bytes from 00:10 to 10:40 UTC on 2026-09-01. At the
+current 15-minute segment cadence this is about 1.92 MB per segment, four
+segments per hour, and 184 MB per day (about 0.18 GB). The default 2 GiB budget
+corresponds to about 11.6 days of ZMS at this rate before accounting for
+`active.wal` and `.idx`. This is one workload measurement, not a fixed storage
+rate. Use the measured local rate when choosing a budget.
 
 ### Collection intervals
 

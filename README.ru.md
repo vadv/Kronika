@@ -57,10 +57,8 @@ target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
 Откройте <http://127.0.0.1:8080/> и войдите как `kronika` с заданным паролем.
-Для доступа по сети используйте обратный прокси с TLS, если только вы явно не
-доверяете этой сети, и задайте `KRONIKA_WEB_COOKIE_SECURE=true`. Бит 0 в
-`KRONIKA_WEB_SOURCES` включает данные OS, бит 1 — PostgreSQL; значение `3`
-включает оба бита.
+Бит 0 в `KRONIKA_WEB_SOURCES` включает данные OS, бит 1 — PostgreSQL; значение
+`3` включает оба бита.
 
 Настройка коллектора и web:
 
@@ -88,8 +86,5 @@ CLI, Cursor и `mcp-remote` описана в
   [PgBouncer](docs/type-registry/pgbouncer.md).
 - [crates/kronika-format/README.ru.md](crates/kronika-format/README.ru.md) —
   формат сегмента.
-
-Команда `make diagrams` пересоздаёт SVG с помощью CLI draw.io, доступного как
-`drawio`. Другой путь можно передать через `DRAWIO=/путь/к/drawio`.
 
 Kronika распространяется по лицензии MIT.

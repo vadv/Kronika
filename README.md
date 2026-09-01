@@ -56,10 +56,8 @@ target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
 Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
-password. For network access, use a TLS-terminating reverse proxy unless you
-explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`. Set
-bit 0 in `KRONIKA_WEB_SOURCES` for OS data and bit 1 for PostgreSQL data; set
-both bits (`3`) to expose both.
+password. Set bit 0 in `KRONIKA_WEB_SOURCES` for OS data and bit 1 for
+PostgreSQL data; set both bits (`3`) to expose both.
 
 Collector and web configuration:
 
@@ -85,8 +83,5 @@ Claude Code, Codex CLI, Cursor, and `mcp-remote` setup.
   [PgBouncer](docs/type-registry/pgbouncer.md).
 - [crates/kronika-format/README.md](crates/kronika-format/README.md) — segment
   format.
-
-Run `make diagrams` to regenerate the committed SVG files with the draw.io CLI
-available as `drawio`. Set `DRAWIO=/path/to/drawio` to use another executable.
 
 Kronika is licensed under the MIT License.

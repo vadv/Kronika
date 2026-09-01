@@ -20,7 +20,7 @@ binds.
 | `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
 | `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
 | `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
-| `KRONIKA_WEB_COOKIE_SECURE` | `false` | `true` adds the `Secure` attribute to the browser session cookie. |
+| `KRONIKA_WEB_COOKIE_SECURE` | `false` | `true` adds the `Secure` attribute to the browser session cookie. It does not enable TLS. |
 | `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_OUT_DIR`. |
 
 ## Run
@@ -42,8 +42,7 @@ The data directory must already exist. On success, the process prints
 `ready <addr>` and starts its HTTP/1.1 listener.
 
 Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
-password. For network access, use a TLS-terminating reverse proxy unless you
-explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`.
+password.
 
 Set every `KRONIKA_WEB_SOURCES` bit whose data web should expose: bit 0 for OS
 and bit 1 for PostgreSQL. Combine the bits to expose both.
