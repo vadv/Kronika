@@ -293,7 +293,6 @@
 @utility cursor-time {
   align-items: baseline; color: var(--color-accent3); display: flex; flex: 0 1 auto; flex-wrap: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; gap: 9px; min-width: 0;
   & > span { align-items: baseline; display: inline-flex; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  & b { color: var(--color-fg4); font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 500; }
   & small { color: var(--color-fg4); font-size: var(--text-xs); }
 }
 @utility series-chart {
@@ -877,7 +876,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .cursor-row-time b { color: var(--color-fg4); font-family: var(--font-sans); font-weight: 500; margin-right: 4px; }
   .timeline-preview-picker { display: grid; grid-template-columns: minmax(0, 1fr); }
   .timeline-preview-picker > select {
     background: var(--color-s2);

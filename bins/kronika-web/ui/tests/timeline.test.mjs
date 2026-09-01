@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, timelineDecorations, timelineNavigationTimes, timelineRecordedTimes, timelineSeriesHelpKey } from "../src/timeline.tsx"',
+  'export { CursorRow } from "../src/cursor-row.tsx"; export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, timelineDecorations, timelineNavigationTimes, timelineRecordedTimes, timelineSeriesHelpKey } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -44,6 +44,38 @@ test("the selected lane draws while one explicit domain owns every shared cursor
   assert.match(timeline, /window\.addEventListener\("keydown", move\)/)
   assert.match(timeline, /if \(controlledLane !== undefined\) return/)
   assert.match(timeline, /previousPrimary\.current = primaryLane\s+setSelectedLane\(primaryLane\)/)
+})
+
+test("the timeline names only the actual rendered sample time", () => {
+  const markup = renderToStaticMarkup(createElement(helpers.CursorRow, {
+    cursor: 200,
+    cursorTimes: [100, 250, 300],
+    onCursor() {},
+    reading: "48%",
+    shownAt: 150,
+    t: (key) => ({ "hour.cursor_next": "Next", "hour.cursor_previous": "Previous" })[key] ?? key,
+    time: (timestamp) => `T${timestamp}`,
+  }))
+  assert.match(markup, /data-testid="cursor-row-time">T150<\/span>/)
+  assert.doesNotMatch(markup, /T200|T250|T300|Cursor|Recorded|Data at/)
+
+  const unavailable = renderToStaticMarkup(createElement(helpers.CursorRow, {
+    cursor: 200,
+    cursorTimes: [100, 250, 300],
+    onCursor() {},
+    reading: "—",
+    shownAt: null,
+    t: (key) => ({ "hour.cursor_next": "Next", "hour.cursor_previous": "Previous" })[key] ?? key,
+    time: (timestamp) => `T${timestamp}`,
+  }))
+  assert.match(unavailable, /data-testid="cursor-row-time">—<\/span>/)
+  assert.doesNotMatch(unavailable, /T100|T200|T250|T300/)
+})
+
+test("the desktop header uses the same actual-sample timestamp presenter", async () => {
+  const app = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  assert.match(app, /data-testid="cursor-time">\{shownAt === null \? "—" : time\.clock\(shownAt\)\}<\/span>/)
+  assert.doesNotMatch(app, /time\.clock\(cursor\)|hour\.cursor_label|hour\.recorded_label|UpdatedAge|lastUpdated|updated-help/)
 })
 
 test("one timeline mark stays an unlabeled shape", () => {

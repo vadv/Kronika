@@ -73,7 +73,7 @@ export function Timeline({
   readonly primaryLane?: string | undefined
   readonly presentation?: TimelinePresentation | undefined
   readonly selectedLane?: string | undefined
-  readonly shownAt?: number | null
+  readonly shownAt: number | null
   readonly t: Translate
 }) {
   const time = useDisplayTime()
@@ -209,7 +209,7 @@ export function Timeline({
       threshold={threshold}
       variant={presentation}
     />
-    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} t={t} time={time.timestamp} />}
+    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} shownAt={shownAt} t={t} time={time.timestamp} />}
   </section>
 }
 

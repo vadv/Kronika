@@ -13,6 +13,7 @@ export function CursorRow({
   cursorTimes,
   onCursor,
   reading,
+  shownAt,
   t,
   time,
 }: {
@@ -20,19 +21,16 @@ export function CursorRow({
   readonly cursorTimes: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly reading: string
+  readonly shownAt: number | null
   readonly t: Translate
   readonly time: (timestamp: number) => string
 }) {
-  const newest = cursorTimes.at(-1)
   const previous = moveCursor(cursor, cursorTimes, "ArrowLeft")
   const next = moveCursor(cursor, cursorTimes, "ArrowRight")
   return <div className="cursor-row" data-testid="cursor-row">
     <span className="cursor-row-reading" data-testid="cursor-row-reading">{reading}</span>
     <button aria-label={t("hour.cursor_previous")} className="cursor-row-step" disabled={previous === cursor} onClick={() => onCursor(previous)} title={t("hour.cursor_previous")} type="button"><span aria-hidden="true">◀</span></button>
-    <span className="cursor-row-time" data-testid="cursor-row-time">
-      <b>{t("hour.cursor_label")}</b>{time(cursor)}
-      {newest !== undefined && <> · <b>{t("hour.recorded_label")}</b>{time(newest)}</>}
-    </span>
+    <span className="cursor-row-time" data-testid="cursor-row-time">{shownAt === null ? "—" : time(shownAt)}</span>
     <button aria-label={t("hour.cursor_next")} className="cursor-row-step" disabled={next === cursor} onClick={() => onCursor(next)} title={t("hour.cursor_next")} type="button"><span aria-hidden="true">▶</span></button>
   </div>
 }

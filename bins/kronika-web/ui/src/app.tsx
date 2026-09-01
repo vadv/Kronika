@@ -40,7 +40,7 @@ import { contextualRows, entityContext, findingRoute, type EntityContext } from 
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
 import { findingProjection } from "./finding-presentation"
-import { HelpPanel, type Translate, LabelHelp } from "./help"
+import { HelpPanel, type Translate } from "./help"
 import { McpPanel } from "./mcp-connect"
 import { MobileControls } from "./mobile-controls"
 import { useHistoryRequest } from "./history-request"
@@ -57,7 +57,6 @@ import {
   activityFor,
   asNumber,
   floorHour,
-  humanAge,
   interpolate,
   processKey,
   processLens,
@@ -348,7 +347,6 @@ function App({ locale, onLocale, t }: {
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshFailed, setRefreshFailed] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const refreshAwaitingSnapshot = useRef(false)
   const segmentsRef = useRef(segments)
   segmentsRef.current = segments
@@ -380,7 +378,6 @@ function App({ locale, onLocale, t }: {
     refreshAwaitingSnapshot.current = false
     setRefreshing(false)
     setRefreshFailed(!succeeded)
-    if (succeeded) setLastUpdated(Date.now() * 1_000)
   }, [])
   const beginRefresh = useCallback(() => {
     if (refreshRequested.current || drawn.current === null || drawn.current !== selectedHour.current) return
@@ -448,7 +445,6 @@ function App({ locale, onLocale, t }: {
         setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
         followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
         setCursor(followsLatest.current ? latest : asked ?? latest)
-        setLastUpdated(Date.now() * 1_000)
         setRefreshing(false)
         writeLastLoadSeconds((Date.now() * 1_000 - loadStartedAt) / 1_000_000)
       }
@@ -565,7 +561,6 @@ function App({ locale, onLocale, t }: {
           foregroundReadyKey.current = foregroundKey
           setBackgroundReadyHour(hour)
           if (visibleSource === "processes") setProcessReadyHour(hour)
-          setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
@@ -618,7 +613,6 @@ function App({ locale, onLocale, t }: {
             setBackgroundReadyHour(hour)
             if (visibleSource === "processes") setProcessReadyHour(hour)
             if (tracksPageSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
-            setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
           }
           const failed = (reason: unknown) => {
@@ -984,8 +978,6 @@ function App({ locale, onLocale, t }: {
       ? HELP_EVENTS
       : visibleSource === "processes" ? HELP_PROCESS : HELP_SYSTEM
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
-  const cursorTime = cursor === 0 ? null : time.clock(cursor)
-  const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
   const inspectorOpen = inspectorPanel === "chart" || (inspectorPanel !== null && detailAvailable)
   const closeInspector = () => {
@@ -1027,8 +1019,7 @@ function App({ locale, onLocale, t }: {
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time max-[760px]:order-9">
-        <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
-        {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
+        <span data-testid="cursor-time">{shownAt === null ? "—" : time.clock(shownAt)}</span>
         {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
         {cursorState === "missing" && <span className="cursor-missing ml-2 font-sans text-xs text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
@@ -1104,29 +1095,6 @@ function App({ locale, onLocale, t }: {
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
     {mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
   </main></DisplayTimeScope>
-}
-
-function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {
-  return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
-}
-
-function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly clock: string; readonly locale: Locale; readonly t: Translate }) {
-  const [now, setNow] = useState(() => Date.now() * 1_000)
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now() * 1_000), 1_000)
-    return () => clearInterval(timer)
-  }, [])
-  const age = humanAge((now - at) / 1_000_000, locale)
-  return <span className="flex flex-none items-baseline text-xs text-fg4" data-testid="updated-time">
-    <LabelHelp
-      helpKey="refresh.updated"
-      helpText={`${t("refresh.updated")} ${t("refresh.ago", { age })} · ${clock}`}
-      iconOnly
-      labelKey="refresh.updated"
-      t={t}
-      testId="updated-help"
-    />
-  </span>
 }
 
 const LOAD_SECONDS_KEY = "kronika.hourload-seconds"

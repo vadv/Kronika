@@ -846,7 +846,6 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.querySelector(".topbar").scrollWidth > document.querySelector(".topbar").clientWidth,
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
-      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
       zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
       zoneSelectors: document.querySelectorAll('[data-testid="timezone-select"]').length,
@@ -859,8 +858,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(browserMode.hour, /08:00–09:00/)
     assert.match(browserMode.status, /08:30:00/)
     assert.doesNotMatch(browserMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
-    assert.match(browserMode.updated, /Updated/)
-    for (const output of [browserMode.cursor, browserMode.hour, browserMode.status, browserMode.updated]) {
+    for (const output of [browserMode.cursor, browserMode.hour, browserMode.status]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(browserMode.overflow, false)
@@ -892,7 +890,6 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
       tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
-      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
       zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
     }))()`)
@@ -904,8 +901,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.status, /05:30:00/)
     assert.doesNotMatch(utcMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
     assert.match(utcMode.tooltip, /05:30:07/)
-    assert.match(utcMode.updated, /Updated/)
-    for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip, utcMode.updated]) {
+    for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
@@ -1345,8 +1341,6 @@ test("the production artifact preserves wire keys and exact finding page state",
       hour: document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent,
       hourContext: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent,
       sample: document.querySelector('.cursor-time')?.textContent.includes('Sample'),
-      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
-      updatedSecondary: document.querySelector('[data-testid="updated-time"] small')?.textContent ?? null,
     }))()`)
     assert.match(localClocks.cursor, /01:30:00/)
     assert.doesNotMatch(localClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
@@ -1354,10 +1348,6 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(localClocks.hour, "01:00–02:00")
     assert.match(localClocks.hourContext, /08\/13\/2026/)
     assert.doesNotMatch(localClocks.hourContext, /GMT|UTC/)
-    // The status line reports staleness as an age, not a wall clock (app.tsx UpdatedAge).
-    assert.match(localClocks.updated, /Updated/)
-    assert.doesNotMatch(localClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
-    assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
 
     const initialTheme = await cdp.evaluate(`document.documentElement.dataset.theme`)
@@ -1496,8 +1486,6 @@ test("the production artifact preserves wire keys and exact finding page state",
       cursorSecondary: document.querySelector('[data-testid="cursor-time"] small') !== null,
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent,
       hourZoneSuffix: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent.includes('UTC') ?? false,
-      updated: document.querySelector('[data-testid="updated-help"]')?.getAttribute("aria-label") ?? "",
-      updatedSecondary: document.querySelector('[data-testid="updated-time"] small') !== null,
       zoneLabel: ${ZONE_LABEL} ?? "",
     }))()`)
     assert.equal(utcClocks.zoneLabel, "UTC")
@@ -1505,11 +1493,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(utcClocks.hour, /05:00–06:00/)
     assert.doesNotMatch(utcClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.doesNotMatch(utcClocks.hour, /GMT|UTC|\.\d{3}(?!\d)/)
-    assert.match(utcClocks.updated, /Обновлено/)
-    assert.doesNotMatch(utcClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourZoneSuffix, false)
-    assert.equal(utcClocks.updatedSecondary, false)
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await switchZone(cdp, "browser")
     await cdp.waitFor(`document.documentElement.lang === "en" && ${ZONE_VALUE} === "browser" && ${ZONE_LABEL} === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("01:30:00")`, "the local-time restore")
@@ -1804,13 +1789,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const size = await cdp.evaluate(`(() => {
         const clientWidth = document.documentElement.clientWidth
-        const updated = document.querySelector('[data-testid="updated-help"]').getBoundingClientRect()
+        const dataTime = document.querySelector('[data-testid="cursor-time"]').getBoundingClientRect()
         const spinner = document.querySelector('[data-testid="cursor-behind"] .loading-ring').getBoundingClientRect()
         const overflow = [...document.querySelectorAll("body *")].flatMap((node) => {
           const rect = node.getBoundingClientRect()
           return rect.right > clientWidth + 0.5 ? [{ className: node.className, right: rect.right, tag: node.tagName }] : []
         }).slice(0, 8)
-        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth, statusGap: spinner.left - updated.right }
+        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth, statusGap: spinner.left - dataTime.right }
       })()`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px document overflow: ${JSON.stringify(size)}`)
       assert.ok(size.statusGap >= 15, `${width}px cursor status grouping: ${JSON.stringify(size)}`)
@@ -5173,8 +5158,8 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         assert.ok(cursorRow.buttons.every((button) => button.height >= 44 && button.width >= 44), `${viewport.kind} cursor steps stay tappable: ${JSON.stringify(cursorRow)}`)
         assert.equal(cursorRow.readingFits, true, `${viewport.kind} lane reading must not clip: ${JSON.stringify(cursorRow)}`)
         assert.equal(cursorRow.stampFits, true, `${viewport.kind} cursor instant must not clip: ${JSON.stringify(cursorRow)}`)
-        assert.match(cursorRow.stampText, /Cursor/)
-        assert.match(cursorRow.stampText, /Recorded/)
+        assert.match(cursorRow.stampText, /^\d{2}:\d{2}:\d{2}$/)
+        assert.doesNotMatch(cursorRow.stampText, /Cursor|Recorded|Data at/)
         assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timeline-preview-reading"]') === null || getComputedStyle(document.querySelector('[data-testid="timeline-preview-reading"]')).display === 'none'`), true, `${viewport.kind} keeps one reading, not a clipped copy`)
         const before = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
         await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:first-of-type').click()`)
