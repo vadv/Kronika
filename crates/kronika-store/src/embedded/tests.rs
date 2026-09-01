@@ -3,7 +3,9 @@ use std::sync::Arc;
 use kronika_layout::SegmentId;
 
 use super::EmbeddedSource;
-use crate::{ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, read_catalog};
+use crate::{
+    ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, SegmentResource, read_catalog,
+};
 
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
 const FIXTURE_LIMIT: u64 = FIXTURE.len() as u64;
@@ -128,6 +130,36 @@ fn embedded_resource_is_bound_to_the_source_that_listed_it() {
         .open_resource(&listing.resources[0])
         .expect_err("foreign resource must fail");
     assert!(matches!(error, crate::ResourceError::ForeignResource));
+}
+
+#[test]
+fn embedded_resource_rejects_forged_length_and_summary() {
+    let (_bytes, source) = source(42);
+    let listing = source.resources().expect("catalog");
+    let resource = &listing.resources[0];
+    let forged_length = SegmentResource::new(
+        resource.identity(),
+        resource.captured_bytes() + 1,
+        Arc::new(*resource.summary()),
+        resource.token().clone(),
+    );
+    assert!(matches!(
+        source.open_resource(&forged_length),
+        Err(crate::ResourceError::ForeignResource)
+    ));
+
+    let mut altered_summary = *resource.summary();
+    altered_summary.min_ts = altered_summary.min_ts.saturating_add(1);
+    let forged_summary = SegmentResource::new(
+        resource.identity(),
+        resource.captured_bytes(),
+        Arc::new(altered_summary),
+        resource.token().clone(),
+    );
+    assert!(matches!(
+        source.open_resource(&forged_summary),
+        Err(crate::ResourceError::ForeignResource)
+    ));
 }
 
 #[test]

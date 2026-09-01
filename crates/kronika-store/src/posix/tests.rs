@@ -7,7 +7,7 @@ use kronika_layout::{LayoutError, LimitKind, SegmentAddress, SegmentId};
 use super::{LISTING_RESERVE_ATTEMPTS, PosixSource, resource_scan_error};
 use crate::{
     ImmutableSegmentSource as _, ResourceCatalog as _, ResourceIdentity, ResourceKind,
-    ResourceWarningSubject, read_resource_catalog,
+    ResourceWarningSubject, SegmentResource, read_resource_catalog,
 };
 
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
@@ -74,6 +74,38 @@ fn posix_resource_and_bytes_are_bound_to_the_source_that_opened_them() {
     assert!(matches!(
         validation_error,
         crate::ResourceError::ForeignResource
+    ));
+}
+
+#[test]
+fn posix_resource_rejects_forged_length_and_summary() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    write_segment(dir.path(), 1_000);
+    let source = PosixSource::open(dir.path()).expect("POSIX source");
+    let listing = source.resources().expect("catalog");
+    let resource = &listing.resources[0];
+    let forged_length = SegmentResource::new(
+        resource.identity(),
+        resource.captured_bytes() + 1,
+        std::sync::Arc::new(*resource.summary()),
+        resource.token().clone(),
+    );
+    assert!(matches!(
+        source.open_resource(&forged_length),
+        Err(crate::ResourceError::ForeignResource)
+    ));
+
+    let mut altered_summary = *resource.summary();
+    altered_summary.max_ts = altered_summary.max_ts.saturating_add(1);
+    let forged_summary = SegmentResource::new(
+        resource.identity(),
+        resource.captured_bytes(),
+        std::sync::Arc::new(altered_summary),
+        resource.token().clone(),
+    );
+    assert!(matches!(
+        source.open_resource(&forged_summary),
+        Err(crate::ResourceError::ForeignResource)
     ));
 }
 

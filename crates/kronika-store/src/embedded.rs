@@ -86,6 +86,13 @@ pub struct EmbeddedSource {
 }
 
 impl EmbeddedSource {
+    fn resource_is_canonical(&self, resource: &SegmentResource<EmbeddedResource>) -> bool {
+        resource.identity() == self.identity
+            && resource.captured_bytes() == self.bytes.len() as u64
+            && resource.summary() == self.summary.as_ref()
+            && Arc::ptr_eq(&resource.token().0, &self.source_id)
+    }
+
     /// Validate shared owned ZMS bytes under the supplied segment identity.
     ///
     /// The ZMS format does not contain its segment ID, so the caller must
@@ -191,9 +198,7 @@ impl ImmutableSegmentSource for EmbeddedSource {
         &self,
         resource: &SegmentResource<Self::Resource>,
     ) -> Result<Self::Bytes, ResourceError> {
-        if resource.identity() != self.identity
-            || !Arc::ptr_eq(&resource.token().0, &self.source_id)
-        {
+        if !self.resource_is_canonical(resource) {
             return Err(ResourceError::ForeignResource);
         }
         Ok(self.bytes.clone())
@@ -204,9 +209,7 @@ impl ImmutableSegmentSource for EmbeddedSource {
         resource: &SegmentResource<Self::Resource>,
         bytes: &Self::Bytes,
     ) -> Result<(), ResourceError> {
-        if resource.identity() != self.identity
-            || !Arc::ptr_eq(&resource.token().0, &self.source_id)
-            || !Arc::ptr_eq(&bytes.source_id, &self.source_id)
+        if !self.resource_is_canonical(resource) || !Arc::ptr_eq(&bytes.source_id, &self.source_id)
         {
             return Err(ResourceError::ForeignResource);
         }

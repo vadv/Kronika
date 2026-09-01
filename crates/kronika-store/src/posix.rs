@@ -114,6 +114,8 @@ impl PosixSource {
         let handle = resource.token();
         if !Arc::ptr_eq(&handle.source_id, &self.source_id)
             || resource.identity() != ResourceIdentity::finished(handle.unit.address.id)
+            || resource.captured_bytes() != handle.unit.identity.len
+            || resource.summary() != handle.unit.summary.as_ref()
         {
             return Err(ResourceError::ForeignResource);
         }

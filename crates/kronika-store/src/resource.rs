@@ -66,7 +66,9 @@ impl<R> SegmentResource<R> {
     ///
     /// The token is transported unchanged back to the adapter. Storage
     /// implementations can keep keys opaque by using a public type with
-    /// private fields.
+    /// private fields. An adapter must compare the identity, captured length,
+    /// and summary with the canonical values bound to that token before it
+    /// opens or validates bytes.
     #[must_use]
     pub const fn new(
         identity: ResourceIdentity,
