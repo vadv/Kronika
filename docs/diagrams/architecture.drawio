@@ -1,117 +1,96 @@
-<mxfile host="app.diagrams.net" type="device">
+<mxfile host="Electron">
   <diagram id="kronika-architecture" name="architecture">
-    <mxGraphModel dx="1700" dy="1050" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" math="0" shadow="0">
+    <mxGraphModel dx="2974" dy="1844" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <!-- Monitored host boundary -->
-        <mxCell id="host" value="Monitored Linux host" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8EDFB;strokeColor=#0d32b2;verticalAlign=top;fontSize=18;fontStyle=1;align=center;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="20" y="20" width="1000" height="920" as="geometry" />
+        <mxCell id="host" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8EDFB;strokeColor=#0d32b2;verticalAlign=top;fontSize=18;fontStyle=1;align=center;spacingTop=6;" value="Monitored Linux host" vertex="1">
+          <mxGeometry height="920" width="1000" x="20" y="20" as="geometry" />
         </mxCell>
-
-        <!-- Sources -->
-        <mxCell id="pg" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;KRONIKA_PG_DSNS" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="60" y="80" width="250" height="60" as="geometry" />
+        <mxCell id="pg" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;KRONIKA_PG_DSNS" vertex="1">
+          <mxGeometry height="60" width="250" x="60" y="80" as="geometry" />
         </mxCell>
-        <mxCell id="pgb" value="&lt;b&gt;PgBouncer&lt;/b&gt;&lt;br&gt;KRONIKA_PGBOUNCER_DSNS" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="60" y="170" width="250" height="60" as="geometry" />
+        <mxCell id="pgb" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;PgBouncer&lt;/b&gt;&lt;br&gt;KRONIKA_PGBOUNCER_DSNS" vertex="1">
+          <mxGeometry height="60" width="250" x="60" y="170" as="geometry" />
         </mxCell>
-        <mxCell id="os" value="&lt;b&gt;OS&lt;/b&gt;&lt;br&gt;/proc, /sys" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="60" y="260" width="250" height="60" as="geometry" />
+        <mxCell id="os" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;OS&lt;/b&gt;&lt;br&gt;/proc, /sys (cgroups)" vertex="1">
+          <mxGeometry height="60" width="250" x="60" y="260" as="geometry" />
         </mxCell>
-
-        <!-- Collector -->
-        <mxCell id="collector" value="&lt;b&gt;kronika-collector&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#c2d0f7;strokeColor=#0d32b2;strokeWidth=2;fontSize=15;" vertex="1" parent="1">
-          <mxGeometry x="430" y="170" width="220" height="60" as="geometry" />
+        <mxCell id="collector" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#60a917;strokeColor=#2D7600;strokeWidth=2;fontSize=15;fontColor=#ffffff;" value="&lt;b&gt;&lt;font style=&quot;font-size: 22px;&quot;&gt;kronika-collector&lt;/font&gt;&lt;/b&gt;" vertex="1">
+          <mxGeometry height="120" width="272" x="434" y="140" as="geometry" />
         </mxCell>
-
-        <mxCell id="e-pg" value="metrics + logs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" edge="1" parent="1" source="pg" target="collector">
+        <mxCell id="e-pg" edge="1" parent="1" source="pg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" target="collector" value="metrics + logs">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e-pgb" value="logs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="pgb" target="collector">
+        <mxCell id="e-pgb" edge="1" parent="1" source="pgb" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="collector" value="logs">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e-os" value="metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.7;" edge="1" parent="1" source="os" target="collector">
+        <mxCell id="e-os" edge="1" parent="1" source="os" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.7;" target="collector" value="metrics">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- Storage cylinder -->
-        <mxCell id="dir" value="KRONIKA_OUT_DIR — POSIX directory, the only storage today" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=18;fillColor=#F7F9FE;strokeColor=#0d32b2;verticalAlign=top;fontSize=15;fontStyle=1;spacingTop=10;" vertex="1" parent="1">
-          <mxGeometry x="60" y="400" width="620" height="480" as="geometry" />
+        <mxCell id="dir" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=18;fillColor=#F7F9FE;strokeColor=#0d32b2;verticalAlign=top;fontSize=15;fontStyle=1;spacingTop=10;" value="KRONIKA_OUT_DIR — POSIX directory, the only storage today" vertex="1">
+          <mxGeometry height="480" width="620" x="60" y="400" as="geometry" />
         </mxCell>
-
-        <mxCell id="e-appends" value="appends" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="collector" target="wal">
+        <mxCell id="e-appends" edge="1" parent="1" source="collector" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="wal" value="appends">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- WAL -->
-        <mxCell id="wal" value="&lt;b&gt;active.wal&lt;/b&gt;&lt;br&gt;what is being recorded now" style="shape=note;size=16;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="100" y="500" width="250" height="66" as="geometry" />
+        <mxCell id="wal" parent="1" style="shape=note;size=16;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;active.wal&lt;/b&gt;&lt;br&gt;what is being recorded now" vertex="1">
+          <mxGeometry height="66" width="250" x="100" y="500" as="geometry" />
         </mxCell>
-
-        <!-- Segment stack (back copy for the pile effect) -->
-        <mxCell id="segback" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;" vertex="1" parent="1">
-          <mxGeometry x="392" y="572" width="260" height="230" as="geometry" />
+        <mxCell id="segback" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;" value="" vertex="1">
+          <mxGeometry height="230" width="260" x="392" y="572" as="geometry" />
         </mxCell>
-        <mxCell id="seg" value="&lt;b&gt;YYYY/MM/DD/N.zms&lt;/b&gt;&lt;br&gt;compressed, self-contained segments" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;verticalAlign=top;fontSize=14;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="380" y="560" width="260" height="230" as="geometry" />
+        <mxCell id="seg" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;verticalAlign=top;fontSize=14;spacingTop=4;" value="&lt;b&gt;YYYY/MM/DD/N.zms&lt;/b&gt;&lt;br&gt;compressed, self-contained segments" vertex="1">
+          <mxGeometry height="230" width="260" x="380" y="560" as="geometry" />
         </mxCell>
-        <mxCell id="rows" value="&lt;b&gt;typed rows&lt;/b&gt;&lt;br&gt;Parquet" style="shape=note;size=12;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=13;" vertex="1" parent="1">
-          <mxGeometry x="400" y="620" width="130" height="56" as="geometry" />
+        <mxCell id="rows" parent="1" style="shape=note;size=12;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=13;" value="&lt;b&gt;typed rows&lt;/b&gt;&lt;br&gt;Parquet" vertex="1">
+          <mxGeometry height="56" width="130" x="422" y="620" as="geometry" />
         </mxCell>
-        <mxCell id="dict" value="&lt;b&gt;shared text dictionary&lt;/b&gt;&lt;br&gt;zstd" style="shape=note;size=12;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=13;" vertex="1" parent="1">
-          <mxGeometry x="420" y="716" width="200" height="56" as="geometry" />
+        <mxCell id="dict" parent="1" style="shape=note;size=12;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=13;" value="&lt;b&gt;shared text dictionary&lt;/b&gt;&lt;br&gt;zstd" vertex="1">
+          <mxGeometry height="56" width="200" x="416" y="720" as="geometry" />
         </mxCell>
-        <mxCell id="e-textbyid" value="text by id" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0.35;entryY=0;" edge="1" parent="1" source="rows" target="dict">
+        <mxCell id="e-textbyid" edge="1" parent="1" source="rows" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0.35;entryY=0;" target="dict" value="text by id">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <mxCell id="e-closed" value="closed by size or age" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0;entryY=0.15;" edge="1" parent="1" source="wal" target="seg">
+        <mxCell id="e-closed" edge="1" parent="1" source="wal" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0;entryY=0.15;" target="seg" value="closed by size or age">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- idx stack -->
-        <mxCell id="idxback" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;" vertex="1" parent="1">
-          <mxGeometry x="132" y="672" width="240" height="66" as="geometry" />
+        <mxCell id="idxback" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;" value="" vertex="1">
+          <mxGeometry height="66" width="240" x="82" y="642" as="geometry" />
         </mxCell>
-        <mxCell id="idx" value="&lt;b&gt;YYYY/MM/DD/N.idx&lt;/b&gt;&lt;br&gt;derived indexes, rebuilt by web" style="shape=note;size=14;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;fontSize=13;" vertex="1" parent="1">
-          <mxGeometry x="120" y="660" width="240" height="66" as="geometry" />
+        <mxCell id="idx" parent="1" style="shape=note;size=14;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;fontSize=13;" value="&lt;b&gt;YYYY/MM/DD/N.idx&lt;/b&gt;&lt;br&gt;derived indexes, rebuilt by web" vertex="1">
+          <mxGeometry height="66" width="240" x="78" y="650" as="geometry" />
         </mxCell>
-        <mxCell id="e-summaries" value="summaries" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.5;entryX=1;entryY=0.3;" edge="1" parent="1" source="seg" target="idx">
+        <mxCell id="e-summaries" edge="1" parent="1" source="seg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.5;entryX=1;entryY=0.3;" target="idx" value="summaries">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- Web -->
-        <mxCell id="web" value="&lt;b&gt;kronika-web&lt;/b&gt;&lt;br&gt;KRONIKA_WEB_LISTEN" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#c2d0f7;strokeColor=#0d32b2;strokeWidth=2;fontSize=15;" vertex="1" parent="1">
-          <mxGeometry x="760" y="590" width="220" height="70" as="geometry" />
+        <mxCell id="web" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#60a917;strokeColor=#2D7600;strokeWidth=2;fontSize=15;fontColor=#ffffff;" value="&lt;b&gt;&lt;font style=&quot;font-size: 22px;&quot;&gt;kronika-web&lt;/font&gt;&lt;/b&gt;&lt;br&gt;KRONIKA_WEB_LISTEN" vertex="1">
+          <mxGeometry height="100" width="220" x="770" y="382" as="geometry" />
         </mxCell>
-        <mxCell id="e-reads" value="reads" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.3;entryX=0;entryY=0.3;" edge="1" parent="1" source="seg" target="web">
+        <mxCell id="e-reads" edge="1" parent="1" source="seg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.3;entryX=0;entryY=0.3;" target="web" value="reads">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e-builds" value="builds, rebuilds" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.8;entryX=1;entryY=0.7;" edge="1" parent="1" source="web" target="idx">
+        <mxCell id="e-builds" edge="1" parent="1" source="web" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.8;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" target="idx" value="builds, rebuilds">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="720" y="840" />
-              <mxPoint x="240" y="840" />
+              <mxPoint x="742" y="464" />
+              <mxPoint x="742" y="840" />
+              <mxPoint x="198" y="840" />
             </Array>
           </mxGeometry>
         </mxCell>
-
-        <!-- Clients outside the host -->
-        <mxCell id="browser" value="&lt;b&gt;Browser&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="1100" y="540" width="240" height="60" as="geometry" />
+        <mxCell id="browser" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;Browser&lt;/b&gt;" vertex="1">
+          <mxGeometry height="206" width="164" x="1115" y="156" as="geometry" />
         </mxCell>
-        <mxCell id="llm" value="&lt;b&gt;LLM client&lt;/b&gt;&lt;br&gt;Claude Code · Codex · Cursor" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="1100" y="650" width="240" height="60" as="geometry" />
+        <mxCell id="llm" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F9FE;strokeColor=#0d32b2;fontSize=14;" value="&lt;b&gt;LLM client&lt;/b&gt;&lt;br&gt;Claude Code · Codex · Cursor" vertex="1">
+          <mxGeometry height="140" width="182" x="1106" y="560" as="geometry" />
         </mxCell>
-        <mxCell id="e-webui" value="Web UI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.3;entryX=0;entryY=0.5;" edge="1" parent="1" source="web" target="browser">
+        <mxCell id="e-webui" edge="1" parent="1" source="web" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.3;entryX=0;entryY=0.5;" target="browser" value="Web UI">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e-mcp" value="MCP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.7;entryX=0;entryY=0.5;" edge="1" parent="1" source="web" target="llm">
+        <mxCell id="e-mcp" edge="1" parent="1" source="web" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.7;entryX=0;entryY=0.5;" target="llm" value="MCP">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
       </root>
     </mxGraphModel>
   </diagram>
