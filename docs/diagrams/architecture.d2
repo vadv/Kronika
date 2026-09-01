@@ -2,7 +2,7 @@
 
 vars: {
   d2-config: {
-    layout-engine: elk
+    layout-engine: dagre
   }
 }
 
@@ -64,7 +64,8 @@ host: Monitored Linux host {
     class: kronika-binary
   }
 
-  dir -> web: reads
+  dir.seg -> web: reads
+  web -> dir.idx: builds, rebuilds
 }
 
 browser: Browser
