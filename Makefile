@@ -3,7 +3,7 @@ TARGET ?= $(shell rustc +$(RUST_TOOLCHAIN) -vV | sed -n 's/^host: //p')
 CARGO_BUILD = cargo +$(RUST_TOOLCHAIN) build --locked --target $(TARGET)
 UI_DIR = bins/kronika-web/ui
 
-.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs
+.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs diagrams
 
 build: ## Build every binary for the selected target.
 	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo -p kronika-web
@@ -74,3 +74,8 @@ demo-status: ## Show the demo container and health state.
 
 demo-logs: ## Follow all demo service logs.
 	@scripts/demo-image.sh logs
+
+diagrams: ## Regenerate the committed documentation SVGs from docs/diagrams (requires d2).
+	@for f in docs/diagrams/*.d2; do \
+		d2 --sketch --theme=0 --dark-theme=200 $$f docs/images/$$(basename $$f .d2).svg; \
+	done
