@@ -22,7 +22,7 @@ import { ActivityFacts } from "./detail-activity"
 import { PlanStatementPanel, StatementPlansPanel } from "./detail-plans"
 import { settingAt } from "./postgres-vitals"
 import { ProcessFacts } from "./detail-process"
-import { activityFor, asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
+import { activityFor, asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale } from "./model"
 import { activityDurationHistory, activityDurationSource, activityDurationMs, decorateActivityRow, transactionDurationMs } from "./postgres-activity"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresOverview } from "./postgres-overview"
@@ -299,6 +299,7 @@ export function PostgresView({
   onContextClear,
   onFinding,
   onOpenChart,
+  onPreview,
   onRelated,
   onPlanLens,
   onRelationLens,
@@ -342,6 +343,7 @@ export function PostgresView({
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
+  readonly onPreview?: ((timestamp: number | null) => void) | undefined
   readonly onRelated: (target: RelatedNavigation) => void
   readonly onSection: (section: PostgresSection) => void
   readonly onRelationLens: (lens: RelationLens) => void
@@ -375,9 +377,8 @@ export function PostgresView({
     if (tab === undefined || tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
     onSection("overview")
   }, [data.availableSections, onSection, section])
-  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
@@ -587,7 +588,6 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
         />
         <strong className="font-mono text-xs font-normal tabular-nums text-fg2">{workerMax === null ? String(workerCount) : `${workerCount} / ${workerMax}`}</strong>
       </span>
-      <span className="snapshot-time">{atTs === null ? t("status.no_data") : time.timestamp(atTs, hour)}</span>
     </div>
     <div className="pg-entity-layout grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden">
       <EntityTable
@@ -1050,13 +1050,9 @@ function PgEntityView({
       : filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
     [dense, pattern, rows, section, visibleColumns],
   )
-  const recordedAt = displayedRows.reduce<number | null>(
-    (latest, row) => latest === null || row.timestamp > latest ? row.timestamp : latest,
-    null,
-  )
   const snapshotStatus = dense
-    ? tableState(metadata, displayedRows.length, cursor, pattern, activeOrder, locale, t, time, focusPreview)
-    : recordedAt === null ? undefined : <span className="snapshot-time">{time.timestamp(recordedAt)}</span>
+    ? tableState(metadata, displayedRows.length, pattern, activeOrder, locale, t, time, focusPreview)
+    : undefined
   const contentSized = displayedRows.length < 10 && !canLoadMore
   const paging = dense && (densePageState !== "idle" || canLoadMore)
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
@@ -1076,7 +1072,6 @@ function PgEntityView({
 export function tableState(
   metadata: SnapshotRows | undefined,
   rowCount: number,
-  cursor: number,
   pattern: string | undefined,
   order: TableOrder | undefined,
   locale: Locale,
@@ -1093,7 +1088,6 @@ export function tableState(
     ? t("pg.table.interval_unavailable")
     : t("pg.table.interval", intervalTimes)
   return <>
-    <span>{t("pg.table.cursor", { time: time.timestamp(cursor) })}</span>
     {focusPreview !== null && <span>{t(`pg.table.focus_${focusPreview}`)}</span>}
     {focusPreview === null && <>
       <span>{interval}</span>

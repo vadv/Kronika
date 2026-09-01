@@ -93,7 +93,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     onNavigate(next)
   }
   const hasMore = metadata?.hasMore === true && metadata.nextCursor !== null
-  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}<span>{t("system.history")}</span></>
+  const status = <>{tableState(metadata, rows.length, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}<span>{t("system.history")}</span></>
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} cursor={cursor} locale={locale} onLens={onLens} section={section} summary={summary} t={t} />

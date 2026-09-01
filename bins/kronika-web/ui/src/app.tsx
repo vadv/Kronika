@@ -61,7 +61,6 @@ import {
   processKey,
   processLens,
   rawText,
-  shownMoment,
   snapshot,
   value,
   type Lens,
@@ -196,6 +195,20 @@ function App({ locale, onLocale, t }: {
   readonly t: Translate
 }) {
   const time = useDisplayTime()
+  const opened = useRef(readAddress(window.location.search))
+  const [cursor, setCursor] = useState(0)
+  const cursorClock = useRef<HTMLSpanElement>(null)
+  const cursorClockPreview = useRef<number | null>(null)
+  const cursorClockValue = useRef({ cursor, time })
+  cursorClockValue.current = { cursor, time }
+  const previewClock = useCallback((timestamp: number | null) => {
+    cursorClockPreview.current = timestamp
+    const node = cursorClock.current
+    if (node === null) return
+    const current = cursorClockValue.current
+    const shown = timestamp ?? current.cursor
+    node.textContent = shown === 0 ? "—" : current.time.clock(shown)
+  }, [])
   const [database, setDatabase] = useState<string | null>(null)
   const instanceLabelRequest = useRef<AbortController | null>(null)
   useEffect(() => () => instanceLabelRequest.current?.abort(), [])
@@ -205,12 +218,11 @@ function App({ locale, onLocale, t }: {
       document.title = "Kronika"
     }
   }, [database])
-  const opened = useRef(readAddress(window.location.search))
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
   const wanted = useRef(opened.current.at)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
-  const [cursor, setCursor] = useState(0)
+  useEffect(() => previewClock(cursorClockPreview.current), [cursor, previewClock, time])
   const followsLatest = useRef(opened.current.at === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
   const [backgroundTimeline, setBackgroundTimeline] = useState<TimelineData | null>(null)
@@ -709,7 +721,6 @@ function App({ locale, onLocale, t }: {
     return () => window.removeEventListener("keydown", shortcuts)
   }, [])
 
-  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const contextRow = selectedFinding?.timestamp === cursor ? findingRow : null
   const allProcessRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
   const processRows = useMemo(() => contextualRows(allProcessRows, context?.logicalName === "os_process" ? context : null, contextRow), [allProcessRows, context, contextRow])
@@ -1018,8 +1029,8 @@ function App({ locale, onLocale, t }: {
       </nav>
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-      <div aria-live="polite" className="cursor-time max-[760px]:order-9">
-        <span data-testid="cursor-time">{shownAt === null ? "—" : time.clock(shownAt)}</span>
+      <div className="cursor-time max-[760px]:order-9">
+        <span data-testid="cursor-time" ref={cursorClock}>{cursor === 0 ? "—" : time.clock(cursor)}</span>
         {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
         {cursorState === "missing" && <span className="cursor-missing ml-2 font-sans text-xs text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
@@ -1051,27 +1062,26 @@ function App({ locale, onLocale, t }: {
       {!loading && error === null && hour !== null && <MobileControls filtered={find !== ""} onOpenChart={openChart} onSearch={setMobileSearch} searchOpen={mobileSearch} t={t} />}
       {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onPreview={previewClock} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />
         <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} enabled={processReadyHour === hour && foregroundReadyKey.current === foregroundKey} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
-          <span className="snapshot-time">{processTableRows[0] === undefined ? t("status.no_data") : time.timestamp(processTableRows[0].timestamp, hour)}</span>
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
           <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onPreview={previewClock} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
     {inspectorOpen && hour !== null && <Inspector
-      chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />}
+      chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onPreview={previewClock} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />}
       detail={selectedProcess === null
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
         : <>

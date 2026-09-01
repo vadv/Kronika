@@ -863,33 +863,14 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     assert.equal(browserMode.overflow, false)
 
-    const hover = async () => {
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null`, "the focused health timeline")
-      await cdp.evaluate(`(() => {
-        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
-        const bounds = plot.getBoundingClientRect()
-        const clientX = bounds.left + (${AT + 3_000_000} - ${HOUR}) / ${HOUR_US} * bounds.width
-        const clientY = bounds.top + bounds.height / 2
-        plot.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX, clientY }))
-        plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX, clientY }))
-      })()`)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the focused chart tooltip")
-    }
-    await hover()
-    const tooltip = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip').textContent`)
-    assert.match(tooltip, /08:30:07/)
-    assert.match(tooltip, /48%/)
-    assert.doesNotMatch(tooltip, /41\.729068|GMT|UTC|\.000/)
     const apiBeforeSwitch = requests.filter(({ path }) => path.startsWith("/api/")).length
     await switchZone(cdp, "utc")
     await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00") === true`, "the UTC display mode")
-    await hover()
     const utcMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
       hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
-      tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
       zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
     }))()`)
@@ -900,8 +881,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.hour, /05:00–06:00/)
     assert.match(utcMode.status, /05:30:00/)
     assert.doesNotMatch(utcMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
-    assert.match(utcMode.tooltip, /05:30:07/)
-    for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip]) {
+    for (const output of [utcMode.cursor, utcMode.hour, utcMode.status]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
@@ -2461,35 +2441,22 @@ test("the production artifact preserves wire keys and exact finding page state",
     const arrow = async (key, expected) => {
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: ${JSON.stringify(key)} }))`)
       await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${expected}"`, `${key} to ${expected}`)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${expected}"`, `${key} exact sample ${expected}`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${expected}"`, `${key} recorded sample ${expected}`)
     }
     await arrow("ArrowLeft", BEFORE_AT)
     await arrow("ArrowRight", AT)
     await arrow("ArrowRight", AFTER_AT)
-    const point = async (target, expected) => {
-      await cdp.evaluate(`(() => {
-        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
-        const bounds = plot.getBoundingClientRect()
-        const range = ${HOUR_US} * (1 + 38 / Math.max(1, bounds.width - 38))
-        const clientX = bounds.left + (${target} - ${HOUR}) / range * bounds.width
-        plot.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
-      })()`)
-      await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${expected}"`, `pointer snap to ${expected}`)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${expected}"`, `pointer exact sample ${expected}`)
-    }
-    await point(QUARTER + 3_000_000, QUARTER_NEXT)
-    await point(QUARTER, QUARTER_PREVIOUS)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="hour-timeline"] .uplot').length`), 1)
 
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await switchZone(cdp, "utc")
-    await cdp.waitFor(`document.documentElement.lang === "ru" && ${ZONE_VALUE} === "utc" && ${ZONE_LABEL} === "UTC" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("05:14:55;")`, "the chart UTC render")
+    await cdp.waitFor(`document.documentElement.lang === "ru" && ${ZONE_VALUE} === "utc" && ${ZONE_LABEL} === "UTC" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("05:30:07;")`, "the chart UTC render")
     const utcSample = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
-    assert.match(utcSample, /^05:14:55;/)
+    assert.match(utcSample, /^05:30:07;/)
     assert.doesNotMatch(utcSample, /GMT|UTC|\.\d{3}(?!\d)/)
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await switchZone(cdp, "browser")
-    await cdp.waitFor(`document.documentElement.lang === "en" && ${ZONE_VALUE} === "browser" && ${ZONE_LABEL} === "Browser time" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:14:55;")`, "the chart local-time restore")
+    await cdp.waitFor(`document.documentElement.lang === "en" && ${ZONE_VALUE} === "browser" && ${ZONE_LABEL} === "Browser time" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:30:07;")`, "the chart local-time restore")
 
     const navigateTo = async (timestamp) => {
       const target = await cdp.evaluate(`(() => {
@@ -2501,13 +2468,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator') !== null`, `timeline at ${timestamp}`, 15_000)
     }
     await navigateTo(DST_EDT_HOUR + 1_800_000_000)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${DST_EDT_HOUR + 1_800_000_000}"`, "the repeated first exact sample")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${DST_EDT_HOUR + 1_800_000_000}"`, "the repeated first recorded sample")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(DST_EDT_HOUR + 1_800_000_000))
     const dstEdt = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.match(dstEdt, /^01:30:00;/)
     assert.doesNotMatch(dstEdt, /GMT|UTC|\.000/)
     await navigateTo(DST_EST_HOUR + 1_800_000_000)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${DST_EST_HOUR + 1_800_000_000}"`, "the repeated second exact sample")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${DST_EST_HOUR + 1_800_000_000}"`, "the repeated second recorded sample")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(DST_EST_HOUR + 1_800_000_000))
     const dstEst = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.match(dstEst, /^01:30:00;/)
@@ -2543,6 +2510,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
       answerSession(request, response, authState)
       return
     }
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/")) {
       if (rejectNextApi) {
         rejectNextApi = false
@@ -3610,6 +3578,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -3714,6 +3683,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -3858,6 +3828,7 @@ test("structured search pending state and snapshot targets preserve exact newest
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -4071,7 +4042,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_B") === true`, "dense statement target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 222/)
 
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&find=cpu_cores%3E1` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=cpu&find=cpu_cores%3E1` })
     await waitForRequests(() => pendingProcessSearch !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="process-table"] [data-testid="table-status"] [role="status"]') !== null`, "initial Process search pending", 15_000)
     const emptyPendingProcess = await cdp.evaluate(`(() => {
@@ -4176,6 +4147,7 @@ test("production health keeps staggered components on one stored evaluation", { 
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -4220,42 +4192,26 @@ test("production health keeps staggered components on one stored evaluation", { 
         return ${JSON.stringify(fragments)}.every((fragment) => text.includes(fragment))
       })()`, "the expected health component values", 15_000)
       const reading = await cdp.evaluate(`document.querySelector('[data-primary] [data-testid="lane-reading"]').textContent`)
-      await cdp.evaluate(`(() => {
-        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
-        const bounds = plot.getBoundingClientRect()
-        const clientX = bounds.left + (${evaluation} - ${hour}) / ${HOUR_US} * bounds.width
-        const clientY = bounds.top + bounds.height / 2
-        plot.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX, clientY }))
-        plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX, clientY }))
-      })()`)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the health contract tooltip")
-      const tooltip = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip').textContent`)
-      return { reading, tooltip }
+      return reading
     }
 
     const fresh = await readAt(HOUR, ["Overall 70%", "OS 80%", "PostgreSQL 90%"])
-    for (const output of [fresh.reading, fresh.tooltip]) {
-      assert.match(output, /Overall[^\d]*70%/)
-      assert.match(output, /OS[^\d]*80%/)
-      assert.match(output, /PostgreSQL[^\d]*90%/)
-    }
+    assert.match(fresh, /Overall[^\d]*70%/)
+    assert.match(fresh, /OS[^\d]*80%/)
+    assert.match(fresh, /PostgreSQL[^\d]*90%/)
 
     const staleHour = HOUR + HOUR_US
     const stale = await readAt(staleHour, ["Overall —", "OS 80%", "PostgreSQL —"])
-    for (const output of [stale.reading, stale.tooltip]) {
-      assert.match(output, /Overall[^\d]*—/)
-      assert.match(output, /OS[^\d]*80%/)
-      assert.match(output, /PostgreSQL[^\d]*—/)
-      assert.doesNotMatch(output, /PostgreSQL[^\d]*90%/)
-    }
+    assert.match(stale, /Overall[^\d]*—/)
+    assert.match(stale, /OS[^\d]*80%/)
+    assert.match(stale, /PostgreSQL[^\d]*—/)
+    assert.doesNotMatch(stale, /PostgreSQL[^\d]*90%/)
 
     const disabledHour = HOUR + 2 * HOUR_US
     const disabled = await readAt(disabledHour, ["Overall 84%", "OS 84%"])
-    for (const output of [disabled.reading, disabled.tooltip]) {
-      assert.match(output, /Overall[^\d]*84%/)
-      assert.match(output, /OS[^\d]*84%/)
-      assert.doesNotMatch(output, /PostgreSQL/)
-    }
+    assert.match(disabled, /Overall[^\d]*84%/)
+    assert.match(disabled, /OS[^\d]*84%/)
+    assert.doesNotMatch(disabled, /PostgreSQL/)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].disabled`), false)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -4281,6 +4237,7 @@ test("production System projections show exact CPU memory and device readings", 
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -4873,7 +4830,7 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
           shell: bounds(shell),
         }
       })()`)
-      if (geometry.cursor !== null && geometry.cursor.bottom > geometry.cursor.top) break
+      if (geometry.cursor === null) break
     }
     assert.ok(geometry.figure.height >= 92 && geometry.figure.height <= 96, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
     for (const axis of geometry.axes) {
@@ -4881,11 +4838,11 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
         && axis.top >= geometry.figure.top - 1 && axis.bottom <= geometry.figure.bottom + 1,
       `${label} ${width}px axis containment: ${JSON.stringify(geometry)}`)
     }
-    assert.ok(geometry.cursor !== null && geometry.cursor.left >= geometry.figure.left - 1
-      && geometry.cursor.right <= geometry.figure.right + 1 && geometry.cursor.bottom <= geometry.figure.bottom + 1,
-    `${label} ${width}px cursor containment: ${JSON.stringify(geometry)}`)
+    assert.equal(geometry.cursor, null, `${label} ${width}px shared native cursor suppressed: ${JSON.stringify(geometry)}`)
     assert.ok(geometry.rightReserve >= 28, `${label} ${width}px final-label reserve: ${JSON.stringify(geometry)}`)
     assert.ok(geometry.following.top >= geometry.shell.bottom - 1, `${label} ${width}px following-region overlap: ${JSON.stringify(geometry)}`)
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 })
+    await delay(20)
   }
 }
 
@@ -5116,6 +5073,10 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
           return rect.bottom > scrollRect.top && rect.top < scrollRect.bottom
         }).length
         return {
+          clocks: [...document.querySelectorAll('[data-testid="cursor-time"], [data-testid="cursor-row-time"], .snapshot-time')].filter((node) => {
+            const rect = node.getBoundingClientRect()
+            return getComputedStyle(node).display !== 'none' && rect.width > 0 && rect.height > 0
+          }).map((node) => node.textContent.trim()),
           documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
           inspector: document.querySelector('[data-testid="inspector"]') !== null,
           painted,
@@ -5127,15 +5088,21 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         }
       })()`)
       assert.equal(closed.inspector, false, viewport.kind)
+      assert.equal(closed.clocks.length, 1, `${viewport.kind} owns one cursor clock: ${JSON.stringify(closed.clocks)}`)
+      assert.match(closed.clocks[0], /^\d{2}:\d{2}:\d{2}$/)
       assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.ok(Math.abs(closed.preview.height - previewHeight(viewport.width)) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+      for (const locale of ["ru", "en"]) {
+        await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+        await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${viewport.kind} ${locale} clock`)
+        assert.equal(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="cursor-time"], [data-testid="cursor-row-time"], .snapshot-time')].filter((node) => { const rect = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && rect.width > 0 && rect.height > 0 }).length`), 1, `${viewport.kind} ${locale} charts-off clock`)
+      }
 
       const cursorRow = await cdp.evaluate(`(() => {
         const row = document.querySelector('[data-testid="cursor-row"]')
         if (row === null || getComputedStyle(row).display === 'none') return { shown: false }
         const reading = row.querySelector('[data-testid="cursor-row-reading"]')
-        const stamp = row.querySelector('[data-testid="cursor-row-time"]')
         const buttons = [...row.querySelectorAll('button')].map((button) => {
           const box = button.getBoundingClientRect()
           return { disabled: button.disabled, height: box.height, label: button.getAttribute('aria-label'), width: box.width }
@@ -5146,7 +5113,6 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
           height: row.getBoundingClientRect().height,
           readingFits: fits(reading), readingText: reading.textContent,
           shown: true,
-          stampFits: fits(stamp), stampText: stamp.textContent,
         }
       })()`)
       if (viewport.width > 520) {
@@ -5157,9 +5123,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         assert.equal(cursorRow.height, 66, JSON.stringify(cursorRow))
         assert.ok(cursorRow.buttons.every((button) => button.height >= 44 && button.width >= 44), `${viewport.kind} cursor steps stay tappable: ${JSON.stringify(cursorRow)}`)
         assert.equal(cursorRow.readingFits, true, `${viewport.kind} lane reading must not clip: ${JSON.stringify(cursorRow)}`)
-        assert.equal(cursorRow.stampFits, true, `${viewport.kind} cursor instant must not clip: ${JSON.stringify(cursorRow)}`)
-        assert.match(cursorRow.stampText, /^\d{2}:\d{2}:\d{2}$/)
-        assert.doesNotMatch(cursorRow.stampText, /Cursor|Recorded|Data at/)
+        assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="cursor-row-time"]')`), null)
         assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timeline-preview-reading"]') === null || getComputedStyle(document.querySelector('[data-testid="timeline-preview-reading"]')).display === 'none'`), true, `${viewport.kind} keeps one reading, not a clipped copy`)
         const before = await cdp.evaluate(`new URL(location.href).searchParams.get('at')`)
         await cdp.evaluate(`document.querySelector('[data-testid="cursor-row"] button:first-of-type').click()`)
@@ -5256,6 +5220,11 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, `${viewport.kind} Chart Inspector`)
       await settleLayout(cdp)
+      for (const locale of ["ru", "en"]) {
+        await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+        await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${viewport.kind} ${locale} chart clock`)
+        assert.equal(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="cursor-time"], [data-testid="cursor-row-time"], .snapshot-time')].filter((node) => { const rect = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && rect.width > 0 && rect.height > 0 }).length`), 1, `${viewport.kind} ${locale} charts-on clock`)
+      }
       const chartGeometry = await cdp.evaluate(`(() => {
         const dock = document.querySelector('[data-testid="inspector"]')
         const body = dock.querySelector('.inspector-body')
@@ -6134,6 +6103,11 @@ function answerHeatmap(url, response) {
   ])
 }
 
+function answerInstanceLabel(response) {
+  response.writeHead(200, { "Content-Type": "application/json" })
+  response.end(JSON.stringify({ record: "instance_label", database: "artifact_db" }))
+}
+
 function ndjson(response, records) {
   response.writeHead(200, {
     "Cache-Control": "no-store",
@@ -6429,7 +6403,7 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-test("mixed-cadence shared cursor uses one exact domain for pointer and both keyboard paths", { timeout: 90_000 }, async () => {
+test("mixed-cadence shared cursor uses one recorded domain for pointer and both keyboard paths", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const page = { errors: [], external: [], responses: [] }
@@ -6438,6 +6412,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
   const activityTwo = base + 4_000
   const five = base + 5_000_000
   const ten = base + 10_000_000
+  let snapshotRequests = 0
   const activityRecords = snapshotRecords().filter((record) => record.record === "layout"
     ? record.layout.logical_name === "pg_stat_activity"
     : record.record === "row" && record.type_id === "1001004")
@@ -6471,7 +6446,15 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("section") ? [] : timeline)
-    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, activityRecords)
+    if (url.pathname === "/api/instance-label") {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ record: "instance_label", database: "artifact_db" }))
+      return
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      snapshotRequests += 1
+      return ndjson(response, activityRecords)
+    }
     response.writeHead(404)
     response.end()
   })
@@ -6535,29 +6518,43 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
       await waitAt(five, `${width}px global five-second cursor`)
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
-      await waitAt(activityTwo, `${width}px exact second Activity cursor`)
+      await waitAt(activityTwo, `${width}px second recorded Activity cursor`)
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
-      await waitAt(activityOne, `${width}px exact first Activity cursor`)
+      await waitAt(activityOne, `${width}px first recorded Activity cursor`)
 
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').focus()`)
       await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyDown", windowsVirtualKeyCode: 39 })
       await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyUp", windowsVirtualKeyCode: 39 })
       await waitAt(activityTwo, `${width}px chart keyboard cursor`)
 
-      const point = await cdp.evaluate(`(() => {
+      const points = await cdp.evaluate(`(() => {
         const figure = document.querySelector('[data-testid="hour-timeline"]')
         const host = figure.querySelector('.uplot-host').getBoundingClientRect()
         const plot = figure.querySelector('.u-over').getBoundingClientRect()
         const extendedEnd = ${HOUR + HOUR_US} + ${HOUR_US} * 38 / Math.max(1, host.width - 84)
-        return {
-          x: plot.left + (${ten} - ${HOUR}) / (extendedEnd - ${HOUR}) * plot.width,
+        figure.querySelector('.uplot').dataset.gestureIdentity = 'same'
+        return [${base - 30_000_000}, ${base}, ${five}, ${ten}].map((timestamp) => ({
+          timestamp,
+          x: plot.left + (timestamp - ${HOUR}) / (extendedEnd - ${HOUR}) * plot.width,
           y: plot.top + plot.height / 2,
-        }
+        }))
       })()`)
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point })
-      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 1, clickCount: 1, type: "mousePressed", ...point })
-      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 0, clickCount: 1, type: "mouseReleased", ...point })
+      const requestsBeforeTravel = snapshotRequests
+      const clocks = []
+      for (const point of points) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y })
+        await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.dataset.selectedTimestamp === "${point.timestamp}"`, `${width}px preview ${point.timestamp}`)
+        clocks.push(await cdp.evaluate(`document.querySelector('[data-testid="cursor-time"]')?.textContent`))
+      }
+      assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(activityTwo), `${width}px pointer travel leaves URL committed`)
+      assert.equal(snapshotRequests, requestsBeforeTravel, `${width}px pointer travel emits no snapshots`)
+      assert.ok(new Set(clocks).size >= 3, `${width}px clock follows pointer: ${JSON.stringify(clocks)}`)
+      assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .uplot')?.dataset.gestureIdentity`), "same", `${width}px plot survives pointer travel`)
+      const point = points.at(-1)
+      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 1, clickCount: 1, type: "mousePressed", x: point.x, y: point.y })
+      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 0, clickCount: 1, type: "mouseReleased", x: point.x, y: point.y })
       await waitAt(ten, `${width}px pointer cursor`)
+      assert.equal(snapshotRequests, requestsBeforeTravel + 1, `${width}px pointer release emits one snapshot`)
     }
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -6581,6 +6578,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
@@ -6812,6 +6810,7 @@ test("phone width keeps narrow rules winning and nothing reserving height", { ti
       return
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])

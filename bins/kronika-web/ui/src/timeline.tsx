@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
 import { buildMetricSamples } from "./chart"
@@ -52,11 +52,11 @@ export function Timeline({
   onCursor,
   onFinding,
   onOpenChart,
+  onPreview,
   onSelectedLane,
   primaryLane = "health",
   presentation = "preview",
   selectedLane: controlledLane,
-  shownAt,
   t,
 }: {
   readonly cursor: number
@@ -69,14 +69,25 @@ export function Timeline({
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
   readonly onOpenChart?: (() => void) | undefined
+  readonly onPreview?: ((timestamp: number | null) => void) | undefined
   readonly onSelectedLane?: ((lane: string) => void) | undefined
   readonly primaryLane?: string | undefined
   readonly presentation?: TimelinePresentation | undefined
   readonly selectedLane?: string | undefined
-  readonly shownAt: number | null
   readonly t: Translate
 }) {
   const time = useDisplayTime()
+  const [previewCursor, setPreviewCursor] = useState<number | null>(null)
+  const displayCursor = previewCursor ?? cursor
+  const preview = useCallback((timestamp: number | null) => {
+    setPreviewCursor((current) => current === timestamp ? current : timestamp)
+    onPreview?.(timestamp)
+  }, [onPreview])
+  useEffect(() => {
+    setPreviewCursor(null)
+    onPreview?.(null)
+  }, [cursor, hour, onPreview])
+  useEffect(() => () => onPreview?.(null), [onPreview])
   const end = hour + 3_600_000_000
   const healthTrack = useMemo(() => healthTimelineSeries(health), [health])
   const lanes = useMemo<readonly TimelineLane[]>(() => {
@@ -137,10 +148,10 @@ export function Timeline({
     return () => window.removeEventListener("keydown", move)
   }, [cursor, cursorTimes, onCursor])
   const recorded = useMemo(() => selected === undefined ? [] : toRecordedSeries(selected, locale, t), [locale, selected, t])
-  const healthAt = selected?.key === "health" ? healthEvaluationAtOrBefore(selected.series, cursor) : null
+  const healthAt = selected?.key === "health" ? healthEvaluationAtOrBefore(selected.series, displayCursor) : null
   const current = (selected?.series ?? []).map((line) => {
     const key = selected?.key ?? "health"
-    const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, cursor)?.value ?? null
+    const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, displayCursor)?.value ?? null
     return `${key === "health" ? `${t(`lane.health.${line.field}`)} ` : ""}${number === null ? "—" : format(number, key, locale)}`
   }).join(" · ")
   const decorations = useMemo(
@@ -148,7 +159,7 @@ export function Timeline({
     [end, hour, lanes, selected],
   )
   const threshold = useMemo(() => selected?.threshold === undefined ? undefined : { below: selected.threshold, seriesId: "overall_health" }, [selected])
-  const selectedReading = selected === undefined ? "—" : laneReading(selected, cursor, locale, t)
+  const selectedReading = selected === undefined ? "—" : laneReading(selected, displayCursor, locale, t)
   const markerLayer = <>{markers.map((marker, index) => {
     const first = marker.findings[0]
     if (first === undefined) return null
@@ -180,8 +191,8 @@ export function Timeline({
             label={`lane.${lane.key}.label`}
             onSelect={() => setSelectedLane(lane.key)}
             primary={lane.key === selected.key}
-            reading={lane.key === selected.key ? laneReading(lane, cursor, locale, t) : compactLaneReading(lane, cursor, locale, t)}
-            fullReading={laneReading(lane, cursor, locale, t)}
+            reading={lane.key === selected.key ? laneReading(lane, displayCursor, locale, t) : compactLaneReading(lane, displayCursor, locale, t)}
+            fullReading={laneReading(lane, displayCursor, locale, t)}
             t={t}
           />)}
         </div><div className="timeline-preview-picker min-w-0 flex-1 items-center gap-1 px-1">
@@ -192,16 +203,16 @@ export function Timeline({
     </div>
     <UPlotChart
       className="timeline-chart"
-      cursor={cursor}
+      cursor={displayCursor}
       decorations={decorations}
       hour={hour}
       locale={locale}
       markerLayer={markerLayer}
       navigationTimestamps={cursorTimes}
       onCursor={onCursor}
+      onPreview={preview}
       onPlotWidth={setPlotWidth}
       reading={current}
-      referenceTimestamp={shownAt ?? undefined}
       series={recorded}
       stats={presentation === "inspector"}
       t={t}
@@ -209,7 +220,7 @@ export function Timeline({
       threshold={threshold}
       variant={presentation}
     />
-    {presentation === "preview" && <CursorRow cursor={cursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} shownAt={shownAt} t={t} time={time.timestamp} />}
+    {presentation === "preview" && <CursorRow cursor={displayCursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} t={t} />}
   </section>
 }
 

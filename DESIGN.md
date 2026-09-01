@@ -627,20 +627,29 @@ data do not; the complete row remains on its owning point/detail path. Tables
 and indexes use twelve cells for their five-minute cadence.
 Gauge metrics rank by the window maximum and display values rather than rates.
 The selected timeline lane controls only the lines, legend and readings that
-are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
+are drawn. Shared cursor navigation instead uses one sorted deduplicated
 union of the timestamps already available to the current screen: every shared
 lane and health point, Process observation moments on Processes (including a
-loaded selected-process history), and the exact per-database Activity moments
-on PostgreSQL Activity. Findings remain directly selectable at their own exact
-timestamp but do not become Arrow stops. Pointer selection, global Left/Right
-and the shared timeline's keyboard control use this same union; an independent
-detail chart keeps its own recorded series as its navigation domain.
+loaded selected-process history), and the per-database Activity moments
+on PostgreSQL Activity. Findings remain directly selectable at their recorded
+timestamp but do not become Arrow stops. Pointer movement over the shared
+timeline previews the nearest timestamp from this union immediately in its
+selection line, lane reading, and single bare workspace clock. It does not
+change the address or read another snapshot. Pointer release commits that same
+timestamp through the ordinary cursor path; leaving or cancelling restores the
+committed cursor. Global Left/Right and the shared timeline's keyboard control
+commit from the same union. An independent detail chart keeps its own recorded
+series as its navigation domain.
 
 The union never rounds, buckets or creates timestamps, and adding a navigation
 timestamp never adds a point to a drawn series. At a faster cursor, a slower
 metric continues to show its last stored sample at or before the cursor without
 interpolation or graph forward-fill. The `at` address and browser history keep
-the exact safe-integer microsecond timestamp.
+the selected safe-integer microsecond timestamp. Different sources and metrics
+have their own cadence; every displayed value is the last stored snapshot at or
+before the selected navigation time. The workspace presents that one navigation
+time once in the top bar at every responsive width. Timeline cursor controls,
+snapshot areas, and table status areas do not repeat it.
 That selected hour establishes the civil date for the whole workspace. A
 cursor, snapshot, table interval, detail or chart readout inside the selected
 day shows time only; a value outside that day, or either endpoint of a

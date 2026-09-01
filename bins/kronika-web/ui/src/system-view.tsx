@@ -10,7 +10,7 @@ import { cellAriaValue, EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
-import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -403,6 +403,7 @@ export function SystemView({
   onContextClear,
   onFinding,
   onOpenChart,
+  onPreview,
   onMetric,
   onSelectedLane,
   onSelectedKey,
@@ -425,6 +426,7 @@ export function SystemView({
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
+  readonly onPreview?: ((timestamp: number | null) => void) | undefined
   readonly onMetric: (metric: string | null) => void
   readonly onSelectedLane: (lane: string) => void
   readonly onSelectedKey: (key: string | null) => void
@@ -482,7 +484,6 @@ export function SystemView({
       onMetric(match.spec.id)
     }
   }, [available, data, focus, onMetric])
-  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const cgroupsPresent = data.availableSections.some((name) => CGROUP_SECTIONS.has(name))
   const withContent = useMemo(() => new Set((Object.keys(RESOURCE_GROUP) as UseResourceKey[]).filter((key) =>
     available.some(({ spec }) => spec.group === RESOURCE_GROUP[key])
@@ -543,7 +544,7 @@ export function SystemView({
     </div>
   }
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={selectedSpec === undefined ? "health" : metricLane(selectedSpec)} selectedLane={selectedLane} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={selectedSpec === undefined ? "health" : metricLane(selectedSpec)} selectedLane={selectedLane} t={t} />
     <div className="system-main mt-0 min-w-0">
       {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
       {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
