@@ -50,15 +50,17 @@ In another terminal, start web with the same data directory.
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-KRONIKA_WEB_SOURCES=1 \
+KRONIKA_WEB_SOURCES=3 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
 target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
 Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
-password. Set bit 0 in `KRONIKA_WEB_SOURCES` for OS data and bit 1 for
-PostgreSQL data; set both bits (`3`) to expose both.
+password. `KRONIKA_WEB_SOURCES` declares which source families the web catalog
+marks as configured: `0` neither, `1` OS, `2` PostgreSQL, `3` both. It does not
+enable collection or filter stored data. The collector reads PostgreSQL
+metrics only when `KRONIKA_PG_DSNS` contains at least one DSN.
 
 Collector and web configuration:
 

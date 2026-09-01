@@ -51,15 +51,18 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-KRONIKA_WEB_SOURCES=1 \
+KRONIKA_WEB_SOURCES=3 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
 target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
 Откройте <http://127.0.0.1:8080/> и войдите как `kronika` с заданным паролем.
-Бит 0 в `KRONIKA_WEB_SOURCES` включает данные OS, бит 1 — PostgreSQL; значение
-`3` включает оба бита.
+`KRONIKA_WEB_SOURCES` объявляет семейства источников, которые web-каталог
+помечает как настроенные: `0` — ни одного, `1` — OS, `2` — PostgreSQL, `3` —
+оба семейства. Эта настройка не включает сбор и не фильтрует сохранённые
+данные. Коллектор читает метрики PostgreSQL, только если `KRONIKA_PG_DSNS`
+содержит хотя бы один DSN.
 
 Настройка коллектора и web:
 

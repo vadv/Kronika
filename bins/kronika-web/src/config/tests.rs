@@ -29,8 +29,10 @@ fn authentication_is_disabled_only_explicitly() {
 }
 
 #[test]
-fn the_source_bitset_is_explicit_and_typed() {
+fn the_source_bitset_accepts_the_four_public_combinations() {
+    assert_eq!(source_set(Some("0".to_owned())).expect("no sources"), 0);
     assert_eq!(source_set(Some("1".to_owned())).expect("OS"), 1);
+    assert_eq!(source_set(Some("2".to_owned())).expect("PostgreSQL"), 2);
     assert_eq!(source_set(Some("3".to_owned())).expect("all sources"), 3);
     assert!(source_set(None).is_err());
     assert!(source_set(Some("postgres".to_owned())).is_err());

@@ -40,7 +40,7 @@ pub(crate) struct Config {
     pub(crate) account: Account,
     /// Whether API and browser session authentication is enforced.
     pub(crate) authentication_required: bool,
-    /// Explicit source bitset persisted in every derived index.
+    /// Source-family configuration reported by the catalog.
     pub(crate) sources: u32,
     /// Whether the server exposes the bundled synthetic demo dataset.
     pub(crate) synthetic_demo: bool,
