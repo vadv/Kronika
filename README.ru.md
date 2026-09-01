@@ -43,9 +43,14 @@ cargo build --release --locked -p kronika-collector -p kronika-web
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+KRONIKA_RETENTION=2147483648 \
 KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
+
+`KRONIKA_RETENTION=2147483648` задаёт фиксированный бюджет хранения 2 GiB;
+фиксированный и автоматический режимы описаны в [настройках хранилища
+коллектора](bins/kronika-collector/README.ru.md#хранилище).
 
 В другом терминале запустите web с тем же каталогом данных.
 

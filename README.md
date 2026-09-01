@@ -42,9 +42,14 @@ Start the collector. This example collects PostgreSQL and host data; omit the
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+KRONIKA_RETENTION=2147483648 \
 KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
+
+`KRONIKA_RETENTION=2147483648` sets a fixed 2 GiB retention budget; [collector
+storage configuration](bins/kronika-collector/README.md#storage) describes the
+fixed and automatic modes.
 
 In another terminal, start web with the same data directory.
 
