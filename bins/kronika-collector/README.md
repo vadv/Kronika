@@ -80,6 +80,43 @@ sections come from. A metric row carries no column naming the server that
 produced it, so a second DSN is followed for its log only, and starting with
 more than one is one line in the log saying which was chosen.
 
+### PostgreSQL role
+
+The quick-start role uses these grants:
+
+```sql
+CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
+GRANT pg_monitor TO kronika_monitor;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
+```
+
+`pg_monitor` supplies the settings and statistics access used by the base
+metrics and gives full visibility to `pg_stat_statements` and
+`pg_store_plans`. The explicit `pg_current_logfile()` grant is needed for log
+discovery on PostgreSQL 10 through 16 and is harmless on later releases.
+
+On an ordinary installation, databases grant `CONNECT` to `PUBLIC`, the
+`public` schema grants `USAGE`, and functions grant `EXECUTE`. The shipped
+extension SQL also grants `SELECT` on the main views and any installed
+`*_info` views. No other grant is needed.
+
+Object grants are local to one database. If the ordinary privileges have been
+revoked:
+
+- grant `CONNECT` on every database to inventory;
+- in each extension database, grant `USAGE` on its schema and `EXECUTE` on the
+  installed reader: `pg_stat_statements(boolean)`, one of `pg_store_plans()` or
+  `pg_store_plans(boolean)`, and, for the vadv interface,
+  `pg_store_plans_get_plan(oid, oid, bigint, bigint)` plus
+  `pg_store_plans_textplan(text)`; if an `*_info` view exists, grant `SELECT` on
+  the view and `EXECUTE` on its same-named zero-argument function; and
+- in every DSN database used for log discovery, grant `EXECUTE` on
+  `pg_catalog.pg_current_logfile()` and, if default function execution was also
+  revoked, `pg_catalog.pg_control_system()`.
+
+The collector calls the extension readers directly; it does not need `SELECT`
+on the main extension views.
+
 Per-table and per-index statistics exist only inside the database that produced
 them. The collector keeps one connection to each connectable database and
 reuses it while it remains healthy for at most one hour. The five-minute

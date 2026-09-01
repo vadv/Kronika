@@ -38,6 +38,22 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
+Создайте учётную запись PostgreSQL, которая используется ниже:
+
+```sh
+sudo -u postgres psql <<'SQL'
+CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
+GRANT pg_monitor TO kronika_monitor;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
+SQL
+```
+
+Эта роль может читать основные метрики PostgreSQL, находить базы данных,
+проверять установленные расширения `pg_stat_statements` и `pg_store_plans` и
+определять текущий журнал PostgreSQL. Если в кластере отозваны обычные права
+`PUBLIC`, выдайте права для нужных баз, перечисленные в разделе [Роль
+PostgreSQL](bins/kronika-collector/README.ru.md#роль-postgresql).
+
 Запустите коллектор. Этот пример собирает данные PostgreSQL и машины; чтобы
 собирать только данные машины, уберите строку `KRONIKA_PG_DSNS`.
 

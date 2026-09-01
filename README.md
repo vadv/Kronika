@@ -37,6 +37,22 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
+Create the PostgreSQL login used below:
+
+```sh
+sudo -u postgres psql <<'SQL'
+CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
+GRANT pg_monitor TO kronika_monitor;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
+SQL
+```
+
+This role can read the base PostgreSQL metrics, enumerate databases, inspect
+installed `pg_stat_statements` and `pg_store_plans` extensions, and discover the
+current PostgreSQL log. If your cluster has revoked PostgreSQL's ordinary
+`PUBLIC` privileges, apply the per-database grants described in [PostgreSQL
+role](bins/kronika-collector/README.md#postgresql-role).
+
 Start the collector. This example collects PostgreSQL and host data; omit the
 `KRONIKA_PG_DSNS` line to collect only the host.
 
