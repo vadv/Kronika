@@ -38,23 +38,18 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-Создайте каталог данных и запустите коллектор. Переменная `KRONIKA_PG_DSNS`
-включает сбор данных PostgreSQL; без неё коллектор записывает только данные
-машины.
+Запустите коллектор. Переменная `KRONIKA_PG_DSNS` включает сбор данных
+PostgreSQL; без неё коллектор записывает только данные машины.
 
 ```sh
-sudo install -d -o "$(id -un)" -g "$(id -gn)" /var/lib/kronika
-
-KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 
-В другом терминале запустите web с тем же каталогом данных. Пользователь web
-должен иметь право создавать и заменять в нём файлы `.idx` и файл
-`.kronika-index.owner.lock`.
+В другом терминале запустите web с тем же каталогом данных.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \

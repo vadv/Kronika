@@ -31,7 +31,7 @@ Install `rustup` and `musl-gcc`, then run from the repository root:
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-web
 
-KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \

@@ -37,22 +37,18 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-Create the data directory, then start the collector. `KRONIKA_PG_DSNS` enables
-PostgreSQL collection; omit it to collect only the host.
+Start the collector. `KRONIKA_PG_DSNS` enables PostgreSQL collection; omit it
+to collect only the host.
 
 ```sh
-sudo install -d -o "$(id -un)" -g "$(id -gn)" /var/lib/kronika
-
-KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 
-In another terminal, start web with the same data directory. Its user must be
-able to create and replace `.idx` files and the `.kronika-index.owner.lock`
-file there.
+In another terminal, start web with the same data directory.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
