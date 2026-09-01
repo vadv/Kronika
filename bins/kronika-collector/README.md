@@ -46,7 +46,7 @@ temporaries, orphan `.idx` files, then finished `.zms` files and their sibling
 finished segment, or unrelated files. If those remaining files still exceed
 the target, collection continues and logs `rotation_degraded`.
 
-On the current M1 workload with roughly 500 tables and 3,000 indexes,
+In one measurement with roughly 500 tables and 3,000 indexes,
 43 finished ZMS files totaled 82,687,221 bytes from 00:10 to 10:40 UTC on
 2026-09-01. At the
 current 15-minute segment cadence this is about 1.92 MB per segment, four

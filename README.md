@@ -67,8 +67,8 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 storage configuration](bins/kronika-collector/README.md#storage) describes the
 fixed and automatic modes.
 
-The measured M1 workload with roughly 500 tables and 3,000 indexes writes about
-184 MB/day. A 2 GiB budget therefore keeps roughly 11 days; `active.wal` and
+In one measurement with roughly 500 tables and 3,000 indexes, Kronika wrote
+about 184 MB/day. A 2 GiB budget therefore keeps roughly 11 days; `active.wal` and
 `.idx` files share that budget.
 
 In another terminal, start web with the same data directory.
