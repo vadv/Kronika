@@ -13,7 +13,7 @@ host: Monitored Linux host {
   pgb: PgBouncer {width: 170}
   os: OS\n/proc, /sys {width: 170}
 
-  collector: kronika-collector\nalways on {
+  collector: kronika-collector {
     style.fill: "#a5d8ff"
     style.font-color: "#1a2633"
     style.stroke-width: 3
@@ -25,13 +25,27 @@ host: Monitored Linux host {
 
   dir: KRONIKA_OUT_DIR\nPOSIX directory — the only storage today {
     shape: cylinder
+
     wal: active.wal\nwhat is being recorded now {
       shape: page
     }
-    seg: YYYY/MM/DD/N.zms\ncompressed, self-contained segments {
+
+    seg: YYYY/MM/DD/N.zms — compressed, self-contained segments {
+      style.multiple: true
+      rows: typed rows\nParquet {
+        shape: page
+      }
+      dict: shared text dictionary\nzstd {
+        shape: page
+      }
+      rows -> dict: text by id
+    }
+
+    idx: YYYY/MM/DD/N.idx\nderived indexes {
       shape: page
       style.multiple: true
     }
+
     wal -> seg: closed by size or age
   }
 
@@ -43,16 +57,13 @@ host: Monitored Linux host {
     style.stroke-width: 3
   }
 
-  dir -> web: read on demand
+  dir.seg -> web: reads
+  web -> dir.idx: builds, rebuilds
+  dir -> web: {style.opacity: 0}
 }
 
 browser: Browser
 llm: LLM client\nClaude Code · Codex · Cursor
-people: People {
-  shape: person
-}
 
 host.web -> browser: Web UI
 host.web -> llm: MCP
-browser -> people
-llm -> people
