@@ -14,11 +14,14 @@ mod segment;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::ops::{Bound, RangeBounds};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use kronika_format::Catalog;
-use kronika_store::{ActiveSnapshot, FinalUnit, LocalDir, read_catalog};
+use kronika_store::{
+    ActiveSnapshot, FinalUnit, ImmutableSegmentSource, LocalDir, ResourceCatalog, ResourceListing,
+    SegmentResource, read_catalog,
+};
 
 pub use dictionary::Dictionary;
 pub use error::ReaderError;
@@ -26,6 +29,58 @@ pub use kronika_format::{BlobEntry, Resolved, StrId};
 pub use kronika_registry::{Cell, Row};
 pub use kronika_store::{StoreObject, StoreWarning, StoreWarningReason};
 pub use segment::{Section, Segment};
+
+/// Product reader for immutable segments from one storage source.
+///
+/// Catalog discovery stays separate from opening positional bytes. The source
+/// decides how an object is prepared; decoding remains synchronous.
+#[derive(Debug)]
+pub struct FinishedReader<S> {
+    source: S,
+}
+
+impl<S> FinishedReader<S> {
+    /// Bind a product reader to one immutable source.
+    #[must_use]
+    pub const fn new(source: S) -> Self {
+        Self { source }
+    }
+}
+
+impl<S: ResourceCatalog> FinishedReader<S> {
+    /// Discover immutable identities and compact catalogs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the bounded catalog pass cannot complete.
+    pub fn resources(&self) -> Result<ResourceListing<S::Resource>, ReaderError> {
+        self.source.resources().map_err(ReaderError::from)
+    }
+}
+
+impl<S: ImmutableSegmentSource> FinishedReader<S> {
+    /// Open one discovered resource through the production row decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or changed resource, an unreadable
+    /// object, or an invalid full catalog.
+    pub fn open_segment(
+        &self,
+        resource: &SegmentResource<S::Resource>,
+    ) -> Result<Segment, ReaderError> {
+        let bytes = self.source.open_resource(resource)?;
+        let catalog = Arc::new(read_catalog(&bytes)?);
+        self.source.validate_opened(resource, &bytes)?;
+        Ok(Segment::open_finished(
+            bytes,
+            catalog,
+            resource.identity().segment_id().get(),
+            resource.captured_bytes(),
+            resource.summary(),
+        ))
+    }
+}
 
 /// Whether a listed segment is immutable or the captured journal prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,7 +470,6 @@ impl CatalogDiscovery<'_> {
 #[derive(Debug)]
 pub struct Reader {
     dir: LocalDir,
-    root: PathBuf,
     provenance: Arc<()>,
 }
 
@@ -432,7 +486,6 @@ impl Reader {
     pub fn open(root: &Path) -> Result<Self, ReaderError> {
         Ok(Self {
             dir: LocalDir::open(root)?,
-            root: root.to_path_buf(),
             provenance: Arc::new(()),
         })
     }
@@ -572,7 +625,7 @@ impl Reader {
             )
             .into());
         }
-        Segment::open(&self.dir, &self.root, unit)
+        Segment::open(&self.dir, unit)
     }
 }
 

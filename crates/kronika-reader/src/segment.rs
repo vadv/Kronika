@@ -1,36 +1,67 @@
 //! One finished or current logical segment, opened.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::File;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kronika_format::{Catalog, Entry, ReadAt as _, crc32c};
+use kronika_format::{Catalog, Entry, ReadAt, crc32c};
 use kronika_registry::{
     Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, contract,
     logical_section_name, visit_rows,
 };
-use kronika_store::{ActiveSnapshot, LocalDir};
+use kronika_store::{ActiveSnapshot, CatalogSummary, LocalDir};
 
 use crate::dictionary::Dictionary;
 use crate::error::ReaderError;
 use crate::{SegmentKind, SegmentRef, SegmentSource};
 
+trait SegmentBytes: ReadAt + Send + Sync {}
+
+impl<T: ReadAt + Send + Sync> SegmentBytes for T {}
+
+// Type erasure stays private and occurs only after a generic source opens one
+// object, keeping the public product segment common to POSIX, embedded, and
+// captured active bytes.
+struct OpenedSegmentBytes(Box<dyn SegmentBytes>);
+
+impl OpenedSegmentBytes {
+    fn new(bytes: impl ReadAt + Send + Sync + 'static) -> Self {
+        Self(Box::new(bytes))
+    }
+}
+
+impl std::fmt::Debug for OpenedSegmentBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedSegmentBytes").finish_non_exhaustive()
+    }
+}
+
+impl ReadAt for OpenedSegmentBytes {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        self.0.read_exact_at(buf, offset)
+    }
+
+    fn byte_len(&self) -> std::io::Result<u64> {
+        self.0.byte_len()
+    }
+}
+
 #[derive(Debug)]
 enum Source {
-    Finished { file: File, catalog: Arc<Catalog> },
+    Finished {
+        bytes: OpenedSegmentBytes,
+        catalog: Arc<Catalog>,
+    },
     Active(ActiveSnapshot),
 }
 
 /// An open finished `.zms` or captured `active.wal` logical segment.
 ///
-/// Section bodies are read on demand. A finished segment holds one file
-/// descriptor; a current segment holds one descriptor for its captured prefix.
+/// Section bodies are read on demand. A finished segment holds one positional
+/// byte source; a current segment holds one descriptor for its captured prefix.
 #[derive(Debug)]
 pub struct Segment {
     id: i64,
     kind: SegmentKind,
-    path: PathBuf,
     source: Source,
     min_ts: i64,
     max_ts: i64,
@@ -52,28 +83,19 @@ pub struct Section {
 }
 
 impl Segment {
-    pub(crate) fn open(
-        dir: &LocalDir,
-        root: &Path,
-        unit: &SegmentRef,
-    ) -> Result<Self, ReaderError> {
+    pub(crate) fn open(dir: &LocalDir, unit: &SegmentRef) -> Result<Self, ReaderError> {
         match &unit.source {
             SegmentSource::Finished(finished) => {
                 let file = dir.open_finished(finished)?;
                 let catalog = Arc::new(kronika_store::read_catalog(&file)?);
                 dir.validate_finished_file(&file, finished)?;
-                let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
-                Ok(Self {
-                    id: unit.segment_id,
-                    kind: SegmentKind::Finished,
-                    path: finished_path(root, finished),
-                    source: Source::Finished { file, catalog },
-                    min_ts: unit.min_ts,
-                    max_ts: unit.max_ts,
-                    captured_bytes: unit.captured_bytes,
-                    window_count: finished.summary.window_count,
-                    section_rows,
-                })
+                Ok(Self::open_finished(
+                    file,
+                    catalog,
+                    unit.segment_id,
+                    unit.captured_bytes,
+                    &finished.summary,
+                ))
             }
             SegmentSource::Active(snapshot) => {
                 let window_count = u32::try_from(snapshot.parts().len()).map_err(|_overflow| {
@@ -86,7 +108,6 @@ impl Segment {
                 Ok(Self {
                     id: unit.segment_id,
                     kind: SegmentKind::Active,
-                    path: root.join("active.wal"),
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
@@ -95,6 +116,29 @@ impl Segment {
                     section_rows,
                 })
             }
+        }
+    }
+
+    pub(crate) fn open_finished(
+        bytes: impl ReadAt + Send + Sync + 'static,
+        catalog: Arc<Catalog>,
+        segment_id: i64,
+        captured_bytes: u64,
+        summary: &CatalogSummary,
+    ) -> Self {
+        let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
+        Self {
+            id: segment_id,
+            kind: SegmentKind::Finished,
+            source: Source::Finished {
+                bytes: OpenedSegmentBytes::new(bytes),
+                catalog,
+            },
+            min_ts: summary.min_ts,
+            max_ts: summary.max_ts,
+            captured_bytes,
+            window_count: summary.window_count,
+            section_rows,
         }
     }
 
@@ -119,12 +163,6 @@ impl Segment {
         }
     }
 
-    /// Where the segment was read from.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Earliest timestamp the segment carries, unix microseconds.
     #[must_use]
     pub const fn min_ts(&self) -> i64 {
@@ -137,7 +175,7 @@ impl Segment {
         self.max_ts
     }
 
-    /// Bytes in the finished file or captured current-journal prefix.
+    /// Bytes in the finished object or captured current-journal prefix.
     #[must_use]
     pub const fn captured_bytes(&self) -> u64 {
         self.captured_bytes
@@ -226,7 +264,7 @@ impl Segment {
         let mut global_base = 0_u64;
         let mut remaining_offset = offset;
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 if let Some(entry) = entry(catalog, type_id) {
                     let rows = u64::from(entry.rows);
                     if remaining_offset < rows {
@@ -239,7 +277,7 @@ impl Segment {
                             })?;
                         let count = visit_body(
                             type_id,
-                            finished_body(file, entry)?,
+                            finished_body(bytes, entry)?,
                             columns,
                             BodyVisit {
                                 expected_rows: u64::from(entry.rows),
@@ -311,9 +349,9 @@ impl Segment {
     pub fn dictionary(&self) -> Result<Dictionary, ReaderError> {
         let mut dictionary = Dictionary::default();
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_dictionary_catalog(&mut dictionary, catalog, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
             Source::Active(snapshot) => {
@@ -342,9 +380,9 @@ impl Segment {
             return Ok(dictionary);
         }
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_selected_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
             Source::Active(snapshot) => {
@@ -375,9 +413,9 @@ impl Segment {
             return Ok(dictionary);
         }
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_once_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
             Source::Active(snapshot) => {
@@ -492,7 +530,7 @@ fn decode_dictionary_catalog(
     Ok(())
 }
 
-fn finished_body(file: &File, entry: &Entry) -> Result<VerifiedSection, ReaderError> {
+fn finished_body(bytes: &impl ReadAt, entry: &Entry) -> Result<VerifiedSection, ReaderError> {
     let len = usize::try_from(entry.len).map_err(|_overflow| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -500,7 +538,7 @@ fn finished_body(file: &File, entry: &Entry) -> Result<VerifiedSection, ReaderEr
         )
     })?;
     let mut buffer = vec![0_u8; len];
-    file.read_exact_at(&mut buffer, entry.offset)?;
+    bytes.read_exact_at(&mut buffer, entry.offset)?;
     verified_body(entry, buffer)
 }
 
@@ -520,12 +558,4 @@ fn verified_body(entry: &Entry, body: Vec<u8>) -> Result<VerifiedSection, Reader
             source,
         }
     })
-}
-
-fn finished_path(root: &Path, unit: &kronika_store::FinalUnit) -> PathBuf {
-    let day = unit.address.day;
-    root.join(day.year_component())
-        .join(day.month_component())
-        .join(day.day_component())
-        .join(unit.address.zms_name())
 }

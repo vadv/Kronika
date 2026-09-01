@@ -513,50 +513,6 @@ impl LocalDir {
     }
 }
 
-impl crate::ResourceCatalog for LocalDir {
-    type Resource = FinalUnit;
-
-    fn resources(&self) -> Result<crate::ResourceListing<Self::Resource>, StoreError> {
-        let scan = self.scan_catalogs()?;
-        let resources = scan
-            .finished
-            .iter()
-            .cloned()
-            .map(|unit| {
-                crate::SegmentResource::new(
-                    crate::ResourceIdentity::finished(unit.address.id),
-                    unit.identity.len,
-                    Arc::clone(&unit.summary),
-                    unit,
-                )
-            })
-            .collect();
-        Ok(crate::ResourceListing {
-            resources,
-            warnings: scan.warnings,
-        })
-    }
-}
-
-impl crate::ImmutableSegmentSource for LocalDir {
-    type Bytes = File;
-
-    fn open_resource(
-        &self,
-        resource: &crate::SegmentResource<Self::Resource>,
-    ) -> Result<Self::Bytes, StoreError> {
-        if resource.identity() != crate::ResourceIdentity::finished(resource.handle().address.id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "finished resource identity does not match its POSIX handle",
-            )
-            .into());
-        }
-        self.open_finished(resource.handle())
-            .map_err(StoreError::from)
-    }
-}
-
 impl ActiveSnapshot {
     /// Identity of the logical segment captured from the journal header.
     #[must_use]

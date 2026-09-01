@@ -6,7 +6,7 @@ use std::sync::Arc;
 use kronika_format::ReadAt;
 use kronika_layout::SegmentId;
 
-use crate::{CatalogSummary, StoreError, StoreWarning};
+use crate::{CatalogSummary, StoreError, StoreObject, StoreWarning};
 
 /// The product-visible kind of one stored resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,10 +92,58 @@ impl<R> SegmentResource<R> {
         &self.summary
     }
 
-    /// Adapter-owned token used only to open this listed object.
-    #[must_use]
-    pub const fn handle(&self) -> &R {
+    pub(crate) const fn handle(&self) -> &R {
         &self.handle
+    }
+}
+
+/// Product-visible subject of a non-fatal resource notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResourceWarningSubject {
+    /// One immutable finished segment.
+    FinishedSegment(ResourceIdentity),
+    /// A mutable journal was unavailable to the catalog pass.
+    ActiveJournal,
+    /// An entry outside the source's supported catalog layout was ignored.
+    ForeignEntry,
+}
+
+/// Storage-neutral, payload-free notice from resource discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceWarning {
+    subject: ResourceWarningSubject,
+    code: &'static str,
+}
+
+impl ResourceWarning {
+    /// Build a notice from a neutral subject and stable low-cardinality code.
+    #[must_use]
+    pub const fn new(subject: ResourceWarningSubject, code: &'static str) -> Self {
+        Self { subject, code }
+    }
+
+    pub(crate) const fn from_store(warning: StoreWarning) -> Self {
+        let subject = match warning.affected {
+            StoreObject::Segment(address) => {
+                ResourceWarningSubject::FinishedSegment(ResourceIdentity::finished(address.id))
+            }
+            StoreObject::ActiveJournal => ResourceWarningSubject::ActiveJournal,
+            StoreObject::Foreign(_) => ResourceWarningSubject::ForeignEntry,
+        };
+        Self::new(subject, warning.reason.code())
+    }
+
+    /// Product-visible object class affected by the notice.
+    #[must_use]
+    pub const fn subject(self) -> ResourceWarningSubject {
+        self.subject
+    }
+
+    /// Stable low-cardinality notice code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        self.code
     }
 }
 
@@ -105,7 +153,7 @@ pub struct ResourceListing<R> {
     /// Immutable resources in source-defined stable order.
     pub resources: Vec<SegmentResource<R>>,
     /// Objects excluded by catalog discovery.
-    pub warnings: Vec<StoreWarning>,
+    pub warnings: Vec<ResourceWarning>,
 }
 
 /// Discovers immutable segment identities and compact catalogs.
@@ -139,4 +187,24 @@ pub trait ImmutableSegmentSource: ResourceCatalog {
         &self,
         resource: &SegmentResource<Self::Resource>,
     ) -> Result<Self::Bytes, StoreError>;
+
+    /// Confirm that opened bytes still name the object captured by discovery.
+    ///
+    /// Call this after decoding the catalog and before publishing a product
+    /// view. Sources with versioned immutable bytes may only need to confirm
+    /// provenance; POSIX sources also recheck the opened file identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the opened object no longer matches the
+    /// listed resource.
+    fn validate_opened(
+        &self,
+        resource: &SegmentResource<Self::Resource>,
+        bytes: &Self::Bytes,
+    ) -> Result<(), StoreError>;
 }
+
+#[cfg(test)]
+#[path = "resource/tests.rs"]
+mod tests;

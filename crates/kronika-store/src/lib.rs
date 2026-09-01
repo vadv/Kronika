@@ -29,6 +29,7 @@
 mod catalog_summary;
 mod embedded;
 mod local;
+mod posix;
 mod resource;
 mod source;
 
@@ -37,9 +38,10 @@ pub use catalog_summary::{
 };
 pub use embedded::{EmbeddedResource, EmbeddedSource, SharedSegmentBytes};
 pub use local::{LocalDir, is_active_journal_scan_error, read_catalog};
+pub use posix::{PosixResource, PosixSegmentBytes, PosixSource};
 pub use resource::{
     ImmutableSegmentSource, ResourceCatalog, ResourceIdentity, ResourceKind, ResourceListing,
-    SegmentResource,
+    ResourceWarning, ResourceWarningSubject, SegmentResource,
 };
 pub use source::{
     ActiveJournalWarningReason, ActivePart, ActiveSnapshot, FinalUnit, InvalidZmsReason,

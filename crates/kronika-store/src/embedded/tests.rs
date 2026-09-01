@@ -6,11 +6,16 @@ use super::EmbeddedSource;
 use crate::{ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, read_catalog};
 
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
+const FIXTURE_LIMIT: u64 = FIXTURE.len() as u64;
 
 fn source(id: i64) -> (Arc<[u8]>, EmbeddedSource) {
     let bytes: Arc<[u8]> = Arc::from(FIXTURE);
-    let source = EmbeddedSource::new(SegmentId::new(id).expect("segment id"), Arc::clone(&bytes))
-        .expect("valid embedded fixture");
+    let source = EmbeddedSource::from_shared(
+        SegmentId::new(id).expect("segment id"),
+        Arc::clone(&bytes),
+        FIXTURE_LIMIT,
+    )
+    .expect("valid embedded fixture");
     (bytes, source)
 }
 
@@ -26,6 +31,9 @@ fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
     assert_eq!(resource.captured_bytes(), FIXTURE.len() as u64);
 
     let opened = source.open_resource(resource).expect("open embedded bytes");
+    source
+        .validate_opened(resource, &opened)
+        .expect("validate embedded bytes");
     assert_eq!(
         opened.as_ptr(),
         bytes.as_ptr(),
@@ -36,6 +44,78 @@ fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
     assert_eq!(
         read_catalog(&opened).expect("embedded catalog"),
         read_catalog(&FIXTURE).expect("fixture catalog")
+    );
+}
+
+#[test]
+fn embedded_static_catalog_keeps_the_static_slice_without_copying() {
+    let source = EmbeddedSource::from_static(
+        SegmentId::new(43).expect("segment id"),
+        FIXTURE,
+        FIXTURE_LIMIT,
+    )
+    .expect("valid static fixture");
+    let listing = source.resources().expect("embedded catalog");
+    let resource = &listing.resources[0];
+    let opened = source.open_resource(resource).expect("open static bytes");
+
+    assert_eq!(opened.as_ptr(), FIXTURE.as_ptr());
+    assert_eq!(source.retained_segment_ptr(), FIXTURE.as_ptr());
+    assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
+    assert_eq!(
+        read_catalog(&opened).expect("static catalog"),
+        read_catalog(&FIXTURE).expect("fixture catalog")
+    );
+    source
+        .validate_opened(resource, &opened)
+        .expect("validate static bytes");
+}
+
+#[test]
+fn embedded_source_enforces_the_explicit_complete_byte_limit() {
+    let error = EmbeddedSource::from_static(
+        SegmentId::new(44).expect("segment id"),
+        FIXTURE,
+        FIXTURE_LIMIT - 1,
+    )
+    .expect_err("fixture must exceed the limit");
+    assert!(matches!(
+        error,
+        crate::StoreError::ResourceTooLarge {
+            len: FIXTURE_LIMIT,
+            max
+        } if max == FIXTURE_LIMIT - 1
+    ));
+}
+
+#[test]
+fn identical_zms_bytes_keep_each_supplied_segment_identity() {
+    let first = EmbeddedSource::from_static(
+        SegmentId::new(45).expect("segment id"),
+        FIXTURE,
+        FIXTURE_LIMIT,
+    )
+    .expect("first source");
+    let second = EmbeddedSource::from_static(
+        SegmentId::new(46).expect("segment id"),
+        FIXTURE,
+        FIXTURE_LIMIT,
+    )
+    .expect("second source");
+
+    assert_eq!(
+        first.resources().expect("first catalog").resources[0]
+            .identity()
+            .segment_id()
+            .get(),
+        45
+    );
+    assert_eq!(
+        second.resources().expect("second catalog").resources[0]
+            .identity()
+            .segment_id()
+            .get(),
+        46
     );
 }
 
@@ -57,7 +137,7 @@ fn embedded_resource_is_bound_to_the_source_that_listed_it() {
 #[test]
 fn embedded_constructor_rejects_invalid_zms_without_deriving_an_id() {
     let bytes: Arc<[u8]> = Arc::from(&b"not a ZMS"[..]);
-    let error = EmbeddedSource::new(SegmentId::new(77).expect("segment id"), bytes)
+    let error = EmbeddedSource::from_shared(SegmentId::new(77).expect("segment id"), bytes, 64)
         .expect_err("invalid bytes");
     assert!(matches!(
         error,
@@ -75,6 +155,9 @@ fn storage_neutral_api_compiles_without_posix_types() {
         let resource = listing.resources.first().expect("resource");
         let bytes = source.open_resource(resource).expect("bytes");
         drop(read_catalog(&bytes).expect("catalog bytes"));
+        source
+            .validate_opened(resource, &bytes)
+            .expect("opened bytes");
     }
 
     let (_bytes, embedded) = source(42);

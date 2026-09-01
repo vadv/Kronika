@@ -289,6 +289,13 @@ pub enum StoreError {
         /// Maximum accepted active part body size, bytes.
         max: u64,
     },
+    /// An immutable resource exceeds an explicit source byte limit.
+    ResourceTooLarge {
+        /// Complete resource length, bytes.
+        len: u64,
+        /// Maximum accepted resource length, bytes.
+        max: u64,
+    },
     /// The source is too short to contain a tail index.
     TooSmall,
     /// The first four bytes are not the ZMS magic.
@@ -326,6 +333,9 @@ impl std::fmt::Display for StoreError {
                     "active part of {len} bytes exceeds the part limit of {max}"
                 )
             }
+            Self::ResourceTooLarge { len, max } => {
+                write!(f, "resource of {len} bytes exceeds the byte limit of {max}")
+            }
             Self::TooSmall => write!(f, "source is too small for a ZMS segment"),
             Self::BadMagic => write!(f, "source does not start with ZMS1 magic"),
             Self::TailIndex(err) => write!(f, "tail index decode failed: {err}"),
@@ -354,6 +364,7 @@ impl std::error::Error for StoreError {
             Self::Catalog(err) | Self::TailIndex(err) => Some(err),
             Self::Layout(err) => Some(err),
             Self::ActivePartTooLarge { .. }
+            | Self::ResourceTooLarge { .. }
             | Self::TooSmall
             | Self::BadMagic
             | Self::UnsupportedFormat { .. }

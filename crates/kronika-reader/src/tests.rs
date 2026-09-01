@@ -1,6 +1,8 @@
 use super::{before_start, overlaps};
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
@@ -10,7 +12,12 @@ use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use sha2::{Digest as _, Sha256};
 
-use super::{Dictionary, Reader, ReaderError, Segment};
+use super::{Dictionary, FinishedReader, Reader, ReaderError, Segment, SegmentKind};
+
+use kronika_store::{
+    CatalogSummary, EmbeddedSource, ImmutableSegmentSource, PosixSource, ResourceIdentity,
+    ResourceKind,
+};
 
 /// A segment covering ten to twenty microseconds.
 const MIN: i64 = 10;
@@ -133,6 +140,13 @@ fn address(raw_id: i64) -> SegmentAddress {
         .expect("segment address")
 }
 
+fn zms_path(root: &Path, address: SegmentAddress) -> PathBuf {
+    root.join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name())
+}
+
 fn topology(ts: i64, cpu_id: i32, model_name: StrId) -> OsTopology {
     OsTopology {
         ts: Ts(ts),
@@ -211,6 +225,133 @@ fn assert_model_names_resolve(segment: &Segment, dictionary: &Dictionary) {
         };
         assert!(dictionary.resolve(*id).is_some());
     }
+}
+
+#[derive(Debug, PartialEq)]
+struct FinishedProductSnapshot {
+    identity: ResourceIdentity,
+    summary: CatalogSummary,
+    kind: SegmentKind,
+    captured_bytes: u64,
+    window_count: u32,
+    sections: Vec<(u32, super::Section)>,
+    topology_rows: Vec<kronika_registry::Row>,
+    cpu_rows: Vec<kronika_registry::Row>,
+    projected_topology: Vec<(u64, kronika_registry::Row)>,
+    model_name: Vec<u8>,
+}
+
+fn finished_product_snapshot<S: ImmutableSegmentSource>(
+    reader: &FinishedReader<S>,
+    model_id: StrId,
+) -> FinishedProductSnapshot {
+    let listing = reader.resources().expect("discover immutable resources");
+    assert!(listing.warnings.is_empty(), "unexpected resource notices");
+    assert_eq!(listing.resources.len(), 1, "one immutable resource");
+    let resource = &listing.resources[0];
+    assert_eq!(resource.identity().kind(), ResourceKind::FinishedSegment);
+    let identity = resource.identity();
+    let summary = *resource.summary();
+    let segment = reader
+        .open_segment(resource)
+        .expect("open immutable product segment");
+    let mut projected_topology = Vec::new();
+    segment
+        .visit_rows(
+            OsTopology::CONTRACT.type_id.get(),
+            &["cpu_id", "model_name"],
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                projected_topology.push((ordinal, row));
+                true
+            },
+        )
+        .expect("project topology rows");
+    let dictionary = segment.dictionary().expect("decode product dictionary");
+    let model_name = match dictionary.resolve(model_id.get()).expect("model name") {
+        Resolved::Str(bytes) => bytes.to_vec(),
+        Resolved::Blob(blob) => blob.stored_bytes.to_vec(),
+    };
+    FinishedProductSnapshot {
+        identity,
+        summary,
+        kind: segment.kind(),
+        captured_bytes: segment.captured_bytes(),
+        window_count: segment.window_count(),
+        sections: segment.sections().collect(),
+        topology_rows: segment
+            .rows(OsTopology::CONTRACT.type_id.get())
+            .expect("topology rows"),
+        cpu_rows: segment
+            .rows(OsCpu::CONTRACT.type_id.get())
+            .expect("CPU rows"),
+        projected_topology,
+        model_name,
+    }
+}
+
+#[test]
+fn finished_sources_match_for_catalog_and_product_reads() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let segment_address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    let model_id = append_text_window(
+        &mut journal,
+        segment_address.id,
+        100,
+        b"storage-boundary-model",
+    );
+    append_cpu_window(&mut journal, segment_address.id, 200);
+    let written = write_segment(&journal, &owner, segment_address).expect("publish segment");
+    journal.reset().expect("leave no active segment");
+
+    let payload: Arc<[u8]> = std::fs::read(zms_path(directory.path(), segment_address))
+        .expect("read embedded fixture")
+        .into();
+    assert_eq!(payload.len() as u64, written.bytes);
+    let embedded =
+        EmbeddedSource::from_shared(segment_address.id, Arc::clone(&payload), written.bytes)
+            .expect("embedded source");
+    assert_eq!(embedded.retained_segment_bytes() as u64, written.bytes);
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_snapshot = finished_product_snapshot(&FinishedReader::new(posix), model_id);
+    let embedded_snapshot = finished_product_snapshot(&FinishedReader::new(embedded), model_id);
+    assert_eq!(posix_snapshot, embedded_snapshot);
+}
+
+#[test]
+fn embedded_product_uses_supplied_identity_and_rejects_foreign_resource() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let first_id = SegmentId::new(42).expect("first id");
+    let second_id = SegmentId::new(43).expect("second id");
+    let first = FinishedReader::new(
+        EmbeddedSource::from_static(first_id, ZMS, ZMS.len() as u64).expect("first source"),
+    );
+    let second = FinishedReader::new(
+        EmbeddedSource::from_static(second_id, ZMS, ZMS.len() as u64).expect("second source"),
+    );
+    let listing = first.resources().expect("first resources");
+    assert_eq!(listing.resources[0].identity().segment_id(), first_id);
+    assert_eq!(
+        first
+            .open_segment(&listing.resources[0])
+            .expect("first segment")
+            .id(),
+        42
+    );
+    let error = second
+        .open_segment(&listing.resources[0])
+        .expect_err("resource token belongs to its source");
+    assert!(matches!(
+        error,
+        ReaderError::Store(kronika_store::StoreError::Io(ref source))
+            if source.kind() == std::io::ErrorKind::InvalidInput
+    ));
 }
 
 #[test]
@@ -390,13 +531,10 @@ fn finished_segment_wins_over_the_same_active_generation() {
 
     let reader = Reader::open(directory.path()).expect("open reader");
     let segment = one_segment(&reader);
-    assert_eq!(
-        segment.path().extension().and_then(std::ffi::OsStr::to_str),
-        Some("zms")
-    );
+    assert_eq!(segment.kind(), SegmentKind::Finished);
     assert_eq!(
         segment.captured_bytes(),
-        std::fs::metadata(segment.path())
+        std::fs::metadata(zms_path(directory.path(), address))
             .expect("finished segment metadata")
             .len()
     );
@@ -416,13 +554,7 @@ fn finished_segment_wins_over_the_same_active_generation() {
     let predecessor = reader
         .open_segment(&predecessor.segments[0])
         .expect("open canonical predecessor");
-    assert_eq!(
-        predecessor
-            .path()
-            .extension()
-            .and_then(std::ffi::OsStr::to_str),
-        Some("zms")
-    );
+    assert_eq!(predecessor.kind(), SegmentKind::Finished);
 }
 
 #[test]
@@ -499,12 +631,7 @@ fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
     append_text_window(&mut journal, address.id, 100, b"one row");
     write_segment(&journal, &owner, address).expect("publish finished segment");
 
-    let path = directory
-        .path()
-        .join(address.day.year_component())
-        .join(address.day.month_component())
-        .join(address.day.day_component())
-        .join(address.zms_name());
+    let path = zms_path(directory.path(), address);
     let mut bytes = std::fs::read(&path).expect("read finished segment");
     bytes[kronika_format::MAGIC.len()] ^= 0xff;
     std::fs::write(&path, bytes).expect("damage finished section body");
@@ -516,10 +643,7 @@ fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
     let segment = reader
         .open_segment(&listing.segments[0])
         .expect("open active fallback");
-    assert_eq!(
-        segment.path().file_name().and_then(std::ffi::OsStr::to_str),
-        Some("active.wal")
-    );
+    assert_eq!(segment.kind(), SegmentKind::Active);
 }
 
 #[test]
@@ -632,13 +756,7 @@ fn finished_dictionary_preserves_boundary_blob_metadata() {
     write_segment(&journal, &owner, finished_address).expect("publish finished blob output");
     let reader = Reader::open(directory.path()).expect("open finished reader");
     let finished = one_segment(&reader);
-    assert_eq!(
-        finished
-            .path()
-            .extension()
-            .and_then(std::ffi::OsStr::to_str),
-        Some("zms")
-    );
+    assert_eq!(finished.kind(), SegmentKind::Finished);
     let dictionary = finished.dictionary().expect("finished dictionary");
     assert_eq!(
         dictionary.resolve(boundary_id.get()),
@@ -666,12 +784,7 @@ fn range_discovery_checks_bodies_only_after_selection() {
     write_segment(&journal, &owner, second_address).expect("publish second");
     journal.reset().expect("leave no active segment");
 
-    let second_path = directory
-        .path()
-        .join(second_address.day.year_component())
-        .join(second_address.day.month_component())
-        .join(second_address.day.day_component())
-        .join(second_address.zms_name());
+    let second_path = zms_path(directory.path(), second_address);
     let mut bytes = std::fs::read(&second_path).expect("read second segment");
     bytes[kronika_format::MAGIC.len()] ^= 0xff;
     std::fs::write(&second_path, bytes).expect("damage one selected body");

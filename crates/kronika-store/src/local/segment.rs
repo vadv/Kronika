@@ -271,9 +271,11 @@ pub(super) fn classify_zms_validation(
         Err(StoreError::SectionChecksum { .. }) => {
             Ok(invalid_zms(InvalidZmsReason::SectionChecksum))
         }
-        Err(error @ (StoreError::Layout(_) | StoreError::ActivePartTooLarge { .. })) => {
-            Err(store_io(error))
-        }
+        Err(
+            error @ (StoreError::Layout(_)
+            | StoreError::ActivePartTooLarge { .. }
+            | StoreError::ResourceTooLarge { .. }),
+        ) => Err(store_io(error)),
     }
 }
 

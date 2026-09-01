@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
@@ -35,6 +35,14 @@ fn address() -> SegmentAddress {
 
 fn address_at(raw: i64) -> SegmentAddress {
     SegmentAddress::new(SegmentId::new(raw).expect("segment id")).expect("address")
+}
+
+fn zms_path(root: &Path, segment: &SegmentRef) -> PathBuf {
+    let address = address_at(segment.id());
+    root.join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name())
 }
 
 fn row(ts: i64, model_name: StrId, mhz: f64) -> OsTopology {
@@ -1052,8 +1060,8 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     write_segment(&journal, &writer, address()).expect("finish segment");
     let reader = Reader::open(directory.path()).expect("finished reader");
     let finished_ref = only_segment(&reader, SegmentKind::Finished);
-    let index_path = path_of(reader.open_segment(&finished_ref).expect("segment").path())
-        .expect("finished index path");
+    let index_path =
+        path_of(&zms_path(directory.path(), &finished_ref)).expect("finished index path");
 
     let contended_owner = data_root
         .acquire_index(LayoutLimits::default())
@@ -1099,11 +1107,7 @@ fn a_published_index_does_not_require_its_finished_source_body() {
 
     let reader = Reader::open(directory.path()).expect("finished reader");
     let finished_ref = only_segment(&reader, SegmentKind::Finished);
-    let source_path = reader
-        .open_segment(&finished_ref)
-        .expect("open finished segment")
-        .path()
-        .to_path_buf();
+    let source_path = zms_path(directory.path(), &finished_ref);
     let published = resource(directory.path(), &reader, &finished_ref, "health")
         .expect("publish finished index");
     assert!(published.persisted);
@@ -1146,13 +1150,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     let finished = only_segment(&reader, SegmentKind::Finished);
     let published = resource(directory.path(), &reader, &finished, "pg_log_errors")
         .expect("publish current index");
-    let path = path_of(
-        reader
-            .open_segment(&finished)
-            .expect("finished segment")
-            .path(),
-    )
-    .expect("index path");
+    let path = path_of(&zms_path(directory.path(), &finished)).expect("index path");
     let canonical = std::fs::read(&path).expect("canonical index");
 
     std::fs::write(&path, &canonical[..10]).expect("truncate derived index");
@@ -1301,13 +1299,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         .expect("raw temporary-file section has no index resource");
     assert!(selected.index.blocks.is_empty());
 
-    let path = path_of(
-        reader
-            .open_segment(&segment)
-            .expect("finished segment")
-            .path(),
-    )
-    .expect("index path");
+    let path = path_of(&zms_path(directory.path(), &segment)).expect("index path");
     assert!(
         read(&path).expect("current index").blocks.iter().all(
             |block| !matches!(block, SeriesBlock::Findings(block) if block.type_id == 2_007_001)
@@ -1584,13 +1576,7 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
         Some(u64::try_from(statement_current.len()).expect("small statement fixture"))
     );
 
-    let index_path = path_of(
-        reader
-            .open_segment(&current)
-            .expect("open current segment")
-            .path(),
-    )
-    .expect("finished index path");
+    let index_path = path_of(&zms_path(directory.path(), &current)).expect("finished index path");
     assert!(read(&index_path).expect("read published index").blocks.iter().all(
         |block| !matches!(block, SeriesBlock::Findings(block) if matches!(block.type_id, 1_100_001 | 1_002_001..=1_002_006))
     ));
