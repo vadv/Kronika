@@ -11,7 +11,8 @@ PG_SUPERUSER=postgres
 MONITOR_USER=kronika_monitor
 WORKLOAD_USER=kronika_demo
 WORKLOAD_DATABASE=kronika_demo
-DEMO_ROOT=${KRONIKA_DEMO_DIR:-${KRONIKA_OUT_DIR:-/var/lib/kronika/data}}
+DEMO_ROOT=${KRONIKA_DEMO_DIR:-/var/lib/kronika/data}
+STORAGE_DIR=${KRONIKA_STORAGE_DIR:-$DEMO_ROOT/segments}
 
 POSTGRES_PID=
 PGB_PID=
@@ -206,9 +207,9 @@ start_pgbouncer() {
 
 start_kronika() {
     install -d -m 0750 -o kronika -g kronika "$DEMO_ROOT"
-    install -d -m 0750 -o kronika -g kronika "$DEMO_ROOT/segments"
+    install -d -m 0750 -o kronika -g kronika "$STORAGE_DIR"
     export KRONIKA_DEMO_DIR="$DEMO_ROOT"
-    export KRONIKA_OUT_DIR="$DEMO_ROOT/segments"
+    export KRONIKA_STORAGE_DIR="$STORAGE_DIR"
     export KRONIKA_PG_DSNS="host=127.0.0.1 port=$PG_PORT user=$MONITOR_USER dbname=postgres application_name=kronika-demo-monitor"
     export KRONIKA_PGBOUNCER_DSNS="host=127.0.0.1 port=$PGB_PORT user=$MONITOR_USER dbname=pgbouncer"
     export KRONIKA_POSTGRES_EFFECTIVE_CPUS="${KRONIKA_POSTGRES_EFFECTIVE_CPUS:-2}"

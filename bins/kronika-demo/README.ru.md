@@ -83,14 +83,13 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 
 | Переменная | По умолчанию | Назначение |
 | --- | ---: | --- |
-| `KRONIKA_DEMO_DIR` | `demo-data` | Куда пишутся лог коллектора, сегменты и `report.json`. |
+| `KRONIKA_DEMO_DIR` | `demo-data` | Куда пишутся лог коллектора и `report.json`. |
+| `KRONIKA_STORAGE_DIR` | `$KRONIKA_DEMO_DIR/segments` | Каталог хранения коллектора. |
 | `KRONIKA_DEMO_DURATION_S` | 60 | Длительность в секундах. `0` — работать до `SIGTERM` или `SIGINT`. |
 | `KRONIKA_DEMO_COLLECTOR_LOG` | `file` | `file` пишет `collector.log`; `stderr` использует унаследованный stderr. В образе задан `stderr` с ограниченной ротацией логов Docker. |
 | `KRONIKA_COLLECTOR_BIN` | `kronika-collector` рядом с бинарём | Какой бинарь коллектора запускать. |
 
 Остальные переменные коллектора `KRONIKA_*` передаются без изменений.
-`kronika-demo` задаёт только `KRONIKA_OUT_DIR` — подкаталог `segments`
-текущего прогона.
 
 ### Опциональная нагрузка PostgreSQL
 

@@ -21,11 +21,11 @@ kronika-registry encodes typed rows as section bodies
 kronika-writer builds a ZMS part
         |
         v
-$KRONIKA_OUT_DIR/active.wal
+$KRONIKA_STORAGE_DIR/active.wal
         |
         | write_segment()
         v
-$KRONIKA_OUT_DIR/YYYY/MM/DD/N.zms
+$KRONIKA_STORAGE_DIR/YYYY/MM/DD/N.zms
         |
         v
 kronika-store / kronika-reader
@@ -34,11 +34,11 @@ kronika-store / kronika-reader
 kronika-web
 ```
 
-Журнал всегда находится в `$KRONIKA_OUT_DIR/active.wal`. Готовые файлы ZMS
+Журнал всегда находится в `$KRONIKA_STORAGE_DIR/active.wal`. Готовые файлы ZMS
 записываются в строгое календарное дерево UTC:
 
 ```text
-$KRONIKA_OUT_DIR/
+$KRONIKA_STORAGE_DIR/
 |-- active.wal
 `-- YYYY/
     `-- MM/
@@ -354,7 +354,7 @@ Parquet, каталог ZMS и структура ZMS/ZMSP находятся в
 содержимое Parquet после декодирования; остальные тела опущены:
 
 ```text
-$KRONIKA_OUT_DIR/YYYY/MM/DD/N.zms  (one file)
+$KRONIKA_STORAGE_DIR/YYYY/MM/DD/N.zms  (one file)
 
 [ "ZMS1" ]
 [ os_process Parquet body, type_id=1_100_001

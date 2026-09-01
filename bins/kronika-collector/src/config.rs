@@ -1,6 +1,6 @@
 //! Environment-only configuration for the collector daemon.
 //!
-//! `KRONIKA_OUT_DIR` is the one required variable. Everything else has a
+//! `KRONIKA_STORAGE_DIR` is the one required variable. Everything else has a
 //! default that is safe on a host that also runs a database. Every variable
 //! is read and parsed here, before any collection starts; a value that does
 //! not parse stops the daemon instead of falling back to the default.
@@ -17,7 +17,7 @@ use crate::scheduler::Intervals;
 /// The validated daemon contract.
 pub(crate) struct Config {
     /// Data root: the journal, the finished segments, and the writer lock.
-    pub(crate) out_dir: PathBuf,
+    pub(crate) storage_dir: PathBuf,
     /// Base tick of the internal timer, seconds; `0` disables the timer and
     /// leaves collection to signals only.
     pub(crate) tick_secs: u64,
@@ -30,7 +30,7 @@ pub(crate) struct Config {
     /// Hard cap of the on-disk journal file; reaching it writes the open
     /// segment early instead of failing the append.
     pub(crate) journal_max_bytes: u64,
-    /// Storage-rotation target for the whole output tree.
+    /// Storage-rotation target for the whole storage tree.
     pub(crate) retention: Option<RetentionConfig>,
     /// Where to ask `PostgreSQL` which log it writes and who it is.
     pub(crate) pg_dsns: Vec<String>,
@@ -104,7 +104,7 @@ const DEFAULT_AUTO_PERCENT: u8 = 80;
 /// Fixed rotation target when `KRONIKA_RETENTION` is unset.
 const DEFAULT_RETENTION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Rotation target for the whole `KRONIKA_OUT_DIR` tree.
+/// Rotation target for the whole `KRONIKA_STORAGE_DIR` tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(
     variant_size_differences,
@@ -179,11 +179,11 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns an error when `KRONIKA_OUT_DIR` is unset, a variable does not
+    /// Returns an error when `KRONIKA_STORAGE_DIR` is unset, a variable does not
     /// parse, or a bound fails validation.
     pub(crate) fn from_env() -> Result<Self> {
-        let out_dir: PathBuf = std::env::var("KRONIKA_OUT_DIR")
-            .context("KRONIKA_OUT_DIR is not set")?
+        let storage_dir: PathBuf = std::env::var("KRONIKA_STORAGE_DIR")
+            .context("KRONIKA_STORAGE_DIR is not set")?
             .into();
         validate_log_level()?;
         let tick_secs = env_u64("KRONIKA_INTERVAL_S", 5)?;
@@ -222,7 +222,7 @@ impl Config {
             "KRONIKA_POSTGRES_EFFECTIVE_CPUS requires KRONIKA_PG_DSNS"
         );
         Ok(Self {
-            out_dir,
+            storage_dir,
             tick_secs,
             intervals: intervals_from_env()?,
             segment_max_bytes,

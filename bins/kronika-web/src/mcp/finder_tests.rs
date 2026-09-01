@@ -18,7 +18,6 @@ fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
             password: "secret".to_owned(),
         },
         authentication_required: true,
-        cookie_secure: false,
         sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
         synthetic_demo: false,
     })

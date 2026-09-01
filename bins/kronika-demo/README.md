@@ -83,13 +83,13 @@ for the collector and optional PostgreSQL workload.
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
-| `KRONIKA_DEMO_DIR` | `demo-data` | Where the collector log, segments, and `report.json` are written. |
+| `KRONIKA_DEMO_DIR` | `demo-data` | Where the collector log and `report.json` are written. |
+| `KRONIKA_STORAGE_DIR` | `$KRONIKA_DEMO_DIR/segments` | Collector storage directory. |
 | `KRONIKA_DEMO_DURATION_S` | 60 | Run duration in seconds. `0` runs until `SIGTERM` or `SIGINT`. |
 | `KRONIKA_DEMO_COLLECTOR_LOG` | `file` | `file` writes `collector.log`; `stderr` uses inherited stderr. The image uses `stderr` with bounded Docker log rotation. |
 | `KRONIKA_COLLECTOR_BIN` | `kronika-collector` beside this binary | Collector binary to run. |
 
-Other `KRONIKA_*` collector variables pass through unchanged. `kronika-demo`
-sets only `KRONIKA_OUT_DIR` to the run's `segments` subdirectory.
+Other `KRONIKA_*` collector variables pass through unchanged.
 
 ### Optional PostgreSQL workload
 

@@ -61,11 +61,11 @@ fn procfs_fixture(world: &mut BddWorld, name: String) -> Result<()> {
 #[given(regex = r#"^a data root whose active\.wal is the journal magic followed by "(.+)"$"#)]
 fn prepared_corrupt_journal(world: &mut BddWorld, trailer: String) -> Result<()> {
     let root = tempfile::tempdir().context("create a data root")?;
-    let out_dir = root.path().join("segments");
-    std::fs::create_dir_all(&out_dir).context("create the segments directory")?;
+    let storage_dir = root.path().join("segments");
+    std::fs::create_dir_all(&storage_dir).context("create the segments directory")?;
     let mut bytes = JOURNAL_MAGIC.to_vec();
     bytes.extend_from_slice(trailer.as_bytes());
-    std::fs::write(out_dir.join("active.wal"), bytes).context("write the damaged journal")?;
+    std::fs::write(storage_dir.join("active.wal"), bytes).context("write the damaged journal")?;
     world.prepared_root = Some(root);
     Ok(())
 }
