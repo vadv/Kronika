@@ -27,13 +27,20 @@
 //! alternate-version reader or migration path.
 
 mod catalog_summary;
+mod embedded;
 mod local;
+mod resource;
 mod source;
 
 pub use catalog_summary::{
     CatalogDigest, CatalogLayoutDigest, CatalogSummary, CatalogSummaryError, catalog_digests,
 };
+pub use embedded::{EmbeddedResource, EmbeddedSource, SharedSegmentBytes};
 pub use local::{LocalDir, is_active_journal_scan_error, read_catalog};
+pub use resource::{
+    ImmutableSegmentSource, ResourceCatalog, ResourceIdentity, ResourceKind, ResourceListing,
+    SegmentResource,
+};
 pub use source::{
     ActiveJournalWarningReason, ActivePart, ActiveSnapshot, FinalUnit, InvalidZmsReason,
     JournalScan, LocalScan, StoreError, StoreIoFailure, StoreIoOperation, StoreObject,

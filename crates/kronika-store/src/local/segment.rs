@@ -29,7 +29,7 @@ pub(super) enum ZmsOpen {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum FinishedValidation {
+pub(crate) enum FinishedValidation {
     Catalog,
     Complete,
 }
@@ -123,7 +123,7 @@ pub(super) fn read_validated_zms_summary<R: ReadAt>(
     )
 }
 
-pub(super) fn read_zms_summary<R: ReadAt>(
+pub(crate) fn read_zms_summary<R: ReadAt>(
     reader: &R,
     retained_metadata: usize,
     metadata_limit: usize,
