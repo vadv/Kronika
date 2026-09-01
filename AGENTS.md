@@ -143,8 +143,8 @@ owner's attention:
   is judged by whether it is correct and readable, not by a ratio of called
   methods.
 
-Formats are not findings either, until there is a release. Nothing has shipped,
-so a name, a magic number or a layout that reads wrong gets changed on the spot.
+Released formats are contracts. Changing a shipped magic number or layout needs
+the owner's explicit compatibility decision; do not invent a migration path.
 
 Do not commit coding-agent plans or design drafts, including
 `docs/superpowers/`. Record durable design changes in both `DESIGN.md` and

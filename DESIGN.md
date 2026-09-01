@@ -412,9 +412,9 @@ truncated and its omitted tail may intersect the hour, the filtered count
 covers only returned in-window locators and `truncated` remains true. The hour
 never counts a locator known to be outside its bounds.
 
-The IDX format is unreleased. `KRNIDX6` is its one current reader and writer and
-changes in place. Web discards and rebuilds any other IDX; there is no
-old-format reader, migration, compatibility branch, or dual write.
+`KRNIDX6` is the IDX format shipped in Kronika 1.0.0. IDX is derived data: web
+discards and rebuilds any other IDX; there is no old-format reader, migration,
+compatibility branch, or dual write.
 
 ### One timeline, no diagnosis
 
