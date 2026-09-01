@@ -1,10 +1,16 @@
 # Kronika architecture. Regenerate the committed SVG with `make diagrams`.
 
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
 direction: right
 
-pg: PostgreSQL\nqueries + log
-pgb: PgBouncer\nlog events
-os: OS\n/proc, /sys
+pg: PostgreSQL\nqueries + log {width: 170}
+pgb: PgBouncer\nlog events {width: 170}
+os: OS\n/proc, /sys {width: 170}
 
 collector: kronika-collector {
   style.stroke-width: 3
@@ -14,19 +20,9 @@ pg -> collector
 pgb -> collector
 os -> collector
 
-storage: KRONIKA_OUT_DIR (POSIX directory) {
-  wal: active.wal {
-    r1: row
-    r2: row
-    r3: row
-  }
-  segment: YYYY/MM/DD/N.zms\nclosed, self-contained {
-    dict: string dictionary
-    row1: row (id → dictionary)
-    row2: row (id → dictionary)
-    row1 -> dict
-    row2 -> dict
-  }
+storage: KRONIKA_OUT_DIR {
+  wal: active.wal\nappend-only journal
+  segment: YYYY/MM/DD/N.zms\nstring dictionary + typed rows
   wal -> segment: write_segment()
 }
 
