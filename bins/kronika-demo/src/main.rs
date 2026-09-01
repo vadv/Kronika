@@ -29,6 +29,10 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
+fn resolve_storage_dir(root: &Path, configured: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(|| root.join("segments"))
+}
+
 fn collector_log_to_stderr(raw: Option<&str>) -> Result<bool> {
     match raw {
         None | Some("file") => Ok(false),
@@ -50,7 +54,7 @@ fn collector_binary() -> Result<PathBuf> {
 
 fn spawn_collector(
     binary: &Path,
-    segments: &Path,
+    storage_dir: &Path,
     root: &Path,
 ) -> Result<(std::process::Child, String)> {
     let log_path = root.join("collector.log");
@@ -63,7 +67,7 @@ fn spawn_collector(
     };
     let mut command = Command::new(binary);
     command
-        .env("KRONIKA_OUT_DIR", segments)
+        .env("KRONIKA_STORAGE_DIR", storage_dir)
         .stdin(Stdio::null());
     if log_to_stderr {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
@@ -106,11 +110,14 @@ fn measure_segments(root: &Path) -> Result<(usize, u64)> {
 
 fn main() -> Result<()> {
     let root = PathBuf::from(env_or("KRONIKA_DEMO_DIR", "demo-data"));
-    let segments = root.join("segments");
+    let storage_dir = resolve_storage_dir(
+        &root,
+        std::env::var_os("KRONIKA_STORAGE_DIR").map(PathBuf::from),
+    );
     let duration_s: u64 = env_or("KRONIKA_DEMO_DURATION_S", "60")
         .parse()
         .context("KRONIKA_DEMO_DURATION_S is not a u64")?;
-    std::fs::create_dir_all(&segments).context("create the demo data root")?;
+    std::fs::create_dir_all(&storage_dir).context("create the demo storage directory")?;
 
     let stop = shutdown::watch().context("watch for shutdown signals")?;
     let workload = WorkloadConfig::from_env()
@@ -120,7 +127,7 @@ fn main() -> Result<()> {
         .context("start the demo workload")?;
 
     let binary = collector_binary()?;
-    let (mut child, log_description) = spawn_collector(&binary, &segments, &root)?;
+    let (mut child, log_description) = spawn_collector(&binary, &storage_dir, &root)?;
     let pid = child.id();
     println!("demo: collector pid {pid} for {duration_s}s, log {log_description}");
 
@@ -175,8 +182,8 @@ fn main() -> Result<()> {
         std::thread::sleep(SAMPLE_INTERVAL);
     }
 
-    let (count, bytes) = measure_segments(&segments)?;
-    let journal_bytes = std::fs::metadata(segments.join("active.wal"))
+    let (count, bytes) = measure_segments(&storage_dir)?;
+    let journal_bytes = std::fs::metadata(storage_dir.join("active.wal"))
         .map(|meta| meta.len())
         .unwrap_or_default();
     let report = Report {
@@ -186,7 +193,7 @@ fn main() -> Result<()> {
         journal_bytes,
         peak_rss_bytes,
         cpu_ms: cpu_ticks.saturating_mul(1_000) / clock_ticks.max(1),
-        sections: sections::section_rows(&segments)?,
+        sections: sections::section_rows(&storage_dir)?,
     };
     print!("{}", report.render());
     let report_path = root.join("report.json");
@@ -196,24 +203,4 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::collector_log_to_stderr;
-
-    #[test]
-    fn collector_log_destination_is_explicit() {
-        assert!(!collector_log_to_stderr(None).expect("default file"));
-        assert!(!collector_log_to_stderr(Some("file")).expect("file"));
-        assert!(collector_log_to_stderr(Some("stderr")).expect("stderr"));
-        assert!(collector_log_to_stderr(Some("stdout")).is_err());
-    }
-
-    #[test]
-    fn healthcheck_does_not_probe_a_database_named_after_the_monitor_role() {
-        let healthcheck = include_str!("../../../scripts/demo-healthcheck.sh");
-        let readiness = healthcheck
-            .lines()
-            .find(|line| line.contains("pg_isready"))
-            .expect("PostgreSQL readiness command");
-        assert!(readiness.contains("--dbname=postgres"));
-    }
-}
+mod tests;

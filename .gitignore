@@ -1,6 +1,7 @@
 /target
 __pycache__/
 .DS_Store
+*.drawio.bkp
 
 # Demo output
 /demo-data/

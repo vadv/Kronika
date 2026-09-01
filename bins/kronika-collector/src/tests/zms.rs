@@ -137,7 +137,7 @@ struct ReplayArtifactReport {
 
 fn config(root: &Path, journal_max_bytes: u64) -> Config {
     Config {
-        out_dir: root.to_path_buf(),
+        storage_dir: root.to_path_buf(),
         tick_secs: 1,
         intervals: Intervals::default(),
         segment_max_bytes: 64 * 1024 * 1024,

@@ -207,7 +207,7 @@ fn reader_sets_aside(world: &mut BddWorld, expected: usize) -> Result<()> {
 #[then("a segment exists under a YYYY/MM/DD directory")]
 fn segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
-    let files = files_under(&run.out_dir());
+    let files = files_under(&run.storage_dir());
     anyhow::ensure!(
         files
             .iter()
@@ -221,7 +221,7 @@ fn segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
 #[then("every published segment file ends in .zms")]
 fn segments_are_zms(world: &mut BddWorld) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
-    for path in files_under(&run.out_dir()) {
+    for path in files_under(&run.storage_dir()) {
         if is_utc_calendar_path(&path) {
             anyhow::ensure!(
                 path.extension().and_then(std::ffi::OsStr::to_str) == Some("zms"),
@@ -237,9 +237,9 @@ fn segments_are_zms(world: &mut BddWorld) -> Result<()> {
 fn journal_is_active_wal(world: &mut BddWorld) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
     anyhow::ensure!(
-        run.out_dir().join("active.wal").exists(),
+        run.storage_dir().join("active.wal").exists(),
         "active.wal is missing from {:?}",
-        files_under(&run.out_dir())
+        files_under(&run.storage_dir())
     );
     Ok(())
 }
@@ -247,7 +247,7 @@ fn journal_is_active_wal(world: &mut BddWorld) -> Result<()> {
 #[then("no segment exists under a YYYY/MM/DD directory")]
 fn no_segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
-    let files = files_under(&run.out_dir());
+    let files = files_under(&run.storage_dir());
     anyhow::ensure!(
         files
             .iter()

@@ -509,8 +509,9 @@ is a line in the collector's log, not a change in the interface.
 
 Direct API requests accept HTTP Basic authentication. The browser sends Basic
 only to create a signed first-party HttpOnly session cookie, then uses that
-cookie for protected API requests. The check stays in one place outside the
-handlers.
+cookie for protected API requests. Session creation and clearing require one
+well-formed HTTP or HTTPS browser `Origin`; the HTTPS form adds `Secure` to the
+cookie. The check stays in one place outside the handlers.
 
 ### Shipped interface
 

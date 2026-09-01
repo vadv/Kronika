@@ -1,16 +1,18 @@
 # Connecting MCP clients
 
 `kronika-web` serves an MCP endpoint at `POST /mcp` — Streamable HTTP,
-stateless, JSON responses, tools only. It authenticates with the same HTTP
-Basic credentials as the web UI, sent as an `Authorization` header on every
-request. Plain `http://` on a LAN works in every client below. The
-endpoint rejects requests carrying an `Origin` header and does not route
-`/mcp` with a query string; a server started without a configured account
-serves `/mcp` without credentials.
+stateless, JSON responses, tools only. With the default authentication mode,
+clients send the same HTTP Basic credentials as the web UI in an
+`Authorization` header on every request. HTTP Basic credentials are exposed
+without TLS; use plain HTTP only on loopback or a network you explicitly trust.
+The endpoint
+rejects requests carrying an `Origin` header and does not route `/mcp` with a
+query string. `KRONIKA_WEB_AUTH=disabled` removes the credential check, but
+`KRONIKA_WEB_USER` and `KRONIKA_WEB_PASSWORD` remain required configuration.
 
 Placeholders used throughout:
 
-- `<URL>` — the endpoint, e.g. `http://192.168.0.22:8080/mcp`
+- `<URL>` — the endpoint, e.g. `http://127.0.0.1:8080/mcp`
 - `kronika` — the registration name. With several Kronika instances, give
   each its own name, or the second registration replaces the first; the
   web UI's connection panel derives one from the largest recorded

@@ -1,14 +1,15 @@
 use http_body_util::BodyExt as _;
 use hyper::header::{
-    ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, COOKIE, ETAG, IF_NONE_MATCH,
+    ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, COOKIE, ETAG, IF_NONE_MATCH, ORIGIN,
     SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    RequestError, RequestTarget, SingleHeader, authorization, if_none_match_values,
-    response_from_meta, route_request, route_request_at, session_response,
+    RequestError, RequestTarget, SessionTarget, SingleHeader, authorization, if_none_match_values,
+    response_from_meta, route_request, route_request_at, route_request_without_authentication,
+    session_response,
 };
 use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
@@ -68,14 +69,34 @@ fn session_request(
     request
 }
 
-fn session_route_response(
-    request: &Request<()>,
-    now: u64,
-    cookie_secure: bool,
-) -> hyper::Response<super::WebBody> {
+fn session_request_from_origin(
+    method: Method,
+    authorization: Option<&str>,
+    cookie: Option<&str>,
+    origin: &'static str,
+) -> Request<()> {
+    session_request_from_origins(method, authorization, cookie, &[origin])
+}
+
+fn session_request_from_origins(
+    method: Method,
+    authorization: Option<&str>,
+    cookie: Option<&str>,
+    origins: &[&'static str],
+) -> Request<()> {
+    let mut request = session_request(method, authorization, cookie);
+    for origin in origins {
+        request
+            .headers_mut()
+            .append(ORIGIN, hyper::header::HeaderValue::from_static(origin));
+    }
+    request
+}
+
+fn session_route_response(request: &Request<()>, now: u64) -> hyper::Response<super::WebBody> {
     match route_request_at(&account(), request, now).expect("session route") {
         RequestTarget::Session(target) => {
-            session_response(&account(), cookie_secure, target).expect("session response")
+            session_response(&account(), target).expect("session response")
         }
         other => panic!("expected session target, got {other:?}"),
     }
@@ -225,7 +246,7 @@ fn duplicate_authorization_fields_are_refused() {
 #[tokio::test]
 async fn session_get_is_query_free_empty_and_unchallenged() {
     const NOW: u64 = 1_786_579_200;
-    let response = session_route_response(&session_request(Method::GET, None, None), NOW, false);
+    let response = session_route_response(&session_request(Method::GET, None, None), NOW);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         response.headers().get(CACHE_CONTROL),
@@ -255,13 +276,23 @@ async fn session_get_is_query_free_empty_and_unchallenged() {
 }
 
 #[tokio::test]
-async fn session_post_issues_a_credential_free_cookie() {
+async fn session_post_with_http_origin_issues_a_credential_free_cookie() {
     const NOW: u64 = 1_786_579_200;
-    let response = session_route_response(
-        &session_request(Method::POST, Some(AUTHORIZATION), None),
-        NOW,
-        false,
+    let mut request = session_request_from_origin(
+        Method::POST,
+        Some(AUTHORIZATION),
+        None,
+        "http://kronika.example",
     );
+    request.headers_mut().insert(
+        "x-forwarded-proto",
+        hyper::header::HeaderValue::from_static("https"),
+    );
+    request.headers_mut().insert(
+        "forwarded",
+        hyper::header::HeaderValue::from_static("for=192.0.2.1;proto=https"),
+    );
+    let response = session_route_response(&request, NOW);
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         response.headers().get(CACHE_CONTROL),
@@ -277,6 +308,7 @@ async fn session_post_issues_a_credential_free_cookie() {
     assert!(cookie.starts_with("kronika_session=v1."));
     assert!(!cookie.contains("dba"));
     assert!(!cookie.contains("secret"));
+    assert!(!cookie.contains("; Secure"));
     assert!(
         response
             .into_body()
@@ -289,16 +321,69 @@ async fn session_post_issues_a_credential_free_cookie() {
 }
 
 #[test]
+fn session_post_with_https_origin_issues_a_secure_cookie() {
+    const NOW: u64 = 1_786_579_200;
+    let request = session_request_from_origin(
+        Method::POST,
+        Some(AUTHORIZATION),
+        None,
+        "https://kronika.example",
+    );
+    let response = session_route_response(&request, NOW);
+    let cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie");
+
+    assert!(cookie.ends_with("; Secure"));
+}
+
+#[test]
+fn session_cookie_mutations_require_one_well_formed_http_origin() {
+    const NOW: u64 = 1_786_579_200;
+    let invalid_origins: [&[&str]; 5] = [
+        &[],
+        &["null"],
+        &["ftp://kronika.example"],
+        &["https://kronika.example/path"],
+        &["https://kronika.example", "https://kronika.example"],
+    ];
+    for method in [Method::POST, Method::DELETE] {
+        let authorization = (method == Method::POST).then_some(AUTHORIZATION);
+        for origins in invalid_origins {
+            let request =
+                session_request_from_origins(method.clone(), authorization, None, origins);
+            assert_eq!(
+                route_request_at(&account(), &request, NOW),
+                Err(RequestError::InvalidOrigin),
+                "{method} {origins:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn invalid_session_post_is_unchallenged_and_does_not_change_the_cookie() {
     const NOW: u64 = 1_786_579_200;
     let response = session_route_response(
         &session_request(Method::POST, Some("Basic ZGJhOndyb25n"), None),
         NOW,
-        false,
     );
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
     assert!(!response.headers().contains_key(SET_COOKIE));
+}
+
+#[test]
+fn disabled_auth_session_post_remains_admitted_without_an_origin() {
+    let request = session_request(Method::POST, None, None);
+    assert_eq!(
+        route_request_without_authentication(&request),
+        Ok(RequestTarget::Session(SessionTarget::Check {
+            admitted: true,
+        }))
+    );
 }
 
 #[test]
@@ -309,7 +394,7 @@ fn duplicate_authorization_cannot_create_a_session() {
         hyper::header::AUTHORIZATION,
         hyper::header::HeaderValue::from_static(AUTHORIZATION),
     );
-    let response = session_route_response(&request, NOW, false);
+    let response = session_route_response(&request, NOW);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(!response.headers().contains_key(SET_COOKIE));
     assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
@@ -319,9 +404,13 @@ fn duplicate_authorization_cannot_create_a_session() {
 fn valid_cookie_restores_session_and_authorizes_browser_api() {
     const NOW: u64 = 1_786_579_200;
     let login = session_route_response(
-        &session_request(Method::POST, Some(AUTHORIZATION), None),
+        &session_request_from_origin(
+            Method::POST,
+            Some(AUTHORIZATION),
+            None,
+            "http://kronika.example",
+        ),
         NOW,
-        false,
     );
     let cookie = request_cookie(
         login
@@ -332,11 +421,7 @@ fn valid_cookie_restores_session_and_authorizes_browser_api() {
             .expect("ASCII cookie"),
     );
 
-    let get = session_route_response(
-        &session_request(Method::GET, None, Some(cookie)),
-        NOW,
-        false,
-    );
+    let get = session_route_response(&session_request(Method::GET, None, Some(cookie)), NOW);
     assert_eq!(get.status(), StatusCode::NO_CONTENT);
     assert!(!get.headers().contains_key(SET_COOKIE));
 
@@ -363,7 +448,6 @@ fn expired_cookie_is_rejected_without_implicit_cleanup() {
     let get = session_route_response(
         &session_request(Method::GET, None, Some(cookie)),
         expired_at,
-        false,
     );
     assert_eq!(get.status(), StatusCode::UNAUTHORIZED);
     assert!(!get.headers().contains_key(SET_COOKIE));
@@ -388,7 +472,7 @@ fn mcp_request_with_a_well_formed_origin_is_rejected() {
     let request = Request::builder()
         .method(Method::POST)
         .uri("/mcp")
-        .header(hyper::header::ORIGIN, "https://example.com")
+        .header(ORIGIN, "https://example.com")
         .body(())
         .expect("request");
     let target = route_request_at(&account(), &request, 0);
@@ -474,7 +558,7 @@ fn duplicate_cookie_fields_are_not_a_session() {
         COOKIE,
         hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
     );
-    let response = session_route_response(&request, NOW, false);
+    let response = session_route_response(&request, NOW);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(!response.headers().contains_key(SET_COOKIE));
 }
@@ -482,7 +566,10 @@ fn duplicate_cookie_fields_are_not_a_session() {
 #[tokio::test]
 async fn session_delete_is_idempotent_and_clears_the_exact_scope() {
     const NOW: u64 = 1_786_579_200;
-    let response = session_route_response(&session_request(Method::DELETE, None, None), NOW, true);
+    let response = session_route_response(
+        &session_request_from_origin(Method::DELETE, None, None, "https://kronika.example"),
+        NOW,
+    );
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         response
@@ -503,10 +590,26 @@ async fn session_delete_is_idempotent_and_clears_the_exact_scope() {
     );
 }
 
+#[test]
+fn session_delete_with_http_origin_clears_without_secure() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(
+        &session_request_from_origin(Method::DELETE, None, None, "http://kronika.example"),
+        NOW,
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok()),
+        Some("kronika_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+    );
+}
+
 #[tokio::test]
 async fn unsupported_session_method_stays_inside_the_empty_session_boundary() {
     const NOW: u64 = 1_786_579_200;
-    let response = session_route_response(&session_request(Method::PUT, None, None), NOW, false);
+    let response = session_route_response(&session_request(Method::PUT, None, None), NOW);
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
         response.headers().get(ALLOW),
@@ -860,7 +963,6 @@ fn mcp_access_body_carries_the_basic_value_only_when_authentication_is_on() {
         listen: "127.0.0.1:0".parse().expect("listen address"),
         account: account(),
         authentication_required,
-        cookie_secure: false,
         sources: crate::config::SOURCE_OS,
         synthetic_demo: false,
     };

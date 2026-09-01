@@ -40,9 +40,7 @@ pub(crate) struct Config {
     pub(crate) account: Account,
     /// Whether API and browser session authentication is enforced.
     pub(crate) authentication_required: bool,
-    /// Whether browser session cookies are restricted to TLS connections.
-    pub(crate) cookie_secure: bool,
-    /// Explicit source bitset persisted in every derived index.
+    /// Source-family configuration reported by the catalog.
     pub(crate) sources: u32,
     /// Whether the server exposes the bundled synthetic demo dataset.
     pub(crate) synthetic_demo: bool,
@@ -71,8 +69,8 @@ impl Config {
     /// Returns an error when the data root, either credential, or the source
     /// bitset is absent, or when a configured value is invalid.
     pub(crate) fn from_env() -> Result<Self> {
-        let data_root: PathBuf = std::env::var("KRONIKA_OUT_DIR")
-            .context("KRONIKA_OUT_DIR is not set")?
+        let data_root: PathBuf = std::env::var("KRONIKA_STORAGE_DIR")
+            .context("KRONIKA_STORAGE_DIR is not set")?
             .into();
         let raw_listen =
             std::env::var("KRONIKA_WEB_LISTEN").unwrap_or_else(|_unset| DEFAULT_LISTEN.to_owned());
@@ -85,8 +83,6 @@ impl Config {
         )?;
         let authentication_required =
             authentication_required(std::env::var("KRONIKA_WEB_AUTH").ok().as_deref())?;
-        let raw_cookie_secure = std::env::var("KRONIKA_WEB_COOKIE_SECURE").ok();
-        let cookie_secure = cookie_secure(raw_cookie_secure.as_deref())?;
         let sources = source_set(std::env::var("KRONIKA_WEB_SOURCES").ok())?;
         let synthetic_demo = synthetic_demo(std::env::var("KRONIKA_WEB_DEMO").ok().as_deref())?;
         Ok(Self {
@@ -94,7 +90,6 @@ impl Config {
             listen,
             account,
             authentication_required,
-            cookie_secure,
             sources,
             synthetic_demo,
         })
@@ -127,16 +122,6 @@ fn account(user: Option<String>, password: Option<String>) -> Result<Account> {
         anyhow::bail!("KRONIKA_WEB_PASSWORD is empty");
     }
     Ok(Account { user, password })
-}
-
-fn cookie_secure(raw: Option<&str>) -> Result<bool> {
-    match raw {
-        None | Some("false") => Ok(false),
-        Some("true") => Ok(true),
-        Some(value) => {
-            anyhow::bail!("KRONIKA_WEB_COOKIE_SECURE={value:?} is not true or false")
-        }
-    }
 }
 
 fn source_set(raw: Option<String>) -> Result<u32> {

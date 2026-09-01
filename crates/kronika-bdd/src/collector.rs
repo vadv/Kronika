@@ -38,12 +38,12 @@ pub(crate) struct Run {
 impl Run {
     /// Spawn the collector over a data root with `env` applied on top.
     pub(crate) fn spawn(root: tempfile::TempDir, env: &[(String, String)]) -> Result<Self> {
-        let out_dir = root.path().join("segments");
-        std::fs::create_dir_all(&out_dir).context("create the segments directory")?;
+        let storage_dir = root.path().join("segments");
+        std::fs::create_dir_all(&storage_dir).context("create the segments directory")?;
         let log_path = root.path().join("collector.log");
         let log = std::fs::File::create(&log_path).context("create collector.log")?;
         let mut command = Command::new(binary()?);
-        command.env("KRONIKA_OUT_DIR", &out_dir);
+        command.env("KRONIKA_STORAGE_DIR", &storage_dir);
         for (key, value) in env {
             command.env(key, value);
         }
@@ -64,7 +64,7 @@ impl Run {
     }
 
     /// The collector's data root.
-    pub(crate) fn out_dir(&self) -> PathBuf {
+    pub(crate) fn storage_dir(&self) -> PathBuf {
         self.root
             .as_ref()
             .expect("the data root outlives the run")

@@ -115,9 +115,9 @@ fn cgroup_v2_window() -> FlushedPart {
         .expect("compatibility rows yield a part")
 }
 
-fn test_config(out_dir: &Path) -> Config {
+fn test_config(storage_dir: &Path) -> Config {
     Config {
-        out_dir: out_dir.to_path_buf(),
+        storage_dir: storage_dir.to_path_buf(),
         tick_secs: 5,
         intervals: Intervals::default(),
         segment_max_bytes: u64::MAX,
@@ -723,7 +723,7 @@ fn recovery_preserves_a_populated_part_without_a_timestamp() {
     assert_eq!(journal.parts().len(), 1);
     assert!(
         fs::read_dir(dir.path())
-            .expect("read output directory")
+            .expect("read storage directory")
             .all(|entry| {
                 entry.expect("directory entry").path().extension()
                     != Some(std::ffi::OsStr::new("zms"))

@@ -37,9 +37,9 @@ async fn shutdown_drops_in_progress_collection() {
     assert!(dropped.load(Ordering::Relaxed));
 }
 
-fn config(out_dir: &Path) -> Config {
+fn config(storage_dir: &Path) -> Config {
     Config {
-        out_dir: out_dir.to_owned(),
+        storage_dir: storage_dir.to_owned(),
         tick_secs: 1,
         intervals: Intervals::default(),
         segment_max_bytes: 64 * 1024 * 1024,
@@ -54,9 +54,9 @@ fn config(out_dir: &Path) -> Config {
     }
 }
 
-fn recovery_candidate(out_dir: &Path) -> Vec<u8> {
-    std::fs::create_dir_all(out_dir).expect("create data root");
-    let root = DataRoot::open(out_dir).expect("open data root");
+fn recovery_candidate(storage_dir: &Path) -> Vec<u8> {
+    std::fs::create_dir_all(storage_dir).expect("create data root");
+    let root = DataRoot::open(storage_dir).expect("open data root");
     let owner = root
         .acquire_writer(LayoutLimits::default())
         .expect("acquire writer");
@@ -73,7 +73,7 @@ fn recovery_candidate(out_dir: &Path) -> Vec<u8> {
         .expect("append recovery candidate");
     drop(journal);
     drop(owner);
-    std::fs::read(out_dir.join("active.wal")).expect("read recovery candidate")
+    std::fs::read(storage_dir.join("active.wal")).expect("read recovery candidate")
 }
 
 #[test]
@@ -82,12 +82,12 @@ fn invalid_connections_stop_before_storage_recovery() {
     let valid = "host=db.example user=monitor".to_owned();
     let invalid = "host='unterminated password=RAW_SECRET dbname=PRIVATE_DATABASE".to_owned();
 
-    for (variable, out_dir) in [
+    for (variable, storage_dir) in [
         ("KRONIKA_PG_DSNS", dir.path().join("postgresql")),
         ("KRONIKA_PGBOUNCER_DSNS", dir.path().join("pgbouncer")),
     ] {
-        let mut config = config(&out_dir);
-        let wal_before = recovery_candidate(&out_dir);
+        let mut config = config(&storage_dir);
+        let wal_before = recovery_candidate(&storage_dir);
         match variable {
             "KRONIKA_PG_DSNS" => {
                 config.pg_dsns = vec![valid.clone(), invalid.clone()];
@@ -107,9 +107,9 @@ fn invalid_connections_stop_before_storage_recovery() {
             assert!(!message.contains(secret));
         }
         assert_eq!(
-            std::fs::read(out_dir.join("active.wal")).expect("read untouched journal"),
+            std::fs::read(storage_dir.join("active.wal")).expect("read untouched journal"),
             wal_before
         );
-        assert!(!out_dir.join("1970/01/01/100.zms").exists());
+        assert!(!storage_dir.join("1970/01/01/100.zms").exists());
     }
 }

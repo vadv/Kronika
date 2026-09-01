@@ -17,17 +17,42 @@ source. Large PostgreSQL results are streamed in bounded batches without
 dropping rows. Each `segment_write_finish` log record includes `rss_kib`, the
 process's peak resident set size.
 
-`KRONIKA_OUT_DIR` is the only required variable.
+`KRONIKA_STORAGE_DIR` is the only required variable.
 
 ### Storage
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
-| `KRONIKA_OUT_DIR` | — | Data root: the journal, the finished segments, and the writer lock. |
+| `KRONIKA_STORAGE_DIR` | — | Data root: the journal, the finished segments, and the writer lock. |
 | `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Write the open segment once the journal holds this many raw bytes. |
 | `KRONIKA_SEGMENT_MAX_AGE_S` | 900 | Write an open segment at this age even if the byte cap was not reached. |
 | `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard cap of `active.wal`. Reaching it writes the open segment early rather than failing the append. |
-| `KRONIKA_RETENTION` | 2 GiB | Rotation target for the whole tree: a byte budget, `auto` (= `auto:80`), or `auto:P` for a used-fraction target of the backing partition. |
+| `KRONIKA_RETENTION` | 2 GiB | Local rotation target: a byte budget, `auto` (= `auto:80`), or `auto:P` for a used-space target on the backing filesystem. |
+
+`KRONIKA_RETENTION` accepts an unsigned decimal byte count or `auto[:P]`. A
+fixed budget must be at least twice `KRONIKA_SEGMENT_MAX_BYTES`; for example,
+`10737418240` sets a 10 GiB budget. Fixed mode counts `active.wal`, finished
+`.zms` files and their `.idx` sidecars, and recognized temporary files.
+`auto:P` instead compares all used bytes on the backing filesystem with `P`
+percent of its capacity, where `P` is from 1 through 99. The percentage applies
+to the entire filesystem, not just Kronika data.
+
+Rotation checks the target after a collection cycle that published one or more
+finished ZMS files and on a one-minute timer; a running collection cycle can
+delay the timer check. Fixed mode also recounts the files once per hour so
+`.idx` files created by web enter the total. Rotation deletes stale writer ZMS
+temporaries, orphan `.idx` files, then finished `.zms` files and their sibling
+`.idx` files from oldest to newest. It never deletes `active.wal`, the newest
+finished segment, or unrelated files. If those remaining files still exceed
+the target, collection continues and logs `rotation_degraded`.
+
+On the current M1 workload with 452 tables and 3,502 indexes, 43 finished ZMS
+files totaled 82,687,221 bytes from 00:10 to 10:40 UTC on 2026-09-01. At the
+current 15-minute segment cadence this is about 1.92 MB per segment, four
+segments per hour, and 184 MB per day (about 0.18 GB). The default 2 GiB budget
+corresponds to about 11.6 days of ZMS at this rate before accounting for
+`active.wal` and `.idx`. This is one workload measurement, not a fixed storage
+rate. Use the measured local rate when choosing a budget.
 
 ### Collection intervals
 
@@ -55,6 +80,47 @@ sections come from. A metric row carries no column naming the server that
 produced it, so a second DSN is followed for its log only, and starting with
 more than one is one line in the log saying which was chosen.
 
+### PostgreSQL role
+
+The quick-start role uses these grants:
+
+```sql
+CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
+GRANT pg_monitor TO kronika_monitor;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
+```
+
+`pg_monitor` supplies the settings and statistics access used by the base
+metrics and gives full visibility to `pg_stat_statements` and
+`pg_store_plans`. The role must inherit this membership because the collector
+does not issue `SET ROLE`. The explicit `pg_current_logfile()` grant is needed
+for log discovery on PostgreSQL 10 through 16 and is harmless on later
+releases.
+
+On an ordinary installation, databases grant `CONNECT` to `PUBLIC`, the
+`public` schema grants `USAGE`, and functions grant `EXECUTE`. The shipped
+extension SQL also grants `SELECT` on the main views and any installed
+`*_info` views. The standard read and function-execution access in `pg_catalog`
+must remain; a cluster that revokes it broadly needs its own catalog allowlist.
+
+Schema, function, and view grants are local to one database. `CONNECT` is
+granted separately on every database. Add only the privileges the role lacks:
+
+- grant `CONNECT` on every database to inventory;
+- in each extension database, grant `USAGE` on its schema whenever it is
+  missing, including for an extension in a custom schema, and grant `EXECUTE`
+  on the installed reader: `pg_stat_statements(boolean)`, one of
+  `pg_store_plans()` or `pg_store_plans(boolean)`, and, for the vadv interface,
+  `pg_store_plans_get_plan(oid, oid, bigint, bigint)` plus
+  `pg_store_plans_textplan(text)`; if an `*_info` view exists, grant `SELECT` on
+  the view and `EXECUTE` on its same-named zero-argument function; and
+- in every DSN database used for log discovery, grant `EXECUTE` on
+  `pg_catalog.pg_current_logfile()` and, if default function execution was also
+  revoked, `pg_catalog.pg_control_system()`.
+
+The collector calls the extension readers directly; it does not need `SELECT`
+on the main extension views.
+
 Per-table and per-index statistics exist only inside the database that produced
 them. The collector keeps one connection to each connectable database and
 reuses it while it remains healthy for at most one hour. The five-minute
@@ -71,21 +137,24 @@ collector selects one usable installation of each extension, so shared rows are
 not duplicated. Creating, dropping, or moving an extension changes the selected
 installation on the next pass.
 
-`pg_stat_statements` is collected from extension version 1.5 onward, with one
-layout per column set. `pg_store_plans` is identified by its callable interface
-and result columns rather than `extversion`: the collector keeps separate OSSC
-and Datasentinel layouts for their zero-argument readers, and recognizes the
-vadv boolean reader only with its four-key plan getter and executable native
-text converter. The collector composes those functions in the discovered
-schema so every stored `plan` is bounded human-readable text. It also discovers
-the exact readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
+`pg_stat_statements` layouts support extension versions 1.5 and later in the
+1.x series. On PostgreSQL 14 or newer, the collector requires version 1.9 or
+later in that series and does not select 1.5–1.8. Each column set has one
+layout. `pg_store_plans` is identified by its callable interface and result
+columns rather than `extversion`: the collector keeps separate OSSC and
+Datasentinel layouts for their zero-argument readers, and recognizes the vadv
+boolean reader only with its four-key plan getter and executable native text
+converter. The collector composes those functions in the discovered schema so
+every stored `plan` is bounded human-readable text. It also discovers the exact
+readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
 view is selected independently of its main statistics reader. The complete
 layout map is in
 [PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).
 When several databases expose different layouts, the collector chooses the
-newest `pg_stat_statements` layout. `pg_store_plans` implementations are not
-ranked: the current database wins when usable, otherwise database name is the
-deterministic tie-break.
+newest `pg_stat_statements` layout. Among databases with that layout, the
+current database wins when usable, otherwise database name is the deterministic
+tie-break. `pg_store_plans` implementations are not ranked and use the same
+database preference.
 
 `pg_settings` is read on each PostgreSQL collection. The collector writes a
 full snapshot after the first successful read, when a setting changes, and in
@@ -161,6 +230,22 @@ of the four is set.
 | `KRONIKA_PGBOUNCER_DSNS` | unset | Where to ask `PgBouncer` for `SHOW CONFIG`, which carries `logfile`. The account needs to be in `stats_users`; no administrative right beyond that. |
 | `KRONIKA_PGBOUNCER_LOGS` | unset | `PgBouncer` logs named outright, paths or patterns. |
 
+Set one PostgreSQL connection as a quoted keyword DSN:
+
+```sh
+KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres'
+```
+
+A `;` inside the same value separates additional DSNs. The first supplies
+metric rows; later entries are used only to discover logs.
+
+The database named by the first DSN is only the initial metric database. On
+that server, the collector inventories it plus every other non-template
+database that the same role can connect to, then reads one usable
+`pg_stat_statements` installation and one usable `pg_store_plans`
+installation (they may come from different databases); no DSN per database is
+needed.
+
 A log file's size is set by someone else's software, so it is read through a
 4 MiB buffer and never held whole. One collection reads at most 256 MiB from
 each file.
@@ -205,7 +290,7 @@ parent block-device identity; layered device ancestry remains unspecified.
 ## Run the collector
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika kronika-collector
+KRONIKA_STORAGE_DIR=/var/lib/kronika kronika-collector
 ```
 
 `SIGTERM` and `SIGINT` stop the loop and leave the journal in place, so a
