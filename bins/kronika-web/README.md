@@ -2,60 +2,61 @@
 
 [Русская версия](README.ru.md)
 
-`kronika-web` serves recorded Kronika data: an embedded single-page
-interface for people and an MCP endpoint for LLM clients. It reads finished
-segments and the valid prefix of `active.wal` through `kronika-reader`,
-opens the data directory read-only, and keeps no cache between requests. It
-has no public command-line interface; environment variables provide its
-configuration.
+`kronika-web` serves recorded Kronika data through a browser interface, an
+HTTP API, and MCP. It reads `active.wal` and finished `.zms` segments through
+`kronika-reader`, and creates derived `.idx` files in the data directory. The
+server is configured only through environment variables.
 
 ## Configuration
 
-Every variable is read once, at startup. A value that does not parse stops
-the server with a message naming the variable and the invalid value.
+Missing required variables and invalid values stop startup before the listener
+binds.
 
-| Variable | Default | Meaning |
+| Variable | Default | Description |
 | --- | ---: | --- |
-| `KRONIKA_OUT_DIR` | — | Data root written by the collector: the journal, the finished segments, and the derived indexes. |
-| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | Socket address the HTTP server binds. |
-| `KRONIKA_WEB_SOURCES` | — | Decimal bitset of the source families recorded in derived indexes: `1` = OS, `2` = PostgreSQL, `3` = both. |
-| `KRONIKA_WEB_USER` | — | Basic-auth user name; non-empty, required even when auth is disabled. |
-| `KRONIKA_WEB_PASSWORD` | — | Basic-auth password; non-empty, required even when auth is disabled. |
-| `KRONIKA_WEB_AUTH` | `required` | `required` enforces authentication on `/api` and `/mcp`; `disabled` admits every request. |
-| `KRONIKA_WEB_COOKIE_SECURE` | `false` | `true` marks the browser session cookie `Secure`, for serving behind TLS. |
-| `KRONIKA_WEB_DEMO` | unset | The only accepted value is `synthetic`: marks the catalog and the interface with the synthetic-demo badge. Data still comes from `KRONIKA_OUT_DIR`. |
+| `KRONIKA_OUT_DIR` | — | Required data directory. It must contain the collector output and allow web to create and replace `.idx` files and `.kronika-index.owner.lock`. |
+| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | HTTP listen address. |
+| `KRONIKA_WEB_SOURCES` | — | Required decimal value: `0` = none, `1` = OS, `2` = PostgreSQL, `3` = both. Other values are rejected. |
+| `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
+| `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
+| `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
+| `KRONIKA_WEB_COOKIE_SECURE` | `false` | `true` adds the `Secure` attribute to the browser session cookie. |
+| `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_OUT_DIR`. |
 
 ## Run
 
+Install `rustup` and `musl-gcc`, then run from the repository root:
+
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
-KRONIKA_WEB_LISTEN=0.0.0.0:8080 \
-KRONIKA_WEB_SOURCES=3 \
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --locked -p kronika-web
+
+KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
-KRONIKA_WEB_PASSWORD=secret \
-kronika-web
+KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
-On success the process prints `ready <addr>` to stdout and serves HTTP/1.1
-until stopped.
+The data directory must already exist. On success, the process prints
+`ready <addr>` and starts its HTTP/1.1 listener.
 
-Authentication accepts either an `Authorization: Basic` header or the
-browser session cookie issued by `POST /auth/session`. A request with wrong
-or missing credentials gets `401`.
+Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
+password. For network access, use a TLS-terminating reverse proxy unless you
+explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`.
+
+Set `KRONIKA_WEB_SOURCES` to match the recorded data: `1` for host data, `2`
+for PostgreSQL, or `3` for both.
+
+With `KRONIKA_WEB_AUTH=required`, protected requests accept either Basic
+credentials or the browser session cookie issued by `POST /auth/session`.
 
 ## Endpoints
 
-- `/` — the interface, one self-contained HTML document embedded in the
-  binary at build time.
-- `/auth/session` — browser login: `GET` checks, `POST` with Basic
-  credentials issues the cookie, `DELETE` clears it.
-- `/api/*` — the GET-only JSON and NDJSON API the interface uses. Responses
-  carry `ETag` and honor `If-None-Match` and `Accept-Encoding`.
-- `/mcp` — the MCP endpoint: stateless Streamable HTTP, `POST` with JSON
-  responses, tools only. Fourteen tools read what was recorded — ranking
-  over an interval, the section catalog, instance metadata, per-section
-  finders, row detail, events — and never query the monitored host.
-  Requests carrying an `Origin` header are rejected, so browsers cannot
-  call it. Client setup: [docs/mcp-clients.md](../../docs/mcp-clients.md);
-  the MCP panel in the interface's top bar produces a ready-to-paste
-  setup prompt.
+- `/` — embedded browser interface; accepts `GET` and `HEAD`.
+- `/auth/session` — checks a browser session with `GET`, creates one from Basic
+  credentials with `POST`, and clears it with `DELETE`.
+- `/api/*` — JSON and NDJSON resources used by the interface; accepts `GET`.
+- `/mcp` — stateless Streamable HTTP endpoint; accepts `POST`. A query string or
+  an `Origin` header is rejected. MCP reads stored Kronika data. See
+  [MCP client setup](../../docs/mcp-clients.md).

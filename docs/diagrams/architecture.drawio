@@ -31,7 +31,7 @@
         <mxCell id="e-os" edge="1" parent="1" source="os" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.5;entryX=0;entryY=0.7;" target="collector" value="metrics">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="dir" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=18;fillColor=#F7F9FE;strokeColor=#0d32b2;verticalAlign=top;fontSize=15;fontStyle=1;spacingTop=10;" value="KRONIKA_OUT_DIR — POSIX directory, the only storage today" vertex="1">
+        <mxCell id="dir" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=18;fillColor=#F7F9FE;strokeColor=#0d32b2;verticalAlign=top;fontSize=15;fontStyle=1;spacingTop=10;" value="KRONIKA_OUT_DIR — local data directory" vertex="1">
           <mxGeometry height="480" width="620" x="60" y="400" as="geometry" />
         </mxCell>
         <mxCell id="e-appends" edge="1" parent="1" source="collector" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="wal" value="appends">

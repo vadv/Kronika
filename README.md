@@ -2,105 +2,94 @@
 
 [Русская версия](README.ru.md)
 
-Kronika records the history of a machine and the databases on it, the way
-`atop` records system history, and replays it later. The collector takes
-periodic snapshots of operating-system and PostgreSQL metrics, parses logs,
-and turns notable log events into metrics. Web reads the recordings and shows
-them to people in a browser and to LLM clients over MCP.
+Kronika records periodic snapshots of a Linux host and its databases for later
+inspection. The collector reads operating-system and PostgreSQL metrics and
+parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
+through a browser interface and MCP.
 
 ![Kronika architecture](docs/images/architecture.svg)
 
-The collector runs all the time on the monitored host; its peak RSS stays
-under 25 MiB, and every segment write logs the measured `rss_kib`. Everything
-it collects lands in one directory: windows append to `active.wal`, and the
-journal is written out as segments named `YYYY/MM/DD/N.zms`. Each segment is
-independent and self-contained — opening one requires no other file, no
-external schema, no registry lookup. `kronika-web` opens the same directory
-read-only: finished segments plus the valid prefix of `active.wal`, all
-through the one `kronika-reader` crate.
+The collector writes the current journal to `active.wal` and finished segments
+to `YYYY/MM/DD/N.zms` under `KRONIKA_OUT_DIR`. `kronika-web` reads those files
+and creates derived `N.idx` files in the same directory.
 
-## Try the demo
+## Run the demo
 
-Requires Docker with Compose v2.
+The demo requires Docker with Compose v2 on amd64 or arm64 Linux.
 
 ```sh
 make demo-up
 ```
 
-This builds one container with PostgreSQL 15, PgBouncer, a workload
-generator, the collector, and web, then waits until it is healthy. Open
-<http://127.0.0.1:8080/> and log in as `demo` / `forensics`. `make demo-stop`
-keeps the collected segments; `make demo-clean` removes containers and data.
-Details: [bins/kronika-demo/README.md](bins/kronika-demo/README.md).
+Open <http://127.0.0.1:8080/> and sign in with user `demo` and password
+`forensics`. `make demo-stop` preserves the collected data; `make demo-clean`
+removes the demo containers and data. See
+[bins/kronika-demo/README.md](bins/kronika-demo/README.md) for details.
 
-## Run it on a host
+## Build and run from source
 
-Build with the pinned Rust toolchain (1.96.0, selected automatically by
-`rust-toolchain.toml`). npm is not needed: `kronika-web` compiles from the
-committed interface artifact.
+The default build produces static x86-64 Linux binaries and requires `rustup`
+and `musl-gcc`. The repository selects Rust 1.96.0 through
+`rust-toolchain.toml`.
 
 ```sh
+rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-The workspace builds static x86-64 Linux binaries by default
-(`.cargo/config.toml`; requires `musl-gcc`), so the binaries land in
-`target/x86_64-unknown-linux-musl/release/`. To build for the current host
-instead, add `--target "$(rustc -vV | sed -n 's/^host: //p')"`.
-
-Start the collector. `KRONIKA_OUT_DIR` is the only required variable; add
-`KRONIKA_PG_DSNS` to record PostgreSQL:
+Create a data directory, then start the collector. `KRONIKA_PG_DSNS` enables
+PostgreSQL collection; omit it to collect only the host.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
-KRONIKA_PG_DSNS='host=/var/run/postgresql user=postgres' \
-kronika-collector
+mkdir -p "$HOME/.local/share/kronika"
+
+KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 
-Start web against the same directory:
+In another terminal, start web with the same data directory. Its user must be
+able to create and replace `.idx` files and the `.kronika-index.owner.lock`
+file there.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
-KRONIKA_WEB_LISTEN=0.0.0.0:8080 \
-KRONIKA_WEB_SOURCES=3 \
+KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
-KRONIKA_WEB_PASSWORD=secret \
-kronika-web
+KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
-Every variable, interval, and cap is documented in
-[bins/kronika-collector/README.md](bins/kronika-collector/README.md) and
-[bins/kronika-web/README.md](bins/kronika-web/README.md).
+Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
+password. For network access, use a TLS-terminating reverse proxy unless you
+explicitly trust the network, and set `KRONIKA_WEB_COOKIE_SECURE=true`. Set
+`KRONIKA_WEB_SOURCES=3` when the collector records PostgreSQL.
 
-## Connect an LLM
+Collector and web configuration:
 
-`kronika-web` serves MCP at `POST /mcp`: stateless Streamable HTTP, the same
-Basic credentials as the interface, fourteen tools that read what was
-recorded and never query the monitored host. The MCP panel in the web
-interface's top bar produces a ready-to-paste setup prompt;
-[docs/mcp-clients.md](docs/mcp-clients.md) covers Claude Code, Codex CLI,
-Cursor, and the `mcp-remote` bridge.
+- [bins/kronika-collector/README.md](bins/kronika-collector/README.md)
+- [bins/kronika-web/README.md](bins/kronika-web/README.md)
+
+## MCP
+
+`kronika-web` serves MCP at `POST /mcp` and uses the same Basic credentials as
+the API. MCP reads stored Kronika data; it does not connect to PostgreSQL or
+read current host state. See [docs/mcp-clients.md](docs/mcp-clients.md) for
+Claude Code, Codex CLI, Cursor, and `mcp-remote` setup.
 
 ## Documentation
 
-- [DESIGN.md](DESIGN.md) — what Kronika is and the rules it is built under.
-- [bins/kronika-collector/README.md](bins/kronika-collector/README.md) —
-  collector configuration and operation.
-- [bins/kronika-web/README.md](bins/kronika-web/README.md) — web
-  configuration, endpoints, MCP.
-- [bins/kronika-demo/README.md](bins/kronika-demo/README.md) — the demo
-  image and the `kronika-demo` binary.
-- [docs/mcp-clients.md](docs/mcp-clients.md) — MCP client setup.
-- [docs/type-registry/](docs/type-registry/) — every recorded section and
-  field: [OS](docs/type-registry/os.md),
+- [DESIGN.md](DESIGN.md) — architecture and product rules.
+- [bins/kronika-demo/README.md](bins/kronika-demo/README.md) — demo commands.
+- [docs/mcp-clients.md](docs/mcp-clients.md) — MCP client configuration.
+- [docs/type-registry/](docs/type-registry/) — recorded sections and fields:
+  [OS](docs/type-registry/os.md),
   [PostgreSQL](docs/type-registry/postgresql.md),
-  [PostgreSQL metrics](docs/type-registry/postgresql-metrics.md),
+  [PostgreSQL metrics](docs/type-registry/postgresql-metrics.md), and
   [PgBouncer](docs/type-registry/pgbouncer.md).
-- [crates/kronika-format/README.md](crates/kronika-format/README.md) — the
-  segment binary format.
+- [crates/kronika-format/README.md](crates/kronika-format/README.md) — segment
+  format.
 
-Diagrams are generated: sources live in [docs/diagrams/](docs/diagrams/),
-`make diagrams` rebuilds the committed SVGs (requires the
-[draw.io](https://www.drawio.com) app).
+Run `make diagrams` to regenerate the committed SVG files with the draw.io CLI
+available as `drawio`. Set `DRAWIO=/path/to/drawio` to use another executable.
 
-MIT license.
+Kronika is licensed under the MIT License.

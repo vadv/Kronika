@@ -2,106 +2,98 @@
 
 [English version](README.md)
 
-Kronika записывает историю машины и работающих на ней баз данных — так же,
-как `atop` записывает историю системы, — и потом воспроизводит её. Коллектор
-периодически снимает метрики операционной системы и PostgreSQL, разбирает
-логи и преобразует значимые события из логов в метрики. Web читает записанное и
-показывает его людям в браузере и LLM-клиентам через MCP.
+Kronika сохраняет периодические снимки состояния Linux-машины и работающих на
+ней баз данных для последующего просмотра. Коллектор читает метрики
+операционной системы и PostgreSQL, а также разбирает журналы PostgreSQL и
+PgBouncer. `kronika-web` показывает сохранённые данные в браузере и отдаёт их
+через MCP.
 
 ![Архитектура Kronika](docs/images/architecture.svg)
 
-Коллектор работает на наблюдаемой машине постоянно; его пиковый RSS остаётся
-ниже 25 MiB, и каждая запись сегмента логирует измеренный `rss_kib`. Всё
-собранное попадает в один каталог: окна дописываются в `active.wal`, а журнал
-записывается сегментами с именами `YYYY/MM/DD/N.zms`. Каждый сегмент
-независим и самодостаточен: чтобы открыть его, не нужны другие файлы, внешняя
-схема или обращение к реестру. `kronika-web` открывает тот же каталог только
-на чтение — готовые сегменты плюс корректный префикс `active.wal`, всё через
-единственный крейт `kronika-reader`.
+Коллектор пишет текущий журнал в `active.wal`, а готовые сегменты — в
+`YYYY/MM/DD/N.zms` внутри `KRONIKA_OUT_DIR`. `kronika-web` читает эти файлы и
+создаёт рядом производные файлы `N.idx`.
 
-## Попробовать демо
+## Запуск демо
 
-Нужен Docker с Compose v2.
+Для демо нужен Docker с Compose v2 на Linux amd64 или arm64.
 
 ```sh
 make demo-up
 ```
 
-Команда собирает один контейнер с PostgreSQL 15, PgBouncer, генератором
-нагрузки, коллектором и web и ждёт, пока он станет здоровым. Откройте
-<http://127.0.0.1:8080/> и войдите как `demo` / `forensics`. `make demo-stop`
-сохраняет собранные сегменты; `make demo-clean` удаляет контейнеры и данные.
-Подробности: [bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md).
+Откройте <http://127.0.0.1:8080/> и войдите с именем `demo` и паролем
+`forensics`. `make demo-stop` сохраняет собранные данные, а `make demo-clean`
+удаляет контейнеры и данные демо. Подробности приведены в
+[bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md).
 
-## Запустить на своей машине
+## Сборка и запуск из исходного кода
 
-Сборка закреплённым тулчейном Rust (1.96.0, выбирается автоматически через
-`rust-toolchain.toml`). npm не нужен: `kronika-web` собирается из
-закоммиченного артефакта интерфейса.
+По умолчанию собираются статические бинарные файлы для Linux x86-64. Для
+сборки нужны `rustup` и `musl-gcc`. Версия Rust 1.96.0 задана в
+`rust-toolchain.toml`.
 
 ```sh
+rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-По умолчанию workspace собирает статические бинарники x86-64 Linux
-(`.cargo/config.toml`; нужен `musl-gcc`), поэтому бинарники попадают в
-`target/x86_64-unknown-linux-musl/release/`. Чтобы собрать под текущую
-машину, добавьте `--target "$(rustc -vV | sed -n 's/^host: //p')"`.
-
-Запустите коллектор. `KRONIKA_OUT_DIR` — единственная обязательная
-переменная; добавьте `KRONIKA_PG_DSNS`, чтобы записывать PostgreSQL:
+Создайте каталог данных и запустите коллектор. Переменная `KRONIKA_PG_DSNS`
+включает сбор данных PostgreSQL; без неё коллектор записывает только данные
+машины.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
-KRONIKA_PG_DSNS='host=/var/run/postgresql user=postgres' \
-kronika-collector
+mkdir -p "$HOME/.local/share/kronika"
+
+KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 
-Запустите web на том же каталоге:
+В другом терминале запустите web с тем же каталогом данных. Пользователь web
+должен иметь право создавать и заменять в нём файлы `.idx` и файл
+`.kronika-index.owner.lock`.
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika \
-KRONIKA_WEB_LISTEN=0.0.0.0:8080 \
-KRONIKA_WEB_SOURCES=3 \
+KRONIKA_OUT_DIR="$HOME/.local/share/kronika" \
+KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
-KRONIKA_WEB_PASSWORD=secret \
-kronika-web
+KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+target/x86_64-unknown-linux-musl/release/kronika-web
 ```
 
-Каждая переменная, интервал и лимит описаны в
-[bins/kronika-collector/README.ru.md](bins/kronika-collector/README.ru.md) и
-[bins/kronika-web/README.ru.md](bins/kronika-web/README.ru.md).
+Откройте <http://127.0.0.1:8080/> и войдите как `kronika` с заданным паролем.
+Для доступа по сети используйте обратный прокси с TLS, если только вы явно не
+доверяете этой сети, и задайте `KRONIKA_WEB_COOKIE_SECURE=true`. Если коллектор
+записывает PostgreSQL, укажите `KRONIKA_WEB_SOURCES=3`.
 
-## Подключить LLM
+Настройка коллектора и web:
 
-`kronika-web` отдаёт MCP на `POST /mcp`: Streamable HTTP без сессий, те же
-Basic-учётные данные, что у интерфейса, четырнадцать инструментов, которые
-читают записанное и никогда не обращаются к наблюдаемой машине. Панель MCP в
-верхней панели веб-интерфейса выдаёт готовый к вставке промпт настройки;
-[docs/mcp-clients.ru.md](docs/mcp-clients.ru.md) описывает Claude Code,
-Codex CLI, Cursor и мост `mcp-remote`.
+- [bins/kronika-collector/README.ru.md](bins/kronika-collector/README.ru.md)
+- [bins/kronika-web/README.ru.md](bins/kronika-web/README.ru.md)
+
+## MCP
+
+`kronika-web` отдаёт MCP на `POST /mcp` и использует те же учётные данные Basic,
+что и API. MCP читает сохранённые данные Kronika: он не подключается к
+PostgreSQL и не читает текущее состояние машины. Настройка Claude Code, Codex
+CLI, Cursor и `mcp-remote` описана в
+[docs/mcp-clients.ru.md](docs/mcp-clients.ru.md).
 
 ## Документация
 
-- [DESIGN.ru.md](DESIGN.ru.md) — что такое Kronika и по каким правилам она
-  строится.
-- [bins/kronika-collector/README.ru.md](bins/kronika-collector/README.ru.md) —
-  настройка и эксплуатация коллектора.
-- [bins/kronika-web/README.ru.md](bins/kronika-web/README.ru.md) — настройка
-  web, эндпоинты, MCP.
-- [bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md) —
-  демо-образ и бинарник `kronika-demo`.
+- [DESIGN.ru.md](DESIGN.ru.md) — архитектура и правила продукта.
+- [bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md) — команды
+  демо.
 - [docs/mcp-clients.ru.md](docs/mcp-clients.ru.md) — настройка MCP-клиентов.
-- [docs/type-registry/](docs/type-registry/) — каждая записываемая секция и
-  поле: [OS](docs/type-registry/os.ru.md),
+- [docs/type-registry/](docs/type-registry/) — записываемые секции и поля:
+  [OS](docs/type-registry/os.ru.md),
   [PostgreSQL](docs/type-registry/postgresql.md),
-  [метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md),
+  [метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) и
   [PgBouncer](docs/type-registry/pgbouncer.md).
 - [crates/kronika-format/README.ru.md](crates/kronika-format/README.ru.md) —
-  бинарный формат сегмента.
+  формат сегмента.
 
-Диаграммы генерируются: исходники лежат в [docs/diagrams/](docs/diagrams/),
-`make diagrams` пересобирает закоммиченные SVG (нужно приложение
-[draw.io](https://www.drawio.com)).
+Команда `make diagrams` пересоздаёт SVG с помощью CLI draw.io, доступного как
+`drawio`. Другой путь можно передать через `DRAWIO=/путь/к/drawio`.
 
-Лицензия MIT.
+Kronika распространяется по лицензии MIT.
