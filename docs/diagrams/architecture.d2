@@ -11,9 +11,11 @@ direction: right
 host: Monitored Linux host {
   pg: PostgreSQL {width: 170}
   pgb: PgBouncer {width: 170}
-  os: Linux kernel\n/proc, /sys {width: 170}
+  os: OS\n/proc, /sys {width: 170}
 
   collector: kronika-collector\nalways on {
+    style.fill: "#a5d8ff"
+    style.font-color: "#1a2633"
     style.stroke-width: 3
   }
 
@@ -22,10 +24,11 @@ host: Monitored Linux host {
   os -> collector: metrics
 
   dir: KRONIKA_OUT_DIR\nPOSIX directory — the only storage today {
+    shape: cylinder
     wal: active.wal\nwhat is being recorded now {
       shape: page
     }
-    seg: YYYY/MM/DD/N.zms\nself-contained: needs no other file {
+    seg: YYYY/MM/DD/N.zms\ncompressed, self-contained segments {
       shape: page
       style.multiple: true
     }
@@ -35,16 +38,21 @@ host: Monitored Linux host {
   collector -> dir.wal: appends
 
   web: kronika-web\non demand · read-only\nlistens on KRONIKA_WEB_LISTEN {
+    style.fill: "#a5d8ff"
+    style.font-color: "#1a2633"
     style.stroke-width: 3
   }
 
   dir -> web: reads
 }
 
+browser: Browser
+llm: LLM client\nClaude Code · Codex · Cursor
 people: People {
   shape: person
 }
-llm: LLM clients\nClaude Code · Codex · Cursor
 
-host.web -> people: Web UI
+host.web -> browser: Web UI
 host.web -> llm: MCP
+browser -> people
+llm -> people
