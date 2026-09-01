@@ -591,7 +591,10 @@ fn recovery_publishes_persisted_cgroup_v2_rows() {
     let recovered = reader
         .open_segment(&listing.segments[0])
         .expect("open recovered segment");
-    assert_eq!(recovered.path(), recovered_path);
+    assert_eq!(
+        recovered.source_label(),
+        recovered_path.display().to_string()
+    );
     assert_eq!(recovered.rows_of(CPU_V2_TYPE_ID), Some(1));
     assert_eq!(recovered.rows_of(MEMORY_V2_TYPE_ID), Some(1));
 

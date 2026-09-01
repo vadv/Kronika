@@ -14,7 +14,7 @@ mod segment;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::ops::{Bound, RangeBounds};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kronika_format::Catalog;
@@ -78,6 +78,7 @@ impl<S: ImmutableSegmentSource> FinishedReader<S> {
             resource.identity().segment_id().get(),
             resource.captured_bytes(),
             resource.summary(),
+            format!("segment:{}", resource.identity().segment_id().get()),
         ))
     }
 }
@@ -470,6 +471,7 @@ impl CatalogDiscovery<'_> {
 #[derive(Debug)]
 pub struct Reader {
     dir: LocalDir,
+    root: PathBuf,
     provenance: Arc<()>,
 }
 
@@ -486,6 +488,7 @@ impl Reader {
     pub fn open(root: &Path) -> Result<Self, ReaderError> {
         Ok(Self {
             dir: LocalDir::open(root)?,
+            root: root.to_path_buf(),
             provenance: Arc::new(()),
         })
     }
@@ -625,7 +628,20 @@ impl Reader {
             )
             .into());
         }
-        Segment::open(&self.dir, unit)
+        let source_label = match &unit.source {
+            SegmentSource::Finished(finished) => {
+                let day = finished.address.day;
+                self.root
+                    .join(day.year_component())
+                    .join(day.month_component())
+                    .join(day.day_component())
+                    .join(finished.address.zms_name())
+            }
+            SegmentSource::Active(_) => self.root.join("active.wal"),
+        }
+        .display()
+        .to_string();
+        Segment::open(&self.dir, unit, source_label)
     }
 }
 

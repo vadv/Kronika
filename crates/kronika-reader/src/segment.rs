@@ -62,6 +62,7 @@ enum Source {
 pub struct Segment {
     id: i64,
     kind: SegmentKind,
+    source_label: String,
     source: Source,
     min_ts: i64,
     max_ts: i64,
@@ -83,7 +84,11 @@ pub struct Section {
 }
 
 impl Segment {
-    pub(crate) fn open(dir: &LocalDir, unit: &SegmentRef) -> Result<Self, ReaderError> {
+    pub(crate) fn open(
+        dir: &LocalDir,
+        unit: &SegmentRef,
+        source_label: String,
+    ) -> Result<Self, ReaderError> {
         match &unit.source {
             SegmentSource::Finished(finished) => {
                 let file = dir.open_finished(finished)?;
@@ -95,6 +100,7 @@ impl Segment {
                     unit.segment_id,
                     unit.captured_bytes,
                     &finished.summary,
+                    source_label,
                 ))
             }
             SegmentSource::Active(snapshot) => {
@@ -108,6 +114,7 @@ impl Segment {
                 Ok(Self {
                     id: unit.segment_id,
                     kind: SegmentKind::Active,
+                    source_label,
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
@@ -125,11 +132,13 @@ impl Segment {
         segment_id: i64,
         captured_bytes: u64,
         summary: &CatalogSummary,
+        source_label: String,
     ) -> Self {
         let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
         Self {
             id: segment_id,
             kind: SegmentKind::Finished,
+            source_label,
             source: Source::Finished {
                 bytes: OpenedSegmentBytes::new(bytes),
                 catalog,
@@ -161,6 +170,15 @@ impl Segment {
             SegmentKind::Finished => None,
             SegmentKind::Active => Some(self.captured_bytes),
         }
+    }
+
+    /// Storage-neutral display label for the source object.
+    ///
+    /// The POSIX adapter supplies the same path text exposed by the previous
+    /// native API. Other adapters use their logical resource identity.
+    #[must_use]
+    pub fn source_label(&self) -> &str {
+        &self.source_label
     }
 
     /// Earliest timestamp the segment carries, unix microseconds.

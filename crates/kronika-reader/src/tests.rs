@@ -533,6 +533,10 @@ fn finished_segment_wins_over_the_same_active_generation() {
     let segment = one_segment(&reader);
     assert_eq!(segment.kind(), SegmentKind::Finished);
     assert_eq!(
+        segment.source_label(),
+        zms_path(directory.path(), address).display().to_string()
+    );
+    assert_eq!(
         segment.captured_bytes(),
         std::fs::metadata(zms_path(directory.path(), address))
             .expect("finished segment metadata")
@@ -644,6 +648,10 @@ fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
         .open_segment(&listing.segments[0])
         .expect("open active fallback");
     assert_eq!(segment.kind(), SegmentKind::Active);
+    assert_eq!(
+        segment.source_label(),
+        directory.path().join("active.wal").display().to_string()
+    );
 }
 
 #[test]
