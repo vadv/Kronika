@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use kronika_format::Catalog;
 use kronika_store::{
-    ActiveSnapshot, FinalUnit, ImmutableSegmentSource, LocalDir, ResourceCatalog, ResourceListing,
-    SegmentResource, read_catalog,
+    ActiveSnapshot, FinalUnit, ImmutableSegmentSource, LocalDir, ResourceCatalog, ResourceError,
+    ResourceListing, SegmentResource, read_catalog, read_resource_catalog,
 };
 
 pub use dictionary::Dictionary;
@@ -54,7 +54,19 @@ impl<S: ResourceCatalog> FinishedReader<S> {
     ///
     /// Returns a storage error when the bounded catalog pass cannot complete.
     pub fn resources(&self) -> Result<ResourceListing<S::Resource>, ReaderError> {
-        self.source.resources().map_err(ReaderError::from)
+        let mut listing = self.source.resources()?;
+        listing
+            .resources
+            .sort_unstable_by_key(SegmentResource::identity);
+        if let Some(identity) = listing
+            .resources
+            .windows(2)
+            .find(|pair| pair[0].identity() == pair[1].identity())
+            .map(|pair| pair[0].identity())
+        {
+            return Err(ResourceError::DuplicateIdentity(identity).into());
+        }
+        Ok(listing)
     }
 }
 
@@ -70,7 +82,7 @@ impl<S: ImmutableSegmentSource> FinishedReader<S> {
         resource: &SegmentResource<S::Resource>,
     ) -> Result<Segment, ReaderError> {
         let bytes = self.source.open_resource(resource)?;
-        let catalog = Arc::new(read_catalog(&bytes)?);
+        let catalog = Arc::new(read_resource_catalog(&bytes)?);
         self.source.validate_opened(resource, &bytes)?;
         Ok(Segment::open_finished(
             bytes,

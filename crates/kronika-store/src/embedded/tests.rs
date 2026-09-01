@@ -81,7 +81,7 @@ fn embedded_source_enforces_the_explicit_complete_byte_limit() {
     .expect_err("fixture must exceed the limit");
     assert!(matches!(
         error,
-        crate::StoreError::ResourceTooLarge {
+        crate::ResourceError::TooLarge {
             len: FIXTURE_LIMIT,
             max
         } if max == FIXTURE_LIMIT - 1
@@ -127,11 +127,7 @@ fn embedded_resource_is_bound_to_the_source_that_listed_it() {
     let error = second
         .open_resource(&listing.resources[0])
         .expect_err("foreign resource must fail");
-    assert!(matches!(
-        error,
-        crate::StoreError::Io(ref source)
-            if source.kind() == std::io::ErrorKind::InvalidInput
-    ));
+    assert!(matches!(error, crate::ResourceError::ForeignResource));
 }
 
 #[test]
@@ -141,7 +137,7 @@ fn embedded_constructor_rejects_invalid_zms_without_deriving_an_id() {
         .expect_err("invalid bytes");
     assert!(matches!(
         error,
-        crate::StoreError::TailIndex(_) | crate::StoreError::TooSmall
+        crate::ResourceError::TailIndex(_) | crate::ResourceError::TooSmall
     ));
 }
 

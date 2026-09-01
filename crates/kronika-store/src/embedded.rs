@@ -6,10 +6,10 @@ use std::sync::Arc;
 use kronika_format::ReadAt;
 use kronika_layout::{LayoutLimits, SegmentId};
 
-use crate::local::segment::{FinishedValidation, read_zms_summary};
+use crate::zms::{FinishedValidation, read_zms_summary};
 use crate::{
-    CatalogSummary, ImmutableSegmentSource, ResourceCatalog, ResourceIdentity, ResourceListing,
-    SegmentResource, StoreError,
+    CatalogSummary, ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceIdentity,
+    ResourceListing, SegmentResource,
 };
 
 #[derive(Clone)]
@@ -101,7 +101,7 @@ impl EmbeddedSource {
         segment_id: SegmentId,
         bytes: Arc<[u8]>,
         max_segment_bytes: u64,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<Self, ResourceError> {
         Self::from_bytes(segment_id, EmbeddedBytes::Shared(bytes), max_segment_bytes)
     }
 
@@ -120,7 +120,7 @@ impl EmbeddedSource {
         segment_id: SegmentId,
         bytes: &'static [u8],
         max_segment_bytes: u64,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<Self, ResourceError> {
         Self::from_bytes(segment_id, EmbeddedBytes::Static(bytes), max_segment_bytes)
     }
 
@@ -128,10 +128,10 @@ impl EmbeddedSource {
         segment_id: SegmentId,
         bytes: EmbeddedBytes,
         max_segment_bytes: u64,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<Self, ResourceError> {
         let len = bytes.as_slice().len() as u64;
         if len > max_segment_bytes {
-            return Err(StoreError::ResourceTooLarge {
+            return Err(ResourceError::TooLarge {
                 len,
                 max: max_segment_bytes,
             });
@@ -141,7 +141,8 @@ impl EmbeddedSource {
             0,
             LayoutLimits::default().max_metadata_bytes,
             FinishedValidation::Complete,
-        )?;
+        )
+        .map_err(ResourceError::from_zms)?;
         let source_id = Arc::new(());
         Ok(Self {
             identity: ResourceIdentity::finished(segment_id),
@@ -170,7 +171,7 @@ impl EmbeddedSource {
 impl ResourceCatalog for EmbeddedSource {
     type Resource = EmbeddedResource;
 
-    fn resources(&self) -> Result<ResourceListing<Self::Resource>, StoreError> {
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
         Ok(ResourceListing {
             resources: vec![SegmentResource::new(
                 self.identity,
@@ -189,15 +190,11 @@ impl ImmutableSegmentSource for EmbeddedSource {
     fn open_resource(
         &self,
         resource: &SegmentResource<Self::Resource>,
-    ) -> Result<Self::Bytes, StoreError> {
+    ) -> Result<Self::Bytes, ResourceError> {
         if resource.identity() != self.identity
-            || !Arc::ptr_eq(&resource.handle().0, &self.source_id)
+            || !Arc::ptr_eq(&resource.token().0, &self.source_id)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "embedded resource belongs to another source",
-            )
-            .into());
+            return Err(ResourceError::ForeignResource);
         }
         Ok(self.bytes.clone())
     }
@@ -206,16 +203,12 @@ impl ImmutableSegmentSource for EmbeddedSource {
         &self,
         resource: &SegmentResource<Self::Resource>,
         bytes: &Self::Bytes,
-    ) -> Result<(), StoreError> {
+    ) -> Result<(), ResourceError> {
         if resource.identity() != self.identity
-            || !Arc::ptr_eq(&resource.handle().0, &self.source_id)
+            || !Arc::ptr_eq(&resource.token().0, &self.source_id)
             || !Arc::ptr_eq(&bytes.source_id, &self.source_id)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "embedded resource belongs to another source",
-            )
-            .into());
+            return Err(ResourceError::ForeignResource);
         }
         Ok(())
     }

@@ -32,6 +32,7 @@ mod local;
 mod posix;
 mod resource;
 mod source;
+mod zms;
 
 pub use catalog_summary::{
     CatalogDigest, CatalogLayoutDigest, CatalogSummary, CatalogSummaryError, catalog_digests,
@@ -40,8 +41,9 @@ pub use embedded::{EmbeddedResource, EmbeddedSource, SharedSegmentBytes};
 pub use local::{LocalDir, is_active_journal_scan_error, read_catalog};
 pub use posix::{PosixResource, PosixSegmentBytes, PosixSource};
 pub use resource::{
-    ImmutableSegmentSource, ResourceCatalog, ResourceIdentity, ResourceKind, ResourceListing,
-    ResourceWarning, ResourceWarningSubject, SegmentResource,
+    ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceFailureKind, ResourceIdentity,
+    ResourceKind, ResourceListing, ResourceWarning, ResourceWarningSubject, SegmentResource,
+    read_resource_catalog,
 };
 pub use source::{
     ActiveJournalWarningReason, ActivePart, ActiveSnapshot, FinalUnit, InvalidZmsReason,

@@ -6,12 +6,70 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kronika_format::ReadAt;
+use kronika_layout::{LayoutError, LimitKind};
 
+use crate::local::summary_allocation_bytes;
 use crate::source::FinalUnit;
 use crate::{
-    ImmutableSegmentSource, LocalDir, ResourceCatalog, ResourceIdentity, ResourceListing,
-    ResourceWarning, SegmentResource, StoreError,
+    ImmutableSegmentSource, LocalDir, LocalScan, ResourceCatalog, ResourceError,
+    ResourceFailureKind, ResourceIdentity, ResourceListing, ResourceWarning, SegmentResource,
+    StoreWarning,
 };
+
+#[cfg(test)]
+std::thread_local! {
+    static LISTING_RESERVE_ATTEMPTS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+const fn metadata_limit(limit: usize) -> ResourceError {
+    ResourceError::MetadataLimit { limit }
+}
+
+fn vector_bytes<T>(capacity: usize, limit: usize) -> Result<usize, ResourceError> {
+    capacity
+        .checked_mul(size_of::<T>())
+        .ok_or_else(|| metadata_limit(limit))
+}
+
+fn admitted_total(parts: &[usize], limit: usize) -> Result<usize, ResourceError> {
+    let total = parts
+        .iter()
+        .try_fold(0_usize, |total, part| total.checked_add(*part))
+        .ok_or_else(|| metadata_limit(limit))?;
+    if total > limit {
+        Err(metadata_limit(limit))
+    } else {
+        Ok(total)
+    }
+}
+
+fn try_reserve_listing<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    limit: usize,
+) -> Result<(), ResourceError> {
+    #[cfg(test)]
+    LISTING_RESERVE_ATTEMPTS.with(|attempts| attempts.set(attempts.get().saturating_add(1)));
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_error| metadata_limit(limit))
+}
+
+fn resource_scan_error(error: io::Error) -> ResourceError {
+    if let Some(LayoutError::TraversalLimitExceeded {
+        kind: LimitKind::MetadataBytes,
+        limit,
+    }) = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<LayoutError>())
+    {
+        ResourceError::MetadataLimit { limit: *limit }
+    } else {
+        error.into()
+    }
+}
 
 /// POSIX-backed catalog and immutable segment source.
 ///
@@ -52,18 +110,101 @@ impl PosixSource {
     fn checked_resource<'a>(
         &self,
         resource: &'a SegmentResource<PosixResource>,
-    ) -> Result<&'a FinalUnit, StoreError> {
-        let handle = resource.handle();
+    ) -> Result<&'a FinalUnit, ResourceError> {
+        let handle = resource.token();
         if !Arc::ptr_eq(&handle.source_id, &self.source_id)
             || resource.identity() != ResourceIdentity::finished(handle.unit.address.id)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "POSIX resource belongs to another source",
-            )
-            .into());
+            return Err(ResourceError::ForeignResource);
         }
         Ok(&handle.unit)
+    }
+
+    fn listing_from_scan(
+        &self,
+        scan: LocalScan,
+        limit: usize,
+    ) -> Result<ResourceListing<PosixResource>, ResourceError> {
+        let resource_count = scan.finished.len();
+        let warning_count = scan
+            .warnings
+            .iter()
+            .copied()
+            .filter_map(ResourceWarning::from_store)
+            .count();
+        let stored_warning_bytes = vector_bytes::<StoreWarning>(scan.warnings.capacity(), limit)?;
+        let scan_retained = admitted_total(&[scan.metadata_bytes, stored_warning_bytes], limit)?;
+        let requested_resource_bytes =
+            vector_bytes::<SegmentResource<PosixResource>>(resource_count, limit)?;
+        let requested_warning_bytes = vector_bytes::<ResourceWarning>(warning_count, limit)?;
+        let retained_summary_bytes = resource_count
+            .checked_mul(summary_allocation_bytes())
+            .ok_or_else(|| metadata_limit(limit))?;
+
+        // Admit both the conversion peak and the returned listing before
+        // requesting either output allocation.
+        admitted_total(
+            &[
+                scan_retained,
+                requested_resource_bytes,
+                requested_warning_bytes,
+            ],
+            limit,
+        )?;
+        admitted_total(
+            &[
+                retained_summary_bytes,
+                requested_resource_bytes,
+                requested_warning_bytes,
+            ],
+            limit,
+        )?;
+
+        let mut resources = Vec::new();
+        try_reserve_listing(&mut resources, resource_count, limit)?;
+        let resource_bytes =
+            vector_bytes::<SegmentResource<PosixResource>>(resources.capacity(), limit)?;
+        admitted_total(
+            &[scan_retained, resource_bytes, requested_warning_bytes],
+            limit,
+        )?;
+
+        let mut warnings = Vec::new();
+        try_reserve_listing(&mut warnings, warning_count, limit)?;
+        let warning_bytes = vector_bytes::<ResourceWarning>(warnings.capacity(), limit)?;
+        admitted_total(&[scan_retained, resource_bytes, warning_bytes], limit)?;
+        admitted_total(
+            &[retained_summary_bytes, resource_bytes, warning_bytes],
+            limit,
+        )?;
+
+        let LocalScan {
+            finished,
+            warnings: stored_warnings,
+            ..
+        } = scan;
+        let finished = Arc::try_unwrap(finished)
+            .map_err(|_shared| ResourceError::Unavailable(ResourceFailureKind::Other))?;
+        for unit in finished {
+            resources.push(SegmentResource::new(
+                ResourceIdentity::finished(unit.address.id),
+                unit.identity.len,
+                Arc::clone(&unit.summary),
+                PosixResource {
+                    unit,
+                    source_id: Arc::clone(&self.source_id),
+                },
+            ));
+        }
+        warnings.extend(
+            stored_warnings
+                .into_iter()
+                .filter_map(ResourceWarning::from_store),
+        );
+        Ok(ResourceListing {
+            resources,
+            warnings,
+        })
     }
 }
 
@@ -128,33 +269,12 @@ impl ReadAt for PosixSegmentBytes {
 impl ResourceCatalog for PosixSource {
     type Resource = PosixResource;
 
-    fn resources(&self) -> Result<ResourceListing<Self::Resource>, StoreError> {
-        let scan = self.dir.scan_catalogs()?;
-        let resources = scan
-            .finished
-            .iter()
-            .cloned()
-            .map(|unit| {
-                SegmentResource::new(
-                    ResourceIdentity::finished(unit.address.id),
-                    unit.identity.len,
-                    Arc::clone(&unit.summary),
-                    PosixResource {
-                        unit,
-                        source_id: Arc::clone(&self.source_id),
-                    },
-                )
-            })
-            .collect();
-        let warnings = scan
-            .warnings
-            .into_iter()
-            .map(ResourceWarning::from_store)
-            .collect();
-        Ok(ResourceListing {
-            resources,
-            warnings,
-        })
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        let scan = self
+            .dir
+            .scan_finished_catalogs()
+            .map_err(resource_scan_error)?;
+        self.listing_from_scan(scan, self.dir.metadata_limit())
     }
 }
 
@@ -164,7 +284,7 @@ impl ImmutableSegmentSource for PosixSource {
     fn open_resource(
         &self,
         resource: &SegmentResource<Self::Resource>,
-    ) -> Result<Self::Bytes, StoreError> {
+    ) -> Result<Self::Bytes, ResourceError> {
         let unit = self.checked_resource(resource)?;
         Ok(PosixSegmentBytes {
             file: self.dir.open_finished(unit)?,
@@ -176,18 +296,14 @@ impl ImmutableSegmentSource for PosixSource {
         &self,
         resource: &SegmentResource<Self::Resource>,
         bytes: &Self::Bytes,
-    ) -> Result<(), StoreError> {
+    ) -> Result<(), ResourceError> {
         let unit = self.checked_resource(resource)?;
         if !Arc::ptr_eq(&bytes.source_id, &self.source_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "POSIX bytes belong to another source",
-            )
-            .into());
+            return Err(ResourceError::ForeignResource);
         }
         self.dir
             .validate_finished_file(&bytes.file, unit)
-            .map_err(StoreError::from)
+            .map_err(ResourceError::from)
     }
 }
 

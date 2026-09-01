@@ -15,8 +15,8 @@ use sha2::{Digest as _, Sha256};
 use super::{Dictionary, FinishedReader, Reader, ReaderError, Segment, SegmentKind};
 
 use kronika_store::{
-    CatalogSummary, EmbeddedSource, ImmutableSegmentSource, PosixSource, ResourceIdentity,
-    ResourceKind,
+    CatalogSummary, EmbeddedSource, ImmutableSegmentSource, PosixSource, ResourceCatalog,
+    ResourceError, ResourceIdentity, ResourceKind, ResourceListing, SegmentResource,
 };
 
 /// A segment covering ten to twenty microseconds.
@@ -51,6 +51,13 @@ fn only_replaced_io_sources_are_reopenable() {
         );
     }
     assert!(!ReaderError::Store(kronika_store::StoreError::BadMagic).source_changed_during_read());
+    assert!(ReaderError::Resource(ResourceError::Changed).source_changed_during_read());
+    assert!(
+        ReaderError::Resource(ResourceError::Unavailable(
+            kronika_store::ResourceFailureKind::NotFound,
+        ))
+        .source_changed_during_read()
+    );
 }
 
 #[test]
@@ -349,8 +356,87 @@ fn embedded_product_uses_supplied_identity_and_rejects_foreign_resource() {
         .expect_err("resource token belongs to its source");
     assert!(matches!(
         error,
-        ReaderError::Store(kronika_store::StoreError::Io(ref source))
-            if source.kind() == std::io::ErrorKind::InvalidInput
+        ReaderError::Resource(ResourceError::ForeignResource)
+    ));
+}
+
+#[derive(Debug)]
+struct ReverseCatalog {
+    summary: CatalogSummary,
+    ids: [i64; 2],
+}
+
+impl ResourceCatalog for ReverseCatalog {
+    type Resource = i64;
+
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        let resources = self
+            .ids
+            .into_iter()
+            .map(|raw_id| {
+                SegmentResource::new(
+                    ResourceIdentity::finished(SegmentId::new(raw_id).expect("segment id")),
+                    0,
+                    Arc::new(self.summary),
+                    raw_id,
+                )
+            })
+            .collect();
+        Ok(ResourceListing {
+            resources,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn immutable_resources_are_normalized_by_identity() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_static(
+        SegmentId::new(42).expect("segment id"),
+        ZMS,
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let listing = FinishedReader::new(ReverseCatalog {
+        summary,
+        ids: [2, 1],
+    })
+    .resources()
+    .expect("normalized resources");
+
+    assert_eq!(
+        listing
+            .resources
+            .iter()
+            .map(|resource| resource.identity().segment_id().get())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
+#[test]
+fn immutable_resources_reject_duplicate_identities() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_static(
+        SegmentId::new(42).expect("segment id"),
+        ZMS,
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let error = FinishedReader::new(ReverseCatalog {
+        summary,
+        ids: [1, 1],
+    })
+    .resources()
+    .expect_err("duplicate identity");
+
+    assert!(matches!(
+        error,
+        ReaderError::Resource(ResourceError::DuplicateIdentity(identity))
+            if identity.segment_id().get() == 1
     ));
 }
 

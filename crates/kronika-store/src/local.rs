@@ -18,6 +18,7 @@ mod journal;
 mod scan;
 pub(crate) mod segment;
 
+pub(crate) use budget::summary_allocation_bytes;
 use budget::{
     layout_io, push_warning_bounded, require_file_identity, retained_metadata_with_warnings,
 };
@@ -32,15 +33,15 @@ use segment::{
     stale_finished_zms,
 };
 
-/// Upper bound on the catalog block size; guards against corrupt tail indices.
-const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
-const ZMS_CRC_CHUNK_BYTES: usize = 16 * 1024;
 const ARC_ALLOCATION_OVERHEAD: usize = 2 * size_of::<usize>();
 const ACTIVE_ARC_ALLOCATION_BYTES: usize = size_of::<Vec<ActivePart>>() + ARC_ALLOCATION_OVERHEAD;
 
 #[cfg(test)]
 std::thread_local! {
     static CATALOG_SUMMARY_READS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    pub(crate) static ACTIVE_JOURNAL_SCANS: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
 }
@@ -67,6 +68,10 @@ impl LocalDir {
         let root = DataRoot::open(root).map_err(layout_io)?;
         let limits = LayoutLimits::default();
         Ok(Self { root, limits })
+    }
+
+    pub(crate) const fn metadata_limit(&self) -> usize {
+        self.limits.max_metadata_bytes
     }
 
     /// Scan the directory for finished segments and active journal parts.
@@ -129,6 +134,16 @@ impl LocalDir {
         }
     }
 
+    /// Scan only finished-segment catalogs for the immutable resource adapter.
+    ///
+    /// The active journal is neither opened nor scanned. The empty journal
+    /// value supplies the existing bounded finished-tree traversal with no
+    /// live state.
+    pub(crate) fn scan_finished_catalogs(&self) -> io::Result<LocalScan> {
+        let journal = empty_journal_scan(self.limits.max_metadata_bytes)?;
+        self.complete_scan_cached_with_warnings(journal, &[], &[], FinishedValidation::Catalog)
+    }
+
     /// Scan only `active.wal`.
     ///
     /// The returned journal view is complete and can be captured inside a
@@ -140,6 +155,8 @@ impl LocalDir {
     /// Returns an I/O error if the journal is malformed, changes during the
     /// scan, or cannot be read.
     pub fn scan_journal(&self) -> io::Result<JournalScan> {
+        #[cfg(test)]
+        ACTIVE_JOURNAL_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
         let journal_path = self.root.diagnostic_path().join("active.wal");
         let journal = self
             .root
