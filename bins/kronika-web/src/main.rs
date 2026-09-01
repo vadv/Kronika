@@ -87,7 +87,7 @@ async fn answer(
                 failed()
             }),
         RequestTarget::Session(session) => {
-            session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
+            session_response(&config.account, session).unwrap_or_else(failed)
         }
         RequestTarget::Api { route, accepted } => {
             if matches!(route, route::Route::McpAccess) {
@@ -173,12 +173,20 @@ fn route_request_with_authentication<B>(
                 authorization(request.headers()),
                 SingleHeader::Value(value) if auth::admits_basic(account, Some(value))
             );
+            let secure = if admitted {
+                secure_session_cookie(request.headers())?
+            } else {
+                false
+            };
             return Ok(RequestTarget::Session(SessionTarget::Login {
                 issued_at: admitted.then_some(now),
+                secure,
             }));
         }
         if request.method() == Method::DELETE {
-            return Ok(RequestTarget::Session(SessionTarget::Clear));
+            return Ok(RequestTarget::Session(SessionTarget::Clear {
+                secure: secure_session_cookie(request.headers())?,
+            }));
         }
         return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
     }
@@ -224,9 +232,16 @@ enum RequestTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionTarget {
-    Check { admitted: bool },
-    Login { issued_at: Option<u64> },
-    Clear,
+    Check {
+        admitted: bool,
+    },
+    Login {
+        issued_at: Option<u64>,
+        secure: bool,
+    },
+    Clear {
+        secure: bool,
+    },
     MethodNotAllowed,
 }
 
@@ -320,17 +335,31 @@ fn reject_browser_origin(headers: &HeaderMap) -> Result<(), RequestError> {
         SingleHeader::Absent => Ok(()),
         SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
         SingleHeader::Value(text) => {
-            let uri: hyper::Uri = text.parse().map_err(|_error| RequestError::InvalidOrigin)?;
-            let well_formed = matches!(uri.scheme_str(), Some("http" | "https"))
-                && uri.authority().is_some()
-                && uri.path() == "/"
-                && uri.query().is_none();
-            if well_formed {
+            if origin_secure(text).is_some() {
                 Err(RequestError::OriginNotAllowed)
             } else {
                 Err(RequestError::InvalidOrigin)
             }
         }
+    }
+}
+
+fn secure_session_cookie(headers: &HeaderMap) -> Result<bool, RequestError> {
+    match unique_header(headers.get_all(ORIGIN).iter()) {
+        SingleHeader::Value(text) => origin_secure(text).ok_or(RequestError::InvalidOrigin),
+        SingleHeader::Absent | SingleHeader::Invalid => Err(RequestError::InvalidOrigin),
+    }
+}
+
+fn origin_secure(text: &str) -> Option<bool> {
+    let uri: hyper::Uri = text.parse().ok()?;
+    if uri.authority().is_none() || uri.path() != "/" || uri.query().is_some() {
+        return None;
+    }
+    match uri.scheme_str() {
+        Some("http") => Some(false),
+        Some("https") => Some(true),
+        _ => None,
     }
 }
 
@@ -573,26 +602,24 @@ fn unauthorized(challenge: bool) -> Response<WebBody> {
     response
 }
 
-fn session_response(
-    account: &config::Account,
-    cookie_secure: bool,
-    target: SessionTarget,
-) -> Option<Response<WebBody>> {
+fn session_response(account: &config::Account, target: SessionTarget) -> Option<Response<WebBody>> {
     let (status, cookie, allow) = match target {
         SessionTarget::Check { admitted: true } => (StatusCode::NO_CONTENT, None, None),
-        SessionTarget::Check { admitted: false } | SessionTarget::Login { issued_at: None } => {
-            (StatusCode::UNAUTHORIZED, None, None)
-        }
+        SessionTarget::Check { admitted: false }
+        | SessionTarget::Login {
+            issued_at: None, ..
+        } => (StatusCode::UNAUTHORIZED, None, None),
         SessionTarget::Login {
             issued_at: Some(now),
+            secure,
         } => (
             StatusCode::NO_CONTENT,
-            Some(auth::issue_cookie(account, now, cookie_secure)),
+            Some(auth::issue_cookie(account, now, secure)),
             None,
         ),
-        SessionTarget::Clear => (
+        SessionTarget::Clear { secure } => (
             StatusCode::NO_CONTENT,
-            Some(auth::clear_cookie(cookie_secure)),
+            Some(auth::clear_cookie(secure)),
             None,
         ),
         SessionTarget::MethodNotAllowed => (

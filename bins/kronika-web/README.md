@@ -20,7 +20,6 @@ binds.
 | `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
 | `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
 | `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
-| `KRONIKA_WEB_COOKIE_SECURE` | `false` | `true` adds the `Secure` attribute to the browser session cookie. It does not enable TLS. |
 | `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_OUT_DIR`. |
 
 ## Run
@@ -54,7 +53,8 @@ credentials or the browser session cookie issued by `POST /auth/session`.
 
 - `/` — embedded browser interface; accepts `GET` and `HEAD`.
 - `/auth/session` — checks a browser session with `GET`, creates one from Basic
-  credentials with `POST`, and clears it with `DELETE`.
+  credentials with `POST`, and clears it with `DELETE`. Browser sessions use a
+  `Secure` cookie automatically over HTTPS.
 - `/api/*` — JSON and NDJSON resources used by the interface; accepts `GET`.
 - `/mcp` — stateless Streamable HTTP endpoint; accepts `POST`. A query string or
   an `Origin` header is rejected. MCP reads stored Kronika data. See

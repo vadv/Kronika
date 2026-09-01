@@ -75,7 +75,7 @@ fn issued_cookie_contains_no_configured_or_basic_credentials() {
 }
 
 #[test]
-fn secure_cookie_option_applies_to_issue_and_clear() {
+fn secure_attribute_applies_to_issue_and_clear() {
     assert!(issue_cookie(&account(), NOW, true).ends_with("; Secure"));
     assert!(clear_cookie(true).ends_with("; Secure"));
 }

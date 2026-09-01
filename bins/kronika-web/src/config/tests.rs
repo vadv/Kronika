@@ -1,4 +1,4 @@
-use super::{account, authentication_required, cookie_secure, source_set, synthetic_demo};
+use super::{account, authentication_required, source_set, synthetic_demo};
 
 #[test]
 fn both_nonempty_credentials_are_required() {
@@ -26,15 +26,6 @@ fn authentication_is_disabled_only_explicitly() {
     assert!(!authentication_required(Some("disabled")).expect("disabled"));
     assert!(authentication_required(Some("false")).is_err());
     assert!(authentication_required(Some("")).is_err());
-}
-
-#[test]
-fn secure_session_cookies_are_an_explicit_tls_option() {
-    assert!(!cookie_secure(None).expect("default"));
-    assert!(!cookie_secure(Some("false")).expect("HTTP"));
-    assert!(cookie_secure(Some("true")).expect("TLS"));
-    assert!(cookie_secure(Some("yes")).is_err());
-    assert!(cookie_secure(Some("")).is_err());
 }
 
 #[test]
