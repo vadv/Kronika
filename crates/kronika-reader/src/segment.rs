@@ -174,8 +174,8 @@ impl Segment {
 
     /// Storage-neutral display label for the source object.
     ///
-    /// The POSIX adapter supplies the same path text exposed by the previous
-    /// native API. Other adapters use their logical resource identity.
+    /// The native directory reader supplies the same path text exposed by the
+    /// previous API. Other sources use their logical resource identity.
     #[must_use]
     pub fn source_label(&self) -> &str {
         &self.source_label
