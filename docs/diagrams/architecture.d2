@@ -8,15 +8,23 @@ vars: {
 
 direction: right
 
+classes: {
+  kronika-binary: {
+    style: {
+      fill: "#c2d0f7"
+      stroke: "#0d32b2"
+      stroke-width: 3
+    }
+  }
+}
+
 host: Monitored Linux host {
   pg: PostgreSQL {width: 170}
   pgb: PgBouncer {width: 170}
   os: OS\n/proc, /sys {width: 170}
 
   collector: kronika-collector {
-    style.fill: "#a5d8ff"
-    style.font-color: "#1a2633"
-    style.stroke-width: 3
+    class: kronika-binary
   }
 
   pg -> collector: metrics + logs\nKRONIKA_PG_DSNS
@@ -47,14 +55,13 @@ host: Monitored Linux host {
     }
 
     wal -> seg: closed by size or age
+    seg -> idx: summaries
   }
 
   collector -> dir.wal: appends
 
   web: kronika-web\non demand · read-only\nlistens on KRONIKA_WEB_LISTEN {
-    style.fill: "#a5d8ff"
-    style.font-color: "#1a2633"
-    style.stroke-width: 3
+    class: kronika-binary
   }
 
   dir.seg -> web: reads
