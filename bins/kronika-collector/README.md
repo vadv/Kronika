@@ -96,21 +96,24 @@ collector selects one usable installation of each extension, so shared rows are
 not duplicated. Creating, dropping, or moving an extension changes the selected
 installation on the next pass.
 
-`pg_stat_statements` is collected from extension version 1.5 onward, with one
-layout per column set. `pg_store_plans` is identified by its callable interface
-and result columns rather than `extversion`: the collector keeps separate OSSC
-and Datasentinel layouts for their zero-argument readers, and recognizes the
-vadv boolean reader only with its four-key plan getter and executable native
-text converter. The collector composes those functions in the discovered
-schema so every stored `plan` is bounded human-readable text. It also discovers
-the exact readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
+`pg_stat_statements` layouts support extension versions 1.5 and later in the
+1.x series. On PostgreSQL 14 or newer, the collector requires version 1.9 or
+later in that series and does not select 1.5–1.8. Each column set has one
+layout. `pg_store_plans` is identified by its callable interface and result
+columns rather than `extversion`: the collector keeps separate OSSC and
+Datasentinel layouts for their zero-argument readers, and recognizes the vadv
+boolean reader only with its four-key plan getter and executable native text
+converter. The collector composes those functions in the discovered schema so
+every stored `plan` is bounded human-readable text. It also discovers the exact
+readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
 view is selected independently of its main statistics reader. The complete
 layout map is in
 [PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).
 When several databases expose different layouts, the collector chooses the
-newest `pg_stat_statements` layout. `pg_store_plans` implementations are not
-ranked: the current database wins when usable, otherwise database name is the
-deterministic tie-break.
+newest `pg_stat_statements` layout. Among databases with that layout, the
+current database wins when usable, otherwise database name is the deterministic
+tie-break. `pg_store_plans` implementations are not ranked and use the same
+database preference.
 
 `pg_settings` is read on each PostgreSQL collection. The collector writes a
 full snapshot after the first successful read, when a setting changes, and in
@@ -194,6 +197,13 @@ KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-
 
 A `;` inside the same value separates additional DSNs. The first supplies
 metric rows; later entries are used only to discover logs.
+
+The database named by the first DSN is only the initial metric database. On
+that server, the collector inventories it plus every other non-template
+database that the same role can connect to, then reads one usable
+`pg_stat_statements` installation and one usable `pg_store_plans`
+installation (they may come from different databases); no DSN per database is
+needed.
 
 A log file's size is set by someone else's software, so it is read through a
 4 MiB buffer and never held whole. One collection reads at most 256 MiB from
