@@ -70,8 +70,12 @@ host: Monitored Linux host {
   dir -> web: {style.opacity: 0}
 }
 
-browser: Browser
-llm: LLM client\nClaude Code · Codex · Cursor
+clients: "" {
+  style.stroke-width: 0
+  style.fill: transparent
+  browser: Browser {width: 250}
+  llm: LLM client\nClaude Code · Codex · Cursor {width: 250}
+}
 
-host.web -> browser: Web UI
-host.web -> llm: MCP
+host.web -> clients.browser: Web UI
+host.web -> clients.llm: MCP
