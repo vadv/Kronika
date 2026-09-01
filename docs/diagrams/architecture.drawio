@@ -1,6 +1,6 @@
 <mxfile host="Electron">
   <diagram id="kronika-architecture" name="architecture">
-    <mxGraphModel dx="2900" dy="1844" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="829" dy="527" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -59,13 +59,15 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="idxback" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;" value="" vertex="1">
-          <mxGeometry height="66" width="240" x="82" y="642" as="geometry" />
+          <mxGeometry height="66" width="240" x="70" y="638" as="geometry" />
         </mxCell>
         <mxCell id="idx" parent="1" style="shape=note;size=14;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0d32b2;fontSize=13;" value="&lt;b&gt;YYYY/MM/DD/N.idx&lt;/b&gt;&lt;br&gt;derived indexes, rebuilt by web" vertex="1">
-          <mxGeometry height="66" width="240" x="78" y="650" as="geometry" />
+          <mxGeometry height="66" width="240" x="66" y="646" as="geometry" />
         </mxCell>
-        <mxCell id="e-summaries" edge="1" parent="1" source="seg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.5;entryX=1;entryY=0.3;" target="idx" value="summaries">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e-summaries" edge="1" parent="1" source="seg" style="rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.5;entryX=1.004;entryY=0.444;entryDx=0;entryDy=0;entryPerimeter=0;exitDx=0;exitDy=0;" target="idx" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;summaries&lt;/font&gt;">
+          <mxGeometry relative="1" x="-0.0652" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
         </mxCell>
         <mxCell id="web" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f0a30a;strokeColor=#BD7000;strokeWidth=2;fontSize=15;fontColor=#000000;" value="&lt;b&gt;&lt;font style=&quot;font-size: 22px;&quot;&gt;kronika-web&lt;/font&gt;&lt;/b&gt;&lt;br&gt;KRONIKA_WEB_LISTEN" vertex="1">
           <mxGeometry height="100" width="220" x="757" y="386" as="geometry" />
@@ -73,7 +75,7 @@
         <mxCell id="e-reads" edge="1" parent="1" source="seg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=1;exitY=0.3;entryX=0;entryY=0.3;" target="web" value="reads">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e-builds" edge="1" parent="1" source="web" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.8;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" target="idx" value="builds, rebuilds">
+        <mxCell id="e-builds" edge="1" parent="1" source="web" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0d32b2;fontSize=12;fontColor=#5b6b8c;exitX=0;exitY=0.8;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" target="idx" value="&lt;span&gt;builds, rebuilds&lt;/span&gt;">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="742" y="464" />
