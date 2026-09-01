@@ -77,5 +77,5 @@ demo-logs: ## Follow all demo service logs.
 
 diagrams: ## Regenerate the committed documentation SVGs from docs/diagrams (requires d2).
 	@for f in docs/diagrams/*.d2; do \
-		d2 --theme=0 --dark-theme=200 --pad 24 $$f docs/images/$$(basename $$f .d2).svg; \
+		d2 --theme=0 --pad 24 $$f docs/images/$$(basename $$f .d2).svg; \
 	done
