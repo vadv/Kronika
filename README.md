@@ -37,11 +37,12 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-Start the collector. `KRONIKA_PG_DSNS` enables PostgreSQL collection; omit it
-to collect only the host.
+Start the collector. This example collects PostgreSQL and host data; omit the
+`KRONIKA_PG_DSNS` line to collect only the host.
 
 ```sh
 sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 

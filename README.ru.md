@@ -38,11 +38,12 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-collector -p kronika-web
 ```
 
-Запустите коллектор. Переменная `KRONIKA_PG_DSNS` включает сбор данных
-PostgreSQL; без неё коллектор записывает только данные машины.
+Запустите коллектор. Этот пример собирает данные PostgreSQL и машины; чтобы
+собирать только данные машины, уберите строку `KRONIKA_PG_DSNS`.
 
 ```sh
 sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
 

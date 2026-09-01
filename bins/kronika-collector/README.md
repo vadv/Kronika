@@ -186,6 +186,15 @@ of the four is set.
 | `KRONIKA_PGBOUNCER_DSNS` | unset | Where to ask `PgBouncer` for `SHOW CONFIG`, which carries `logfile`. The account needs to be in `stats_users`; no administrative right beyond that. |
 | `KRONIKA_PGBOUNCER_LOGS` | unset | `PgBouncer` logs named outright, paths or patterns. |
 
+Set one PostgreSQL connection as a quoted keyword DSN:
+
+```sh
+KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres'
+```
+
+A `;` inside the same value separates additional DSNs. The first supplies
+metric rows; later entries are used only to discover logs.
+
 A log file's size is set by someone else's software, so it is read through a
 4 MiB buffer and never held whole. One collection reads at most 256 MiB from
 each file.
