@@ -71,7 +71,7 @@ In another terminal, start web with the same data directory.
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
+KRONIKA_WEB_LISTEN=0.0.0.0:8080 \
 KRONIKA_WEB_SOURCES=3 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
