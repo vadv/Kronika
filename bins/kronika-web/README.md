@@ -14,13 +14,13 @@ binds.
 
 | Variable | Default | Description |
 | --- | ---: | --- |
-| `KRONIKA_OUT_DIR` | — | Required data directory. It must contain the collector output and allow web to create and replace `.idx` files and `.kronika-index.owner.lock`. |
+| `KRONIKA_STORAGE_DIR` | — | Required data directory. It must contain the collector output and allow web to create and replace `.idx` files and `.kronika-index.owner.lock`. |
 | `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | HTTP listen address. |
 | `KRONIKA_WEB_SOURCES` | — | Required decimal bitset. Bit 0 enables OS data; bit 1 enables PostgreSQL data. Unsupported bits are rejected. |
 | `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
 | `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
 | `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
-| `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_OUT_DIR`. |
+| `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_STORAGE_DIR`. |
 
 ## Run
 
@@ -30,7 +30,7 @@ Install `rustup` and `musl-gcc`, then run from the repository root:
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-web
 
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \

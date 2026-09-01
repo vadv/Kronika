@@ -17,13 +17,13 @@ source. Large PostgreSQL results are streamed in bounded batches without
 dropping rows. Each `segment_write_finish` log record includes `rss_kib`, the
 process's peak resident set size.
 
-`KRONIKA_OUT_DIR` is the only required variable.
+`KRONIKA_STORAGE_DIR` is the only required variable.
 
 ### Storage
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
-| `KRONIKA_OUT_DIR` | — | Data root: the journal, the finished segments, and the writer lock. |
+| `KRONIKA_STORAGE_DIR` | — | Data root: the journal, the finished segments, and the writer lock. |
 | `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Write the open segment once the journal holds this many raw bytes. |
 | `KRONIKA_SEGMENT_MAX_AGE_S` | 900 | Write an open segment at this age even if the byte cap was not reached. |
 | `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard cap of `active.wal`. Reaching it writes the open segment early rather than failing the append. |
@@ -239,7 +239,7 @@ parent block-device identity; layered device ancestry remains unspecified.
 ## Run the collector
 
 ```sh
-KRONIKA_OUT_DIR=/var/lib/kronika kronika-collector
+KRONIKA_STORAGE_DIR=/var/lib/kronika kronika-collector
 ```
 
 `SIGTERM` and `SIGINT` stop the loop and leave the journal in place, so a

@@ -5,7 +5,7 @@ use super::{
     WriterOwner, duration_ms, field, log_close_failure, log_event, peak_rss_kib, write_segment,
 };
 
-/// Open the journal under the output directory and write out windows a
+/// Open the journal under the storage directory and write out windows a
 /// previous process left behind, so a restart loses no collected data.
 ///
 /// A readable non-empty journal gets one publication attempt. Any open,

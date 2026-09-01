@@ -1,4 +1,4 @@
-//! Storage rotation for the `KRONIKA_OUT_DIR` tree.
+//! Storage rotation for the `KRONIKA_STORAGE_DIR` tree.
 //!
 //! Rotation keeps the whole data tree inside a fixed byte budget or a partition
 //! used-fraction target by deleting the oldest replaceable data. It runs after

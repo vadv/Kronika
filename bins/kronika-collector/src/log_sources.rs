@@ -6,7 +6,7 @@
 //! given; a file reached both ways is followed once.
 //!
 //! Each file is followed from where the previous process stopped; the offsets
-//! are keyed by path in `<out>/log.offsets`, so a restart resumes instead of
+//! are keyed by path in `<storage>/log.offsets`, so a restart resumes instead of
 //! re-reading or skipping. A file that cannot be read is one warning line
 //! every rescan and no rows.
 
@@ -115,7 +115,7 @@ pub(crate) struct LogSources {
 }
 
 impl LogSources {
-    /// Take the configuration and resume from `<out>/log.offsets`.
+    /// Take the configuration and resume from `<storage>/log.offsets`.
     ///
     /// # Errors
     ///
@@ -127,7 +127,7 @@ impl LogSources {
             .map(PostgresTarget::new)
             .collect();
         let pgbouncer_dsns = parse_connections("KRONIKA_PGBOUNCER_DSNS", &config.pgbouncer_dsns)?;
-        let offsets = Offsets::load(&config.out_dir)?;
+        let offsets = Offsets::load(&config.storage_dir)?;
         Ok(Self {
             offsets,
             pg_dsns,

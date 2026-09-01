@@ -10,7 +10,7 @@ through a browser interface and MCP.
 ![Kronika architecture](docs/images/architecture.svg)
 
 The collector writes the current journal to `active.wal` and finished segments
-to `YYYY/MM/DD/N.zms` under `KRONIKA_OUT_DIR`. `kronika-web` reads those files
+to `YYYY/MM/DD/N.zms` under `KRONIKA_STORAGE_DIR`. `kronika-web` reads those files
 and creates derived `N.idx` files in the same directory.
 
 ## Run the demo
@@ -41,7 +41,7 @@ Start the collector. This example collects PostgreSQL and host data; omit the
 `KRONIKA_PG_DSNS` line to collect only the host.
 
 ```sh
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
@@ -49,7 +49,7 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 In another terminal, start web with the same data directory.
 
 ```sh
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \

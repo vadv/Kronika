@@ -11,7 +11,7 @@ PgBouncer. `kronika-web` показывает сохранённые данны�
 ![Архитектура Kronika](docs/images/architecture.svg)
 
 Коллектор пишет текущий журнал в `active.wal`, а готовые сегменты — в
-`YYYY/MM/DD/N.zms` внутри `KRONIKA_OUT_DIR`. `kronika-web` читает эти файлы и
+`YYYY/MM/DD/N.zms` внутри `KRONIKA_STORAGE_DIR`. `kronika-web` читает эти файлы и
 создаёт рядом производные файлы `N.idx`.
 
 ## Запуск демо
@@ -42,7 +42,7 @@ cargo build --release --locked -p kronika-collector -p kronika-web
 собирать только данные машины, уберите строку `KRONIKA_PG_DSNS`.
 
 ```sh
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
 target/x86_64-unknown-linux-musl/release/kronika-collector
 ```
@@ -50,7 +50,7 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 В другом терминале запустите web с тем же каталогом данных.
 
 ```sh
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \

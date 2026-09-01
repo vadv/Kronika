@@ -1,9 +1,9 @@
 //! Linux system collector daemon.
 //!
 //! Configuration is environment-only; the one required variable is
-//! `KRONIKA_OUT_DIR`. The process snapshots the OS sources on their own
-//! intervals, appends each synchronized window to `<out>/active.wal`, and
-//! publishes immutable `<out>/YYYY/MM/DD/<segment-id>.zms` segments by size,
+//! `KRONIKA_STORAGE_DIR`. The process snapshots the OS sources on their own
+//! intervals, appends each synchronized window to `<storage>/active.wal`, and
+//! publishes immutable `<storage>/YYYY/MM/DD/<segment-id>.zms` segments by size,
 //! age, journal pressure, or `SIGUSR2`.
 //!
 //! `SIGTERM` and `SIGINT` stop the loop without discarding the journal.
@@ -121,8 +121,8 @@ fn prepare_collector_storage(
 /// Take exclusive ownership of the data root and recover what the previous
 /// process left behind.
 fn start_up(config: &Config) -> Result<(WriterOwner, Journal)> {
-    std::fs::create_dir_all(&config.out_dir).context("create the output directory")?;
-    let data_root = DataRoot::open(&config.out_dir).context("open the data root")?;
+    std::fs::create_dir_all(&config.storage_dir).context("create the storage directory")?;
+    let data_root = DataRoot::open(&config.storage_dir).context("open the data root")?;
     let writer_owner = data_root
         .acquire_writer(LayoutLimits::default())
         .context("acquire exclusive writer ownership")?;

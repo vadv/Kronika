@@ -20,11 +20,11 @@ kronika-registry encodes typed rows as section bodies
 kronika-writer builds a ZMS part
         |
         v
-$KRONIKA_OUT_DIR/active.wal
+$KRONIKA_STORAGE_DIR/active.wal
         |
         | write_segment()
         v
-$KRONIKA_OUT_DIR/YYYY/MM/DD/N.zms
+$KRONIKA_STORAGE_DIR/YYYY/MM/DD/N.zms
         |
         v
 kronika-store / kronika-reader
@@ -33,11 +33,11 @@ kronika-store / kronika-reader
 kronika-web
 ```
 
-The journal is always `$KRONIKA_OUT_DIR/active.wal`. Finished ZMS files use
+The journal is always `$KRONIKA_STORAGE_DIR/active.wal`. Finished ZMS files use
 the strict UTC calendar tree:
 
 ```text
-$KRONIKA_OUT_DIR/
+$KRONIKA_STORAGE_DIR/
 |-- active.wal
 `-- YYYY/
     `-- MM/
@@ -348,7 +348,7 @@ share that name, the data occupies one physical file as follows. The diagram
 shows decoded Parquet contents and omits unrelated bodies:
 
 ```text
-$KRONIKA_OUT_DIR/YYYY/MM/DD/N.zms  (one file)
+$KRONIKA_STORAGE_DIR/YYYY/MM/DD/N.zms  (one file)
 
 [ "ZMS1" ]
 [ os_process Parquet body, type_id=1_100_001

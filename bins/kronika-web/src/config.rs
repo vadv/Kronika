@@ -69,8 +69,8 @@ impl Config {
     /// Returns an error when the data root, either credential, or the source
     /// bitset is absent, or when a configured value is invalid.
     pub(crate) fn from_env() -> Result<Self> {
-        let data_root: PathBuf = std::env::var("KRONIKA_OUT_DIR")
-            .context("KRONIKA_OUT_DIR is not set")?
+        let data_root: PathBuf = std::env::var("KRONIKA_STORAGE_DIR")
+            .context("KRONIKA_STORAGE_DIR is not set")?
             .into();
         let raw_listen =
             std::env::var("KRONIKA_WEB_LISTEN").unwrap_or_else(|_unset| DEFAULT_LISTEN.to_owned());

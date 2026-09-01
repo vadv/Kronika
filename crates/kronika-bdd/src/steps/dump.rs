@@ -18,7 +18,7 @@ fn binary() -> Result<PathBuf> {
 /// Run the dumper over the run's data root and return what it printed.
 pub(crate) fn dump(world: &BddWorld, flags: &[&str]) -> Result<String> {
     let collector = world.run.as_ref().context("a collector was started")?;
-    let root = collector.out_dir();
+    let root = collector.storage_dir();
     let mut command = Command::new(binary()?);
     command.arg(&root).args(flags);
     run(&mut command).with_context(|| format!("run the dumper over {}", root.display()))

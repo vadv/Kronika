@@ -25,7 +25,7 @@ fn demo_finishes(world: &mut BddWorld, seconds: u64) -> Result<()> {
 #[when(regex = r"^the last (\d+) bytes of the journal are cut off$")]
 fn cut_the_journal(world: &mut BddWorld, bytes: u64) -> Result<()> {
     let run = world.run.take().context("a collector was started")?;
-    let journal = run.out_dir().join("active.wal");
+    let journal = run.storage_dir().join("active.wal");
     let len = std::fs::metadata(&journal)
         .with_context(|| format!("stat {}", journal.display()))?
         .len();
@@ -44,7 +44,7 @@ fn cut_the_journal(world: &mut BddWorld, bytes: u64) -> Result<()> {
 #[when(regex = r"^the oldest published segment is cut down to (\d+) bytes$")]
 fn cut_a_segment(world: &mut BddWorld, bytes: u64) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
-    let root = run.out_dir();
+    let root = run.storage_dir();
     let mut segments: Vec<PathBuf> = files_under(&root)
         .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "zms"))

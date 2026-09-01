@@ -14,13 +14,13 @@
 
 | Переменная | По умолчанию | Описание |
 | --- | ---: | --- |
-| `KRONIKA_OUT_DIR` | — | Обязательный каталог данных. В нём должны находиться результаты работы коллектора; web должен иметь право создавать и заменять файлы `.idx` и `.kronika-index.owner.lock`. |
+| `KRONIKA_STORAGE_DIR` | — | Обязательный каталог данных. В нём должны находиться результаты работы коллектора; web должен иметь право создавать и заменять файлы `.idx` и `.kronika-index.owner.lock`. |
 | `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | Адрес, на котором HTTP-сервер принимает соединения. |
 | `KRONIKA_WEB_SOURCES` | — | Обязательное десятичное число. Бит 0 включает данные OS, бит 1 — PostgreSQL. Остальные биты недопустимы. |
 | `KRONIKA_WEB_USER` | — | Обязательное непустое имя пользователя Basic, в том числе при отключённой аутентификации. |
 | `KRONIKA_WEB_PASSWORD` | — | Обязательный непустой пароль Basic, в том числе при отключённой аутентификации. |
 | `KRONIKA_WEB_AUTH` | `required` | `required` защищает `/api/*` и `/mcp`; `disabled` отключает проверку учётных данных. |
-| `KRONIKA_WEB_DEMO` | не задана | Допустимо только значение `synthetic`. Оно помечает ответы и интерфейс как синтетические; данные по-прежнему читаются из `KRONIKA_OUT_DIR`. |
+| `KRONIKA_WEB_DEMO` | не задана | Допустимо только значение `synthetic`. Оно помечает ответы и интерфейс как синтетические; данные по-прежнему читаются из `KRONIKA_STORAGE_DIR`. |
 
 ## Запуск
 
@@ -30,7 +30,7 @@
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked -p kronika-web
 
-sudo env KRONIKA_OUT_DIR=/var/lib/kronika \
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 KRONIKA_WEB_SOURCES=1 \
 KRONIKA_WEB_USER=kronika \
 KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
