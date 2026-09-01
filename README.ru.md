@@ -101,7 +101,7 @@ Codex CLI, Cursor и мост `mcp-remote`.
   бинарный формат сегмента.
 
 Диаграммы генерируются: исходники лежат в [docs/diagrams/](docs/diagrams/),
-`make diagrams` пересобирает закоммиченные SVG (нужен
-[d2](https://d2lang.com)).
+`make diagrams` пересобирает закоммиченные SVG (нужно приложение
+[draw.io](https://www.drawio.com)).
 
 Лицензия MIT.

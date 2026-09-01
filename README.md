@@ -100,7 +100,7 @@ Cursor, and the `mcp-remote` bridge.
   segment binary format.
 
 Diagrams are generated: sources live in [docs/diagrams/](docs/diagrams/),
-`make diagrams` rebuilds the committed SVGs (requires
-[d2](https://d2lang.com)).
+`make diagrams` rebuilds the committed SVGs (requires the
+[draw.io](https://www.drawio.com) app).
 
 MIT license.

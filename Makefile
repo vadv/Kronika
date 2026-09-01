@@ -75,7 +75,10 @@ demo-status: ## Show the demo container and health state.
 demo-logs: ## Follow all demo service logs.
 	@scripts/demo-image.sh logs
 
-diagrams: ## Regenerate the committed documentation SVGs from docs/diagrams (requires d2).
-	@for f in docs/diagrams/*.d2; do \
-		d2 --theme=0 --pad 24 $$f docs/images/$$(basename $$f .d2).svg; \
+DRAWIO ?= /Applications/draw.io.app/Contents/MacOS/draw.io
+
+diagrams: ## Regenerate the committed documentation SVGs from docs/diagrams (requires the draw.io app).
+	@for f in docs/diagrams/*.drawio; do \
+		"$(DRAWIO)" --export --format svg --theme light --border 16 \
+			--output docs/images/$$(basename $$f .drawio).svg $$f; \
 	done
