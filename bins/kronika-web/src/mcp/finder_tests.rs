@@ -1,7 +1,11 @@
+use std::io;
 use std::sync::Arc;
 
+use kronika_query::QueryError;
+use kronika_reader::ReaderError;
 use serde_json::{Map, Value, json};
 
+use crate::api::ApiError;
 use crate::config::{Account, Config};
 use crate::tests::artifacts::{Fixture, NamedIndexSnapshot};
 
@@ -54,6 +58,54 @@ fn assert_no_storage_coordinates(value: &Value) {
         }
         _ => {}
     }
+}
+
+fn stale(message: &'static str) -> QueryError {
+    QueryError::Unreadable(Box::new(ReaderError::Io(io::Error::new(
+        io::ErrorKind::Interrupted,
+        message,
+    ))))
+}
+
+#[test]
+fn native_snapshot_queries_replay_only_one_source_change() {
+    let fixture = Fixture::new();
+    let config = test_config(fixture.root().to_path_buf());
+
+    let mut attempts = 0;
+    let value = super::run_snapshot_query(&config, |_context| {
+        attempts += 1;
+        if attempts == 1 {
+            Err(stale("first active generation"))
+        } else {
+            Ok(42)
+        }
+    })
+    .expect("second capture succeeds");
+    assert_eq!(value, 42);
+    assert_eq!(attempts, 2);
+
+    let mut repeated = 0;
+    let error = super::run_snapshot_query(&config, |_context| {
+        repeated += 1;
+        Err::<(), _>(stale(if repeated == 1 {
+            "first active generation"
+        } else {
+            "second active generation"
+        }))
+    })
+    .expect_err("the second source change is returned");
+    assert_eq!(repeated, 2);
+    assert!(error.to_string().contains("second active generation"));
+
+    let mut refused = 0;
+    let error = super::run_snapshot_query(&config, |_context| {
+        refused += 1;
+        Err::<(), _>(QueryError::BadFilter("filter".to_owned()))
+    })
+    .expect_err("semantic refusal is returned");
+    assert_eq!(refused, 1);
+    assert!(matches!(error, ApiError::BadFilter(_)));
 }
 
 fn detail(config: &Config, row: &Value) -> Value {

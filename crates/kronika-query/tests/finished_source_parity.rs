@@ -11,19 +11,31 @@ use icu_locale_core as _;
 use kronika_format::DictLimits;
 use kronika_index as _;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
+use kronika_query::snapshot::{
+    CurrentSnapshotQuery, FinderQuery, FinderResult, FinderSurface, PlainRowOut, ProcessRowOut,
+    RelationRow, SnapshotPoint, execute_current_plain, execute_current_relation, execute_plain,
+    execute_processes, execute_relation,
+};
 use kronika_query::{
     CatalogRequest, EventsQuery, EventsRepresentation, EventsResult, Filter, FinishedDataset,
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, HourPart, HourRequest,
     HourSeriesRequest, NormalizedRanking, QueryContext, QueryDataset, QueryRequest, QuerySink,
-    RelationGroup, RowDetailResult, TimeRange, Window, execute, execute_events,
+    RelationGroup, RelationKind, RowDetailResult, TimeRange, Window, execute, execute_events,
     execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
 };
 use kronika_reader as _;
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_process::OsProcess;
+use kronika_registry::pg_locks::PgLocksV2;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
+use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_stat_database::PgStatDatabaseV1;
+use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuumV1;
+use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_stat_user_indexes::PgStatUserIndexesV1;
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
+use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
 use kronika_registry::{StrId, Ts};
 use kronika_store::{EmbeddedSource, PosixSource};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -178,6 +190,113 @@ fn row_detail_result(dataset: Arc<dyn QueryDataset>, detail_ref: &str) -> RowDet
     execute_row_detail(&context, request, &Records::default()).expect("execute typed row detail")
 }
 
+fn finder_query(surface: FinderSurface) -> FinderQuery {
+    FinderQuery {
+        surface,
+        point: SnapshotPoint::LatestRecorded,
+        search: None,
+        order: None,
+        group: matches!(surface, FinderSurface::Tables | FinderSurface::Indexes)
+            .then_some(RelationGroup::Object),
+        limit: 4,
+    }
+}
+
+fn process_result_json(result: FinderResult<ProcessRowOut>) -> serde_json::Value {
+    let rows = result
+        .rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "pid": row.pid,
+                "ppid": row.ppid,
+                "segment_id": row.segment_id,
+                "type_id": row.type_id,
+                "row_ordinal": row.row_ordinal,
+                "at": row.at,
+                "identity": row.identity,
+                "fields": row.fields,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "rows": rows,
+        "truncated": result.truncated,
+        "as_of": result.as_of,
+    })
+}
+
+fn plain_result_json(result: FinderResult<PlainRowOut>) -> serde_json::Value {
+    let rows = result
+        .rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "segment_id": row.segment_id,
+                "type_id": row.type_id,
+                "row_ordinal": row.row_ordinal,
+                "at": row.at,
+                "identity": row.identity,
+                "fields": row.fields,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "rows": rows,
+        "truncated": result.truncated,
+        "as_of": result.as_of,
+    })
+}
+
+fn relation_result_json(
+    result: FinderResult<RelationRow>,
+    kind: RelationKind,
+) -> serde_json::Value {
+    let rows = result
+        .rows
+        .into_iter()
+        .map(|row| {
+            let metrics = row
+                .metrics
+                .into_iter()
+                .map(|(name, metric)| (name, metric.map_or(serde_json::Value::Null, |m| m.json())))
+                .collect::<serde_json::Map<_, _>>();
+            serde_json::json!({
+                "key": row.key.json(kind, RelationGroup::Object),
+                "metrics": metrics,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "rows": rows,
+        "truncated": result.truncated,
+        "as_of": result.as_of,
+    })
+}
+
+fn finder_result_json(context: &QueryContext, surface: FinderSurface) -> serde_json::Value {
+    let query = finder_query(surface);
+    match surface {
+        FinderSurface::Processes => process_result_json(
+            execute_processes(context, &query, &|| false).expect("execute process finder"),
+        ),
+        FinderSurface::Tables | FinderSurface::Indexes => {
+            let kind = if surface == FinderSurface::Tables {
+                RelationKind::Tables
+            } else {
+                RelationKind::Indexes
+            };
+            relation_result_json(
+                execute_relation(context, &query, &|| false).expect("execute relation finder"),
+                kind,
+            )
+        }
+        _ => plain_result_json(
+            execute_plain(context, &query, &|| false).expect("execute plain finder"),
+        ),
+    }
+}
+
 fn write_posix_fixture(root: &Path, segment_id: SegmentId) {
     let address = SegmentAddress::new(segment_id).expect("segment address");
     let day = root
@@ -292,10 +411,165 @@ const fn parity_table(
     }
 }
 
+const fn parity_index(
+    timestamp: i64,
+    database: StrId,
+    schema: StrId,
+    table: StrId,
+    label: StrId,
+    scans: i64,
+) -> PgStatUserIndexesV1 {
+    PgStatUserIndexesV1 {
+        ts: Ts(timestamp),
+        datid: 1,
+        datname: database,
+        indexrelid: 12,
+        relid: 11,
+        schemaname: schema,
+        relname: table,
+        indexrelname: label,
+        tablespace_oid: 1_663,
+        tablespace: Some(label),
+        idx_scan: scans,
+        idx_tup_read: 0,
+        idx_tup_fetch: 0,
+        main_fork_bytes: 8_192,
+        indisunique: true,
+        indisprimary: true,
+        indisvalid: true,
+        indisexclusion: false,
+        indisready: true,
+        amname: label,
+        indexdef: Some(label),
+        idx_blks_read: 0,
+        idx_blks_hit: 0,
+    }
+}
+
+const fn parity_database(timestamp: i64, database: StrId, commits: i64) -> PgStatDatabaseV1 {
+    PgStatDatabaseV1 {
+        ts: Ts(timestamp),
+        datid: 1,
+        datname: Some(database),
+        numbackends: Some(3),
+        xact_commit: commits,
+        xact_rollback: 0,
+        blks_read: 0,
+        blks_hit: 0,
+        tup_returned: 0,
+        tup_fetched: 0,
+        tup_inserted: 0,
+        tup_updated: 0,
+        tup_deleted: 0,
+        conflicts: 0,
+        temp_files: 0,
+        temp_bytes: 0,
+        deadlocks: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        stats_reset: None,
+        frozen_xid_age: Some(7),
+        min_mxid_age: Some(5),
+        datconnlimit: Some(-1),
+        datallowconn: Some(true),
+        datistemplate: Some(false),
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fixture counters are the exactly representable values 10 and 20"
+)]
+fn parity_statement(timestamp: i64, label: StrId, calls: i64) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(timestamp),
+        queryid: Some(71),
+        userid: 72,
+        dbid: 1,
+        datname: Some(label),
+        usename: Some(label),
+        query: Some(label),
+        calls,
+        rows: calls * 2,
+        plans: calls,
+        total_exec_time: calls as f64 * 4.0,
+        total_plan_time: calls as f64,
+        min_exec_time: 1.0,
+        max_exec_time: 4.0,
+        mean_exec_time: 2.0,
+        stddev_exec_time: 0.5,
+        min_plan_time: 0.1,
+        max_plan_time: 1.0,
+        mean_plan_time: 0.5,
+        stddev_plan_time: 0.1,
+        shared_blks_hit: calls,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fixture counters are the exactly representable values 10 and 20"
+)]
+fn parity_plan(timestamp: i64, label: StrId, calls: i64) -> PgStorePlansOsscV1 {
+    PgStorePlansOsscV1 {
+        ts: Ts(timestamp),
+        queryid: 71,
+        planid: -7,
+        userid: 72,
+        dbid: 1,
+        datname: Some(label),
+        usename: Some(label),
+        plan: Some(label),
+        calls,
+        total_time: calls as f64 * 3.0,
+        min_time: 1.0,
+        max_time: 3.0,
+        mean_time: 2.0,
+        stddev_time: 0.5,
+        rows: calls * 2,
+        shared_blks_hit: calls,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        shared_blk_read_time: 0.0,
+        shared_blk_write_time: 0.0,
+        local_blk_read_time: 0.0,
+        local_blk_write_time: 0.0,
+        temp_blk_read_time: 0.0,
+        temp_blk_write_time: 0.0,
+        first_call: Ts(timestamp - 1),
+        last_call: Ts(timestamp),
+    }
+}
+
 fn fixture_label(interner: &mut Interner, value: &[u8]) -> StrId {
     StrId(interner.intern(value).expect("intern fixture label").get())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one shared segment fixture covers every query family without duplicate writers"
+)]
 fn write_heatmap_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
     let data_root = DataRoot::open(root).expect("open heatmap data root");
     let owner = data_root
@@ -364,6 +638,104 @@ fn write_heatmap_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
             ..relation
         })
         .expect("current relation row fits");
+    for (timestamp, scans) in [(HEATMAP_FROM, 3), (HEATMAP_TO, 9)] {
+        buffers
+            .push(parity_index(
+                timestamp, database, schema, table, label, scans,
+            ))
+            .expect("index row fits");
+    }
+    buffers
+        .push(PgStatActivityV3 {
+            ts: Ts(HEATMAP_TO),
+            pid: 42,
+            leader_pid: None,
+            datid: Some(1),
+            datname: Some(database),
+            usename: Some(label),
+            application_name: label,
+            client_addr: label,
+            backend_type: label,
+            state: Some(label),
+            wait_event_type: None,
+            wait_event: None,
+            query: Some(label),
+            query_id: Some(71),
+            backend_xid_age: Some(7),
+            backend_xmin_age: Some(5),
+            backend_start: Ts(HEATMAP_FROM),
+            xact_start: Some(Ts(HEATMAP_FROM)),
+            query_start: Some(Ts(HEATMAP_FROM)),
+            state_change: Some(Ts(HEATMAP_FROM)),
+        })
+        .expect("activity row fits");
+    buffers
+        .push(PgLocksV2 {
+            ts: Ts(HEATMAP_TO),
+            pid: 42,
+            blocked_by: vec![7],
+            datid: 1,
+            datname: database,
+            usename: Some(label),
+            application_name: label,
+            client_addr: label,
+            backend_type: label,
+            state: Some(label),
+            wait_event_type: Some(label),
+            wait_event: Some(label),
+            query: label,
+            backend_xid_age: Some(7),
+            backend_xmin_age: Some(5),
+            backend_start: Some(Ts(HEATMAP_FROM)),
+            xact_start: Some(Ts(HEATMAP_FROM)),
+            query_start: Some(Ts(HEATMAP_FROM)),
+            state_change: Some(Ts(HEATMAP_FROM)),
+            lock_locktype: Some(label),
+            lock_mode: Some(label),
+            lock_database: Some(1),
+            lock_relation: Some(11),
+            lock_relname: Some(table),
+            lock_page: None,
+            lock_tuple: None,
+            lock_virtualxid: None,
+            lock_transactionid: None,
+            lock_classid: None,
+            lock_objid: None,
+            lock_objsubid: None,
+            lock_target: Some(label),
+            waitstart: Some(Ts(HEATMAP_FROM)),
+        })
+        .expect("lock row fits");
+    buffers
+        .push(PgStatProgressVacuumV1 {
+            ts: Ts(HEATMAP_TO),
+            pid: 43,
+            datid: 1,
+            datname: database,
+            relid: 11,
+            schemaname: Some(schema),
+            relname: Some(table),
+            is_autovacuum: true,
+            phase: label,
+            heap_blks_total: 100,
+            heap_blks_scanned: 40,
+            heap_blks_vacuumed: 20,
+            index_vacuum_count: 1,
+            max_dead_tuples: 1_000,
+            num_dead_tuples: 250,
+        })
+        .expect("vacuum row fits");
+    for (timestamp, calls) in [(HEATMAP_FROM, 10), (HEATMAP_TO, 20)] {
+        buffers
+            .push(parity_database(timestamp, database, calls))
+            .expect("database row fits");
+        buffers
+            .push(parity_statement(timestamp, label, calls))
+            .expect("statement row fits");
+        buffers
+            .push(parity_plan(timestamp, label, calls))
+            .expect("plan row fits");
+    }
     let dictionary = dict::encode(interner.window()).expect("encode parity dictionary");
     let part = buffers
         .flush(&dictionary)
@@ -859,4 +1231,114 @@ fn row_detail_is_typed_identical_for_posix_and_embedded_finished_zms() {
             "truncated": false,
         })
     );
+}
+
+#[test]
+fn all_snapshot_finders_are_typed_identical_for_posix_and_embedded_finished_zms() {
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
+    let directory = tempfile::tempdir().expect("temporary POSIX root");
+    let payload = write_heatmap_fixture(directory.path(), segment_id);
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_context =
+        QueryContext::new(Arc::new(FinishedDataset::new(posix.clone())), 0b11, false);
+
+    let embedded = EmbeddedSource::from_shared(
+        segment_id,
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("payload length fits u64"),
+    )
+    .expect("embedded source");
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_context = QueryContext::new(
+        Arc::new(FinishedDataset::new(embedded.clone())),
+        0b11,
+        false,
+    );
+
+    for surface in [
+        FinderSurface::Processes,
+        FinderSurface::Tables,
+        FinderSurface::Indexes,
+        FinderSurface::Activity,
+        FinderSurface::Locks,
+        FinderSurface::Vacuum,
+        FinderSurface::Databases,
+        FinderSurface::Statements,
+        FinderSurface::Plans,
+    ] {
+        let posix_result = finder_result_json(&posix_context, surface);
+        let embedded_result = finder_result_json(&embedded_context, surface);
+        assert_eq!(posix_result, embedded_result, "{surface:?} backend parity");
+        assert_eq!(embedded_result["truncated"], false, "{surface:?}");
+        assert_eq!(embedded_result["as_of"], HEATMAP_TO, "{surface:?}");
+        assert_eq!(
+            embedded_result["rows"].as_array().map(Vec::len),
+            Some(1),
+            "{surface:?} must return its representative row"
+        );
+
+        let (pointer, expected) = match surface {
+            FinderSurface::Processes => ("/rows/0/fields/comm", serde_json::json!("parity")),
+            FinderSurface::Tables => ("/rows/0/metrics/seq_scan", serde_json::json!(10.0)),
+            FinderSurface::Indexes => ("/rows/0/metrics/idx_scan", serde_json::json!(6.0)),
+            FinderSurface::Activity => ("/rows/0/fields/pid", serde_json::json!(42)),
+            FinderSurface::Locks => ("/rows/0/fields/blocked_by", serde_json::json!([7])),
+            FinderSurface::Vacuum => ("/rows/0/fields/heap_blks_scanned", serde_json::json!("40")),
+            FinderSurface::Databases => ("/rows/0/fields/xact_commit", serde_json::json!(10.0)),
+            FinderSurface::Statements => ("/rows/0/fields/calls", serde_json::json!(10.0)),
+            FinderSurface::Plans => ("/rows/0/fields/calls", serde_json::json!("20")),
+        };
+        assert_eq!(
+            embedded_result.pointer(pointer),
+            Some(&expected),
+            "{surface:?} substantive value"
+        );
+    }
+
+    let plain_query = CurrentSnapshotQuery {
+        logical_name: "instance_metadata".to_owned(),
+        fields: vec!["hostname".to_owned()],
+        order: None,
+        group: None,
+        limit: 2,
+    };
+    let posix_plain = execute_current_plain(&posix_context, plain_query.clone(), &|| false)
+        .expect("execute POSIX current plain")
+        .map(plain_result_json);
+    let embedded_plain = execute_current_plain(&embedded_context, plain_query, &|| false)
+        .expect("execute embedded current plain")
+        .map(plain_result_json);
+    assert_eq!(posix_plain, embedded_plain);
+    let plain = embedded_plain.expect("current instance metadata");
+    assert_eq!(plain["rows"][0]["fields"]["hostname"], "parity");
+
+    let relation_query = CurrentSnapshotQuery {
+        logical_name: "pg_stat_user_tables".to_owned(),
+        fields: vec!["seq_scan".to_owned()],
+        order: None,
+        group: Some(RelationGroup::Object),
+        limit: 2,
+    };
+    let posix_relation =
+        execute_current_relation(&posix_context, relation_query.clone(), &|| false)
+            .expect("execute POSIX current relation")
+            .map(|result| relation_result_json(result, RelationKind::Tables));
+    let embedded_relation = execute_current_relation(&embedded_context, relation_query, &|| false)
+        .expect("execute embedded current relation")
+        .map(|result| relation_result_json(result, RelationKind::Tables));
+    assert_eq!(posix_relation, embedded_relation);
+    let relation = embedded_relation.expect("current table relation");
+    assert_eq!(relation["rows"][0]["key"]["relname"], "parity_table");
+    assert_eq!(relation["rows"][0]["metrics"]["seq_scan"], 10.0);
+
+    assert_eq!(
+        posix.retained_segment_bytes(),
+        0,
+        "POSIX execution must not retain a whole segment"
+    );
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
 }

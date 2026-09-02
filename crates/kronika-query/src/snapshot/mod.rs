@@ -488,11 +488,24 @@ pub struct SnapshotPreparation {
     validator_segments: Vec<DatasetSegment>,
 }
 
+struct PreparedSnapshotInputs {
+    cursor: Option<SnapshotCursor>,
+    search: Option<Box<StructuredSearch>>,
+    first_match_query_id: Option<i64>,
+    binding: u64,
+}
+
 /// Capture one explicit snapshot selection without scanning predecessors.
+///
+/// # Errors
+///
+/// Returns a query error when the request is invalid, its segment is absent,
+/// or the captured dataset cannot provide a consistent catalog.
 pub fn prepare_snapshot(
     context: &QueryContext,
     request: SnapshotRequest,
 ) -> Result<SnapshotPreparation, QueryError> {
+    let inputs = prepared_snapshot_inputs(&request)?;
     let listing = {
         let catalog = context.dataset.catalog()?;
         catalog.segments(SegmentSelection::new(SegmentBounds::all()))?
@@ -504,7 +517,7 @@ pub fn prepare_snapshot(
         .position(|segment| segment.id() == request.segment_id)
         .ok_or(QueryError::NoSuchSegment)?;
     let current = segments.remove(index);
-    prepare_selected_state(
+    prepare_selected_state_with_inputs(
         Arc::clone(&context.dataset),
         current,
         segments,
@@ -512,6 +525,7 @@ pub fn prepare_snapshot(
         request,
         true,
         None,
+        inputs,
     )
 }
 
@@ -544,22 +558,66 @@ fn prepare_selected_state(
     pin_current: bool,
     current_from: Option<i64>,
 ) -> Result<SnapshotPreparation, QueryError> {
+    let inputs = prepared_snapshot_inputs(&request)?;
+    prepare_selected_state_with_inputs(
+        dataset,
+        current,
+        segments,
+        clean,
+        request,
+        pin_current,
+        current_from,
+        inputs,
+    )
+}
+
+fn prepared_snapshot_inputs(
+    request: &SnapshotRequest,
+) -> Result<PreparedSnapshotInputs, QueryError> {
     let cursor = request
         .cursor
         .as_deref()
         .map(SnapshotCursor::parse)
         .transpose()?;
-    let search = prepared_search(&request, cursor.is_some())?;
-    let first_match_query_id = prepared_first_match(&request, search.as_deref())?;
-    let binding = snapshot_binding(&request, search.as_deref());
+    let search = prepared_search(request, cursor.is_some())?;
+    let first_match_query_id = prepared_first_match(request, search.as_deref())?;
+    let binding = snapshot_binding(request, search.as_deref());
     let parsed = cursor
         .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
     if request.cursor.is_some() && parsed.is_none() {
         return Err(QueryError::BadCursor);
     }
-    let anchor = pin(dataset.as_ref(), current, parsed)?;
+    Ok(PreparedSnapshotInputs {
+        cursor: parsed,
+        search,
+        first_match_query_id,
+        binding,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "captured selection and parsed request state meet at this ownership boundary"
+)]
+fn prepare_selected_state_with_inputs(
+    dataset: Arc<dyn QueryDataset>,
+    current: DatasetSegment,
+    segments: Vec<DatasetSegment>,
+    clean: bool,
+    request: SnapshotRequest,
+    pin_current: bool,
+    current_from: Option<i64>,
+    inputs: PreparedSnapshotInputs,
+) -> Result<SnapshotPreparation, QueryError> {
+    let PreparedSnapshotInputs {
+        cursor,
+        search,
+        first_match_query_id,
+        binding,
+    } = inputs;
+    let anchor = pin(dataset.as_ref(), current, cursor)?;
     let active_position = anchor.active_position().unwrap_or(0);
-    if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
+    if cursor.is_some_and(|cursor| cursor.active_position != active_position) {
         return Err(QueryError::BadCursor);
     }
     let validator_segments =
@@ -587,7 +645,7 @@ fn prepare_selected_state(
         request,
         pin_current,
         current_from,
-        cursor: parsed,
+        cursor,
         search,
         first_match_query_id,
         binding,
@@ -614,6 +672,11 @@ impl SnapshotPreparation {
     }
 
     /// Finish planning and predecessor scans, producing the shared execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a query error when projection planning, segment opening, or
+    /// predecessor selection fails.
     pub fn finish(self) -> Result<QueryExecution, QueryError> {
         Ok(QueryExecution {
             prepared: Prepared::Snapshot(self.finish_prepared()?),

@@ -80,7 +80,7 @@ fn call_with(
         limit,
     };
     let result = match super::run_snapshot_query(config, |context| {
-        execute_processes(context, query.clone(), &|| cancelled())
+        execute_processes(context, &query, &|| cancelled())
     }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(LOGICAL_NAME, &error),

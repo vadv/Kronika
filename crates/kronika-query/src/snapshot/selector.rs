@@ -49,21 +49,21 @@ pub enum SnapshotPoint {
 pub enum FinderSurface {
     /// Operating-system processes.
     Processes,
-    /// PostgreSQL user tables.
+    /// `PostgreSQL` user tables.
     Tables,
-    /// PostgreSQL user indexes.
+    /// `PostgreSQL` user indexes.
     Indexes,
-    /// PostgreSQL activity.
+    /// `PostgreSQL` activity.
     Activity,
-    /// PostgreSQL locks.
+    /// `PostgreSQL` locks.
     Locks,
-    /// PostgreSQL vacuum progress.
+    /// `PostgreSQL` vacuum progress.
     Vacuum,
-    /// PostgreSQL database statistics.
+    /// `PostgreSQL` database statistics.
     Databases,
-    /// PostgreSQL statement statistics.
+    /// `PostgreSQL` statement statistics.
     Statements,
-    /// PostgreSQL stored plans.
+    /// `PostgreSQL` stored plans.
     Plans,
 }
 
@@ -218,27 +218,27 @@ impl<R> FinderResult<R> {
 /// Returns a typed request, captured-data, or cancellation error.
 pub fn execute_processes(
     context: &QueryContext,
-    query: FinderQuery,
+    query: &FinderQuery,
     cancelled: &impl Fn() -> bool,
 ) -> Result<FinderResult<ProcessRowOut>, QueryError> {
     if query.surface != FinderSurface::Processes {
         return Err(QueryError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(context, &query, cancelled)? else {
+    let Some(prepared) = prepare(context, query, cancelled)? else {
         return Ok(FinderResult::empty());
     };
     prepared.compute_process_rows(limit, cancelled)
 }
 
-/// Execute one non-relation PostgreSQL finder through the shared snapshot engine.
+/// Execute one non-relation `PostgreSQL` finder through the shared snapshot engine.
 ///
 /// # Errors
 ///
 /// Returns a typed request, captured-data, or cancellation error.
 pub fn execute_plain(
     context: &QueryContext,
-    query: FinderQuery,
+    query: &FinderQuery,
     cancelled: &impl Fn() -> bool,
 ) -> Result<FinderResult<PlainRowOut>, QueryError> {
     if matches!(
@@ -248,7 +248,7 @@ pub fn execute_plain(
         return Err(QueryError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(context, &query, cancelled)? else {
+    let Some(prepared) = prepare(context, query, cancelled)? else {
         return Ok(FinderResult::empty());
     };
     prepared.compute_plain_rows(limit, cancelled)
@@ -261,7 +261,7 @@ pub fn execute_plain(
 /// Returns a typed request, captured-data, or cancellation error.
 pub fn execute_relation(
     context: &QueryContext,
-    query: FinderQuery,
+    query: &FinderQuery,
     cancelled: &impl Fn() -> bool,
 ) -> Result<FinderResult<RelationRow>, QueryError> {
     if !matches!(
@@ -271,7 +271,7 @@ pub fn execute_relation(
         return Err(QueryError::BadFilter("surface".to_owned()));
     }
     let limit = query.limit;
-    let Some(prepared) = prepare(context, &query, cancelled)? else {
+    let Some(prepared) = prepare(context, query, cancelled)? else {
         return Ok(FinderResult::empty());
     };
     prepared.compute_relation_rows(limit, cancelled)

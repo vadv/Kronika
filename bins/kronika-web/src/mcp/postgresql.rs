@@ -51,7 +51,7 @@ pub(crate) fn call_tables(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call(RelationKind::Tables, config, group, query, cancelled)
+    call(RelationKind::Tables, config, group, &query, cancelled)
 }
 
 pub(crate) fn call_indexes(
@@ -82,18 +82,18 @@ pub(crate) fn call_indexes(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call(RelationKind::Indexes, config, group, query, cancelled)
+    call(RelationKind::Indexes, config, group, &query, cancelled)
 }
 
 fn call(
     kind: RelationKind,
     config: &Config,
     group: RelationGroup,
-    query: FinderQuery,
+    query: &FinderQuery,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
     let result = match super::run_snapshot_query(config, |context| {
-        execute_relation(context, query.clone(), &|| cancelled())
+        execute_relation(context, query, &|| cancelled())
     }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(kind.logical_name(), &error),
@@ -192,7 +192,7 @@ pub(crate) fn call_activity(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
 pub(crate) fn call_locks(
@@ -222,7 +222,7 @@ pub(crate) fn call_locks(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
 pub(crate) fn call_vacuum(
@@ -252,7 +252,7 @@ pub(crate) fn call_vacuum(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
 pub(crate) fn call_databases(
@@ -282,13 +282,17 @@ pub(crate) fn call_databases(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
-fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool) -> CallToolResult {
+fn call_plain(
+    config: &Config,
+    query: &FinderQuery,
+    cancelled: &dyn Fn() -> bool,
+) -> CallToolResult {
     let surface = query.surface;
     let result = match super::run_snapshot_query(config, |context| {
-        execute_plain(context, query.clone(), &|| cancelled())
+        execute_plain(context, query, &|| cancelled())
     }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(surface.logical_name(), &error),
@@ -351,7 +355,7 @@ pub(crate) fn call_statements(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
 pub(crate) fn call_plans(
@@ -381,7 +385,7 @@ pub(crate) fn call_plans(
         Ok(query) => query,
         Err(error) => return error,
     };
-    call_plain(config, query, cancelled)
+    call_plain(config, &query, cancelled)
 }
 
 /// Keeps compact fields in mass finder output and appends its detail reference.

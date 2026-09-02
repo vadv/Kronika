@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use kronika_format::DictLimits;
+use kronika_format::{DictLimits, ReadAt};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Cell, Row};
 use kronika_registry::contract;
@@ -10,7 +10,7 @@ use kronika_registry::os_process::OsProcess;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::{StrId, Ts};
-use kronika_store::EmbeddedSource;
+use kronika_store::{EmbeddedSource, ImmutableSegmentSource, PosixSource, ResourceCatalog};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
@@ -72,13 +72,22 @@ fn fixture_payload(fill: impl FnOnce(&mut Interner, &mut SectionBuffers)) -> Arc
     drop(journal);
     drop(owner);
 
-    let path = root
-        .path()
-        .join(address.day.year_component())
-        .join(address.day.month_component())
-        .join(address.day.day_component())
-        .join(address.zms_name());
-    std::fs::read(path).expect("read snapshot fixture").into()
+    let source = PosixSource::open(root.path()).expect("open snapshot fixture source");
+    let listing = source.resources().expect("list snapshot fixture resource");
+    let resource = listing
+        .resources
+        .first()
+        .expect("snapshot fixture resource");
+    let bytes = source
+        .open_resource(resource)
+        .expect("open snapshot fixture resource");
+    let len = usize::try_from(bytes.byte_len().expect("snapshot fixture length"))
+        .expect("snapshot fixture length fits memory");
+    let mut payload = vec![0; len];
+    bytes
+        .read_exact_at(&mut payload, 0)
+        .expect("read snapshot fixture resource");
+    payload.into()
 }
 
 fn snapshot_request(section: &str, fields: &[&str]) -> SnapshotRequest {
@@ -101,10 +110,10 @@ fn snapshot_request(section: &str, fields: &[&str]) -> SnapshotRequest {
     }
 }
 
-fn snapshot_records(payload: Arc<[u8]>, request: SnapshotRequest) -> Vec<Value> {
+fn snapshot_records(payload: &Arc<[u8]>, request: SnapshotRequest) -> Vec<Value> {
     let source = EmbeddedSource::from_shared(
         SegmentId::new(SEGMENT_ID).expect("snapshot segment id"),
-        Arc::clone(&payload),
+        Arc::clone(payload),
         u64::try_from(payload.len()).expect("snapshot payload length fits u64"),
     )
     .expect("embedded snapshot source");
@@ -267,7 +276,7 @@ fn snapshot_top_k_keeps_page_size_plus_one_and_dictionary_work_chunked() {
     let mut request = snapshot_request("os_process", &["pid", "comm"]);
     request.by = vec!["comm".to_owned()];
     request.page_size = Some(10);
-    let records = snapshot_records(payload, request);
+    let records = snapshot_records(&payload, request);
 
     assert_eq!(
         records
@@ -310,7 +319,7 @@ fn snapshot_first_match_stops_after_the_first_nonempty_query_text() {
     request.page_size = Some(1);
     request.search = Some("query_id:42".to_owned());
     request.first_match = true;
-    let records = snapshot_records(payload, request);
+    let records = snapshot_records(&payload, request);
 
     let rows = records
         .iter()
@@ -342,7 +351,7 @@ fn unpaged_snapshot_staging_and_filter_dictionary_stay_chunk_bounded() {
         column: "comm".to_owned(),
         value: "worker".to_owned(),
     }];
-    let records = snapshot_records(payload, request);
+    let records = snapshot_records(&payload, request);
 
     assert_eq!(
         records
@@ -352,6 +361,36 @@ fn unpaged_snapshot_staging_and_filter_dictionary_stay_chunk_bounded() {
         usize::try_from(ROWS).expect("positive row count")
     );
     assert_eq!(context_operations(), (1_024, 1_025, 1));
+}
+
+#[test]
+fn snapshot_preflight_exposes_identity_before_predecessor_scans() {
+    let payload = fixture_payload(|interner, buffers| {
+        let label = StrId(interner.intern(b"relation").expect("intern label").get());
+        buffers
+            .push(table(100, 11, 10, label))
+            .expect("predecessor row fits");
+        buffers
+            .push(table(SNAPSHOT_AT, 11, 20, label))
+            .expect("current row fits");
+    });
+    let source = EmbeddedSource::from_shared(
+        SegmentId::new(SEGMENT_ID).expect("snapshot segment id"),
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("snapshot payload length fits u64"),
+    )
+    .expect("embedded snapshot source");
+    let context = QueryContext::new(Arc::new(FinishedDataset::new(source)), 0b11, false);
+    let mut request = snapshot_request("pg_stat_user_tables", &["seq_scan"]);
+    request.group = Some(RelationGroup::Object);
+
+    reset_relation_snapshot_operations();
+    let preparation = super::prepare_snapshot(&context, request).expect("snapshot preflight");
+    assert!(preparation.metadata().identity().is_some());
+    assert_eq!(relation_snapshot_operations(), (0, 0, 0));
+
+    let _execution = preparation.finish().expect("finish snapshot planning");
+    assert!(relation_snapshot_operations().0 > 0);
 }
 
 #[test]
@@ -377,7 +416,7 @@ fn relation_snapshot_bounds_predecessor_scans_and_page_metric_projection() {
     request.group = Some(RelationGroup::Object);
     request.by = vec!["seq_scan".to_owned()];
     request.page_size = Some(1);
-    let records = snapshot_records(payload, request);
+    let records = snapshot_records(&payload, request);
 
     assert_eq!(
         records

@@ -172,6 +172,7 @@ pub struct SearchClause {
 impl SearchClause {
     /// Constructs a typed clause for MCP. `canonical` is empty because typed
     /// MCP searches never bind or resume HTTP cursors.
+    #[must_use]
     pub const fn from_parts(
         key: &'static str,
         columns: &'static [&'static str],
@@ -215,12 +216,14 @@ pub enum SearchValue {
 impl SearchValue {
     /// Builds the text parser's case-insensitive substring glob. `*` and `?`
     /// retain their glob semantics.
+    #[must_use]
     pub fn pattern(raw: &str) -> Self {
         Self::Pattern(GlobPattern::new(raw))
     }
 
     /// Builds a case-insensitive literal substring pattern for typed MCP
     /// filters. Unlike the text DSL, `*` and `?` have no wildcard meaning.
+    #[must_use]
     pub fn contains(raw: &str) -> Self {
         Self::Pattern(GlobPattern::contains(raw))
     }
@@ -229,11 +232,13 @@ impl SearchValue {
     /// case-insensitive equality — no substring behavior, `*`/`?` taken
     /// literally. The text DSL cannot express this; the typed MCP filter
     /// input uses it for its `eq` operator on string fields.
+    #[must_use]
     pub fn exact(raw: &str) -> Self {
         Self::Pattern(GlobPattern::exact(raw))
     }
 
     /// Whether two identifier or pattern values are exact duplicates.
+    #[must_use]
     pub fn same_exact(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Identifier(left), Self::Identifier(right)) => left == right,
@@ -269,6 +274,7 @@ pub struct Quantity {
 impl Quantity {
     /// Builds a non-negative integer threshold already expressed in the field's
     /// comparison unit.
+    #[must_use]
     pub fn from_integer(value: u128) -> Self {
         Self {
             numerator: value,
@@ -349,6 +355,11 @@ pub struct SearchDiagnostic {
 
 impl StructuredSearch {
     /// Parse and validate a bounded search for one logical snapshot section.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when the expression exceeds a bound or contains
+    /// invalid syntax, fields, values, or phase combinations.
     pub fn parse(raw: &str, logical_name: &str) -> Result<Self, SearchDiagnostic> {
         if raw.chars().count() > SEARCH_MAX_EXPRESSION_CHARS {
             return Err(diagnostic("expression_too_long", 0, raw.len()));
@@ -411,12 +422,14 @@ impl StructuredSearch {
     }
 
     /// Canonical expression used to bind HTTP page cursors.
+    #[must_use]
     pub fn canonical(&self) -> &str {
         &self.canonical
     }
 
     /// Constructs a typed MCP search. `canonical` is empty because this path
     /// never creates or validates an HTTP snapshot cursor.
+    #[must_use]
     pub const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
         Self {
             expr,
@@ -433,6 +446,10 @@ impl StructuredSearch {
     }
 
     /// Reject an `OR` that mixes member and derived-result phases.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when one disjunction crosses evaluation phases.
     pub fn validate_grouped_phase(&self) -> Result<(), SearchDiagnostic> {
         phase(&self.expr).map(|_phase| ())
     }
@@ -473,6 +490,7 @@ impl StructuredSearch {
     }
 
     /// Exact query identifier requested by a valid first-match expression.
+    #[must_use]
     pub fn first_match_query_id(&self) -> Option<i64> {
         let Expr::Predicate(clause) = &self.expr else {
             return None;
@@ -847,6 +865,7 @@ impl<'a> Parser<'a> {
 }
 
 /// Structured-search field catalog for a logical snapshot section.
+#[must_use]
 pub fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
         "os_process" => PROCESS_SEARCH_FIELDS,
@@ -863,6 +882,7 @@ pub fn search_fields(logical_name: &str) -> &'static [SearchField] {
 }
 
 /// Derived result definition for one public search field.
+#[must_use]
 pub fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
     let field = search_fields(logical_name)
         .iter()
@@ -1203,6 +1223,7 @@ fn canonical_value(value: &str) -> String {
 }
 
 /// Validate the canonical decimal spelling of a signed or unsigned identifier.
+#[must_use]
 pub fn valid_identifier(value: &str, signed: bool) -> bool {
     if signed {
         if value == "-0" {

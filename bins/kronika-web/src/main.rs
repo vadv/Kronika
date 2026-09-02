@@ -725,9 +725,7 @@ fn largest_database(config: &Config) -> Option<String> {
 }
 
 fn try_largest_database(config: &Config) -> Result<Option<String>, ApiError> {
-    let dataset = Arc::new(crate::query_adapter::NativeDataset::from_root(
-        &config.data_root,
-    )?);
+    let dataset = Arc::new(query_adapter::NativeDataset::from_root(&config.data_root)?);
     let context = kronika_query::QueryContext::new(dataset, config.sources, config.synthetic_demo);
     let query = kronika_query::snapshot::CurrentSnapshotQuery {
         logical_name: "pg_stat_user_tables".to_owned(),

@@ -943,8 +943,7 @@ impl Fixture {
     }
 
     /// `rows` is `(ts, xact_commit, xact_rollback, deadlocks)`, one
-    /// `pg_stat_database` row per timestamp for the same database (`datid`
-    /// 73) — the predecessor/current pair a cumulative-counter rate needs.
+    /// `pg_stat_database` row per timestamp for database 73.
     fn append_postgres_database_rows(&mut self, rows: &[(i64, i64, i64, i64)]) {
         let mut buffers = SectionBuffers::new();
         for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
@@ -6703,6 +6702,27 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
             .collect::<Vec<_>>()
     );
     assert_eq!(full[0]["truncated"], false);
+}
+
+#[test]
+fn snapshot_quantity_filter_matches_a_cumulative_database_counter() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_database_rows(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
+    fixture.finish();
+
+    let target = |threshold| {
+        format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_database&field=datid&field=deadlocks&by=datid&search=deadlocks%3E{threshold}"
+        )
+    };
+    let matching = stream(fixture.prepare(&target(0), None)).expect("matching snapshot");
+    let rows = row_records(&matching);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], 73);
+
+    let below_threshold =
+        stream(fixture.prepare(&target(100), None)).expect("nonmatching snapshot");
+    assert!(row_records(&below_threshold).is_empty());
 }
 
 #[test]

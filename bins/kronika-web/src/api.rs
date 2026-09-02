@@ -55,7 +55,7 @@ impl ResponseMeta {
 
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
-    Query(PreparedQuery),
+    Query(Box<PreparedQuery>),
     Empty(ResponseMeta),
 }
 
@@ -265,7 +265,7 @@ fn query_meta(metadata: kronika_query::QueryMetadata<'_>) -> ResponseMeta {
 
 fn prepared_query(execution: kronika_query::QueryExecution) -> Prepared {
     let meta = query_meta(execution.metadata());
-    Prepared::Query(PreparedQuery { execution, meta })
+    Prepared::Query(Box::new(PreparedQuery { execution, meta }))
 }
 
 /// Perform request validation and initial I/O outside the Tokio worker.
@@ -429,7 +429,7 @@ pub(crate) fn prepare_with_demo(
                 .map_err(ApiError::from)?;
             let meta = query_meta(preparation.metadata());
             let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
-            if let Some(not_modified) = conditional_not_modified(meta.clone(), concrete_validator) {
+            if let Some(not_modified) = conditional_not_modified(meta, concrete_validator) {
                 return Ok(not_modified);
             }
             preparation
@@ -454,14 +454,7 @@ fn shared_data_request(request: crate::route::DataRequest) -> kronika_query::Dat
             section: request.segment.section,
         },
         fields: request.fields,
-        filters: request
-            .filters
-            .into_iter()
-            .map(|filter| kronika_query::Filter {
-                column: filter.column,
-                value: filter.value,
-            })
-            .collect(),
+        filters: request.filters,
         type_id: request.type_id,
         after: request.after.map(|after| kronika_query::ActiveCursor {
             segment_id: after.segment_id,
@@ -481,14 +474,7 @@ fn shared_hour_request(request: crate::route::HourRequest) -> kronika_query::Hou
             .map(|series| kronika_query::HourSeriesRequest {
                 section: series.section,
                 fields: series.fields,
-                filters: series
-                    .filters
-                    .into_iter()
-                    .map(|filter| kronika_query::Filter {
-                        column: filter.column,
-                        value: filter.value,
-                    })
-                    .collect(),
+                filters: series.filters,
                 type_id: series.type_id,
                 group: series.group.map(|group| match group {
                     crate::route::RelationGroup::Database => kronika_query::RelationGroup::Database,
