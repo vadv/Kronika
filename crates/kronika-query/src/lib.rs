@@ -20,6 +20,7 @@ mod rows;
 mod selection;
 mod time;
 
+pub use catalog::{CatalogFacts, CatalogField, CatalogSection, catalog_facts};
 pub use dataset::{
     CapturedCatalog, DatasetListing, DatasetSegment, DatasetWarning, DatasetWarningSubject,
     OpaqueCapture, PredecessorSelection, QueryDataset, SegmentBounds, SegmentSelection,
@@ -27,12 +28,14 @@ pub use dataset::{
 pub use error::QueryError;
 pub use events::{
     EventGroup, EventOccurrence, EventsQuery, EventsQueryError, EventsRepresentation, EventsResult,
-    MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+    MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS, execute_events, label_event_fields,
 };
 pub use finished_dataset::FinishedDataset;
 pub use heatmap::{
-    DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, MAX_FIELDS, MAX_TOP,
-    NormalizedRanking, ValidatedHeatmapQuery, validate_heatmap_request,
+    CoverageState, DEFAULT_TOP, HeatmapBand, HeatmapBatchQuery, HeatmapBatchResult,
+    HeatmapCoverage, HeatmapEntity, HeatmapError, HeatmapGrid, HeatmapGroup, HeatmapInterval,
+    HeatmapItemQuery, HeatmapItemResult, HeatmapView, MAX_FIELDS, MAX_TOP, NamedValues,
+    NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch, validate_heatmap_request,
 };
 pub use index_provider::{IndexProvider, IndexResource};
 pub use request::{

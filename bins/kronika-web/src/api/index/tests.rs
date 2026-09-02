@@ -1,30 +1,10 @@
-use hyper::StatusCode;
 use kronika_index::{
     ActiveBackendPoint, Finding, FindingBlock, FindingKind, HealthPoint, ResourceIndex,
     SeriesBlock, TargetedIndex, TransactionPoint,
 };
-use kronika_reader::SegmentKind;
 
-use super::{health_layout, resource_meta, section_layout, stream_findings, stream_series};
-use crate::api::CachePolicy;
+use super::{health_layout, section_layout, stream_findings, stream_series};
 use crate::route::Window;
-
-#[test]
-fn a_finished_index_is_kept_by_the_browser_as_long_as_its_segment_lasts() {
-    let meta = resource_meta(SegmentKind::Finished, Some(0x1234_abcd)).unwrap();
-    assert_eq!(meta.status, StatusCode::OK);
-    assert_eq!(meta.cache, CachePolicy::Immutable);
-    assert_eq!(meta.etag.as_deref(), Some("W/\"1234abcd\""));
-    assert!(resource_meta(SegmentKind::Finished, None).is_err());
-}
-
-#[test]
-fn active_index_has_no_validator_and_is_never_stored() {
-    let meta = resource_meta(SegmentKind::Active, None).unwrap();
-    assert_eq!(meta.status, StatusCode::OK);
-    assert_eq!(meta.cache, CachePolicy::NoStore);
-    assert_eq!(meta.etag, None);
-}
 
 #[test]
 fn health_has_three_explicit_allowlisted_series() {

@@ -10,6 +10,32 @@ use serde_json::{Map, Value};
 use crate::budget::ByteBudget;
 use crate::route::MAX_QUERY_BYTES;
 
+pub(crate) struct CancellationSink<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl std::fmt::Debug for CancellationSink<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancellationSink").finish_non_exhaustive()
+    }
+}
+
+impl<'a> CancellationSink<'a> {
+    pub(crate) const fn new(cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self { cancelled }
+    }
+}
+
+impl kronika_query::QuerySink for CancellationSink<'_> {
+    fn record(&mut self, _bytes: Vec<u8>) -> bool {
+        false
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct FinderOutput {

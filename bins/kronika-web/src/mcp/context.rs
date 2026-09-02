@@ -1,10 +1,14 @@
-//! `kronika_list_recorded_sections`: logical product sections in recorded data.
+//! `kronika_list_recorded_sections`: logical sections in recorded data.
 
+use std::sync::Arc;
+
+use kronika_query::{
+    CatalogField, CatalogRequest, CatalogSection, QueryContext, Window, catalog_facts,
+};
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 
 use crate::config::Config;
-use crate::route::Window;
 
 use super::semantics::{mcp_error, mcp_structured, storage_error};
 
@@ -24,30 +28,35 @@ pub(crate) fn call(
                 );
             }
         };
-    let prepared = match crate::api::catalog::prepare(
-        &config.data_root,
-        Window::default(),
-        config.sources,
-        config.synthetic_demo,
-    ) {
-        Ok(prepared) => prepared,
-        Err(error) => return storage_error(&error),
+    let dataset = match crate::query_adapter::NativeDataset::from_root(&config.data_root) {
+        Ok(dataset) => Arc::new(dataset),
+        Err(error) => return storage_error(&crate::api::ApiError::from(error)),
     };
-    let mut sections = prepared.recorded_sections();
-    let range = match exclusive_recorded_range(prepared.recorded_range()) {
+    let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
+    let facts = match catalog_facts(
+        &context,
+        CatalogRequest {
+            window: Window::default(),
+        },
+    ) {
+        Ok(facts) => facts,
+        Err(error) => return storage_error(&crate::api::ApiError::from(error)),
+    };
+    let range = match exclusive_recorded_range(facts.recorded_range) {
         Ok(range) => range,
         Err(error) => return mcp_error(error),
     };
     if let Some(wanted) = &input.section {
-        sections.retain(|section| section["logical_name"] == wanted.as_str());
-        if sections.is_empty() {
-            let recorded: Vec<String> = prepared
-                .recorded_sections()
+        if !facts
+            .sections
+            .iter()
+            .any(|section| section.logical_name == wanted.as_str())
+        {
+            let recorded = facts
+                .sections
                 .iter()
-                .filter_map(|section| section["logical_name"].as_str().map(str::to_owned))
-                .collect::<std::collections::BTreeSet<String>>()
-                .into_iter()
-                .collect();
+                .map(|section| section.logical_name.to_owned())
+                .collect::<Vec<_>>();
             return super::semantics::mcp_error_with(
                 format!(
                     "no recorded section named {wanted:?}; recorded: {}",
@@ -57,11 +66,40 @@ pub(crate) fn call(
             );
         }
     }
+    let sections = facts
+        .sections
+        .iter()
+        .filter(|section| {
+            input
+                .section
+                .as_deref()
+                .is_none_or(|wanted| section.logical_name == wanted)
+        })
+        .map(section_value)
+        .collect::<Vec<_>>();
     mcp_structured(json!({
         "recorded_from": range.map(|(from, _to)| from.to_string()),
         "recorded_to": range.map(|(_from, to)| to.to_string()),
         "sections": sections,
     }))
+}
+
+fn section_value(section: &CatalogSection) -> Value {
+    json!({
+        "logical_name": section.logical_name,
+        "source_family": section.source_family,
+        "rows": section.rows.to_string(),
+        "bytes": section.bytes.to_string(),
+        "fields": section.fields.iter().map(field_value).collect::<Vec<_>>(),
+    })
+}
+
+fn field_value(field: &CatalogField) -> Value {
+    json!({
+        "name": field.name,
+        "class": field.class,
+        "unit": field.unit,
+    })
 }
 
 fn exclusive_recorded_range(range: Option<(i64, i64)>) -> Result<Option<(i64, i64)>, &'static str> {

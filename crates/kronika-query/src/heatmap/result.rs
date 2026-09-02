@@ -1,9 +1,8 @@
-//! Typed Heatmap result shared by native adapters.
+//! Typed Heatmap result shared by recorded-data adapters.
 
 use std::collections::BTreeMap;
 
 use kronika_registry::{ColumnClass, Unit};
-use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -11,54 +10,49 @@ use super::query::NormalizedRanking;
 use crate::row_key::{DetailLocator, serialize_decimal};
 
 /// Stable name-to-value object used for identities and labels.
-pub(crate) type NamedValues = BTreeMap<String, Value>;
+pub type NamedValues = BTreeMap<String, Value>;
 
 /// Results in exact requested ranking order.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapBatchResult {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapBatchResult {
     /// One result per requested item, including exact duplicates.
-    pub(crate) results: Vec<HeatmapItemResult>,
+    pub results: Vec<HeatmapItemResult>,
 }
 
 /// One ranked metric fold and optional time grid.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapItemResult {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapItemResult {
     /// Normalized input selection.
-    pub(crate) ranking: NormalizedRanking,
+    pub ranking: NormalizedRanking,
     /// Whether the requested window carried eligible rows.
-    pub(crate) coverage: HeatmapCoverage,
+    pub coverage: HeatmapCoverage,
     /// Registry quantity class shared by the selected fields.
     #[serde(serialize_with = "serialize_class")]
-    #[schemars(with = "String")]
-    pub(crate) class: ColumnClass,
+    pub class: ColumnClass,
     /// Registry unit shared by the selected fields, when declared.
     #[serde(serialize_with = "serialize_optional_unit")]
-    #[schemars(with = "Option<String>")]
-    pub(crate) unit: Option<Unit>,
+    pub unit: Option<Unit>,
     /// Ranked entities in semantic order.
-    pub(crate) entities: Vec<HeatmapEntity>,
+    pub entities: Vec<HeatmapEntity>,
     /// Authoritative total across every eligible entity.
-    pub(crate) totals_total: Option<f64>,
+    pub totals_total: Option<f64>,
     /// Total outside the retained top entities.
-    pub(crate) others_total: Option<f64>,
+    pub others_total: Option<f64>,
     /// Complete eligible entity count before top-N truncation.
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
-    pub(crate) entity_count: u64,
+    pub entity_count: u64,
     /// Rows whose physical timestamp order moved backwards.
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
-    pub(crate) out_of_order: u64,
+    pub out_of_order: u64,
     /// Bucketed output for a grid view.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
-    pub(crate) grid: Option<HeatmapGrid>,
+    pub grid: Option<HeatmapGrid>,
 }
 
 /// Whether a ranking window contained eligible data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CoverageState {
+pub enum CoverageState {
     /// At least one eligible row was observed.
     Data,
     /// No eligible rows were observed.
@@ -66,82 +60,89 @@ pub(crate) enum CoverageState {
 }
 
 /// Coverage facts for one ranking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapCoverage {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HeatmapCoverage {
     /// Data/no-data state.
-    pub(crate) state: CoverageState,
+    pub state: CoverageState,
     /// Eligible physical rows in the selected window.
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
-    pub(crate) window_rows: u64,
+    pub window_rows: u64,
 }
 
 /// One retained ranked entity.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapEntity {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapEntity {
     /// Stable public identity.
-    pub(crate) identity: NamedValues,
+    pub identity: NamedValues,
     /// Display fields captured from the representative row.
-    pub(crate) labels: NamedValues,
+    pub labels: NamedValues,
     pub(crate) detail_locator: DetailLocator,
     /// Folded total used for ranking.
-    pub(crate) total: Option<f64>,
+    pub total: Option<f64>,
     /// Per-column values for a grid view.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
-    pub(crate) cells: Option<Vec<Option<f64>>>,
+    pub cells: Option<Vec<Option<f64>>>,
+}
+
+impl HeatmapEntity {
+    /// Encode the representative row as an opaque detail reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explanation when the internal locator is invalid.
+    pub fn detail_ref(&self) -> Result<String, String> {
+        self.detail_locator.detail_ref()
+    }
 }
 
 /// Grid labels, intervals, groups, totals, and remainder.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapGrid {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapGrid {
     /// Entity label fields in output order.
-    pub(crate) label_names: Vec<String>,
+    pub label_names: Vec<String>,
     /// Aggregation fields in output order.
-    pub(crate) group_names: Vec<String>,
+    pub group_names: Vec<String>,
     /// Equal time intervals with inclusive endpoints.
-    pub(crate) intervals: Vec<HeatmapInterval>,
+    pub intervals: Vec<HeatmapInterval>,
     /// Aggregated entity groups.
-    pub(crate) groups: Vec<HeatmapGroup>,
+    pub groups: Vec<HeatmapGroup>,
     /// All-entity band.
-    pub(crate) totals: HeatmapBand,
+    pub totals: HeatmapBand,
     /// Band outside the retained entities.
-    pub(crate) others: HeatmapBand,
+    pub others: HeatmapBand,
 }
 
 /// One grid interval with inclusive endpoints.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapInterval {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HeatmapInterval {
     /// Inclusive interval start.
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
-    pub(crate) start: i64,
+    pub start: i64,
     /// Inclusive interval end.
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
-    pub(crate) end: i64,
+    pub end: i64,
 }
 
 /// One aggregated entity group in a grid.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapGroup {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapGroup {
     /// Group values in `group_names` order.
-    pub(crate) values: Vec<Value>,
+    pub values: Vec<Value>,
     /// Retained entities represented by this group.
-    pub(crate) members: u32,
+    pub members: u32,
     /// Folded total for the group.
-    pub(crate) total: Option<f64>,
+    pub total: Option<f64>,
     /// Per-column group values.
-    pub(crate) cells: Vec<Option<f64>>,
+    pub cells: Vec<Option<f64>>,
 }
 
 /// Total and per-column values for one grid band.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct HeatmapBand {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeatmapBand {
     /// Folded band total.
-    pub(crate) total: Option<f64>,
+    pub total: Option<f64>,
     /// Per-column band values.
-    pub(crate) cells: Vec<Option<f64>>,
+    pub cells: Vec<Option<f64>>,
 }
 
 #[expect(

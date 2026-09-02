@@ -1,18 +1,22 @@
 //! `kronika_rank_metrics`: thin MCP adapter for the shared Heatmap batch.
 
+use std::sync::Arc;
+
+use kronika_query::{
+    HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView, MAX_FIELDS,
+    NormalizedRanking, QueryContext, TimeRange, execute_heatmap_batch,
+};
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
-use crate::api::heatmap::{
-    HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView, MAX_FIELDS,
-    NormalizedRanking, prepare_batch,
-};
+use crate::api::ApiError;
 use crate::config::Config;
+use crate::query_adapter::NativeDataset;
 use crate::route::MAX_QUERY_BYTES;
 
 use super::catalog::{OVERVIEW_TOOL, OverviewInput, OverviewRankingInput};
 use super::semantics::{
-    arguments_within_budget, invalid_arguments, mcp_error, mcp_error_indexed,
+    CancellationSink, arguments_within_budget, invalid_arguments, mcp_error, mcp_error_indexed,
     mcp_error_indexed_with, mcp_structured,
 };
 
@@ -51,6 +55,10 @@ pub(crate) fn call(
         Ok(range) => range,
         Err(error) => return mcp_error_indexed(format!("rankings[0]: {error}"), 0),
     };
+    let range = match TimeRange::new(range.from, range.to_exclusive) {
+        Ok(range) => range,
+        Err(error) => return mcp_error_indexed(format!("rankings[0]: {error}"), 0),
+    };
     let mut items = Vec::new();
     let mut source_indices = Vec::new();
     for (index, ranking) in input.rankings.into_iter().enumerate() {
@@ -81,11 +89,19 @@ pub(crate) fn call(
             source_indices.push(index);
         }
     }
-    let prepared = match prepare_batch(&config.data_root, HeatmapBatchQuery { range, items }) {
-        Ok(prepared) => prepared,
-        Err(error) => return heatmap_error(error, &source_indices),
+    let dataset = match NativeDataset::from_root(&config.data_root) {
+        Ok(dataset) => Arc::new(dataset),
+        Err(error) => {
+            let message = super::semantics::storage_error_message(&ApiError::from(error));
+            return mcp_error_indexed(format!("rankings[0]: {message}"), 0);
+        }
     };
-    let result = match prepared.execute(&|| cancelled()) {
+    let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
+    let result = match execute_heatmap_batch(
+        &context,
+        HeatmapBatchQuery { range, items },
+        &CancellationSink::new(cancelled),
+    ) {
         Ok(result) => result,
         Err(error) => return heatmap_error(error, &source_indices),
     };
@@ -103,9 +119,9 @@ fn heatmap_error(error: HeatmapError, source_indices: &[usize]) -> CallToolResul
         .copied()
         .unwrap_or(expanded_index);
     let valid_options = error.valid_options().to_vec();
-    let api_error = error.into_api();
+    let api_error = ApiError::from(error.into_query());
     let message = super::semantics::storage_error_message(&api_error);
-    let message = if matches!(api_error, crate::api::ApiError::BadLocator(_)) {
+    let message = if matches!(api_error, ApiError::BadLocator(_)) {
         message
     } else {
         format!("rankings[{ranking_index}]: {message}")
@@ -129,7 +145,7 @@ fn public_result(result: &HeatmapBatchResult) -> Result<Value, String> {
             return Err("overview entity count changed during encoding".to_owned());
         }
         for (typed, encoded) in typed.entities.iter().zip(entities) {
-            super::semantics::set_detail_ref(encoded, typed.detail_locator.detail_ref()?)?;
+            super::semantics::set_detail_ref(encoded, typed.detail_ref()?)?;
         }
     }
     Ok(structured)

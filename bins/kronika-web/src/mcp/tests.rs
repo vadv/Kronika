@@ -2200,7 +2200,7 @@ fn find_events_default_and_explicit_groups_are_identical() {
         assert_eq!(http.remove("record"), Some(json!("event_group")));
         let http_ref = http.remove("detail_ref").expect("HTTP detail ref");
         assert_eq!(mcp_ref, http_ref);
-        assert_eq!(mcp, http, "HTTP and MCP keep the same product fields");
+        assert_eq!(mcp, http, "HTTP and MCP keep the same semantic fields");
         assert_no_storage_coordinate_keys(&serde_json::Value::Object(http));
     }
 }

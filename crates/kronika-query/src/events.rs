@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use kronika_reader::{Cell, Row, Segment, SegmentKind};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -14,8 +13,8 @@ use super::row_key::{self, DetailLocator};
 use super::time::TimeRange;
 use crate::request::{DataRequest, Filter, SegmentRequest};
 use crate::{
-    DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability, SegmentBounds,
-    SegmentSelection,
+    DatasetSegment, QueryContext, QueryDataset, QueryError, QuerySink, QueryStability,
+    SegmentBounds, SegmentSelection,
 };
 
 mod group;
@@ -30,7 +29,7 @@ const ROW_CHUNK_ROWS: usize = 512;
 const MINUTE_COLUMNS: usize = 60;
 const MINUTE_MICROS: i64 = 60_000_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Public Events output shape.
 pub enum EventsRepresentation {
@@ -49,7 +48,7 @@ impl EventsRepresentation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub(crate) enum EventSource {
     #[serde(rename = "pg_log_errors")]
     Errors,
@@ -354,9 +353,9 @@ impl std::fmt::Display for EventsQueryError {
 
 impl std::error::Error for EventsQueryError {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "representation", rename_all = "snake_case")]
-/// Typed result used by native non-HTTP adapters and their schemas.
+/// Typed result used by recorded-data adapters.
 pub enum EventsResult {
     /// Collated event groups.
     Groups {
@@ -403,7 +402,7 @@ pub(crate) struct EventDataRow {
     pub(crate) values: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EventTier {
     Critical,
@@ -411,7 +410,7 @@ pub(crate) enum EventTier {
     Routine,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 /// One collated recorded-event group.
 pub struct EventGroup {
@@ -440,7 +439,7 @@ impl EventGroup {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind")]
 pub(crate) enum EventStat {
     #[serde(rename = "pg.errors")]
@@ -497,7 +496,7 @@ pub(crate) enum EventStat {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 /// One recorded physical event occurrence.
 pub struct EventOccurrence {
     #[serde(flatten)]
@@ -634,6 +633,19 @@ pub(crate) fn prepare(
         query,
         validator_shape,
     })
+}
+
+/// Run a recorded-event query and return its typed result.
+///
+/// # Errors
+///
+/// Returns a semantic, decoding, cancellation, or captured-source error.
+pub fn execute_events(
+    context: &QueryContext,
+    query: EventsQuery,
+    sink: &dyn QuerySink,
+) -> Result<EventsResult, QueryError> {
+    prepare(Arc::clone(&context.dataset), query)?.execute(sink)
 }
 
 impl PreparedEvents {
@@ -1026,7 +1038,8 @@ fn occurrence(source: EventSource, row: EventDataRow) -> EventOccurrence {
     }
 }
 
-pub(crate) fn label_event_fields(section: &str, fields: &mut Map<String, Value>) {
+/// Add stable labels for numeric event vocabulary fields.
+pub fn label_event_fields(section: &str, fields: &mut Map<String, Value>) {
     for (field, labels) in event_labels(section) {
         add_map_label(fields, field, labels);
     }
@@ -1077,3 +1090,6 @@ fn add_map_label(fields: &mut Map<String, Value>, field: &str, labels: &[&str]) 
         fields.insert(format!("{field}_label"), json!(label));
     }
 }
+
+#[cfg(test)]
+mod tests;

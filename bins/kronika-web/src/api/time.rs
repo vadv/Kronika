@@ -29,10 +29,6 @@ impl TimeRange {
         Self::new(from, to_exclusive)
     }
 
-    pub(crate) const fn contains(self, timestamp: i64) -> bool {
-        timestamp >= self.from && timestamp < self.to_exclusive
-    }
-
     #[cfg(test)]
     pub(crate) const fn width(self) -> i128 {
         self.to_exclusive as i128 - self.from as i128

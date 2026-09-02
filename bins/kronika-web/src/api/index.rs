@@ -1,88 +1,15 @@
 //! HTTP representation of one allowlisted per-segment index series.
 
-#[cfg(test)]
-use std::path::Path;
-
-#[cfg(test)]
-use hyper::StatusCode;
 use kronika_index::{
     DERIVED_HEALTH_TYPE_ID, FindingBlock, FindingKind, INSTANCE_METADATA_TYPE_ID,
     INSTANCE_METADATA_V1_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock,
 };
-#[cfg(test)]
-use kronika_index::{resource, series_keys};
-#[cfg(test)]
-use kronika_reader::{SegmentKind, SegmentRef};
 use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
 use super::ApiError;
 use super::render::record;
-#[cfg(test)]
-use super::{CachePolicy, ResponseMeta, explicit_segment};
-#[cfg(test)]
-use crate::route::SegmentRequest;
 use crate::route::Window;
-
-#[cfg(test)]
-pub(crate) struct PreparedIndex {
-    meta: ResponseMeta,
-    segment: SegmentRef,
-    logical_name: String,
-    resource: ResourceIndex,
-}
-
-#[cfg(test)]
-pub(crate) fn prepare(root: &Path, request: SegmentRequest) -> Result<PreparedIndex, ApiError> {
-    let (reader, segment) = explicit_segment(root, request.segment_id)?;
-    if series_keys(&segment, &request.section).is_empty() {
-        return Err(ApiError::NoSuchSection);
-    }
-    let started = std::time::Instant::now();
-    let resource = resource(root, &reader, &segment, &request.section)?;
-    let point_count = resource.index.blocks.iter().map(block_len).sum::<usize>();
-    eprintln!(
-        "kronika-web: index_resource segment_id={} logical_name={} persisted={} blocks={} points={} elapsed_us={}",
-        segment.id(),
-        request.section,
-        resource.persisted,
-        resource.index.blocks.len(),
-        point_count,
-        started.elapsed().as_micros(),
-    );
-    let meta = resource_meta(segment.kind(), resource.index.checksum)?;
-    Ok(PreparedIndex {
-        meta,
-        segment,
-        logical_name: request.section,
-        resource,
-    })
-}
-
-#[cfg(test)]
-impl PreparedIndex {
-    pub(crate) fn meta(&self) -> ResponseMeta {
-        self.meta.clone()
-    }
-
-    pub(crate) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
-                "record": "index",
-                "segment": segment_value(&self.segment),
-                "logical_name": self.logical_name,
-                "checksum": self.resource.index.checksum.map(|value| format!("{value:08x}")),
-            }))?)
-        {
-            return Ok(());
-        }
-        stream_series(&self.logical_name, self.resource, None, emit, cancelled).map(|_connected| ())
-    }
-}
 
 pub(super) fn stream_series(
     logical_name: &str,
@@ -122,7 +49,9 @@ pub(super) fn stream_series(
                 SeriesBlock::OsHealth(points)
                 | SeriesBlock::OverallHealth(points)
                 | SeriesBlock::PostgresHealth(points) => {
-                    let series = health_series.expect("health block has a series name");
+                    let Some(series) = health_series else {
+                        return Err(ApiError::NoSuchSection);
+                    };
                     for point in points.into_iter().filter(|point| {
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
@@ -234,58 +163,6 @@ fn stream_findings(
         }
     }
     Ok(true)
-}
-
-#[cfg(test)]
-const fn block_len(block: &SeriesBlock) -> usize {
-    match block {
-        SeriesBlock::OsHealth(points)
-        | SeriesBlock::OverallHealth(points)
-        | SeriesBlock::PostgresHealth(points) => points.len(),
-        SeriesBlock::PgTransactions { points, .. } => points.len(),
-        SeriesBlock::PgActiveBackends { points, .. } => points.len(),
-        SeriesBlock::Findings(block) => block.findings.len(),
-    }
-}
-
-#[cfg(test)]
-fn segment_value(segment: &SegmentRef) -> Value {
-    let cursor = segment.active_position().map(|wal_position| {
-        json!({
-            "segment_id": segment.id().to_string(),
-            "wal_position": wal_position.to_string(),
-        })
-    });
-    json!({
-        "id": segment.id().to_string(),
-        "kind": match segment.kind() {
-            SegmentKind::Finished => "finished",
-            SegmentKind::Active => "active",
-        },
-        "min_ts": segment.min_ts().to_string(),
-        "max_ts": segment.max_ts().to_string(),
-        "cursor": cursor,
-    })
-}
-
-#[cfg(test)]
-fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMeta, ApiError> {
-    match kind {
-        SegmentKind::Finished => {
-            let checksum = checksum.ok_or_else(|| {
-                ApiError::Unreadable(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "finished index has no validated checksum",
-                )))
-            })?;
-            Ok(ResponseMeta {
-                status: StatusCode::OK,
-                cache: CachePolicy::Immutable,
-                etag: Some(format!("W/\"{checksum:08x}\"")),
-            })
-        }
-        SegmentKind::Active => Ok(ResponseMeta::ok(CachePolicy::NoStore)),
-    }
 }
 
 fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {

@@ -1,6 +1,5 @@
 //! Normalized Heatmap queries.
 
-use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::TimeRange;
@@ -31,12 +30,11 @@ pub struct HeatmapItemQuery {
 }
 
 /// Stable ranking selection exposed in typed results.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct NormalizedRanking {
     /// Registry logical-section name.
     pub section: String,
     /// One to four compatible numeric fields folded together.
-    #[schemars(length(min = 1, max = 4))]
     pub fields: Vec<String>,
     /// Maximum ranked entities retained.
     pub top: usize,

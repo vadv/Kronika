@@ -11,13 +11,9 @@ use kronika_reader::{Reader, ReaderError, SegmentRef};
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
-#[cfg(test)]
-use crate::route::ActiveCursor;
 use crate::route::Route;
 
 pub(crate) mod catalog;
-pub(crate) mod events;
-pub(crate) mod heatmap;
 pub(crate) mod history;
 mod hour;
 pub(crate) mod index;
@@ -25,8 +21,6 @@ mod query;
 mod render;
 pub(crate) mod row_detail;
 pub(crate) mod row_key;
-#[cfg(test)]
-pub(crate) mod rows;
 pub(crate) mod snapshot;
 pub(crate) mod time;
 
@@ -552,21 +546,6 @@ fn weak_dataset_etag(
     found.then(|| format!("W/\"{:x}\"", digest.finalize()))
 }
 
-#[cfg(test)]
-fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
-    let started = std::time::Instant::now();
-    let reader = Reader::open(root)?;
-    let listing = reader.catalog_segment(id)?;
-    log_warnings(&listing.warnings);
-    let segment = listing
-        .segments
-        .into_iter()
-        .next()
-        .ok_or(ApiError::NoSuchSegment)?;
-    log_segment_open(&segment, started.elapsed());
-    Ok((reader, segment))
-}
-
 fn explicit_segment_with_listing(
     root: &Path,
     id: i64,
@@ -597,23 +576,6 @@ fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
         segment.sections().len(),
         elapsed.as_micros(),
     );
-}
-
-#[cfg(test)]
-fn active_tail(
-    current: &SegmentRef,
-    after: Option<ActiveCursor>,
-) -> Result<Option<SegmentRef>, ApiError> {
-    let Some(after) = after else {
-        return Ok(None);
-    };
-    if current.kind() != kronika_reader::SegmentKind::Active || current.id() != after.segment_id {
-        return Err(ApiError::BadCursor);
-    }
-    current
-        .at_active_position(after.wal_position)
-        .map(Some)
-        .map_err(|_error| ApiError::BadCursor)
 }
 
 fn log_warnings(warnings: &[kronika_reader::StoreWarning]) {

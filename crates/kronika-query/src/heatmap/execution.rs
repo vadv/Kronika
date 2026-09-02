@@ -31,11 +31,13 @@ enum HeatmapQueryErrorKind {
     MixedUnits(String),
 }
 
+/// Indexed refusal or captured-source failure from one Heatmap batch.
 #[derive(Debug)]
-pub(crate) struct HeatmapError {
+pub struct HeatmapError {
     ranking_index: usize,
     message: String,
     query_error: Option<HeatmapQueryErrorKind>,
+    valid_options: Vec<String>,
 }
 
 impl HeatmapError {
@@ -44,6 +46,7 @@ impl HeatmapError {
             ranking_index,
             message,
             HeatmapQueryErrorKind::BadFilter("heatmap".to_owned()),
+            Vec::new(),
         )
     }
 
@@ -56,22 +59,43 @@ impl HeatmapError {
             ranking_index,
             message,
             HeatmapQueryErrorKind::BadFilter(parameter.to_owned()),
+            Vec::new(),
         )
     }
 
     fn bad_locator(ranking_index: usize, message: impl Into<String>) -> Self {
-        Self::invalid_as(ranking_index, message, HeatmapQueryErrorKind::BadLocator)
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapQueryErrorKind::BadLocator,
+            Vec::new(),
+        )
     }
 
-    fn no_such_section(ranking_index: usize, message: impl Into<String>) -> Self {
-        Self::invalid_as(ranking_index, message, HeatmapQueryErrorKind::NoSuchSection)
+    fn no_such_section(
+        ranking_index: usize,
+        message: impl Into<String>,
+        valid_options: Vec<String>,
+    ) -> Self {
+        Self::invalid_as(
+            ranking_index,
+            message,
+            HeatmapQueryErrorKind::NoSuchSection,
+            valid_options,
+        )
     }
 
-    fn no_such_column(ranking_index: usize, message: impl Into<String>, column: String) -> Self {
+    fn no_such_column(
+        ranking_index: usize,
+        message: impl Into<String>,
+        column: String,
+        valid_options: Vec<String>,
+    ) -> Self {
         Self::invalid_as(
             ranking_index,
             message,
             HeatmapQueryErrorKind::NoSuchColumn(column),
+            valid_options,
         )
     }
 
@@ -80,6 +104,7 @@ impl HeatmapError {
             ranking_index,
             message,
             HeatmapQueryErrorKind::MixedUnits(fields),
+            Vec::new(),
         )
     }
 
@@ -87,11 +112,13 @@ impl HeatmapError {
         ranking_index: usize,
         message: impl Into<String>,
         query_error: HeatmapQueryErrorKind,
+        valid_options: Vec<String>,
     ) -> Self {
         Self {
             ranking_index,
             message: message.into(),
             query_error: Some(query_error),
+            valid_options,
         }
     }
 
@@ -100,10 +127,25 @@ impl HeatmapError {
             ranking_index,
             message: error.to_string(),
             query_error: None,
+            valid_options: Vec::new(),
         }
     }
 
-    pub(crate) fn into_query(mut self) -> QueryError {
+    /// Zero-based expanded-item index that refused the batch.
+    #[must_use]
+    pub const fn ranking_index(&self) -> usize {
+        self.ranking_index
+    }
+
+    /// Registry names valid in place of an unknown section or field.
+    #[must_use]
+    pub fn valid_options(&self) -> &[String] {
+        &self.valid_options
+    }
+
+    /// Reduce this indexed batch error to the common query error family.
+    #[must_use]
+    pub fn into_query(mut self) -> QueryError {
         match self.query_error.take() {
             Some(HeatmapQueryErrorKind::BadFilter(parameter)) => QueryError::BadFilter(parameter),
             Some(HeatmapQueryErrorKind::BadLocator) => QueryError::BadLocator(self.message),
@@ -180,6 +222,15 @@ pub(crate) fn prepare(
     dataset: Arc<dyn QueryDataset>,
     validated: ValidatedHeatmapQuery,
 ) -> Result<PreparedHeatmap, QueryError> {
+    prepare_batch(dataset, validated)
+        .map(|batch| PreparedHeatmap { batch })
+        .map_err(HeatmapError::into_query)
+}
+
+fn prepare_batch(
+    dataset: Arc<dyn QueryDataset>,
+    validated: ValidatedHeatmapQuery,
+) -> Result<PreparedHeatmapBatch, HeatmapError> {
     let ValidatedHeatmapQuery {
         query,
         unique,
@@ -188,13 +239,13 @@ pub(crate) fn prepare(
     let listing = {
         let catalog = dataset
             .catalog()
-            .map_err(|error| HeatmapError::storage(0, error).into_query())?;
+            .map_err(|error| HeatmapError::storage(0, error))?;
         catalog
             .segments(SegmentSelection::new(SegmentBounds::half_open(
                 query.range.from,
                 query.range.to_exclusive,
             )))
-            .map_err(|error| HeatmapError::storage(0, error).into_query())?
+            .map_err(|error| HeatmapError::storage(0, error))?
     };
     let validator_available = listing.warnings.is_empty();
     let mut segments = listing.segments;
@@ -203,16 +254,14 @@ pub(crate) fn prepare(
     });
     segments.sort_by_key(DatasetSegment::min_ts);
     let validator_shape = format!("{query:?}");
-    Ok(PreparedHeatmap {
-        batch: PreparedHeatmapBatch {
-            dataset,
-            segments,
-            query,
-            unique,
-            original_to_unique,
-            validator_shape,
-            validator_available,
-        },
+    Ok(PreparedHeatmapBatch {
+        dataset,
+        segments,
+        query,
+        unique,
+        original_to_unique,
+        validator_shape,
+        validator_available,
     })
 }
 
@@ -232,6 +281,32 @@ pub(crate) fn validate_request(
         unique,
         original_to_unique,
     })
+}
+
+/// Execute one ordered Heatmap batch and return its typed result.
+///
+/// # Errors
+///
+/// Returns the expanded ranking index, known replacement names, and the
+/// semantic, decoding, cancellation, or captured-source failure.
+pub fn execute_heatmap_batch(
+    context: &crate::QueryContext,
+    query: HeatmapBatchQuery,
+    sink: &dyn QuerySink,
+) -> Result<HeatmapBatchResult, HeatmapError> {
+    if query.items.is_empty() {
+        return Err(HeatmapError::invalid(0, "rankings must not be empty"));
+    }
+    let (unique, original_to_unique) = normalize_items(&query.items)?;
+    prepare_batch(
+        Arc::clone(&context.dataset),
+        ValidatedHeatmapQuery {
+            query,
+            unique,
+            original_to_unique,
+        },
+    )?
+    .execute(sink)
 }
 
 impl PreparedHeatmap {
@@ -511,11 +586,31 @@ fn validate_item(
         })
         .collect();
     if contracts.is_empty() {
+        let mut seen = HashSet::new();
+        let valid_options = registry()
+            .iter()
+            .filter_map(|contract| logical_section_name(contract.type_id.get()))
+            .filter(|section| seen.insert(*section))
+            .map(str::to_owned)
+            .collect();
         return Err(HeatmapError::no_such_section(
             index,
             "no such logical section",
+            valid_options,
         ));
     }
+    let numeric_options = || {
+        let mut seen = HashSet::new();
+        contracts
+            .iter()
+            .flat_map(|contract| contract.columns)
+            .filter(|column| {
+                matches!(column.class, ColumnClass::Cumulative | ColumnClass::Gauge)
+                    && seen.insert(column.name)
+            })
+            .map(|column| column.name.to_owned())
+            .collect::<Vec<_>>()
+    };
     let mut class = None;
     let mut unit = None;
     for field in &ranking.fields {
@@ -528,6 +623,7 @@ fn validate_item(
                 index,
                 format!("no such column {field:?}"),
                 field.clone(),
+                numeric_options(),
             ));
         }
         for column in columns {
@@ -536,6 +632,7 @@ fn validate_item(
                     index,
                     format!("column {field:?} is not numeric"),
                     field.clone(),
+                    numeric_options(),
                 ));
             }
             if class
@@ -549,6 +646,7 @@ fn validate_item(
                         ranking.fields.join("+")
                     ),
                     field.clone(),
+                    numeric_options(),
                 ));
             }
             if unit
@@ -570,10 +668,18 @@ fn validate_item(
                 .iter()
                 .any(|contract| contract.column(group).is_some())
         {
+            let mut seen = HashSet::new();
+            let valid_options = contracts
+                .iter()
+                .flat_map(|contract| contract.columns)
+                .filter(|column| seen.insert(column.name))
+                .map(|column| column.name.to_owned())
+                .collect();
             return Err(HeatmapError::no_such_column(
                 index,
                 format!("no such column {group:?}"),
                 group.clone(),
+                valid_options,
             ));
         }
     }

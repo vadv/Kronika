@@ -4,7 +4,6 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::events::label_event_fields;
 use super::render::record;
 use super::row_key::DetailLocator;
 use super::snapshot::PreparedSnapshot;
@@ -89,7 +88,7 @@ impl PreparedRowDetail {
         ] {
             fields.remove(field);
         }
-        label_event_fields(&self.locator.section, &mut fields);
+        kronika_query::label_event_fields(&self.locator.section, &mut fields);
         normalize_detail_text(&self.locator.section, &mut fields).map_err(|error| {
             ApiError::Unreadable(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

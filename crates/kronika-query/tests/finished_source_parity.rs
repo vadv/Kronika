@@ -12,15 +12,15 @@ use kronika_format as _;
 use kronika_index as _;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_query::{
-    CatalogRequest, FinishedDataset, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView,
-    NormalizedRanking, QueryContext, QueryDataset, QueryRequest, QuerySink, TimeRange, execute,
+    CatalogRequest, FinishedDataset, HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery,
+    HeatmapView, NormalizedRanking, QueryContext, QueryDataset, QueryRequest, QuerySink, TimeRange,
+    execute, execute_heatmap_batch,
 };
 use kronika_reader as _;
 use kronika_registry::Ts;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_store::{EmbeddedSource, PosixSource};
 use kronika_writer::{Journal, JournalConfig, SectionBuffers, write_segment};
-use schemars as _;
 use serde as _;
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
@@ -82,6 +82,32 @@ fn heatmap_bytes(dataset: Arc<dyn QueryDataset>) -> Vec<u8> {
         .stream(&mut records)
         .expect("stream heatmap query");
     records.0
+}
+
+fn ranking_only_query() -> HeatmapBatchQuery {
+    let top_one = HeatmapItemQuery {
+        ranking: NormalizedRanking {
+            section: "os_cpu".to_owned(),
+            fields: vec!["user".to_owned()],
+            top: 1,
+        },
+        view: HeatmapView::RankingOnly,
+    };
+    let mut top_two = top_one.clone();
+    top_two.ranking.top = 2;
+    HeatmapBatchQuery {
+        range: TimeRange::new(HEATMAP_FROM, HEATMAP_TO + 1).expect("ranking range"),
+        items: vec![top_one.clone(), top_two, top_one],
+    }
+}
+
+fn ranking_only_result(
+    dataset: Arc<dyn QueryDataset>,
+    query: HeatmapBatchQuery,
+) -> HeatmapBatchResult {
+    let context = QueryContext::new(dataset, 0, false);
+    execute_heatmap_batch(&context, query, &Records::default())
+        .expect("execute typed ranking batch")
 }
 
 fn write_posix_fixture(root: &Path, segment_id: SegmentId) {
@@ -262,4 +288,69 @@ fn heatmap_query_is_byte_identical_for_posix_and_embedded_finished_zms() {
     assert_eq!(posix_error.code(), embedded_error.code());
     assert_eq!(posix_error.parameter(), embedded_error.parameter());
     assert_eq!(posix_error.to_string(), embedded_error.to_string());
+}
+
+#[test]
+fn ranking_only_batch_is_typed_identical_for_posix_and_embedded_finished_zms() {
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
+    let directory = tempfile::tempdir().expect("temporary POSIX root");
+    let payload = write_heatmap_fixture(directory.path(), segment_id);
+    let query = ranking_only_query();
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_result =
+        ranking_only_result(Arc::new(FinishedDataset::new(posix.clone())), query.clone());
+    assert_eq!(posix.retained_segment_bytes(), 0);
+
+    let embedded = EmbeddedSource::from_shared(
+        segment_id,
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("payload length fits u64"),
+    )
+    .expect("embedded source");
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_result =
+        ranking_only_result(Arc::new(FinishedDataset::new(embedded.clone())), query);
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+
+    assert_eq!(posix_result, embedded_result);
+    let results = &embedded_result.results;
+    assert_eq!(results.len(), 3);
+    assert_eq!(
+        results[0], results[2],
+        "exact duplicate items stay in place"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.ranking.top)
+            .collect::<Vec<_>>(),
+        [1, 2, 1]
+    );
+    assert!(results.iter().all(|result| result.grid.is_none()));
+    assert_eq!(results[0].entity_count, 2);
+    assert_eq!(results[0].totals_total, Some(30.0));
+    assert_eq!(results[0].others_total, Some(10.0));
+    assert_eq!(results[0].entities.len(), 1);
+    assert_eq!(
+        results[0].entities[0].identity["cpu_id"],
+        serde_json::json!(1)
+    );
+    assert_eq!(results[0].entities[0].total, Some(20.0));
+    assert_eq!(results[1].entity_count, 2);
+    assert_eq!(results[1].others_total, None);
+    assert_eq!(results[1].entities.len(), 2);
+    assert_eq!(
+        results[1].entities[0].identity["cpu_id"],
+        serde_json::json!(1)
+    );
+    assert_eq!(results[1].entities[0].total, Some(20.0));
+    assert_eq!(
+        results[1].entities[1].identity["cpu_id"],
+        serde_json::json!(0)
+    );
+    assert_eq!(results[1].entities[1].total, Some(10.0));
 }

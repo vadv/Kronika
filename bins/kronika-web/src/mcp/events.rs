@@ -1,15 +1,21 @@
-//! Thin MCP adapter for the shared recorded-events product query.
+//! Thin MCP adapter for the shared recorded-events query.
 
+use std::sync::Arc;
+
+use kronika_query::{
+    EventsQuery, EventsResult, MAX_EVENTS_WINDOW_MICROS, QueryContext, TimeRange, execute_events,
+};
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
-use crate::api::events::{EventsResult, MAX_EVENTS_WINDOW_MICROS};
+use crate::api::ApiError;
 use crate::config::Config;
+use crate::query_adapter::NativeDataset;
 
 use super::catalog::{EventsInput, FIND_EVENTS_TOOL};
 use super::semantics::{
-    arguments_within_budget, invalid_arguments, mcp_error, mcp_error_with, mcp_structured,
-    storage_error,
+    CancellationSink, arguments_within_budget, invalid_arguments, mcp_error, mcp_error_with,
+    mcp_structured, storage_error,
 };
 
 pub(crate) fn call(
@@ -41,18 +47,20 @@ pub(crate) fn call(
         Ok(range) => range,
         Err(error) => return mcp_error(error.to_string()),
     };
-    let query = match crate::api::events::EventsQuery::normalize(
+    let range = match TimeRange::new(range.from, range.to_exclusive) {
+        Ok(range) => range,
+        Err(error) => return mcp_error(error),
+    };
+    let query = match EventsQuery::normalize(
         range,
         input.sources,
-        input.representation,
+        input.representation.into_query(),
         input.limit as usize,
     ) {
         Ok(query) => query,
         Err(error) => return mcp_error_with(error.to_string(), error.valid_options()),
     };
-    let result = match crate::api::events::prepare(&config.data_root, query)
-        .and_then(|prepared| prepared.execute(&|| cancelled()))
-    {
+    let result = match run_query(config, query, cancelled) {
         Ok(result) => result,
         Err(error) => return storage_error(&error),
     };
@@ -62,20 +70,30 @@ pub(crate) fn call(
     }
 }
 
+fn run_query(
+    config: &Config,
+    query: EventsQuery,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<EventsResult, ApiError> {
+    let dataset = Arc::new(NativeDataset::from_root(&config.data_root)?);
+    let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
+    execute_events(&context, query, &CancellationSink::new(cancelled)).map_err(ApiError::from)
+}
+
 fn public_result(result: &EventsResult) -> Result<Value, String> {
     let (key, refs) = match result {
         EventsResult::Groups { groups, .. } => (
             "groups",
             groups
                 .iter()
-                .map(|group| group.detail_locator.detail_ref())
+                .map(kronika_query::EventGroup::detail_ref)
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         EventsResult::Occurrences { occurrences, .. } => (
             "occurrences",
             occurrences
                 .iter()
-                .map(|occurrence| occurrence.detail_locator.detail_ref())
+                .map(kronika_query::EventOccurrence::detail_ref)
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     };

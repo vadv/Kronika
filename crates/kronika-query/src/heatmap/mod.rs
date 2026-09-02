@@ -4,11 +4,15 @@ mod execution;
 mod query;
 mod result;
 
-pub use execution::ValidatedHeatmapQuery;
+pub use execution::{HeatmapError, ValidatedHeatmapQuery, execute_heatmap_batch};
 pub(crate) use execution::{PreparedHeatmap, prepare};
 pub use query::{
     DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, MAX_FIELDS, MAX_TOP,
     NormalizedRanking,
+};
+pub use result::{
+    CoverageState, HeatmapBand, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapGrid,
+    HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
 };
 
 /// Validate one heatmap request without opening its recorded-data source.

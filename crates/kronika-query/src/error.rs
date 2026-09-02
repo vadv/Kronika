@@ -29,7 +29,7 @@ pub enum QueryError {
 }
 
 impl QueryError {
-    /// Whether a native caller should retry against a fresh capture.
+    /// Reports whether a native caller can retry against a fresh capture.
     #[must_use]
     pub fn source_changed_during_read(&self) -> bool {
         let Self::Unreadable(error) = self else {

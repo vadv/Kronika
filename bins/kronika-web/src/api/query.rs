@@ -2,8 +2,6 @@
 
 use std::collections::HashSet;
 
-#[cfg(test)]
-use kronika_reader::SegmentRef;
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, StrId};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
 
@@ -107,24 +105,6 @@ pub(super) fn plans(
             })
         })
         .collect()
-}
-
-#[cfg(test)]
-pub(super) fn apply_tail(plans: &mut [Plan], prior: Option<&SegmentRef>) -> Result<(), ApiError> {
-    let Some(prior) = prior else {
-        return Ok(());
-    };
-    for plan in plans {
-        plan.start_row = prior
-            .sections()
-            .iter()
-            .find(|section| section.type_id == plan.type_id)
-            .map_or(0, |section| section.rows);
-        if plan.start_row > plan.rows {
-            return Err(ApiError::BadCursor);
-        }
-    }
-    Ok(())
 }
 
 fn projection(

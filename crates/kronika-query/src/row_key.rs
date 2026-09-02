@@ -4,7 +4,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use kronika_reader::{Cell, Row};
 use kronika_registry::{ColumnClass, Semantics, TypeContract, contract, logical_section_name};
-use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -20,21 +19,17 @@ type DetailPayload = (u8, String, i64, i64, u32, u64, RowIdentity);
 pub(crate) type RowIdentity = Map<String, Value>;
 
 /// Stable logical row identity with an optional physical-position hint.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DetailLocator {
     pub(crate) section: String,
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
     pub(crate) segment_id: i64,
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
     pub(crate) at: i64,
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
     pub(crate) type_id: u32,
     #[serde(serialize_with = "serialize_decimal")]
-    #[schemars(with = "String")]
     pub(crate) row_ordinal: u64,
     pub(crate) identity: RowIdentity,
 }

@@ -1,6 +1,5 @@
 //! Strict parsing of the four resource families.
 
-pub(crate) use crate::api::heatmap::HeatmapRequest;
 use crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES;
 use kronika_query::TimeRange;
 use kronika_query::{
@@ -48,6 +47,19 @@ pub(crate) enum Route {
     McpAccess,
     /// The largest recorded database, naming the instance.
     InstanceLabel,
+}
+
+/// Parsed HTTP shape for one ranked heatmap resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeatmapRequest {
+    pub(crate) from: i64,
+    pub(crate) to: i64,
+    pub(crate) section: String,
+    pub(crate) fields: Vec<String>,
+    pub(crate) columns: usize,
+    pub(crate) top: usize,
+    pub(crate) group: Vec<String>,
+    pub(crate) type_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

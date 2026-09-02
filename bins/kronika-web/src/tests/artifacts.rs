@@ -2809,43 +2809,14 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
 }
 
 #[test]
-fn shared_catalog_execution_matches_the_previous_native_bytes() {
-    let mut fixture = Fixture::new();
-    fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
-    fixture.append_health();
-    fixture.finish();
-
-    let previous = previous_catalog_bytes(
-        &fixture,
-        crate::route::Window::default(),
-        usize::MAX,
-        usize::MAX,
-    )
-    .expect("stream previous catalog");
-    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
-        .expect("stream shared catalog");
-
-    assert_eq!(shared, previous);
-}
-
-#[test]
-fn shared_catalog_preserves_the_active_wal_cursor_bytes() {
+fn catalog_includes_the_active_wal_cursor() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
     let position = fixture.position();
 
-    let previous = previous_catalog_bytes(
-        &fixture,
-        crate::route::Window::default(),
-        usize::MAX,
-        usize::MAX,
-    )
-    .expect("stream previous active catalog");
-    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
-        .expect("stream shared active catalog");
-
-    assert_eq!(shared, previous);
-    let records = raw_ndjson_records(&shared);
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream active catalog");
+    let records = raw_ndjson_records(&bytes);
     let active = records
         .iter()
         .find(|record| record["record"] == "active_segment")
@@ -2856,23 +2827,14 @@ fn shared_catalog_preserves_the_active_wal_cursor_bytes() {
 }
 
 #[test]
-fn shared_catalog_preserves_finished_over_active_for_the_same_generation() {
+fn catalog_prefers_finished_over_active_for_the_same_generation() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7)]);
     fixture.finish();
 
-    let previous = previous_catalog_bytes(
-        &fixture,
-        crate::route::Window::default(),
-        usize::MAX,
-        usize::MAX,
-    )
-    .expect("stream previous finished catalog");
-    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
-        .expect("stream shared finished catalog");
-
-    assert_eq!(shared, previous);
-    let segments = raw_ndjson_records(&shared)
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream finished catalog");
+    let segments = raw_ndjson_records(&bytes)
         .into_iter()
         .filter(|record| {
             matches!(
@@ -2887,7 +2849,7 @@ fn shared_catalog_preserves_finished_over_active_for_the_same_generation() {
 }
 
 #[test]
-fn shared_catalog_preserves_bounded_multi_segment_ordering() {
+fn catalog_orders_segments_inside_the_requested_bounds() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1)]);
     fixture.finish_and_continue(SEGMENT_ID + 1);
@@ -2897,22 +2859,15 @@ fn shared_catalog_preserves_bounded_multi_segment_ordering() {
     fixture.finish_and_continue(SEGMENT_ID + 3);
     fixture.append_diskstats(&[(400, 0, 4)]);
 
-    let window = crate::route::Window {
-        from: Some(150),
-        to: Some(350),
-    };
-    let previous = previous_catalog_bytes(&fixture, window, usize::MAX, usize::MAX)
-        .expect("stream previous bounded catalog");
-    let shared = shared_catalog_bytes(
+    let bytes = catalog_response_bytes(
         &fixture,
         "/api/catalog?from=150&to=350",
         usize::MAX,
         usize::MAX,
     )
-    .expect("stream shared bounded catalog");
+    .expect("stream bounded catalog");
 
-    assert_eq!(shared, previous);
-    let segment_ids = raw_ndjson_records(&shared)
+    let segment_ids = raw_ndjson_records(&bytes)
         .into_iter()
         .filter(|record| record["record"] == "finished_segment")
         .map(|record| record["id"].clone())
@@ -2924,31 +2879,22 @@ fn shared_catalog_preserves_bounded_multi_segment_ordering() {
 }
 
 #[test]
-fn shared_catalog_preserves_warning_record_bytes_and_order() {
+fn catalog_emits_warnings_after_segments() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1)]);
     fixture.finish();
     fixture.add_foreign_entry();
 
-    let previous = previous_catalog_bytes(
-        &fixture,
-        crate::route::Window::default(),
-        usize::MAX,
-        usize::MAX,
-    )
-    .expect("stream previous warning catalog");
-    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
-        .expect("stream shared warning catalog");
-
-    assert_eq!(shared, previous);
-    let records = raw_ndjson_records(&shared);
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream warning catalog");
+    let records = raw_ndjson_records(&bytes);
     let warning = records.last().expect("warning record");
     assert_eq!(warning["record"], "warning");
     assert_eq!(warning["affected"]["kind"], "foreign_entry");
 }
 
 #[test]
-fn shared_catalog_preserves_native_stream_stop_boundaries() {
+fn catalog_honors_cancellation_and_sink_stop_boundaries() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1)]);
     fixture.finish_and_continue(SEGMENT_ID + 1);
@@ -2956,49 +2902,27 @@ fn shared_catalog_preserves_native_stream_stop_boundaries() {
     fixture.finish();
     fixture.add_foreign_entry();
 
-    for (accepted_records, cancelled_after) in [
-        (usize::MAX, 0),
-        (usize::MAX, 1),
-        (1, usize::MAX),
-        (2, usize::MAX),
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["catalog"][..]),
+        (1, usize::MAX, &["catalog"][..]),
+        (2, usize::MAX, &["catalog", "finished_segment"][..]),
     ] {
-        let previous = previous_catalog_bytes(
-            &fixture,
-            crate::route::Window::default(),
-            accepted_records,
-            cancelled_after,
-        )
-        .expect("stop previous catalog stream");
-        let shared =
-            shared_catalog_bytes(&fixture, "/api/catalog", accepted_records, cancelled_after)
-                .expect("stop shared catalog stream");
+        let bytes =
+            catalog_response_bytes(&fixture, "/api/catalog", accepted_records, cancelled_after)
+                .expect("stop catalog stream");
         assert_eq!(
-            shared, previous,
+            raw_ndjson_records(&bytes)
+                .iter()
+                .map(|record| record["record"].as_str().expect("record kind"))
+                .collect::<Vec<_>>(),
+            expected,
             "accepted_records={accepted_records} cancelled_after={cancelled_after}"
         );
     }
 }
 
-fn previous_catalog_bytes(
-    fixture: &Fixture,
-    window: crate::route::Window,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<Vec<u8>, ApiError> {
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    crate::api::catalog::prepare(fixture.root(), window, SOURCES, false)?.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok(output)
-}
-
-fn shared_catalog_bytes(
+fn catalog_response_bytes(
     fixture: &Fixture,
     target: &str,
     accepted_records: usize,
@@ -3026,20 +2950,17 @@ fn raw_ndjson_records(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
-fn shared_history_preserves_finished_response_bytes() {
+fn history_orders_finished_rows_by_physical_ordinal() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
     fixture.finish();
     let target = target("history", "field=minor&field=reads");
 
-    let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream previous finished history");
-    let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream shared finished history");
+    let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream finished history");
 
-    assert_eq!(shared, previous);
     assert_eq!(
-        raw_ndjson_records(&shared)
+        raw_ndjson_records(&bytes)
             .into_iter()
             .filter(|record| record["record"] == "row")
             .map(|record| record["ordinal"].clone())
@@ -3049,7 +2970,7 @@ fn shared_history_preserves_finished_response_bytes() {
 }
 
 #[test]
-fn shared_history_preserves_active_after_cursor_bytes() {
+fn history_starts_after_the_active_cursor() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9)]);
     let position = fixture.position();
@@ -3059,13 +2980,10 @@ fn shared_history_preserves_active_after_cursor_bytes() {
         &format!("field=reads&after={SEGMENT_ID},{position}"),
     );
 
-    let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream previous active tail");
-    let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream shared active tail");
+    let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream active tail");
 
-    assert_eq!(shared, previous);
-    let records = raw_ndjson_records(&shared);
+    let records = raw_ndjson_records(&bytes);
     let header = records
         .iter()
         .find(|record| record["record"] == "history")
@@ -3082,7 +3000,7 @@ fn shared_history_preserves_active_after_cursor_bytes() {
 }
 
 #[test]
-fn shared_rows_preserve_finished_ascending_and_descending_pages() {
+fn rows_page_finished_data_in_both_orders() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(
         &(0..5)
@@ -3106,13 +3024,10 @@ fn shared_rows_preserve_finished_ascending_and_descending_pages() {
             let target = cursor
                 .as_ref()
                 .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
-            let previous = previous_rows_bytes(&fixture, &target, usize::MAX, usize::MAX)
-                .expect("stream previous finished rows page");
-            let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
-                .expect("stream shared finished rows page");
-            assert_eq!(shared, previous, "order={order} page={page_count}");
+            let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream finished rows page");
 
-            let records = raw_ndjson_records(&shared);
+            let records = raw_ndjson_records(&bytes);
             ordinals.extend(
                 records
                     .iter()
@@ -3137,18 +3052,15 @@ fn shared_rows_preserve_finished_ascending_and_descending_pages() {
 }
 
 #[test]
-fn shared_rows_preserve_active_cursor_pinning_bytes() {
+fn rows_cursor_pins_the_active_position() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 10), (100, 1, 11), (100, 2, 12)]);
     let position = fixture.position();
     let base = target("rows", "field=reads&page_size=2&order=asc");
 
-    let previous = previous_rows_bytes(&fixture, &base, usize::MAX, usize::MAX)
-        .expect("stream previous first active page");
-    let shared = shared_query_bytes(&fixture, &base, usize::MAX, usize::MAX)
-        .expect("stream shared first active page");
-    assert_eq!(shared, previous);
-    let first = raw_ndjson_records(&shared);
+    let bytes = query_response_bytes(&fixture, &base, usize::MAX, usize::MAX)
+        .expect("stream first active page");
+    let first = raw_ndjson_records(&bytes);
     let cursor = first
         .iter()
         .find(|record| record["record"] == "page")
@@ -3165,12 +3077,9 @@ fn shared_rows_preserve_active_cursor_pinning_bytes() {
 
     fixture.append_diskstats(&[(100, 3, 13)]);
     let resumed_target = format!("{base}&cursor={cursor}");
-    let previous = previous_rows_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
-        .expect("stream previous pinned active page");
-    let shared = shared_query_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
-        .expect("stream shared pinned active page");
-    assert_eq!(shared, previous);
-    let resumed = raw_ndjson_records(&shared);
+    let bytes = query_response_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
+        .expect("stream pinned active page");
+    let resumed = raw_ndjson_records(&bytes);
     let rows = resumed
         .iter()
         .filter(|record| record["record"] == "row")
@@ -3187,125 +3096,101 @@ fn shared_rows_preserve_active_cursor_pinning_bytes() {
 }
 
 #[test]
-fn shared_history_and_rows_preserve_semantic_errors() {
+fn history_and_rows_return_stable_errors() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7)]);
     fixture.finish();
 
-    for target in [
-        target("history", "field=not_recorded"),
-        format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/history?field=reads"),
+    for (target, status, code, parameter, message) in [
+        (
+            target("history", "field=not_recorded"),
+            StatusCode::BAD_REQUEST,
+            "no_such_column",
+            Some("not_recorded"),
+            "no such column \"not_recorded\"",
+        ),
+        (
+            format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/history?field=reads"),
+            StatusCode::NOT_FOUND,
+            "no_such_section",
+            None,
+            "no such logical section",
+        ),
     ] {
-        let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
-            .expect_err("previous history must reject request");
-        let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
-            .expect_err("shared history must reject request");
-        assert_api_error_parity(&shared, &previous);
+        let error = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("history must reject request");
+        assert_api_error(&error, status, code, parameter, message);
     }
 
-    for target in [
-        target("rows", "field=not_recorded"),
-        target("rows", "field=reads&cursor=not-a-cursor"),
+    for (target, status, code, parameter, message) in [
+        (
+            target("rows", "field=not_recorded"),
+            StatusCode::BAD_REQUEST,
+            "no_such_column",
+            Some("not_recorded"),
+            "no such column \"not_recorded\"",
+        ),
+        (
+            target("rows", "field=reads&cursor=not-a-cursor"),
+            StatusCode::BAD_REQUEST,
+            "bad_cursor",
+            None,
+            "invalid page cursor",
+        ),
     ] {
-        let previous = previous_rows_bytes(&fixture, &target, usize::MAX, usize::MAX)
-            .expect_err("previous rows must reject request");
-        let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
-            .expect_err("shared rows must reject request");
-        assert_api_error_parity(&shared, &previous);
+        let error = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("rows must reject request");
+        assert_api_error(&error, status, code, parameter, message);
     }
 }
 
 #[test]
-fn shared_history_and_rows_preserve_native_stream_stop_boundaries() {
+fn history_and_rows_honor_cancellation_and_sink_stop_boundaries() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
     fixture.finish();
     let history = target("history", "field=minor&field=reads");
     let rows = target("rows", "field=minor&field=reads&page_size=2&order=desc");
 
-    for (accepted_records, cancelled_after) in [
-        (usize::MAX, 0),
-        (usize::MAX, 1),
-        (1, usize::MAX),
-        (2, usize::MAX),
-        (3, usize::MAX),
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["history"][..]),
+        (1, usize::MAX, &["history"][..]),
+        (2, usize::MAX, &["history", "layout"][..]),
+        (3, usize::MAX, &["history", "layout", "row"][..]),
     ] {
-        let previous =
-            previous_history_bytes(&fixture, &history, accepted_records, cancelled_after)
-                .expect("stop previous history stream");
-        let shared = shared_query_bytes(&fixture, &history, accepted_records, cancelled_after)
-            .expect("stop shared history stream");
+        let bytes = query_response_bytes(&fixture, &history, accepted_records, cancelled_after)
+            .expect("stop history stream");
         assert_eq!(
-            shared, previous,
+            record_kinds(&bytes),
+            expected,
             "history accepted_records={accepted_records} cancelled_after={cancelled_after}"
         );
 
-        let previous = previous_rows_bytes(&fixture, &rows, accepted_records, cancelled_after)
-            .expect("stop previous rows stream");
-        let shared = shared_query_bytes(&fixture, &rows, accepted_records, cancelled_after)
-            .expect("stop shared rows stream");
+        let expected = expected
+            .iter()
+            .map(|kind| if *kind == "history" { "rows" } else { *kind })
+            .collect::<Vec<_>>();
+        let bytes = query_response_bytes(&fixture, &rows, accepted_records, cancelled_after)
+            .expect("stop rows stream");
         assert_eq!(
-            shared, previous,
+            record_kinds(&bytes),
+            expected,
             "rows accepted_records={accepted_records} cancelled_after={cancelled_after}"
         );
     }
 }
 
-fn previous_history_bytes(
+fn query_response_bytes(
     fixture: &Fixture,
     target: &str,
     accepted_records: usize,
     cancelled_after: usize,
 ) -> Result<Vec<u8>, ApiError> {
-    let crate::route::Route::History(request) = fixture_route(target) else {
-        panic!("history route");
-    };
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    crate::api::history::prepare(fixture.root(), request)?.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok(output)
+    query_response(fixture, target, accepted_records, cancelled_after).map(|(_meta, bytes)| bytes)
 }
 
-fn previous_rows_bytes(
-    fixture: &Fixture,
-    target: &str,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<Vec<u8>, ApiError> {
-    let crate::route::Route::Rows(request) = fixture_route(target) else {
-        panic!("rows route");
-    };
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    crate::api::rows::prepare(fixture.root(), request)?.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok(output)
-}
-
-fn shared_query_bytes(
-    fixture: &Fixture,
-    target: &str,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<Vec<u8>, ApiError> {
-    shared_query_response(fixture, target, accepted_records, cancelled_after)
-        .map(|(_meta, bytes)| bytes)
-}
-
-fn shared_query_response(
+fn query_response(
     fixture: &Fixture,
     target: &str,
     accepted_records: usize,
@@ -3333,66 +3218,66 @@ fn fixture_route(target: &str) -> crate::route::Route {
     crate::route::parse(path, query).expect("valid fixture route")
 }
 
-fn assert_api_error_parity(shared: &ApiError, previous: &ApiError) {
-    assert_eq!(shared.status(), previous.status());
-    assert_eq!(shared.code(), previous.code());
-    assert_eq!(shared.parameter(), previous.parameter());
-    assert_eq!(shared.to_string(), previous.to_string());
-    assert_eq!(
-        shared.source_changed_during_read(),
-        previous.source_changed_during_read()
-    );
+fn record_kinds(bytes: &[u8]) -> Vec<String> {
+    raw_ndjson_records(bytes)
+        .iter()
+        .map(|record| record["record"].as_str().expect("record kind").to_owned())
+        .collect()
+}
+
+fn assert_api_error(
+    error: &ApiError,
+    status: StatusCode,
+    code: &str,
+    parameter: Option<&str>,
+    message: &str,
+) {
+    assert_eq!(error.status(), status);
+    assert_eq!(error.code(), code);
+    assert_eq!(error.parameter(), parameter);
+    assert_eq!(error.to_string(), message);
+    assert!(!error.source_changed_during_read());
 }
 
 #[test]
-fn shared_index_preserves_finished_checksum_etag_and_body_bytes() {
+fn finished_index_uses_its_checksum_for_the_etag() {
     let mut fixture = Fixture::new();
     fixture.append_health();
     fixture.finish();
     let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
 
-    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream shared finished index");
-    let (previous_meta, previous) =
-        previous_index_response(&fixture, &target, usize::MAX, usize::MAX)
-            .expect("stream previous finished index");
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream finished index");
 
-    assert_eq!(shared_meta, previous_meta);
-    assert_eq!(shared, previous);
-    assert_eq!(shared_meta.cache, CachePolicy::Immutable);
-    let header = raw_ndjson_records(&shared)
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    let header = raw_ndjson_records(&bytes)
         .into_iter()
         .find(|record| record["record"] == "index")
         .expect("index header");
     let checksum = header["checksum"].as_str().expect("finished checksum");
     assert_eq!(
-        shared_meta.etag.as_deref(),
+        meta.etag.as_deref(),
         Some(format!("W/\"{checksum}\"").as_str())
     );
 
-    let not_modified = fixture.prepare(&target, shared_meta.etag.as_deref());
+    let not_modified = fixture.prepare(&target, meta.etag.as_deref());
     assert_eq!(not_modified.meta().status, StatusCode::NOT_MODIFIED);
-    assert_eq!(not_modified.meta().etag, shared_meta.etag);
+    assert_eq!(not_modified.meta().etag, meta.etag);
     assert!(matches!(not_modified, Prepared::Empty(_)));
 }
 
 #[test]
-fn shared_index_preserves_active_nonpersisted_meta_and_body_bytes() {
+fn active_index_has_no_etag_or_persisted_file() {
     let mut fixture = Fixture::new();
     fixture.append_health();
     let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
 
-    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream shared active index");
-    let (previous_meta, previous) =
-        previous_index_response(&fixture, &target, usize::MAX, usize::MAX)
-            .expect("stream previous active index");
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream active index");
 
-    assert_eq!(shared_meta, previous_meta);
-    assert_eq!(shared, previous);
-    assert_eq!(shared_meta.cache, CachePolicy::NoStore);
-    assert_eq!(shared_meta.etag, None);
-    let header = raw_ndjson_records(&shared)
+    assert_eq!(meta.cache, CachePolicy::NoStore);
+    assert_eq!(meta.etag, None);
+    let header = raw_ndjson_records(&bytes)
         .into_iter()
         .find(|record| record["record"] == "index")
         .expect("index header");
@@ -3409,40 +3294,41 @@ fn shared_index_preserves_active_nonpersisted_meta_and_body_bytes() {
 }
 
 #[test]
-fn shared_index_preserves_errors_and_stream_stop_boundaries() {
+fn index_returns_stable_errors_and_honors_stream_stops() {
     let mut fixture = Fixture::new();
     fixture.append_health();
 
     let missing = format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/index");
-    let previous = previous_index_response(&fixture, &missing, usize::MAX, usize::MAX)
-        .expect_err("previous index rejects an unknown series");
-    let shared = shared_query_response(&fixture, &missing, usize::MAX, usize::MAX)
-        .expect_err("shared index rejects an unknown series");
-    assert_api_error_parity(&shared, &previous);
+    let error = query_response(&fixture, &missing, usize::MAX, usize::MAX)
+        .expect_err("index rejects an unknown series");
+    assert_api_error(
+        &error,
+        StatusCode::NOT_FOUND,
+        "no_such_section",
+        None,
+        "no such logical section",
+    );
 
     let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
-    for (accepted_records, cancelled_after) in [
-        (usize::MAX, 0),
-        (usize::MAX, 1),
-        (1, usize::MAX),
-        (2, usize::MAX),
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["index"][..]),
+        (1, usize::MAX, &["index"][..]),
+        (2, usize::MAX, &["index", "layout"][..]),
     ] {
-        let (previous_meta, previous) =
-            previous_index_response(&fixture, &target, accepted_records, cancelled_after)
-                .expect("stop previous index stream");
-        let (shared_meta, shared) =
-            shared_query_response(&fixture, &target, accepted_records, cancelled_after)
-                .expect("stop shared index stream");
-        assert_eq!(shared_meta, previous_meta);
+        let (meta, bytes) = query_response(&fixture, &target, accepted_records, cancelled_after)
+            .expect("stop index stream");
+        assert_eq!(meta.cache, CachePolicy::NoStore);
         assert_eq!(
-            shared, previous,
+            record_kinds(&bytes),
+            expected,
             "accepted_records={accepted_records} cancelled_after={cancelled_after}"
         );
     }
 }
 
 #[test]
-fn shared_heatmap_preserves_bytes_meta_order_and_truncation() {
+fn heatmap_preserves_cache_order_and_truncation() {
     for finished in [false, true] {
         let mut fixture = Fixture::new();
         fixture.append_resolved_diskstats(&[
@@ -3459,25 +3345,20 @@ fn shared_heatmap_preserves_bytes_meta_order_and_truncation() {
         let target =
             "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
 
-        let (previous_meta, previous) =
-            previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
-                .expect("stream previous heatmap");
-        let (shared_meta, shared) = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
-            .expect("stream shared heatmap");
+        let (meta, bytes) =
+            query_response(&fixture, target, usize::MAX, usize::MAX).expect("stream heatmap");
 
-        assert_eq!(shared_meta, previous_meta, "finished={finished}");
-        assert_eq!(shared, previous, "finished={finished}");
         assert_eq!(
-            shared_meta.cache,
+            meta.cache,
             if finished {
                 CachePolicy::Immutable
             } else {
                 CachePolicy::NoStore
             }
         );
-        assert_eq!(shared_meta.etag.is_some(), finished);
+        assert_eq!(meta.etag.is_some(), finished);
 
-        let records = raw_ndjson_records(&shared);
+        let records = raw_ndjson_records(&bytes);
         assert_eq!(records[0]["record"], "heatmap");
         assert_eq!(records[0]["entity_count"], 3);
         assert_eq!(records[0]["top"], 2);
@@ -3497,7 +3378,7 @@ fn shared_heatmap_preserves_bytes_meta_order_and_truncation() {
 }
 
 #[test]
-fn shared_heatmap_preserves_grouped_tie_order_and_truncation() {
+fn heatmap_uses_stable_group_tie_order_and_truncation() {
     let mut fixture = Fixture::new();
     fixture.append_resolved_diskstats(&[
         (100, 0, 0),
@@ -3511,15 +3392,12 @@ fn shared_heatmap_preserves_grouped_tie_order_and_truncation() {
     let target =
         "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1&group=minor";
 
-    let (previous_meta, previous) =
-        previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
-            .expect("stream previous grouped heatmap");
-    let (shared_meta, shared) = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
-        .expect("stream shared grouped heatmap");
-    assert_eq!(shared_meta, previous_meta);
-    assert_eq!(shared, previous);
+    let (meta, bytes) =
+        query_response(&fixture, target, usize::MAX, usize::MAX).expect("stream grouped heatmap");
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    assert!(meta.etag.is_some());
 
-    let records = raw_ndjson_records(&shared);
+    let records = raw_ndjson_records(&bytes);
     assert_eq!(records[0]["group"], serde_json::json!(["minor"]));
     assert_eq!(records[0]["top"], 1);
     assert_eq!(records[0]["entity_count"], 3);
@@ -3532,75 +3410,93 @@ fn shared_heatmap_preserves_grouped_tie_order_and_truncation() {
 }
 
 #[test]
-fn shared_heatmap_preserves_errors_and_stream_stop_boundaries() {
+fn heatmap_returns_stable_errors_and_honors_stream_stops() {
     let mut fixture = Fixture::new();
     fixture.append_resolved_diskstats(&[(100, 0, 10), (100, 1, 10), (200, 0, 20), (200, 1, 40)]);
     fixture.finish();
 
-    for target in [
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&field=read_time_ms&columns=2&top=2",
+    for (target, code, parameter, message) in [
+        (
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
+            "no_such_column",
+            Some("missing"),
+            "no such column \"missing\"",
+        ),
+        (
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&field=read_time_ms&columns=2&top=2",
+            "mixed_units",
+            Some("reads+read_time_ms"),
+            "fields carry different units: reads+read_time_ms",
+        ),
     ] {
-        let previous = previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
-            .expect_err("previous heatmap rejects the request");
-        let shared = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
-            .expect_err("shared heatmap rejects the request");
-        assert_api_error_parity(&shared, &previous);
+        let error = query_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect_err("heatmap rejects the request");
+        assert_api_error(&error, StatusCode::BAD_REQUEST, code, parameter, message);
     }
 
     let target = "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
-    let previous = previous_heatmap_response(&fixture, target, usize::MAX, 0)
-        .expect_err("previous heatmap execution is cancelled");
-    let shared = shared_query_response(&fixture, target, usize::MAX, 0)
-        .expect_err("shared heatmap execution is cancelled");
-    assert_api_error_parity(&shared, &previous);
+    let error = query_response(&fixture, target, usize::MAX, 0)
+        .expect_err("heatmap execution is cancelled");
+    assert_api_error(
+        &error,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unreadable",
+        None,
+        "rankings[0]: request cancelled",
+    );
 
-    for (accepted_records, cancelled_after) in [
-        (1, usize::MAX),
-        (2, usize::MAX),
-        (3, usize::MAX),
-        (usize::MAX, 1),
-        (usize::MAX, 2),
-        (usize::MAX, 3),
+    for (accepted_records, cancelled_after, expected) in [
+        (1, usize::MAX, &["heatmap"][..]),
+        (2, usize::MAX, &["heatmap", "heatmap_row"][..]),
+        (
+            3,
+            usize::MAX,
+            &["heatmap", "heatmap_row", "heatmap_row"][..],
+        ),
+        (usize::MAX, 1, &["heatmap"][..]),
+        (usize::MAX, 2, &["heatmap", "heatmap_row"][..]),
+        (
+            usize::MAX,
+            3,
+            &[
+                "heatmap",
+                "heatmap_row",
+                "heatmap_row",
+                "heatmap_band",
+                "heatmap_band",
+            ][..],
+        ),
     ] {
-        let (previous_meta, previous) =
-            previous_heatmap_response(&fixture, target, accepted_records, cancelled_after)
-                .expect("stop previous heatmap stream");
-        let (shared_meta, shared) =
-            shared_query_response(&fixture, target, accepted_records, cancelled_after)
-                .expect("stop shared heatmap stream");
-        assert_eq!(shared_meta, previous_meta);
+        let (meta, bytes) = query_response(&fixture, target, accepted_records, cancelled_after)
+            .expect("stop heatmap stream");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
         assert_eq!(
-            shared, previous,
+            record_kinds(&bytes),
+            expected,
             "accepted_records={accepted_records} cancelled_after={cancelled_after}"
         );
     }
 }
 
 #[test]
-fn shared_heatmap_preserves_validation_before_source_open() {
+fn heatmap_validates_the_endpoint_before_opening_the_source() {
     let directory = tempfile::tempdir().expect("temporary parent");
     let missing = directory.path().join("missing-root");
-    for target in [
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
-        "/api/heatmap?from=100&to=9223372036854775807&section=os_diskstats&field=reads&columns=2&top=2",
-        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2",
-    ] {
-        let crate::route::Route::Heatmap(request) = fixture_route(target) else {
-            panic!("heatmap route");
-        };
-        let previous = crate::api::heatmap::prepare(&missing, request)
-            .err()
-            .expect("previous heatmap rejects an unavailable source");
-        let shared = crate::api::prepare(&missing, SOURCES, fixture_route(target), None)
-            .err()
-            .expect("shared heatmap rejects an unavailable source");
-        assert_api_error_parity(&shared, &previous);
-    }
+    let target = "/api/heatmap?from=100&to=9223372036854775807&section=os_diskstats&field=reads&columns=2&top=2";
+    let error = crate::api::prepare(&missing, SOURCES, fixture_route(target), None)
+        .err()
+        .expect("heatmap rejects an overflowing endpoint");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_filter",
+        Some("to"),
+        "invalid typed filter for \"to\"",
+    );
 }
 
 #[test]
-fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
+fn events_preserve_group_and_occurrence_order_truncation_and_detail_refs() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
     let to_exclusive = from + 4;
@@ -3618,17 +3514,11 @@ fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
             "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=groups&limit=10"
         ),
     ] {
-        let (previous_meta, previous) =
-            previous_events_response(&fixture, &target, usize::MAX, usize::MAX)
-                .expect("stream previous event groups");
-        let (shared_meta, shared) =
-            shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
-                .expect("stream shared event groups");
-        assert_eq!(shared_meta, previous_meta);
-        assert_eq!(shared, previous);
-        assert_eq!(shared_meta.cache, CachePolicy::Immutable);
-        assert!(shared_meta.etag.is_some());
-        let records = raw_ndjson_records(&shared);
+        let (meta, bytes) =
+            query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream event groups");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert!(meta.etag.is_some());
+        let records = raw_ndjson_records(&bytes);
         assert_eq!(records[0]["representation"], "groups");
         assert_eq!(records[0]["truncated"], target.ends_with("limit=1"));
         assert!(
@@ -3644,14 +3534,11 @@ fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
     let target = format!(
         "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=occurrences&limit=3"
     );
-    let (previous_meta, previous) =
-        previous_events_response(&fixture, &target, usize::MAX, usize::MAX)
-            .expect("stream previous event occurrences");
-    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
-        .expect("stream shared event occurrences");
-    assert_eq!(shared_meta, previous_meta);
-    assert_eq!(shared, previous);
-    let records = raw_ndjson_records(&shared);
+    let (meta, bytes) = query_response(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream event occurrences");
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    assert!(meta.etag.is_some());
+    let records = raw_ndjson_records(&bytes);
     assert_eq!(records[0]["representation"], "occurrences");
     assert_eq!(records[0]["truncated"], true);
     let occurrences = records
@@ -3674,7 +3561,7 @@ fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
 }
 
 #[test]
-fn shared_events_preserve_cancellation_errors_and_sink_stop_boundaries() {
+fn events_return_stable_errors_and_honor_stream_stops() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
     let to_exclusive = from + 3;
@@ -3685,136 +3572,56 @@ fn shared_events_preserve_cancellation_errors_and_sink_stop_boundaries() {
         "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=10"
     );
 
-    let previous = previous_events_response(&fixture, &target, usize::MAX, 0)
-        .expect_err("previous event execution is cancelled");
-    let shared = shared_query_response(&fixture, &target, usize::MAX, 0)
-        .expect_err("shared event execution is cancelled");
-    assert_api_error_parity(&shared, &previous);
+    let error =
+        query_response(&fixture, &target, usize::MAX, 0).expect_err("event execution is cancelled");
+    assert_api_error(
+        &error,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "cancelled",
+        None,
+        "request cancelled",
+    );
 
     for cancelled_after in [1, 2] {
-        let (previous_meta, previous) =
-            previous_events_response(&fixture, &target, usize::MAX, cancelled_after)
-                .expect("cancel previous events after the header");
-        let (shared_meta, shared) =
-            shared_query_response(&fixture, &target, usize::MAX, cancelled_after)
-                .expect("cancel shared events after the header");
-        assert_eq!(shared_meta, previous_meta);
-        assert_eq!(shared, previous, "cancelled_after={cancelled_after}");
+        let (meta, bytes) = query_response(&fixture, &target, usize::MAX, cancelled_after)
+            .expect("cancel events after the header");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert_eq!(
+            record_kinds(&bytes),
+            ["events", "event_occurrence", "event_occurrence"],
+            "cancelled_after={cancelled_after}"
+        );
     }
 
-    for accepted_records in [1, 2] {
-        let (previous_meta, previous) =
-            previous_events_response(&fixture, &target, accepted_records, usize::MAX)
-                .expect("stop previous events stream");
-        let (shared_meta, shared) =
-            shared_query_response(&fixture, &target, accepted_records, usize::MAX)
-                .expect("stop shared events stream");
-        assert_eq!(shared_meta, previous_meta);
-        assert_eq!(shared, previous, "accepted_records={accepted_records}");
+    for (accepted_records, expected) in [
+        (1, &["events"][..]),
+        (2, &["events", "event_occurrence"][..]),
+    ] {
+        let (meta, bytes) = query_response(&fixture, &target, accepted_records, usize::MAX)
+            .expect("stop events stream");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "accepted_records={accepted_records}"
+        );
     }
 
     let mut duplicate = Fixture::new();
     duplicate.append_log_error(from);
     duplicate.append_log_error(from);
     duplicate.finish();
-    let previous = previous_events_response(&duplicate, &target, usize::MAX, usize::MAX)
-        .expect_err("previous events reject an ambiguous detail locator");
-    let shared = shared_query_response(&duplicate, &target, usize::MAX, usize::MAX)
-        .expect_err("shared events reject an ambiguous detail locator");
-    assert_api_error_parity(&shared, &previous);
-}
-
-fn previous_index_response(
-    fixture: &Fixture,
-    target: &str,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
-    let crate::route::Route::Index(request) = fixture_route(target) else {
-        panic!("index route");
-    };
-    let prepared = crate::api::index::prepare(fixture.root(), request)?;
-    let meta = prepared.meta();
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    prepared.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok((meta, output))
-}
-
-fn previous_events_response(
-    fixture: &Fixture,
-    target: &str,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
-    let crate::route::Route::Events(query) = fixture_route(target) else {
-        panic!("events route");
-    };
-    let query = legacy_events_query(&query);
-    let prepared = crate::api::events::prepare(fixture.root(), query)?;
-    let meta = prepared.meta();
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    prepared.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok((meta, output))
-}
-
-fn previous_heatmap_response(
-    fixture: &Fixture,
-    target: &str,
-    accepted_records: usize,
-    cancelled_after: usize,
-) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
-    let crate::route::Route::Heatmap(request) = fixture_route(target) else {
-        panic!("heatmap route");
-    };
-    let prepared = crate::api::heatmap::prepare(fixture.root(), request)?;
-    let meta = prepared.meta();
-    let emitted = Cell::new(0_usize);
-    let mut output = Vec::new();
-    prepared.stream(
-        &mut |bytes| {
-            output.extend_from_slice(&bytes);
-            emitted.set(emitted.get() + 1);
-            emitted.get() < accepted_records
-        },
-        &|| emitted.get() >= cancelled_after,
-    )?;
-    Ok((meta, output))
-}
-
-fn legacy_events_query(query: &kronika_query::EventsQuery) -> crate::api::events::EventsQuery {
-    let range = query.range();
-    let representation = match query.representation() {
-        kronika_query::EventsRepresentation::Groups => {
-            crate::api::events::EventsRepresentation::Groups
-        }
-        kronika_query::EventsRepresentation::Occurrences => {
-            crate::api::events::EventsRepresentation::Occurrences
-        }
-    };
-    crate::api::events::EventsQuery::normalize(
-        crate::api::time::TimeRange::new(range.from(), range.to_exclusive())
-            .expect("legacy event range"),
-        Some(query.sources().map(str::to_owned).collect()),
-        representation,
-        query.limit(),
-    )
-    .expect("legacy event query")
+    let error = query_response(&duplicate, &target, usize::MAX, usize::MAX)
+        .expect_err("events reject an ambiguous detail locator");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_locator",
+        None,
+        &format!(
+            "cannot emit detail_ref: pg_log_errors has a non-unique identity at timestamp {from} in segment {SEGMENT_ID}"
+        ),
+    );
 }
 
 #[test]
@@ -4364,74 +4171,6 @@ fn empty_finished_heatmap_has_no_validator() {
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(prepared.meta().etag, None);
-}
-
-// Gauge ranks use window maxima (50/45/30/25/20 for PIDs 101/102/103/105/
-// 104), while one-column bands sum each PID's last value (118 total, 63
-// others). The two conventions disagree on purpose: a `rank_only` that
-// mixed them would fail the assertions below.
-fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
-    [
-        (100, 101, 50, "fixture"),
-        (300, 101, 10, "fixture"),
-        (100, 102, 40, "fixture"),
-        (300, 102, 45, "fixture"),
-        (100, 103, 5, "fixture"),
-        (300, 103, 30, "fixture"),
-        (100, 104, 20, "fixture"),
-        (300, 104, 8, "fixture"),
-        (100, 105, 15, "fixture"),
-        (300, 105, 25, "fixture"),
-    ]
-}
-
-#[test]
-fn shared_heatmap_result_keeps_one_convention_for_gauge_totals() {
-    let mut fixture = Fixture::new();
-    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
-    fixture.finish();
-
-    let request = crate::api::heatmap::HeatmapBatchQuery {
-        range: crate::api::time::TimeRange::new(100, 401).expect("range"),
-        items: vec![crate::api::heatmap::HeatmapItemQuery {
-            ranking: crate::api::heatmap::NormalizedRanking {
-                section: "os_process".to_owned(),
-                fields: vec!["rmem_kb".to_owned()],
-                top: 2,
-            },
-            view: crate::api::heatmap::HeatmapView::RankingOnly,
-        }],
-    };
-
-    let result = crate::api::heatmap::prepare_batch(fixture.root(), request)
-        .expect("prepare")
-        .execute(&|| false)
-        .expect("execute");
-    let ranking = &result.results[0];
-
-    // Every number follows the per-entity window-maximum convention the
-    // entities themselves rank by: totals_total is the largest maximum
-    // across all five entities, others_total the largest across the three
-    // beyond top=2 — never smaller than a member, unlike the streamed
-    // grid's last-value band arithmetic (118/63 on this same fixture).
-    assert_eq!(ranking.entities.len(), 2);
-    assert_eq!(ranking.entity_count, 5);
-    assert_eq!(
-        ranking
-            .entities
-            .iter()
-            .map(|entity| entity.total)
-            .collect::<Vec<_>>(),
-        vec![Some(50.0), Some(45.0)]
-    );
-    assert_eq!(ranking.totals_total, Some(50.0));
-    assert_eq!(ranking.others_total, Some(30.0));
-    let winner = &ranking.entities[0];
-    assert_eq!(
-        winner.detail_locator.type_id,
-        OsProcess::CONTRACT.type_id.get()
-    );
-    assert_eq!(winner.identity["pid"], serde_json::json!(101));
 }
 
 // Each entry differs from its browser_resource_targets peer in one parameter.

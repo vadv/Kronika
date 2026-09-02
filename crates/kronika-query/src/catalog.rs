@@ -1,5 +1,7 @@
 //! Actual segment and physical-section inventory.
 
+use std::collections::BTreeMap;
+
 use kronika_reader::{SegmentKind, SegmentSection};
 use kronika_registry::{logical_section_name, section_implementation, section_name};
 use serde_json::{Value, json};
@@ -9,7 +11,62 @@ use crate::dataset::{
     SegmentBounds, SegmentSelection,
 };
 use crate::render::record;
-use crate::{CatalogRequest, QueryError, QuerySink, SOURCE_OS, SOURCE_POSTGRESQL, Window};
+use crate::{
+    CatalogRequest, QueryContext, QueryError, QuerySink, SOURCE_OS, SOURCE_POSTGRESQL, Window,
+};
+
+/// Typed recorded-range and logical-section facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogFacts {
+    /// First and last recorded timestamps, or `None` when no segment exists.
+    pub recorded_range: Option<(i64, i64)>,
+    /// Logical recorded sections in name order.
+    pub sections: Vec<CatalogSection>,
+}
+
+/// One logical recorded section summarized across selected segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSection {
+    /// Stable registry logical-section name.
+    pub logical_name: &'static str,
+    /// Recorded source family, when the layout belongs to one.
+    pub source_family: Option<&'static str>,
+    /// Total physical rows across the selected segments.
+    pub rows: u64,
+    /// Total encoded section bytes across the selected segments.
+    pub bytes: u64,
+    /// Stable union of recorded layout fields in name order.
+    pub fields: Vec<CatalogField>,
+}
+
+/// One field available in a recorded logical section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogField {
+    /// Stable registry field name.
+    pub name: &'static str,
+    /// Registry value-class code.
+    pub class: &'static str,
+    /// Registry unit code, when the field declares one.
+    pub unit: Option<&'static str>,
+}
+
+/// Read typed facts from the same captured catalog used by streamed queries.
+///
+/// # Errors
+///
+/// Returns a captured-source error when catalog discovery cannot complete.
+pub fn catalog_facts(
+    context: &QueryContext,
+    request: CatalogRequest,
+) -> Result<CatalogFacts, QueryError> {
+    let prepared = PreparedCatalog::prepare(
+        context.dataset.as_ref(),
+        request,
+        context.configured_sources,
+        context.synthetic_demo,
+    )?;
+    Ok(prepared.facts())
+}
 
 pub(crate) struct PreparedCatalog {
     listing: DatasetListing,
@@ -86,6 +143,83 @@ impl PreparedCatalog {
             }
         }
         Ok(())
+    }
+
+    fn facts(&self) -> CatalogFacts {
+        type FieldFacts = (&'static str, Option<&'static str>);
+        type SectionFacts = (
+            u64,
+            u64,
+            Option<&'static str>,
+            BTreeMap<&'static str, FieldFacts>,
+        );
+
+        let mut totals = BTreeMap::<&'static str, SectionFacts>::new();
+        for segment in &self.listing.segments {
+            for section in segment.sections() {
+                let Some(logical_name) = logical_section_name(section.type_id) else {
+                    continue;
+                };
+                if logical_name.starts_with("dict.") {
+                    continue;
+                }
+                let Some(contract) = kronika_registry::contract(section.type_id) else {
+                    continue;
+                };
+                let (rows, bytes, _source_family, fields) =
+                    totals.entry(logical_name).or_insert_with(|| {
+                        (
+                            0,
+                            0,
+                            source_bit(section.type_id).and_then(source_name),
+                            BTreeMap::new(),
+                        )
+                    });
+                *rows = rows.saturating_add(section.rows);
+                *bytes = bytes.saturating_add(section.bytes);
+                for column in contract.columns {
+                    fields.entry(column.name).or_insert_with(|| {
+                        (
+                            column.class.code(),
+                            column.unit.map(kronika_registry::Unit::code),
+                        )
+                    });
+                }
+            }
+        }
+
+        let sections = totals
+            .into_iter()
+            .map(
+                |(logical_name, (rows, bytes, source_family, fields))| CatalogSection {
+                    logical_name,
+                    source_family,
+                    rows,
+                    bytes,
+                    fields: fields
+                        .into_iter()
+                        .map(|(name, (class, unit))| CatalogField { name, class, unit })
+                        .collect(),
+                },
+            )
+            .collect();
+        let recorded_range = self
+            .listing
+            .segments
+            .iter()
+            .map(DatasetSegment::min_ts)
+            .min()
+            .zip(
+                self.listing
+                    .segments
+                    .iter()
+                    .map(DatasetSegment::max_ts)
+                    .max(),
+            );
+        CatalogFacts {
+            recorded_range,
+            sections,
+        }
     }
 }
 
@@ -195,3 +329,7 @@ fn warning_value(warning: DatasetWarning) -> Value {
         "affected": affected,
     })
 }
+
+#[cfg(test)]
+#[path = "catalog/tests.rs"]
+mod tests;
