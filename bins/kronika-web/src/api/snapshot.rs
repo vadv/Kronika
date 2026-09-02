@@ -14,10 +14,12 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell as Counter;
 
+use kronika_query::output_fields as shared_fields;
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
+use self::relation::query_group;
 use self::search::{
     Quantity, SearchClause, SearchOperator, SearchValue, StructuredSearch, result_field,
     search_fields,
@@ -29,7 +31,6 @@ use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
-use crate::route::{SeriesRequest, Window};
 
 pub(crate) struct PreparedSnapshot {
     reader: Reader,
@@ -470,20 +471,6 @@ pub(crate) fn relation_snapshot_operations() -> (usize, usize, usize) {
     )
 }
 
-pub(super) fn stream_relation_history(
-    reader: &Reader,
-    listed: &[SegmentRef],
-    window: Window,
-    request: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
-    relation::stream_history(reader, listed, window, request, emit, cancelled)
-}
-
-#[cfg(test)]
-pub(crate) use relation::{history_operations, reset_history_operations, tablespace_moment_visits};
-
 pub(crate) fn prepare(
     root: &Path,
     request: SnapshotRequest,
@@ -540,7 +527,7 @@ fn prepare_with(
     }
     let relation_fields = request
         .group
-        .map(|group| relation::output_fields(&request.sections, group, &request.fields))
+        .map(|group| shared_fields(&request.sections, query_group(group), &request.fields))
         .transpose()?
         .unwrap_or_default();
     let (physical_filters, relation_filters) = relation::split_filters(&request)?;
@@ -5070,18 +5057,6 @@ fn counter_delta(now: &Cell, earlier: &Cell) -> Option<OrderedNumber> {
         _ => return None,
     };
     (exact >= 0).then_some(OrderedNumber::Integer(exact))
-}
-
-fn rate_columns(plan: &Plan) -> Vec<&'static str> {
-    plan.fields
-        .iter()
-        .filter_map(|field| field.column)
-        .filter(|column| {
-            plan.contract
-                .column(column)
-                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
-        })
-        .collect()
 }
 
 fn output_rate_fields(plan: &Plan) -> Vec<&str> {

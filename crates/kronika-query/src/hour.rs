@@ -1,41 +1,39 @@
-//! Composes one hour of timeline data into one response.
+//! One composed hour of catalog, series, index, and lane records.
 
-use std::ops::Bound::{Included, Unbounded};
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use kronika_index::{finding_keys, resource_selected, series_keys};
-use kronika_reader::{Cell, Listing, Reader, SegmentKind, SegmentRef};
+use kronika_index::{finding_keys_for_sections, series_keys_for_sections};
+use kronika_reader::{Cell, SegmentKind};
 use kronika_registry::{ColumnClass, contract};
 use serde_json::json;
 
-use super::catalog::{PreparedCatalog, metric_source_bit, source_bit};
-use super::history::stream_plans;
-use super::index::stream_series;
-use super::query::plans;
-use super::render::record;
-use super::{ApiError, CachePolicy, ResponseMeta};
-use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
-use crate::route::{
-    ActiveCursor, DataRequest, HourPart, HourRequest, SegmentRequest, SeriesRequest, Window,
+use crate::catalog::{PreparedCatalog, metric_source_bit, source_bit};
+use crate::history::stream_plans;
+use crate::index::stream_series;
+use crate::projection::plans;
+use crate::render::record;
+use crate::{
+    ActiveCursor, DataRequest, DatasetListing, DatasetSegment, HourPart, HourRequest,
+    HourSeriesRequest, IndexProvider, QueryDataset, QueryError, QuerySink, QueryStability,
+    SegmentBounds, SegmentRequest, SegmentSelection, Window,
 };
 
 mod lanes;
 mod postgres_summary;
 pub(crate) mod process_summary;
+mod relation;
+
+pub use relation::{
+    GroupKey, Metric, RelationAggregate, RelationField, RelationKind, RelationSource,
+    index_scan_rate_is_zero, key_fields, output_fields,
+};
 
 #[cfg(test)]
 mod tests;
 
 const SERIES: &str = "health";
-
 const HOUR: i64 = 3_600_000_000;
-const ALL_SOURCES: u32 = SOURCE_OS | SOURCE_POSTGRESQL;
-
-#[cfg(test)]
-thread_local! {
-    static LANE_OPERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static SOURCE_PRESENCE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+const ALL_SOURCES: u32 = crate::SOURCE_OS | crate::SOURCE_POSTGRESQL;
 
 #[derive(Default)]
 struct SourcePresence {
@@ -44,32 +42,32 @@ struct SourcePresence {
 }
 
 pub(crate) struct PreparedHour {
-    root: PathBuf,
-    reader: Reader,
+    dataset: Arc<dyn QueryDataset>,
+    indexes: Option<Arc<dyn IndexProvider>>,
     catalog: Option<PreparedCatalog>,
-    listed: Vec<SegmentRef>,
-    segments: Vec<SegmentRef>,
+    listed: Vec<DatasetSegment>,
+    segments: Vec<DatasetSegment>,
     window: Window,
     hours: Vec<i64>,
-    series: Option<SeriesRequest>,
+    series: Option<HourSeriesRequest>,
     part: HourPart,
-    etag: Option<String>,
+    shape: String,
+    validator_segments: Option<Vec<DatasetSegment>>,
 }
 
-pub(super) fn prepare(
-    root: &Path,
+pub(crate) fn prepare(
+    dataset: Arc<dyn QueryDataset>,
+    indexes: Option<Arc<dyn IndexProvider>>,
     request: HourRequest,
     configured_sources: u32,
     synthetic_demo: bool,
-) -> Result<PreparedHour, ApiError> {
-    let started = std::time::Instant::now();
+) -> Result<PreparedHour, QueryError> {
     let requested = request.window;
-    let reader = Reader::open(root)?;
-    let discovery = reader.catalog_discovery()?;
+    let discovery = dataset.catalog()?;
     let hours = if request.part == HourPart::Lanes {
         Vec::new()
     } else {
-        hours_of_ranges(discovery.ranges())
+        hours_of_ranges(discovery.ranges().iter().copied())
     };
     let window = requested.from.map_or_else(
         || latest_hour(&hours),
@@ -78,48 +76,49 @@ pub(super) fn prepare(
             to: Some(requested.to.unwrap_or_else(|| hour_end(from))),
         },
     );
-    let stored = if request.series.is_some() {
-        discovery.segments(..)?
+    let stored = discovery.segments(SegmentSelection::new(if request.series.is_some() {
+        SegmentBounds::all()
     } else {
-        discovery.segments((
-            window.from.map_or(Unbounded, Included),
-            window.to.map_or(Unbounded, Included),
-        ))?
-    };
+        SegmentBounds::inclusive(window.from, window.to)
+    }))?;
+    drop(discovery);
+    let clean = stored.warnings.is_empty();
     let listed = stored.segments;
     let mut segments = listed
         .iter()
         .filter(|segment| overlaps_window(segment.min_ts(), segment.max_ts(), window))
         .cloned()
         .collect::<Vec<_>>();
-    segments.sort_by_key(SegmentRef::min_ts);
+    segments.sort_by_key(DatasetSegment::min_ts);
     if request.part == HourPart::Lanes {
-        let expected = request.segments.as_deref().ok_or(ApiError::BadCursor)?;
-        pin_segments(&mut segments, expected, request.active)?;
+        let expected = request.segments.as_deref().ok_or(QueryError::BadCursor)?;
+        pin_segments(dataset.as_ref(), &mut segments, expected, request.active)?;
     }
-    super::catalog::log_open(segments.len(), &stored.warnings, started);
     let shape = format!(
         "window={window:?};hours={hours:?};series={:?};part={:?};segments={:?};active={:?};sources={configured_sources};demo={synthetic_demo}",
         request.series, request.part, request.segments, request.active,
     );
-    let etag = if request.part == HourPart::Base || segments.is_empty() {
+    let validator_segments = if request.part == HourPart::Base || segments.is_empty() || !clean {
         None
-    } else if request.series.is_some() && stored.warnings.is_empty() {
-        super::weak_etag(
-            "hour",
-            &shape,
+    } else {
+        let candidates = if request.series.is_some() {
             listed
                 .iter()
-                .filter(|segment| window.to.is_none_or(|to| segment.min_ts() <= to)),
-        )
-    } else if stored.warnings.is_empty() {
-        super::weak_etag("hour", &shape, &segments)
-    } else {
-        None
+                .filter(|segment| window.to.is_none_or(|to| segment.min_ts() <= to))
+                .cloned()
+                .collect()
+        } else {
+            segments.clone()
+        };
+        (!candidates.is_empty()
+            && candidates
+                .iter()
+                .all(|segment| segment.kind() == SegmentKind::Finished))
+        .then_some(candidates)
     };
     let catalog = (request.series.is_none() && request.part != HourPart::Lanes).then(|| {
         PreparedCatalog::from_listing(
-            Listing {
+            DatasetListing {
                 segments: segments.clone(),
                 warnings: stored.warnings,
             },
@@ -129,8 +128,8 @@ pub(super) fn prepare(
         )
     });
     Ok(PreparedHour {
-        root: root.to_path_buf(),
-        reader,
+        dataset,
+        indexes,
         catalog,
         listed,
         segments,
@@ -138,35 +137,37 @@ pub(super) fn prepare(
         hours,
         series: request.series,
         part: request.part,
-        etag,
+        shape,
+        validator_segments,
     })
 }
 
 fn pin_segments(
-    segments: &mut [SegmentRef],
+    dataset: &dyn QueryDataset,
+    segments: &mut [DatasetSegment],
     expected: &[i64],
     cursor: Option<ActiveCursor>,
-) -> Result<(), ApiError> {
+) -> Result<(), QueryError> {
     if !segments
         .iter()
-        .map(SegmentRef::id)
+        .map(DatasetSegment::id)
         .eq(expected.iter().copied())
     {
-        return Err(ApiError::BadCursor);
+        return Err(QueryError::BadCursor);
     }
     let active = segments
         .iter()
         .position(|segment| segment.kind() == SegmentKind::Active);
     match (active, cursor) {
         (None, None) => Ok(()),
-        (Some(_), None) | (None, Some(_)) => Err(ApiError::BadCursor),
+        (Some(_), None) | (None, Some(_)) => Err(QueryError::BadCursor),
         (Some(index), Some(cursor)) => {
             if segments[index].id() != cursor.segment_id {
-                return Err(ApiError::BadCursor);
+                return Err(QueryError::BadCursor);
             }
-            segments[index] = segments[index]
-                .at_active_position(cursor.wal_position)
-                .map_err(|_error| ApiError::BadCursor)?;
+            segments[index] = dataset
+                .at_active_position(&segments[index], cursor.wal_position)
+                .map_err(|_error| QueryError::BadCursor)?;
             Ok(())
         }
     }
@@ -205,35 +206,32 @@ const fn hour_end(from: i64) -> i64 {
 }
 
 impl PreparedHour {
-    pub(super) fn meta(&self) -> ResponseMeta {
-        let settled = self
+    pub(crate) fn stability(&self) -> QueryStability {
+        if self.validator_segments.is_some() {
+            QueryStability::Immutable
+        } else if self
             .segments
             .iter()
-            .all(|segment| segment.kind() == SegmentKind::Finished);
-        ResponseMeta::ok_with_etag(
-            if self.etag.is_some() {
-                CachePolicy::Immutable
-            } else if settled {
-                CachePolicy::Revalidate
-            } else {
-                CachePolicy::NoStore
-            },
-            self.etag.clone(),
-        )
+            .all(|segment| segment.kind() == SegmentKind::Finished)
+        {
+            QueryStability::Revalidate
+        } else {
+            QueryStability::Mutable
+        }
     }
 
-    pub(super) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        let started = std::time::Instant::now();
-        let count = self.segments.len();
-        if cancelled() {
+    pub(crate) fn validator_input(&self) -> Option<(&'static str, &str, &[DatasetSegment])> {
+        self.validator_segments
+            .as_deref()
+            .map(|segments| ("hour", self.shape.as_str(), segments))
+    }
+
+    pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
+        if sink.cancelled() {
             return Ok(());
         }
         if self.part != HourPart::Lanes
-            && !emit(record(json!({
+            && !sink.record(record(json!({
                 "record": "hour",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
@@ -243,8 +241,8 @@ impl PreparedHour {
             return Ok(());
         }
         let Self {
-            root,
-            reader,
+            dataset,
+            indexes,
             catalog,
             listed,
             segments,
@@ -257,21 +255,18 @@ impl PreparedHour {
             if series.section == postgres_summary::SECTION {
                 postgres_summary::validate(&series)?;
                 let segments = postgres_summary::with_previous(&listed, segments);
-                return postgres_summary::stream(&reader, &segments, window, emit, cancelled);
+                return postgres_summary::stream(dataset.as_ref(), &segments, window, sink);
             }
             if series.group.is_some() {
-                return super::snapshot::stream_relation_history(
-                    &reader, &listed, window, &series, emit, cancelled,
-                );
+                return relation::stream_history(dataset.as_ref(), &listed, window, &series, sink);
             }
             if series.section == process_summary::SECTION {
                 let segments = process_summary::with_predecessors(&listed, segments);
-                return process_summary::stream(
-                    &reader, &segments, window, &series, emit, cancelled,
-                );
+                return process_summary::stream(dataset.as_ref(), &segments, window, &series, sink);
             }
             for segment in &segments {
-                if cancelled() || !emit_series(&reader, segment, window, &series, emit, cancelled)?
+                if sink.cancelled()
+                    || !emit_series(dataset.as_ref(), segment, window, &series, sink)?
                 {
                     return Ok(());
                 }
@@ -279,58 +274,66 @@ impl PreparedHour {
             return Ok(());
         }
         if let Some(catalog) = catalog {
-            let presence = source_presence(&reader, &segments, window, cancelled)?;
+            let presence = source_presence(dataset.as_ref(), &segments, window, sink)?;
             catalog
                 .with_present_sources(presence.any, presence.metrics)
-                .stream(emit, cancelled)?;
+                .stream(sink)?;
         }
         let mut lane_state = lanes::State::default();
         for segment in &segments {
-            if cancelled() {
+            if sink.cancelled() {
                 return Ok(());
             }
             if part != HourPart::Lanes
-                && !emit_index(&root, &reader, segment, window, emit, cancelled)?
+                && !emit_index(
+                    indexes.as_deref().ok_or_else(missing_index_provider)?,
+                    segment,
+                    window,
+                    sink,
+                )?
             {
                 return Ok(());
             }
             if part != HourPart::Base
                 && !emit_lanes(
-                    &reader,
+                    dataset.as_ref(),
                     segment,
                     window,
                     &mut lane_state,
                     part == HourPart::Lanes,
-                    emit,
-                    cancelled,
+                    sink,
                 )?
             {
                 return Ok(());
             }
         }
-        eprintln!(
-            "kronika-web: hour segments={count} elapsed_us={}",
-            started.elapsed().as_micros(),
-        );
         Ok(())
     }
 }
 
+fn missing_index_provider() -> QueryError {
+    QueryError::Unreadable(Box::new(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this query context has no derived-index provider",
+    )))
+}
+
 fn emit_index(
-    root: &Path,
-    reader: &Reader,
-    segment: &SegmentRef,
+    indexes: &dyn IndexProvider,
+    segment: &DatasetSegment,
     window: Window,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
-    let mut keys = series_keys(segment, SERIES);
-    keys.extend(series_keys(segment, "pg_stat_activity"));
-    keys.extend(finding_keys(segment));
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
+    let mut keys = series_keys_for_sections(segment.sections(), SERIES);
+    keys.extend(series_keys_for_sections(
+        segment.sections(),
+        "pg_stat_activity",
+    ));
+    keys.extend(finding_keys_for_sections(segment.sections()));
     keys.sort_unstable();
     keys.dedup();
-    let resource = resource_selected(root, reader, segment, &keys)?;
-    if !emit(record(json!({
+    let resource = indexes.load(segment, SERIES, &keys)?;
+    if !sink.record(record(json!({
         "record": "index",
         "segment": { "id": segment.id().to_string() },
         "logical_name": SERIES,
@@ -338,28 +341,24 @@ fn emit_index(
     }))?) {
         return Ok(false);
     }
-    stream_series(SERIES, resource, Some(window), emit, cancelled)
+    stream_series(SERIES, resource, Some(window), sink)
 }
 
 fn source_presence(
-    reader: &Reader,
-    segments: &[SegmentRef],
+    dataset: &dyn QueryDataset,
+    segments: &[DatasetSegment],
     window: Window,
-    cancelled: &impl Fn() -> bool,
-) -> Result<SourcePresence, ApiError> {
+    sink: &dyn QuerySink,
+) -> Result<SourcePresence, QueryError> {
     let mut presence = SourcePresence::default();
-    for segment_ref in segments
+    for segment in segments
         .iter()
         .filter(|segment| window.contains(segment.min_ts()) && window.contains(segment.max_ts()))
     {
-        if cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
+        if sink.cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
             break;
         }
-        for section in segment_ref
-            .sections()
-            .iter()
-            .filter(|section| section.rows > 0)
-        {
+        for section in segment.sections().iter().filter(|section| section.rows > 0) {
             if presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES {
                 break;
             }
@@ -379,14 +378,14 @@ fn source_presence(
             }
         }
     }
-    for segment_ref in segments
+    for descriptor in segments
         .iter()
         .filter(|segment| !window.contains(segment.min_ts()) || !window.contains(segment.max_ts()))
     {
-        if cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
+        if sink.cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
             break;
         }
-        let needed = segment_ref.sections().iter().any(|section| {
+        let needed = descriptor.sections().iter().any(|section| {
             let Some(any) = source_bit(section.type_id) else {
                 return false;
             };
@@ -396,9 +395,9 @@ fn source_presence(
         if !needed {
             continue;
         }
-        let segment = reader.open_segment(segment_ref)?;
-        for section in segment_ref.sections() {
-            if cancelled() {
+        let segment = dataset.open(descriptor)?;
+        for section in descriptor.sections() {
+            if sink.cancelled() {
                 break;
             }
             let type_id = section.type_id;
@@ -418,10 +417,8 @@ fn source_presence(
                 continue;
             };
             let mut found = false;
-            #[cfg(test)]
-            SOURCE_PRESENCE_SCANS.set(SOURCE_PRESENCE_SCANS.get() + 1);
             segment.visit_rows(type_id, &[timestamp.name], 0, usize::MAX, |_ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     return false;
                 }
                 if matches!(row.get(timestamp.name), Some(Cell::Ts(value)) if window.contains(*value))
@@ -443,17 +440,16 @@ fn source_presence(
 }
 
 fn emit_series(
-    reader: &Reader,
-    segment_ref: &SegmentRef,
+    dataset: &dyn QueryDataset,
+    descriptor: &DatasetSegment,
     window: Window,
-    series: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
-    let segment = reader.open_segment(segment_ref)?;
+    series: &HourSeriesRequest,
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
+    let segment = dataset.open(descriptor)?;
     let request = DataRequest {
         segment: SegmentRequest {
-            segment_id: segment_ref.id(),
+            segment_id: descriptor.id(),
             section: series.section.clone(),
         },
         fields: series.fields.clone(),
@@ -463,53 +459,41 @@ fn emit_series(
     };
     match plans(&segment, &request, true) {
         Ok(plans) => {
-            if !emit(record(json!({
+            if !sink.record(record(json!({
                 "record": "series_segment",
-                "segment": { "id": segment_ref.id().to_string() },
+                "segment": { "id": descriptor.id().to_string() },
             }))?) {
                 return Ok(false);
             }
-            stream_plans(
-                &segment,
-                &series.section,
-                &plans,
-                Some(window),
-                emit,
-                cancelled,
-            )
+            stream_plans(&segment, &series.section, &plans, Some(window), sink)
         }
-        Err(ApiError::NoSuchSection) => Ok(true),
+        Err(QueryError::NoSuchSection) => Ok(true),
         Err(error) => Err(error),
     }
 }
 
 fn emit_lanes(
-    reader: &Reader,
-    segment_ref: &SegmentRef,
+    dataset: &dyn QueryDataset,
+    descriptor: &DatasetSegment,
     window: Window,
     state: &mut lanes::State,
     include_context: bool,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
-    #[cfg(test)]
-    LANE_OPERATIONS.set(LANE_OPERATIONS.get() + 1);
-    let segment = reader.open_segment(segment_ref)?;
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
+    let segment = dataset.open(descriptor)?;
     let (points, postgresql_interval_seconds) = lanes::collect(&segment, window, state)?;
-    if include_context
-        && !emit(record(json!({
-            "record": "lane_context",
-            "segment_id": segment_ref.id().to_string(),
-            "postgresql_interval_seconds": postgresql_interval_seconds.map(|value| value.to_string()),
-        }))?)
-    {
+    if include_context && !sink.record(record(json!({
+        "record": "lane_context",
+        "segment_id": descriptor.id().to_string(),
+        "postgresql_interval_seconds": postgresql_interval_seconds.map(|value| value.to_string()),
+    }))?) {
         return Ok(false);
     }
     for point in points {
-        if cancelled()
-            || !emit(record(json!({
+        if sink.cancelled()
+            || !sink.record(record(json!({
                 "record": "lane",
-                "segment_id": segment_ref.id().to_string(),
+                "segment_id": descriptor.id().to_string(),
                 "lane": point.key,
                 "ts": point.ts.to_string(),
                 "value": point.value,
@@ -519,15 +503,4 @@ fn emit_lanes(
         }
     }
     Ok(true)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_operations() {
-    LANE_OPERATIONS.set(0);
-    SOURCE_PRESENCE_SCANS.set(0);
-}
-
-#[cfg(test)]
-pub(crate) fn operations() -> (usize, usize) {
-    (LANE_OPERATIONS.get(), SOURCE_PRESENCE_SCANS.get())
 }

@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
 use kronika_registry::{contract, logical_section_name};
 
-use crate::api::ApiError;
-use crate::route::Window;
+use crate::{QueryError, Window};
 
 #[cfg(test)]
 mod tests;
@@ -86,7 +85,7 @@ pub(super) fn collect(
     segment: &Segment,
     window: Window,
     state: &mut State,
-) -> Result<(Vec<LanePoint>, Option<u64>), ApiError> {
+) -> Result<(Vec<LanePoint>, Option<u64>), QueryError> {
     let mut facts = Facts::default();
     for (type_id, _rows) in segment.sections() {
         let Some(name) = logical_section_name(type_id) else {
@@ -124,7 +123,7 @@ struct Facts {
     postgresql_interval_seconds: Option<u64>,
 }
 
-fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(), ApiError> {
+fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(), QueryError> {
     let names = with_columns(
         type_id,
         &["clock_ticks_per_sec"],
@@ -150,7 +149,7 @@ fn read_cpu(
     type_id: u32,
     counters: &mut Counters,
     facts: &mut Facts,
-) -> Result<(), ApiError> {
+) -> Result<(), QueryError> {
     const FIELDS: [&str; 8] = [
         "ts", "cpu_id", "user", "nice", "system", "irq", "softirq", "steal",
     ];
@@ -189,7 +188,7 @@ fn cpu_busy_ticks(row: &Row) -> Option<i64> {
         })
 }
 
-fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), QueryError> {
     let names = with_columns(type_id, &["ts", "resource", "some_total"], &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let (Some(ts), Some(resource), Some(total)) = (
@@ -212,7 +211,7 @@ fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<
     Ok(())
 }
 
-fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), QueryError> {
     let names = with_columns(type_id, &["ts", "mem_total", "mem_available"], &[]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let (Some(ts), Some(total), Some(available)) = (
@@ -232,7 +231,7 @@ fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Resu
     Ok(())
 }
 
-fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), QueryError> {
     let names = with_columns(
         type_id,
         &["ts", "io_time_ms", "io_weighted_time_ms"],
@@ -253,7 +252,11 @@ fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result
     Ok(())
 }
 
-fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_network(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+) -> Result<(), QueryError> {
     const FIELDS: [&str; 9] = [
         "ts", "rx_bytes", "tx_bytes", "rx_drop", "tx_drop", "rx_errs", "tx_errs", "rx_fifo",
         "tx_fifo",
@@ -280,7 +283,7 @@ fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Res
     Ok(())
 }
 
-fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), QueryError> {
     let names = with_columns(type_id, &["ts"], &["pswpin", "pswpout", "oom_kill"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let Some(ts) = timestamp(&row, "ts") else {
@@ -337,7 +340,11 @@ fn activity_sample(row: &Row) -> ActivitySample {
     }
 }
 
-fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+fn read_activity(
+    segment: &Segment,
+    type_id: u32,
+    counters: &mut Counters,
+) -> Result<(), QueryError> {
     let names = with_columns(
         type_id,
         &[

@@ -2,55 +2,18 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-#[cfg(test)]
-use std::cell::Cell as OperationCounter;
-
-use kronika_reader::{Cell, Reader, Row, Segment, SegmentRef};
+use kronika_reader::{Cell, Row, Segment};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Value, json};
 
-use crate::api::ApiError;
-use crate::api::render::record;
-use crate::route::{SeriesRequest, Window};
+use crate::render::record;
+use crate::{DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, Window};
 
 pub(super) const SECTION: &str = "os_process_summary";
 
 const PROCESS: &str = "os_process";
 const ACTIVITY: &str = "pg_stat_activity";
 const DERIVED_TYPE_ID: &str = "0";
-
-#[cfg(test)]
-thread_local! {
-    static PROCESS_VISITS: OperationCounter<usize> = const { OperationCounter::new(0) };
-    static ACTIVITY_VISITS: OperationCounter<usize> = const { OperationCounter::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_operations() {
-    PROCESS_VISITS.set(0);
-    ACTIVITY_VISITS.set(0);
-}
-
-#[cfg(test)]
-pub(crate) fn operations() -> (usize, usize) {
-    (PROCESS_VISITS.get(), ACTIVITY_VISITS.get())
-}
-
-#[cfg(test)]
-fn process_visit() {
-    PROCESS_VISITS.set(PROCESS_VISITS.get() + 1);
-}
-
-#[cfg(not(test))]
-const fn process_visit() {}
-
-#[cfg(test)]
-fn activity_visit() {
-    ACTIVITY_VISITS.set(ACTIVITY_VISITS.get() + 1);
-}
-
-#[cfg(not(test))]
-const fn activity_visit() {}
 
 const PROCESS_COLUMNS: [&str; 17] = [
     "ts",
@@ -271,13 +234,13 @@ fn count_value(value: u64) -> Value {
 }
 
 pub(super) fn with_predecessors(
-    all: &[SegmentRef],
-    mut selected: Vec<SegmentRef>,
-) -> Vec<SegmentRef> {
+    all: &[DatasetSegment],
+    mut selected: Vec<DatasetSegment>,
+) -> Vec<DatasetSegment> {
     let first_process = selected
         .iter()
         .filter(|segment| has_section(segment, PROCESS))
-        .map(SegmentRef::id)
+        .map(DatasetSegment::id)
         .min();
     let Some(first_process) = first_process else {
         return selected;
@@ -291,45 +254,44 @@ pub(super) fn with_predecessors(
             selected.push(previous.clone());
         }
     }
-    selected.sort_by_key(SegmentRef::id);
+    selected.sort_by_key(DatasetSegment::id);
     selected.dedup_by_key(|segment| segment.id());
     selected
 }
 
-fn has_section(segment: &SegmentRef, logical_name: &str) -> bool {
+fn has_section(segment: &DatasetSegment, logical_name: &str) -> bool {
     segment.sections().iter().any(|section| {
         logical_section_name(section.type_id).is_some_and(|name| name == logical_name)
     })
 }
 
 pub(super) fn stream(
-    reader: &Reader,
-    segments: &[SegmentRef],
+    dataset: &dyn QueryDataset,
+    segments: &[DatasetSegment],
     window: Window,
-    request: &SeriesRequest,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
+    request: &HourSeriesRequest,
+    sink: &mut dyn QuerySink,
+) -> Result<(), QueryError> {
     let fields = selected_fields(request)?;
     let mut opened = Vec::with_capacity(segments.len());
     for segment in segments {
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(());
         }
-        opened.push(reader.open_segment(segment)?);
+        opened.push(dataset.open(segment)?);
     }
-    let activities = activity_pids(&opened, cancelled)?;
-    let moments = process_moments(&opened, cancelled)?;
-    let summaries = summaries(&opened, &moments, &activities, cancelled)?;
-    emit_summaries(&summaries, window, &fields, emit, cancelled)
+    let activities = activity_pids(&opened, sink)?;
+    let moments = process_moments(&opened, sink)?;
+    let summaries = summaries(&opened, &moments, &activities, sink)?;
+    emit_summaries(&summaries, window, &fields, sink)
 }
 
-fn selected_fields(request: &SeriesRequest) -> Result<Vec<FieldSpec>, ApiError> {
+fn selected_fields(request: &HourSeriesRequest) -> Result<Vec<FieldSpec>, QueryError> {
     if let Some(filter) = request.filters.first() {
-        return Err(ApiError::BadFilter(filter.column.clone()));
+        return Err(QueryError::BadFilter(filter.column.clone()));
     }
     if request.type_id.is_some() {
-        return Err(ApiError::BadFilter("type_id".to_owned()));
+        return Err(QueryError::BadFilter("type_id".to_owned()));
     }
     if request.fields.is_empty() {
         return Ok(FIELDS.to_vec());
@@ -342,15 +304,15 @@ fn selected_fields(request: &SeriesRequest) -> Result<Vec<FieldSpec>, ApiError> 
                 .iter()
                 .find(|field| field.name == name)
                 .copied()
-                .ok_or_else(|| ApiError::NoSuchColumn(name.clone()))
+                .ok_or_else(|| QueryError::NoSuchColumn(name.clone()))
         })
         .collect()
 }
 
 fn activity_pids(
     segments: &[Segment],
-    cancelled: &impl Fn() -> bool,
-) -> Result<BTreeMap<i64, BTreeSet<i32>>, ApiError> {
+    sink: &dyn QuerySink,
+) -> Result<BTreeMap<i64, BTreeSet<i32>>, QueryError> {
     let mut snapshots = BTreeMap::<i64, BTreeSet<i32>>::new();
     for segment in segments {
         for (type_id, _rows) in segment.sections() {
@@ -359,9 +321,8 @@ fn activity_pids(
             }
             let fields = existing_columns(type_id, &["ts", "pid"]);
             let mut connected = true;
-            activity_visit();
             segment.visit_rows(type_id, &fields, 0, usize::MAX, |_ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     connected = false;
                     return false;
                 }
@@ -379,10 +340,7 @@ fn activity_pids(
     Ok(snapshots)
 }
 
-fn process_moments(
-    segments: &[Segment],
-    cancelled: &impl Fn() -> bool,
-) -> Result<MomentIndex, ApiError> {
+fn process_moments(segments: &[Segment], sink: &dyn QuerySink) -> Result<MomentIndex, QueryError> {
     let mut moments = BTreeMap::<i64, i64>::new();
     let mut last_by_segment = HashMap::new();
     for segment in segments {
@@ -392,9 +350,8 @@ fn process_moments(
             }
             let fields = existing_columns(type_id, &["ts"]);
             let mut connected = true;
-            process_visit();
             segment.visit_rows(type_id, &fields, 0, usize::MAX, |_ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     connected = false;
                     return false;
                 }
@@ -436,8 +393,8 @@ fn summaries(
     segments: &[Segment],
     moments: &MomentIndex,
     activities: &BTreeMap<i64, BTreeSet<i32>>,
-    cancelled: &impl Fn() -> bool,
-) -> Result<BTreeMap<i64, Summary>, ApiError> {
+    sink: &dyn QuerySink,
+) -> Result<BTreeMap<i64, Summary>, QueryError> {
     let mut out = BTreeMap::<i64, Summary>::new();
     let mut previous = HashMap::<i32, Previous>::new();
     for segment in segments {
@@ -459,9 +416,8 @@ fn summaries(
                     .collect::<Vec<_>>(),
             );
             let mut connected = true;
-            process_visit();
             segment.visit_rows(type_id, &fields, 0, usize::MAX, |_ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     connected = false;
                     return false;
                 }
@@ -515,7 +471,7 @@ fn summaries(
     Ok(out)
 }
 
-fn ticks_per_second(segment: &Segment) -> Result<Option<f64>, ApiError> {
+fn ticks_per_second(segment: &Segment) -> Result<Option<f64>, QueryError> {
     let mut stored = None;
     for (type_id, _rows) in segment.sections() {
         if logical_section_name(type_id) != Some("instance_metadata") {
@@ -681,26 +637,25 @@ fn emit_summaries(
     summaries: &BTreeMap<i64, Summary>,
     window: Window,
     fields: &[FieldSpec],
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<(), QueryError> {
     let mut segment_id = None;
     let mut ordinal = 0_u64;
     for (ts, summary) in summaries {
         if !inside(*ts, window) {
             continue;
         }
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(());
         }
         if segment_id != Some(summary.segment_id) {
             segment_id = Some(summary.segment_id);
             ordinal = 0;
-            if !emit(record(json!({
+            if !sink.record(record(json!({
                 "record": "series_segment",
                 "segment": { "id": summary.segment_id.to_string() },
             }))?)
-                || !emit(record(json!({
+                || !sink.record(record(json!({
                     "record": "layout",
                     "layout": layout(fields),
                 }))?)
@@ -708,7 +663,7 @@ fn emit_summaries(
                 return Ok(());
             }
         }
-        if !emit(record(json!({
+        if !sink.record(record(json!({
             "record": "row",
             "type_id": DERIVED_TYPE_ID,
             "ordinal": ordinal.to_string(),

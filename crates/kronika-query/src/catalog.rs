@@ -73,6 +73,8 @@ pub(crate) struct PreparedCatalog {
     window: Window,
     configured_sources: u32,
     synthetic_demo: bool,
+    present_sources: Option<u32>,
+    metric_sources: Option<u32>,
 }
 
 impl PreparedCatalog {
@@ -92,24 +94,54 @@ impl PreparedCatalog {
             window: request.window,
             configured_sources,
             synthetic_demo,
+            present_sources: None,
+            metric_sources: None,
         })
     }
 
+    pub(crate) const fn from_listing(
+        listing: DatasetListing,
+        window: Window,
+        configured_sources: u32,
+        synthetic_demo: bool,
+    ) -> Self {
+        Self {
+            listing,
+            window,
+            configured_sources,
+            synthetic_demo,
+            present_sources: None,
+            metric_sources: None,
+        }
+    }
+
+    pub(crate) const fn with_present_sources(
+        mut self,
+        present_sources: u32,
+        metric_sources: u32,
+    ) -> Self {
+        self.present_sources = Some(present_sources);
+        self.metric_sources = Some(metric_sources);
+        self
+    }
+
     pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
-        let present_sources = self
-            .listing
-            .segments
-            .iter()
-            .flat_map(DatasetSegment::sections)
-            .filter_map(|section| source_bit(section.type_id))
-            .fold(0_u32, |present, bit| present | bit);
-        let metric_sources = self
-            .listing
-            .segments
-            .iter()
-            .flat_map(DatasetSegment::sections)
-            .filter_map(|section| metric_source_bit(section.type_id))
-            .fold(0_u32, |present, bit| present | bit);
+        let present_sources = self.present_sources.unwrap_or_else(|| {
+            self.listing
+                .segments
+                .iter()
+                .flat_map(DatasetSegment::sections)
+                .filter_map(|section| source_bit(section.type_id))
+                .fold(0_u32, |present, bit| present | bit)
+        });
+        let metric_sources = self.metric_sources.unwrap_or_else(|| {
+            self.listing
+                .segments
+                .iter()
+                .flat_map(DatasetSegment::sections)
+                .filter_map(|section| metric_source_bit(section.type_id))
+                .fold(0_u32, |present, bit| present | bit)
+        });
         if sink.cancelled()
             || !sink.record(record(json!({
                 "record": "catalog",
@@ -284,7 +316,7 @@ fn source_family_values(configured: u32, present: u32, metrics: u32) -> Vec<Valu
         .collect()
 }
 
-const fn source_bit(type_id: u32) -> Option<u32> {
+pub(crate) const fn source_bit(type_id: u32) -> Option<u32> {
     match type_id {
         1_001_001..=1_019_999 | 2_001_001..=2_199_999 => Some(SOURCE_POSTGRESQL),
         1_100_001..=1_299_999 => Some(SOURCE_OS),
@@ -292,7 +324,7 @@ const fn source_bit(type_id: u32) -> Option<u32> {
     }
 }
 
-fn metric_source_bit(type_id: u32) -> Option<u32> {
+pub(crate) fn metric_source_bit(type_id: u32) -> Option<u32> {
     let bit = source_bit(type_id)?;
     let is_log = logical_section_name(type_id).is_some_and(|name| name.starts_with("pg_log_"));
     (!is_log).then_some(bit)

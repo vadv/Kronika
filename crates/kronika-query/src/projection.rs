@@ -1,6 +1,6 @@
 //! Per-layout projection, typed equality filters, and chunk dictionaries.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, hash_map::RandomState};
 
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, StrId};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
@@ -52,6 +52,10 @@ enum TypedFilter {
 }
 
 /// Build compatible per-physical-layout plans without merging identities.
+///
+/// # Errors
+///
+/// Returns a query error when the requested section, projection, or filters are invalid.
 pub fn plans(
     segment: &Segment,
     request: &DataRequest,
@@ -201,8 +205,10 @@ fn validate_filter_names(
     Ok(())
 }
 
-/// Resolve only dictionary ids retained in one bounded physical-row chunk.
-pub fn chunk_dictionary(segment: &Segment, rows: &[(u64, Row)]) -> Result<Dictionary, QueryError> {
+pub(crate) fn chunk_dictionary(
+    segment: &Segment,
+    rows: &[(u64, Row)],
+) -> Result<Dictionary, QueryError> {
     let (dictionary, ids) = dictionary_for_chunk(segment, rows)?;
     if let Some(unresolved) = ids
         .iter()
@@ -214,8 +220,7 @@ pub fn chunk_dictionary(segment: &Segment, rows: &[(u64, Row)]) -> Result<Dictio
     Ok(dictionary)
 }
 
-/// Load dictionary entries referenced by one bounded streaming chunk.
-pub fn streaming_chunk_dictionary(
+pub(crate) fn streaming_chunk_dictionary(
     segment: &Segment,
     rows: &[(u64, Row)],
 ) -> Result<Dictionary, QueryError> {
@@ -239,9 +244,13 @@ fn dictionary_for_chunk(
 }
 
 /// Resolve an exact set of dictionary identities and reject missing entries.
+///
+/// # Errors
+///
+/// Returns a query error when the dictionary cannot be read or an identity is unresolved.
 pub fn resolved_dictionary(
     segment: &Segment,
-    ids: &HashSet<u64>,
+    ids: &HashSet<u64, RandomState>,
 ) -> Result<Dictionary, QueryError> {
     let dictionary = segment.dictionary_for(ids)?;
     if let Some(unresolved) = ids
@@ -261,8 +270,10 @@ fn unresolved_dictionary(id: u64) -> QueryError {
     )))
 }
 
-/// Reject a row carrying a dictionary identity absent from the loaded dictionary.
-pub fn validate_row_dictionary(row: &Row, dictionary: &Dictionary) -> Result<(), QueryError> {
+pub(crate) fn validate_row_dictionary(
+    row: &Row,
+    dictionary: &Dictionary,
+) -> Result<(), QueryError> {
     if let Some(unresolved) = row.iter().find_map(|(_name, cell)| match cell {
         Cell::StrId(id) if dictionary.resolve(*id).is_none() => Some(*id),
         _ => None,
@@ -290,6 +301,10 @@ impl Plan {
     }
 
     /// Resolve dictionary entries needed only for exact filter matching.
+    ///
+    /// # Errors
+    ///
+    /// Returns a query error when the dictionary cannot be read or an identity is unresolved.
     pub fn selection_dictionary(
         &self,
         segment: &Segment,
@@ -303,6 +318,10 @@ impl Plan {
     }
 
     /// Load dictionary entries addressed directly by typed string filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a query error when the dictionary cannot be read.
     pub fn exact_filter_dictionary(&self, segment: &Segment) -> Result<Dictionary, QueryError> {
         let ids = self
             .filters
@@ -316,6 +335,10 @@ impl Plan {
     }
 
     /// Reject a selected string identity that was not present in the dictionary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a query error when a selected identity is unresolved.
     pub fn validate_exact_filter_ids(
         &self,
         row: &Row,

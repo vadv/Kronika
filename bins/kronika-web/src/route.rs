@@ -117,12 +117,6 @@ pub(crate) struct Window {
     pub(crate) to: Option<i64>,
 }
 
-impl Window {
-    pub(crate) fn contains(self, timestamp: i64) -> bool {
-        self.from.is_none_or(|from| timestamp >= from) && self.to.is_none_or(|to| timestamp <= to)
-    }
-}
-
 /// One logical section in one explicit segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SegmentRequest {

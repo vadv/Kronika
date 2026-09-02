@@ -12,14 +12,18 @@ use kronika_format::DictLimits;
 use kronika_index as _;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_query::{
-    CatalogRequest, EventsQuery, EventsRepresentation, EventsResult, FinishedDataset,
-    HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, NormalizedRanking,
-    QueryContext, QueryDataset, QueryRequest, QuerySink, RowDetailResult, TimeRange, execute,
-    execute_events, execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
+    CatalogRequest, EventsQuery, EventsRepresentation, EventsResult, Filter, FinishedDataset,
+    HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, HourPart, HourRequest,
+    HourSeriesRequest, NormalizedRanking, QueryContext, QueryDataset, QueryRequest, QuerySink,
+    RelationGroup, RowDetailResult, TimeRange, Window, execute, execute_events,
+    execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
 };
 use kronika_reader as _;
+use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cpu::OsCpu;
+use kronika_registry::os_process::OsProcess;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
+use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::{StrId, Ts};
 use kronika_store::{EmbeddedSource, PosixSource};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -84,6 +88,44 @@ fn heatmap_bytes(dataset: Arc<dyn QueryDataset>) -> Vec<u8> {
         .stream(&mut records)
         .expect("stream heatmap query");
     records.0
+}
+
+fn hour_bytes(dataset: Arc<dyn QueryDataset>, request: HourRequest) -> Vec<u8> {
+    let context = QueryContext::new(dataset, 0b11, false);
+    let execution = execute(&context, QueryRequest::Hour(request)).expect("prepare hour query");
+    let mut records = Records::default();
+    execution.stream(&mut records).expect("stream hour query");
+    records.0
+}
+
+fn series_hour_request(
+    window: Window,
+    section: &str,
+    fields: Vec<String>,
+    filters: Vec<Filter>,
+    group: Option<RelationGroup>,
+) -> HourRequest {
+    HourRequest {
+        window,
+        series: Some(HourSeriesRequest {
+            section: section.to_owned(),
+            fields,
+            filters,
+            type_id: None,
+            group,
+        }),
+        part: HourPart::Combined,
+        segments: None,
+        active: None,
+    }
+}
+
+fn ndjson(bytes: &[u8]) -> Vec<serde_json::Value> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|record| !record.is_empty())
+        .map(|record| serde_json::from_slice(record).expect("NDJSON record"))
+        .collect()
 }
 
 fn ranking_only_query() -> HeatmapBatchQuery {
@@ -154,6 +196,106 @@ fn finished_path(root: &Path, segment_id: SegmentId) -> std::path::PathBuf {
         .join(address.zms_name())
 }
 
+const fn parity_process(timestamp: i64, label: StrId) -> OsProcess {
+    OsProcess {
+        ts: Ts(timestamp),
+        pid: 41,
+        starttime: Ts(SEGMENT_ID - 1_000_000),
+        ppid: 1,
+        uid: 1_000,
+        euid: 1_000,
+        gid: 1_000,
+        egid: 1_000,
+        state: b'R',
+        num_threads: 1,
+        tty: 0,
+        comm: label,
+        cmdline: Some(label),
+        utime: 0,
+        stime: 0,
+        nice: 0,
+        prio: 20,
+        rtprio: 0,
+        policy: 0,
+        curcpu: 0,
+        rundelay_ns: 0,
+        blkdelay_ticks: 0,
+        nvcsw: 0,
+        nivcsw: 0,
+        minflt: 0,
+        majflt: 0,
+        vmem_kb: 1_024,
+        rmem_kb: 512,
+        vswap_kb: 0,
+        syscr: Some(0),
+        syscw: Some(0),
+        rchar: Some(0),
+        wchar: Some(0),
+        read_bytes: Some(0),
+        write_bytes: Some(0),
+        cancelled_write_bytes: Some(0),
+        exit_signal: 17,
+        scope: 0,
+    }
+}
+
+const fn parity_table(
+    timestamp: i64,
+    database: StrId,
+    schema: StrId,
+    table: StrId,
+) -> PgStatUserTablesV1 {
+    PgStatUserTablesV1 {
+        ts: Ts(timestamp),
+        datid: 1,
+        datname: database,
+        relid: 11,
+        schemaname: schema,
+        relname: table,
+        tablespace_oid: None,
+        tablespace: None,
+        seq_scan: 10,
+        seq_tup_read: 0,
+        idx_scan: None,
+        idx_tup_fetch: None,
+        n_tup_ins: 0,
+        n_tup_upd: 0,
+        n_tup_del: 0,
+        n_tup_hot_upd: 0,
+        n_live_tup: 0,
+        n_dead_tup: 0,
+        n_mod_since_analyze: 0,
+        vacuum_count: 0,
+        autovacuum_count: 0,
+        analyze_count: 0,
+        autoanalyze_count: 0,
+        last_vacuum: None,
+        last_autovacuum: None,
+        last_analyze: None,
+        last_autoanalyze: None,
+        main_fork_bytes: 0,
+        toast_bytes: None,
+        toast_n_live_tup: None,
+        toast_n_dead_tup: None,
+        toast_last_autovacuum: None,
+        xid_age: None,
+        mxid_age: None,
+        reltuples: 0,
+        heap_blks_read: 0,
+        heap_blks_hit: 0,
+        idx_blks_read: None,
+        idx_blks_hit: None,
+        toast_blks_read: None,
+        toast_blks_hit: None,
+        tidx_blks_read: None,
+        tidx_blks_hit: None,
+    }
+}
+
+fn fixture_label(interner: &mut Interner, value: &[u8]) -> StrId {
+    StrId(interner.intern(value).expect("intern fixture label").get())
+}
+
 fn write_heatmap_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
     let data_root = DataRoot::open(root).expect("open heatmap data root");
     let owner = data_root
@@ -161,7 +303,27 @@ fn write_heatmap_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
         .expect("acquire heatmap writer");
     let mut journal =
         Journal::open(&owner, JournalConfig::default()).expect("open heatmap journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let label = fixture_label(&mut interner, b"parity");
+    let database = fixture_label(&mut interner, b"parity_database");
+    let schema = fixture_label(&mut interner, b"parity_schema");
+    let table = fixture_label(&mut interner, b"parity_table");
     let mut buffers = SectionBuffers::new();
+    buffers
+        .push(InstanceMetadata {
+            ts: Ts(HEATMAP_FROM),
+            hostname: label,
+            kernel_version: label,
+            environment: 0,
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4_096,
+            boot_id: label,
+            btime: Ts(1),
+            postgresql_enabled: false,
+            postgresql_interval_seconds: 30,
+            postgresql_effective_cpus: None,
+        })
+        .expect("metadata row fits");
     for (timestamp, aggregate, first, second) in [(HEATMAP_FROM, 0, 0, 0), (HEATMAP_TO, 30, 10, 20)]
     {
         for (cpu_id, user) in [(-1, aggregate), (0, first), (1, second)] {
@@ -184,8 +346,27 @@ fn write_heatmap_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
                 .expect("CPU row fits");
         }
     }
+    let process = parity_process(HEATMAP_FROM, label);
+    buffers.push(process).expect("base process row fits");
+    buffers
+        .push(OsProcess {
+            ts: Ts(HEATMAP_TO),
+            utime: 100,
+            ..process
+        })
+        .expect("current process row fits");
+    let relation = parity_table(HEATMAP_FROM, database, schema, table);
+    buffers.push(relation).expect("base relation row fits");
+    buffers
+        .push(PgStatUserTablesV1 {
+            ts: Ts(HEATMAP_TO),
+            seq_scan: 20,
+            ..relation
+        })
+        .expect("current relation row fits");
+    let dictionary = dict::encode(interner.window()).expect("encode parity dictionary");
     let part = buffers
-        .flush(&[])
+        .flush(&dictionary)
         .expect("encode heatmap rows")
         .expect("nonempty heatmap rows");
     journal
@@ -394,6 +575,100 @@ fn heatmap_query_is_byte_identical_for_posix_and_embedded_finished_zms() {
     assert_eq!(posix_error.code(), embedded_error.code());
     assert_eq!(posix_error.parameter(), embedded_error.parameter());
     assert_eq!(posix_error.to_string(), embedded_error.to_string());
+}
+
+#[test]
+fn hour_products_are_byte_identical_for_posix_and_embedded_finished_zms() {
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
+    let directory = tempfile::tempdir().expect("temporary POSIX root");
+    let payload = write_heatmap_fixture(directory.path(), segment_id);
+    let window = Window {
+        from: Some(HEATMAP_FROM),
+        to: Some(HEATMAP_TO),
+    };
+    let requests = [
+        series_hour_request(window, "os_cpu", vec!["user".to_owned()], Vec::new(), None),
+        HourRequest {
+            window,
+            series: None,
+            part: HourPart::Lanes,
+            segments: Some(vec![SEGMENT_ID]),
+            active: None,
+        },
+        series_hour_request(
+            window,
+            "os_process_summary",
+            vec!["user_cores".to_owned()],
+            Vec::new(),
+            None,
+        ),
+        series_hour_request(window, "postgresql_summary", Vec::new(), Vec::new(), None),
+        series_hour_request(
+            window,
+            "pg_stat_user_tables",
+            vec!["seq_scan".to_owned()],
+            vec![Filter {
+                column: "datid".to_owned(),
+                value: "1".to_owned(),
+            }],
+            Some(RelationGroup::Database),
+        ),
+    ];
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix.clone()));
+
+    let embedded = EmbeddedSource::from_shared(
+        segment_id,
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("payload length fits u64"),
+    )
+    .expect("embedded source");
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded.clone()));
+
+    let mut outputs = Vec::new();
+    for request in requests {
+        let posix_bytes = hour_bytes(Arc::clone(&posix_dataset), request.clone());
+        let embedded_bytes = hour_bytes(Arc::clone(&embedded_dataset), request);
+        assert_eq!(posix_bytes, embedded_bytes);
+        outputs.push(embedded_bytes);
+    }
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+
+    assert!(
+        outputs[0]
+            .windows(b"\"record\":\"row\"".len())
+            .any(|bytes| { bytes == b"\"record\":\"row\"" })
+    );
+    assert!(
+        outputs[1]
+            .windows(b"\"lane\":\"cpu_busy\"".len())
+            .any(|bytes| { bytes == b"\"lane\":\"cpu_busy\"" })
+    );
+    let end = HEATMAP_TO.to_string();
+    let process = ndjson(&outputs[2]);
+    assert!(process.iter().any(|record| {
+        record["record"] == "row"
+            && record["timestamp"].as_str() == Some(end.as_str())
+            && record["values"][0].as_f64() == Some(1.0)
+    }));
+    let postgresql = ndjson(&outputs[3]);
+    assert!(postgresql.iter().any(|record| {
+        record["record"] == "row"
+            && record["values"][0] == 4
+            && record["values"][9].as_f64() == Some(100.0)
+    }));
+    let relation = ndjson(&outputs[4]);
+    assert!(relation.iter().any(|record| {
+        record["record"] == "relation"
+            && record["sample_to"].as_str() == Some(end.as_str())
+            && record["values"]["seq_scan"].as_f64() == Some(10.0)
+    }));
 }
 
 #[test]

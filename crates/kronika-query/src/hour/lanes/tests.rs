@@ -7,7 +7,7 @@ use super::{
     ActivitySample, Counters, activity_sample, counter_sum, cpu_busy_ticks, current_points, points,
     rate, record_activity_sample,
 };
-use crate::route::Window;
+use crate::Window;
 
 #[test]
 fn counter_points_keep_unusable_subtractions_as_null_and_zero_as_data() {

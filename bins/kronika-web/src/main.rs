@@ -726,7 +726,6 @@ fn largest_database(root: &std::path::Path) -> Option<String> {
 }
 
 fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiError> {
-    use crate::api::snapshot::relation::Metric;
     let Some((segment_id, at)) = mcp::current_segment(root, "pg_stat_user_tables")? else {
         return Ok(None);
     };
@@ -755,10 +754,7 @@ fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiErr
         .rows
         .into_iter()
         .next()
-        .and_then(|row| match row.key.metric("datname") {
-            Some(Metric::Text(name)) => Some(name),
-            _ => None,
-        }))
+        .and_then(|row| row.key.text("datname").map(str::to_owned)))
 }
 
 fn json_response(status: StatusCode, body: String) -> Response<WebBody> {

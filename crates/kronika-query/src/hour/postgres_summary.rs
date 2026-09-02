@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
-use kronika_reader::{Reader, Row, Segment, SegmentRef};
+use kronika_reader::{Row, Segment};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Value, json};
 
-use super::super::{ApiError, render::record};
-use crate::route::{SeriesRequest, Window};
+use crate::render::record;
+use crate::{DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, Window};
 
 mod facts;
 #[cfg(test)]
@@ -24,7 +24,7 @@ const SOURCES: [&str; 5] = [
 
 struct Point(i64, i64, u8, [Option<f64>; 17]);
 
-pub(super) fn validate(request: &SeriesRequest) -> Result<(), ApiError> {
+pub(super) fn validate(request: &HourSeriesRequest) -> Result<(), QueryError> {
     let parameter = request
         .filters
         .first()
@@ -34,18 +34,21 @@ pub(super) fn validate(request: &SeriesRequest) -> Result<(), ApiError> {
         .or_else(|| (!request.fields.is_empty()).then_some("field"));
     parameter.map_or_else(
         || Ok(()),
-        |parameter| Err(ApiError::BadFilter(parameter.to_owned())),
+        |parameter| Err(QueryError::BadFilter(parameter.to_owned())),
     )
 }
 
-pub(super) fn with_previous(all: &[SegmentRef], mut selected: Vec<SegmentRef>) -> Vec<SegmentRef> {
+pub(super) fn with_previous(
+    all: &[DatasetSegment],
+    mut selected: Vec<DatasetSegment>,
+) -> Vec<DatasetSegment> {
     let selected_len = selected.len();
-    selected.sort_by_key(SegmentRef::id);
+    selected.sort_by_key(DatasetSegment::id);
     for source in SOURCES {
         let first = selected[..selected_len]
             .iter()
             .find(|segment| has_section(segment, source))
-            .map(SegmentRef::id);
+            .map(DatasetSegment::id);
         if let Some(first) = first
             && let Some(previous) = all
                 .iter()
@@ -56,12 +59,12 @@ pub(super) fn with_previous(all: &[SegmentRef], mut selected: Vec<SegmentRef>) -
             selected.push(previous.clone());
         }
     }
-    selected.sort_by_key(SegmentRef::id);
+    selected.sort_by_key(DatasetSegment::id);
     selected.dedup_by_key(|segment| segment.id());
     selected
 }
 
-fn has_section(segment: &SegmentRef, name: &str) -> bool {
+fn has_section(segment: &DatasetSegment, name: &str) -> bool {
     segment
         .sections()
         .iter()
@@ -69,32 +72,31 @@ fn has_section(segment: &SegmentRef, name: &str) -> bool {
 }
 
 pub(super) fn stream(
-    reader: &Reader,
-    segments: &[SegmentRef],
+    dataset: &dyn QueryDataset,
+    segments: &[DatasetSegment],
     window: Window,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<(), QueryError> {
     let mut opened = Vec::with_capacity(segments.len());
     for segment in segments {
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(());
         }
-        opened.push(reader.open_segment(segment)?);
+        opened.push(dataset.open(segment)?);
     }
     let mut points = Vec::new();
     for surface in 1..=5 {
-        points.extend(surface_points(&opened, surface, cancelled)?);
+        points.extend(surface_points(&opened, surface, sink)?);
     }
     points.sort_by_key(|point| (point.1, point.2));
-    emit_points(&points, window, emit, cancelled)
+    emit_points(&points, window, sink)
 }
 
 fn surface_points(
     segments: &[Segment],
     surface: u8,
-    cancelled: &impl Fn() -> bool,
-) -> Result<Vec<Point>, ApiError> {
+    sink: &dyn QuerySink,
+) -> Result<Vec<Point>, QueryError> {
     let source = SOURCES[usize::from(surface - 1)];
     let mut previous = HashMap::<Vec<i128>, (i64, Previous)>::new();
     let mut moments = BTreeMap::<(i64, i128), (i64, Summary)>::new();
@@ -116,7 +118,7 @@ fn surface_points(
             columns.sort_unstable();
             columns.dedup();
             segment.visit_rows(type_id, &columns, 0, usize::MAX, |_ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     return false;
                 }
                 let Some(timestamp) = integer(row.get("ts")).and_then(|ts| i64::try_from(ts).ok())
@@ -190,31 +192,30 @@ fn identity(type_id: u32, row: &Row) -> Vec<i128> {
 fn emit_points(
     points: &[Point],
     window: Window,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<(), QueryError> {
     let mut segment = None;
     let mut ordinal = 0_u64;
     for point in points {
         if !window.contains(point.1) {
             continue;
         }
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(());
         }
         if segment != Some(point.0) {
             segment = Some(point.0);
             ordinal = 0;
-            if !emit(record(json!({
+            if !sink.record(record(json!({
                 "record": "series_segment",
                 "segment": { "id": point.0.to_string() },
             }))?)
-                || !emit(record(json!({ "record": "layout", "layout": layout() }))?)
+                || !sink.record(record(json!({ "record": "layout", "layout": layout() }))?)
             {
                 return Ok(());
             }
         }
-        if !emit(record(json!({
+        if !sink.record(record(json!({
             "record": "row",
             "type_id": "0",
             "ordinal": ordinal.to_string(),

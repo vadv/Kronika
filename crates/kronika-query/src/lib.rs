@@ -10,6 +10,7 @@ mod events;
 mod finished_dataset;
 mod heatmap;
 mod history;
+mod hour;
 mod index;
 mod index_provider;
 mod projection;
@@ -38,14 +39,15 @@ pub use heatmap::{
     HeatmapItemQuery, HeatmapItemResult, HeatmapView, MAX_FIELDS, MAX_TOP, NamedValues,
     NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch, validate_heatmap_request,
 };
-pub use index_provider::{IndexProvider, IndexResource};
-pub use projection::{
-    OutputField, Plan, chunk_dictionary, plans, resolved_dictionary, streaming_chunk_dictionary,
-    validate_row_dictionary,
+pub use hour::{
+    GroupKey, Metric, RelationAggregate, RelationField, RelationKind, RelationSource,
+    index_scan_rate_is_zero, key_fields, output_fields,
 };
+pub use index_provider::{IndexProvider, IndexResource};
+pub use projection::{OutputField, Plan, plans, resolved_dictionary};
 pub use request::{
-    ActiveCursor, CatalogRequest, DataRequest, Filter, IndexRequest, Order, QueryRequest,
-    RowsRequest, SegmentRequest, Window,
+    ActiveCursor, CatalogRequest, DataRequest, Filter, HourPart, HourRequest, HourSeriesRequest,
+    IndexRequest, Order, QueryRequest, RelationGroup, RowsRequest, SegmentRequest, Window,
 };
 pub use row_detail::{
     PreparedRowDetail, RowDetailResult, ValidatedRowDetailQuery, execute_row_detail,
@@ -60,6 +62,7 @@ pub use time::TimeRange;
 use catalog::PreparedCatalog;
 use events::PreparedEvents;
 use history::PreparedHistory;
+use hour::PreparedHour;
 use rows::PreparedRows;
 
 /// Source-family bit for recorded operating-system data.
@@ -194,6 +197,7 @@ enum Prepared {
     Heatmap(heatmap::PreparedHeatmap),
     Index(index::PreparedIndex),
     History(PreparedHistory),
+    Hour(PreparedHour),
     Rows(PreparedRows),
     Events(PreparedEvents),
     RowDetail(PreparedRowDetail),
@@ -232,6 +236,16 @@ impl QueryExecution {
                 stability: prepared.stability(),
                 identity: None,
             },
+            Prepared::Hour(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: prepared
+                    .validator_input()
+                    .map(|(resource, shape, segments)| QueryIdentity::SegmentSet {
+                        resource,
+                        shape,
+                        segments,
+                    }),
+            },
             Prepared::Rows(prepared) => QueryMetadata {
                 stability: prepared.stability(),
                 identity: None,
@@ -264,6 +278,7 @@ impl QueryExecution {
             Prepared::Heatmap(prepared) => prepared.stream(sink),
             Prepared::Index(prepared) => prepared.stream(sink),
             Prepared::History(prepared) => prepared.stream(sink),
+            Prepared::Hour(prepared) => prepared.stream(sink),
             Prepared::Rows(prepared) => prepared.stream(sink),
             Prepared::Events(prepared) => prepared.stream(sink),
             Prepared::RowDetail(prepared) => prepared.stream(sink),
@@ -299,6 +314,13 @@ pub fn execute(
         QueryRequest::History(request) => {
             Prepared::History(history::prepare(context.dataset.as_ref(), request)?)
         }
+        QueryRequest::Hour(request) => Prepared::Hour(hour::prepare(
+            std::sync::Arc::clone(&context.dataset),
+            context.indexes.clone(),
+            request,
+            context.configured_sources,
+            context.synthetic_demo,
+        )?),
         QueryRequest::Rows(request) => {
             Prepared::Rows(rows::prepare(context.dataset.as_ref(), request)?)
         }

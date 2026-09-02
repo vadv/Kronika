@@ -60,6 +60,73 @@ pub struct ActiveCursor {
     pub wal_position: u64,
 }
 
+/// One hour response assembled from a captured segment set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HourRequest {
+    /// Inclusive recorded-time filter.
+    pub window: Window,
+    /// Optional full-resolution or derived series selection.
+    pub series: Option<HourSeriesRequest>,
+    /// Base/index and lane composition.
+    pub part: HourPart,
+    /// Exact segment identities pinned by a follow-up lane request.
+    pub segments: Option<Vec<i64>>,
+    /// Committed active prefix pinned by a follow-up lane request.
+    pub active: Option<ActiveCursor>,
+}
+
+/// Portion of an hour response requested by the native route.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HourPart {
+    /// Catalog, indexes, and reduced lanes.
+    #[default]
+    Combined,
+    /// Catalog and indexes only.
+    Base,
+    /// Reduced lanes only, pinned to a prior base response.
+    Lanes,
+}
+
+/// One full-resolution or derived series inside an hour.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HourSeriesRequest {
+    /// Registry logical-section name or stable derived-section name.
+    pub section: String,
+    /// Output fields in caller order.
+    pub fields: Vec<String>,
+    /// Typed equality predicates.
+    pub filters: Vec<Filter>,
+    /// Optional exact physical layout.
+    pub type_id: Option<u32>,
+    /// Optional relation aggregation level.
+    pub group: Option<RelationGroup>,
+}
+
+impl std::fmt::Debug for HourSeriesRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeriesRequest")
+            .field("section", &self.section)
+            .field("fields", &self.fields)
+            .field("filters", &self.filters)
+            .field("type_id", &self.type_id)
+            .field("group", &self.group)
+            .finish()
+    }
+}
+
+/// Aggregation level for recorded relation products.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationGroup {
+    /// One aggregate per database.
+    Database,
+    /// One aggregate per schema.
+    Schema,
+    /// One aggregate per tablespace.
+    Tablespace,
+    /// One aggregate per relation object.
+    Object,
+}
+
 /// Projection and predicates shared by history and row pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataRequest {
@@ -109,6 +176,8 @@ pub enum QueryRequest {
     Index(IndexRequest),
     /// Full-resolution rows from one exact segment.
     History(DataRequest),
+    /// One composed timeline hour.
+    Hour(HourRequest),
     /// One stable bounded page from one exact segment.
     Rows(RowsRequest),
     /// Recorded event groups or physical occurrences over one window.

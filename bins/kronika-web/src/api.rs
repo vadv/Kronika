@@ -13,27 +13,16 @@ use sha2::{Digest as _, Sha256};
 use crate::encoding::etag_matches;
 use crate::route::Route;
 
-pub(crate) mod catalog;
-pub(crate) mod history;
-mod hour;
-pub(crate) mod index;
 mod query;
 mod render;
 pub(crate) mod snapshot;
 pub(crate) mod time;
 
 #[cfg(test)]
-pub(crate) use hour::process_summary::{
-    operations as process_summary_operations, reset_operations as reset_process_summary_operations,
-};
-#[cfg(test)]
-pub(crate) use hour::{operations as hour_operations, reset_operations as reset_hour_operations};
-#[cfg(test)]
 pub(crate) use snapshot::{
-    context_operations, first_match_rows, history_operations, page_operations,
-    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
-    reset_history_operations, reset_page_operations, reset_relation_snapshot_operations,
-    tablespace_moment_visits,
+    context_operations, first_match_rows, page_operations, relation_snapshot_operations,
+    reset_context_operations, reset_first_match_rows, reset_page_operations,
+    reset_relation_snapshot_operations,
 };
 
 /// Cache policy applied centrally after preparation.
@@ -77,7 +66,6 @@ impl ResponseMeta {
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
     Query(PreparedQuery),
-    Hour(hour::PreparedHour),
     Snapshot(snapshot::PreparedSnapshot),
     Empty(ResponseMeta),
 }
@@ -92,7 +80,6 @@ impl Prepared {
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
             Self::Query(prepared) => prepared.meta.clone(),
-            Self::Hour(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
@@ -109,7 +96,6 @@ impl Prepared {
                 let mut sink = NativeSink { emit, cancelled };
                 prepared.execution.stream(&mut sink).map_err(ApiError::from)
             }
-            Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
@@ -417,7 +403,17 @@ pub(crate) fn prepare_with_demo(
                 .map_err(ApiError::from)
         }
         Route::Hour(request) => {
-            hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(
+                std::sync::Arc::<crate::query_adapter::NativeDataset>::clone(&dataset),
+                sources,
+                synthetic_demo,
+            )
+            .with_index_provider(dataset);
+            kronika_query::execute(&context, QueryRequest::Hour(shared_hour_request(request)))
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
         Route::Rows(request) => {
             let dataset =
@@ -468,6 +464,48 @@ fn shared_data_request(request: crate::route::DataRequest) -> kronika_query::Dat
         after: request.after.map(|after| kronika_query::ActiveCursor {
             segment_id: after.segment_id,
             wal_position: after.wal_position,
+        }),
+    }
+}
+
+fn shared_hour_request(request: crate::route::HourRequest) -> kronika_query::HourRequest {
+    kronika_query::HourRequest {
+        window: kronika_query::Window {
+            from: request.window.from,
+            to: request.window.to,
+        },
+        series: request
+            .series
+            .map(|series| kronika_query::HourSeriesRequest {
+                section: series.section,
+                fields: series.fields,
+                filters: series
+                    .filters
+                    .into_iter()
+                    .map(|filter| kronika_query::Filter {
+                        column: filter.column,
+                        value: filter.value,
+                    })
+                    .collect(),
+                type_id: series.type_id,
+                group: series.group.map(|group| match group {
+                    crate::route::RelationGroup::Database => kronika_query::RelationGroup::Database,
+                    crate::route::RelationGroup::Schema => kronika_query::RelationGroup::Schema,
+                    crate::route::RelationGroup::Tablespace => {
+                        kronika_query::RelationGroup::Tablespace
+                    }
+                    crate::route::RelationGroup::Object => kronika_query::RelationGroup::Object,
+                }),
+            }),
+        part: match request.part {
+            crate::route::HourPart::Combined => kronika_query::HourPart::Combined,
+            crate::route::HourPart::Base => kronika_query::HourPart::Base,
+            crate::route::HourPart::Lanes => kronika_query::HourPart::Lanes,
+        },
+        segments: request.segments,
+        active: request.active.map(|active| kronika_query::ActiveCursor {
+            segment_id: active.segment_id,
+            wal_position: active.wal_position,
         }),
     }
 }

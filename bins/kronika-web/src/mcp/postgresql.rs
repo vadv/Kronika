@@ -1,12 +1,13 @@
 //! MCP adapters over recorded `PostgreSQL` finder results.
 
+use kronika_query::{RelationGroup as QueryRelationGroup, RelationKind};
 use kronika_reader::Reader;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
 use crate::api::snapshot;
 use crate::api::snapshot::PlainRowOut;
-use crate::api::snapshot::relation::{RelationKind, RelationRow};
+use crate::api::snapshot::relation::RelationRow;
 use crate::api::snapshot::selector::{
     FinderOrder, FinderQuery, FinderResult, FinderSurface, execute_plain, execute_relation,
 };
@@ -101,6 +102,7 @@ fn call(
         Err(error) => return finder_storage_error(kind.logical_name(), &error),
     };
 
+    let group = query_group(group);
     let rows: Vec<Value> = result
         .rows
         .into_iter()
@@ -167,7 +169,7 @@ pub(crate) fn current_segment(
 }
 
 /// Flattens metrics and group identity; identity fields win name collisions.
-fn row_to_json(row: RelationRow, kind: RelationKind, group: RelationGroup) -> Value {
+fn row_to_json(row: RelationRow, kind: RelationKind, group: QueryRelationGroup) -> Value {
     let mut object = Map::new();
     for (name, metric) in row.metrics {
         object.insert(name, metric.map_or(Value::Null, |metric| metric.json()));
@@ -176,6 +178,15 @@ fn row_to_json(row: RelationRow, kind: RelationKind, group: RelationGroup) -> Va
         object.extend(key_fields);
     }
     Value::Object(object)
+}
+
+const fn query_group(group: RelationGroup) -> QueryRelationGroup {
+    match group {
+        RelationGroup::Database => QueryRelationGroup::Database,
+        RelationGroup::Schema => QueryRelationGroup::Schema,
+        RelationGroup::Tablespace => QueryRelationGroup::Tablespace,
+        RelationGroup::Object => QueryRelationGroup::Object,
+    }
 }
 
 pub(crate) fn call_activity(

@@ -37,30 +37,9 @@ pub(super) fn plans(
     kronika_query::plans(segment, &request, history_coordinates).map_err(ApiError::from)
 }
 
-pub(super) fn chunk_dictionary(
-    segment: &Segment,
-    rows: &[(u64, kronika_reader::Row)],
-) -> Result<kronika_reader::Dictionary, ApiError> {
-    Ok(kronika_query::chunk_dictionary(segment, rows)?)
-}
-
-pub(super) fn streaming_chunk_dictionary(
-    segment: &Segment,
-    rows: &[(u64, kronika_reader::Row)],
-) -> Result<kronika_reader::Dictionary, ApiError> {
-    Ok(kronika_query::streaming_chunk_dictionary(segment, rows)?)
-}
-
 pub(super) fn resolved_dictionary(
     segment: &Segment,
     ids: &std::collections::HashSet<u64>,
 ) -> Result<kronika_reader::Dictionary, ApiError> {
     Ok(kronika_query::resolved_dictionary(segment, ids)?)
-}
-
-pub(super) fn validate_row_dictionary(
-    row: &kronika_reader::Row,
-    dictionary: &kronika_reader::Dictionary,
-) -> Result<(), ApiError> {
-    Ok(kronika_query::validate_row_dictionary(row, dictionary)?)
 }

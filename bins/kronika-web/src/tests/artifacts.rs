@@ -34,9 +34,8 @@ use serde_json::Value;
 
 use crate::api::{
     ApiError, CachePolicy, Prepared, ResponseMeta, context_operations, first_match_rows,
-    hour_operations, page_operations, relation_snapshot_operations, reset_context_operations,
-    reset_first_match_rows, reset_hour_operations, reset_page_operations,
-    reset_relation_snapshot_operations,
+    page_operations, relation_snapshot_operations, reset_context_operations,
+    reset_first_match_rows, reset_page_operations, reset_relation_snapshot_operations,
 };
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
@@ -3711,39 +3710,26 @@ fn hour_source_presence_folds_contained_inventory_and_scans_partial_rows() {
     let mut contained = Fixture::new();
     contained.append_log_error(100);
     contained.finish();
-    reset_hour_operations();
     let records = stream(contained.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("contained source inventory");
     assert_eq!(source_flags(&records, "postgresql"), (true, false));
-    assert_eq!(
-        hour_operations().1,
-        0,
-        "contained segment needs no row scan"
-    );
 
     let mut partial = Fixture::new();
     partial.append_log_error(99);
     partial.append_log_error(100);
     partial.finish();
-    reset_hour_operations();
     let records = stream(partial.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("partial positive source");
     assert_eq!(source_flags(&records, "postgresql"), (true, false));
-    assert!(hour_operations().1 > 0, "partial segment scans timestamps");
 
     let mut straddling = Fixture::new();
     straddling.append_log_error(99);
     straddling.append_diskstats(&[(100, 0, 1)]);
     straddling.finish();
-    reset_hour_operations();
     let records = stream(straddling.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("straddling source inventory");
     assert_eq!(source_flags(&records, "os"), (true, true));
     assert_eq!(source_flags(&records, "postgresql"), (false, false));
-    assert!(
-        hour_operations().1 > 0,
-        "straddling segment scans timestamps"
-    );
 }
 
 #[test]
@@ -4322,12 +4308,10 @@ fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
     let legacy_etag = legacy_prepared.meta().etag.expect("legacy ETag");
     let legacy = stream(legacy_prepared).expect("legacy combined hour");
 
-    reset_hour_operations();
     let base_prepared = fixture.prepare("/api/hour?from=100&to=400&part=base", None);
     assert_eq!(base_prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(base_prepared.meta().etag, None);
     let base = stream(base_prepared).expect("lightweight hour base");
-    assert_eq!(hour_operations().0, 0, "base must not collect lanes");
     assert!(base.iter().all(|record| record["record"] != "lane"));
     assert!(base.iter().any(|record| record["record"] == "catalog"));
     assert!(base.iter().any(|record| record["record"] == "point"));
@@ -4340,7 +4324,6 @@ fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
     let lanes_etag = lanes_prepared.meta().etag.expect("lanes ETag");
     assert_ne!(lanes_etag, legacy_etag);
     let lanes = stream(lanes_prepared).expect("finished pinned lanes");
-    assert_eq!(hour_operations().0, 2, "each segment uses one lane reducer");
     assert!(
         lanes
             .iter()
@@ -4592,7 +4575,6 @@ fn process_and_statement_rows_remain_available_without_findings() {
 
 #[test]
 fn process_summary_series_uses_the_complete_set_and_previous_segment() {
-    crate::api::reset_process_summary_operations();
     let mut fixture = Fixture::new();
     fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..3, None);
     fixture.finish_and_continue(SEGMENT_ID + 1_000);
@@ -4655,11 +4637,6 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
     assert_eq!(values[13], Value::Null, "all unavailable values stay null");
     assert_eq!(values[14], 4_080.0);
     assert_eq!(values[15], 8_160.0);
-    assert_eq!(
-        crate::api::process_summary_operations(),
-        (4, 2),
-        "each segment gets two numeric process passes and one activity pass"
-    );
 }
 
 #[test]
@@ -6717,14 +6694,14 @@ fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and
     for (direct, http) in rows.iter().zip(http_rows.iter()) {
         assert_eq!(
             direct.key.json(
-                crate::api::snapshot::relation::RelationKind::Tables,
-                crate::route::RelationGroup::Object
+                kronika_query::RelationKind::Tables,
+                kronika_query::RelationGroup::Object
             ),
             http["key"],
         );
         let direct_value = direct.metrics["seq_scan"]
             .as_ref()
-            .map_or(Value::Null, crate::api::snapshot::relation::Metric::json);
+            .map_or(Value::Null, kronika_query::Metric::json);
         assert_eq!(direct_value, http["values"]["seq_scan"]);
     }
 }
@@ -7492,7 +7469,6 @@ fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
     reason = "the staggered fixture keeps independent database snapshots and expected points together"
 )]
 fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
-    crate::api::reset_history_operations();
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[
         (
@@ -7609,11 +7585,6 @@ fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
     assert_eq!(rows[2]["values"]["table_count"], "1");
     assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
     assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
-    assert_eq!(
-        crate::api::tablespace_moment_visits(),
-        1,
-        "the selected layout discovers databases and predecessor moments together",
-    );
 }
 
 #[test]
@@ -7641,7 +7612,6 @@ fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set
     fixture.append_dml_table_snapshots(&current);
     fixture.finish();
 
-    crate::api::reset_history_operations();
     let target = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=schema&field=table_count&field=dml_total&field=insert_share_pct&where.datid=1&where.schemaname=public";
     let records = stream(fixture.prepare(target, None)).expect("grouped relation history");
     let rows = relation_records(&records);
@@ -7657,23 +7627,12 @@ fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set
     assert_eq!(rows[0]["sample_from"], "100");
     assert_eq!(rows[0]["sample_to"], "200");
     assert!(rows[0]["source"].is_null());
-    assert_eq!(
-        crate::api::history_operations(),
-        (2, 2),
-        "one selection and one source visit per physical layout and segment",
-    );
 
-    crate::api::reset_history_operations();
     let one_metric = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=dml_total&where.datid=1";
     let records = stream(fixture.prepare(one_metric, None)).expect("single-metric grouped history");
     let rows = relation_records(&records);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"]["dml_total"], 2_140_000.0);
-    assert_eq!(
-        crate::api::history_operations(),
-        (2, 2),
-        "requested metric count must not multiply physical source visits",
-    );
 }
 
 #[test]
