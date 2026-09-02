@@ -9,7 +9,7 @@ use base64 as _;
 use icu_collator as _;
 use icu_locale_core as _;
 use kronika_format::DictLimits;
-use kronika_index as _;
+use kronika_index::build_from_reader;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_query::snapshot::{
     CurrentSnapshotQuery, FinderQuery, FinderResult, FinderSurface, PlainRowOut, ProcessRowOut,
@@ -19,11 +19,12 @@ use kronika_query::snapshot::{
 use kronika_query::{
     CatalogRequest, EventsQuery, EventsRepresentation, EventsResult, Filter, FinishedDataset,
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, HourPart, HourRequest,
-    HourSeriesRequest, NormalizedRanking, QueryContext, QueryDataset, QueryRequest, QuerySink,
-    RelationGroup, RelationKind, RowDetailResult, TimeRange, Window, execute, execute_events,
-    execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
+    HourSeriesRequest, IndexProvider, IndexRequest, MemoryIndexProvider, NormalizedRanking,
+    QueryContext, QueryDataset, QueryRequest, QuerySink, RelationGroup, RelationKind,
+    RowDetailResult, TimeRange, Window, execute, execute_events, execute_heatmap_batch,
+    execute_row_detail, validate_row_detail_ref,
 };
-use kronika_reader as _;
+use kronika_reader::Reader;
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_process::OsProcess;
@@ -107,6 +108,20 @@ fn hour_bytes(dataset: Arc<dyn QueryDataset>, request: HourRequest) -> Vec<u8> {
     let execution = execute(&context, QueryRequest::Hour(request)).expect("prepare hour query");
     let mut records = Records::default();
     execution.stream(&mut records).expect("stream hour query");
+    records.0
+}
+
+fn indexed_bytes(
+    dataset: Arc<dyn QueryDataset>,
+    indexes: Arc<dyn IndexProvider>,
+    request: QueryRequest,
+) -> Vec<u8> {
+    let context = QueryContext::new(dataset, 0b11, false).with_index_provider(indexes);
+    let execution = execute(&context, request).expect("prepare indexed query");
+    let mut records = Records::default();
+    execution
+        .stream(&mut records)
+        .expect("stream indexed query");
     records.0
 }
 
@@ -1041,6 +1056,76 @@ fn hour_products_are_byte_identical_for_posix_and_embedded_finished_zms() {
             && record["sample_to"].as_str() == Some(end.as_str())
             && record["values"]["seq_scan"].as_f64() == Some(10.0)
     }));
+}
+
+#[test]
+fn native_built_index_drives_real_posix_and_owned_embedded_queries() {
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
+    let directory = tempfile::tempdir().expect("temporary POSIX root");
+    drop(write_heatmap_fixture(directory.path(), segment_id));
+
+    let reader = Reader::open(directory.path()).expect("native reader");
+    let listing = reader.segments(..).expect("native segment listing");
+    let segment_ref = listing.segments.first().expect("finished segment");
+    let segment = reader.open_segment(segment_ref).expect("native segment");
+    let encoded_index = build_from_reader(&reader, segment_ref, &segment)
+        .expect("native canonical index build")
+        .encode()
+        .expect("canonical index encoding");
+    let provider: Arc<dyn IndexProvider> = Arc::new(
+        MemoryIndexProvider::new(segment_id, encoded_index).expect("memory index provider"),
+    );
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix));
+    let payload = std::fs::read(finished_path(directory.path(), segment_id))
+        .expect("read finished ZMS into owned bytes");
+    let payload_ptr = payload.as_ptr();
+    let payload_len = payload.len();
+    let embedded = EmbeddedSource::from_owned(
+        segment_id,
+        payload,
+        u64::try_from(payload_len).expect("payload length fits u64"),
+    )
+    .expect("owned embedded source");
+    assert_eq!(embedded.retained_segment_ptr(), payload_ptr);
+    assert_eq!(embedded.retained_segment_bytes(), payload_len);
+    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded));
+
+    let requests = [
+        QueryRequest::Index(IndexRequest {
+            segment_id: SEGMENT_ID,
+            section: "health".to_owned(),
+        }),
+        QueryRequest::Hour(HourRequest {
+            window: Window {
+                from: Some(HEATMAP_FROM),
+                to: Some(HEATMAP_TO),
+            },
+            series: None,
+            part: HourPart::Base,
+            segments: None,
+            active: None,
+        }),
+    ];
+    for request in requests {
+        let posix = indexed_bytes(
+            Arc::clone(&posix_dataset),
+            Arc::clone(&provider),
+            request.clone(),
+        );
+        let embedded = indexed_bytes(
+            Arc::clone(&embedded_dataset),
+            Arc::clone(&provider),
+            request,
+        );
+        assert_eq!(posix, embedded);
+        assert!(
+            posix
+                .windows(b"\"record\":\"index\"".len())
+                .any(|bytes| bytes == b"\"record\":\"index\"")
+        );
+    }
 }
 
 #[test]

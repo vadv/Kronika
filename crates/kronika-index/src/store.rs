@@ -8,7 +8,7 @@ use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
 #[cfg(test)]
 use crate::selection::finding_keys;
 use crate::selection::series_keys;
-use crate::series::{SeriesKey, SeriesKind};
+use crate::series::SeriesKey;
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
 
@@ -154,7 +154,7 @@ pub fn resource_selected(
             for wait in [true, false] {
                 if let Some(mut file) = data_root.open_idx(address)?
                     && let Ok(selected) = read_target(&mut file, keys)
-                    && contains_targets(&selected, keys)
+                    && selected.contains_targets(keys)
                 {
                     return Ok(ResourceIndex {
                         index: selected,
@@ -200,12 +200,6 @@ pub fn resource_selected(
             })
         }
     }
-}
-
-fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {
-    keys.iter()
-        .filter(|key| !matches!(key.kind, SeriesKind::PostgresHealth))
-        .all(|key| index.blocks.iter().any(|block| block.key() == *key))
 }
 
 fn address_of(raw_id: i64) -> Result<SegmentAddress, LayoutError> {

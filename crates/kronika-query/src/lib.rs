@@ -44,7 +44,7 @@ pub use hour::{
     GroupKey, Metric, RelationAggregate, RelationField, RelationKind, RelationSource,
     index_scan_rate_is_zero, key_fields, output_fields,
 };
-pub use index_provider::{IndexProvider, IndexResource};
+pub use index_provider::{IndexProvider, IndexResource, MemoryIndexProvider};
 pub use projection::{OutputField, Plan, plans, resolved_dictionary};
 pub use request::{
     ActiveCursor, CatalogRequest, DataRequest, Filter, HourPart, HourRequest, HourSeriesRequest,
@@ -108,7 +108,7 @@ impl QueryContext {
         }
     }
 
-    /// Add the native derived-index/cache adapter used by indexed queries.
+    /// Add the derived-index source used by indexed queries.
     #[must_use]
     pub fn with_index_provider(mut self, indexes: std::sync::Arc<dyn IndexProvider>) -> Self {
         self.indexes = Some(indexes);
