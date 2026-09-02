@@ -1,9 +1,10 @@
 RUST_TOOLCHAIN ?= 1.96.0
+DYLINT_TOOLCHAIN ?= nightly-2026-05-28
 TARGET ?= $(shell rustc +$(RUST_TOOLCHAIN) -vV | sed -n 's/^host: //p')
 CARGO_BUILD = cargo +$(RUST_TOOLCHAIN) build --locked --target $(TARGET)
 UI_DIR = bins/kronika-web/ui
 
-.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check query-boundary lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs diagrams
+.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check query-boundary dylint lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs diagrams
 
 build: ## Build every binary for the selected target.
 	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo -p kronika-web
@@ -38,7 +39,10 @@ fmt-check: ## Verify workspace formatting without changing files.
 query-boundary: ## Verify the shared query layer remains storage and transport neutral.
 	@scripts/check-query-boundary.sh
 
-lint: query-boundary ## Run clippy over the workspace with warnings denied.
+dylint: ## Run the pinned repository and Mordant lint set.
+	@DYLINT_TOOLCHAIN=$(DYLINT_TOOLCHAIN) scripts/check-dylints.sh
+
+lint: query-boundary dylint ## Run repository-specific lints and clippy with warnings denied.
 	@cargo +$(RUST_TOOLCHAIN) clippy --locked --workspace --all-targets -- -D warnings
 
 test: ## Run every non-BDD unit and integration test.

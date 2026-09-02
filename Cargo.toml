@@ -20,6 +20,11 @@ members = [
     "bins/kronika-web",
 ]
 
+[workspace.metadata.dylint]
+libraries = [
+    { git = "https://github.com/scarletindustries/mordant", rev = "8f0803f66dee128cca7cc0e950d8ec051cdd537a" },
+]
+
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
