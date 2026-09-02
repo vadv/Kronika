@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
+// Dependencies exercised by integration targets; anchor them for this crate's
+// unit-test target under the workspace's unused-dependency lint.
+use kronika_layout as _;
 use kronika_reader::{Segment, SegmentKind, SegmentSection};
+use tempfile as _;
 
 use crate::{
     CapturedCatalog, CatalogRequest, DatasetListing, DatasetSegment, DatasetWarning, OpaqueCapture,

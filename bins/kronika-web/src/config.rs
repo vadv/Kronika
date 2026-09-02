@@ -8,8 +8,7 @@ use anyhow::{Context as _, Result};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-pub(crate) const SOURCE_OS: u32 = 1 << 0;
-pub(crate) const SOURCE_POSTGRESQL: u32 = 1 << 1;
+pub(crate) use kronika_query::{SOURCE_OS, SOURCE_POSTGRESQL};
 const SUPPORTED_SOURCES: u32 = SOURCE_OS | SOURCE_POSTGRESQL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

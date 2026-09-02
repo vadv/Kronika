@@ -4,24 +4,29 @@ use std::error::Error;
 use std::path::Path;
 
 use hyper::StatusCode;
-use kronika_query::{CatalogRequest, QueryContext, QueryRequest, QuerySink, QueryStability};
+use kronika_query::{
+    CatalogRequest, QueryContext, QueryIdentity, QueryRequest, QuerySink, QueryStability,
+};
 use kronika_reader::{Reader, ReaderError, SegmentRef};
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
-use crate::route::{ActiveCursor, Route};
+#[cfg(test)]
+use crate::route::ActiveCursor;
+use crate::route::Route;
 
 pub(crate) mod catalog;
 pub(crate) mod events;
 pub(crate) mod heatmap;
 pub(crate) mod history;
 mod hour;
-mod index;
+pub(crate) mod index;
 mod query;
 mod render;
 pub(crate) mod row_detail;
 pub(crate) mod row_key;
-mod rows;
+#[cfg(test)]
+pub(crate) mod rows;
 pub(crate) mod snapshot;
 pub(crate) mod time;
 
@@ -84,13 +89,9 @@ impl ResponseMeta {
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
     Query(kronika_query::QueryExecution),
-    Index(index::PreparedIndex),
-    History(history::PreparedHistory),
     Heatmap(heatmap::PreparedHeatmap),
     Hour(hour::PreparedHour),
-    Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
-    Events(events::PreparedEvents),
     RowDetail(row_detail::PreparedRowDetail),
     Empty(ResponseMeta),
 }
@@ -100,13 +101,9 @@ impl Prepared {
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
             Self::Query(execution) => query_meta(execution.metadata()),
-            Self::Index(prepared) => prepared.meta(),
-            Self::History(prepared) => prepared.meta(),
             Self::Heatmap(prepared) => prepared.meta(),
             Self::Hour(prepared) => prepared.meta(),
-            Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
-            Self::Events(prepared) => prepared.meta(),
             Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
             Self::Empty(meta) => meta.clone(),
         }
@@ -123,13 +120,9 @@ impl Prepared {
                 let mut sink = NativeSink { emit, cancelled };
                 execution.stream(&mut sink).map_err(ApiError::from)
             }
-            Self::Index(prepared) => prepared.stream(emit, cancelled),
-            Self::History(prepared) => prepared.stream(emit, cancelled),
             Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
-            Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
-            Self::Events(prepared) => prepared.stream(emit, cancelled),
             Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
@@ -282,13 +275,22 @@ where
     }
 }
 
-const fn query_meta(metadata: kronika_query::QueryMetadata) -> ResponseMeta {
+fn query_meta(metadata: kronika_query::QueryMetadata<'_>) -> ResponseMeta {
     let cache = match metadata.stability() {
         QueryStability::Mutable => CachePolicy::NoStore,
         QueryStability::Revalidate => CachePolicy::Revalidate,
         QueryStability::Immutable => CachePolicy::Immutable,
     };
-    ResponseMeta::ok(cache)
+    let etag = metadata.identity().map(|identity| match identity {
+        QueryIdentity::IndexChecksum(checksum) => format!("W/\"{checksum:08x}\""),
+        QueryIdentity::SegmentSet {
+            resource,
+            shape,
+            segments,
+        } => weak_dataset_etag(resource, shape, segments)
+            .expect("shared query exposes only immutable non-empty segment identities"),
+    });
+    ResponseMeta::ok_with_etag(cache, etag)
 }
 
 /// Perform request validation and initial I/O outside the Tokio worker.
@@ -327,17 +329,66 @@ pub(crate) fn prepare_with_demo(
             .map(Prepared::Query)
             .map_err(ApiError::from)
         }
-        Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
-        Route::History(request) => history::prepare(root, request).map(Prepared::History),
+        Route::Index(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset.clone(), sources, synthetic_demo)
+                .with_index_provider(dataset);
+            kronika_query::execute(
+                &context,
+                &QueryRequest::Index(kronika_query::IndexRequest {
+                    segment_id: request.segment_id,
+                    section: request.section,
+                }),
+            )
+            .map(Prepared::Query)
+            .map_err(ApiError::from)
+        }
+        Route::History(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(
+                &context,
+                &QueryRequest::History(shared_data_request(request)),
+            )
+            .map(Prepared::Query)
+            .map_err(ApiError::from)
+        }
         Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
-        Route::Events(request) => events::prepare(root, request).map(Prepared::Events),
+        Route::Events(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(&context, &QueryRequest::Events(request))
+                .map(Prepared::Query)
+                .map_err(ApiError::from)
+        }
         Route::RowDetail(detail_ref) => {
             row_detail::prepare(root, &detail_ref).map(Prepared::RowDetail)
         }
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }
-        Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
+        Route::Rows(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(
+                &context,
+                &QueryRequest::Rows(kronika_query::RowsRequest {
+                    data: shared_data_request(request.data),
+                    order: match request.order {
+                        crate::route::Order::Asc => kronika_query::Order::Asc,
+                        crate::route::Order::Desc => kronika_query::Order::Desc,
+                    },
+                    page_size: request.page_size,
+                    cursor: request.cursor,
+                }),
+            )
+            .map(Prepared::Query)
+            .map_err(ApiError::from)
+        }
         Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
         // Answered directly in `main.rs`.
         Route::McpAccess | Route::InstanceLabel => return Err(ApiError::NoSuchSection),
@@ -347,6 +398,29 @@ pub(crate) fn prepare_with_demo(
         return Ok(not_modified);
     }
     Ok(prepared)
+}
+
+fn shared_data_request(request: crate::route::DataRequest) -> kronika_query::DataRequest {
+    kronika_query::DataRequest {
+        segment: kronika_query::SegmentRequest {
+            segment_id: request.segment.segment_id,
+            section: request.segment.section,
+        },
+        fields: request.fields,
+        filters: request
+            .filters
+            .into_iter()
+            .map(|filter| kronika_query::Filter {
+                column: filter.column,
+                value: filter.value,
+            })
+            .collect(),
+        type_id: request.type_id,
+        after: request.after.map(|after| kronika_query::ActiveCursor {
+            segment_id: after.segment_id,
+            wal_position: after.wal_position,
+        }),
+    }
 }
 
 fn conditional_not_modified(meta: ResponseMeta, if_none_match: Option<&str>) -> Option<Prepared> {
@@ -392,6 +466,36 @@ where
     found.then(|| format!("W/\"{:x}\"", digest.finalize()))
 }
 
+fn weak_dataset_etag(
+    resource: &str,
+    shape: &str,
+    segments: &[kronika_query::DatasetSegment],
+) -> Option<String> {
+    let mut digest = Sha256::new();
+    digest.update(resource.len().to_le_bytes());
+    digest.update(resource.as_bytes());
+    digest.update(shape.len().to_le_bytes());
+    digest.update(shape.as_bytes());
+    let mut found = false;
+    for segment in segments {
+        if segment.kind() == kronika_reader::SegmentKind::Active {
+            return None;
+        }
+        found = true;
+        digest.update(segment.id().to_le_bytes());
+        digest.update(segment.min_ts().to_le_bytes());
+        digest.update(segment.max_ts().to_le_bytes());
+        digest.update(segment.sections().len().to_le_bytes());
+        for section in segment.sections() {
+            digest.update(section.type_id.to_le_bytes());
+            digest.update(section.rows.to_le_bytes());
+            digest.update(section.bytes.to_le_bytes());
+        }
+    }
+    found.then(|| format!("W/\"{:x}\"", digest.finalize()))
+}
+
+#[cfg(test)]
 fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
@@ -438,6 +542,7 @@ fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
     );
 }
 
+#[cfg(test)]
 fn active_tail(
     current: &SegmentRef,
     after: Option<ActiveCursor>,

@@ -182,6 +182,12 @@ impl SegmentRef {
         &self.sections
     }
 
+    /// Share the compact section catalog without copying its entries.
+    #[must_use]
+    pub fn shared_sections(&self) -> Arc<[SegmentSection]> {
+        Arc::clone(&self.sections)
+    }
+
     /// Pin an active reference to an earlier committed cursor position.
     ///
     /// Finished references and positions that are not complete frame

@@ -8,7 +8,7 @@ use crate::detect::finding_layout;
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
 use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
-use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
+use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef, SegmentSection};
 use kronika_registry::logical_section_name;
 
 /// Extension of an index file.
@@ -204,8 +204,13 @@ pub fn resource_selected(
 /// Return every sparse-finding block present in one segment.
 #[must_use]
 pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
-    let mut keys = segment
-        .sections()
+    finding_keys_for_sections(segment.sections())
+}
+
+/// Return every sparse-finding block described by neutral segment metadata.
+#[must_use]
+pub fn finding_keys_for_sections(sections: &[SegmentSection]) -> Vec<SeriesKey> {
+    let mut keys = sections
         .iter()
         .filter(|section| finding_layout(section.type_id))
         .map(|section| SeriesKey {
@@ -225,6 +230,12 @@ pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
 /// Return the allowlisted series exposed by one logical section.
 #[must_use]
 pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
+    series_keys_for_sections(segment.sections(), logical_name)
+}
+
+/// Return the allowlisted series described by neutral segment metadata.
+#[must_use]
+pub fn series_keys_for_sections(sections: &[SegmentSection], logical_name: &str) -> Vec<SeriesKey> {
     if logical_name == "health" {
         return vec![
             SeriesKey::OS_HEALTH,
@@ -237,7 +248,7 @@ pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
         ];
     }
     let mut keys = Vec::new();
-    for section in segment.sections() {
+    for section in sections {
         match logical_name {
             "pg_stat_database" if pg_database_layout(section.type_id) => keys.push(SeriesKey {
                 kind: SeriesKind::PgTransactionsPerSecond,

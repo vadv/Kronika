@@ -33,8 +33,8 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 use serde_json::Value;
 
 use crate::api::{
-    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, hour_operations,
-    page_operations, relation_snapshot_operations, reset_context_operations,
+    ApiError, CachePolicy, Prepared, ResponseMeta, context_operations, first_match_rows,
+    hour_operations, page_operations, relation_snapshot_operations, reset_context_operations,
     reset_first_match_rows, reset_hour_operations, reset_page_operations,
     reset_relation_snapshot_operations,
 };
@@ -2815,36 +2815,813 @@ fn shared_catalog_execution_matches_the_previous_native_bytes() {
     fixture.append_health();
     fixture.finish();
 
-    let mut previous = Vec::new();
-    crate::api::catalog::prepare(
-        fixture.root(),
+    let previous = previous_catalog_bytes(
+        &fixture,
         crate::route::Window::default(),
-        SOURCES,
-        false,
-    )
-    .expect("prepare previous catalog")
-    .stream(
-        &mut |bytes| {
-            previous.extend_from_slice(&bytes);
-            true
-        },
-        &|| false,
+        usize::MAX,
+        usize::MAX,
     )
     .expect("stream previous catalog");
-
-    let mut shared = Vec::new();
-    fixture
-        .prepare("/api/catalog", None)
-        .stream(
-            &mut |bytes| {
-                shared.extend_from_slice(&bytes);
-                true
-            },
-            &|| false,
-        )
+    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
         .expect("stream shared catalog");
 
     assert_eq!(shared, previous);
+}
+
+#[test]
+fn shared_catalog_preserves_the_active_wal_cursor_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
+    let position = fixture.position();
+
+    let previous = previous_catalog_bytes(
+        &fixture,
+        crate::route::Window::default(),
+        usize::MAX,
+        usize::MAX,
+    )
+    .expect("stream previous active catalog");
+    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream shared active catalog");
+
+    assert_eq!(shared, previous);
+    let records = raw_ndjson_records(&shared);
+    let active = records
+        .iter()
+        .find(|record| record["record"] == "active_segment")
+        .expect("active catalog record");
+    assert_eq!(active["id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["wal_position"], position.to_string());
+}
+
+#[test]
+fn shared_catalog_preserves_finished_over_active_for_the_same_generation() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    fixture.finish();
+
+    let previous = previous_catalog_bytes(
+        &fixture,
+        crate::route::Window::default(),
+        usize::MAX,
+        usize::MAX,
+    )
+    .expect("stream previous finished catalog");
+    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream shared finished catalog");
+
+    assert_eq!(shared, previous);
+    let segments = raw_ndjson_records(&shared)
+        .into_iter()
+        .filter(|record| {
+            matches!(
+                record["record"].as_str(),
+                Some("finished_segment" | "active_segment")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0]["record"], "finished_segment");
+    assert_eq!(segments[0]["id"], SEGMENT_ID.to_string());
+}
+
+#[test]
+fn shared_catalog_preserves_bounded_multi_segment_ordering() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    fixture.append_diskstats(&[(200, 0, 2)]);
+    fixture.finish_and_continue(SEGMENT_ID + 2);
+    fixture.append_diskstats(&[(300, 0, 3)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3);
+    fixture.append_diskstats(&[(400, 0, 4)]);
+
+    let window = crate::route::Window {
+        from: Some(150),
+        to: Some(350),
+    };
+    let previous = previous_catalog_bytes(&fixture, window, usize::MAX, usize::MAX)
+        .expect("stream previous bounded catalog");
+    let shared = shared_catalog_bytes(
+        &fixture,
+        "/api/catalog?from=150&to=350",
+        usize::MAX,
+        usize::MAX,
+    )
+    .expect("stream shared bounded catalog");
+
+    assert_eq!(shared, previous);
+    let segment_ids = raw_ndjson_records(&shared)
+        .into_iter()
+        .filter(|record| record["record"] == "finished_segment")
+        .map(|record| record["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        segment_ids,
+        [SEGMENT_ID + 1, SEGMENT_ID + 2].map(|id| Value::from(id.to_string()))
+    );
+}
+
+#[test]
+fn shared_catalog_preserves_warning_record_bytes_and_order() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    let previous = previous_catalog_bytes(
+        &fixture,
+        crate::route::Window::default(),
+        usize::MAX,
+        usize::MAX,
+    )
+    .expect("stream previous warning catalog");
+    let shared = shared_catalog_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream shared warning catalog");
+
+    assert_eq!(shared, previous);
+    let records = raw_ndjson_records(&shared);
+    let warning = records.last().expect("warning record");
+    assert_eq!(warning["record"], "warning");
+    assert_eq!(warning["affected"]["kind"], "foreign_entry");
+}
+
+#[test]
+fn shared_catalog_preserves_native_stream_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    fixture.append_diskstats(&[(200, 0, 2)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    for (accepted_records, cancelled_after) in [
+        (usize::MAX, 0),
+        (usize::MAX, 1),
+        (1, usize::MAX),
+        (2, usize::MAX),
+    ] {
+        let previous = previous_catalog_bytes(
+            &fixture,
+            crate::route::Window::default(),
+            accepted_records,
+            cancelled_after,
+        )
+        .expect("stop previous catalog stream");
+        let shared =
+            shared_catalog_bytes(&fixture, "/api/catalog", accepted_records, cancelled_after)
+                .expect("stop shared catalog stream");
+        assert_eq!(
+            shared, previous,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+fn previous_catalog_bytes(
+    fixture: &Fixture,
+    window: crate::route::Window,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    crate::api::catalog::prepare(fixture.root(), window, SOURCES, false)?.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok(output)
+}
+
+fn shared_catalog_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    fixture.prepare(target, None).stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok(output)
+}
+
+fn raw_ndjson_records(bytes: &[u8]) -> Vec<Value> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|record| !record.is_empty())
+        .map(|record| serde_json::from_slice(record).expect("JSON record"))
+        .collect()
+}
+
+#[test]
+fn shared_history_preserves_finished_response_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
+    fixture.finish();
+    let target = target("history", "field=minor&field=reads");
+
+    let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream previous finished history");
+    let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream shared finished history");
+
+    assert_eq!(shared, previous);
+    assert_eq!(
+        raw_ndjson_records(&shared)
+            .into_iter()
+            .filter(|record| record["record"] == "row")
+            .map(|record| record["ordinal"].clone())
+            .collect::<Vec<_>>(),
+        ["0", "1", "2"].map(Value::from)
+    );
+}
+
+#[test]
+fn shared_history_preserves_active_after_cursor_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9)]);
+    let position = fixture.position();
+    fixture.append_diskstats(&[(300, 2, 11)]);
+    let target = target(
+        "history",
+        &format!("field=reads&after={SEGMENT_ID},{position}"),
+    );
+
+    let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream previous active tail");
+    let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream shared active tail");
+
+    assert_eq!(shared, previous);
+    let records = raw_ndjson_records(&shared);
+    let header = records
+        .iter()
+        .find(|record| record["record"] == "history")
+        .expect("history header");
+    assert_eq!(header["after"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(header["after"]["wal_position"], position.to_string());
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["ordinal"], "2");
+    assert_eq!(rows[0]["values"], serde_json::json!(["11"]));
+}
+
+#[test]
+fn shared_rows_preserve_finished_ascending_and_descending_pages() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..5)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.finish();
+
+    for (order, expected) in [
+        ("asc", vec!["0", "1", "2", "3", "4"]),
+        ("desc", vec!["4", "3", "2", "1", "0"]),
+    ] {
+        let base = target(
+            "rows",
+            &format!("field=minor&field=reads&page_size=2&order={order}"),
+        );
+        let mut cursor = None;
+        let mut ordinals = Vec::new();
+        let mut page_count = 0_usize;
+        loop {
+            let target = cursor
+                .as_ref()
+                .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+            let previous = previous_rows_bytes(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream previous finished rows page");
+            let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream shared finished rows page");
+            assert_eq!(shared, previous, "order={order} page={page_count}");
+
+            let records = raw_ndjson_records(&shared);
+            ordinals.extend(
+                records
+                    .iter()
+                    .filter(|record| record["record"] == "row")
+                    .map(|record| record["ordinal"].as_str().expect("row ordinal").to_owned()),
+            );
+            cursor = records
+                .iter()
+                .find(|record| record["record"] == "page")
+                .expect("page trailer")["next_cursor"]
+                .as_str()
+                .map(ToOwned::to_owned);
+            page_count += 1;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(page_count < 4, "cursor must make progress");
+        }
+        assert_eq!(ordinals, expected, "order={order}");
+        assert_eq!(page_count, 3, "order={order}");
+    }
+}
+
+#[test]
+fn shared_rows_preserve_active_cursor_pinning_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 10), (100, 1, 11), (100, 2, 12)]);
+    let position = fixture.position();
+    let base = target("rows", "field=reads&page_size=2&order=asc");
+
+    let previous = previous_rows_bytes(&fixture, &base, usize::MAX, usize::MAX)
+        .expect("stream previous first active page");
+    let shared = shared_query_bytes(&fixture, &base, usize::MAX, usize::MAX)
+        .expect("stream shared first active page");
+    assert_eq!(shared, previous);
+    let first = raw_ndjson_records(&shared);
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "page")
+        .and_then(|record| record["next_cursor"].as_str())
+        .expect("active page cursor")
+        .to_owned();
+    assert_eq!(
+        first
+            .iter()
+            .find(|record| record["record"] == "rows")
+            .expect("rows header")["segment"]["cursor"]["wal_position"],
+        position.to_string()
+    );
+
+    fixture.append_diskstats(&[(100, 3, 13)]);
+    let resumed_target = format!("{base}&cursor={cursor}");
+    let previous = previous_rows_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
+        .expect("stream previous pinned active page");
+    let shared = shared_query_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
+        .expect("stream shared pinned active page");
+    assert_eq!(shared, previous);
+    let resumed = raw_ndjson_records(&shared);
+    let rows = resumed
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["ordinal"], "2");
+    assert_eq!(
+        resumed
+            .iter()
+            .find(|record| record["record"] == "page")
+            .expect("page trailer")["next_cursor"],
+        Value::Null
+    );
+}
+
+#[test]
+fn shared_history_and_rows_preserve_semantic_errors() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    fixture.finish();
+
+    for target in [
+        target("history", "field=not_recorded"),
+        format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/history?field=reads"),
+    ] {
+        let previous = previous_history_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("previous history must reject request");
+        let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("shared history must reject request");
+        assert_api_error_parity(&shared, &previous);
+    }
+
+    for target in [
+        target("rows", "field=not_recorded"),
+        target("rows", "field=reads&cursor=not-a-cursor"),
+    ] {
+        let previous = previous_rows_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("previous rows must reject request");
+        let shared = shared_query_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("shared rows must reject request");
+        assert_api_error_parity(&shared, &previous);
+    }
+}
+
+#[test]
+fn shared_history_and_rows_preserve_native_stream_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
+    fixture.finish();
+    let history = target("history", "field=minor&field=reads");
+    let rows = target("rows", "field=minor&field=reads&page_size=2&order=desc");
+
+    for (accepted_records, cancelled_after) in [
+        (usize::MAX, 0),
+        (usize::MAX, 1),
+        (1, usize::MAX),
+        (2, usize::MAX),
+        (3, usize::MAX),
+    ] {
+        let previous =
+            previous_history_bytes(&fixture, &history, accepted_records, cancelled_after)
+                .expect("stop previous history stream");
+        let shared = shared_query_bytes(&fixture, &history, accepted_records, cancelled_after)
+            .expect("stop shared history stream");
+        assert_eq!(
+            shared, previous,
+            "history accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+
+        let previous = previous_rows_bytes(&fixture, &rows, accepted_records, cancelled_after)
+            .expect("stop previous rows stream");
+        let shared = shared_query_bytes(&fixture, &rows, accepted_records, cancelled_after)
+            .expect("stop shared rows stream");
+        assert_eq!(
+            shared, previous,
+            "rows accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+fn previous_history_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let crate::route::Route::History(request) = fixture_route(target) else {
+        panic!("history route");
+    };
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    crate::api::history::prepare(fixture.root(), request)?.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok(output)
+}
+
+fn previous_rows_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let crate::route::Route::Rows(request) = fixture_route(target) else {
+        panic!("rows route");
+    };
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    crate::api::rows::prepare(fixture.root(), request)?.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok(output)
+}
+
+fn shared_query_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    shared_query_response(fixture, target, accepted_records, cancelled_after)
+        .map(|(_meta, bytes)| bytes)
+}
+
+fn shared_query_response(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    let prepared = prepare_result(fixture, target)?;
+    let meta = prepared.meta();
+    prepared.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok((meta, output))
+}
+
+fn fixture_route(target: &str) -> crate::route::Route {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    crate::route::parse(path, query).expect("valid fixture route")
+}
+
+fn assert_api_error_parity(shared: &ApiError, previous: &ApiError) {
+    assert_eq!(shared.status(), previous.status());
+    assert_eq!(shared.code(), previous.code());
+    assert_eq!(shared.parameter(), previous.parameter());
+    assert_eq!(shared.to_string(), previous.to_string());
+    assert_eq!(
+        shared.source_changed_during_read(),
+        previous.source_changed_during_read()
+    );
+}
+
+#[test]
+fn shared_index_preserves_finished_checksum_etag_and_body_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    fixture.finish();
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+
+    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream shared finished index");
+    let (previous_meta, previous) =
+        previous_index_response(&fixture, &target, usize::MAX, usize::MAX)
+            .expect("stream previous finished index");
+
+    assert_eq!(shared_meta, previous_meta);
+    assert_eq!(shared, previous);
+    assert_eq!(shared_meta.cache, CachePolicy::Immutable);
+    let header = raw_ndjson_records(&shared)
+        .into_iter()
+        .find(|record| record["record"] == "index")
+        .expect("index header");
+    let checksum = header["checksum"].as_str().expect("finished checksum");
+    assert_eq!(
+        shared_meta.etag.as_deref(),
+        Some(format!("W/\"{checksum}\"").as_str())
+    );
+
+    let not_modified = fixture.prepare(&target, shared_meta.etag.as_deref());
+    assert_eq!(not_modified.meta().status, StatusCode::NOT_MODIFIED);
+    assert_eq!(not_modified.meta().etag, shared_meta.etag);
+    assert!(matches!(not_modified, Prepared::Empty(_)));
+}
+
+#[test]
+fn shared_index_preserves_active_nonpersisted_meta_and_body_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+
+    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream shared active index");
+    let (previous_meta, previous) =
+        previous_index_response(&fixture, &target, usize::MAX, usize::MAX)
+            .expect("stream previous active index");
+
+    assert_eq!(shared_meta, previous_meta);
+    assert_eq!(shared, previous);
+    assert_eq!(shared_meta.cache, CachePolicy::NoStore);
+    assert_eq!(shared_meta.etag, None);
+    let header = raw_ndjson_records(&shared)
+        .into_iter()
+        .find(|record| record["record"] == "index")
+        .expect("index header");
+    assert_eq!(header["checksum"], Value::Null);
+    assert!(
+        std::fs::read_dir(fixture.root())
+            .expect("list active fixture root")
+            .all(|entry| {
+                entry.expect("active fixture entry").path().extension()
+                    != Some(std::ffi::OsStr::new("idx"))
+            }),
+        "an active query must not persist an IDX"
+    );
+}
+
+#[test]
+fn shared_index_preserves_errors_and_stream_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+
+    let missing = format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/index");
+    let previous = previous_index_response(&fixture, &missing, usize::MAX, usize::MAX)
+        .expect_err("previous index rejects an unknown series");
+    let shared = shared_query_response(&fixture, &missing, usize::MAX, usize::MAX)
+        .expect_err("shared index rejects an unknown series");
+    assert_api_error_parity(&shared, &previous);
+
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+    for (accepted_records, cancelled_after) in [
+        (usize::MAX, 0),
+        (usize::MAX, 1),
+        (1, usize::MAX),
+        (2, usize::MAX),
+    ] {
+        let (previous_meta, previous) =
+            previous_index_response(&fixture, &target, accepted_records, cancelled_after)
+                .expect("stop previous index stream");
+        let (shared_meta, shared) =
+            shared_query_response(&fixture, &target, accepted_records, cancelled_after)
+                .expect("stop shared index stream");
+        assert_eq!(shared_meta, previous_meta);
+        assert_eq!(
+            shared, previous,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+#[test]
+fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to_exclusive = from + 4;
+    fixture.append_pgbouncer_event(from);
+    fixture.append_log_error(from);
+    fixture.append_log_error(from + 1);
+    fixture.append_pgbouncer_event(from + 2);
+    fixture.finish();
+
+    for target in [
+        format!(
+            "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=groups&limit=1"
+        ),
+        format!(
+            "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=groups&limit=10"
+        ),
+    ] {
+        let (previous_meta, previous) =
+            previous_events_response(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream previous event groups");
+        let (shared_meta, shared) =
+            shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream shared event groups");
+        assert_eq!(shared_meta, previous_meta);
+        assert_eq!(shared, previous);
+        assert_eq!(shared_meta.cache, CachePolicy::Immutable);
+        assert!(shared_meta.etag.is_some());
+        let records = raw_ndjson_records(&shared);
+        assert_eq!(records[0]["representation"], "groups");
+        assert_eq!(records[0]["truncated"], target.ends_with("limit=1"));
+        assert!(
+            records
+                .iter()
+                .filter(|record| record["record"] == "event_group")
+                .all(|record| record["detail_ref"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()))
+        );
+    }
+
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=occurrences&limit=3"
+    );
+    let (previous_meta, previous) =
+        previous_events_response(&fixture, &target, usize::MAX, usize::MAX)
+            .expect("stream previous event occurrences");
+    let (shared_meta, shared) = shared_query_response(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream shared event occurrences");
+    assert_eq!(shared_meta, previous_meta);
+    assert_eq!(shared, previous);
+    let records = raw_ndjson_records(&shared);
+    assert_eq!(records[0]["representation"], "occurrences");
+    assert_eq!(records[0]["truncated"], true);
+    let occurrences = records
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .collect::<Vec<_>>();
+    assert_eq!(occurrences.len(), 3);
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|record| record["source"].as_str().expect("event source"))
+            .collect::<Vec<_>>(),
+        ["pgbouncer_events", "pg_log_errors", "pg_log_errors"]
+    );
+    assert!(occurrences.iter().all(|record| {
+        record["detail_ref"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    }));
+}
+
+#[test]
+fn shared_events_preserve_cancellation_errors_and_sink_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to_exclusive = from + 3;
+    fixture.append_log_error(from);
+    fixture.append_log_error(from + 1);
+    fixture.finish();
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=10"
+    );
+
+    let previous = previous_events_response(&fixture, &target, usize::MAX, 0)
+        .expect_err("previous event execution is cancelled");
+    let shared = shared_query_response(&fixture, &target, usize::MAX, 0)
+        .expect_err("shared event execution is cancelled");
+    assert_api_error_parity(&shared, &previous);
+
+    for accepted_records in [1, 2] {
+        let (previous_meta, previous) =
+            previous_events_response(&fixture, &target, accepted_records, usize::MAX)
+                .expect("stop previous events stream");
+        let (shared_meta, shared) =
+            shared_query_response(&fixture, &target, accepted_records, usize::MAX)
+                .expect("stop shared events stream");
+        assert_eq!(shared_meta, previous_meta);
+        assert_eq!(shared, previous, "accepted_records={accepted_records}");
+    }
+
+    let mut duplicate = Fixture::new();
+    duplicate.append_log_error(from);
+    duplicate.append_log_error(from);
+    duplicate.finish();
+    let previous = previous_events_response(&duplicate, &target, usize::MAX, usize::MAX)
+        .expect_err("previous events reject an ambiguous detail locator");
+    let shared = shared_query_response(&duplicate, &target, usize::MAX, usize::MAX)
+        .expect_err("shared events reject an ambiguous detail locator");
+    assert_api_error_parity(&shared, &previous);
+}
+
+fn previous_index_response(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
+    let crate::route::Route::Index(request) = fixture_route(target) else {
+        panic!("index route");
+    };
+    let prepared = crate::api::index::prepare(fixture.root(), request)?;
+    let meta = prepared.meta();
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    prepared.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok((meta, output))
+}
+
+fn previous_events_response(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
+    let crate::route::Route::Events(query) = fixture_route(target) else {
+        panic!("events route");
+    };
+    let query = legacy_events_query(query);
+    let prepared = crate::api::events::prepare(fixture.root(), query)?;
+    let meta = prepared.meta();
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    prepared.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok((meta, output))
+}
+
+fn legacy_events_query(query: kronika_query::EventsQuery) -> crate::api::events::EventsQuery {
+    let range = query.range();
+    let representation = match query.representation() {
+        kronika_query::EventsRepresentation::Groups => {
+            crate::api::events::EventsRepresentation::Groups
+        }
+        kronika_query::EventsRepresentation::Occurrences => {
+            crate::api::events::EventsRepresentation::Occurrences
+        }
+    };
+    crate::api::events::EventsQuery::normalize(
+        crate::api::time::TimeRange::new(range.from(), range.to_exclusive())
+            .expect("legacy event range"),
+        Some(query.sources().map(str::to_owned).collect()),
+        representation,
+        query.limit(),
+    )
+    .expect("legacy event query")
 }
 
 #[test]

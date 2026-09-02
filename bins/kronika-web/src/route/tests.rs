@@ -3,7 +3,7 @@ use super::{
     MAX_SEARCH_EXPRESSION_CHARS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest,
     Window, parse,
 };
-use crate::api::events::{EventSource, EventsRepresentation};
+use kronika_query::EventsRepresentation;
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {
@@ -33,12 +33,12 @@ fn events_route_is_half_open_deduplicated_and_strict() {
     .expect("events route") else {
         panic!("events route");
     };
-    assert_eq!(request.range.from, 10);
-    assert_eq!(request.range.to_exclusive, 20);
-    assert_eq!(request.representation, EventsRepresentation::Occurrences);
+    assert_eq!(request.range().from(), 10);
+    assert_eq!(request.range().to_exclusive(), 20);
+    assert_eq!(request.representation(), EventsRepresentation::Occurrences);
     assert_eq!(
-        request.sources,
-        [EventSource::Errors, EventSource::TempFiles]
+        request.sources().collect::<Vec<_>>(),
+        ["pg_log_errors", "pg_log_temp_files"]
     );
 
     for query in [

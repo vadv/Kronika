@@ -1,29 +1,25 @@
 //! Projected full-resolution history, streamed per physical layout and identity.
 
-#[cfg(test)]
-use std::{collections::BTreeSet, path::Path};
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 
-#[cfg(test)]
-use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
-use kronika_reader::{Cell, Row, Segment};
-#[cfg(test)]
-use kronika_reader::{SegmentKind, SegmentRef};
+use kronika_index::{
+    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
+    OS_PSI_TYPE_ID, visit_health_points,
+};
+use kronika_reader::{Cell, Row, Segment, SegmentKind};
 use serde_json::{Value, json};
 
-use super::ApiError;
-use super::query::{Plan, streaming_chunk_dictionary, validate_row_dictionary};
-#[cfg(test)]
-use super::query::{apply_tail, plans};
+use super::projection::{
+    Plan, apply_tail, plans, streaming_chunk_dictionary, validate_row_dictionary,
+};
 use super::render::{cell, projected_layout, record};
-#[cfg(test)]
-use super::{active_tail, explicit_segment};
-use crate::route::Window;
-#[cfg(test)]
-use crate::route::{ActiveCursor, DataRequest};
+use super::selection::{active_tail, exact_segment as explicit_segment};
+use crate::request::{ActiveCursor, DataRequest, Window};
+use crate::{DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability};
 
 const ROW_CHUNK_ROWS: usize = 512;
 
-#[cfg(test)]
 pub(crate) struct PreparedHistory {
     segment: Segment,
     logical_name: String,
@@ -32,18 +28,19 @@ pub(crate) struct PreparedHistory {
     health: Option<HealthPlan>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct HealthPlan {
     field_count: usize,
     psi_start_row: u64,
 }
 
-#[cfg(test)]
-pub(crate) fn prepare(root: &Path, request: DataRequest) -> Result<PreparedHistory, ApiError> {
-    let (reader, segment_ref) = explicit_segment(root, request.segment.segment_id)?;
-    let tail = active_tail(&segment_ref, request.after)?;
-    let segment = reader.open_segment(&segment_ref)?;
+pub(crate) fn prepare(
+    dataset: &dyn QueryDataset,
+    request: DataRequest,
+) -> Result<PreparedHistory, QueryError> {
+    let segment_ref = explicit_segment(dataset, request.segment.segment_id)?;
+    let tail = active_tail(dataset, &segment_ref, request.after)?;
+    let segment = dataset.open(&segment_ref)?;
     let (plans, health) = if request.segment.section == "health" {
         (Vec::new(), Some(health_plan(&request, tail.as_ref())?))
     } else {
@@ -60,15 +57,17 @@ pub(crate) fn prepare(root: &Path, request: DataRequest) -> Result<PreparedHisto
     })
 }
 
-#[cfg(test)]
 impl PreparedHistory {
-    pub(crate) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
+    pub(crate) const fn stability(&self) -> QueryStability {
+        match self.segment.kind() {
+            SegmentKind::Finished => QueryStability::Immutable,
+            SegmentKind::Active => QueryStability::Mutable,
+        }
+    }
+
+    pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
+        if sink.cancelled()
+            || !sink.record(record(json!({
                 "record": "history",
                 "segment": {
                     "id": self.segment.id().to_string(),
@@ -92,29 +91,17 @@ impl PreparedHistory {
             return Ok(());
         }
         if let Some(health) = self.health {
-            return self.stream_health(health, emit, cancelled);
+            return self.stream_health(health, sink);
         }
-        stream_plans(
-            &self.segment,
-            &self.logical_name,
-            &self.plans,
-            None,
-            emit,
-            cancelled,
-        )
-        .map(|_connected| ())
+        stream_plans(&self.segment, &self.logical_name, &self.plans, None, sink)
+            .map(|_connected| ())
     }
 
-    fn stream_health(
-        &self,
-        plan: HealthPlan,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
+    fn stream_health(&self, plan: HealthPlan, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
+        if sink.cancelled()
+            || !sink.record(record(json!({
                 "record": "layout",
-                "layout": super::index::section_layout("health", 0)?,
+                "layout": health_layout(),
             }))?)
         {
             return Ok(());
@@ -128,7 +115,7 @@ impl PreparedHistory {
                 plan.psi_start_row,
                 usize::MAX,
                 |_ordinal, row| {
-                    if cancelled() {
+                    if sink.cancelled() {
                         connected = false;
                         return false;
                     }
@@ -147,9 +134,10 @@ impl PreparedHistory {
         }
         let mut ordinal = 0_u64;
         let mut failure = None;
+        let sink = RefCell::new(sink);
         visit_health_points(
             &self.segment,
-            || !cancelled(),
+            || !sink.borrow().cancelled(),
             |point| {
                 let point_ordinal = ordinal;
                 ordinal = ordinal.saturating_add(1);
@@ -169,7 +157,7 @@ impl PreparedHistory {
                     "identity": [],
                     "values": values,
                 })) {
-                    Ok(bytes) => connected = emit(bytes),
+                    Ok(bytes) => connected = sink.borrow_mut().record(bytes),
                     Err(error) => {
                         failure = Some(error);
                         connected = false;
@@ -185,15 +173,17 @@ impl PreparedHistory {
     }
 }
 
-#[cfg(test)]
-fn health_plan(request: &DataRequest, tail: Option<&SegmentRef>) -> Result<HealthPlan, ApiError> {
+fn health_plan(
+    request: &DataRequest,
+    tail: Option<&DatasetSegment>,
+) -> Result<HealthPlan, QueryError> {
     for field in &request.fields {
         if field != "health" {
-            return Err(ApiError::NoSuchColumn(field.clone()));
+            return Err(QueryError::NoSuchColumn(field.clone()));
         }
     }
     if let Some(filter) = request.filters.first() {
-        return Err(ApiError::BadFilter(filter.column.clone()));
+        return Err(QueryError::BadFilter(filter.column.clone()));
     }
     let psi_start_row = tail
         .and_then(|segment| {
@@ -213,15 +203,14 @@ fn emit_chunk(
     segment: &Segment,
     plan: &Plan,
     rows: &mut Vec<(u64, Row)>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
-    if cancelled() {
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
+    if sink.cancelled() {
         return Ok(false);
     }
     let dictionary = streaming_chunk_dictionary(segment, rows)?;
     for (ordinal, row) in rows.drain(..) {
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(false);
         }
         validate_row_dictionary(&row, &dictionary)?;
@@ -251,7 +240,7 @@ fn emit_chunk(
                     .map_or(Ok(Value::Null), |value| cell(value, &dictionary))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if !emit(record(json!({
+        if !sink.record(record(json!({
             "record": "row",
             "type_id": plan.type_id.to_string(),
             "ordinal": ordinal.to_string(),
@@ -265,16 +254,15 @@ fn emit_chunk(
     Ok(true)
 }
 
-pub(super) fn stream_plans(
+pub(crate) fn stream_plans(
     segment: &Segment,
     logical_name: &str,
     plans: &[Plan],
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
     for plan in plans {
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(false);
         }
         let fields = plan
@@ -287,7 +275,7 @@ pub(super) fn stream_plans(
                 )
             })
             .collect::<Vec<_>>();
-        if !emit(record(json!({
+        if !sink.record(record(json!({
             "record": "layout",
             "layout": projected_layout(logical_name, plan.contract, &fields),
         }))?) {
@@ -305,7 +293,7 @@ pub(super) fn stream_plans(
             plan.start_row,
             usize::MAX,
             |ordinal, row| {
-                if cancelled() {
+                if sink.cancelled() {
                     connected = false;
                     return false;
                 }
@@ -321,7 +309,7 @@ pub(super) fn stream_plans(
                 if chunk.len() < ROW_CHUNK_ROWS {
                     return true;
                 }
-                match emit_chunk(segment, plan, &mut chunk, emit, cancelled) {
+                match emit_chunk(segment, plan, &mut chunk, sink) {
                     Ok(still_connected) => connected = still_connected,
                     Err(error) => failure = Some(error),
                 }
@@ -329,7 +317,7 @@ pub(super) fn stream_plans(
             },
         )?;
         if failure.is_none() && connected && !chunk.is_empty() {
-            match emit_chunk(segment, plan, &mut chunk, emit, cancelled) {
+            match emit_chunk(segment, plan, &mut chunk, sink) {
                 Ok(still_connected) => connected = still_connected,
                 Err(error) => failure = Some(error),
             }
@@ -342,4 +330,31 @@ pub(super) fn stream_plans(
         }
     }
     Ok(true)
+}
+
+fn health_layout() -> Value {
+    json!({
+        "logical_name": "health",
+        "physical_name": "derived_os_health",
+        "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
+        "implementation": "kronika",
+        "identity": [],
+        "columns": [{
+            "name": "os_health",
+            "type": "u8",
+            "class": "gauge",
+            "unit": "percent",
+            "nullable": true,
+        }],
+        "provenance": {
+            "inputs": [
+                INSTANCE_METADATA_TYPE_ID.to_string(),
+                INSTANCE_METADATA_V1_TYPE_ID.to_string(),
+                OS_PSI_TYPE_ID.to_string(),
+                "1001001",
+                "1001002",
+                "1001004",
+            ],
+        },
+    })
 }

@@ -20,6 +20,6 @@ pub use series::{
     ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
 };
 pub use store::{
-    EXTENSION, LoadError, ResourceIndex, finding_keys, path_of, read, resource, resource_selected,
-    series_keys,
+    EXTENSION, LoadError, ResourceIndex, finding_keys, finding_keys_for_sections, path_of, read,
+    resource, resource_selected, series_keys, series_keys_for_sections,
 };

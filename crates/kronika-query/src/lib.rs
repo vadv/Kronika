@@ -3,17 +3,40 @@
 mod catalog;
 mod dataset;
 mod error;
+mod events;
+mod finished_dataset;
+mod history;
+mod index;
+mod index_provider;
+mod projection;
 mod render;
 mod request;
+mod row_key;
+mod rows;
+mod selection;
+mod time;
 
 pub use dataset::{
     CapturedCatalog, DatasetListing, DatasetSegment, DatasetWarning, DatasetWarningSubject,
     OpaqueCapture, PredecessorSelection, QueryDataset, SegmentBounds, SegmentSelection,
 };
 pub use error::QueryError;
-pub use request::{CatalogRequest, QueryRequest, Window};
+pub use events::{
+    EventGroup, EventOccurrence, EventsQuery, EventsQueryError, EventsRepresentation, EventsResult,
+    MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+};
+pub use finished_dataset::FinishedDataset;
+pub use index_provider::{IndexProvider, IndexResource};
+pub use request::{
+    ActiveCursor, CatalogRequest, DataRequest, Filter, IndexRequest, Order, QueryRequest,
+    RowsRequest, SegmentRequest, Window,
+};
+pub use time::TimeRange;
 
 use catalog::PreparedCatalog;
+use events::PreparedEvents;
+use history::PreparedHistory;
+use rows::PreparedRows;
 
 /// Source-family bit for recorded operating-system data.
 pub const SOURCE_OS: u32 = 1 << 0;
@@ -24,6 +47,7 @@ pub const SOURCE_POSTGRESQL: u32 = 1 << 1;
 #[derive(Clone)]
 pub struct QueryContext {
     dataset: std::sync::Arc<dyn QueryDataset>,
+    indexes: Option<std::sync::Arc<dyn IndexProvider>>,
     configured_sources: u32,
     synthetic_demo: bool,
 }
@@ -32,6 +56,7 @@ impl std::fmt::Debug for QueryContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryContext")
             .field("dataset", &self.dataset)
+            .field("indexes", &self.indexes)
             .field("configured_sources", &self.configured_sources)
             .field("synthetic_demo", &self.synthetic_demo)
             .finish()
@@ -48,9 +73,26 @@ impl QueryContext {
     ) -> Self {
         Self {
             dataset,
+            indexes: None,
             configured_sources,
             synthetic_demo,
         }
+    }
+
+    /// Add the native derived-index/cache adapter used by indexed queries.
+    #[must_use]
+    pub fn with_index_provider(mut self, indexes: std::sync::Arc<dyn IndexProvider>) -> Self {
+        self.indexes = Some(indexes);
+        self
+    }
+
+    fn index_provider(&self) -> Result<&dyn IndexProvider, QueryError> {
+        self.indexes.as_deref().ok_or_else(|| {
+            QueryError::Unreadable(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this query context has no derived-index provider",
+            )))
+        })
     }
 }
 
@@ -65,22 +107,46 @@ pub enum QueryStability {
     Immutable,
 }
 
-/// Transport-neutral facts known before records are emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryMetadata {
-    stability: QueryStability,
+/// Stable response identity whose wire representation belongs to the adapter.
+#[derive(Debug, Clone, Copy)]
+pub enum QueryIdentity<'a> {
+    /// CRC32C validated from one immutable IDX container.
+    IndexChecksum(u32),
+    /// Exact immutable segment selection whose digest remains adapter-owned.
+    SegmentSet {
+        /// Stable response-family domain.
+        resource: &'a str,
+        /// Exact semantic request shape.
+        shape: &'a str,
+        /// Captured segment descriptors in selection order.
+        segments: &'a [DatasetSegment],
+    },
 }
 
-impl QueryMetadata {
+/// Transport-neutral facts known before records are emitted.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryMetadata<'a> {
+    stability: QueryStability,
+    identity: Option<QueryIdentity<'a>>,
+}
+
+impl<'a> QueryMetadata<'a> {
     /// Stability of the selected recorded data.
     #[must_use]
     pub const fn stability(self) -> QueryStability {
         self.stability
     }
 
+    /// Stable selected-data identity, when one is available.
+    #[must_use]
+    pub const fn identity(self) -> Option<QueryIdentity<'a>> {
+        self.identity
+    }
+
     const fn revalidate() -> Self {
         Self {
             stability: QueryStability::Revalidate,
+            identity: None,
         }
     }
 }
@@ -101,6 +167,10 @@ pub struct QueryExecution {
 
 enum Prepared {
     Catalog(PreparedCatalog),
+    Index(index::PreparedIndex),
+    History(PreparedHistory),
+    Rows(PreparedRows),
+    Events(PreparedEvents),
 }
 
 impl std::fmt::Debug for QueryExecution {
@@ -112,9 +182,34 @@ impl std::fmt::Debug for QueryExecution {
 impl QueryExecution {
     /// Facts the native adapter maps to cache and validator policy.
     #[must_use]
-    pub const fn metadata(&self) -> QueryMetadata {
-        match self.prepared {
+    pub fn metadata(&self) -> QueryMetadata<'_> {
+        match &self.prepared {
             Prepared::Catalog(_) => QueryMetadata::revalidate(),
+            Prepared::Index(prepared) => QueryMetadata {
+                stability: match prepared.kind() {
+                    kronika_reader::SegmentKind::Finished => QueryStability::Immutable,
+                    kronika_reader::SegmentKind::Active => QueryStability::Mutable,
+                },
+                identity: prepared.checksum().map(QueryIdentity::IndexChecksum),
+            },
+            Prepared::History(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: None,
+            },
+            Prepared::Rows(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: None,
+            },
+            Prepared::Events(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: prepared
+                    .validator_input()
+                    .map(|(resource, shape, segments)| QueryIdentity::SegmentSet {
+                        resource,
+                        shape,
+                        segments,
+                    }),
+            },
         }
     }
 
@@ -126,6 +221,10 @@ impl QueryExecution {
     pub fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
         match self.prepared {
             Prepared::Catalog(prepared) => prepared.stream(sink),
+            Prepared::Index(prepared) => prepared.stream(sink),
+            Prepared::History(prepared) => prepared.stream(sink),
+            Prepared::Rows(prepared) => prepared.stream(sink),
+            Prepared::Events(prepared) => prepared.stream(sink),
         }
     }
 }
@@ -145,6 +244,21 @@ pub fn execute(
             *request,
             context.configured_sources,
             context.synthetic_demo,
+        )?),
+        QueryRequest::Index(request) => Prepared::Index(index::prepare(
+            context.dataset.as_ref(),
+            context.index_provider()?,
+            request,
+        )?),
+        QueryRequest::History(request) => {
+            Prepared::History(history::prepare(context.dataset.as_ref(), request.clone())?)
+        }
+        QueryRequest::Rows(request) => {
+            Prepared::Rows(rows::prepare(context.dataset.as_ref(), request.clone())?)
+        }
+        QueryRequest::Events(request) => Prepared::Events(events::prepare(
+            std::sync::Arc::clone(&context.dataset),
+            request.clone(),
         )?),
     };
     Ok(QueryExecution { prepared })

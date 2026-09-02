@@ -1,18 +1,19 @@
 //! Native captured-data adapter for shared query execution.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use kronika_query::{
     CapturedCatalog, DatasetListing, DatasetSegment, DatasetWarning, DatasetWarningSubject,
-    OpaqueCapture, PredecessorSelection, QueryDataset, QueryError, SegmentSelection,
+    IndexProvider, IndexResource, OpaqueCapture, PredecessorSelection, QueryDataset, QueryError,
+    SegmentSelection,
 };
 use kronika_reader::{CatalogDiscovery, Listing, Reader, Segment, SegmentRef, StoreObject};
 
 /// One native reader retained for every opaque segment capture it produced.
 #[derive(Debug)]
 pub(crate) struct NativeDataset {
+    root: PathBuf,
     reader: Reader,
     started: Instant,
 }
@@ -22,29 +23,32 @@ impl NativeDataset {
         let started = Instant::now();
         Ok(Self {
             reader: Reader::open(root)?,
+            root: root.to_owned(),
             started,
         })
     }
 
-    fn descriptor(segment: &SegmentRef) -> DatasetSegment {
+    fn descriptor(segment: SegmentRef) -> DatasetSegment {
+        let sections = segment.shared_sections();
+        let id = segment.id();
+        let kind = segment.kind();
+        let min_ts = segment.min_ts();
+        let max_ts = segment.max_ts();
+        let active_position = segment.active_position();
         DatasetSegment::new(
-            OpaqueCapture::new(segment.clone()),
-            segment.id(),
-            segment.kind(),
-            segment.min_ts(),
-            segment.max_ts(),
-            segment.active_position(),
-            Arc::from(segment.sections()),
+            OpaqueCapture::new(segment),
+            id,
+            kind,
+            min_ts,
+            max_ts,
+            active_position,
+            sections,
         )
     }
 
     fn listing(listing: Listing) -> DatasetListing {
         DatasetListing {
-            segments: listing
-                .segments
-                .into_iter()
-                .map(|segment| Self::descriptor(&segment))
-                .collect(),
+            segments: listing.segments.into_iter().map(Self::descriptor).collect(),
             warnings: listing.warnings.into_iter().map(warning).collect(),
         }
     }
@@ -131,7 +135,55 @@ impl QueryDataset for NativeDataset {
         let pinned = Self::captured(segment)?
             .at_active_position(position)
             .map_err(QueryError::from)?;
-        Ok(Self::descriptor(&pinned))
+        Ok(Self::descriptor(pinned))
+    }
+}
+
+impl IndexProvider for NativeDataset {
+    fn load(
+        &self,
+        segment: &DatasetSegment,
+        logical_name: &str,
+        keys: &[kronika_index::SeriesKey],
+    ) -> Result<IndexResource, QueryError> {
+        let started = Instant::now();
+        let resource = kronika_index::resource_selected(
+            &self.root,
+            &self.reader,
+            Self::captured(segment)?,
+            keys,
+        )
+        .map_err(|error| QueryError::Unreadable(Box::new(error)))?;
+        let point_count = resource
+            .index
+            .blocks
+            .iter()
+            .map(index_block_len)
+            .sum::<usize>();
+        eprintln!(
+            "kronika-web: index_resource segment_id={} logical_name={} persisted={} blocks={} points={} elapsed_us={}",
+            segment.id(),
+            logical_name,
+            resource.persisted,
+            resource.index.blocks.len(),
+            point_count,
+            started.elapsed().as_micros(),
+        );
+        Ok(IndexResource {
+            index: resource.index,
+            persisted: resource.persisted,
+        })
+    }
+}
+
+const fn index_block_len(block: &kronika_index::SeriesBlock) -> usize {
+    match block {
+        kronika_index::SeriesBlock::OsHealth(points)
+        | kronika_index::SeriesBlock::OverallHealth(points)
+        | kronika_index::SeriesBlock::PostgresHealth(points) => points.len(),
+        kronika_index::SeriesBlock::PgTransactions { points, .. } => points.len(),
+        kronika_index::SeriesBlock::PgActiveBackends { points, .. } => points.len(),
+        kronika_index::SeriesBlock::Findings(block) => block.findings.len(),
     }
 }
 

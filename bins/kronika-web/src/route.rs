@@ -1,11 +1,11 @@
 //! Strict parsing of the four resource families.
 
-use crate::api::events::{
-    EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
-};
 pub(crate) use crate::api::heatmap::HeatmapRequest;
 use crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES;
-use crate::api::time::TimeRange;
+use kronika_query::TimeRange;
+use kronika_query::{
+    EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+};
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -547,10 +547,8 @@ fn parse_events(query: &str) -> Result<EventsQuery, RouteError> {
         limit.ok_or_else(|| RouteError::BadParameter("limit".to_owned()))?,
     )
     .map_err(|error| match error {
-        crate::api::events::EventsQueryError::Limit(_) => {
-            RouteError::BadParameter("limit".to_owned())
-        }
-        crate::api::events::EventsQueryError::Source { .. } => {
+        kronika_query::EventsQueryError::Limit(_) => RouteError::BadParameter("limit".to_owned()),
+        kronika_query::EventsQueryError::Source { .. } => {
             RouteError::BadParameter("source".to_owned())
         }
     })

@@ -1,77 +1,60 @@
-//! HTTP representation of one allowlisted per-segment index series.
+//! Representation of one allowlisted per-segment index series.
 
-#[cfg(test)]
-use std::path::Path;
-
-#[cfg(test)]
-use hyper::StatusCode;
 use kronika_index::{
     DERIVED_HEALTH_TYPE_ID, FindingBlock, FindingKind, INSTANCE_METADATA_TYPE_ID,
-    INSTANCE_METADATA_V1_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock,
+    INSTANCE_METADATA_V1_TYPE_ID, OS_PSI_TYPE_ID, SeriesBlock, series_keys_for_sections,
 };
-#[cfg(test)]
-use kronika_index::{resource, series_keys};
-#[cfg(test)]
-use kronika_reader::{SegmentKind, SegmentRef};
+use kronika_reader::SegmentKind;
 use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
-use super::ApiError;
-use super::render::record;
-#[cfg(test)]
-use super::{CachePolicy, ResponseMeta, explicit_segment};
-#[cfg(test)]
-use crate::route::SegmentRequest;
-use crate::route::Window;
+use crate::dataset::{DatasetSegment, QueryDataset};
+use crate::index_provider::{IndexProvider, IndexResource};
+use crate::render::record;
+use crate::{IndexRequest, QueryError, QuerySink, Window};
 
-#[cfg(test)]
 pub(crate) struct PreparedIndex {
-    meta: ResponseMeta,
-    segment: SegmentRef,
+    segment: DatasetSegment,
     logical_name: String,
-    resource: ResourceIndex,
+    resource: IndexResource,
 }
 
-#[cfg(test)]
-pub(crate) fn prepare(root: &Path, request: SegmentRequest) -> Result<PreparedIndex, ApiError> {
-    let (reader, segment) = explicit_segment(root, request.segment_id)?;
-    if series_keys(&segment, &request.section).is_empty() {
-        return Err(ApiError::NoSuchSection);
+pub(crate) fn prepare(
+    dataset: &dyn QueryDataset,
+    indexes: &dyn IndexProvider,
+    request: &IndexRequest,
+) -> Result<PreparedIndex, QueryError> {
+    let listing = dataset.segment(request.segment_id)?;
+    let segment = listing
+        .segments
+        .into_iter()
+        .next()
+        .ok_or(QueryError::NoSuchSegment)?;
+    let keys = series_keys_for_sections(segment.sections(), &request.section);
+    if keys.is_empty() {
+        return Err(QueryError::NoSuchSection);
     }
-    let started = std::time::Instant::now();
-    let resource = resource(root, &reader, &segment, &request.section)?;
-    let point_count = resource.index.blocks.iter().map(block_len).sum::<usize>();
-    eprintln!(
-        "kronika-web: index_resource segment_id={} logical_name={} persisted={} blocks={} points={} elapsed_us={}",
-        segment.id(),
-        request.section,
-        resource.persisted,
-        resource.index.blocks.len(),
-        point_count,
-        started.elapsed().as_micros(),
-    );
-    let meta = resource_meta(segment.kind(), resource.index.checksum)?;
+    let resource = indexes.load(&segment, &request.section, &keys)?;
+    validate_checksum(segment.kind(), resource.index.checksum)?;
     Ok(PreparedIndex {
-        meta,
         segment,
-        logical_name: request.section,
+        logical_name: request.section.clone(),
         resource,
     })
 }
 
-#[cfg(test)]
 impl PreparedIndex {
-    pub(crate) fn meta(&self) -> ResponseMeta {
-        self.meta.clone()
+    pub(crate) const fn kind(&self) -> SegmentKind {
+        self.segment.kind()
     }
 
-    pub(crate) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
+    pub(crate) const fn checksum(&self) -> Option<u32> {
+        self.resource.index.checksum
+    }
+
+    pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
+        if sink.cancelled()
+            || !sink.record(record(json!({
                 "record": "index",
                 "segment": segment_value(&self.segment),
                 "logical_name": self.logical_name,
@@ -80,32 +63,31 @@ impl PreparedIndex {
         {
             return Ok(());
         }
-        stream_series(&self.logical_name, self.resource, None, emit, cancelled).map(|_connected| ())
+        stream_series(&self.logical_name, self.resource, None, sink).map(|_connected| ())
     }
 }
 
-pub(super) fn stream_series(
+pub(crate) fn stream_series(
     logical_name: &str,
-    resource: ResourceIndex,
+    resource: IndexResource,
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
     {
         for block in resource.index.blocks {
             if let SeriesBlock::Findings(block) = block {
                 let finding_logical_name = if block.type_id == 0 {
                     "health"
                 } else {
-                    logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
+                    logical_section_name(block.type_id).ok_or(QueryError::NoSuchSection)?
                 };
-                if !stream_findings(finding_logical_name, block, window, emit, cancelled)? {
+                if !stream_findings(finding_logical_name, block, window, sink)? {
                     return Ok(false);
                 }
                 continue;
             }
-            if cancelled()
-                || !emit(record(json!({
+            if sink.cancelled()
+                || !sink.record(record(json!({
                     "record": "layout",
                     "layout": block_layout(logical_name, &block)?,
                 }))?)
@@ -126,8 +108,8 @@ pub(super) fn stream_series(
                     for point in points.into_iter().filter(|point| {
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
-                        if cancelled()
-                            || !emit(record(json!({
+                        if sink.cancelled()
+                            || !sink.record(record(json!({
                                 "record": "point",
                                 "series": series,
                                 "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
@@ -144,8 +126,8 @@ pub(super) fn stream_series(
                     for point in points.into_iter().filter(|point| {
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
-                        if cancelled()
-                            || !emit(record(json!({
+                        if sink.cancelled()
+                            || !sink.record(record(json!({
                                 "record": "point",
                                 "series": "transactions_per_second",
                                 "type_id": type_id.to_string(),
@@ -162,8 +144,8 @@ pub(super) fn stream_series(
                     for point in points.into_iter().filter(|point| {
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
-                        if cancelled()
-                            || !emit(record(json!({
+                        if sink.cancelled()
+                            || !sink.record(record(json!({
                                 "record": "point",
                                 "series": "active_backends",
                                 "type_id": type_id.to_string(),
@@ -176,7 +158,7 @@ pub(super) fn stream_series(
                         }
                     }
                 }
-                SeriesBlock::Findings(_) => return Err(ApiError::NoSuchSection),
+                SeriesBlock::Findings(_) => return Err(QueryError::NoSuchSection),
             }
         }
         Ok(true)
@@ -187,9 +169,8 @@ fn stream_findings(
     logical_name: &str,
     mut block: FindingBlock,
     window: Option<Window>,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
+    sink: &mut dyn QuerySink,
+) -> Result<bool, QueryError> {
     if let Some(window) = window {
         let omitted_may_intersect = block.truncated
             && block
@@ -202,8 +183,8 @@ fn stream_findings(
         block.total_hits = u32::try_from(block.findings.len()).unwrap_or(u32::MAX);
         block.truncated = omitted_may_intersect;
     }
-    if cancelled()
-        || !emit(record(json!({
+    if sink.cancelled()
+        || !sink.record(record(json!({
             "record": "findings",
             "logical_name": logical_name,
             "type_id": block.type_id.to_string(),
@@ -214,7 +195,7 @@ fn stream_findings(
         return Ok(false);
     }
     for finding in block.findings {
-        if cancelled() {
+        if sink.cancelled() {
             return Ok(false);
         }
         let mut value = json!({
@@ -229,27 +210,14 @@ fn stream_findings(
         if let Some(category) = finding.category {
             value["category"] = category.into();
         }
-        if !emit(record(value)?) {
+        if !sink.record(record(value)?) {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-#[cfg(test)]
-const fn block_len(block: &SeriesBlock) -> usize {
-    match block {
-        SeriesBlock::OsHealth(points)
-        | SeriesBlock::OverallHealth(points)
-        | SeriesBlock::PostgresHealth(points) => points.len(),
-        SeriesBlock::PgTransactions { points, .. } => points.len(),
-        SeriesBlock::PgActiveBackends { points, .. } => points.len(),
-        SeriesBlock::Findings(block) => block.findings.len(),
-    }
-}
-
-#[cfg(test)]
-fn segment_value(segment: &SegmentRef) -> Value {
+fn segment_value(segment: &DatasetSegment) -> Value {
     let cursor = segment.active_position().map(|wal_position| {
         json!({
             "segment_id": segment.id().to_string(),
@@ -268,27 +236,22 @@ fn segment_value(segment: &SegmentRef) -> Value {
     })
 }
 
-#[cfg(test)]
-fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMeta, ApiError> {
+fn validate_checksum(kind: SegmentKind, checksum: Option<u32>) -> Result<(), QueryError> {
     match kind {
         SegmentKind::Finished => {
-            let checksum = checksum.ok_or_else(|| {
-                ApiError::Unreadable(Box::new(std::io::Error::new(
+            checksum.ok_or_else(|| {
+                QueryError::Unreadable(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "finished index has no validated checksum",
                 )))
             })?;
-            Ok(ResponseMeta {
-                status: StatusCode::OK,
-                cache: CachePolicy::Immutable,
-                etag: Some(format!("W/\"{checksum:08x}\"")),
-            })
+            Ok(())
         }
-        SegmentKind::Active => Ok(ResponseMeta::ok(CachePolicy::NoStore)),
+        SegmentKind::Active => Ok(()),
     }
 }
 
-fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
+fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, QueryError> {
     match block {
         SeriesBlock::OsHealth(_) => Ok(health_layout("os_health")),
         SeriesBlock::OverallHealth(_) => Ok(health_layout("overall_health")),
@@ -297,7 +260,7 @@ fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiEr
         SeriesBlock::PgActiveBackends { type_id, .. } => {
             section_layout("pg_stat_activity", *type_id)
         }
-        SeriesBlock::Findings(_) => Err(ApiError::NoSuchSection),
+        SeriesBlock::Findings(_) => Err(QueryError::NoSuchSection),
     }
 }
 
@@ -309,11 +272,11 @@ const fn finding_kind(kind: FindingKind) -> &'static str {
     }
 }
 
-pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
+pub(crate) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, QueryError> {
     if type_id == DERIVED_HEALTH_TYPE_ID {
         return Ok(health_layout("os_health"));
     }
-    let contract = contract(type_id).ok_or(ApiError::NoSuchSection)?;
+    let contract = contract(type_id).ok_or(QueryError::NoSuchSection)?;
     let (identity, columns) = match logical_name {
         "pg_stat_database" => (
             json!(["datid"]),
@@ -335,7 +298,7 @@ pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, 
                 "nullable": false,
             }]),
         ),
-        _ => return Err(ApiError::NoSuchSection),
+        _ => return Err(QueryError::NoSuchSection),
     };
     Ok(json!({
         "logical_name": logical_name,
@@ -373,6 +336,3 @@ fn health_layout(series: &str) -> Value {
         },
     })
 }
-
-#[cfg(test)]
-mod tests;

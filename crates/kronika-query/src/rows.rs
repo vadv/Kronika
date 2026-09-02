@@ -1,14 +1,13 @@
 //! Stable bounded pages over physical row order.
 
-use std::path::Path;
-
-use kronika_reader::{Dictionary, Row, Segment, SegmentKind, SegmentRef};
+use kronika_reader::{Dictionary, Row, Segment, SegmentKind};
 use serde_json::{Value, json};
 
-use super::query::{Plan, apply_tail, chunk_dictionary, plans};
+use super::projection::{Plan, apply_tail, chunk_dictionary, plans};
 use super::render::{cell, projected_layout, record};
-use super::{ApiError, active_tail, explicit_segment};
-use crate::route::{Order, RowsRequest};
+use super::selection::{active_tail, exact_segment};
+use crate::request::{Order, RowsRequest};
+use crate::{DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cursor {
@@ -28,7 +27,10 @@ pub(crate) struct PreparedRows {
     start: Cursor,
 }
 
-pub(crate) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows, ApiError> {
+pub(crate) fn prepare(
+    dataset: &dyn QueryDataset,
+    request: RowsRequest,
+) -> Result<PreparedRows, QueryError> {
     let binding = binding(&request);
     let parsed = request
         .cursor
@@ -39,12 +41,12 @@ pub(crate) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
             cursor.segment_id == request.data.segment.segment_id && cursor.binding == binding
         });
     if request.cursor.is_some() && parsed.is_none() {
-        return Err(ApiError::BadCursor);
+        return Err(QueryError::BadCursor);
     }
-    let (reader, current) = explicit_segment(root, request.data.segment.segment_id)?;
-    let segment_ref = pin(current, parsed)?;
-    let tail = active_tail(&segment_ref, request.data.after)?;
-    let segment = reader.open_segment(&segment_ref)?;
+    let current = exact_segment(dataset, request.data.segment.segment_id)?;
+    let segment_ref = pin(dataset, current, parsed)?;
+    let tail = active_tail(dataset, &segment_ref, request.data.after)?;
+    let segment = dataset.open(&segment_ref)?;
     let mut plans = plans(&segment, &request.data, false)?;
     apply_tail(&mut plans, tail.as_ref())?;
     let active_position = segment.active_position().unwrap_or(0);
@@ -71,13 +73,13 @@ pub(crate) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
         },
     };
     let Some(plan) = plans.get(start.layout_index) else {
-        return Err(ApiError::BadCursor);
+        return Err(QueryError::BadCursor);
     };
     if start.position < plan.start_row
         || start.position > plan.rows
         || start.active_position != active_position
     {
-        return Err(ApiError::BadCursor);
+        return Err(QueryError::BadCursor);
     }
     Ok(PreparedRows {
         segment,
@@ -90,13 +92,16 @@ pub(crate) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
 }
 
 impl PreparedRows {
-    pub(crate) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled()
-            || !emit(record(json!({
+    pub(crate) const fn stability(&self) -> QueryStability {
+        match self.segment.kind() {
+            SegmentKind::Finished => QueryStability::Immutable,
+            SegmentKind::Active => QueryStability::Mutable,
+        }
+    }
+
+    pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
+        if sink.cancelled()
+            || !sink.record(record(json!({
                 "record": "rows",
                 "segment": {
                     "id": self.segment.id().to_string(),
@@ -120,7 +125,7 @@ impl PreparedRows {
             return Ok(());
         }
         for plan in &self.plans {
-            if cancelled() {
+            if sink.cancelled() {
                 return Ok(());
             }
             let fields = plan
@@ -133,7 +138,7 @@ impl PreparedRows {
                     )
                 })
                 .collect::<Vec<_>>();
-            if !emit(record(json!({
+            if !sink.record(record(json!({
                 "record": "layout",
                 "layout": projected_layout(&self.logical_name, plan.contract, &fields),
             }))?) {
@@ -142,25 +147,21 @@ impl PreparedRows {
         }
 
         let page = match self.order {
-            Order::Asc => self.asc(emit, cancelled)?,
-            Order::Desc => self.desc(emit, cancelled)?,
+            Order::Asc => self.asc(sink)?,
+            Order::Desc => self.desc(sink)?,
         };
-        if !page.connected || cancelled() {
+        if !page.connected || sink.cancelled() {
             return Ok(());
         }
         let next = page.next.map(Cursor::encode);
-        let _sent = emit(record(json!({
+        let _sent = sink.record(record(json!({
             "record": "page",
             "next_cursor": next,
         }))?);
         Ok(())
     }
 
-    fn asc(
-        &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<Page, ApiError> {
+    fn asc(&self, sink: &mut dyn QuerySink) -> Result<Page, QueryError> {
         let mut page = AscPage {
             emitted: 0,
             next: None,
@@ -168,7 +169,7 @@ impl PreparedRows {
         };
         let mut failure = None;
         for layout_index in self.start.layout_index..self.plans.len() {
-            if cancelled() {
+            if sink.cancelled() {
                 page.connected = false;
                 break;
             }
@@ -189,7 +190,7 @@ impl PreparedRows {
                 offset,
                 usize::MAX,
                 |ordinal, row| {
-                    if cancelled() {
+                    if sink.cancelled() {
                         page.connected = false;
                         return false;
                     }
@@ -197,21 +198,16 @@ impl PreparedRows {
                     if chunk.len() < chunk_rows {
                         return true;
                     }
-                    if let Err(error) = self.emit_asc_chunk(
-                        plan,
-                        layout_index,
-                        &mut chunk,
-                        &mut page,
-                        emit,
-                        cancelled,
-                    ) {
+                    if let Err(error) =
+                        self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, sink)
+                    {
                         failure = Some(error);
                     }
                     page.connected && failure.is_none() && page.next.is_none()
                 },
             )?;
             if failure.is_none() && page.connected && page.next.is_none() && !chunk.is_empty() {
-                self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, emit, cancelled)?;
+                self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, sink)?;
             }
             if failure.is_some() || !page.connected || page.next.is_some() {
                 break;
@@ -232,16 +228,15 @@ impl PreparedRows {
         layout_index: usize,
         rows: &mut Vec<(u64, Row)>,
         page: &mut AscPage,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
-        if cancelled() {
+        sink: &mut dyn QuerySink,
+    ) -> Result<(), QueryError> {
+        if sink.cancelled() {
             page.connected = false;
             return Ok(());
         }
         let dictionary = chunk_dictionary(&self.segment, rows)?;
         for (ordinal, row) in rows.drain(..) {
-            if cancelled() {
+            if sink.cancelled() {
                 page.connected = false;
                 break;
             }
@@ -256,7 +251,7 @@ impl PreparedRows {
                 });
                 break;
             }
-            page.connected = emit(row_record(plan, ordinal, &row, &dictionary)?);
+            page.connected = sink.record(row_record(plan, ordinal, &row, &dictionary)?);
             if !page.connected {
                 break;
             }
@@ -265,17 +260,13 @@ impl PreparedRows {
         Ok(())
     }
 
-    fn desc(
-        &self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<Page, ApiError> {
+    fn desc(&self, sink: &mut dyn QuerySink) -> Result<Page, QueryError> {
         let mut emitted = 0_usize;
         let mut next = None;
         let mut connected = true;
         let mut failure = None;
         for layout_index in (0..=self.start.layout_index).rev() {
-            if cancelled() {
+            if sink.cancelled() {
                 connected = false;
                 break;
             }
@@ -292,7 +283,7 @@ impl PreparedRows {
                 let chunk_rows = self.page_size.saturating_add(1);
                 let lower = upper.saturating_sub(chunk_rows as u64).max(plan.start_row);
                 let limit =
-                    usize::try_from(upper - lower).map_err(|_overflow| ApiError::BadCursor)?;
+                    usize::try_from(upper - lower).map_err(|_overflow| QueryError::BadCursor)?;
                 // Reverse physical order needs only one bounded projected chunk;
                 // no complete section or response is retained.
                 let mut chunk: Vec<(u64, Row)> = Vec::with_capacity(limit);
@@ -302,7 +293,7 @@ impl PreparedRows {
                     lower,
                     limit,
                     |ordinal, row| {
-                        if cancelled() {
+                        if sink.cancelled() {
                             connected = false;
                             return false;
                         }
@@ -315,7 +306,7 @@ impl PreparedRows {
                 }
                 let dictionary = chunk_dictionary(&self.segment, &chunk)?;
                 for (ordinal, row) in chunk.into_iter().rev() {
-                    if cancelled() {
+                    if sink.cancelled() {
                         connected = false;
                         break;
                     }
@@ -332,7 +323,7 @@ impl PreparedRows {
                     }
                     match row_record(plan, ordinal, &row, &dictionary) {
                         Ok(bytes) => {
-                            connected = emit(bytes);
+                            connected = sink.record(bytes);
                             emitted = emitted.saturating_add(1);
                         }
                         Err(error) => {
@@ -369,16 +360,20 @@ struct AscPage {
     connected: bool,
 }
 
-fn pin(current: SegmentRef, cursor: Option<Cursor>) -> Result<SegmentRef, ApiError> {
+fn pin(
+    dataset: &dyn QueryDataset,
+    current: DatasetSegment,
+    cursor: Option<Cursor>,
+) -> Result<DatasetSegment, QueryError> {
     let Some(cursor) = cursor else {
         return Ok(current);
     };
     match current.kind() {
         SegmentKind::Finished if cursor.active_position == 0 => Ok(current),
-        SegmentKind::Active => current
-            .at_active_position(cursor.active_position)
-            .map_err(|_error| ApiError::BadCursor),
-        SegmentKind::Finished => Err(ApiError::BadCursor),
+        SegmentKind::Active => dataset
+            .at_active_position(&current, cursor.active_position)
+            .map_err(|_error| QueryError::BadCursor),
+        SegmentKind::Finished => Err(QueryError::BadCursor),
     }
 }
 
@@ -387,7 +382,7 @@ fn row_record(
     ordinal: u64,
     row: &Row,
     dictionary: &Dictionary,
-) -> Result<Vec<u8>, ApiError> {
+) -> Result<Vec<u8>, QueryError> {
     let values = plan
         .fields
         .iter()
@@ -407,17 +402,17 @@ fn row_record(
 }
 
 impl Cursor {
-    fn parse(raw: &str) -> Result<Self, ApiError> {
+    fn parse(raw: &str) -> Result<Self, QueryError> {
         let fields: Vec<&str> = raw.split(',').collect();
         if fields.len() != 5 {
-            return Err(ApiError::BadCursor);
+            return Err(QueryError::BadCursor);
         }
         Ok(Self {
-            segment_id: fields[0].parse().map_err(|_error| ApiError::BadCursor)?,
-            active_position: fields[1].parse().map_err(|_error| ApiError::BadCursor)?,
-            layout_index: fields[2].parse().map_err(|_error| ApiError::BadCursor)?,
-            position: fields[3].parse().map_err(|_error| ApiError::BadCursor)?,
-            binding: fields[4].parse().map_err(|_error| ApiError::BadCursor)?,
+            segment_id: fields[0].parse().map_err(|_error| QueryError::BadCursor)?,
+            active_position: fields[1].parse().map_err(|_error| QueryError::BadCursor)?,
+            layout_index: fields[2].parse().map_err(|_error| QueryError::BadCursor)?,
+            position: fields[3].parse().map_err(|_error| QueryError::BadCursor)?,
+            binding: fields[4].parse().map_err(|_error| QueryError::BadCursor)?,
         })
     }
 
