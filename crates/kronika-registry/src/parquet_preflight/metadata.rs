@@ -349,7 +349,7 @@ pub(super) fn checked_nonnegative(raw: i64) -> Result<usize, CodecError> {
 }
 
 pub(super) const fn page_value_limit() -> usize {
-    MAX_SECTION_ROWS + MAX_LIST_I32_VALUES_PER_SECTION
+    MAX_SECTION_ROWS.saturating_add(MAX_LIST_I32_VALUES_PER_SECTION)
 }
 
 pub(super) fn add_page_values(total: &mut usize, raw: i32) -> Result<(), CodecError> {

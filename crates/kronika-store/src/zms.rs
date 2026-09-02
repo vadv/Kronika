@@ -34,6 +34,7 @@ impl From<io::Error> for ZmsError {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FinishedValidation {
+    #[cfg(feature = "posix")]
     Catalog,
     Complete,
 }

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rustix::fs::RenameFlags;
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 
-use crate::{LayoutError, LimitKind, OwnerKind, SegmentAddress, UtcDay};
+use crate::{LayoutError, LayoutLimits, OwnerKind, SegmentAddress, UtcDay};
 
 /// Root-level active segment journal.
 mod discovery;
@@ -40,7 +40,7 @@ use fsops::{
     sync_source_directory, temporary_name, unlink_named_if_identity, unlink_regular_capturing_size,
     verify_named_identity,
 };
-use names::{hash_name, validate_limit, writer_lock_is_poisoned};
+use names::{hash_name, writer_lock_is_poisoned};
 
 /// The raw journal the collector appends to.
 pub const ACTIVE_JOURNAL_NAME: &str = "active.wal";
@@ -55,10 +55,6 @@ pub const INDEX_OWNER_LOCK_NAME: &str = ".kronika-index.owner.lock";
 pub const LOG_OFFSETS_NAME: &str = "log.offsets";
 /// The temporary the offsets file is renamed from.
 pub const LOG_OFFSETS_TEMP_NAME: &str = "log.tmp";
-const HARD_MAX_VISITED_ENTRIES: usize = 4_000_000;
-const HARD_MAX_ENTRIES_PER_DAY: usize = 1_000_000;
-const HARD_MAX_SEGMENTS: usize = 2_000_000;
-const HARD_MAX_METADATA_BYTES: usize = 128 * 1024 * 1024;
 const ENTRY_METADATA_BYTES: usize = 128;
 const SCAN_RACE_ATTEMPTS: usize = 4;
 const WRITER_LOCK_HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
@@ -69,61 +65,6 @@ const DIRECTORY_MODE: Mode = Mode::RUSR
     .union(Mode::XGRP);
 const DATA_FILE_MODE: Mode = Mode::RUSR.union(Mode::WUSR).union(Mode::RGRP);
 const LOCK_FILE_MODE: Mode = Mode::RUSR.union(Mode::WUSR);
-
-/// Non-zero hard-capped resource limits for one strict tree traversal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "`LayoutLimits::max_*` makes each public bound explicit at call sites"
-)]
-pub struct LayoutLimits {
-    /// Maximum number of entries visited across the entire tree.
-    pub max_visited_entries: usize,
-    /// Maximum number of entries visited in a single day directory.
-    pub max_entries_per_day: usize,
-    /// Maximum number of finished ZMS segments returned.
-    pub max_segments: usize,
-    /// Maximum accounted bytes for names and result metadata.
-    pub max_metadata_bytes: usize,
-}
-
-impl LayoutLimits {
-    /// Validates all limits against their non-zero hard ranges.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LayoutError::InvalidLimits`] for a zero or excessive value.
-    pub fn validate(self) -> Result<Self, LayoutError> {
-        validate_limit(
-            LimitKind::VisitedEntries,
-            self.max_visited_entries,
-            HARD_MAX_VISITED_ENTRIES,
-        )?;
-        validate_limit(
-            LimitKind::EntriesPerDay,
-            self.max_entries_per_day,
-            HARD_MAX_ENTRIES_PER_DAY,
-        )?;
-        validate_limit(LimitKind::Segments, self.max_segments, HARD_MAX_SEGMENTS)?;
-        validate_limit(
-            LimitKind::MetadataBytes,
-            self.max_metadata_bytes,
-            HARD_MAX_METADATA_BYTES,
-        )?;
-        Ok(self)
-    }
-}
-
-impl Default for LayoutLimits {
-    fn default() -> Self {
-        Self {
-            max_visited_entries: 1_000_000,
-            max_entries_per_day: 10_000,
-            max_segments: 500_000,
-            max_metadata_bytes: HARD_MAX_METADATA_BYTES,
-        }
-    }
-}
 
 /// A validated, already-open data-directory root.
 ///

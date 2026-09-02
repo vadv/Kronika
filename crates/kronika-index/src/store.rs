@@ -4,12 +4,10 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use crate::build::{BuildError, build_from_reader, build_selected_from_reader};
-use crate::detect::finding_layout;
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
-use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
+use crate::series::{SeriesKey, SeriesKind};
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
-use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef, SegmentSection};
-use kronika_registry::logical_section_name;
+use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
 
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
@@ -199,79 +197,6 @@ pub fn resource_selected(
             })
         }
     }
-}
-
-/// Return every sparse-finding block present in one segment.
-#[must_use]
-pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
-    finding_keys_for_sections(segment.sections())
-}
-
-/// Return every sparse-finding block described by neutral segment metadata.
-#[must_use]
-pub fn finding_keys_for_sections(sections: &[SegmentSection]) -> Vec<SeriesKey> {
-    let mut keys = sections
-        .iter()
-        .filter(|section| finding_layout(section.type_id))
-        .map(|section| SeriesKey {
-            kind: SeriesKind::Findings,
-            type_id: section.type_id,
-        })
-        .collect::<Vec<_>>();
-    keys.push(SeriesKey {
-        kind: SeriesKind::Findings,
-        type_id: 0,
-    });
-    keys.sort_unstable();
-    keys.dedup();
-    keys
-}
-
-/// Return the allowlisted series exposed by one logical section.
-#[must_use]
-pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
-    series_keys_for_sections(segment.sections(), logical_name)
-}
-
-/// Return the allowlisted series described by neutral segment metadata.
-#[must_use]
-pub fn series_keys_for_sections(sections: &[SegmentSection], logical_name: &str) -> Vec<SeriesKey> {
-    if logical_name == "health" {
-        return vec![
-            SeriesKey::OS_HEALTH,
-            SeriesKey::OVERALL_HEALTH,
-            SeriesKey::POSTGRES_HEALTH,
-            SeriesKey {
-                kind: SeriesKind::Findings,
-                type_id: 0,
-            },
-        ];
-    }
-    let mut keys = Vec::new();
-    for section in sections {
-        match logical_name {
-            "pg_stat_database" if pg_database_layout(section.type_id) => keys.push(SeriesKey {
-                kind: SeriesKind::PgTransactionsPerSecond,
-                type_id: section.type_id,
-            }),
-            "pg_stat_activity" if pg_activity_layout(section.type_id) => keys.push(SeriesKey {
-                kind: SeriesKind::PgActiveBackends,
-                type_id: section.type_id,
-            }),
-            _ => {}
-        }
-        if finding_layout(section.type_id)
-            && logical_section_name(section.type_id).is_some_and(|name| name == logical_name)
-        {
-            keys.push(SeriesKey {
-                kind: SeriesKind::Findings,
-                type_id: section.type_id,
-            });
-        }
-    }
-    keys.sort_unstable();
-    keys.dedup();
-    keys
 }
 
 fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {

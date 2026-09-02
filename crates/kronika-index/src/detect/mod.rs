@@ -2,7 +2,9 @@ mod direct;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kronika_reader::{Cell, Segment, SegmentRef};
+#[cfg(feature = "posix")]
+use kronika_reader::SegmentRef;
+use kronika_reader::{Cell, Segment};
 
 use crate::Index;
 use crate::build::{ActiveBackendSample, BuildError};
@@ -97,6 +99,7 @@ impl FindingBuilder {
     }
 
     /// Whether a prior segment can contribute a required predecessor.
+    #[cfg(feature = "posix")]
     pub(crate) fn needs(&self, segment: &SegmentRef) -> bool {
         segment.sections().iter().any(|section| {
             self.requested.contains(&section.type_id)

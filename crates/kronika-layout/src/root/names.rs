@@ -9,7 +9,7 @@ use std::ffi::CStr;
 
 use rustix::fs::FileType;
 
-use crate::error::{LayoutError, LimitKind};
+use crate::error::LayoutError;
 use crate::time::{SegmentAddress, SegmentId, UtcDay};
 
 use super::entry::{EntryFileType, EntryParent, ForeignEntryReason, PathIdentity, TemporaryKind};
@@ -19,22 +19,6 @@ use super::{
     ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, INDEX_OWNER_LOCK_NAME, LOG_OFFSETS_NAME,
     LOG_OFFSETS_TEMP_NAME, WRITER_OWNER_LOCK_NAME,
 };
-
-pub(super) const fn validate_limit(
-    kind: LimitKind,
-    value: usize,
-    hard_max: usize,
-) -> Result<(), LayoutError> {
-    if value == 0 || value > hard_max {
-        Err(LayoutError::InvalidLimits {
-            kind,
-            value,
-            hard_max,
-        })
-    } else {
-        Ok(())
-    }
-}
 
 pub(super) fn is_control_name(name: &str) -> bool {
     matches!(

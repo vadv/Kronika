@@ -7,8 +7,10 @@ use std::sync::Arc;
 use kronika_format::{Catalog, CatalogLayoutError, DecodeError, ReadAt};
 use kronika_layout::SegmentId;
 
+use crate::CatalogSummary;
 use crate::zms::ZmsError;
-use crate::{CatalogSummary, StoreObject, StoreWarning};
+#[cfg(feature = "posix")]
+use crate::{StoreObject, StoreWarning};
 
 /// The product-visible kind of one stored resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -131,6 +133,7 @@ impl ResourceWarning {
         Self { subject, code }
     }
 
+    #[cfg(feature = "posix")]
     pub(crate) const fn from_store(warning: StoreWarning) -> Option<Self> {
         match warning.affected {
             StoreObject::Segment(address) => Some(Self::new(

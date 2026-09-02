@@ -8,11 +8,15 @@ use kronika_registry::{
     Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, contract,
     logical_section_name, visit_rows,
 };
-use kronika_store::{ActiveSnapshot, CatalogSummary, LocalDir};
+use kronika_store::CatalogSummary;
+#[cfg(feature = "posix")]
+use kronika_store::{ActiveSnapshot, LocalDir};
 
+use crate::SegmentKind;
 use crate::dictionary::Dictionary;
 use crate::error::ReaderError;
-use crate::{SegmentKind, SegmentRef, SegmentSource};
+#[cfg(feature = "posix")]
+use crate::{SegmentRef, SegmentSource};
 
 trait SegmentBytes: ReadAt + Send + Sync {}
 
@@ -51,6 +55,7 @@ enum Source {
         bytes: OpenedSegmentBytes,
         catalog: Arc<Catalog>,
     },
+    #[cfg(feature = "posix")]
     Active(ActiveSnapshot),
 }
 
@@ -84,6 +89,7 @@ pub struct Section {
 }
 
 impl Segment {
+    #[cfg(feature = "posix")]
     pub(crate) fn open(
         dir: &LocalDir,
         unit: &SegmentRef,
@@ -309,6 +315,7 @@ impl Segment {
                     }
                 }
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     let Some(entry) = entry(&part.catalog, type_id) else {
@@ -372,6 +379,7 @@ impl Segment {
                     finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_dictionary_catalog(&mut dictionary, &part.catalog, |entry| {
@@ -403,6 +411,7 @@ impl Segment {
                     finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_selected_dictionary_catalog(
@@ -436,6 +445,7 @@ impl Segment {
                     finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_once_dictionary_catalog(&mut dictionary, &part.catalog, ids, |entry| {
@@ -560,6 +570,7 @@ fn finished_body(bytes: &impl ReadAt, entry: &Entry) -> Result<VerifiedSection, 
     verified_body(entry, buffer)
 }
 
+#[cfg(feature = "posix")]
 fn active_body(
     snapshot: &ActiveSnapshot,
     part_index: usize,

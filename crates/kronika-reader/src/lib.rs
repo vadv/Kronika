@@ -11,22 +11,30 @@ mod dictionary;
 mod error;
 mod segment;
 
+#[cfg(feature = "posix")]
 use std::cmp::Reverse;
+#[cfg(feature = "posix")]
 use std::collections::BTreeSet;
+#[cfg(feature = "posix")]
 use std::ops::{Bound, RangeBounds};
+#[cfg(feature = "posix")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "posix")]
 use kronika_format::Catalog;
+#[cfg(feature = "posix")]
+use kronika_store::{ActiveSnapshot, FinalUnit, LocalDir, read_catalog};
 use kronika_store::{
-    ActiveSnapshot, FinalUnit, ImmutableSegmentSource, LocalDir, ResourceCatalog, ResourceError,
-    ResourceListing, SegmentResource, read_catalog, read_resource_catalog,
+    ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceListing, SegmentResource,
+    read_resource_catalog,
 };
 
 pub use dictionary::Dictionary;
 pub use error::ReaderError;
 pub use kronika_format::{BlobEntry, Resolved, StrId};
 pub use kronika_registry::{Cell, Row};
+#[cfg(feature = "posix")]
 pub use kronika_store::{StoreObject, StoreWarning, StoreWarningReason};
 pub use segment::{Section, Segment};
 
@@ -116,6 +124,7 @@ pub struct SegmentSection {
     pub bytes: u64,
 }
 
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 enum SegmentSource {
     Finished(FinalUnit),
@@ -126,6 +135,7 @@ enum SegmentSource {
 ///
 /// The underlying source is deliberately opaque so finished `.zms` files and
 /// the current `active.wal` prefix are opened through the same API.
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 pub struct SegmentRef {
     source: SegmentSource,
@@ -137,6 +147,7 @@ pub struct SegmentRef {
     sections: Arc<[SegmentSection]>,
 }
 
+#[cfg(feature = "posix")]
 impl SegmentRef {
     /// Stable segment id: unix microseconds of its first appended window.
     #[must_use]
@@ -221,6 +232,7 @@ impl SegmentRef {
 }
 
 /// What one directory scan found.
+#[cfg(feature = "posix")]
 #[derive(Debug)]
 pub struct Listing {
     /// Finished and current segments overlapping the requested range, oldest
@@ -235,12 +247,14 @@ pub struct Listing {
 ///
 /// A caller can inspect all recorded time ranges, choose a window, and then
 /// materialize references only for segments that overlap that window.
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 pub struct CatalogDiscovery<'a> {
     reader: &'a Reader,
     scan: kronika_store::LocalScan,
 }
 
+#[cfg(feature = "posix")]
 #[derive(Clone, Copy)]
 enum ListingMode {
     Catalog,
@@ -248,6 +262,7 @@ enum ListingMode {
     Validated,
 }
 
+#[cfg(feature = "posix")]
 impl CatalogDiscovery<'_> {
     /// Time bounds of every canonical segment found by the scan.
     pub fn ranges(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
@@ -495,6 +510,7 @@ impl CatalogDiscovery<'_> {
 }
 
 /// An open data directory.
+#[cfg(feature = "posix")]
 #[derive(Debug)]
 pub struct Reader {
     dir: LocalDir,
@@ -502,6 +518,7 @@ pub struct Reader {
     provenance: Arc<()>,
 }
 
+#[cfg(feature = "posix")]
 impl Reader {
     /// Open `root` as a data directory.
     ///
@@ -680,6 +697,7 @@ impl Reader {
     single_use_lifetimes,
     reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
 )]
+#[cfg(feature = "posix")]
 fn sections_of<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> Vec<SegmentSection> {
     let mut sections = std::collections::BTreeMap::<u32, SegmentSection>::new();
     for catalog in catalogs {
@@ -696,6 +714,7 @@ fn sections_of<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> Vec<Segme
     sections.into_values().collect()
 }
 
+#[cfg(feature = "posix")]
 fn active_bounds(parts: &[kronika_store::ActivePart]) -> Option<(i64, i64)> {
     if parts.is_empty() {
         return None;
@@ -718,6 +737,7 @@ fn active_bounds(parts: &[kronika_store::ActivePart]) -> Option<(i64, i64)> {
 /// Timestamps are whole microseconds, so an excluded bound moves one
 /// microsecond inwards and both ends become inclusive. An empty range then
 /// yields no instants at all and matches nothing.
+#[cfg(feature = "posix")]
 fn overlaps<R: RangeBounds<i64>>(range: &R, min_ts: i64, max_ts: i64) -> bool {
     let start = match range.start_bound() {
         Bound::Unbounded => i64::MIN,
@@ -742,6 +762,7 @@ fn overlaps<R: RangeBounds<i64>>(range: &R, min_ts: i64, max_ts: i64) -> bool {
     min_ts.max(start) <= max_ts.min(end)
 }
 
+#[cfg(feature = "posix")]
 fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
     match range.start_bound() {
         Bound::Unbounded => false,
@@ -750,9 +771,10 @@ fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
     }
 }
 
+#[cfg(feature = "posix")]
 fn owned_bounds<R: RangeBounds<i64>>(range: &R) -> (Bound<i64>, Bound<i64>) {
     (range.start_bound().cloned(), range.end_bound().cloned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "posix"))]
 mod tests;

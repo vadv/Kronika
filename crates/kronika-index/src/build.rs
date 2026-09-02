@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use kronika_reader::{Cell, Reader, ReaderError, Resolved, Segment, SegmentKind, SegmentRef};
+use kronika_reader::{Cell, ReaderError, Resolved, Segment};
+#[cfg(feature = "posix")]
+use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use kronika_registry::instance_metadata::Environment;
 
 use crate::detect::{FindingBuilder, finding_layout};
@@ -127,6 +129,7 @@ impl From<ReaderError> for BuildError {
     }
 }
 
+#[cfg(feature = "posix")]
 fn predecessor_health_seed(
     reader: &Reader,
     predecessor: Option<&SegmentRef>,
@@ -256,6 +259,7 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
 /// # Errors
 ///
 /// Returns a production-reader, dictionary-resolution, or build failure.
+#[cfg(feature = "posix")]
 pub fn build_from_reader(
     reader: &Reader,
     segment_ref: &SegmentRef,
@@ -265,6 +269,7 @@ pub fn build_from_reader(
     build_selected_from_reader(reader, segment_ref, segment, &requested)
 }
 
+#[cfg(feature = "posix")]
 pub(crate) fn build_selected_from_reader(
     reader: &Reader,
     segment_ref: &SegmentRef,
