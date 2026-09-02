@@ -1,5 +1,8 @@
 //! Portable query composition for one finished embedded segment.
 
+#[cfg(test)]
+use serde_json as _;
+
 use std::sync::Arc;
 
 use kronika_index::IndexError;

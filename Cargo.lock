@@ -1531,6 +1531,7 @@ dependencies = [
  "kronika-layout",
  "kronika-query",
  "kronika-store",
+ "serde_json",
 ]
 
 [[package]]

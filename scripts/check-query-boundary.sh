@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 crate_root="$repo_root/crates/kronika-query"
 source_root="$crate_root/src"
+report_root="$repo_root/crates/kronika-report"
+report_source_root="$report_root/src"
 cargo_bin=${CARGO_BIN:-cargo}
 rust_toolchain=${RUST_TOOLCHAIN:-1.96.0}
 failed=0
@@ -20,6 +22,13 @@ if rg -n \
     failed=1
 fi
 
+if rg -n \
+    'std::(fs|path)(::|\b)|\b(Path|PathBuf|File|LocalDir|Mutex|Instant)\b|\b(hyper|tokio|rmcp|http|wasm_bindgen)(::|_)|async[[:space:]]+fn' \
+    "$report_source_root"; then
+    echo "kronika-report source crosses its portable composition boundary" >&2
+    failed=1
+fi
+
 dependency_names=$(
     "$cargo_bin" "+$rust_toolchain" tree --locked -p kronika-query \
         --edges normal --prefix none |
@@ -29,6 +38,19 @@ dependency_names=$(
 if printf '%s\n' "$dependency_names" |
     rg '^(http|http-body.*|hyper.*|tokio.*|rmcp.*)$'; then
     echo "kronika-query dependency graph contains a native transport/runtime crate" >&2
+    failed=1
+fi
+
+
+report_dependency_names=$(
+    "$cargo_bin" "+$rust_toolchain" tree --locked -p kronika-report \
+        --edges normal --prefix none |
+        sed -E 's/ v[0-9].*$//' |
+        sort -u
+)
+if printf '%s\n' "$report_dependency_names" |
+    rg '^(http|http-body.*|hyper.*|tokio.*|rmcp.*|wasm-bindgen.*)$'; then
+    echo "kronika-report dependency graph contains a transport/runtime binding" >&2
     failed=1
 fi
 
