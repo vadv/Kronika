@@ -9,6 +9,7 @@ fn layout(extversion: &str) -> Option<StatementsVersion> {
     parse_version(extversion).and_then(statements_version)
 }
 
+#[derive(Clone, Copy)]
 enum StatementAccess {
     Full,
     Hidden,

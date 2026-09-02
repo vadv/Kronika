@@ -95,6 +95,7 @@ mod tests {
     use super::{ArchiverRow, to_archiver};
     use crate::test_intern as fake_intern;
 
+    #[derive(Clone, Copy)]
     enum WalSamples {
         Both,
         Neither,

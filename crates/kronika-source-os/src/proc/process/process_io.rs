@@ -143,7 +143,7 @@ enum IoRead {
 }
 
 impl IoRead {
-    fn discovered(self, credentials: FsCredentials) -> Discovered {
+    const fn discovered(self, credentials: FsCredentials) -> Discovered {
         match self {
             Self::Value(value) => Discovered::Value(value, credentials),
             Self::Gone => Discovered::Gone,

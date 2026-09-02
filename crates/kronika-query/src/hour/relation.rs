@@ -1099,6 +1099,7 @@ struct TimestampAggregate {
     never: u64,
 }
 
+#[derive(Clone, Copy)]
 enum TimestampObservation<'a> {
     Unavailable,
     NotApplicable,
