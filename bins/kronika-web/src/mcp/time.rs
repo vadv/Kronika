@@ -3,10 +3,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::DateTime;
+use kronika_query::snapshot::SnapshotPoint;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::time::{SnapshotPoint, TimeRange};
+use crate::api::time::TimeRange;
 
 const VALID_FORMS: &str = "a JSON integer or canonical signed decimal-string i64 Unix timestamp in microseconds, RFC 3339 with Z or a numeric UTC offset, now, or now-N{us,ms,s,m,h,d,w}";
 

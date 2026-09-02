@@ -3,22 +3,19 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use kronika_query::snapshot::{
-    SearchClause, SearchOperator, SearchValue, result_field, search_fields,
-};
-use kronika_query::{
-    GroupKey, Metric, RelationAggregate, RelationKind, RelationSource, index_scan_rate_is_zero,
-    key_fields,
-};
 use kronika_reader::{Cell, Row};
 use serde_json::{Map, Value, json};
 
 use super::{
-    ApiError, CounterReadings, Order, PageContext, Plan, PreparedSnapshot, RelationGroup,
-    SectionPlans, SnapshotCursor, StructuredSearch, identity_of, record, resolved_dictionary,
-    search_matches, validate_search_projection,
+    CounterReadings, PageContext, Plan, PreparedSnapshot, SearchClause, SearchOperator,
+    SearchValue, SectionPlans, SnapshotCursor, StructuredSearch, identity_of, result_field,
+    search_fields, search_matches, search_value_matches, validate_search_projection,
 };
-use crate::route::{Filter, SnapshotRequest};
+use crate::render::record;
+use crate::{
+    Filter, GroupKey, Metric, Order, QueryError, RelationAggregate, RelationGroup, RelationKind,
+    RelationSource, SnapshotRequest, index_scan_rate_is_zero, key_fields, resolved_dictionary,
+};
 
 const INDEXES: &str = "pg_stat_user_indexes";
 
@@ -28,13 +25,12 @@ pub(super) fn snapshot_physical_fields(
     fields: &[String],
     by: &[String],
     search: Option<&StructuredSearch>,
-) -> Result<Vec<String>, ApiError> {
+) -> Result<Vec<String>, QueryError> {
     let kind = RelationKind::from_name(logical_name)?;
-    let query_group = group;
     let mut semantic = fields.to_vec();
     semantic.extend(by.iter().map(|name| sort_name(name).to_owned()));
     let mut names = kind
-        .physical_fields(query_group, &semantic)
+        .physical_fields(group, &semantic)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     names.extend(
@@ -52,12 +48,12 @@ pub(super) fn snapshot_physical_fields(
 
 pub(super) fn split_filters(
     request: &SnapshotRequest,
-) -> Result<(Vec<Filter>, Vec<Filter>), ApiError> {
+) -> Result<(Vec<Filter>, Vec<Filter>), QueryError> {
     if request.group.is_none() {
         return Ok((request.filters.clone(), Vec::new()));
     }
     let [section] = request.sections.as_slice() else {
-        return Err(ApiError::BadFilter("where".to_owned()));
+        return Err(QueryError::BadFilter("where".to_owned()));
     };
     let mut physical = Vec::new();
     let mut derived = Vec::new();
@@ -65,11 +61,11 @@ pub(super) fn split_filters(
         if filter.column == "tablespace_oid"
             && filter.value.parse::<u32>().ok().is_none_or(|oid| oid == 0)
         {
-            return Err(ApiError::BadFilter(filter.column.clone()));
+            return Err(QueryError::BadFilter(filter.column.clone()));
         }
         if filter.column == "no_scans" {
             if section != INDEXES || filter.value != "true" {
-                return Err(ApiError::BadFilter(filter.column.clone()));
+                return Err(QueryError::BadFilter(filter.column.clone()));
             }
             derived.push(filter.clone());
         } else {
@@ -79,9 +75,13 @@ pub(super) fn split_filters(
     Ok((physical, derived))
 }
 
-pub(crate) struct RelationRow {
-    pub(crate) key: GroupKey,
-    pub(crate) metrics: BTreeMap<String, Option<Metric>>,
+/// One typed grouped-relation result used by non-streaming adapters.
+#[derive(Debug)]
+pub struct RelationRow {
+    /// Stable grouping identity.
+    pub key: GroupKey,
+    /// Requested semantic metrics keyed by public field name.
+    pub metrics: BTreeMap<String, Option<Metric>>,
     source: RelationSource,
     from: Option<i64>,
     to: Option<i64>,
@@ -96,19 +96,18 @@ impl PreparedSnapshot {
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
+    ) -> Result<(), QueryError> {
         let [section] = self.sections.as_slice() else {
-            return Err(ApiError::BadCursor);
+            return Err(QueryError::BadCursor);
         };
-        let group = self.group.ok_or(ApiError::BadCursor)?;
-        let query_group = group;
+        let group = self.group.ok_or(QueryError::BadCursor)?;
         let kind = RelationKind::from_name(&section.logical_name)?;
-        let fields = kind.fields(query_group);
-        let keys = key_fields(kind, query_group);
+        let fields = kind.fields(group);
+        let keys = key_fields(kind, group);
         for name in &self.by {
             let semantic = sort_name(name);
             if !fields.iter().any(|field| field.name() == semantic) && !keys.contains(&semantic) {
-                return Err(ApiError::NoSuchColumn(name.clone()));
+                return Err(QueryError::NoSuchColumn(name.clone()));
             }
         }
         if cancelled()
@@ -142,7 +141,7 @@ impl PreparedSnapshot {
             .map(|aggregate| {
                 let sort = order_by.and_then(|name| {
                     aggregate
-                        .metric(kind, query_group, name)
+                        .metric(kind, group, name)
                         .or_else(|| aggregate.key().metric(name))
                 });
                 (aggregate, sort)
@@ -164,10 +163,10 @@ impl PreparedSnapshot {
                     aggregate.source().context_index() == cursor.context_index
                         && aggregate.source().ordinal() == cursor.ordinal
                 })
-                .ok_or(ApiError::BadCursor)?,
+                .ok_or(QueryError::BadCursor)?,
             None => 0,
         };
-        let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
+        let page_size = self.page_size.ok_or(QueryError::BadCursor)?;
         let end = start.saturating_add(page_size).min(ranked.len());
         let has_more = end < ranked.len();
         let next_cursor = has_more.then(|| {
@@ -200,7 +199,7 @@ impl PreparedSnapshot {
             let metrics = self
                 .relation_fields
                 .iter()
-                .map(|name| (name.clone(), aggregate.metric(kind, query_group, name)))
+                .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
                 .collect();
             let row = RelationRow {
                 key: aggregate.key().clone(),
@@ -245,24 +244,23 @@ impl PreparedSnapshot {
         &self,
         limit: usize,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<super::selector::FinderResult<RelationRow>, ApiError> {
+    ) -> Result<super::selector::FinderResult<RelationRow>, QueryError> {
         let [section] = self.sections.as_slice() else {
-            return Err(ApiError::BadCursor);
+            return Err(QueryError::BadCursor);
         };
-        let group = self.group.ok_or(ApiError::BadCursor)?;
-        let query_group = group;
+        let group = self.group.ok_or(QueryError::BadCursor)?;
         let kind = RelationKind::from_name(&section.logical_name)?;
-        let fields = kind.fields(query_group);
-        let keys = key_fields(kind, query_group);
+        let fields = kind.fields(group);
+        let keys = key_fields(kind, group);
         for name in &self.by {
             let semantic = sort_name(name);
             if !fields.iter().any(|field| field.name() == semantic) && !keys.contains(&semantic) {
-                return Err(ApiError::NoSuchColumn(name.clone()));
+                return Err(QueryError::NoSuchColumn(name.clone()));
             }
         }
         let contexts = self.partitioned_contexts(section, cancelled)?;
         if cancelled() {
-            return Err(ApiError::Cancelled);
+            return Err(QueryError::Cancelled);
         }
         let as_of = contexts
             .iter()
@@ -271,7 +269,7 @@ impl PreparedSnapshot {
         let mut aggregates = BTreeMap::<GroupKey, RelationAggregate>::new();
         for context in &contexts {
             if cancelled() {
-                return Err(ApiError::Cancelled);
+                return Err(QueryError::Cancelled);
             }
             scan_context(self, kind, group, context, &mut aggregates, cancelled)?;
         }
@@ -284,7 +282,7 @@ impl PreparedSnapshot {
             .map(|aggregate| {
                 let sort = order_by.and_then(|name| {
                     aggregate
-                        .metric(kind, query_group, name)
+                        .metric(kind, group, name)
                         .or_else(|| aggregate.key().metric(name))
                 });
                 (aggregate, sort)
@@ -307,7 +305,7 @@ impl PreparedSnapshot {
                 let metrics = self
                     .relation_fields
                     .iter()
-                    .map(|name| (name.clone(), aggregate.metric(kind, query_group, name)))
+                    .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
                     .collect();
                 RelationRow {
                     key: aggregate.key().clone(),
@@ -325,13 +323,12 @@ impl PreparedSnapshot {
         })
     }
 
-    /// Applies a typed expression after the grouped-phase and projection
-    /// validation used for parsed HTTP search. `None` leaves the snapshot
-    /// unchanged.
+    /// Applies a typed expression after grouped-phase and projection
+    /// validation. `None` leaves the snapshot unchanged.
     pub(crate) fn with_search(
         mut self,
         search: Option<StructuredSearch>,
-    ) -> Result<Self, ApiError> {
+    ) -> Result<Self, QueryError> {
         let Some(search) = search else {
             return Ok(self);
         };
@@ -341,7 +338,7 @@ impl PreparedSnapshot {
         {
             search
                 .validate_grouped_phase()
-                .map_err(|_diagnostic| ApiError::BadFilter("search".to_owned()))?;
+                .map_err(|_diagnostic| QueryError::BadFilter("search".to_owned()))?;
         }
         validate_search_projection(Some(&search), &self.sections)?;
         self.search = Some(Box::new(search));
@@ -360,9 +357,8 @@ fn scan_context(
     context: &PageContext<'_>,
     aggregates: &mut BTreeMap<GroupKey, RelationAggregate>,
     cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
-    let query_group = group;
-    let source_segment = prepared.reader.open_segment(context.source)?;
+) -> Result<(), QueryError> {
+    let source_segment = prepared.dataset.open(context.source)?;
     let mut offset = 0_u64;
     while offset < context.rows {
         let mut chunk = Vec::new();
@@ -380,7 +376,7 @@ fn scan_context(
             },
         )?;
         if cancelled() {
-            return Err(ApiError::Cancelled);
+            return Err(QueryError::Cancelled);
         }
         if chunk.is_empty() {
             break;
@@ -449,7 +445,7 @@ fn scan_context(
             ) {
                 continue;
             }
-            let Some(key) = GroupKey::from_row(kind, query_group, &row, &dictionary)? else {
+            let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
                 continue;
             };
             aggregates
@@ -467,7 +463,7 @@ fn scan_context(
         }
     }
     if cancelled() {
-        return Err(ApiError::Cancelled);
+        return Err(QueryError::Cancelled);
     }
     Ok(())
 }
@@ -534,7 +530,7 @@ fn matches_search_clause(
         aggregate
             .text(column)
             .or_else(|| aggregate.key().text(column))
-            .is_some_and(|stored| super::search_value_matches(stored, &clause.value))
+            .is_some_and(|stored| search_value_matches(stored, &clause.value))
     })
 }
 
@@ -543,7 +539,7 @@ fn relation_layout(
     kind: RelationKind,
     group: RelationGroup,
     selected: &[String],
-) -> Result<Vec<u8>, ApiError> {
+) -> Result<Vec<u8>, QueryError> {
     let available = kind.fields(group);
     let columns = selected
         .iter()
@@ -571,7 +567,7 @@ fn relation_record(
     group: RelationGroup,
     row: &RelationRow,
     physical_source: bool,
-) -> Result<Vec<u8>, ApiError> {
+) -> Result<Vec<u8>, QueryError> {
     let values = relation_values(&row.metrics);
     let source = physical_source.then(|| {
         json!({

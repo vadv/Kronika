@@ -35,11 +35,5 @@ impl TimeRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SnapshotPoint {
-    LatestRecorded,
-    At(i64),
-}
-
 #[cfg(test)]
 mod tests;

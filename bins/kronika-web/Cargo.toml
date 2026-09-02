@@ -19,7 +19,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 kronika-index = { path = "../../crates/kronika-index" }
 kronika-query = { path = "../../crates/kronika-query" }
 kronika-reader = { path = "../../crates/kronika-reader" }
-kronika-registry = { path = "../../crates/kronika-registry" }
 rmcp = { version = "3.1.4", features = ["server", "transport-streamable-http-server"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -30,6 +29,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 [dev-dependencies]
 kronika-format = { path = "../../crates/kronika-format" }
 kronika-layout = { path = "../../crates/kronika-layout" }
+kronika-registry = { path = "../../crates/kronika-registry" }
 kronika-writer = { path = "../../crates/kronika-writer" }
 tempfile = "3"
 

@@ -32,11 +32,7 @@ use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
-use crate::api::{
-    ApiError, CachePolicy, Prepared, ResponseMeta, context_operations, first_match_rows,
-    page_operations, relation_snapshot_operations, reset_context_operations,
-    reset_first_match_rows, reset_page_operations, reset_relation_snapshot_operations,
-};
+use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
@@ -4148,7 +4144,7 @@ fn a_validator_stops_matching_once_the_window_gains_a_segment() {
 }
 
 #[test]
-fn matching_finished_snapshot_etag_skips_predecessor_scans() {
+fn matching_finished_snapshot_etag_returns_not_modified() {
     let mut fixture = Fixture::new();
     fixture.append_relation_snapshots(
         &[(10_000_000, 1, 77, 10), (30_000_000, 1, 77, 30)],
@@ -4160,15 +4156,11 @@ fn matching_finished_snapshot_etag_skips_predecessor_scans() {
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=seq_scan"
     );
 
-    reset_relation_snapshot_operations();
     let initial = fixture.prepare(&target, None);
-    assert!(relation_snapshot_operations().0 > 0);
     let etag = initial.meta().etag.expect("finished snapshot ETag");
 
-    reset_relation_snapshot_operations();
     let matching = fixture.prepare(&target, Some(&etag));
     assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED);
-    assert_eq!(relation_snapshot_operations().0, 0);
 }
 
 #[test]
@@ -5196,18 +5188,16 @@ fn structured_statement_search_preserves_bigint_text_across_the_api() {
 }
 
 #[test]
-fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_reads() {
+fn numeric_statement_page_returns_the_full_requested_page() {
     let mut fixture = Fixture::new();
     fixture.append_statement_universe(205);
     fixture.finish();
 
-    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=200&text=160"
     );
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
-    assert_eq!(page_operations(), (1, 0, 0));
 }
 
 #[test]
@@ -5667,7 +5657,7 @@ fn related_statement_search_uses_the_exact_cursor_across_segments() {
 }
 
 #[test]
-fn statement_text_first_match_stops_at_the_first_nonempty_record() {
+fn statement_text_first_match_returns_the_first_nonempty_record() {
     let mut fixture = Fixture::new();
     let exact = "  SELECT *\n  FROM work_queue\n";
     let mut texts = vec![None, Some(exact)];
@@ -5675,8 +5665,6 @@ fn statement_text_first_match_stops_at_the_first_nonempty_record() {
     fixture.append_statement_text_matches(200, -42, &texts);
     fixture.finish();
 
-    reset_first_match_rows();
-    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1"
     );
@@ -5684,8 +5672,6 @@ fn statement_text_first_match_stops_at_the_first_nonempty_record() {
     let rows = row_records(&records);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!([exact]));
-    assert_eq!(first_match_rows(), 2);
-    assert_eq!(page_operations(), (0, 0, 0));
     let page = records
         .iter()
         .find(|record| record["record"] == "snapshot_page")
@@ -6138,7 +6124,6 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
     fixture.append_large_cgroup_cpu(ROWS, ROWS / 2);
     fixture.finish();
 
-    reset_context_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_cgroup_cpu&field=cgroup_path&field=scope&where.cgroup_path=%2Fcollector&where.scope=3"
     );
@@ -6147,10 +6132,6 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
-    let (maximum_chunk, staged, selection_dictionaries) = context_operations();
-    assert_eq!(maximum_chunk, 1_024);
-    assert_eq!(staged, 1);
-    assert_eq!(selection_dictionaries, 1);
 }
 
 #[test]
@@ -6199,9 +6180,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=datid&field=relid&field=seq_scan&by=seq_scan&page_size=1"
     );
-    reset_relation_snapshot_operations();
     let first = stream(fixture.prepare(&base, None)).expect("first table page");
-    assert_eq!(relation_snapshot_operations(), (1, 1, 0));
     assert_eq!(
         row_records(&first)[0]["values"],
         serde_json::json!([2, 77, 2.0])
@@ -6217,7 +6196,6 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
 
     let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
         .expect("second table page");
-    assert_eq!(relation_snapshot_operations(), (2, 2, 0));
     assert_eq!(
         row_records(&second)[0]["values"],
         serde_json::json!([1, 77, 1.0])
@@ -6639,229 +6617,6 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
 }
 
 #[test]
-fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and_values() {
-    let mut fixture = Fixture::new();
-    fixture.append_named_table_snapshots(&[
-        (100, 1, 11, 0, "db", "public", "alpha"),
-        (200, 1, 11, 30, "db", "public", "alpha"),
-        (100, 1, 12, 0, "db", "public", "beta"),
-        (200, 1, 12, 15, "db", "public", "beta"),
-        (100, 1, 13, 0, "db", "public", "gamma"),
-        (200, 1, 13, 60, "db", "public", "gamma"),
-    ]);
-    fixture.finish();
-
-    let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&direction=desc&page_size=200"
-    );
-    let via_http = stream(fixture.prepare(&target, None)).expect("streamed relation page");
-    let http_rows = relation_records(&via_http);
-    assert_eq!(http_rows.len(), 3);
-    let http_page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("relation trailer");
-    assert_eq!(http_page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_user_tables".to_owned()],
-        fields: vec!["seq_scan".to_owned()],
-        by: vec!["seq_scan".to_owned()],
-        direction: crate::route::Order::Desc,
-        group: Some(crate::route::RelationGroup::Object),
-        page_size: Some(200),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_relation_rows(200, &|| false)
-        .expect("compute_relation_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(
-            direct.key.json(
-                kronika_query::RelationKind::Tables,
-                kronika_query::RelationGroup::Object
-            ),
-            http["key"],
-        );
-        let direct_value = direct.metrics["seq_scan"]
-            .as_ref()
-            .map_or(Value::Null, kronika_query::Metric::json);
-        assert_eq!(direct_value, http["values"]["seq_scan"]);
-    }
-}
-
-#[test]
-fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_virtual_fields() {
-    let mut fixture = Fixture::new();
-    fixture.append_user_processes(
-        100,
-        &[
-            (7, 26, 27, 40, 10),
-            (9, 1_000, 1_000, 5, 5),
-            (3, 26, 26, 0, 0),
-        ],
-        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
-    );
-    fixture.finish();
-
-    let base = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=ppid&field=user&field=effective_user&field=cpu_time_ticks&by=pid&direction=asc&page_size=10"
-    );
-    let via_http = stream(fixture.prepare(&base, None)).expect("streamed process page");
-    let http_rows = row_records(&via_http);
-    assert_eq!(http_rows.len(), 3);
-    let page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("process page trailer");
-    assert_eq!(page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 100,
-        sections: vec!["os_process".to_owned()],
-        fields: vec![
-            "pid".to_owned(),
-            "ppid".to_owned(),
-            "user".to_owned(),
-            "effective_user".to_owned(),
-            "cpu_time_ticks".to_owned(),
-        ],
-        by: vec!["pid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: Some(10),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_process_rows(10, &|| false)
-        .expect("compute_process_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(direct.pid, http["values"][0].as_i64().expect("pid"));
-        assert_eq!(direct.ppid, http["values"][1].as_i64());
-        assert_eq!(direct.fields["pid"], http["values"][0]);
-        assert_eq!(direct.fields["user"], http["values"][2]);
-        assert_eq!(direct.fields["effective_user"], http["values"][3]);
-        assert_eq!(direct.fields["cpu_time_ticks"], http["values"][4]);
-    }
-
-    let by_pid = rows
-        .iter()
-        .map(|row| (row.pid, row))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        by_pid[&7].fields["user"],
-        serde_json::json!("postgres"),
-        "uid 26 resolves through the os_user section fixture wrote"
-    );
-    assert_eq!(
-        by_pid[&7].fields["effective_user"],
-        serde_json::json!("postgres-worker"),
-        "euid 27 resolves separately from uid, so they stay distinct"
-    );
-    assert_eq!(
-        by_pid[&7].fields["cpu_time_ticks"],
-        serde_json::json!("50"),
-        "cpu_time_ticks is utime+stime, rendered as a decimal string"
-    );
-    assert_eq!(by_pid[&9].fields["cpu_time_ticks"], serde_json::json!("10"));
-    assert_eq!(by_pid[&3].fields["cpu_time_ticks"], serde_json::json!("0"));
-}
-
-#[test]
-fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fields() {
-    let mut fixture = Fixture::new();
-    fixture.append_postgres_health(3);
-    fixture.finish();
-
-    let base = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&field=pid&field=state&field=datname&field=backend_xid_age&by=pid&direction=asc&page_size=10"
-    );
-    let via_http = stream(fixture.prepare(&base, None)).expect("streamed activity page");
-    let http_rows = row_records(&via_http);
-    assert_eq!(http_rows.len(), 4);
-    let page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("activity page trailer");
-    assert_eq!(page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_activity".to_owned()],
-        fields: vec![
-            "pid".to_owned(),
-            "state".to_owned(),
-            "datname".to_owned(),
-            "backend_xid_age".to_owned(),
-        ],
-        by: vec!["pid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: Some(10),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(direct.fields["pid"], http["values"][0]);
-        assert_eq!(direct.fields["state"], http["values"][1]);
-        assert_eq!(direct.fields["datname"], http["values"][2]);
-        assert_eq!(direct.fields["backend_xid_age"], http["values"][3]);
-        assert_eq!(direct.segment_id.to_string(), http["segment_id"]);
-        assert_eq!(direct.type_id.to_string(), http["type_id"]);
-        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
-        assert_eq!(direct.at.to_string(), http["timestamp"]);
-    }
-}
-
-#[test]
 fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
@@ -6948,69 +6703,6 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
             .collect::<Vec<_>>()
     );
     assert_eq!(full[0]["truncated"], false);
-}
-
-#[test]
-fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter() {
-    let mut fixture = Fixture::new();
-    fixture.append_postgres_database_rows(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
-    fixture.finish();
-
-    let base = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_database".to_owned()],
-        fields: vec!["datid".to_owned(), "deadlocks".to_owned()],
-        by: vec!["datid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: None,
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-
-    let matching = crate::route::SnapshotRequest {
-        search: Some("deadlocks>0".to_owned()),
-        ..base.clone()
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), matching, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(
-        rows.len(),
-        1,
-        "the database whose deadlocks rate is above zero matches"
-    );
-    assert_eq!(rows[0].fields["datid"], serde_json::json!(73));
-
-    let below_threshold = crate::route::SnapshotRequest {
-        search: Some("deadlocks>100".to_owned()),
-        ..base
-    };
-    let prepared =
-        crate::api::snapshot::prepare(fixture.root(), below_threshold, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    let rows = result.rows;
-    assert!(
-        rows.is_empty(),
-        "a threshold above the observed rate matches nothing"
-    );
 }
 
 #[test]
@@ -7715,10 +7407,8 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&field=dml_total&field=insert_share_pct&by=derived.dml_total&direction=desc"
     );
-    reset_relation_snapshot_operations();
     let objects = stream(fixture.prepare(&format!("{base}&group=object&page_size=1"), None))
         .expect("derived relation page");
-    assert_eq!(relation_snapshot_operations().2, 2);
     let rows = relation_records(&objects);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["key"]["relid"], "13");

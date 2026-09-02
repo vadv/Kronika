@@ -22,9 +22,12 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 
+use kronika_query::{QueryContext, QueryError};
+
 use crate::WebBody;
 use crate::body::BodyError;
 use crate::config::Config;
+use crate::query_adapter::NativeDataset;
 
 mod catalog;
 mod context;
@@ -44,7 +47,23 @@ mod finder_tests;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use postgresql::current_segment;
+/// Runs one typed snapshot query against a fresh native capture, replaying once
+/// when the active source rolls over during the read.
+fn run_snapshot_query<R>(
+    config: &Config,
+    mut execute: impl FnMut(&QueryContext) -> Result<R, QueryError>,
+) -> Result<R, crate::api::ApiError> {
+    let mut attempt = || {
+        let dataset = Arc::new(NativeDataset::from_root(&config.data_root)?);
+        let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
+        execute(&context)
+    };
+    match attempt() {
+        Err(error) if error.source_changed_during_read() => attempt(),
+        result => result,
+    }
+    .map_err(crate::api::ApiError::from)
+}
 
 #[derive(Clone)]
 struct KronikaMcp {

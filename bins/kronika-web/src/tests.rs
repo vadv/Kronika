@@ -112,12 +112,20 @@ fn the_instance_label_names_the_largest_recorded_database() {
         (100, 2, 21, 0, "big", "public", "t2", None, None, 900, None),
     ]);
     fixture.finish();
+    let config = |root: &std::path::Path| crate::config::Config {
+        data_root: root.to_path_buf(),
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: account(),
+        authentication_required: true,
+        sources: crate::config::SOURCE_POSTGRESQL,
+        synthetic_demo: false,
+    };
     assert_eq!(
-        crate::largest_database(fixture.root()),
+        crate::largest_database(&config(fixture.root())),
         Some("big".to_owned())
     );
     let empty = artifacts::Fixture::new();
-    assert_eq!(crate::largest_database(empty.root()), None);
+    assert_eq!(crate::largest_database(&config(empty.root())), None);
 
     let body: serde_json::Value =
         serde_json::from_str(&crate::instance_label_body(Some("big"))).expect("json");

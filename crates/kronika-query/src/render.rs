@@ -101,7 +101,6 @@ fn finite(value: f64) -> Value {
     )
 }
 
-#[cfg(test)]
 pub(crate) fn shorten(mut value: Value, limit: usize) -> Value {
     match &mut value {
         Value::String(text) => shorten_text(text, limit),
@@ -115,7 +114,6 @@ pub(crate) fn shorten(mut value: Value, limit: usize) -> Value {
     value
 }
 
-#[cfg(test)]
 fn shorten_text(text: &mut String, limit: usize) {
     if text.chars().count() <= limit {
         return;

@@ -213,6 +213,8 @@ pub enum QueryRequest {
     History(DataRequest),
     /// One composed timeline hour.
     Hour(HourRequest),
+    /// One current-state snapshot from one explicit segment.
+    Snapshot(SnapshotRequest),
     /// One stable bounded page from one exact segment.
     Rows(RowsRequest),
     /// Recorded event groups or physical occurrences over one window.

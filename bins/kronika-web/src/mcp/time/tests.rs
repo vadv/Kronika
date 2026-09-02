@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::api::time::SnapshotPoint;
+use kronika_query::snapshot::SnapshotPoint;
 
 use super::{
     TimeSpecInput, resolve_bounded_range, resolve_point, resolve_range, resolve_range_with,

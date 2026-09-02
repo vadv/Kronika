@@ -7,23 +7,13 @@ use hyper::StatusCode;
 use kronika_query::{
     CatalogRequest, QueryContext, QueryIdentity, QueryRequest, QuerySink, QueryStability,
 };
-use kronika_reader::{Reader, ReaderError, SegmentRef};
+use kronika_reader::ReaderError;
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
 use crate::route::Route;
 
-mod query;
-mod render;
-pub(crate) mod snapshot;
 pub(crate) mod time;
-
-#[cfg(test)]
-pub(crate) use snapshot::{
-    context_operations, first_match_rows, page_operations, relation_snapshot_operations,
-    reset_context_operations, reset_first_match_rows, reset_page_operations,
-    reset_relation_snapshot_operations,
-};
 
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +56,6 @@ impl ResponseMeta {
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
     Query(PreparedQuery),
-    Snapshot(snapshot::PreparedSnapshot),
     Empty(ResponseMeta),
 }
 
@@ -80,7 +69,6 @@ impl Prepared {
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
             Self::Query(prepared) => prepared.meta.clone(),
-            Self::Snapshot(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -96,7 +84,6 @@ impl Prepared {
                 let mut sink = NativeSink { emit, cancelled };
                 prepared.execution.stream(&mut sink).map_err(ApiError::from)
             }
-            Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -434,7 +421,22 @@ pub(crate) fn prepare_with_demo(
             .map(prepared_query)
             .map_err(ApiError::from)
         }
-        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+        Route::Snapshot(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            let preparation = kronika_query::snapshot::prepare_snapshot(&context, *request)
+                .map_err(ApiError::from)?;
+            let meta = query_meta(preparation.metadata());
+            let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
+            if let Some(not_modified) = conditional_not_modified(meta.clone(), concrete_validator) {
+                return Ok(not_modified);
+            }
+            preparation
+                .finish()
+                .map(prepared_query)
+                .map_err(ApiError::from)
+        }
         // Answered directly in `main.rs`.
         Route::McpAccess | Route::InstanceLabel => return Err(ApiError::NoSuchSection),
     }?;
@@ -523,36 +525,6 @@ fn conditional_not_modified(meta: ResponseMeta, if_none_match: Option<&str>) -> 
         })
 }
 
-fn weak_etag<I, S>(resource: &str, shape: &str, segments: I) -> Option<String>
-where
-    I: IntoIterator<Item = S>,
-    S: std::borrow::Borrow<SegmentRef>,
-{
-    let mut digest = Sha256::new();
-    digest.update(resource.len().to_le_bytes());
-    digest.update(resource.as_bytes());
-    digest.update(shape.len().to_le_bytes());
-    digest.update(shape.as_bytes());
-    let mut found = false;
-    for segment in segments {
-        let segment = segment.borrow();
-        if segment.kind() == kronika_reader::SegmentKind::Active {
-            return None;
-        }
-        found = true;
-        digest.update(segment.id().to_le_bytes());
-        digest.update(segment.min_ts().to_le_bytes());
-        digest.update(segment.max_ts().to_le_bytes());
-        digest.update(segment.sections().len().to_le_bytes());
-        for section in segment.sections() {
-            digest.update(section.type_id.to_le_bytes());
-            digest.update(section.rows.to_le_bytes());
-            digest.update(section.bytes.to_le_bytes());
-        }
-    }
-    found.then(|| format!("W/\"{:x}\"", digest.finalize()))
-}
-
 fn weak_dataset_etag(
     resource: &str,
     shape: &str,
@@ -580,42 +552,4 @@ fn weak_dataset_etag(
         }
     }
     found.then(|| format!("W/\"{:x}\"", digest.finalize()))
-}
-
-fn explicit_segment_with_listing(
-    root: &Path,
-    id: i64,
-) -> Result<(Reader, SegmentRef, Vec<SegmentRef>, bool), ApiError> {
-    let started = std::time::Instant::now();
-    let reader = Reader::open(root)?;
-    let listing = reader.catalog_segments(..)?;
-    let clean = listing.warnings.is_empty();
-    log_warnings(&listing.warnings);
-    let mut segments = listing.segments;
-    let index = segments
-        .iter()
-        .position(|segment| segment.id() == id)
-        .ok_or(ApiError::NoSuchSegment)?;
-    let segment = segments.remove(index);
-    log_segment_open(&segment, started.elapsed());
-    Ok((reader, segment, segments, clean))
-}
-
-fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
-    eprintln!(
-        "kronika-web: segment_open id={} kind={} sections={} elapsed_us={}",
-        segment.id(),
-        match segment.kind() {
-            kronika_reader::SegmentKind::Finished => "finished",
-            kronika_reader::SegmentKind::Active => "active",
-        },
-        segment.sections().len(),
-        elapsed.as_micros(),
-    );
-}
-
-fn log_warnings(warnings: &[kronika_reader::StoreWarning]) {
-    for warning in warnings {
-        eprintln!("kronika-web: store warning code={}", warning.reason.code());
-    }
 }

@@ -3,9 +3,10 @@
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 
-use crate::api::snapshot::ProcessRowOut;
-use crate::api::snapshot::selector::{FinderOrder, FinderQuery, FinderSurface, execute_processes};
-use crate::api::time::SnapshotPoint;
+use kronika_query::snapshot::{
+    FinderOrder, FinderQuery, FinderSurface, ProcessRowOut, SnapshotPoint, execute_processes,
+};
+
 use crate::config::Config;
 use crate::route::MAX_SNAPSHOT_PAGE_SIZE;
 
@@ -78,7 +79,9 @@ fn call_with(
         group: None,
         limit,
     };
-    let result = match execute_processes(&config.data_root, query, &|| cancelled()) {
+    let result = match super::run_snapshot_query(config, |context| {
+        execute_processes(context, query.clone(), &|| cancelled())
+    }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(LOGICAL_NAME, &error),
     };

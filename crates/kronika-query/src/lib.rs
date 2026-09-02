@@ -200,6 +200,7 @@ enum Prepared {
     Index(index::PreparedIndex),
     History(PreparedHistory),
     Hour(PreparedHour),
+    Snapshot(snapshot::PreparedSnapshot),
     Rows(PreparedRows),
     Events(PreparedEvents),
     RowDetail(PreparedRowDetail),
@@ -248,6 +249,16 @@ impl QueryExecution {
                         segments,
                     }),
             },
+            Prepared::Snapshot(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: prepared
+                    .validator_input()
+                    .map(|(resource, shape, segments)| QueryIdentity::SegmentSet {
+                        resource,
+                        shape,
+                        segments,
+                    }),
+            },
             Prepared::Rows(prepared) => QueryMetadata {
                 stability: prepared.stability(),
                 identity: None,
@@ -281,6 +292,7 @@ impl QueryExecution {
             Prepared::Index(prepared) => prepared.stream(sink),
             Prepared::History(prepared) => prepared.stream(sink),
             Prepared::Hour(prepared) => prepared.stream(sink),
+            Prepared::Snapshot(prepared) => prepared.stream(sink),
             Prepared::Rows(prepared) => prepared.stream(sink),
             Prepared::Events(prepared) => prepared.stream(sink),
             Prepared::RowDetail(prepared) => prepared.stream(sink),
@@ -297,6 +309,9 @@ pub fn execute(
     context: &QueryContext,
     request: QueryRequest,
 ) -> Result<QueryExecution, QueryError> {
+    if let QueryRequest::Snapshot(request) = request {
+        return snapshot::prepare_snapshot(context, request)?.finish();
+    }
     let prepared = match request {
         QueryRequest::Catalog(request) => Prepared::Catalog(PreparedCatalog::prepare(
             context.dataset.as_ref(),
@@ -323,6 +338,7 @@ pub fn execute(
             context.configured_sources,
             context.synthetic_demo,
         )?),
+        QueryRequest::Snapshot(_) => unreachable!("snapshot handled before shared preparation"),
         QueryRequest::Rows(request) => {
             Prepared::Rows(rows::prepare(context.dataset.as_ref(), request)?)
         }

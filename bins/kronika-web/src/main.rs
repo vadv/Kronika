@@ -94,8 +94,7 @@ async fn answer(
             if matches!(route, route::Route::McpAccess) {
                 mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
             } else if matches!(route, route::Route::InstanceLabel) {
-                match tokio::task::spawn_blocking(move || largest_database(&config.data_root)).await
-                {
+                match tokio::task::spawn_blocking(move || largest_database(&config)).await {
                     Ok(database) => {
                         let cache_for_a_day = database.is_some();
                         let response =
@@ -715,8 +714,8 @@ fn instance_label_body(database: Option<&str>) -> String {
 
 /// Operators call an instance by its biggest database, so the label is
 /// the largest database in the newest recorded relation snapshot.
-fn largest_database(root: &std::path::Path) -> Option<String> {
-    match try_largest_database(root) {
+fn largest_database(config: &Config) -> Option<String> {
+    match try_largest_database(config) {
         Ok(database) => database,
         Err(error) => {
             eprintln!("kronika-web: instance label: {error}");
@@ -725,31 +724,26 @@ fn largest_database(root: &std::path::Path) -> Option<String> {
     }
 }
 
-fn try_largest_database(root: &std::path::Path) -> Result<Option<String>, ApiError> {
-    let Some((segment_id, at)) = mcp::current_segment(root, "pg_stat_user_tables")? else {
-        return Ok(None);
-    };
-    let request = route::SnapshotRequest {
-        segment_id,
-        at,
-        sections: vec!["pg_stat_user_tables".to_owned()],
+fn try_largest_database(config: &Config) -> Result<Option<String>, ApiError> {
+    let dataset = Arc::new(crate::query_adapter::NativeDataset::from_root(
+        &config.data_root,
+    )?);
+    let context = kronika_query::QueryContext::new(dataset, config.sources, config.synthetic_demo);
+    let query = kronika_query::snapshot::CurrentSnapshotQuery {
+        logical_name: "pg_stat_user_tables".to_owned(),
         fields: vec!["displayed_storage_bytes".to_owned()],
-        by: vec!["displayed_storage_bytes".to_owned()],
-        direction: route::Order::Desc,
+        order: Some(kronika_query::snapshot::FinderOrder {
+            field: "displayed_storage_bytes".to_owned(),
+            direction: kronika_query::Order::Desc,
+        }),
         group: Some(route::RelationGroup::Database),
-        page_size: None,
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
+        limit: 1,
     };
-    let api::Prepared::Snapshot(prepared) = api::snapshot::prepare(root, request, None)? else {
+    let Some(result) =
+        kronika_query::snapshot::execute_current_relation(&context, query, &|| false)?
+    else {
         return Ok(None);
     };
-    let result = prepared.compute_relation_rows(1, &|| false)?;
     Ok(result
         .rows
         .into_iter()

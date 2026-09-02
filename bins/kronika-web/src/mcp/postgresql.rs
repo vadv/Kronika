@@ -1,20 +1,15 @@
 //! MCP adapters over recorded `PostgreSQL` finder results.
 
+use kronika_query::snapshot::{
+    CurrentSnapshotQuery, FinderOrder, FinderQuery, FinderResult, FinderSurface, PlainRowOut,
+    RelationRow, SnapshotPoint, execute_current_plain, execute_plain, execute_relation,
+};
 use kronika_query::{RelationGroup as QueryRelationGroup, RelationKind};
-use kronika_reader::Reader;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
-use crate::api::snapshot;
-use crate::api::snapshot::PlainRowOut;
-use crate::api::snapshot::relation::RelationRow;
-use crate::api::snapshot::selector::{
-    FinderOrder, FinderQuery, FinderResult, FinderSurface, execute_plain, execute_relation,
-};
-use crate::api::time::SnapshotPoint;
-use crate::api::{ApiError, Prepared};
 use crate::config::Config;
-use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup, SnapshotRequest};
+use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, RelationGroup};
 
 use super::catalog::{
     ActivityInput, DatabasesInput, FIND_POSTGRESQL_ACTIVITY_TOOL, FIND_POSTGRESQL_DATABASES_TOOL,
@@ -97,7 +92,9 @@ fn call(
     query: FinderQuery,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    let result = match execute_relation(&config.data_root, query, &|| cancelled()) {
+    let result = match super::run_snapshot_query(config, |context| {
+        execute_relation(context, query.clone(), &|| cancelled())
+    }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(kind.logical_name(), &error),
     };
@@ -145,27 +142,6 @@ fn finder_query(
         group,
         limit,
     })
-}
-
-/// Returns the highest-ID segment carrying `logical_name` and its maximum
-/// timestamp, or `None` when nothing recorded the section. The instance tool
-/// uses this legacy snapshot anchor; finder tools use the shared selector.
-pub(crate) fn current_segment(
-    root: &std::path::Path,
-    logical_name: &str,
-) -> Result<Option<(i64, i64)>, ApiError> {
-    let reader = Reader::open(root)?;
-    let listing = reader.catalog_segments(..)?;
-    let segment = listing
-        .segments
-        .iter()
-        .filter(|segment| {
-            segment.sections().iter().any(|section| {
-                kronika_registry::logical_section_name(section.type_id) == Some(logical_name)
-            })
-        })
-        .max_by_key(|segment| segment.id());
-    Ok(segment.map(|segment| (segment.id(), segment.max_ts())))
 }
 
 /// Flattens metrics and group identity; identity fields win name collisions.
@@ -311,7 +287,9 @@ pub(crate) fn call_databases(
 
 fn call_plain(config: &Config, query: FinderQuery, cancelled: &dyn Fn() -> bool) -> CallToolResult {
     let surface = query.surface;
-    let result = match execute_plain(&config.data_root, query, &|| cancelled()) {
+    let result = match super::run_snapshot_query(config, |context| {
+        execute_plain(context, query.clone(), &|| cancelled())
+    }) {
         Ok(result) => result,
         Err(error) => return finder_storage_error(surface.logical_name(), &error),
     };
@@ -333,37 +311,17 @@ pub(super) fn plain_rows(
     config: &Config,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<FinderResult<PlainRowOut>>, CallToolResult> {
-    let Some((segment_id, at)) = current_segment(&config.data_root, logical_name)
-        .map_err(|error| super::semantics::storage_error(&error))?
-    else {
-        return Ok(None);
-    };
-    let request = SnapshotRequest {
-        segment_id,
-        at,
-        sections: vec![logical_name.to_owned()],
+    let query = CurrentSnapshotQuery {
+        logical_name: logical_name.to_owned(),
         fields: Vec::new(),
-        by: Vec::new(),
-        direction: Order::Asc,
+        order: None,
         group: None,
-        page_size: None,
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
+        limit: usize::MAX,
     };
-    let prepared = snapshot::prepare(&config.data_root, request, None)
-        .map_err(|error| super::semantics::storage_error(&error))?;
-    let Prepared::Snapshot(prepared) = prepared else {
-        return Err(mcp_error("could not read stored data"));
-    };
-    let result = prepared
-        .compute_plain_rows(usize::MAX, &|| cancelled())
-        .map_err(|error| super::semantics::storage_error(&error))?;
-    Ok(Some(result))
+    super::run_snapshot_query(config, |context| {
+        execute_current_plain(context, query.clone(), &|| cancelled())
+    })
+    .map_err(|error| super::semantics::storage_error(&error))
 }
 
 pub(crate) fn call_statements(

@@ -1,20 +1,400 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
+use kronika_format::DictLimits;
+use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Cell, Row};
 use kronika_registry::contract;
+use kronika_registry::os_process::OsProcess;
+use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
+use kronika_registry::{StrId, Ts};
+use kronika_store::EmbeddedSource;
+use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::{Value, json};
 
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
-    compare_products, ordered_cell, plan_statement_query_id_columns, prepared_search, rate,
-    record_contributing_moment, scheduled_ticks, snapshot_binding, timed_context_index,
+    compare_products, context_operations, first_match_rows, ordered_cell, page_operations,
+    plan_statement_query_id_columns, prepared_search, rate, record_contributing_moment,
+    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
+    reset_page_operations, reset_relation_snapshot_operations, scheduled_ticks, snapshot_binding,
+    timed_context_index,
 };
-use crate::api::query::OutputField;
-use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
+use crate::{
+    Filter, FinishedDataset, Order, OutputField, QueryContext, QueryDataset, QueryRequest,
+    QuerySink, RelationGroup, SnapshotRequest, execute,
+};
 
 const COLUMN: &str = "counter";
+const SEGMENT_ID: i64 = 1_709_164_800_000_000;
+const SNAPSHOT_AT: i64 = 200;
+
+#[derive(Default)]
+struct SnapshotRecords(Vec<Value>);
+
+impl QuerySink for SnapshotRecords {
+    fn record(&mut self, bytes: Vec<u8>) -> bool {
+        self.0
+            .push(serde_json::from_slice(&bytes).expect("snapshot record JSON"));
+        true
+    }
+
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+fn fixture_payload(fill: impl FnOnce(&mut Interner, &mut SectionBuffers)) -> Arc<[u8]> {
+    let root = tempfile::tempdir().expect("snapshot fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("snapshot fixture data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("snapshot fixture writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("snapshot journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let mut buffers = SectionBuffers::new();
+    fill(&mut interner, &mut buffers);
+    let dictionary = dict::encode(interner.window()).expect("snapshot fixture dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode snapshot fixture")
+        .expect("nonempty snapshot fixture");
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("snapshot segment id");
+    journal
+        .append(segment_id, &part)
+        .expect("append snapshot fixture");
+    let address = SegmentAddress::new(segment_id).expect("snapshot segment address");
+    write_segment(&journal, &owner, address).expect("finish snapshot fixture");
+    journal.reset().expect("reset snapshot fixture journal");
+    drop(journal);
+    drop(owner);
+
+    let path = root
+        .path()
+        .join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name());
+    std::fs::read(path).expect("read snapshot fixture").into()
+}
+
+fn snapshot_request(section: &str, fields: &[&str]) -> SnapshotRequest {
+    SnapshotRequest {
+        segment_id: SEGMENT_ID,
+        at: SNAPSHOT_AT,
+        sections: vec![section.to_owned()],
+        fields: fields.iter().map(|field| (*field).to_owned()).collect(),
+        by: Vec::new(),
+        direction: Order::Desc,
+        group: None,
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    }
+}
+
+fn snapshot_records(payload: Arc<[u8]>, request: SnapshotRequest) -> Vec<Value> {
+    let source = EmbeddedSource::from_shared(
+        SegmentId::new(SEGMENT_ID).expect("snapshot segment id"),
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("snapshot payload length fits u64"),
+    )
+    .expect("embedded snapshot source");
+    let dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(source));
+    let context = QueryContext::new(dataset, 0b11, false);
+    let execution = execute(&context, QueryRequest::Snapshot(request)).expect("prepare snapshot");
+    let mut records = SnapshotRecords::default();
+    execution
+        .stream(&mut records)
+        .expect("stream snapshot records");
+    records.0
+}
+
+fn process(pid: i32, label: StrId) -> OsProcess {
+    OsProcess {
+        ts: Ts(SNAPSHOT_AT),
+        pid,
+        starttime: Ts(SEGMENT_ID - 1_000_000 + i64::from(pid)),
+        ppid: 1,
+        uid: 1_000,
+        euid: 1_000,
+        gid: 1_000,
+        egid: 1_000,
+        state: b'S',
+        num_threads: 1,
+        tty: 0,
+        comm: label,
+        cmdline: Some(label),
+        utime: 0,
+        stime: 0,
+        nice: 0,
+        prio: 20,
+        rtprio: 0,
+        policy: 0,
+        curcpu: 0,
+        rundelay_ns: 0,
+        blkdelay_ticks: 0,
+        nvcsw: 0,
+        nivcsw: 0,
+        minflt: 0,
+        majflt: 0,
+        vmem_kb: 0,
+        rmem_kb: 0,
+        vswap_kb: 0,
+        syscr: None,
+        syscw: None,
+        rchar: None,
+        wchar: None,
+        read_bytes: None,
+        write_bytes: None,
+        cancelled_write_bytes: None,
+        exit_signal: 17,
+        scope: 0,
+    }
+}
+
+fn statement(dbid: u32, query: Option<StrId>) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(SNAPSHOT_AT),
+        queryid: Some(42),
+        userid: 72,
+        dbid,
+        datname: None,
+        usename: None,
+        query,
+        calls: 1,
+        rows: 0,
+        plans: 0,
+        total_exec_time: 1.0,
+        total_plan_time: 0.0,
+        min_exec_time: 0.0,
+        max_exec_time: 0.0,
+        mean_exec_time: 0.0,
+        stddev_exec_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+        stddev_plan_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
+    }
+}
+
+fn table(ts: i64, relid: u32, seq_scan: i64, label: StrId) -> PgStatUserTablesV1 {
+    PgStatUserTablesV1 {
+        ts: Ts(ts),
+        datid: 1,
+        datname: label,
+        relid,
+        schemaname: label,
+        relname: label,
+        tablespace_oid: None,
+        tablespace: None,
+        seq_scan,
+        seq_tup_read: 0,
+        idx_scan: None,
+        idx_tup_fetch: None,
+        n_tup_ins: 0,
+        n_tup_upd: 0,
+        n_tup_del: 0,
+        n_tup_hot_upd: 0,
+        n_live_tup: 0,
+        n_dead_tup: 0,
+        n_mod_since_analyze: 0,
+        vacuum_count: 0,
+        autovacuum_count: 0,
+        analyze_count: 0,
+        autoanalyze_count: 0,
+        last_vacuum: None,
+        last_autovacuum: None,
+        last_analyze: None,
+        last_autoanalyze: None,
+        main_fork_bytes: 0,
+        toast_bytes: None,
+        toast_n_live_tup: None,
+        toast_n_dead_tup: None,
+        toast_last_autovacuum: None,
+        xid_age: None,
+        mxid_age: None,
+        reltuples: 0,
+        heap_blks_read: 0,
+        heap_blks_hit: 0,
+        idx_blks_read: None,
+        idx_blks_hit: None,
+        toast_blks_read: None,
+        toast_blks_hit: None,
+        tidx_blks_read: None,
+        tidx_blks_hit: None,
+    }
+}
+
+#[test]
+fn snapshot_top_k_keeps_page_size_plus_one_and_dictionary_work_chunked() {
+    const ROWS: i32 = 1_025;
+    let payload = fixture_payload(|interner, buffers| {
+        let label = StrId(
+            interner
+                .intern(b"worker")
+                .expect("intern process label")
+                .get(),
+        );
+        for pid in 0..ROWS {
+            buffers.push(process(pid, label)).expect("process row fits");
+        }
+    });
+    reset_page_operations();
+    let mut request = snapshot_request("os_process", &["pid", "comm"]);
+    request.by = vec!["comm".to_owned()];
+    request.page_size = Some(10);
+    let records = snapshot_records(payload, request);
+
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["record"] == "row")
+            .count(),
+        10
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("snapshot page trailer");
+    assert_eq!(page["eligible"], "1025");
+    assert_eq!(page["returned"], "10");
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page_operations(), (1, 2, 1_024));
+}
+
+#[test]
+fn snapshot_first_match_stops_after_the_first_nonempty_query_text() {
+    let payload = fixture_payload(|interner, buffers| {
+        let text = StrId(
+            interner
+                .intern(b"select 42")
+                .expect("intern query text")
+                .get(),
+        );
+        buffers
+            .push(statement(73, None))
+            .expect("empty statement row fits");
+        for dbid in 74..=202 {
+            buffers
+                .push(statement(dbid, Some(text)))
+                .expect("statement row fits");
+        }
+    });
+    reset_first_match_rows();
+    reset_page_operations();
+    let mut request = snapshot_request("pg_stat_statements", &["query"]);
+    request.page_size = Some(1);
+    request.search = Some("query_id:42".to_owned());
+    request.first_match = true;
+    let records = snapshot_records(payload, request);
+
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], json!(["select 42"]));
+    assert_eq!(first_match_rows(), 2);
+    assert_eq!(page_operations(), (0, 0, 0));
+}
+
+#[test]
+fn unpaged_snapshot_staging_and_filter_dictionary_stay_chunk_bounded() {
+    const ROWS: i32 = 1_025;
+    let payload = fixture_payload(|interner, buffers| {
+        let label = StrId(
+            interner
+                .intern(b"worker")
+                .expect("intern process label")
+                .get(),
+        );
+        for pid in 0..ROWS {
+            buffers.push(process(pid, label)).expect("process row fits");
+        }
+    });
+    reset_context_operations();
+    let mut request = snapshot_request("os_process", &["pid"]);
+    request.filters = vec![Filter {
+        column: "comm".to_owned(),
+        value: "worker".to_owned(),
+    }];
+    let records = snapshot_records(payload, request);
+
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["record"] == "row")
+            .count(),
+        usize::try_from(ROWS).expect("positive row count")
+    );
+    assert_eq!(context_operations(), (1_024, 1_025, 1));
+}
+
+#[test]
+fn relation_snapshot_bounds_predecessor_scans_and_page_metric_projection() {
+    let payload = fixture_payload(|interner, buffers| {
+        let label = StrId(
+            interner
+                .intern(b"relation")
+                .expect("intern relation label")
+                .get(),
+        );
+        for (relid, current) in [(11, 30), (12, 15), (13, 60)] {
+            buffers
+                .push(table(100, relid, 0, label))
+                .expect("predecessor relation row fits");
+            buffers
+                .push(table(SNAPSHOT_AT, relid, current, label))
+                .expect("current relation row fits");
+        }
+    });
+    reset_relation_snapshot_operations();
+    let mut request = snapshot_request("pg_stat_user_tables", &["seq_scan"]);
+    request.group = Some(RelationGroup::Object);
+    request.by = vec!["seq_scan".to_owned()];
+    request.page_size = Some(1);
+    let records = snapshot_records(payload, request);
+
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["record"] == "relation")
+            .count(),
+        1
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("relation page trailer");
+    assert_eq!(page["eligible"], "3");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], true);
+    assert_eq!(relation_snapshot_operations(), (1, 1, 1));
+}
 
 #[test]
 fn plan_statement_query_id_mapping_is_fork_transparent() {
@@ -666,11 +1046,11 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
 
 #[test]
 fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private() {
-    let statements = kronika_query::snapshot::search_fields("pg_stat_statements")
+    let statements = super::search_fields("pg_stat_statements")
         .iter()
         .map(|field| field.key)
         .collect::<Vec<_>>();
-    let plans = kronika_query::snapshot::search_fields("pg_store_plans")
+    let plans = super::search_fields("pg_store_plans")
         .iter()
         .map(|field| field.key)
         .collect::<Vec<_>>();
@@ -715,7 +1095,7 @@ fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private(
         assert!(!statements.contains(&physical));
         assert!(!plans.contains(&physical));
         assert!(
-            !kronika_query::snapshot::search_fields("os_process")
+            !super::search_fields("os_process")
                 .iter()
                 .any(|field| field.key == physical)
         );
@@ -744,10 +1124,7 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
         "schema:public AND size>100MB AND seq_scan_rate<0.5/s"
     );
     assert_eq!(parsed.clauses[0].columns, ["schemaname"]);
-    assert!(matches!(
-        parsed.expr,
-        kronika_query::snapshot::Expr::And(..)
-    ));
+    assert!(matches!(parsed.expr, super::Expr::And(..)));
     assert!(matches!(
         &parsed.clauses[1].value,
         SearchValue::Quantity(quantity)
@@ -869,10 +1246,7 @@ fn structured_search_parses_boolean_precedence_groups_and_phase_rules() {
         parsed.canonical(),
         "(schema:public OR schema:audit) AND (size>100MB OR buffer_hit<90%)"
     );
-    assert!(matches!(
-        parsed.expr,
-        kronika_query::snapshot::Expr::And(..)
-    ));
+    assert!(matches!(parsed.expr, super::Expr::And(..)));
     parsed
         .validate_grouped_phase()
         .expect("AND may cross the grouped phase boundary");
@@ -888,10 +1262,7 @@ fn structured_search_parses_boolean_precedence_groups_and_phase_rules() {
         "pg_stat_user_tables",
     )
     .expect("valid precedence");
-    assert!(matches!(
-        precedence.expr,
-        kronika_query::snapshot::Expr::Or { .. }
-    ));
+    assert!(matches!(precedence.expr, super::Expr::Or { .. }));
 
     for expression in [
         "schema:public OR size>100MB",

@@ -2,10 +2,6 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
-use crate::api::{
-    page_operations, relation_snapshot_operations, reset_page_operations,
-    reset_relation_snapshot_operations,
-};
 use crate::config::{Account, Config};
 use crate::tests::artifacts::{Fixture, NamedIndexSnapshot};
 
@@ -210,7 +206,7 @@ fn active_metadata_and_default_postgresql_cadences_bound_samples() {
 }
 
 #[test]
-fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
+fn in_combines_plain_and_relation_filter_values() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "alpha"), (100, 102, 40, "beta")]);
     fixture.append_named_table_snapshots(&[
@@ -220,7 +216,6 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
     fixture.finish();
     let config = test_config(fixture.root().to_path_buf());
 
-    reset_page_operations();
     let scalar = structured(super::processes::call(
         &config,
         arguments(&json!({
@@ -229,10 +224,8 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
         })),
         &|| false,
     ));
-    let scalar_operations = page_operations();
     assert_eq!(scalar["rows"].as_array().expect("rows").len(), 1);
 
-    reset_page_operations();
     let any = structured(super::processes::call(
         &config,
         arguments(&json!({
@@ -246,7 +239,6 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
         &|| false,
     ));
     assert_eq!(any["rows"].as_array().expect("rows").len(), 1);
-    assert_eq!(page_operations(), scalar_operations);
 
     let and_or = structured(super::processes::call(
         &config,
@@ -263,7 +255,6 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["pid"], 102);
 
-    reset_relation_snapshot_operations();
     let scalar = structured(super::postgresql::call_tables(
         &config,
         arguments(&json!({
@@ -273,10 +264,8 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
         })),
         &|| false,
     ));
-    let scalar_operations = relation_snapshot_operations();
     assert_eq!(scalar["rows"].as_array().expect("rows").len(), 1);
 
-    reset_relation_snapshot_operations();
     let any = structured(super::postgresql::call_tables(
         &config,
         arguments(&json!({
@@ -292,7 +281,6 @@ fn in_is_one_clause_and_does_not_multiply_plain_or_relation_scans() {
         &|| false,
     ));
     assert_eq!(any["rows"].as_array().expect("rows").len(), 1);
-    assert_eq!(relation_snapshot_operations(), scalar_operations);
 }
 
 #[test]
