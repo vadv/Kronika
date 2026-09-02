@@ -12,7 +12,7 @@ use crate::route::MAX_SNAPSHOT_PAGE_SIZE;
 
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
-use super::semantics::{bounded_limit, finder_output, finder_storage_error, mcp_structured};
+use super::semantics::{bounded_limit, finder_output, mcp_structured};
 use super::time::resolve_point;
 
 const LOGICAL_NAME: &str = "os_process";
@@ -79,19 +79,21 @@ fn call_with(
         group: None,
         limit,
     };
-    let result = match super::run_snapshot_query(config, |context| {
-        execute_processes(context, &query, &|| cancelled())
-    }) {
-        Ok(result) => result,
-        Err(error) => return finder_storage_error(LOGICAL_NAME, &error),
-    };
-
-    let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
-        Ok(rows) => rows,
-        Err(_error) => return super::semantics::mcp_error("could not produce detail_ref"),
-    };
-    let output = finder_output(rows, result.truncated);
-    mcp_structured(output)
+    super::run_finder_query(
+        config,
+        LOGICAL_NAME,
+        |context| execute_processes(context, &query, cancelled),
+        |result| {
+            let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
+                Ok(rows) => rows,
+                Err(_error) => {
+                    return super::semantics::mcp_error("could not produce detail_ref");
+                }
+            };
+            let output = finder_output(rows, result.truncated);
+            mcp_structured(output)
+        },
+    )
 }
 
 /// Keeps compact fields, overwrites `pid`/`ppid` from the typed identity, and

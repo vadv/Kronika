@@ -95,7 +95,7 @@ impl PreparedSnapshot {
     pub(super) fn emit_relation_page(
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<(), QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -243,7 +243,7 @@ impl PreparedSnapshot {
     pub(crate) fn compute_relation_rows(
         &self,
         limit: usize,
-        cancelled: &impl Fn() -> bool,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<super::selector::FinderResult<RelationRow>, QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -356,7 +356,7 @@ fn scan_context(
     group: RelationGroup,
     context: &PageContext<'_>,
     aggregates: &mut BTreeMap<GroupKey, RelationAggregate>,
-    cancelled: &impl Fn() -> bool,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), QueryError> {
     let source_segment = prepared.dataset.open(context.source)?;
     let mut offset = 0_u64;

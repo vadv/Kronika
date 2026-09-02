@@ -15,8 +15,8 @@ use hyper::header::{CACHE_CONTROL, HeaderValue, VARY};
 use hyper::{Request, Response};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -63,6 +63,18 @@ fn run_snapshot_query<R>(
         result => result,
     }
     .map_err(crate::api::ApiError::from)
+}
+
+fn run_finder_query<R>(
+    config: &Config,
+    logical_name: &str,
+    execute: impl FnMut(&QueryContext) -> Result<R, QueryError>,
+    render: impl FnOnce(R) -> CallToolResult,
+) -> CallToolResult {
+    match run_snapshot_query(config, execute) {
+        Ok(result) => render(result),
+        Err(error) => semantics::finder_storage_error(logical_name, &error),
+    }
 }
 
 #[derive(Clone)]

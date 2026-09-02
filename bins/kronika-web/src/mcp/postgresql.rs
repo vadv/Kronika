@@ -1,10 +1,10 @@
 //! MCP adapters over recorded `PostgreSQL` finder results.
 
+use kronika_query::RelationKind;
 use kronika_query::snapshot::{
     CurrentSnapshotQuery, FinderOrder, FinderQuery, FinderResult, FinderSurface, PlainRowOut,
     RelationRow, SnapshotPoint, execute_current_plain, execute_plain, execute_relation,
 };
-use kronika_query::{RelationGroup as QueryRelationGroup, RelationKind};
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
 
@@ -18,9 +18,7 @@ use super::catalog::{
     IndexesInput, LocksInput, PlansInput, SortInput, StatementsInput, TablesInput, VacuumInput,
 };
 use super::filter::{FilterInput, build_search};
-use super::semantics::{
-    bounded_limit, finder_output, finder_storage_error, mcp_error, mcp_structured,
-};
+use super::semantics::{bounded_limit, finder_output, mcp_error, mcp_structured};
 use super::time::{TimeSpecInput, resolve_point};
 
 pub(crate) fn call_tables(
@@ -92,21 +90,20 @@ fn call(
     query: &FinderQuery,
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
-    let result = match super::run_snapshot_query(config, |context| {
-        execute_relation(context, query, &|| cancelled())
-    }) {
-        Ok(result) => result,
-        Err(error) => return finder_storage_error(kind.logical_name(), &error),
-    };
-
-    let group = query_group(group);
-    let rows: Vec<Value> = result
-        .rows
-        .into_iter()
-        .map(|row| row_to_json(row, kind, group))
-        .collect();
-    let output = finder_output(rows, result.truncated);
-    mcp_structured(output)
+    super::run_finder_query(
+        config,
+        kind.logical_name(),
+        |context| execute_relation(context, query, cancelled),
+        |result| {
+            let rows: Vec<Value> = result
+                .rows
+                .into_iter()
+                .map(|row| row_to_json(row, kind, group))
+                .collect();
+            let output = finder_output(rows, result.truncated);
+            mcp_structured(output)
+        },
+    )
 }
 
 fn finder_point(tool: &str, at: Option<&TimeSpecInput>) -> Result<SnapshotPoint, CallToolResult> {
@@ -145,7 +142,7 @@ fn finder_query(
 }
 
 /// Flattens metrics and group identity; identity fields win name collisions.
-fn row_to_json(row: RelationRow, kind: RelationKind, group: QueryRelationGroup) -> Value {
+fn row_to_json(row: RelationRow, kind: RelationKind, group: RelationGroup) -> Value {
     let mut object = Map::new();
     for (name, metric) in row.metrics {
         object.insert(name, metric.map_or(Value::Null, |metric| metric.json()));
@@ -154,15 +151,6 @@ fn row_to_json(row: RelationRow, kind: RelationKind, group: QueryRelationGroup) 
         object.extend(key_fields);
     }
     Value::Object(object)
-}
-
-const fn query_group(group: RelationGroup) -> QueryRelationGroup {
-    match group {
-        RelationGroup::Database => QueryRelationGroup::Database,
-        RelationGroup::Schema => QueryRelationGroup::Schema,
-        RelationGroup::Tablespace => QueryRelationGroup::Tablespace,
-        RelationGroup::Object => QueryRelationGroup::Object,
-    }
 }
 
 pub(crate) fn call_activity(
@@ -291,23 +279,24 @@ fn call_plain(
     cancelled: &dyn Fn() -> bool,
 ) -> CallToolResult {
     let surface = query.surface;
-    let result = match super::run_snapshot_query(config, |context| {
-        execute_plain(context, query, &|| cancelled())
-    }) {
-        Ok(result) => result,
-        Err(error) => return finder_storage_error(surface.logical_name(), &error),
-    };
-    let rows: Vec<Value> = match result
-        .rows
-        .into_iter()
-        .map(|row| finder_plain_row_to_json(surface.logical_name(), row))
-        .collect()
-    {
-        Ok(rows) => rows,
-        Err(_error) => return mcp_error("could not produce detail_ref"),
-    };
-    let output = finder_output(rows, result.truncated);
-    mcp_structured(output)
+    super::run_finder_query(
+        config,
+        surface.logical_name(),
+        |context| execute_plain(context, query, cancelled),
+        |result| {
+            let rows: Vec<Value> = match result
+                .rows
+                .into_iter()
+                .map(|row| finder_plain_row_to_json(surface.logical_name(), row))
+                .collect()
+            {
+                Ok(rows) => rows,
+                Err(_error) => return mcp_error("could not produce detail_ref"),
+            };
+            let output = finder_output(rows, result.truncated);
+            mcp_structured(output)
+        },
+    )
 }
 
 pub(super) fn plain_rows(
@@ -323,7 +312,7 @@ pub(super) fn plain_rows(
         limit: usize::MAX,
     };
     super::run_snapshot_query(config, |context| {
-        execute_current_plain(context, query.clone(), &|| cancelled())
+        execute_current_plain(context, query.clone(), cancelled)
     })
     .map_err(|error| super::semantics::storage_error(&error))
 }

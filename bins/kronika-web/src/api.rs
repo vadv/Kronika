@@ -476,14 +476,7 @@ fn shared_hour_request(request: crate::route::HourRequest) -> kronika_query::Hou
                 fields: series.fields,
                 filters: series.filters,
                 type_id: series.type_id,
-                group: series.group.map(|group| match group {
-                    crate::route::RelationGroup::Database => kronika_query::RelationGroup::Database,
-                    crate::route::RelationGroup::Schema => kronika_query::RelationGroup::Schema,
-                    crate::route::RelationGroup::Tablespace => {
-                        kronika_query::RelationGroup::Tablespace
-                    }
-                    crate::route::RelationGroup::Object => kronika_query::RelationGroup::Object,
-                }),
+                group: series.group,
             }),
         part: match request.part {
             crate::route::HourPart::Combined => kronika_query::HourPart::Combined,
