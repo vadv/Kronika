@@ -1,6 +1,6 @@
 //! Strict parsing of the four resource families.
 
-use crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES;
+use kronika_query::DETAIL_REF_MAX_ENCODED_BYTES;
 use kronika_query::TimeRange;
 use kronika_query::{
     EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,

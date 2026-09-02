@@ -664,7 +664,7 @@ pub(crate) struct RowDetailInput {
     /// `kronika_get_row_detail`.
     #[schemars(length(
         min = 1,
-        max = crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES
+        max = kronika_query::DETAIL_REF_MAX_ENCODED_BYTES
     ))]
     pub(crate) detail_ref: String,
 }

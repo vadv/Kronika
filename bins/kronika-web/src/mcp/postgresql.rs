@@ -418,7 +418,7 @@ pub(crate) fn call_plans(
 /// Keeps compact fields in mass finder output and appends its detail reference.
 fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Value, String> {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    let detail_ref = crate::api::row_key::detail_locator(
+    let detail_ref = kronika_query::detail_locator(
         logical_name,
         row.segment_id,
         row.at,
@@ -427,7 +427,7 @@ fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Valu
         row.identity,
     )
     .detail_ref()?;
-    object.retain(|field, _value| !crate::api::row_key::is_detail_text(logical_name, field));
+    object.retain(|field, _value| !kronika_query::is_detail_text(logical_name, field));
     object.insert("detail_ref".to_owned(), Value::String(detail_ref));
     Ok(Value::Object(object))
 }
@@ -435,7 +435,7 @@ fn finder_plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Valu
 /// Flattens projected fields and appends the shared opaque detail reference.
 pub(super) fn plain_row_to_json(logical_name: &str, row: PlainRowOut) -> Result<Value, String> {
     let mut object: Map<String, Value> = row.fields.into_iter().collect();
-    let detail_ref = crate::api::row_key::detail_locator(
+    let detail_ref = kronika_query::detail_locator(
         logical_name,
         row.segment_id,
         row.at,

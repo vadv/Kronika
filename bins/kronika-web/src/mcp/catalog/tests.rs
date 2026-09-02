@@ -622,7 +622,7 @@ fn row_detail_accepts_only_one_opaque_string() {
     assert_eq!(properties["detail_ref"]["minLength"], 1);
     assert_eq!(
         properties["detail_ref"]["maxLength"],
-        crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES
+        kronika_query::DETAIL_REF_MAX_ENCODED_BYTES
     );
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));

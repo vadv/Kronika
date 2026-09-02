@@ -3496,6 +3496,60 @@ fn heatmap_validates_the_endpoint_before_opening_the_source() {
 }
 
 #[test]
+fn row_detail_rejects_a_malformed_ref_before_opening_storage() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let missing = directory.path().join("missing-root");
+    let error = crate::api::prepare(
+        &missing,
+        SOURCES,
+        crate::route::Route::RowDetail("not+base64".to_owned()),
+        None,
+    )
+    .err()
+    .expect("row detail rejects a malformed reference");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_locator",
+        None,
+        "invalid detail_ref",
+    );
+}
+
+#[test]
+fn row_detail_http_bytes_and_cache_policy_stay_stable() {
+    let mut fixture = Fixture::new();
+    let at = SEGMENT_ID + 10;
+    fixture.append_pgbouncer_event(at);
+    fixture.finish();
+    let events = format!(
+        "/api/events?from={at}&to={}&source=pgbouncer_events&representation=occurrences&limit=1",
+        at + 1
+    );
+    let (_meta, bytes) =
+        query_response(&fixture, &events, usize::MAX, usize::MAX).expect("event occurrence");
+    let occurrence = raw_ndjson_records(&bytes)
+        .into_iter()
+        .find(|record| record["record"] == "event_occurrence")
+        .expect("event occurrence");
+    let detail_ref = occurrence["detail_ref"].as_str().expect("detail ref");
+    let target = format!("/api/row-detail?detail_ref={detail_ref}");
+
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("row detail");
+
+    assert_eq!(meta.cache, CachePolicy::NoStore);
+    assert_eq!(meta.etag, None);
+    assert_eq!(
+        bytes,
+        format!(
+            "{{\"at\":\"{at}\",\"fields\":{{\"database\":null,\"host\":null,\"level\":2,\"level_label\":\"warning\",\"source_file\":\"fixture\",\"text\":{{\"full_len\":\"7\",\"sha256\":null,\"stored_text\":\"fixture\",\"truncated\":false}},\"ts\":\"{at}\",\"username\":null}},\"record\":\"row_detail\",\"section\":\"pgbouncer_events\"}}\n"
+        )
+        .into_bytes()
+    );
+}
+
+#[test]
 fn events_preserve_group_and_occurrence_order_truncation_and_detail_refs() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;

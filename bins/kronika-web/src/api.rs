@@ -19,8 +19,6 @@ mod hour;
 pub(crate) mod index;
 mod query;
 mod render;
-pub(crate) mod row_detail;
-pub(crate) mod row_key;
 pub(crate) mod snapshot;
 pub(crate) mod time;
 
@@ -67,10 +65,6 @@ pub(crate) struct ResponseMeta {
 }
 
 impl ResponseMeta {
-    const fn ok(cache: CachePolicy) -> Self {
-        Self::ok_with_etag(cache, None)
-    }
-
     const fn ok_with_etag(cache: CachePolicy, etag: Option<String>) -> Self {
         Self {
             status: StatusCode::OK,
@@ -85,7 +79,6 @@ pub(crate) enum Prepared {
     Query(PreparedQuery),
     Hour(hour::PreparedHour),
     Snapshot(snapshot::PreparedSnapshot),
-    RowDetail(row_detail::PreparedRowDetail),
     Empty(ResponseMeta),
 }
 
@@ -101,7 +94,6 @@ impl Prepared {
             Self::Query(prepared) => prepared.meta.clone(),
             Self::Hour(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
-            Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -119,7 +111,6 @@ impl Prepared {
             }
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
-            Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -416,7 +407,14 @@ pub(crate) fn prepare_with_demo(
                 .map_err(ApiError::from)
         }
         Route::RowDetail(detail_ref) => {
-            row_detail::prepare(root, &detail_ref).map(Prepared::RowDetail)
+            let request =
+                kronika_query::validate_row_detail_ref(&detail_ref).map_err(ApiError::from)?;
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(&context, QueryRequest::RowDetail(request))
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)

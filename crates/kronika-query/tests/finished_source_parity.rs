@@ -14,8 +14,8 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_query::{
     CatalogRequest, EventsQuery, EventsRepresentation, EventsResult, FinishedDataset,
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, NormalizedRanking,
-    QueryContext, QueryDataset, QueryRequest, QuerySink, TimeRange, execute, execute_events,
-    execute_heatmap_batch,
+    QueryContext, QueryDataset, QueryRequest, QuerySink, RowDetailResult, TimeRange, execute,
+    execute_events, execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
 };
 use kronika_reader as _;
 use kronika_registry::os_cpu::OsCpu;
@@ -128,6 +128,12 @@ fn events_query() -> EventsQuery {
 fn events_result(dataset: Arc<dyn QueryDataset>, query: EventsQuery) -> EventsResult {
     let context = QueryContext::new(dataset, 0, false);
     execute_events(&context, query, &Records::default()).expect("execute typed events query")
+}
+
+fn row_detail_result(dataset: Arc<dyn QueryDataset>, detail_ref: &str) -> RowDetailResult {
+    let context = QueryContext::new(dataset, 0, false);
+    let request = validate_row_detail_ref(detail_ref).expect("validate row detail reference");
+    execute_row_detail(&context, request, &Records::default()).expect("execute typed row detail")
 }
 
 fn write_posix_fixture(root: &Path, segment_id: SegmentId) {
@@ -521,5 +527,61 @@ fn events_result_is_typed_identical_for_posix_and_embedded_finished_zms() {
             ("pg_log_errors", "1709164800000010"),
             ("pg_log_errors", "1709164800000020"),
         ]
+    );
+}
+
+#[test]
+fn row_detail_is_typed_identical_for_posix_and_embedded_finished_zms() {
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
+    let directory = tempfile::tempdir().expect("temporary POSIX root");
+    let payload = write_events_fixture(directory.path(), segment_id);
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix.clone()));
+    let listing = events_result(Arc::clone(&posix_dataset), events_query());
+    let EventsResult::Occurrences { occurrences, .. } = listing else {
+        panic!("occurrence result");
+    };
+    let detail_ref = occurrences
+        .get(1)
+        .expect("error occurrence after temporary-file tie")
+        .detail_ref()
+        .expect("error detail reference");
+    let posix_result = row_detail_result(posix_dataset, &detail_ref);
+    assert_eq!(posix.retained_segment_bytes(), 0);
+
+    let embedded = EmbeddedSource::from_shared(
+        segment_id,
+        Arc::clone(&payload),
+        u64::try_from(payload.len()).expect("payload length fits u64"),
+    )
+    .expect("embedded source");
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_result = row_detail_result(
+        Arc::new(FinishedDataset::new(embedded.clone())),
+        &detail_ref,
+    );
+    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+
+    assert_eq!(posix_result, embedded_result);
+    assert_eq!(embedded_result.section, "pg_log_errors");
+    assert_eq!(embedded_result.at, SEGMENT_ID + 10);
+    assert_eq!(embedded_result.fields["at"], (SEGMENT_ID + 10).to_string());
+    assert_eq!(embedded_result.fields["severity"], 0);
+    assert_eq!(embedded_result.fields["severity_label"], "error");
+    assert_eq!(embedded_result.fields["category"], 8);
+    assert_eq!(embedded_result.fields["category_label"], "auth");
+    assert_eq!(embedded_result.fields["pattern"], "error-a");
+    assert_eq!(
+        embedded_result.fields["sample"],
+        serde_json::json!({
+            "full_len": "7",
+            "sha256": null,
+            "stored_text": "error-a",
+            "truncated": false,
+        })
     );
 }

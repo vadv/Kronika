@@ -8,20 +8,19 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 const DETAIL_REF_VERSION: u8 = 1;
-#[cfg(test)]
 const DETAIL_REF_CHECKSUM_BYTES: usize = size_of::<u32>();
-pub(crate) const DETAIL_REF_MAX_ENCODED_BYTES: usize = 8 * 1024;
+/// Maximum accepted byte length of one encoded detail reference.
+pub const DETAIL_REF_MAX_ENCODED_BYTES: usize = 8 * 1024;
 
-#[cfg(test)]
 type DetailPayload = (u8, String, i64, i64, u32, u64, RowIdentity);
 
 /// Complete registry identity kept inside an opaque detail reference.
-pub(crate) type RowIdentity = Map<String, Value>;
+pub type RowIdentity = Map<String, Value>;
 
 /// Stable logical row identity with an optional physical-position hint.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DetailLocator {
+pub struct DetailLocator {
     pub(crate) section: String,
     #[serde(serialize_with = "serialize_decimal")]
     pub(crate) segment_id: i64,
@@ -35,7 +34,8 @@ pub(crate) struct DetailLocator {
 }
 
 /// Builds one stable locator. The ordinal is only a physical hint.
-pub(crate) fn detail_locator(
+#[must_use]
+pub fn detail_locator(
     section: &str,
     segment_id: i64,
     at: i64,
@@ -55,7 +55,11 @@ pub(crate) fn detail_locator(
 
 impl DetailLocator {
     /// Encodes the locator as one opaque, stateless value for adapters.
-    pub(crate) fn detail_ref(&self) -> Result<String, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an explanation when the locator is invalid or oversized.
+    pub fn detail_ref(&self) -> Result<String, String> {
         if logical_section_name(self.type_id) != Some(self.section.as_str())
             || validate(self.type_id, &self.identity).is_err()
         {
@@ -79,7 +83,6 @@ impl DetailLocator {
     }
 
     /// Decodes and validates the one current detail-reference format.
-    #[cfg(test)]
     pub(crate) fn from_detail_ref(detail_ref: &str) -> Result<Self, String> {
         if detail_ref.is_empty() || detail_ref.len() > DETAIL_REF_MAX_ENCODED_BYTES {
             return Err("detail_ref length is invalid".to_owned());
@@ -149,9 +152,7 @@ where
 /// Snapshot-like sources use their declared cross-snapshot registry identity.
 /// Event streams can repeat a semantic key at one timestamp, so the complete
 /// non-timestamp stored row is their identity.
-pub(crate) fn identity_columns(
-    contract: &'static TypeContract,
-) -> impl Iterator<Item = &'static str> {
+pub fn identity_columns(contract: &'static TypeContract) -> impl Iterator<Item = &'static str> {
     let event = contract.semantics == Semantics::EventStream;
     contract
         .columns
@@ -167,7 +168,12 @@ pub(crate) fn identity_columns(
 }
 
 /// Encodes one row's identity without resolving dictionary-backed payloads.
-pub(crate) fn identity(type_id: u32, row: &Row) -> Result<RowIdentity, String> {
+///
+/// # Errors
+///
+/// Returns an explanation when the type or decoded row is incompatible with
+/// the registry identity contract.
+pub fn identity(type_id: u32, row: &Row) -> Result<RowIdentity, String> {
     let contract =
         contract(type_id).ok_or_else(|| format!("type_id {type_id} has no registry contract"))?;
     if contract.type_id.get() != row.contract().type_id.get() {
@@ -186,7 +192,11 @@ pub(crate) fn identity(type_id: u32, row: &Row) -> Result<RowIdentity, String> {
 }
 
 /// Validates that an input carries exactly the registry identity members.
-pub(crate) fn validate(type_id: u32, requested: &RowIdentity) -> Result<(), String> {
+///
+/// # Errors
+///
+/// Returns an explanation naming missing or unexpected identity members.
+pub fn validate(type_id: u32, requested: &RowIdentity) -> Result<(), String> {
     let contract =
         contract(type_id).ok_or_else(|| format!("type_id {type_id} has no registry contract"))?;
     let expected = identity_columns(contract).collect::<Vec<_>>();
@@ -231,7 +241,8 @@ fn identity_value(cell: &Cell) -> Value {
 }
 
 /// Stored text kept out of mass results and returned only by row detail.
-pub(crate) fn is_detail_text(section: &str, field: &str) -> bool {
+#[must_use]
+pub fn is_detail_text(section: &str, field: &str) -> bool {
     matches!(
         (section, field),
         ("os_process", "cmdline")

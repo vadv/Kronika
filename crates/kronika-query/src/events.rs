@@ -496,7 +496,7 @@ pub(crate) enum EventStat {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 /// One recorded physical event occurrence.
 pub struct EventOccurrence {
     #[serde(flatten)]

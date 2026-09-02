@@ -100,7 +100,7 @@ fn row_to_json(row: ProcessRowOut) -> Result<Value, String> {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
-    let detail_ref = crate::api::row_key::detail_locator(
+    let detail_ref = kronika_query::detail_locator(
         LOGICAL_NAME,
         row.segment_id,
         row.at,
@@ -109,7 +109,7 @@ fn row_to_json(row: ProcessRowOut) -> Result<Value, String> {
         row.identity,
     )
     .detail_ref()?;
-    object.retain(|field, _| !crate::api::row_key::is_detail_text(LOGICAL_NAME, field));
+    object.retain(|field, _| !kronika_query::is_detail_text(LOGICAL_NAME, field));
     object.insert("detail_ref".to_owned(), Value::String(detail_ref));
     Ok(Value::Object(object))
 }

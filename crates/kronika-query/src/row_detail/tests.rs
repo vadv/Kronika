@@ -1,9 +1,10 @@
 use serde_json::{Value, json};
 
-use super::normalize_detail_text;
+use super::{counter_delta, normalize_detail_text};
+use kronika_reader::Cell;
 
 #[test]
-fn every_present_detail_text_has_one_stable_shape() {
+fn present_detail_text_has_one_stable_shape() {
     let mut activity = json!({
         "query": "select 'привет'",
         "state": "active",
@@ -49,8 +50,12 @@ fn every_present_detail_text_has_one_stable_shape() {
     );
     assert_eq!(error["detail"], Value::Null);
     assert!(error["sample"].get("representation").is_none());
-    assert_eq!(
-        error["pattern"],
-        "duplicate key value violates constraint ?"
-    );
+}
+
+#[test]
+fn counter_deltas_reject_resets_and_non_finite_values() {
+    assert_eq!(counter_delta(&Cell::U64(15), &Cell::U64(5)), Some(10.0));
+    assert_eq!(counter_delta(&Cell::U64(5), &Cell::U64(15)), None);
+    assert_eq!(counter_delta(&Cell::F64(2.5), &Cell::F64(1.0)), Some(1.5));
+    assert_eq!(counter_delta(&Cell::F64(f64::NAN), &Cell::F64(1.0)), None);
 }

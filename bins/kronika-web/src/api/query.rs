@@ -120,7 +120,7 @@ fn projection(
         .chain(filters.iter().map(TypedFilter::column))
         .collect();
     if history_coordinates {
-        projection.extend(crate::api::row_key::identity_columns(contract));
+        projection.extend(kronika_query::identity_columns(contract));
         projection.extend(timestamp);
     }
     projection.sort_unstable();

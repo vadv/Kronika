@@ -113,4 +113,6 @@ pub enum QueryRequest {
     Rows(RowsRequest),
     /// Recorded event groups or physical occurrences over one window.
     Events(crate::EventsQuery),
+    /// One exact stored row addressed by a validated opaque reference.
+    RowDetail(crate::ValidatedRowDetailQuery),
 }

@@ -2101,6 +2101,31 @@ fn get_row_detail_rejects_the_old_structured_locator_input() {
 }
 
 #[test]
+fn get_row_detail_rejects_a_malformed_ref_before_opening_storage() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let config = test_config(directory.path().join("missing-root"));
+    let arguments = json!({"detail_ref": "not+base64"})
+        .as_object()
+        .expect("arguments")
+        .clone();
+
+    let result = crate::mcp::row_detail::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.content[0].as_text().expect("error").text,
+        "invalid detail_ref"
+    );
+    assert_eq!(
+        result.structured_content,
+        Some(json!({
+            "record": "error",
+            "message": "invalid detail_ref",
+        }))
+    );
+}
+
+#[test]
 fn find_events_returns_structural_fields_with_one_opaque_ref() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);

@@ -1059,7 +1059,7 @@ pub(crate) struct ProcessRowOut {
     pub(crate) type_id: u32,
     pub(crate) row_ordinal: u64,
     pub(crate) at: i64,
-    pub(crate) identity: super::row_key::RowIdentity,
+    pub(crate) identity: kronika_query::RowIdentity,
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
@@ -1070,11 +1070,11 @@ pub(crate) struct PlainRowOut {
     pub(crate) type_id: u32,
     pub(crate) row_ordinal: u64,
     pub(crate) at: i64,
-    pub(crate) identity: super::row_key::RowIdentity,
+    pub(crate) identity: kronika_query::RowIdentity,
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
-type RankedRecord<'a> = (&'a Plan, Value, super::row_key::RowIdentity);
+type RankedRecord<'a> = (&'a Plan, Value, kronika_query::RowIdentity);
 type RankedLocatorKey = (usize, i64, String);
 
 impl PreparedSnapshot {
@@ -1687,7 +1687,7 @@ impl PreparedSnapshot {
             }
             let timestamp = context.plan.timestamp.ok_or(ApiError::BadCursor)?;
             let mut projection = vec![timestamp];
-            projection.extend(super::row_key::identity_columns(context.plan.contract));
+            projection.extend(kronika_query::identity_columns(context.plan.contract));
             let source = self.reader.open_segment(context.source)?;
             let mut failure = None;
             #[cfg(test)]
@@ -1794,121 +1794,11 @@ impl PreparedSnapshot {
                 self.text,
             )?;
             let locator_identity =
-                super::row_key::identity(context.plan.type_id, &ranked.staged.row)
+                kronika_query::identity(context.plan.type_id, &ranked.staged.row)
                     .map_err(|error| row_locator_invalid(&error))?;
             records.push((context.plan, record, locator_identity));
         }
         Ok(records)
-    }
-
-    /// Returns the physical row selected by timestamp and complete identity.
-    /// The supplied ordinal is only a physical hint and may change at finalization.
-    pub(crate) fn fetch_identity_row(
-        &self,
-        ordinal_hint: u64,
-        requested_identity: &super::row_key::RowIdentity,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<Option<Value>, ApiError> {
-        let [section] = self.sections.as_slice() else {
-            return Err(ApiError::BadCursor);
-        };
-        let [plan] = section.plans.as_slice() else {
-            return Err(ApiError::BadCursor);
-        };
-        let Some(timestamp) = plan.timestamp else {
-            return Err(ApiError::BadCursor);
-        };
-        super::row_key::validate(plan.type_id, requested_identity).map_err(ApiError::BadLocator)?;
-        if ordinal_hint >= plan.rows {
-            return Err(ApiError::BadLocator(format!(
-                "invalid detail_locator row_ordinal {ordinal_hint}: type_id {} has {} rows in segment {}",
-                plan.type_id,
-                plan.rows,
-                self.anchor.id(),
-            )));
-        }
-        let source = self.reader.open_segment(&self.anchor)?;
-        let mut projection = vec![timestamp];
-        projection.extend(super::row_key::identity_columns(plan.contract));
-        let mut resolved = None;
-        let mut failure = None;
-        source.visit_rows(
-            plan.type_id,
-            &projection,
-            0,
-            usize::MAX,
-            |ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                match locator_matches(plan, timestamp, self.at, requested_identity, &row) {
-                    Ok(false) => true,
-                    Ok(true) if resolved.replace(ordinal).is_none() => true,
-                    Ok(true) => {
-                        failure = Some(ApiError::BadLocator(format!(
-                            "detail_locator identity is not unique for segment_id={}, type_id={}, at={}",
-                            self.anchor.id(),
-                            plan.type_id,
-                            self.at,
-                        )));
-                        false
-                    }
-                    Err(error) => {
-                        failure = Some(error);
-                        false
-                    }
-                }
-            },
-        )?;
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if cancelled() {
-            return Err(ApiError::Cancelled);
-        }
-        let Some(ordinal) = resolved else {
-            return Err(ApiError::BadLocator(format!(
-                "no stored row matches detail_locator segment_id={}, type_id={}, at={} and identity",
-                self.anchor.id(),
-                plan.type_id,
-                self.at,
-            )));
-        };
-        drop(source);
-        let mut facts = HashMap::new();
-        let contexts = if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
-            self.partitioned_contexts(section, cancelled)?
-        } else {
-            self.timed_contexts(section, 0, plan, timestamp, cancelled, &mut facts)?
-        };
-        let Some(context) = contexts.iter().find(|context| {
-            context.source.id() == self.anchor.id() && context.plan.type_id == plan.type_id
-        }) else {
-            return Ok(None);
-        };
-        let mut values = None;
-        let mut emit = |bytes: Vec<u8>| {
-            values = row_values(&bytes);
-            true
-        };
-        self.emit_context_rows(context, Some(ordinal), &mut emit, cancelled)?;
-        let Some(values) = values else {
-            return Ok(None);
-        };
-        if values.len() != plan.fields.len() {
-            return Ok(None);
-        }
-        let mut object: serde_json::Map<String, Value> = plan
-            .fields
-            .iter()
-            .map(|field| field.name.clone())
-            .zip(values)
-            .collect();
-        object.insert("segment_id".to_owned(), json!(self.anchor.id().to_string()));
-        object.insert("type_id".to_owned(), json!(plan.type_id.to_string()));
-        object.insert("row_ordinal".to_owned(), json!(ordinal.to_string()));
-        object.insert("at".to_owned(), json!(self.at.to_string()));
-        Ok(Some(Value::Object(object)))
     }
 
     fn emit_first_match(
@@ -3164,7 +3054,7 @@ fn row_locator(plan: &Plan, mut record: Value) -> Result<RowLocator, ApiError> {
 fn process_row_out(
     plan: &Plan,
     record: Value,
-    identity: super::row_key::RowIdentity,
+    identity: kronika_query::RowIdentity,
 ) -> Result<ProcessRowOut, ApiError> {
     let RowLocator {
         segment_id,
@@ -3199,7 +3089,7 @@ fn process_row_out(
 fn plain_row_out(
     plan: &Plan,
     record: Value,
-    identity: super::row_key::RowIdentity,
+    identity: kronika_query::RowIdentity,
 ) -> Result<PlainRowOut, ApiError> {
     let RowLocator {
         segment_id,
@@ -3311,18 +3201,6 @@ fn derived_ratio_fields(fields: &BTreeMap<String, Value>) -> BTreeMap<String, Va
             ),
         ),
     ])
-}
-
-/// Extracts values from an internal NDJSON row; malformed internal data returns
-/// `None`.
-fn row_values(bytes: &[u8]) -> Option<Vec<Value>> {
-    let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else {
-        return None;
-    };
-    match object.remove("values") {
-        Some(Value::Array(values)) => Some(values),
-        _ => None,
-    }
 }
 
 impl PageRows {
@@ -5277,7 +5155,7 @@ fn encoded_locator_identity(plan: &Plan, row: &Row) -> Result<(i64, String), Api
             plan.type_id,
         ))
     })?;
-    let identity = super::row_key::identity(plan.type_id, row).map_err(ApiError::BadLocator)?;
+    let identity = kronika_query::identity(plan.type_id, row).map_err(ApiError::BadLocator)?;
     Ok((at, serde_json::to_string(&identity)?))
 }
 
@@ -5287,21 +5165,6 @@ fn non_unique_locator(context: &PageContext<'_>, at: i64) -> ApiError {
         context.logical_name,
         context.source.id(),
     ))
-}
-
-fn locator_matches(
-    plan: &Plan,
-    timestamp: &'static str,
-    at: i64,
-    requested: &super::row_key::RowIdentity,
-    row: &Row,
-) -> Result<bool, ApiError> {
-    if row_timestamp(row, timestamp) != Some(at) {
-        return Ok(false);
-    }
-    super::row_key::identity(plan.type_id, row)
-        .map(|identity| &identity == requested)
-        .map_err(ApiError::BadLocator)
 }
 
 #[cfg(test)]

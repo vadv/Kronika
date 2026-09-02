@@ -15,6 +15,7 @@ mod index_provider;
 mod projection;
 mod render;
 mod request;
+mod row_detail;
 mod row_key;
 mod rows;
 mod selection;
@@ -41,6 +42,14 @@ pub use index_provider::{IndexProvider, IndexResource};
 pub use request::{
     ActiveCursor, CatalogRequest, DataRequest, Filter, IndexRequest, Order, QueryRequest,
     RowsRequest, SegmentRequest, Window,
+};
+pub use row_detail::{
+    PreparedRowDetail, RowDetailResult, ValidatedRowDetailQuery, execute_row_detail,
+    prepare_row_detail, validate_row_detail_ref,
+};
+pub use row_key::{
+    DETAIL_REF_MAX_ENCODED_BYTES, DetailLocator, RowIdentity, detail_locator, identity,
+    identity_columns, is_detail_text, validate,
 };
 pub use time::TimeRange;
 
@@ -183,6 +192,7 @@ enum Prepared {
     History(PreparedHistory),
     Rows(PreparedRows),
     Events(PreparedEvents),
+    RowDetail(PreparedRowDetail),
 }
 
 impl std::fmt::Debug for QueryExecution {
@@ -232,6 +242,10 @@ impl QueryExecution {
                         segments,
                     }),
             },
+            Prepared::RowDetail(_) => QueryMetadata {
+                stability: QueryStability::Mutable,
+                identity: None,
+            },
         }
     }
 
@@ -248,6 +262,7 @@ impl QueryExecution {
             Prepared::History(prepared) => prepared.stream(sink),
             Prepared::Rows(prepared) => prepared.stream(sink),
             Prepared::Events(prepared) => prepared.stream(sink),
+            Prepared::RowDetail(prepared) => prepared.stream(sink),
         }
     }
 }
@@ -287,6 +302,9 @@ pub fn execute(
             std::sync::Arc::clone(&context.dataset),
             request,
         )?),
+        QueryRequest::RowDetail(request) => {
+            Prepared::RowDetail(prepare_row_detail(context, request)?)
+        }
     };
     Ok(QueryExecution { prepared })
 }
