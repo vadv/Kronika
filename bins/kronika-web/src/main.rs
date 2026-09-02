@@ -11,6 +11,7 @@ mod budget;
 mod config;
 mod encoding;
 mod mcp;
+mod query_adapter;
 mod route;
 mod ui;
 

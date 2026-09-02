@@ -1,0 +1,17 @@
+[package]
+name = "kronika-query"
+description = "Storage-neutral execution of recorded-data queries"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kronika-reader = { path = "../kronika-reader" }
+kronika-registry = { path = "../kronika-registry" }
+serde_json = "1"
+
+[lints]
+workspace = true

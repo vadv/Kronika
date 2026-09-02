@@ -2809,6 +2809,45 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
 }
 
 #[test]
+fn shared_catalog_execution_matches_the_previous_native_bytes() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
+    fixture.append_health();
+    fixture.finish();
+
+    let mut previous = Vec::new();
+    crate::api::catalog::prepare(
+        fixture.root(),
+        crate::route::Window::default(),
+        SOURCES,
+        false,
+    )
+    .expect("prepare previous catalog")
+    .stream(
+        &mut |bytes| {
+            previous.extend_from_slice(&bytes);
+            true
+        },
+        &|| false,
+    )
+    .expect("stream previous catalog");
+
+    let mut shared = Vec::new();
+    fixture
+        .prepare("/api/catalog", None)
+        .stream(
+            &mut |bytes| {
+                shared.extend_from_slice(&bytes);
+                true
+            },
+            &|| false,
+        )
+        .expect("stream shared catalog");
+
+    assert_eq!(shared, previous);
+}
+
+#[test]
 fn hour_source_presence_uses_only_rows_inside_the_requested_window() {
     let mut fixture = Fixture::new();
     fixture.append_postgres_health_at(100, 0);

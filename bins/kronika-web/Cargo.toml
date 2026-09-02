@@ -20,6 +20,7 @@ icu_collator = "2.3.1"
 icu_locale_core = "2.3.0"
 kronika-index = { path = "../../crates/kronika-index" }
 kronika-format = { path = "../../crates/kronika-format" }
+kronika-query = { path = "../../crates/kronika-query" }
 kronika-reader = { path = "../../crates/kronika-reader" }
 kronika-registry = { path = "../../crates/kronika-registry" }
 rmcp = { version = "3.1.4", features = ["server", "transport-streamable-http-server"] }

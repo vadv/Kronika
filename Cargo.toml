@@ -9,6 +9,7 @@ members = [
     "crates/kronika-store",
     "crates/kronika-reader",
     "crates/kronika-index",
+    "crates/kronika-query",
     "crates/kronika-source-os",
     "crates/kronika-source-log",
     "crates/kronika-source-pg",

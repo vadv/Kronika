@@ -11,7 +11,9 @@ use kronika_registry::{logical_section_name, section_implementation, section_nam
 use serde_json::{Value, json};
 
 use super::render::record;
-use super::{ApiError, CachePolicy, ResponseMeta, log_warnings};
+use super::{ApiError, log_warnings};
+#[cfg(test)]
+use super::{CachePolicy, ResponseMeta};
 use crate::config::{SOURCE_FAMILIES, SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::route::Window;
 
@@ -72,11 +74,12 @@ impl PreparedCatalog {
         self
     }
 
+    #[cfg(test)]
     pub(super) const fn meta() -> ResponseMeta {
         ResponseMeta::ok(CachePolicy::Revalidate)
     }
 
-    pub(super) fn stream(
+    pub(crate) fn stream(
         self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,

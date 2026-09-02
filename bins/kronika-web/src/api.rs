@@ -4,6 +4,7 @@ use std::error::Error;
 use std::path::Path;
 
 use hyper::StatusCode;
+use kronika_query::{CatalogRequest, QueryContext, QueryRequest, QuerySink, QueryStability};
 use kronika_reader::{Reader, ReaderError, SegmentRef};
 use sha2::{Digest as _, Sha256};
 
@@ -82,7 +83,7 @@ impl ResponseMeta {
 
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
-    Catalog(catalog::PreparedCatalog),
+    Query(kronika_query::QueryExecution),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
     Heatmap(heatmap::PreparedHeatmap),
@@ -98,7 +99,7 @@ impl Prepared {
     /// Response status and caching, available before the first body record.
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
-            Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
+            Self::Query(execution) => query_meta(execution.metadata()),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
             Self::Heatmap(prepared) => prepared.meta(),
@@ -118,7 +119,10 @@ impl Prepared {
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         match self {
-            Self::Catalog(prepared) => prepared.stream(emit, cancelled),
+            Self::Query(execution) => {
+                let mut sink = NativeSink { emit, cancelled };
+                execution.stream(&mut sink).map_err(ApiError::from)
+            }
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
             Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
@@ -242,6 +246,51 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 
+impl From<kronika_query::QueryError> for ApiError {
+    fn from(error: kronika_query::QueryError) -> Self {
+        match error {
+            kronika_query::QueryError::NoSuchSegment => Self::NoSuchSegment,
+            kronika_query::QueryError::NoSuchSection => Self::NoSuchSection,
+            kronika_query::QueryError::NoSuchColumn(column) => Self::NoSuchColumn(column),
+            kronika_query::QueryError::MixedUnits(fields) => Self::MixedUnits(fields),
+            kronika_query::QueryError::BadFilter(column) => Self::BadFilter(column),
+            kronika_query::QueryError::BadCursor => Self::BadCursor,
+            kronika_query::QueryError::BadLocator(message) => Self::BadLocator(message),
+            kronika_query::QueryError::Cancelled => Self::Cancelled,
+            kronika_query::QueryError::Unreadable(error) => Self::Unreadable(error),
+            other => Self::Unreadable(Box::new(other)),
+        }
+    }
+}
+
+struct NativeSink<'a, E, C> {
+    emit: &'a mut E,
+    cancelled: &'a C,
+}
+
+impl<E, C> QuerySink for NativeSink<'_, E, C>
+where
+    E: FnMut(Vec<u8>) -> bool,
+    C: Fn() -> bool,
+{
+    fn record(&mut self, bytes: Vec<u8>) -> bool {
+        (self.emit)(bytes)
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+}
+
+const fn query_meta(metadata: kronika_query::QueryMetadata) -> ResponseMeta {
+    let cache = match metadata.stability() {
+        QueryStability::Mutable => CachePolicy::NoStore,
+        QueryStability::Revalidate => CachePolicy::Revalidate,
+        QueryStability::Immutable => CachePolicy::Immutable,
+    };
+    ResponseMeta::ok(cache)
+}
+
 /// Perform request validation and initial I/O outside the Tokio worker.
 #[cfg(test)]
 pub(crate) fn prepare(
@@ -263,7 +312,20 @@ pub(crate) fn prepare_with_demo(
 ) -> Result<Prepared, ApiError> {
     let prepared = match route {
         Route::Catalog(window) => {
-            catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(
+                &context,
+                &QueryRequest::Catalog(CatalogRequest {
+                    window: kronika_query::Window {
+                        from: window.from,
+                        to: window.to,
+                    },
+                }),
+            )
+            .map(Prepared::Query)
+            .map_err(ApiError::from)
         }
         Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),

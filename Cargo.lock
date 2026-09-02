@@ -1473,6 +1473,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-query"
+version = "1.0.0"
+dependencies = [
+ "kronika-reader",
+ "kronika-registry",
+ "serde_json",
+]
+
+[[package]]
 name = "kronika-reader"
 version = "1.0.0"
 dependencies = [
@@ -1561,6 +1570,7 @@ dependencies = [
  "kronika-format",
  "kronika-index",
  "kronika-layout",
+ "kronika-query",
  "kronika-reader",
  "kronika-registry",
  "kronika-writer",
