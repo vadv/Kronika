@@ -1,10 +1,14 @@
 //! Storage-neutral execution of recorded-data queries.
 
+#[cfg(test)]
+use kronika_writer as _;
+
 mod catalog;
 mod dataset;
 mod error;
 mod events;
 mod finished_dataset;
+mod heatmap;
 mod history;
 mod index;
 mod index_provider;
@@ -26,6 +30,10 @@ pub use events::{
     MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
 };
 pub use finished_dataset::FinishedDataset;
+pub use heatmap::{
+    DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, MAX_FIELDS, MAX_TOP,
+    NormalizedRanking, ValidatedHeatmapQuery, validate_heatmap_request,
+};
 pub use index_provider::{IndexProvider, IndexResource};
 pub use request::{
     ActiveCursor, CatalogRequest, DataRequest, Filter, IndexRequest, Order, QueryRequest,
@@ -167,6 +175,7 @@ pub struct QueryExecution {
 
 enum Prepared {
     Catalog(PreparedCatalog),
+    Heatmap(heatmap::PreparedHeatmap),
     Index(index::PreparedIndex),
     History(PreparedHistory),
     Rows(PreparedRows),
@@ -185,6 +194,16 @@ impl QueryExecution {
     pub fn metadata(&self) -> QueryMetadata<'_> {
         match &self.prepared {
             Prepared::Catalog(_) => QueryMetadata::revalidate(),
+            Prepared::Heatmap(prepared) => QueryMetadata {
+                stability: prepared.stability(),
+                identity: prepared
+                    .validator_input()
+                    .map(|(resource, shape, segments)| QueryIdentity::SegmentSet {
+                        resource,
+                        shape,
+                        segments,
+                    }),
+            },
             Prepared::Index(prepared) => QueryMetadata {
                 stability: match prepared.kind() {
                     kronika_reader::SegmentKind::Finished => QueryStability::Immutable,
@@ -221,6 +240,7 @@ impl QueryExecution {
     pub fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
         match self.prepared {
             Prepared::Catalog(prepared) => prepared.stream(sink),
+            Prepared::Heatmap(prepared) => prepared.stream(sink),
             Prepared::Index(prepared) => prepared.stream(sink),
             Prepared::History(prepared) => prepared.stream(sink),
             Prepared::Rows(prepared) => prepared.stream(sink),
@@ -236,29 +256,33 @@ impl QueryExecution {
 /// Returns a semantic, decoding, or captured-source error.
 pub fn execute(
     context: &QueryContext,
-    request: &QueryRequest,
+    request: QueryRequest,
 ) -> Result<QueryExecution, QueryError> {
     let prepared = match request {
         QueryRequest::Catalog(request) => Prepared::Catalog(PreparedCatalog::prepare(
             context.dataset.as_ref(),
-            *request,
+            request,
             context.configured_sources,
             context.synthetic_demo,
+        )?),
+        QueryRequest::Heatmap(request) => Prepared::Heatmap(heatmap::prepare(
+            std::sync::Arc::clone(&context.dataset),
+            request,
         )?),
         QueryRequest::Index(request) => Prepared::Index(index::prepare(
             context.dataset.as_ref(),
             context.index_provider()?,
-            request,
+            &request,
         )?),
         QueryRequest::History(request) => {
-            Prepared::History(history::prepare(context.dataset.as_ref(), request.clone())?)
+            Prepared::History(history::prepare(context.dataset.as_ref(), request)?)
         }
         QueryRequest::Rows(request) => {
-            Prepared::Rows(rows::prepare(context.dataset.as_ref(), request.clone())?)
+            Prepared::Rows(rows::prepare(context.dataset.as_ref(), request)?)
         }
         QueryRequest::Events(request) => Prepared::Events(events::prepare(
             std::sync::Arc::clone(&context.dataset),
-            request.clone(),
+            request,
         )?),
     };
     Ok(QueryExecution { prepared })

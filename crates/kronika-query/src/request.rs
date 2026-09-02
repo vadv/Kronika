@@ -103,6 +103,8 @@ pub struct RowsRequest {
 pub enum QueryRequest {
     /// Actual finished/current segment inventory.
     Catalog(CatalogRequest),
+    /// One ranked entity heatmap over a recorded window.
+    Heatmap(crate::ValidatedHeatmapQuery),
     /// One allowlisted derived series from one exact segment.
     Index(IndexRequest),
     /// Full-resolution rows from one exact segment.

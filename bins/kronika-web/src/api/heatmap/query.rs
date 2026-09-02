@@ -31,6 +31,13 @@ pub(crate) struct NormalizedRanking {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum HeatmapView {
     RankingOnly,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the retained HTTP oracle constructs grid views in tests"
+        )
+    )]
     Grid {
         columns: usize,
         group: Vec<String>,
@@ -75,6 +82,7 @@ pub(crate) struct HeatmapRequest {
     pub(crate) type_id: Option<u32>,
 }
 
+#[cfg(test)]
 impl HeatmapRequest {
     pub(crate) fn normalize(self) -> Result<HeatmapBatchQuery, LegacyRangeError> {
         let to_exclusive = self.to.checked_add(1).ok_or(LegacyRangeError)?;
@@ -97,15 +105,18 @@ impl HeatmapRequest {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LegacyRangeError;
 
+#[cfg(test)]
 impl std::fmt::Display for LegacyRangeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("the inclusive heatmap window cannot be represented as [from,to)")
     }
 }
 
+#[cfg(test)]
 impl std::error::Error for LegacyRangeError {}
 
 #[cfg(test)]

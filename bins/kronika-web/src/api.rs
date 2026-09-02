@@ -88,20 +88,23 @@ impl ResponseMeta {
 
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
-    Query(kronika_query::QueryExecution),
-    Heatmap(heatmap::PreparedHeatmap),
+    Query(PreparedQuery),
     Hour(hour::PreparedHour),
     Snapshot(snapshot::PreparedSnapshot),
     RowDetail(row_detail::PreparedRowDetail),
     Empty(ResponseMeta),
 }
 
+pub(crate) struct PreparedQuery {
+    execution: kronika_query::QueryExecution,
+    meta: ResponseMeta,
+}
+
 impl Prepared {
     /// Response status and caching, available before the first body record.
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
-            Self::Query(execution) => query_meta(execution.metadata()),
-            Self::Heatmap(prepared) => prepared.meta(),
+            Self::Query(prepared) => prepared.meta.clone(),
             Self::Hour(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
             Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
@@ -116,11 +119,10 @@ impl Prepared {
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         match self {
-            Self::Query(execution) => {
+            Self::Query(prepared) => {
                 let mut sink = NativeSink { emit, cancelled };
-                execution.stream(&mut sink).map_err(ApiError::from)
+                prepared.execution.stream(&mut sink).map_err(ApiError::from)
             }
-            Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
@@ -221,6 +223,17 @@ impl Error for ApiError {
     }
 }
 
+#[derive(Debug)]
+struct HeatmapOpenError(String);
+
+impl std::fmt::Display for HeatmapOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rankings[0]: {}", self.0)
+    }
+}
+
+impl Error for HeatmapOpenError {}
+
 impl From<ReaderError> for ApiError {
     fn from(error: ReaderError) -> Self {
         Self::Unreadable(Box::new(error))
@@ -281,16 +294,20 @@ fn query_meta(metadata: kronika_query::QueryMetadata<'_>) -> ResponseMeta {
         QueryStability::Revalidate => CachePolicy::Revalidate,
         QueryStability::Immutable => CachePolicy::Immutable,
     };
-    let etag = metadata.identity().map(|identity| match identity {
-        QueryIdentity::IndexChecksum(checksum) => format!("W/\"{checksum:08x}\""),
+    let etag = metadata.identity().and_then(|identity| match identity {
+        QueryIdentity::IndexChecksum(checksum) => Some(format!("W/\"{checksum:08x}\"")),
         QueryIdentity::SegmentSet {
             resource,
             shape,
             segments,
-        } => weak_dataset_etag(resource, shape, segments)
-            .expect("shared query exposes only immutable non-empty segment identities"),
+        } => weak_dataset_etag(resource, shape, segments),
     });
     ResponseMeta::ok_with_etag(cache, etag)
+}
+
+fn prepared_query(execution: kronika_query::QueryExecution) -> Prepared {
+    let meta = query_meta(execution.metadata());
+    Prepared::Query(PreparedQuery { execution, meta })
 }
 
 /// Perform request validation and initial I/O outside the Tokio worker.
@@ -305,6 +322,10 @@ pub(crate) fn prepare(
 }
 
 /// Prepare a response with the deployment identity exposed in its catalog.
+#[expect(
+    clippy::too_many_lines,
+    reason = "route preparation keeps every blocking response family in one match"
+)]
 pub(crate) fn prepare_with_demo(
     root: &Path,
     sources: u32,
@@ -319,29 +340,33 @@ pub(crate) fn prepare_with_demo(
             let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(
                 &context,
-                &QueryRequest::Catalog(CatalogRequest {
+                QueryRequest::Catalog(CatalogRequest {
                     window: kronika_query::Window {
                         from: window.from,
                         to: window.to,
                     },
                 }),
             )
-            .map(Prepared::Query)
+            .map(prepared_query)
             .map_err(ApiError::from)
         }
         Route::Index(request) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(dataset.clone(), sources, synthetic_demo)
-                .with_index_provider(dataset);
+            let context = QueryContext::new(
+                std::sync::Arc::<crate::query_adapter::NativeDataset>::clone(&dataset),
+                sources,
+                synthetic_demo,
+            )
+            .with_index_provider(dataset);
             kronika_query::execute(
                 &context,
-                &QueryRequest::Index(kronika_query::IndexRequest {
+                QueryRequest::Index(kronika_query::IndexRequest {
                     segment_id: request.segment_id,
                     section: request.section,
                 }),
             )
-            .map(Prepared::Query)
+            .map(prepared_query)
             .map_err(ApiError::from)
         }
         Route::History(request) => {
@@ -350,18 +375,50 @@ pub(crate) fn prepare_with_demo(
             let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(
                 &context,
-                &QueryRequest::History(shared_data_request(request)),
+                QueryRequest::History(shared_data_request(request)),
             )
-            .map(Prepared::Query)
+            .map(prepared_query)
             .map_err(ApiError::from)
         }
-        Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
+        Route::Heatmap(request) => {
+            let to_exclusive = request
+                .to
+                .checked_add(1)
+                .ok_or_else(|| ApiError::BadFilter("to".to_owned()))?;
+            let range = kronika_query::TimeRange::new(request.from, to_exclusive)
+                .map_err(|_error| ApiError::BadFilter("to".to_owned()))?;
+            let query = kronika_query::HeatmapBatchQuery {
+                range,
+                items: vec![kronika_query::HeatmapItemQuery {
+                    ranking: kronika_query::NormalizedRanking {
+                        section: request.section,
+                        fields: request.fields,
+                        top: request.top,
+                    },
+                    view: kronika_query::HeatmapView::Grid {
+                        columns: request.columns,
+                        group: request.group,
+                        type_id: request.type_id,
+                    },
+                }],
+            };
+            let query = kronika_query::validate_heatmap_request(query).map_err(ApiError::from)?;
+            let dataset = std::sync::Arc::new(
+                crate::query_adapter::NativeDataset::from_root(root).map_err(|error| {
+                    ApiError::Unreadable(Box::new(HeatmapOpenError(error.to_string())))
+                })?,
+            );
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(&context, QueryRequest::Heatmap(query))
+                .map(prepared_query)
+                .map_err(ApiError::from)
+        }
         Route::Events(request) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, &QueryRequest::Events(request))
-                .map(Prepared::Query)
+            kronika_query::execute(&context, QueryRequest::Events(request))
+                .map(prepared_query)
                 .map_err(ApiError::from)
         }
         Route::RowDetail(detail_ref) => {
@@ -376,7 +433,7 @@ pub(crate) fn prepare_with_demo(
             let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(
                 &context,
-                &QueryRequest::Rows(kronika_query::RowsRequest {
+                QueryRequest::Rows(kronika_query::RowsRequest {
                     data: shared_data_request(request.data),
                     order: match request.order {
                         crate::route::Order::Asc => kronika_query::Order::Asc,
@@ -386,7 +443,7 @@ pub(crate) fn prepare_with_demo(
                     cursor: request.cursor,
                 }),
             )
-            .map(Prepared::Query)
+            .map(prepared_query)
             .map_err(ApiError::from)
         }
         Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),

@@ -95,7 +95,7 @@ fn catalog_records_are_exact_and_storage_neutral() {
     let context = QueryContext::new(dataset, 0b11, false);
     let execution = execute(
         &context,
-        &QueryRequest::Catalog(CatalogRequest {
+        QueryRequest::Catalog(CatalogRequest {
             window: Window {
                 from: Some(10),
                 to: Some(20),

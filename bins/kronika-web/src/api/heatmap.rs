@@ -4,7 +4,9 @@ mod execution;
 mod query;
 mod result;
 
-pub(crate) use execution::{HeatmapError, PreparedHeatmap, prepare, prepare_batch};
+#[cfg(test)]
+pub(crate) use execution::prepare;
+pub(crate) use execution::{HeatmapError, prepare_batch};
 pub(crate) use query::{
     DEFAULT_TOP, HeatmapBatchQuery, HeatmapItemQuery, HeatmapRequest, HeatmapView, MAX_FIELDS,
     MAX_TOP, NormalizedRanking,

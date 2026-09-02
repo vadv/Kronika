@@ -3,16 +3,22 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
+#[cfg(test)]
+use kronika_reader::SegmentKind;
+use kronika_reader::{Cell, Reader, Row, Segment, SegmentRef};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::query::{Plan, plans, streaming_chunk_dictionary, validate_row_dictionary};
-use super::render::{cell, record};
+use super::render::cell;
+#[cfg(test)]
+use super::render::record;
 use super::row_key::{self, DetailLocator};
 use super::time::TimeRange;
-use super::{ApiError, CachePolicy, ResponseMeta, log_warnings, weak_etag};
+use super::{ApiError, log_warnings};
+#[cfg(test)]
+use super::{CachePolicy, ResponseMeta, weak_etag};
 use crate::route::{DataRequest, Filter, SegmentRequest};
 
 mod group;
@@ -37,6 +43,7 @@ pub(crate) enum EventsRepresentation {
 }
 
 impl EventsRepresentation {
+    #[cfg(test)]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Groups => "groups",
@@ -320,6 +327,7 @@ pub(crate) enum EventsResult {
 }
 
 impl EventsResult {
+    #[cfg(test)]
     pub(crate) const fn representation(&self) -> EventsRepresentation {
         match self {
             Self::Groups { .. } => EventsRepresentation::Groups,
@@ -327,6 +335,7 @@ impl EventsResult {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn truncated(&self) -> bool {
         match self {
             Self::Groups { truncated, .. } | Self::Occurrences { truncated, .. } => *truncated,
@@ -438,6 +447,7 @@ pub(crate) struct PreparedEvents {
     reader: Reader,
     segments: Vec<SegmentRef>,
     query: EventsQuery,
+    #[cfg(test)]
     meta: ResponseMeta,
 }
 
@@ -542,27 +552,33 @@ pub(crate) fn prepare(root: &Path, query: EventsQuery) -> Result<PreparedEvents,
         segment.max_ts() >= query.range.from && segment.min_ts() < query.range.to_exclusive
     });
     segments.sort_by_key(SegmentRef::min_ts);
-    let shape = format!("{query:?}");
-    let etag = weak_etag("events", &shape, &segments);
-    let cache = if etag.is_some() {
-        CachePolicy::Immutable
-    } else if segments
-        .iter()
-        .any(|segment| segment.kind() == SegmentKind::Active)
-    {
-        CachePolicy::NoStore
-    } else {
-        CachePolicy::Revalidate
+    #[cfg(test)]
+    let meta = {
+        let shape = format!("{query:?}");
+        let etag = weak_etag("events", &shape, &segments);
+        let cache = if etag.is_some() {
+            CachePolicy::Immutable
+        } else if segments
+            .iter()
+            .any(|segment| segment.kind() == SegmentKind::Active)
+        {
+            CachePolicy::NoStore
+        } else {
+            CachePolicy::Revalidate
+        };
+        ResponseMeta::ok_with_etag(cache, etag)
     };
     Ok(PreparedEvents {
         reader,
         segments,
         query,
-        meta: ResponseMeta::ok_with_etag(cache, etag),
+        #[cfg(test)]
+        meta,
     })
 }
 
 impl PreparedEvents {
+    #[cfg(test)]
     pub(crate) fn meta(&self) -> ResponseMeta {
         self.meta.clone()
     }
@@ -663,6 +679,7 @@ impl PreparedEvents {
         occurrences.finish()
     }
 
+    #[cfg(test)]
     pub(crate) fn stream(
         self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -685,6 +702,7 @@ impl PreparedEvents {
     }
 }
 
+#[cfg(test)]
 fn emit_groups(
     groups: Vec<EventGroup>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -698,6 +716,7 @@ fn emit_groups(
     Ok(())
 }
 
+#[cfg(test)]
 fn emit_occurrences(
     occurrences: Vec<EventOccurrence>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -711,6 +730,7 @@ fn emit_occurrences(
     Ok(())
 }
 
+#[cfg(test)]
 fn public_item<T: Serialize>(
     record_name: &str,
     item: &T,

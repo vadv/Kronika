@@ -1,38 +1,29 @@
 //! One-pass Heatmap planning, execution, and transport-independent folding.
 
 use std::cmp::Ordering;
-#[cfg(test)]
-use std::collections::BTreeMap;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
-#[cfg(test)]
-use kronika_reader::SegmentKind;
-use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
+use kronika_reader::{Cell, Dictionary, Row, Segment, SegmentKind};
 use kronika_registry::{ColumnClass, Unit, contract, logical_section_name, registry};
-use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
+use serde_json::{Value, json};
 
-#[cfg(test)]
-use super::query::HeatmapRequest;
 use super::query::{HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, MAX_FIELDS, MAX_TOP};
 use super::result::{
     CoverageState, HeatmapBand, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapGrid,
     HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
 };
-use crate::api::ApiError;
-use crate::api::render::cell;
-#[cfg(test)]
-use crate::api::render::record;
-use crate::api::row_key;
-#[cfg(test)]
-use crate::api::{CachePolicy, ResponseMeta};
+use crate::render::{cell, record};
+use crate::row_key;
+use crate::{
+    DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability, SegmentBounds,
+    SegmentSelection,
+};
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
 type RenderedIds = HashMap<(usize, u64), Value>;
 
 #[derive(Debug)]
-enum HeatmapApiError {
+enum HeatmapQueryErrorKind {
     BadFilter(String),
     BadLocator,
     NoSuchSection,
@@ -44,8 +35,7 @@ enum HeatmapApiError {
 pub(crate) struct HeatmapError {
     ranking_index: usize,
     message: String,
-    api_error: Option<HeatmapApiError>,
-    valid_options: Vec<String>,
+    query_error: Option<HeatmapQueryErrorKind>,
 }
 
 impl HeatmapError {
@@ -53,8 +43,7 @@ impl HeatmapError {
         Self::invalid_as(
             ranking_index,
             message,
-            HeatmapApiError::BadFilter("heatmap".to_owned()),
-            Vec::new(),
+            HeatmapQueryErrorKind::BadFilter("heatmap".to_owned()),
         )
     }
 
@@ -66,44 +55,23 @@ impl HeatmapError {
         Self::invalid_as(
             ranking_index,
             message,
-            HeatmapApiError::BadFilter(parameter.to_owned()),
-            Vec::new(),
+            HeatmapQueryErrorKind::BadFilter(parameter.to_owned()),
         )
     }
 
     fn bad_locator(ranking_index: usize, message: impl Into<String>) -> Self {
-        Self::invalid_as(
-            ranking_index,
-            message,
-            HeatmapApiError::BadLocator,
-            Vec::new(),
-        )
+        Self::invalid_as(ranking_index, message, HeatmapQueryErrorKind::BadLocator)
     }
 
-    fn no_such_section(
-        ranking_index: usize,
-        message: impl Into<String>,
-        valid_options: Vec<String>,
-    ) -> Self {
-        Self::invalid_as(
-            ranking_index,
-            message,
-            HeatmapApiError::NoSuchSection,
-            valid_options,
-        )
+    fn no_such_section(ranking_index: usize, message: impl Into<String>) -> Self {
+        Self::invalid_as(ranking_index, message, HeatmapQueryErrorKind::NoSuchSection)
     }
 
-    fn no_such_column(
-        ranking_index: usize,
-        message: impl Into<String>,
-        column: String,
-        valid_options: Vec<String>,
-    ) -> Self {
+    fn no_such_column(ranking_index: usize, message: impl Into<String>, column: String) -> Self {
         Self::invalid_as(
             ranking_index,
             message,
-            HeatmapApiError::NoSuchColumn(column),
-            valid_options,
+            HeatmapQueryErrorKind::NoSuchColumn(column),
         )
     }
 
@@ -111,22 +79,19 @@ impl HeatmapError {
         Self::invalid_as(
             ranking_index,
             message,
-            HeatmapApiError::MixedUnits(fields),
-            Vec::new(),
+            HeatmapQueryErrorKind::MixedUnits(fields),
         )
     }
 
     fn invalid_as(
         ranking_index: usize,
         message: impl Into<String>,
-        api_error: HeatmapApiError,
-        valid_options: Vec<String>,
+        query_error: HeatmapQueryErrorKind,
     ) -> Self {
         Self {
             ranking_index,
             message: message.into(),
-            api_error: Some(api_error),
-            valid_options,
+            query_error: Some(query_error),
         }
     }
 
@@ -134,27 +99,18 @@ impl HeatmapError {
         Self {
             ranking_index,
             message: error.to_string(),
-            api_error: None,
-            valid_options: Vec::new(),
+            query_error: None,
         }
     }
 
-    pub(crate) const fn ranking_index(&self) -> usize {
-        self.ranking_index
-    }
-
-    pub(crate) fn valid_options(&self) -> &[String] {
-        &self.valid_options
-    }
-
-    pub(crate) fn into_api(mut self) -> ApiError {
-        match self.api_error.take() {
-            Some(HeatmapApiError::BadFilter(parameter)) => ApiError::BadFilter(parameter),
-            Some(HeatmapApiError::BadLocator) => ApiError::BadLocator(self.message),
-            Some(HeatmapApiError::NoSuchSection) => ApiError::NoSuchSection,
-            Some(HeatmapApiError::NoSuchColumn(column)) => ApiError::NoSuchColumn(column),
-            Some(HeatmapApiError::MixedUnits(fields)) => ApiError::MixedUnits(fields),
-            None => ApiError::Unreadable(Box::new(self)),
+    pub(crate) fn into_query(mut self) -> QueryError {
+        match self.query_error.take() {
+            Some(HeatmapQueryErrorKind::BadFilter(parameter)) => QueryError::BadFilter(parameter),
+            Some(HeatmapQueryErrorKind::BadLocator) => QueryError::BadLocator(self.message),
+            Some(HeatmapQueryErrorKind::NoSuchSection) => QueryError::NoSuchSection,
+            Some(HeatmapQueryErrorKind::NoSuchColumn(column)) => QueryError::NoSuchColumn(column),
+            Some(HeatmapQueryErrorKind::MixedUnits(fields)) => QueryError::MixedUnits(fields),
+            None => QueryError::Unreadable(Box::new(self)),
         }
     }
 }
@@ -167,74 +123,21 @@ impl std::fmt::Display for HeatmapError {
 
 impl std::error::Error for HeatmapError {}
 
-#[cfg(test)]
 pub(crate) struct PreparedHeatmap {
     batch: PreparedHeatmapBatch,
 }
 
 pub(crate) struct PreparedHeatmapBatch {
-    reader: Reader,
-    segments: Vec<SegmentRef>,
+    dataset: Arc<dyn QueryDataset>,
+    segments: Vec<DatasetSegment>,
     query: HeatmapBatchQuery,
     unique: Vec<ItemSpec>,
     original_to_unique: Vec<usize>,
-    #[cfg(test)]
-    etag: Option<String>,
-    #[cfg(test)]
-    executions: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    row_visits: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    retained_identities: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    retained_label_slots: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    metric_fold_slots: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    scan_segment_opens: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    dictionary_segment_opens: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    open_segment_handles: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    peak_open_segment_handles: std::sync::atomic::AtomicU64,
+    validator_shape: String,
+    validator_available: bool,
 }
 
-/// Test-only lifetime probe for one opened reader segment.
-///
-/// A finished `Segment` owns its file descriptor, so keeping this wrapper in
-/// scope measures the maximum simultaneous finished descriptors exercised by
-/// a batch. The production path opens the same `Segment` directly.
-#[cfg(test)]
-struct TrackedSegment<'a> {
-    segment: Option<Segment>,
-    open_segment_handles: &'a std::sync::atomic::AtomicU64,
-}
-
-#[cfg(test)]
-impl std::ops::Deref for TrackedSegment<'_> {
-    type Target = Segment;
-
-    fn deref(&self) -> &Self::Target {
-        let Some(segment) = self.segment.as_ref() else {
-            unreachable!("tracked segment is not available during dereference");
-        };
-        segment
-    }
-}
-
-#[cfg(test)]
-impl Drop for TrackedSegment<'_> {
-    fn drop(&mut self) {
-        drop(self.segment.take());
-        let previous = self
-            .open_segment_handles
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        debug_assert!(previous > 0, "opened segment lifetime underflow");
-    }
-}
-
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ItemSpec {
     query: HeatmapItemQuery,
     class: ColumnClass,
@@ -243,192 +146,159 @@ struct ItemSpec {
     first_index: usize,
 }
 
+/// A heatmap request whose complete registry shape has been checked.
+#[derive(Clone)]
+pub struct ValidatedHeatmapQuery {
+    query: HeatmapBatchQuery,
+    unique: Vec<ItemSpec>,
+    original_to_unique: Vec<usize>,
+}
+
+impl std::fmt::Debug for ValidatedHeatmapQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ValidatedHeatmapQuery")
+            .field(&self.query)
+            .finish()
+    }
+}
+
+impl PartialEq for ValidatedHeatmapQuery {
+    fn eq(&self, other: &Self) -> bool {
+        self.query == other.query
+    }
+}
+
+impl Eq for ValidatedHeatmapQuery {}
+
 struct SharedSectionSpec {
     name: String,
     labels: Vec<String>,
     first_index: usize,
 }
 
-#[cfg(test)]
-pub(crate) fn prepare(root: &Path, request: HeatmapRequest) -> Result<PreparedHeatmap, ApiError> {
-    let query = request
-        .normalize()
-        .map_err(|_error| ApiError::BadFilter("to".to_owned()))?;
-    prepare_batch(root, query)
-        .map(|batch| PreparedHeatmap { batch })
-        .map_err(HeatmapError::into_api)
-}
-
-pub(crate) fn prepare_batch(
-    root: &Path,
-    query: HeatmapBatchQuery,
-) -> Result<PreparedHeatmapBatch, HeatmapError> {
-    if query.items.is_empty() {
-        return Err(HeatmapError::invalid(0, "rankings must not be empty"));
-    }
-    let (unique, original_to_unique) = normalize_items(&query.items)?;
-    let started = std::time::Instant::now();
-    let reader = Reader::open(root).map_err(|error| HeatmapError::storage(0, error))?;
-    let stored = reader
-        .catalog_segments(query.range.from..query.range.to_exclusive)
-        .map_err(|error| HeatmapError::storage(0, error))?;
-    let mut segments: Vec<SegmentRef> = stored
-        .segments
-        .into_iter()
-        .filter(|segment| {
-            segment.max_ts() >= query.range.from && segment.min_ts() < query.range.to_exclusive
-        })
-        .collect();
-    segments.sort_by_key(SegmentRef::min_ts);
-    super::super::catalog::log_open(segments.len(), &stored.warnings, started);
-    #[cfg(test)]
-    let etag = stored
-        .warnings
-        .is_empty()
-        .then(|| super::super::weak_etag("heatmap", &format!("{query:?}"), &segments))
-        .flatten();
-    Ok(PreparedHeatmapBatch {
-        reader,
-        segments,
+pub(crate) fn prepare(
+    dataset: Arc<dyn QueryDataset>,
+    validated: ValidatedHeatmapQuery,
+) -> Result<PreparedHeatmap, QueryError> {
+    let ValidatedHeatmapQuery {
         query,
         unique,
         original_to_unique,
-        #[cfg(test)]
-        etag,
-        #[cfg(test)]
-        executions: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        row_visits: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        retained_identities: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        retained_label_slots: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        metric_fold_slots: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        scan_segment_opens: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        dictionary_segment_opens: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        open_segment_handles: std::sync::atomic::AtomicU64::new(0),
-        #[cfg(test)]
-        peak_open_segment_handles: std::sync::atomic::AtomicU64::new(0),
+    } = validated;
+    let listing = {
+        let catalog = dataset
+            .catalog()
+            .map_err(|error| HeatmapError::storage(0, error).into_query())?;
+        catalog
+            .segments(SegmentSelection::new(SegmentBounds::half_open(
+                query.range.from,
+                query.range.to_exclusive,
+            )))
+            .map_err(|error| HeatmapError::storage(0, error).into_query())?
+    };
+    let validator_available = listing.warnings.is_empty();
+    let mut segments = listing.segments;
+    segments.retain(|segment| {
+        segment.max_ts() >= query.range.from && segment.min_ts() < query.range.to_exclusive
+    });
+    segments.sort_by_key(DatasetSegment::min_ts);
+    let validator_shape = format!("{query:?}");
+    Ok(PreparedHeatmap {
+        batch: PreparedHeatmapBatch {
+            dataset,
+            segments,
+            query,
+            unique,
+            original_to_unique,
+            validator_shape,
+            validator_available,
+        },
     })
 }
 
-#[cfg(test)]
+pub(crate) fn validate_request(
+    query: HeatmapBatchQuery,
+) -> Result<ValidatedHeatmapQuery, QueryError> {
+    if query.range.from >= query.range.to_exclusive {
+        return Err(QueryError::BadFilter("to".to_owned()));
+    }
+    if query.items.len() != 1 || !matches!(query.items[0].view, HeatmapView::Grid { .. }) {
+        return Err(QueryError::BadFilter("heatmap".to_owned()));
+    }
+    let (unique, original_to_unique) =
+        normalize_items(&query.items).map_err(HeatmapError::into_query)?;
+    Ok(ValidatedHeatmapQuery {
+        query,
+        unique,
+        original_to_unique,
+    })
+}
+
 impl PreparedHeatmap {
-    pub(crate) fn meta(&self) -> ResponseMeta {
-        self.batch.meta()
+    pub(crate) fn stability(&self) -> QueryStability {
+        self.batch.stability()
     }
 
-    pub(crate) fn stream(
-        self,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(), ApiError> {
+    pub(crate) fn validator_input(&self) -> Option<(&str, &str, &[DatasetSegment])> {
+        self.batch.validator_input()
+    }
+
+    pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
         let range = self.batch.query.range;
-        let result = self
-            .batch
-            .execute(cancelled)
-            .map_err(HeatmapError::into_api)?;
+        let result = self.batch.execute(sink).map_err(HeatmapError::into_query)?;
         let Some(item) = result.results.first() else {
             return Ok(());
         };
-        emit_http(item, range.from, range.to_exclusive - 1, emit, cancelled)
+        stream_grid(item, range.from, range.to_exclusive - 1, sink)
     }
 }
 
 impl PreparedHeatmapBatch {
-    #[cfg(test)]
-    pub(crate) fn meta(&self) -> ResponseMeta {
-        let settled = self
+    pub(crate) fn stability(&self) -> QueryStability {
+        if self.validator_input().is_some() {
+            QueryStability::Immutable
+        } else if self
             .segments
             .iter()
-            .all(|segment| segment.kind() == SegmentKind::Finished);
-        ResponseMeta::ok_with_etag(
-            if self.etag.is_some() {
-                CachePolicy::Immutable
-            } else if settled {
-                CachePolicy::Revalidate
-            } else {
-                CachePolicy::NoStore
-            },
-            self.etag.clone(),
-        )
-    }
-
-    #[cfg(not(test))]
-    fn open_for_scan(&self, segment_ref: &SegmentRef) -> Result<Segment, HeatmapError> {
-        self.reader
-            .open_segment(segment_ref)
-            .map_err(|error| HeatmapError::storage(0, error))
-    }
-
-    #[cfg(test)]
-    fn open_for_scan(&self, segment_ref: &SegmentRef) -> Result<TrackedSegment<'_>, HeatmapError> {
-        let segment = self
-            .reader
-            .open_segment(segment_ref)
-            .map_err(|error| HeatmapError::storage(0, error))?;
-        Ok(self.track_segment(segment, &self.scan_segment_opens))
-    }
-
-    #[cfg(not(test))]
-    fn open_for_dictionary(
-        &self,
-        segment_ref: &SegmentRef,
-        ranking_index: usize,
-    ) -> Result<Segment, HeatmapError> {
-        self.reader
-            .open_segment(segment_ref)
-            .map_err(|error| HeatmapError::storage(ranking_index, error))
-    }
-
-    #[cfg(test)]
-    fn open_for_dictionary(
-        &self,
-        segment_ref: &SegmentRef,
-        ranking_index: usize,
-    ) -> Result<TrackedSegment<'_>, HeatmapError> {
-        let segment = self
-            .reader
-            .open_segment(segment_ref)
-            .map_err(|error| HeatmapError::storage(ranking_index, error))?;
-        Ok(self.track_segment(segment, &self.dictionary_segment_opens))
-    }
-
-    #[cfg(test)]
-    fn track_segment(
-        &self,
-        segment: Segment,
-        opens: &std::sync::atomic::AtomicU64,
-    ) -> TrackedSegment<'_> {
-        opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let open = self
-            .open_segment_handles
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .saturating_add(1);
-        self.peak_open_segment_handles
-            .fetch_max(open, std::sync::atomic::Ordering::Relaxed);
-        TrackedSegment {
-            segment: Some(segment),
-            open_segment_handles: &self.open_segment_handles,
+            .all(|segment| segment.kind() == SegmentKind::Finished)
+        {
+            QueryStability::Revalidate
+        } else {
+            QueryStability::Mutable
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one captured batch owns scan and dictionary resolution"
-    )]
-    pub(crate) fn execute(
-        &self,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<HeatmapBatchResult, HeatmapError> {
-        #[cfg(test)]
-        self.executions
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pub(crate) fn validator_input(&self) -> Option<(&str, &str, &[DatasetSegment])> {
+        (self.validator_available
+            && !self.segments.is_empty()
+            && self
+                .segments
+                .iter()
+                .all(|segment| segment.kind() == SegmentKind::Finished))
+        .then_some((
+            "heatmap",
+            self.validator_shape.as_str(),
+            self.segments.as_slice(),
+        ))
+    }
 
+    fn open_for_scan(&self, segment_ref: &DatasetSegment) -> Result<Segment, HeatmapError> {
+        self.dataset
+            .open(segment_ref)
+            .map_err(|error| HeatmapError::storage(0, error))
+    }
+
+    fn open_for_dictionary(
+        &self,
+        segment_ref: &DatasetSegment,
+        ranking_index: usize,
+    ) -> Result<Segment, HeatmapError> {
+        self.dataset
+            .open(segment_ref)
+            .map_err(|error| HeatmapError::storage(ranking_index, error))
+    }
+
+    pub(crate) fn execute(&self, sink: &dyn QuerySink) -> Result<HeatmapBatchResult, HeatmapError> {
         let (section_specs, accumulator_sections) = shared_section_specs(&self.unique);
         let mut sections = section_specs
             .iter()
@@ -446,7 +316,7 @@ impl PreparedHeatmapBatch {
         let mut rendered_ids = RenderedIds::new();
 
         for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
-            if cancelled() {
+            if sink.cancelled() {
                 return Err(HeatmapError::storage(0, "request cancelled"));
             }
             {
@@ -465,9 +335,7 @@ impl PreparedHeatmapBatch {
                         self.query.range,
                         &mut accumulators,
                         &mut sections,
-                        cancelled,
-                        #[cfg(test)]
-                        &self.row_visits,
+                        sink,
                     )?;
                 }
             }
@@ -515,12 +383,6 @@ impl PreparedHeatmapBatch {
             }
         }
 
-        #[cfg(test)]
-        let metric_fold_slots = accumulators
-            .iter()
-            .map(Accumulator::fold_count)
-            .map(|count| u64::try_from(count).unwrap_or(u64::MAX))
-            .sum();
         let mut unique_results = Vec::with_capacity(accumulators.len());
         for (spec, accumulator) in self.unique.iter().zip(accumulators) {
             let section = &indexed_sections[accumulator.section];
@@ -531,27 +393,6 @@ impl PreparedHeatmapBatch {
             .iter()
             .map(|index| unique_results[*index].clone())
             .collect();
-        #[cfg(test)]
-        {
-            self.retained_identities.store(
-                sections
-                    .iter()
-                    .map(SharedSection::len)
-                    .map(|count| u64::try_from(count).unwrap_or(u64::MAX))
-                    .sum(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            self.retained_label_slots.store(
-                sections
-                    .iter()
-                    .map(SharedSection::label_slots)
-                    .map(|count| u64::try_from(count).unwrap_or(u64::MAX))
-                    .sum(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            self.metric_fold_slots
-                .store(metric_fold_slots, std::sync::atomic::Ordering::Relaxed);
-        }
         Ok(HeatmapBatchResult { results })
     }
 }
@@ -670,31 +511,11 @@ fn validate_item(
         })
         .collect();
     if contracts.is_empty() {
-        let mut seen = HashSet::new();
-        let valid_options = registry()
-            .iter()
-            .filter_map(|contract| logical_section_name(contract.type_id.get()))
-            .filter(|section| seen.insert(*section))
-            .map(str::to_owned)
-            .collect();
         return Err(HeatmapError::no_such_section(
             index,
             "no such logical section",
-            valid_options,
         ));
     }
-    let numeric_options = || {
-        let mut seen = HashSet::new();
-        contracts
-            .iter()
-            .flat_map(|contract| contract.columns)
-            .filter(|column| {
-                matches!(column.class, ColumnClass::Cumulative | ColumnClass::Gauge)
-                    && seen.insert(column.name)
-            })
-            .map(|column| column.name.to_owned())
-            .collect::<Vec<_>>()
-    };
     let mut class = None;
     let mut unit = None;
     for field in &ranking.fields {
@@ -707,7 +528,6 @@ fn validate_item(
                 index,
                 format!("no such column {field:?}"),
                 field.clone(),
-                numeric_options(),
             ));
         }
         for column in columns {
@@ -716,7 +536,6 @@ fn validate_item(
                     index,
                     format!("column {field:?} is not numeric"),
                     field.clone(),
-                    numeric_options(),
                 ));
             }
             if class
@@ -730,7 +549,6 @@ fn validate_item(
                         ranking.fields.join("+")
                     ),
                     field.clone(),
-                    numeric_options(),
                 ));
             }
             if unit
@@ -752,18 +570,10 @@ fn validate_item(
                 .iter()
                 .any(|contract| contract.column(group).is_some())
         {
-            let mut seen = HashSet::new();
-            let valid_options = contracts
-                .iter()
-                .flat_map(|contract| contract.columns)
-                .filter(|column| seen.insert(column.name))
-                .map(|column| column.name.to_owned())
-                .collect();
             return Err(HeatmapError::no_such_column(
                 index,
                 format!("no such column {group:?}"),
                 group.clone(),
-                valid_options,
             ));
         }
     }
@@ -779,11 +589,10 @@ fn validate_item(
             }
         }
     }
-    Ok((
-        class.expect("one validated numeric field"),
-        unit.expect("one validated numeric field"),
-        labels,
-    ))
+    let class = class.ok_or_else(|| {
+        HeatmapError::invalid(index, "numeric field validation found no quantity class")
+    })?;
+    Ok((class, unit.unwrap_or(None), labels))
 }
 
 struct PhysicalPlan {
@@ -891,22 +700,14 @@ fn physical_plans(
     plans
 }
 
-#[cfg_attr(
-    test,
-    expect(
-        clippy::too_many_arguments,
-        reason = "one physical scan's explicit shared state"
-    )
-)]
 fn scan_plan(
     segment: &Segment,
     segment_slot: usize,
     plan: &PhysicalPlan,
-    range: crate::api::time::TimeRange,
+    range: crate::TimeRange,
     accumulators: &mut [Accumulator],
     sections: &mut [SharedSection],
-    cancelled: &impl Fn() -> bool,
-    #[cfg(test)] row_visits: &std::sync::atomic::AtomicU64,
+    sink: &dyn QuerySink,
 ) -> Result<(), HeatmapError> {
     let take = usize::try_from(plan.rows).unwrap_or(usize::MAX);
     let segment_id = segment.id();
@@ -914,9 +715,7 @@ fn scan_plan(
     let mut failure = None;
     segment
         .visit_rows(plan.type_id, &plan.projection, 0, take, |ordinal, row| {
-            #[cfg(test)]
-            row_visits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if cancelled() {
+            if sink.cancelled() {
                 failure = Some(HeatmapError::storage(plan.first_index, "request cancelled"));
                 return false;
             }
@@ -987,11 +786,11 @@ struct ScanStats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct EntityId(u32);
+struct EntityId(usize);
 
 impl EntityId {
-    fn index(self) -> usize {
-        usize::try_from(self.0).expect("u32 entity id fits usize")
+    const fn index(self) -> usize {
+        self.0
     }
 }
 
@@ -1125,16 +924,6 @@ impl SharedSection {
         }
     }
 
-    #[cfg(test)]
-    const fn len(&self) -> usize {
-        self.entities.len()
-    }
-
-    #[cfg(test)]
-    const fn label_slots(&self) -> usize {
-        self.entities.len().saturating_mul(self.label_count)
-    }
-
     fn indexed(&self) -> IndexedSection<'_> {
         let mut raw_keys = vec![""; self.entities.len()];
         for (raw_key, entity) in &self.by_raw_key {
@@ -1177,7 +966,7 @@ impl SharedSection {
             entity
         } else {
             let raw_key: Box<str> = self.key_scratch.clone().into_boxed_str();
-            let entity = EntityId(u32::try_from(self.entities.len()).map_err(|_error| {
+            u32::try_from(self.entities.len()).map_err(|_error| {
                 HeatmapError::invalid(
                     self.first_index,
                     format!(
@@ -1185,7 +974,8 @@ impl SharedSection {
                         self.entities.len(), self.name
                     ),
                 )
-            })?);
+            })?;
+            let entity = EntityId(self.entities.len());
             self.by_raw_key.insert(raw_key, entity);
             let locator_identity = row_key::identity(row.contract().type_id.get(), row)
                 .map_err(|error| HeatmapError::bad_locator(self.first_index, error))?;
@@ -1248,7 +1038,7 @@ impl SharedSection {
 struct Accumulator {
     section: usize,
     label_slots: Vec<usize>,
-    range: crate::api::time::TimeRange,
+    range: crate::TimeRange,
     columns: usize,
     cumulative: bool,
     grid: bool,
@@ -1315,7 +1105,7 @@ enum LabelCutoff {
 impl Accumulator {
     fn new(
         spec: &ItemSpec,
-        range: crate::api::time::TimeRange,
+        range: crate::TimeRange,
         section: usize,
         shared: &SharedSectionSpec,
     ) -> Self {
@@ -1327,13 +1117,7 @@ impl Accumulator {
         } else {
             spec.labels
                 .iter()
-                .map(|name| {
-                    shared
-                        .labels
-                        .iter()
-                        .position(|candidate| candidate == name)
-                        .expect("item label belongs to its shared section")
-                })
+                .filter_map(|name| shared.labels.iter().position(|candidate| candidate == name))
                 .collect()
         };
         Self {
@@ -1415,7 +1199,10 @@ impl Accumulator {
             group
         });
         let FoldArena::Grid { folds, .. } = &mut self.folds else {
-            unreachable!("grid accumulator owns grid folds")
+            return Err(HeatmapError::invalid(
+                self.first_index,
+                "grid observation reached a non-grid accumulator",
+            ));
         };
         let state = &mut folds[fold];
         if inserted {
@@ -1478,7 +1265,10 @@ impl Accumulator {
             folds,
         } = &mut self.folds
         else {
-            unreachable!("ranking accumulator owns ranking folds")
+            return Err(HeatmapError::invalid(
+                self.first_index,
+                "ranking observation reached a grid accumulator",
+            ));
         };
         let entity_index = entity.index();
         if slot_by_entity.len() <= entity_index {
@@ -1516,7 +1306,10 @@ impl Accumulator {
             folds,
         } = &mut self.folds
         else {
-            unreachable!("grid accumulator owns grid folds")
+            return Err(HeatmapError::invalid(
+                self.first_index,
+                "grid observation reached a ranking accumulator",
+            ));
         };
         let entity_index = entity.index();
         if slot_by_entity.len() <= entity_index {
@@ -1615,7 +1408,7 @@ impl Accumulator {
 
     fn ordered_grid_folds<'a>(&'a self, section: &IndexedSection<'_>) -> Vec<&'a GridFold> {
         let FoldArena::Grid { folds, .. } = &self.folds else {
-            unreachable!("grouped accumulator owns grid folds")
+            return Vec::new();
         };
         let mut states = folds.iter().collect::<Vec<_>>();
         states.sort_unstable_by(|left, right| {
@@ -2185,7 +1978,7 @@ pub(super) fn entity_key_into(key: &mut String, type_id: u32, identity: &[Value]
     }
 }
 
-fn intervals(range: crate::api::time::TimeRange, columns: usize) -> Vec<HeatmapInterval> {
+fn intervals(range: crate::TimeRange, columns: usize) -> Vec<HeatmapInterval> {
     (0..columns)
         .map(|index| HeatmapInterval {
             start: interval_start(range, columns, index),
@@ -2194,11 +1987,7 @@ fn intervals(range: crate::api::time::TimeRange, columns: usize) -> Vec<HeatmapI
         .collect()
 }
 
-pub(super) fn interval_start(
-    range: crate::api::time::TimeRange,
-    columns: usize,
-    index: usize,
-) -> i64 {
+pub(super) fn interval_start(range: crate::TimeRange, columns: usize, index: usize) -> i64 {
     let span = i128::from(range.to_exclusive) - i128::from(range.from);
     let offset = span * to_i128(index) / to_i128(columns.max(1));
     range.from.saturating_add(clamped(offset))
@@ -2207,7 +1996,7 @@ pub(super) fn interval_start(
 pub(super) fn column_of_span(
     previous_ts: Option<i64>,
     timestamp: i64,
-    range: crate::api::time::TimeRange,
+    range: crate::TimeRange,
     columns: usize,
 ) -> usize {
     let middle = match previous_ts {
@@ -2217,11 +2006,7 @@ pub(super) fn column_of_span(
     column_of(middle.max(range.from), range, columns)
 }
 
-pub(super) fn column_of(
-    timestamp: i64,
-    range: crate::api::time::TimeRange,
-    columns: usize,
-) -> usize {
+pub(super) fn column_of(timestamp: i64, range: crate::TimeRange, columns: usize) -> usize {
     let span = (i128::from(range.to_exclusive) - i128::from(range.from)).max(1);
     let offset = i128::from(timestamp) - i128::from(range.from);
     let column = (offset * to_i128(columns.max(1)) / span).max(0);
@@ -2353,18 +2138,15 @@ fn peak_values(cells: &[Option<f64>]) -> Option<f64> {
         })
 }
 
-#[cfg(test)]
-fn emit_http(
+fn stream_grid(
     item: &HeatmapItemResult,
     from: i64,
     to: i64,
-    emit: &mut impl FnMut(Vec<u8>) -> bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<(), ApiError> {
-    let grid = item
-        .grid
-        .as_ref()
-        .ok_or_else(|| ApiError::BadFilter("HTTP heatmap requires a grid result".to_owned()))?;
+    sink: &mut dyn QuerySink,
+) -> Result<(), QueryError> {
+    let grid = item.grid.as_ref().ok_or_else(|| {
+        QueryError::BadFilter("streamed heatmap requires a grid result".to_owned())
+    })?;
     let grouped = !grid.group_names.is_empty();
     let mut header = json!({
         "record": "heatmap",
@@ -2384,18 +2166,21 @@ fn emit_http(
         "intervals": grid.intervals,
     });
     if grouped {
-        header
-            .as_object_mut()
-            .expect("heatmap header is an object")
-            .insert("group".to_owned(), json!(grid.group_names));
+        let Some(header) = header.as_object_mut() else {
+            return Err(QueryError::Unreadable(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "heatmap header did not serialize as an object",
+            ))));
+        };
+        header.insert("group".to_owned(), json!(grid.group_names));
     }
-    if cancelled() || !emit(record(header)?) {
+    if sink.cancelled() || !sink.record(record(header)?) {
         return Ok(());
     }
     if grouped {
         for group in &grid.groups {
-            if cancelled()
-                || !emit(record(json!({
+            if sink.cancelled()
+                || !sink.record(record(json!({
                     "record": "heatmap_row",
                     "type_id": "0",
                     "identity": group.values,
@@ -2416,11 +2201,11 @@ fn emit_http(
                 .iter()
                 .map(|name| entity.labels.get(name).cloned().unwrap_or(Value::Null))
                 .collect();
-            if cancelled()
-                || !emit(record(json!({
+            if sink.cancelled()
+                || !sink.record(record(json!({
                     "record": "heatmap_row",
                     "type_id": type_id.to_string(),
-                    "identity": http_identity(type_id, &entity.identity),
+                    "identity": stream_identity(type_id, &entity.identity),
                     "labels": labels,
                     "total": entity.total,
                     "cells": entity.cells,
@@ -2430,7 +2215,7 @@ fn emit_http(
             }
         }
     }
-    if !emit(record(json!({
+    if !sink.record(record(json!({
         "record": "heatmap_band",
         "band": "totals",
         "total": grid.totals.total,
@@ -2438,7 +2223,7 @@ fn emit_http(
     }))?) {
         return Ok(());
     }
-    if !emit(record(json!({
+    if !sink.record(record(json!({
         "record": "heatmap_band",
         "band": "others",
         "total": grid.others.total,
@@ -2449,8 +2234,7 @@ fn emit_http(
     Ok(())
 }
 
-#[cfg(test)]
-fn http_identity(type_id: u32, identity: &BTreeMap<String, Value>) -> Vec<Value> {
+fn stream_identity(type_id: u32, identity: &BTreeMap<String, Value>) -> Vec<Value> {
     let Some(contract) = contract(type_id) else {
         return identity.values().cloned().collect();
     };
@@ -2464,54 +2248,4 @@ fn http_identity(type_id: u32, identity: &BTreeMap<String, Value>) -> Vec<Value>
                 .unwrap_or(Value::Null)
         })
         .collect()
-}
-
-#[cfg(test)]
-impl PreparedHeatmapBatch {
-    pub(crate) fn execution_operations(&self) -> u64 {
-        self.executions.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn row_visits(&self) -> u64 {
-        self.row_visits.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn retained_identities(&self) -> u64 {
-        self.retained_identities
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn retained_label_slots(&self) -> u64 {
-        self.retained_label_slots
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn metric_fold_slots(&self) -> u64 {
-        self.metric_fold_slots
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn selected_segments(&self) -> u64 {
-        u64::try_from(self.segments.len()).unwrap_or(u64::MAX)
-    }
-
-    pub(crate) fn scan_segment_opens(&self) -> u64 {
-        self.scan_segment_opens
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn dictionary_segment_opens(&self) -> u64 {
-        self.dictionary_segment_opens
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn open_segment_handles(&self) -> u64 {
-        self.open_segment_handles
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn peak_open_segment_handles(&self) -> u64 {
-        self.peak_open_segment_handles
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
 }

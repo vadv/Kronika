@@ -104,7 +104,12 @@ pub(crate) fn stream_series(
                 SeriesBlock::OsHealth(points)
                 | SeriesBlock::OverallHealth(points)
                 | SeriesBlock::PostgresHealth(points) => {
-                    let series = health_series.expect("health block has a series name");
+                    let Some(series) = health_series else {
+                        return Err(QueryError::Unreadable(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "health block has no series name",
+                        ))));
+                    };
                     for point in points.into_iter().filter(|point| {
                         window.is_none_or(|window| window.contains(point.timestamp))
                     }) {
@@ -247,7 +252,11 @@ fn validate_checksum(kind: SegmentKind, checksum: Option<u32>) -> Result<(), Que
             })?;
             Ok(())
         }
-        SegmentKind::Active => Ok(()),
+        SegmentKind::Active if checksum.is_none() => Ok(()),
+        SegmentKind::Active => Err(QueryError::Unreadable(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "active index unexpectedly carries a reusable checksum",
+        )))),
     }
 }
 
@@ -336,3 +345,7 @@ fn health_layout(series: &str) -> Value {
         },
     })
 }
+
+#[cfg(test)]
+#[path = "index/tests.rs"]
+mod tests;

@@ -776,7 +776,7 @@ impl PreparedEvents {
 fn emit_groups(groups: Vec<EventGroup>, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
     for group in groups {
         let value = public_item("event_group", &group, &group.detail_locator)?;
-        if sink.cancelled() || !sink.record(record(value)?) {
+        if !sink.record(record(value)?) {
             break;
         }
     }
@@ -789,7 +789,7 @@ fn emit_occurrences(
 ) -> Result<(), QueryError> {
     for occurrence in occurrences {
         let value = public_item("event_occurrence", &occurrence, &occurrence.detail_locator)?;
-        if sink.cancelled() || !sink.record(record(value)?) {
+        if !sink.record(record(value)?) {
             break;
         }
     }

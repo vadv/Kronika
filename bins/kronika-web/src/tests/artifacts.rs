@@ -3442,6 +3442,164 @@ fn shared_index_preserves_errors_and_stream_stop_boundaries() {
 }
 
 #[test]
+fn shared_heatmap_preserves_bytes_meta_order_and_truncation() {
+    for finished in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.append_resolved_diskstats(&[
+            (100, 0, 10),
+            (100, 1, 10),
+            (100, 2, 10),
+            (200, 0, 20),
+            (200, 1, 40),
+            (200, 2, 30),
+        ]);
+        if finished {
+            fixture.finish();
+        }
+        let target =
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
+
+        let (previous_meta, previous) =
+            previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
+                .expect("stream previous heatmap");
+        let (shared_meta, shared) = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect("stream shared heatmap");
+
+        assert_eq!(shared_meta, previous_meta, "finished={finished}");
+        assert_eq!(shared, previous, "finished={finished}");
+        assert_eq!(
+            shared_meta.cache,
+            if finished {
+                CachePolicy::Immutable
+            } else {
+                CachePolicy::NoStore
+            }
+        );
+        assert_eq!(shared_meta.etag.is_some(), finished);
+
+        let records = raw_ndjson_records(&shared);
+        assert_eq!(records[0]["record"], "heatmap");
+        assert_eq!(records[0]["entity_count"], 3);
+        assert_eq!(records[0]["top"], 2);
+        assert_eq!(records[0]["others_count"], 1);
+        let rows = records
+            .iter()
+            .filter(|record| record["record"] == "heatmap_row")
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["identity"], serde_json::json!([8, 1]));
+        assert_eq!(rows[1]["identity"], serde_json::json!([8, 2]));
+        assert_eq!(rows[0]["total"], 30.0);
+        assert_eq!(rows[1]["total"], 20.0);
+        assert_eq!(records[records.len() - 2]["band"], "totals");
+        assert_eq!(records[records.len() - 1]["band"], "others");
+    }
+}
+
+#[test]
+fn shared_heatmap_preserves_grouped_tie_order_and_truncation() {
+    let mut fixture = Fixture::new();
+    fixture.append_resolved_diskstats(&[
+        (100, 0, 0),
+        (100, 1, 0),
+        (100, 2, 0),
+        (200, 0, 10),
+        (200, 1, 10),
+        (200, 2, 5),
+    ]);
+    fixture.finish();
+    let target =
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1&group=minor";
+
+    let (previous_meta, previous) =
+        previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect("stream previous grouped heatmap");
+    let (shared_meta, shared) = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
+        .expect("stream shared grouped heatmap");
+    assert_eq!(shared_meta, previous_meta);
+    assert_eq!(shared, previous);
+
+    let records = raw_ndjson_records(&shared);
+    assert_eq!(records[0]["group"], serde_json::json!(["minor"]));
+    assert_eq!(records[0]["top"], 1);
+    assert_eq!(records[0]["entity_count"], 3);
+    assert_eq!(records[0]["others_count"], 2);
+    assert_eq!(records[1]["identity"], serde_json::json!([0]));
+    assert_eq!(records[1]["members"], 1);
+    assert_eq!(records[1]["total"], 10.0);
+    assert_eq!(records[records.len() - 1]["band"], "others");
+    assert_eq!(records[records.len() - 1]["total"], 15.0);
+}
+
+#[test]
+fn shared_heatmap_preserves_errors_and_stream_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_resolved_diskstats(&[(100, 0, 10), (100, 1, 10), (200, 0, 20), (200, 1, 40)]);
+    fixture.finish();
+
+    for target in [
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&field=read_time_ms&columns=2&top=2",
+    ] {
+        let previous = previous_heatmap_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect_err("previous heatmap rejects the request");
+        let shared = shared_query_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect_err("shared heatmap rejects the request");
+        assert_api_error_parity(&shared, &previous);
+    }
+
+    let target = "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
+    let previous = previous_heatmap_response(&fixture, target, usize::MAX, 0)
+        .expect_err("previous heatmap execution is cancelled");
+    let shared = shared_query_response(&fixture, target, usize::MAX, 0)
+        .expect_err("shared heatmap execution is cancelled");
+    assert_api_error_parity(&shared, &previous);
+
+    for (accepted_records, cancelled_after) in [
+        (1, usize::MAX),
+        (2, usize::MAX),
+        (3, usize::MAX),
+        (usize::MAX, 1),
+        (usize::MAX, 2),
+        (usize::MAX, 3),
+    ] {
+        let (previous_meta, previous) =
+            previous_heatmap_response(&fixture, target, accepted_records, cancelled_after)
+                .expect("stop previous heatmap stream");
+        let (shared_meta, shared) =
+            shared_query_response(&fixture, target, accepted_records, cancelled_after)
+                .expect("stop shared heatmap stream");
+        assert_eq!(shared_meta, previous_meta);
+        assert_eq!(
+            shared, previous,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+#[test]
+fn shared_heatmap_preserves_validation_before_source_open() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let missing = directory.path().join("missing-root");
+    for target in [
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
+        "/api/heatmap?from=100&to=9223372036854775807&section=os_diskstats&field=reads&columns=2&top=2",
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2",
+    ] {
+        let crate::route::Route::Heatmap(request) = fixture_route(target) else {
+            panic!("heatmap route");
+        };
+        let previous = crate::api::heatmap::prepare(&missing, request)
+            .err()
+            .expect("previous heatmap rejects an unavailable source");
+        let shared = crate::api::prepare(&missing, SOURCES, fixture_route(target), None)
+            .err()
+            .expect("shared heatmap rejects an unavailable source");
+        assert_api_error_parity(&shared, &previous);
+    }
+}
+
+#[test]
 fn shared_events_preserve_group_and_occurrence_bytes_meta_and_detail_refs() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
@@ -3533,6 +3691,17 @@ fn shared_events_preserve_cancellation_errors_and_sink_stop_boundaries() {
         .expect_err("shared event execution is cancelled");
     assert_api_error_parity(&shared, &previous);
 
+    for cancelled_after in [1, 2] {
+        let (previous_meta, previous) =
+            previous_events_response(&fixture, &target, usize::MAX, cancelled_after)
+                .expect("cancel previous events after the header");
+        let (shared_meta, shared) =
+            shared_query_response(&fixture, &target, usize::MAX, cancelled_after)
+                .expect("cancel shared events after the header");
+        assert_eq!(shared_meta, previous_meta);
+        assert_eq!(shared, previous, "cancelled_after={cancelled_after}");
+    }
+
     for accepted_records in [1, 2] {
         let (previous_meta, previous) =
             previous_events_response(&fixture, &target, accepted_records, usize::MAX)
@@ -3588,7 +3757,7 @@ fn previous_events_response(
     let crate::route::Route::Events(query) = fixture_route(target) else {
         panic!("events route");
     };
-    let query = legacy_events_query(query);
+    let query = legacy_events_query(&query);
     let prepared = crate::api::events::prepare(fixture.root(), query)?;
     let meta = prepared.meta();
     let emitted = Cell::new(0_usize);
@@ -3604,7 +3773,31 @@ fn previous_events_response(
     Ok((meta, output))
 }
 
-fn legacy_events_query(query: kronika_query::EventsQuery) -> crate::api::events::EventsQuery {
+fn previous_heatmap_response(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
+    let crate::route::Route::Heatmap(request) = fixture_route(target) else {
+        panic!("heatmap route");
+    };
+    let prepared = crate::api::heatmap::prepare(fixture.root(), request)?;
+    let meta = prepared.meta();
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    prepared.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok((meta, output))
+}
+
+fn legacy_events_query(query: &kronika_query::EventsQuery) -> crate::api::events::EventsQuery {
     let range = query.range();
     let representation = match query.representation() {
         kronika_query::EventsRepresentation::Groups => {

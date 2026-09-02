@@ -512,6 +512,12 @@ impl Reader {
         })
     }
 
+    /// Native data-directory path retained for sibling derived resources.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// List finished segments and the captured current segment whose
     /// timestamps overlap `range`.
     ///

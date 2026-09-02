@@ -1,6 +1,6 @@
 //! Native captured-data adapter for shared query execution.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use kronika_query::{
@@ -13,7 +13,6 @@ use kronika_reader::{CatalogDiscovery, Listing, Reader, Segment, SegmentRef, Sto
 /// One native reader retained for every opaque segment capture it produced.
 #[derive(Debug)]
 pub(crate) struct NativeDataset {
-    root: PathBuf,
     reader: Reader,
     started: Instant,
 }
@@ -23,7 +22,6 @@ impl NativeDataset {
         let started = Instant::now();
         Ok(Self {
             reader: Reader::open(root)?,
-            root: root.to_owned(),
             started,
         })
     }
@@ -148,7 +146,7 @@ impl IndexProvider for NativeDataset {
     ) -> Result<IndexResource, QueryError> {
         let started = Instant::now();
         let resource = kronika_index::resource_selected(
-            &self.root,
+            self.reader.root(),
             &self.reader,
             Self::captured(segment)?,
             keys,
@@ -171,7 +169,6 @@ impl IndexProvider for NativeDataset {
         );
         Ok(IndexResource {
             index: resource.index,
-            persisted: resource.persisted,
         })
     }
 }

@@ -1485,6 +1485,7 @@ dependencies = [
  "kronika-reader",
  "kronika-registry",
  "kronika-store",
+ "kronika-writer",
  "schemars",
  "serde",
  "serde_json",
