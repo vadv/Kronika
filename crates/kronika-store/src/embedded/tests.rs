@@ -44,10 +44,79 @@ fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
     );
     assert_eq!(source.retained_segment_ptr(), bytes.as_ptr());
     assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
+    assert_eq!(source.bytes.bytes.allocation_capacity(), FIXTURE.len());
     assert_eq!(
         read_resource_catalog(&opened).expect("embedded catalog"),
         read_resource_catalog(&FIXTURE).expect("fixture catalog")
     );
+}
+
+#[test]
+fn embedded_owned_source_keeps_the_vec_allocation_across_clones_and_opens() {
+    let mut bytes = Vec::with_capacity(FIXTURE.len() + 257);
+    bytes.extend_from_slice(FIXTURE);
+    let original_ptr = bytes.as_ptr();
+    let original_len = bytes.len();
+    let original_capacity = bytes.capacity();
+    let source = EmbeddedSource::from_owned(
+        SegmentId::new(47).expect("segment id"),
+        bytes,
+        FIXTURE_LIMIT,
+    )
+    .expect("valid owned fixture");
+    let cloned = source.clone();
+    let listing = source.resources().expect("owned catalog");
+    let opened = source
+        .open_resource(&listing.resources[0])
+        .expect("open owned bytes");
+    let opened_clone = opened.clone();
+
+    assert_eq!(source.retained_segment_ptr(), original_ptr);
+    assert_eq!(cloned.retained_segment_ptr(), original_ptr);
+    assert_eq!(opened.as_ptr(), original_ptr);
+    assert_eq!(opened_clone.as_ptr(), original_ptr);
+    assert_eq!(source.retained_segment_bytes(), original_len);
+    assert_eq!(source.bytes.bytes.allocation_capacity(), original_capacity);
+    assert_eq!(cloned.bytes.bytes.allocation_capacity(), original_capacity);
+    assert_eq!(opened.len(), original_len);
+    assert_eq!(listing.resources[0].identity().segment_id().get(), 47);
+    drop(source);
+    drop(cloned);
+    drop(opened);
+    assert_eq!(opened_clone.as_ptr(), original_ptr);
+    assert_eq!(opened_clone.len(), original_len);
+    assert_eq!(
+        read_resource_catalog(&opened_clone).expect("catalog after source drop"),
+        read_resource_catalog(&FIXTURE).expect("fixture catalog")
+    );
+}
+
+#[test]
+fn embedded_owned_source_keeps_validation_and_limit_failures() {
+    let error = EmbeddedSource::from_owned(
+        SegmentId::new(48).expect("segment id"),
+        FIXTURE.to_vec(),
+        FIXTURE_LIMIT - 1,
+    )
+    .expect_err("fixture must exceed the limit");
+    assert!(matches!(
+        error,
+        crate::ResourceError::TooLarge {
+            len: FIXTURE_LIMIT,
+            max
+        } if max == FIXTURE_LIMIT - 1
+    ));
+
+    let error = EmbeddedSource::from_owned(
+        SegmentId::new(48).expect("segment id"),
+        b"not a ZMS".to_vec(),
+        64,
+    )
+    .expect_err("invalid owned bytes");
+    assert!(matches!(
+        error,
+        crate::ResourceError::TailIndex(_) | crate::ResourceError::TooSmall
+    ));
 }
 
 #[test]
@@ -65,6 +134,7 @@ fn embedded_static_catalog_keeps_the_static_slice_without_copying() {
     assert_eq!(opened.as_ptr(), FIXTURE.as_ptr());
     assert_eq!(source.retained_segment_ptr(), FIXTURE.as_ptr());
     assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
+    assert_eq!(source.bytes.bytes.allocation_capacity(), 0);
     assert_eq!(
         read_resource_catalog(&opened).expect("static catalog"),
         read_resource_catalog(&FIXTURE).expect("fixture catalog")

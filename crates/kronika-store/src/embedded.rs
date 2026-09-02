@@ -1,4 +1,4 @@
-//! One immutable ZMS segment retained in shared or static bytes.
+//! One immutable ZMS segment retained in owned, shared, or static bytes.
 
 use std::io;
 use std::sync::Arc;
@@ -14,15 +14,28 @@ use crate::{
 
 #[derive(Clone)]
 enum EmbeddedBytes {
+    Owned(Arc<OwnedSegment>),
     Shared(Arc<[u8]>),
     Static(&'static [u8]),
 }
 
+struct OwnedSegment(Vec<u8>);
+
 impl EmbeddedBytes {
     fn as_slice(&self) -> &[u8] {
         match self {
+            Self::Owned(bytes) => bytes.0.as_slice(),
             Self::Shared(bytes) => bytes.as_ref(),
             Self::Static(bytes) => bytes,
+        }
+    }
+
+    #[cfg(test)]
+    fn allocation_capacity(&self) -> usize {
+        match self {
+            Self::Owned(bytes) => bytes.0.capacity(),
+            Self::Shared(bytes) => bytes.len(),
+            Self::Static(_bytes) => 0,
         }
     }
 }
@@ -91,6 +104,33 @@ impl EmbeddedSource {
             && resource.captured_bytes() == self.bytes.len() as u64
             && resource.summary() == self.summary.as_ref()
             && Arc::ptr_eq(&resource.token().0, &self.source_id)
+    }
+
+    /// Validate exclusively owned ZMS bytes under the supplied segment identity.
+    ///
+    /// The `Vec` allocation, including its capacity, is moved behind shared
+    /// ownership without copying its contents. Source, open, and clone handles
+    /// retain that same allocation. Retained payload capacity is the original
+    /// `Vec` capacity and excludes the `Arc` control block and compact catalog
+    /// metadata. The ZMS format does not contain its segment ID, so the caller
+    /// must provide it. `max_segment_bytes` bounds the logical length before
+    /// format validation; a caller with a retained-memory budget must account
+    /// the vector capacity separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a limit, format, checksum, or bounded-metadata error for invalid
+    /// bytes.
+    pub fn from_owned(
+        segment_id: SegmentId,
+        bytes: Vec<u8>,
+        max_segment_bytes: u64,
+    ) -> Result<Self, ResourceError> {
+        Self::from_bytes(
+            segment_id,
+            EmbeddedBytes::Owned(Arc::new(OwnedSegment(bytes))),
+            max_segment_bytes,
+        )
     }
 
     /// Validate shared owned ZMS bytes under the supplied segment identity.
@@ -162,7 +202,7 @@ impl EmbeddedSource {
         })
     }
 
-    /// Bytes retained for the complete embedded segment allocation.
+    /// Logical bytes retained for the complete embedded segment.
     #[must_use]
     pub fn retained_segment_bytes(&self) -> usize {
         self.bytes.len()
