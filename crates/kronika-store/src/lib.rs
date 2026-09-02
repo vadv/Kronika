@@ -26,6 +26,10 @@
 //! Journal v1 is the journal format shipped in Kronika 1.0.0. There is no
 //! alternate-version reader or migration path.
 
+// Cargo exposes Unix-only dev dependencies to every host test build.
+#[cfg(all(test, not(feature = "posix"), unix))]
+use tempfile as _;
+
 mod catalog_summary;
 mod embedded;
 #[cfg(feature = "posix")]

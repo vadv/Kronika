@@ -131,9 +131,13 @@ pub(crate) const MAX_LIST_I32_VALUES_PER_SECTION: usize =
 
 // ---- Encode shared code ----------------------------------------------------
 
+pub(crate) fn row_count_fits(rows: usize) -> bool {
+    u32::try_from(rows).is_ok()
+}
+
 /// Reject a row count above [`MAX_SECTION_ROWS`] before columns are built.
-pub(crate) const fn check_row_cap(rows: usize) -> Result<(), CodecError> {
-    if rows > MAX_SECTION_ROWS {
+pub(crate) fn check_row_cap(rows: usize) -> Result<(), CodecError> {
+    if !row_count_fits(rows) {
         return Err(CodecError::TooManyRows {
             rows,
             max: MAX_SECTION_ROWS,
@@ -304,11 +308,7 @@ pub struct DecodedSection {
 }
 
 /// Parquet read batch size: the reader yields batches of at most this many rows.
-pub(crate) const DECODE_BATCH_SIZE: usize = if MAX_SECTION_ROWS < 8192 {
-    MAX_SECTION_ROWS
-} else {
-    8192
-};
+pub(crate) const DECODE_BATCH_SIZE: usize = 8192;
 
 /// Decode a Parquet section body, streaming batches into `push_rows`.
 pub(crate) fn decode_section<Row>(
@@ -330,9 +330,16 @@ pub(crate) fn decode_section<Row>(
     let mut rows = Vec::new();
     for batch in reader {
         let batch = batch?;
-        if rows.len() + batch.num_rows() > MAX_SECTION_ROWS {
+        let next_rows =
+            rows.len()
+                .checked_add(batch.num_rows())
+                .ok_or(CodecError::TooManyRows {
+                    rows: usize::MAX,
+                    max: MAX_SECTION_ROWS,
+                })?;
+        if !row_count_fits(next_rows) {
             return Err(CodecError::TooManyRows {
-                rows: rows.len() + batch.num_rows(),
+                rows: next_rows,
                 max: MAX_SECTION_ROWS,
             });
         }
@@ -383,8 +390,13 @@ pub(crate) fn decode_batches(
     let mut rows = 0_usize;
     for batch in reader {
         let batch = batch?;
-        rows += batch.num_rows();
-        if rows > MAX_SECTION_ROWS {
+        rows = rows
+            .checked_add(batch.num_rows())
+            .ok_or(CodecError::TooManyRows {
+                rows: usize::MAX,
+                max: MAX_SECTION_ROWS,
+            })?;
+        if !row_count_fits(rows) {
             return Err(CodecError::TooManyRows {
                 rows,
                 max: MAX_SECTION_ROWS,

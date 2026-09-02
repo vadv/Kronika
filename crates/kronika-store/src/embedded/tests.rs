@@ -4,7 +4,8 @@ use kronika_layout::SegmentId;
 
 use super::EmbeddedSource;
 use crate::{
-    ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, SegmentResource, read_catalog,
+    ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, SegmentResource,
+    read_resource_catalog,
 };
 
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
@@ -44,8 +45,8 @@ fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
     assert_eq!(source.retained_segment_ptr(), bytes.as_ptr());
     assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
     assert_eq!(
-        read_catalog(&opened).expect("embedded catalog"),
-        read_catalog(&FIXTURE).expect("fixture catalog")
+        read_resource_catalog(&opened).expect("embedded catalog"),
+        read_resource_catalog(&FIXTURE).expect("fixture catalog")
     );
 }
 
@@ -65,8 +66,8 @@ fn embedded_static_catalog_keeps_the_static_slice_without_copying() {
     assert_eq!(source.retained_segment_ptr(), FIXTURE.as_ptr());
     assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
     assert_eq!(
-        read_catalog(&opened).expect("static catalog"),
-        read_catalog(&FIXTURE).expect("fixture catalog")
+        read_resource_catalog(&opened).expect("static catalog"),
+        read_resource_catalog(&FIXTURE).expect("fixture catalog")
     );
     source
         .validate_opened(resource, &opened)
@@ -182,7 +183,7 @@ fn storage_neutral_api_compiles_without_posix_types() {
         let listing = source.resources().expect("catalog");
         let resource = listing.resources.first().expect("resource");
         let bytes = source.open_resource(resource).expect("bytes");
-        drop(read_catalog(&bytes).expect("catalog bytes"));
+        drop(read_resource_catalog(&bytes).expect("catalog bytes"));
         source
             .validate_opened(resource, &bytes)
             .expect("opened bytes");

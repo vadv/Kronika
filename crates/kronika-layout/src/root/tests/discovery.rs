@@ -1,6 +1,7 @@
 //! Discovery.
 
 use super::*;
+use crate::LimitKind;
 
 #[test]
 fn strict_scan_sorts_numeric_ids_and_associates_indexs() {

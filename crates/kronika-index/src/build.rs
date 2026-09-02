@@ -906,6 +906,7 @@ fn stall_snapshot_identity(
     Ok(running.then_some(identity))
 }
 
+#[cfg(feature = "posix")]
 fn last_stall_snapshot(
     segment: &Segment,
     metadata: Option<&MetadataProjection>,

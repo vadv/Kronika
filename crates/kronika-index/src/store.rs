@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use crate::build::{BuildError, build_from_reader, build_selected_from_reader};
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
+#[cfg(test)]
+use crate::selection::finding_keys;
+use crate::selection::series_keys;
 use crate::series::{SeriesKey, SeriesKind};
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};

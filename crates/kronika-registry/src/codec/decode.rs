@@ -3,7 +3,7 @@
 use super::{
     Array, ArrowReaderOptions, BooleanArray, Bytes, CodecError, DECODE_BATCH_SIZE,
     MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS,
-    ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder, RecordBatch,
+    ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder, RecordBatch, row_count_fits,
 };
 
 /// Build a Parquet reader after byte, row-group, and claimed-row caps pass.
@@ -32,7 +32,7 @@ pub(super) fn capped_reader(
 
     let claimed = builder.metadata().file_metadata().num_rows();
     let row_count = match usize::try_from(claimed) {
-        Ok(rows) if rows <= MAX_SECTION_ROWS => rows,
+        Ok(rows) if row_count_fits(rows) => rows,
         Ok(rows) => {
             return Err(CodecError::TooManyRows {
                 rows,

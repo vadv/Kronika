@@ -35,6 +35,7 @@ const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     2_005_002,
     2_006_001,
 ];
+#[cfg(feature = "posix")]
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 
 const OVERALL_HEALTH_FIELD: u16 = 1;
@@ -61,6 +62,7 @@ const EVENT_TIMESTAMP_FIELD: u16 = 0;
 #[derive(Debug)]
 pub(crate) struct FindingBuilder {
     requested: BTreeSet<u32>,
+    #[cfg(feature = "posix")]
     cutoff: i64,
     cpu_before: Option<CpuRaw>,
     oom_before: Option<(i64, Option<i64>)>,
@@ -73,7 +75,17 @@ pub(crate) struct FindingBuilder {
 
 impl FindingBuilder {
     /// Discover only concrete series that occur in the target segment.
-    pub(crate) fn new(segment: &Segment, requested: &[SeriesKey]) -> Self {
+    pub(crate) fn new(
+        #[cfg_attr(
+            not(feature = "posix"),
+            expect(
+                unused_variables,
+                reason = "the segment supplies only predecessor bounds in POSIX builds"
+            )
+        )]
+        segment: &Segment,
+        requested: &[SeriesKey],
+    ) -> Self {
         let requested: BTreeSet<u32> = requested
             .iter()
             .filter(|key| key.kind == SeriesKind::Findings)
@@ -82,6 +94,7 @@ impl FindingBuilder {
             .collect();
         Self {
             requested,
+            #[cfg(feature = "posix")]
             cutoff: segment.min_ts().saturating_sub(FIFTEEN_MINUTES_US),
             cpu_before: None,
             oom_before: None,
@@ -94,6 +107,7 @@ impl FindingBuilder {
     }
 
     /// Earliest preferred timestamp for adjacent counter inputs.
+    #[cfg(feature = "posix")]
     pub(crate) const fn window_start(&self) -> i64 {
         self.cutoff
     }
@@ -108,6 +122,7 @@ impl FindingBuilder {
         })
     }
 
+    #[cfg(feature = "posix")]
     pub(crate) fn observe_prior(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if self.requested.contains(&OS_CPU) {
             self.observe_prior_cpu(segment)?;
@@ -256,6 +271,7 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
         )
 }
 
+#[cfg(feature = "posix")]
 const fn needs_prior_rows(type_id: u32) -> bool {
     matches!(
         type_id,

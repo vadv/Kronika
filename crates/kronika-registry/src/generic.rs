@@ -15,7 +15,7 @@ use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderB
 
 use crate::codec::{
     CodecError, DECODE_BATCH_SIZE, MAX_DECODED_SECTION_BYTES, MAX_LIST_I32_VALUES_PER_ROW,
-    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, schema_matches,
+    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, row_count_fits, schema_matches,
 };
 use crate::contract::{ColumnType, TypeContract};
 use crate::{VerifiedSection, registry, validate_parquet_decode_work};
@@ -246,7 +246,7 @@ fn visit_rows_with(
     let claimed = builder.metadata().file_metadata().num_rows();
     let rows = usize::try_from(claimed)
         .map_err(|_overflow| CodecError::InvalidRowCount { raw: claimed })?;
-    if rows > MAX_SECTION_ROWS {
+    if !row_count_fits(rows) {
         return Err(CodecError::TooManyRows {
             rows,
             max: MAX_SECTION_ROWS,

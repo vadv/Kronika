@@ -56,6 +56,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: make test
 
+  wasm-query:
+    name: portable query
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned WebAssembly target
+        run: rustup target add wasm32-unknown-unknown --toolchain 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the embedded query graph
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: |
+          cargo +1.96.0 test --locked -p kronika-store --lib --no-default-features
+          cargo +1.96.0 check --locked -p kronika-query --lib \
+            --target wasm32-unknown-unknown --no-default-features
+          if cargo +1.96.0 tree -p kronika-query \
+            --target wasm32-unknown-unknown --no-default-features \
+            --edges normal,build --prefix none | grep -E '^(rustix|errno) v'; then
+            echo "portable query graph contains a POSIX dependency" >&2
+            exit 1
+          fi
+
   bdd:
     name: bdd
     runs-on: ubuntu-latest

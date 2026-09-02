@@ -285,20 +285,17 @@ impl Segment {
         mut visitor: impl FnMut(u64, Row) -> bool,
     ) -> Result<usize, ReaderError> {
         let mut visited = 0_usize;
-        let mut global_base = 0_u64;
-        let mut remaining_offset = offset;
         match &self.source {
             Source::Finished { bytes, catalog } => {
                 if let Some(entry) = entry(catalog, type_id) {
                     let rows = u64::from(entry.rows);
-                    if remaining_offset < rows {
-                        let local_offset =
-                            usize::try_from(remaining_offset).map_err(|_overflow| {
-                                std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "row offset does not fit usize",
-                                )
-                            })?;
+                    if offset < rows {
+                        let local_offset = usize::try_from(offset).map_err(|_overflow| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "row offset does not fit usize",
+                            )
+                        })?;
                         let count = visit_body(
                             type_id,
                             finished_body(bytes, entry)?,
@@ -317,6 +314,8 @@ impl Segment {
             }
             #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
+                let mut global_base = 0_u64;
+                let mut remaining_offset = offset;
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     let Some(entry) = entry(&part.catalog, type_id) else {
                         continue;
