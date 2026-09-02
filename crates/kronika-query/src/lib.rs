@@ -39,6 +39,10 @@ pub use heatmap::{
     NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch, validate_heatmap_request,
 };
 pub use index_provider::{IndexProvider, IndexResource};
+pub use projection::{
+    OutputField, Plan, chunk_dictionary, plans, resolved_dictionary, streaming_chunk_dictionary,
+    validate_row_dictionary,
+};
 pub use request::{
     ActiveCursor, CatalogRequest, DataRequest, Filter, IndexRequest, Order, QueryRequest,
     RowsRequest, SegmentRequest, Window,
