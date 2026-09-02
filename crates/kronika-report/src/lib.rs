@@ -27,11 +27,11 @@ pub struct ReportInput {
     pub max_zms_bytes: u64,
 }
 
-/// Typed failure while binding report artifacts.
+/// Typed failure while preparing or binding report artifacts.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ReportError {
-    /// Invalid typed segment identity supplied by an adapter.
+    /// Invalid segment identity preserved while preparing typed input.
     Layout(LayoutError),
     /// Invalid or over-limit finished ZMS bytes.
     Resource(ResourceError),

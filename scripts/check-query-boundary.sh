@@ -23,9 +23,16 @@ if rg -n \
 fi
 
 if rg -n \
-    'std::(fs|path)(::|\b)|\b(Path|PathBuf|File|LocalDir|Mutex|Instant)\b|\b(hyper|tokio|rmcp|http|wasm_bindgen)(::|_)|async[[:space:]]+fn' \
+    'std::(fs|net|path)(::|\b)|\b(Path|PathBuf|File|LocalDir|Mutex|Instant)\b|\b(hyper|tokio|rmcp|http|url|reqwest|ureq|oauth2|jsonwebtoken|openidconnect|wasm_bindgen)(::|_)|async[[:space:]]+fn|^[[:space:]]*(pub[[:space:]]+)?trait[[:space:]]|\bsegment_id[[:space:]]*:[[:space:]]*String\b' \
     "$report_source_root"; then
     echo "kronika-report source crosses its portable composition boundary" >&2
+    failed=1
+fi
+
+if rg -n \
+    '\.(clone|to_vec|to_owned)\(|copy_from_slice|extend_from_slice' \
+    "$report_source_root"; then
+    echo "kronika-report source copies or clones owned input" >&2
     failed=1
 fi
 
@@ -41,7 +48,6 @@ if printf '%s\n' "$dependency_names" |
     failed=1
 fi
 
-
 report_dependency_names=$(
     "$cargo_bin" "+$rust_toolchain" tree --locked -p kronika-report \
         --edges normal --prefix none |
@@ -49,7 +55,7 @@ report_dependency_names=$(
         sort -u
 )
 if printf '%s\n' "$report_dependency_names" |
-    rg '^(http|http-body.*|hyper.*|tokio.*|rmcp.*|wasm-bindgen.*)$'; then
+    rg '^(http|http-body.*|hyper.*|tokio.*|rmcp.*|url|reqwest.*|ureq|oauth2|jsonwebtoken|openidconnect|native-tls|rustls.*|socket2|mio|wasm-bindgen.*)$'; then
     echo "kronika-report dependency graph contains a transport/runtime binding" >&2
     failed=1
 fi

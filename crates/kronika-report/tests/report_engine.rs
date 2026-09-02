@@ -83,7 +83,27 @@ fn direct_context(segment_id: SegmentId) -> QueryContext {
         .with_index_provider(Arc::new(indexes))
 }
 
-fn request_families(segment_id: SegmentId) -> Vec<(&'static str, QueryRequest)> {
+fn snapshot_request(segment_id: SegmentId) -> QueryRequest {
+    QueryRequest::Snapshot(SnapshotRequest {
+        segment_id: segment_id.get(),
+        at: SEGMENT_ID_VALUE,
+        sections: vec!["os_process".to_owned()],
+        fields: vec!["comm".to_owned(), "utime".to_owned()],
+        by: Vec::new(),
+        direction: Order::Desc,
+        group: None,
+        page_size: None,
+        cursor: None,
+        search: None,
+        first_match: false,
+        text: None,
+        filters: Vec::new(),
+        type_id: None,
+        row_ordinal: None,
+    })
+}
+
+fn request_families(segment_id: SegmentId) -> Vec<(&'static str, &'static str, QueryRequest)> {
     let data = DataRequest {
         segment: SegmentRequest {
             segment_id: segment_id.get(),
@@ -130,18 +150,24 @@ fn request_families(segment_id: SegmentId) -> Vec<(&'static str, QueryRequest)> 
     let row_detail = validate_row_detail_ref(&detail_ref).expect("validated detail reference");
 
     vec![
-        ("catalog", QueryRequest::Catalog(CatalogRequest::default())),
-        ("heatmap", QueryRequest::Heatmap(heatmap)),
+        (
+            "catalog",
+            "finished_segment",
+            QueryRequest::Catalog(CatalogRequest::default()),
+        ),
+        ("heatmap", "heatmap_row", QueryRequest::Heatmap(heatmap)),
         (
             "index",
+            "point",
             QueryRequest::Index(IndexRequest {
                 segment_id: segment_id.get(),
-                section: "health".to_owned(),
+                section: "pg_stat_database".to_owned(),
             }),
         ),
-        ("history", QueryRequest::History(data.clone())),
+        ("history", "row", QueryRequest::History(data.clone())),
         (
             "hour",
+            "point",
             QueryRequest::Hour(HourRequest {
                 window: Window {
                     from: Some(SEGMENT_ID_VALUE),
@@ -153,28 +179,10 @@ fn request_families(segment_id: SegmentId) -> Vec<(&'static str, QueryRequest)> 
                 active: None,
             }),
         ),
-        (
-            "snapshot",
-            QueryRequest::Snapshot(SnapshotRequest {
-                segment_id: segment_id.get(),
-                at: SEGMENT_ID_VALUE,
-                sections: vec!["os_process".to_owned()],
-                fields: vec!["comm".to_owned(), "utime".to_owned()],
-                by: Vec::new(),
-                direction: Order::Desc,
-                group: None,
-                page_size: None,
-                cursor: None,
-                search: None,
-                first_match: false,
-                text: None,
-                filters: Vec::new(),
-                type_id: None,
-                row_ordinal: None,
-            }),
-        ),
+        ("snapshot", "row", snapshot_request(segment_id)),
         (
             "rows",
+            "row",
             QueryRequest::Rows(RowsRequest {
                 data,
                 order: Order::Asc,
@@ -182,8 +190,12 @@ fn request_families(segment_id: SegmentId) -> Vec<(&'static str, QueryRequest)> 
                 cursor: None,
             }),
         ),
-        ("events", QueryRequest::Events(events)),
-        ("row_detail", QueryRequest::RowDetail(row_detail)),
+        ("events", "event_occurrence", QueryRequest::Events(events)),
+        (
+            "row_detail",
+            "row_detail",
+            QueryRequest::RowDetail(row_detail),
+        ),
     ]
 }
 
@@ -209,7 +221,7 @@ fn ndjson(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
-fn construction_preserves_typed_layout_resource_and_index_failures() {
+fn report_error_preserves_a_typed_layout_failure() {
     let layout: ReportError = SegmentId::new(i64::MAX)
         .expect_err("invalid segment identity")
         .into();
@@ -217,7 +229,11 @@ fn construction_preserves_typed_layout_resource_and_index_failures() {
         layout,
         ReportError::Layout(LayoutError::SegmentIdOutOfRange(i64::MAX))
     ));
+    assert!(layout.source().is_some());
+}
 
+#[test]
+fn construction_preserves_typed_resource_and_index_failures() {
     let mut over_limit = report_input(segment_id());
     over_limit.max_zms_bytes -= 1;
     let error = ReportEngine::new(over_limit).expect_err("logical limit must apply first");
@@ -280,7 +296,7 @@ fn explicit_segment_id_binds_both_embedded_artifacts() {
         &engine,
         QueryRequest::Index(IndexRequest {
             segment_id: rebound.get(),
-            section: "health".to_owned(),
+            section: "pg_stat_database".to_owned(),
         }),
     )
     .expect("IDX is bound to the explicit identity");
@@ -307,22 +323,35 @@ fn report_engine_matches_direct_context_for_all_nine_query_families() {
     let requests = request_families(segment_id);
     assert_eq!(requests.len(), 9);
 
-    for (family, request) in requests {
+    for (family, expected_record, request) in requests {
         let direct = direct_bytes(&context, request.clone())
             .unwrap_or_else(|error| panic!("direct {family} failed: {error}"));
         let report = report_bytes(&engine, request)
             .unwrap_or_else(|error| panic!("report {family} failed: {error}"));
         assert_eq!(report, direct, "{family} bytes");
-        assert!(!ndjson(&report).is_empty(), "{family} output");
+        let records = ndjson(&report);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["record"] == expected_record),
+            "{family} has no {expected_record} record"
+        );
 
         if family == "events" {
-            assert!(ndjson(&report).iter().any(|record| {
+            assert!(records.iter().any(|record| {
                 record["record"] == "event_occurrence" && record["source"] == "pg_log_errors"
+            }));
+        }
+        if family == "index" {
+            assert!(records.iter().any(|record| {
+                record["record"] == "point"
+                    && record["series"] == "transactions_per_second"
+                    && !record["value"].is_null()
             }));
         }
         if family == "snapshot" {
             assert!(
-                ndjson(&report).iter().any(|record| {
+                records.iter().any(|record| {
                     record["record"] == "row"
                         && record["timestamp"].as_str() == Some(SEGMENT_ID_TEXT)
                         && record["values"][1].is_null()
