@@ -75,17 +75,9 @@ pub(crate) struct FindingBuilder {
 
 impl FindingBuilder {
     /// Discover only concrete series that occur in the target segment.
-    pub(crate) fn new(
-        #[cfg_attr(
-            not(feature = "posix"),
-            expect(
-                unused_variables,
-                reason = "the segment supplies only predecessor bounds in POSIX builds"
-            )
-        )]
-        segment: &Segment,
-        requested: &[SeriesKey],
-    ) -> Self {
+    pub(crate) fn new(segment: &Segment, requested: &[SeriesKey]) -> Self {
+        #[cfg(not(feature = "posix"))]
+        let _ = segment;
         let requested: BTreeSet<u32> = requested
             .iter()
             .filter(|key| key.kind == SeriesKind::Findings)

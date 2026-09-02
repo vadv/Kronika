@@ -10,11 +10,11 @@ repository.workspace = true
 
 [features]
 default = ["posix"]
-posix = ["dep:kronika-layout", "kronika-reader/posix"]
+posix = ["kronika-layout/posix", "kronika-reader/posix"]
 
 [dependencies]
 kronika-format = { path = "../kronika-format" }
-kronika-layout = { path = "../kronika-layout", optional = true }
+kronika-layout = { path = "../kronika-layout", default-features = false, optional = true }
 kronika-reader = { path = "../kronika-reader", default-features = false }
 kronika-registry = { path = "../kronika-registry" }
 
