@@ -2615,6 +2615,66 @@ fn get_row_detail_uses_an_opaque_ref_for_the_complete_identity() {
 }
 
 #[test]
+fn get_row_detail_maps_cancelled_missing_and_non_unique_lookups_stably() {
+    let mut source = Fixture::new();
+    source.append_process_gauge_rows(&[(100, 101, 50, "source")]);
+    source.finish();
+    let source_config = test_config(source.root().to_path_buf());
+    let found = crate::mcp::processes::call(
+        &source_config,
+        json!({"filters": [], "limit": 1})
+            .as_object()
+            .expect("arguments")
+            .clone(),
+        &|| false,
+    );
+    let row = &found.structured_content.expect("finder result")["rows"][0];
+    let arguments = detail_arguments(row);
+
+    let cancelled = crate::mcp::row_detail::call(&source_config, arguments.clone(), &|| true);
+    assert_eq!(cancelled.is_error, Some(true));
+    assert_eq!(
+        cancelled.content[0].as_text().expect("error").text,
+        "request cancelled"
+    );
+    assert_eq!(
+        cancelled.structured_content,
+        Some(json!({
+            "record": "error",
+            "message": "request cancelled",
+        }))
+    );
+
+    let mut missing = Fixture::new();
+    missing.append_process_gauge_rows(&[(100, 102, 40, "other")]);
+    missing.finish();
+    let missing = crate::mcp::row_detail::call(
+        &test_config(missing.root().to_path_buf()),
+        arguments.clone(),
+        &|| false,
+    );
+    assert_eq!(missing.is_error, Some(true));
+    assert_eq!(
+        missing.content[0].as_text().expect("error").text,
+        "detail_ref does not identify one recorded row"
+    );
+
+    let mut duplicate = Fixture::new();
+    duplicate.append_process_gauge_rows(&[(100, 101, 50, "first"), (100, 101, 60, "second")]);
+    duplicate.finish();
+    let duplicate = crate::mcp::row_detail::call(
+        &test_config(duplicate.root().to_path_buf()),
+        arguments,
+        &|| false,
+    );
+    assert_eq!(duplicate.is_error, Some(true));
+    assert_eq!(
+        duplicate.content[0].as_text().expect("error").text,
+        "detail_ref does not identify one recorded row"
+    );
+}
+
+#[test]
 fn find_processes_refuses_to_emit_a_ref_for_a_non_unique_identity() {
     let mut fixture = Fixture::new();
     fixture.append_process_gauge_rows(&[(100, 101, 50, "first"), (100, 101, 60, "second")]);
