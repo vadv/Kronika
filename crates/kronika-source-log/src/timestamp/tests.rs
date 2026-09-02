@@ -1,18 +1,4 @@
-use chrono::{Local, NaiveDateTime, TimeZone as _};
-
-use super::parse_local;
-
-/// What the host's timezone makes of a wall-clock reading.
-fn local_micros(text: &str) -> i64 {
-    let naive =
-        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").expect("a readable wall clock");
-    Local
-        .from_local_datetime(&naive)
-        .earliest()
-        .expect("the host timezone maps this reading")
-        .timestamp()
-        * 1_000_000
-}
+use super::{local_micros, parse_local};
 
 #[test]
 fn reads_the_wall_clock_in_the_host_timezone() {

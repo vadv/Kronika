@@ -410,10 +410,7 @@ pub(crate) fn prepare_with_demo(
                 &context,
                 QueryRequest::Rows(kronika_query::RowsRequest {
                     data: shared_data_request(request.data),
-                    order: match request.order {
-                        crate::route::Order::Asc => kronika_query::Order::Asc,
-                        crate::route::Order::Desc => kronika_query::Order::Desc,
-                    },
+                    order: request.order,
                     page_size: request.page_size,
                     cursor: request.cursor,
                 }),

@@ -947,9 +947,7 @@ fn stop_if_persistence_unhealthy(journal: &Journal) -> Result<()> {
 
 fn announce(line: &str) {
     let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "{line}")
-        .and_then(|()| stdout.flush())
-        .ok();
+    drop(writeln!(stdout, "{line}").and_then(|()| stdout.flush()));
 }
 
 #[cfg(test)]

@@ -6,23 +6,9 @@ use hyper::header::{ACCEPT, CONTENT_TYPE, HOST};
 use hyper::{Method, Request};
 use serde_json::json;
 
-use super::response;
-use crate::config::{Account, Config};
+use super::{response, test_config};
+use crate::config::Config;
 use crate::tests::artifacts::Fixture;
-
-fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
-    Arc::new(Config {
-        data_root,
-        listen: "127.0.0.1:0".parse().expect("listen address"),
-        account: Account {
-            user: "dba".to_owned(),
-            password: "secret".to_owned(),
-        },
-        authentication_required: true,
-        sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
-        synthetic_demo: false,
-    })
-}
 
 const FORBIDDEN_COORDINATE_KEYS: [&str; 5] = [
     "detail_locator",

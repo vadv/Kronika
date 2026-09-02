@@ -338,7 +338,11 @@ impl Drop for IdxTemp<'_> {
         if !self.completed
             && let Ok(expected) = FileIdentity::from_file(&self.file)
         {
-            unlink_named_if_identity(&self.day, &self.temp_name, expected).ok();
+            drop(unlink_named_if_identity(
+                &self.day,
+                &self.temp_name,
+                expected,
+            ));
         }
     }
 }

@@ -1099,15 +1099,22 @@ struct TimestampAggregate {
     never: u64,
 }
 
+enum TimestampObservation<'a> {
+    Unavailable,
+    NotApplicable,
+    Stored(Option<&'a Cell>),
+}
+
 impl TimestampAggregate {
-    fn add(&mut self, present: bool, stored: Option<&Cell>, structural_na: bool) {
-        if !present {
-            self.unavailable = true;
-            return;
-        }
-        if structural_na {
-            return;
-        }
+    fn add(&mut self, observation: TimestampObservation<'_>) {
+        let stored = match observation {
+            TimestampObservation::Unavailable => {
+                self.unavailable = true;
+                return;
+            }
+            TimestampObservation::NotApplicable => return,
+            TimestampObservation::Stored(stored) => stored,
+        };
         self.applicable = self.applicable.saturating_add(1);
         match stored {
             Some(Cell::Ts(value)) => {
@@ -1395,11 +1402,14 @@ impl RelationAggregate {
         for &name in TABLE_TIMESTAMPS {
             let structural_na = name == "toast_last_autovacuum"
                 && matches!(row.get("toast_bytes"), Some(Cell::Null));
-            self.timestamps.entry(name).or_default().add(
-                plan.contract.column(name).is_some(),
-                row.get(name),
-                structural_na,
-            );
+            let observation = if plan.contract.column(name).is_none() {
+                TimestampObservation::Unavailable
+            } else if structural_na {
+                TimestampObservation::NotApplicable
+            } else {
+                TimestampObservation::Stored(row.get(name))
+            };
+            self.timestamps.entry(name).or_default().add(observation);
         }
         for name in ["relname", "tablespace"] {
             if let Some(value) = text_cell(row.get(name), dictionary)? {
@@ -1433,11 +1443,12 @@ impl RelationAggregate {
                 .add(gauge_input(plan, row, name, false));
         }
         for &name in INDEX_TIMESTAMPS {
-            self.timestamps.entry(name).or_default().add(
-                plan.contract.column(name).is_some(),
-                row.get(name),
-                false,
-            );
+            let observation = if plan.contract.column(name).is_some() {
+                TimestampObservation::Stored(row.get(name))
+            } else {
+                TimestampObservation::Unavailable
+            };
+            self.timestamps.entry(name).or_default().add(observation);
         }
         for &name in INDEX_FLAGS {
             self.flags.entry(name).or_default().add(row.get(name));
@@ -4387,7 +4398,7 @@ mod tests {
     fn last_scan_never_is_distinct_from_layout_absence() {
         let mut aggregate = aggregate();
         let mut never = TimestampAggregate::default();
-        never.add(true, Some(&Cell::Null), false);
+        never.add(TimestampObservation::Stored(Some(&Cell::Null)));
         aggregate.timestamps.insert("last_seq_scan", never);
         assert_eq!(
             aggregate
@@ -4402,7 +4413,7 @@ mod tests {
         );
 
         let mut seen = TimestampAggregate::default();
-        seen.add(true, Some(&Cell::Ts(30)), false);
+        seen.add(TimestampObservation::Stored(Some(&Cell::Ts(30))));
         aggregate.timestamps.insert("last_idx_scan", seen);
         for kind in [RelationKind::Tables, RelationKind::Indexes] {
             assert_eq!(
@@ -4415,7 +4426,7 @@ mod tests {
         }
 
         let mut absent = TimestampAggregate::default();
-        absent.add(false, None, false);
+        absent.add(TimestampObservation::Unavailable);
         aggregate.timestamps.insert("last_seq_scan", absent);
         assert!(
             aggregate
@@ -4475,23 +4486,23 @@ mod tests {
     #[test]
     fn timestamps_keep_oldest_latest_and_explicit_never() {
         let mut timestamp = TimestampAggregate::default();
-        timestamp.add(true, Some(&Cell::Ts(30)), false);
-        timestamp.add(true, Some(&Cell::Null), false);
-        timestamp.add(true, Some(&Cell::Ts(10)), false);
+        timestamp.add(TimestampObservation::Stored(Some(&Cell::Ts(30))));
+        timestamp.add(TimestampObservation::Stored(Some(&Cell::Null)));
+        timestamp.add(TimestampObservation::Stored(Some(&Cell::Ts(10))));
         assert!(timestamp.exact());
         assert_eq!(timestamp.oldest, Some(10));
         assert_eq!(timestamp.latest, Some(30));
         assert_eq!(timestamp.never, 1);
 
         let mut toast = TimestampAggregate::default();
-        toast.add(true, Some(&Cell::Null), true);
+        toast.add(TimestampObservation::NotApplicable);
         assert!(!toast.exact(), "all no-TOAST rows stay unavailable");
-        toast.add(true, Some(&Cell::Null), false);
+        toast.add(TimestampObservation::Stored(Some(&Cell::Null)));
         assert!(toast.exact());
         assert_eq!(toast.never, 1);
 
         let mut absent = TimestampAggregate::default();
-        absent.add(false, None, false);
+        absent.add(TimestampObservation::Unavailable);
         assert!(!absent.exact());
     }
 

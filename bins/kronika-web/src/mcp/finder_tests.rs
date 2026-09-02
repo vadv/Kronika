@@ -1,27 +1,13 @@
 use std::io;
-use std::sync::Arc;
 
 use kronika_query::QueryError;
 use kronika_reader::ReaderError;
 use serde_json::{Map, Value, json};
 
+use super::test_config;
 use crate::api::ApiError;
-use crate::config::{Account, Config};
+use crate::config::Config;
 use crate::tests::artifacts::{Fixture, NamedIndexSnapshot};
-
-fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
-    Arc::new(Config {
-        data_root,
-        listen: "127.0.0.1:0".parse().expect("listen address"),
-        account: Account {
-            user: "dba".to_owned(),
-            password: "secret".to_owned(),
-        },
-        authentication_required: true,
-        sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
-        synthetic_demo: false,
-    })
-}
 
 fn arguments(value: &Value) -> Map<String, Value> {
     value.as_object().expect("arguments object").clone()

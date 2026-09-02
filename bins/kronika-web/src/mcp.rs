@@ -47,6 +47,21 @@ mod finder_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
+    Arc::new(Config {
+        data_root,
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: crate::config::Account {
+            user: "dba".to_owned(),
+            password: "secret".to_owned(),
+        },
+        authentication_required: true,
+        sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
+        synthetic_demo: false,
+    })
+}
+
 /// Runs one typed snapshot query against a fresh native capture, replaying once
 /// when the active source rolls over during the read.
 fn run_snapshot_query<R>(

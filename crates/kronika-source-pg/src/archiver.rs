@@ -95,7 +95,18 @@ mod tests {
     use super::{ArchiverRow, to_archiver};
     use crate::test_intern as fake_intern;
 
-    fn sample_row(archived: bool, failed: bool) -> ArchiverRow {
+    enum WalSamples {
+        Both,
+        Neither,
+        FailedOnly,
+    }
+
+    fn sample_row(samples: WalSamples) -> ArchiverRow {
+        let (archived, failed) = match samples {
+            WalSamples::Both => (true, true),
+            WalSamples::Neither => (false, false),
+            WalSamples::FailedOnly => (false, true),
+        };
         ArchiverRow {
             ts: 2_000,
             archived_count: 100,
@@ -110,7 +121,7 @@ mod tests {
 
     #[test]
     fn interns_wal_names_and_maps_times() {
-        let r = to_archiver(&sample_row(true, true), fake_intern).expect("intern");
+        let r = to_archiver(&sample_row(WalSamples::Both), fake_intern).expect("intern");
         assert_eq!(r.ts.0, 2_000);
         assert_eq!(r.archived_count, 100);
         assert_eq!(
@@ -127,7 +138,7 @@ mod tests {
 
     #[test]
     fn handles_null_wal_names() {
-        let r = to_archiver(&sample_row(false, false), fake_intern).expect("intern");
+        let r = to_archiver(&sample_row(WalSamples::Neither), fake_intern).expect("intern");
         assert_eq!(r.last_archived_wal, None);
         assert_eq!(r.last_archived_time, None);
         assert_eq!(r.last_failed_wal, None);
@@ -137,7 +148,7 @@ mod tests {
     #[test]
     fn intern_failure_propagates() {
         assert_eq!(
-            to_archiver(&sample_row(false, true), |_| Err("full")),
+            to_archiver(&sample_row(WalSamples::FailedOnly), |_| Err("full")),
             Err("full")
         );
     }

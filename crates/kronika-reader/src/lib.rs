@@ -241,6 +241,13 @@ pub struct CatalogDiscovery<'a> {
     scan: kronika_store::LocalScan,
 }
 
+#[derive(Clone, Copy)]
+enum ListingMode {
+    Catalog,
+    CatalogWithPredecessor,
+    Validated,
+}
+
 impl CatalogDiscovery<'_> {
     /// Time bounds of every canonical segment found by the scan.
     pub fn ranges(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
@@ -268,7 +275,7 @@ impl CatalogDiscovery<'_> {
     /// Returns an I/O error when a selected segment changed or its catalog
     /// cannot be read safely.
     pub fn segments<R: RangeBounds<i64>>(self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, false)
+        self.list_segments(range, ListingMode::Catalog)
     }
 
     /// Open section catalogs in `range` and the closest canonical predecessor.
@@ -282,7 +289,7 @@ impl CatalogDiscovery<'_> {
         self,
         range: R,
     ) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, true)
+        self.list_segments(range, ListingMode::CatalogWithPredecessor)
     }
 
     /// Open section catalogs in `range` and the closest predecessor carrying
@@ -303,7 +310,7 @@ impl CatalogDiscovery<'_> {
         type_ids: &[u32],
     ) -> Result<Listing, ReaderError> {
         let bounds = owned_bounds(&range);
-        let mut listing = self.clone().list_segments(bounds, false, false)?;
+        let mut listing = self.clone().list_segments(bounds, ListingMode::Catalog)?;
         let mut remaining = type_ids.iter().copied().collect::<BTreeSet<_>>();
         if remaining.is_empty() {
             return Ok(listing);
@@ -396,8 +403,7 @@ impl CatalogDiscovery<'_> {
     fn list_segments<R: RangeBounds<i64>>(
         mut self,
         range: R,
-        validate_bodies: bool,
-        include_predecessor: bool,
+        mode: ListingMode,
     ) -> Result<Listing, ReaderError> {
         let mut segments = Vec::new();
         let finished = Arc::clone(&self.scan.finished);
@@ -408,10 +414,10 @@ impl CatalogDiscovery<'_> {
                 .iter()
                 .any(|unit| unit.address.id.get() == active_id)
         });
-        let canonical_active = (validate_bodies || !finished_exists)
+        let canonical_active = (matches!(mode, ListingMode::Validated) || !finished_exists)
             .then_some(active_id.zip(active_time_bounds))
             .flatten();
-        let predecessor = include_predecessor
+        let predecessor = matches!(mode, ListingMode::CatalogWithPredecessor)
             .then(|| {
                 finished
                     .iter()
@@ -430,7 +436,9 @@ impl CatalogDiscovery<'_> {
             overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
                 || predecessor == Some(unit.address.id.get())
         }) {
-            if validate_bodies && !self.reader.dir.validate_finished(&mut self.scan, unit)? {
+            if matches!(mode, ListingMode::Validated)
+                && !self.reader.dir.validate_finished(&mut self.scan, unit)?
+            {
                 continue;
             }
             let file = self.reader.dir.open_finished(unit)?;
@@ -529,7 +537,7 @@ impl Reader {
     ///
     /// Returns an I/O error when the directory cannot be walked.
     pub fn segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, true, false)
+        self.list_segments(range, ListingMode::Validated)
     }
 
     /// Scan compact catalog summaries before choosing which full catalogs to
@@ -558,7 +566,7 @@ impl Reader {
     /// Returns an I/O error when the directory or a segment catalog cannot be
     /// read safely.
     pub fn catalog_segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, false)
+        self.list_segments(range, ListingMode::Catalog)
     }
 
     /// Find one segment by its stable id without opening unrelated catalogs.
@@ -625,17 +633,15 @@ impl Reader {
         &self,
         range: R,
     ) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, true)
+        self.list_segments(range, ListingMode::CatalogWithPredecessor)
     }
 
     fn list_segments<R: RangeBounds<i64>>(
         &self,
         range: R,
-        validate_bodies: bool,
-        include_predecessor: bool,
+        mode: ListingMode,
     ) -> Result<Listing, ReaderError> {
-        self.catalog_discovery()?
-            .list_segments(range, validate_bodies, include_predecessor)
+        self.catalog_discovery()?.list_segments(range, mode)
     }
 
     /// Open one of the segments a listing returned.

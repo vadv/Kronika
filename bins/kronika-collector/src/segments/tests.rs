@@ -19,7 +19,8 @@ use crate::scheduler::Intervals;
 
 use super::open::{open_collector_journal, write_recovered_journal};
 use super::{
-    SegmentState, append_window_and_maybe_close, close_open_segment, close_reason, encode_window,
+    CloseConditions, SegmentState, append_window_and_maybe_close, close_open_segment, close_reason,
+    encode_window,
 };
 
 fn empty_interner() -> Interner {
@@ -231,11 +232,15 @@ fn configured_size_closes_only_after_the_valid_frame_is_appended() {
 fn configured_sixty_four_mib_boundary_is_exact() {
     const LIMIT: u64 = 64 * 1024 * 1024;
     let limit_bytes = usize::try_from(LIMIT).expect("64 MiB fits usize");
+    let conditions = CloseConditions {
+        forced: false,
+        age_expired: false,
+    };
 
-    assert_eq!(close_reason(false, limit_bytes - 1, LIMIT, false), None);
-    assert_eq!(close_reason(false, limit_bytes, LIMIT, false), Some("size"));
+    assert_eq!(close_reason(conditions, limit_bytes - 1, LIMIT), None);
+    assert_eq!(close_reason(conditions, limit_bytes, LIMIT), Some("size"));
     assert_eq!(
-        close_reason(false, limit_bytes + 1, LIMIT, false),
+        close_reason(conditions, limit_bytes + 1, LIMIT),
         Some("size")
     );
 }

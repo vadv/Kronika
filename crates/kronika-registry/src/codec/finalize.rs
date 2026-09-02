@@ -554,15 +554,8 @@ where
         let all = vec![0..rows];
         all
     } else {
-        let projected = project_columns(
-            expected_rows,
-            contract,
-            &sort_key_indices,
-            false,
-            true,
-            metadata,
-            open,
-        )?;
+        let projected =
+            project_columns(expected_rows, contract, &sort_key_indices, metadata, open)?;
         let sort_columns = projected
             .values
             .iter()
@@ -656,8 +649,6 @@ fn project_columns<R, E>(
     expected_rows: &[u32],
     contract: &TypeContract,
     column_indices: &[usize],
-    remove_metadata: bool,
-    concatenate: bool,
     metadata: &mut SectionMetadataCache,
     open: &mut impl FnMut(usize) -> Result<R, E>,
 ) -> Result<ProjectedColumns, E>
@@ -684,7 +675,7 @@ where
             expected as usize,
             metadata,
             section_index,
-            remove_metadata,
+            false,
         )?;
         let mask =
             ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
@@ -736,17 +727,13 @@ where
         .into());
     }
 
-    let values = if concatenate {
-        columns
-            .iter()
-            .map(|arrays| {
-                let arrays = arrays.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-                concat(&arrays).map_err(CodecError::from).map_err(E::from)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
+    let values = columns
+        .iter()
+        .map(|arrays| {
+            let arrays = arrays.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+            concat(&arrays).map_err(CodecError::from).map_err(E::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ProjectedColumns {
         arrays: columns,
         values,

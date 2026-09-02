@@ -142,6 +142,16 @@ enum IoRead {
     Unavailable,
 }
 
+impl IoRead {
+    fn discovered(self, credentials: FsCredentials) -> Discovered {
+        match self {
+            Self::Value(value) => Discovered::Value(value, credentials),
+            Self::Gone => Discovered::Gone,
+            Self::Unavailable => Discovered::Unavailable,
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_SWITCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -169,11 +179,7 @@ fn discover_io(
         with_credentials(reader, observed, baseline, true, |reader, active| {
             if cached_attempt != Some(active) {
                 attempted = Some(active);
-                outcome = Some(match read_io(reader, target.pid) {
-                    IoRead::Value(value) => Discovered::Value(value, active),
-                    IoRead::Gone => Discovered::Gone,
-                    IoRead::Unavailable => Discovered::Unavailable,
-                });
+                outcome = Some(read_io(reader, target.pid).discovered(active));
             }
         });
         match outcome {
@@ -183,11 +189,7 @@ fn discover_io(
     }
 
     if attempted != Some(baseline) && cached_attempt != Some(baseline) {
-        return match read_io(reader, target.pid) {
-            IoRead::Value(value) => Discovered::Value(value, baseline),
-            IoRead::Gone => Discovered::Gone,
-            IoRead::Unavailable => Discovered::Unavailable,
-        };
+        return read_io(reader, target.pid).discovered(baseline);
     }
     Discovered::Unavailable
 }

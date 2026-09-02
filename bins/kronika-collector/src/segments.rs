@@ -143,17 +143,22 @@ impl SegmentState {
 ///
 /// Forced ticks write immediately; otherwise the raw journal size or segment
 /// age closes the segment.
-pub(crate) const fn close_reason(
+#[derive(Clone, Copy)]
+struct CloseConditions {
     forced: bool,
+    age_expired: bool,
+}
+
+const fn close_reason(
+    conditions: CloseConditions,
     journal_bytes: usize,
     max_bytes: u64,
-    age_expired: bool,
 ) -> Option<&'static str> {
-    if forced {
+    if conditions.forced {
         Some("forced")
     } else if journal_bytes as u64 >= max_bytes {
         Some("size")
-    } else if age_expired {
+    } else if conditions.age_expired {
         Some("age")
     } else {
         None
@@ -352,10 +357,12 @@ pub(crate) fn append_window_and_maybe_close(
     segment.on_window_appended(active_id, now);
     let age = Duration::from_secs(config.segment_max_age_secs);
     if let Some(reason) = close_reason(
-        forced,
+        CloseConditions {
+            forced,
+            age_expired: segment.age_expired(now, age),
+        },
         journal.bytes(),
         config.segment_max_bytes,
-        segment.age_expired(now, age),
     ) {
         finished.push((
             close_open_segment(journal, owner, segment, reason)
