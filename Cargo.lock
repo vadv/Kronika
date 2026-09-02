@@ -1524,6 +1524,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-report"
+version = "1.0.0"
+dependencies = [
+ "kronika-index",
+ "kronika-layout",
+ "kronika-query",
+ "kronika-store",
+]
+
+[[package]]
 name = "kronika-source-log"
 version = "1.0.0"
 dependencies = [
