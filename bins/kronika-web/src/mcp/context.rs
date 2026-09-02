@@ -46,25 +46,24 @@ pub(crate) fn call(
         Ok(range) => range,
         Err(error) => return mcp_error(error),
     };
-    if let Some(wanted) = &input.section {
-        if !facts
+    if let Some(wanted) = &input.section
+        && !facts
             .sections
             .iter()
             .any(|section| section.logical_name == wanted.as_str())
-        {
-            let recorded = facts
-                .sections
-                .iter()
-                .map(|section| section.logical_name.to_owned())
-                .collect::<Vec<_>>();
-            return super::semantics::mcp_error_with(
-                format!(
-                    "no recorded section named {wanted:?}; recorded: {}",
-                    recorded.join(", ")
-                ),
-                recorded,
-            );
-        }
+    {
+        let recorded = facts
+            .sections
+            .iter()
+            .map(|section| section.logical_name.to_owned())
+            .collect::<Vec<_>>();
+        return super::semantics::mcp_error_with(
+            format!(
+                "no recorded section named {wanted:?}; recorded: {}",
+                recorded.join(", ")
+            ),
+            recorded,
+        );
     }
     let sections = facts
         .sections
