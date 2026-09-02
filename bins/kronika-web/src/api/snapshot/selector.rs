@@ -3,11 +3,11 @@
 use std::path::Path;
 
 use kronika_query::RelationKind;
+use kronika_query::snapshot::StructuredSearch;
 use kronika_reader::{Cell, Reader, SegmentRef};
 use kronika_registry::{contract, logical_section_name, registry};
 
 use super::relation::RelationRow;
-use super::search::StructuredSearch;
 use super::{PlainRowOut, PreparedSnapshot, ProcessRowOut};
 use crate::api::time::SnapshotPoint;
 use crate::api::{ApiError, Prepared};
@@ -107,7 +107,7 @@ impl FinderSurface {
         if let Some(kind) = self.relation_kind() {
             let group = group.ok_or_else(|| ApiError::BadFilter("group".to_owned()))?;
             return kind
-                .sort_field_known(query_group(group), field)
+                .sort_field_known(group, field)
                 .then(|| field.to_owned())
                 .ok_or_else(|| ApiError::NoSuchColumn(field.to_owned()));
         }
@@ -126,15 +126,6 @@ impl FinderSurface {
             .any(|layout| layout.column(field).is_some())
             .then(|| field.to_owned())
             .ok_or_else(|| ApiError::NoSuchColumn(field.to_owned()))
-    }
-}
-
-const fn query_group(group: RelationGroup) -> kronika_query::RelationGroup {
-    match group {
-        RelationGroup::Database => kronika_query::RelationGroup::Database,
-        RelationGroup::Schema => kronika_query::RelationGroup::Schema,
-        RelationGroup::Tablespace => kronika_query::RelationGroup::Tablespace,
-        RelationGroup::Object => kronika_query::RelationGroup::Object,
     }
 }
 

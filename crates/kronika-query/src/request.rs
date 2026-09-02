@@ -127,6 +127,41 @@ pub enum RelationGroup {
     Object,
 }
 
+/// One current-state snapshot at or before a recorded timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotRequest {
+    /// Preferred recorded segment identity.
+    pub segment_id: i64,
+    /// Requested sample timestamp, Unix microseconds.
+    pub at: i64,
+    /// Registry logical-section names in output order.
+    pub sections: Vec<String>,
+    /// Output fields in caller order; empty selects the stable union.
+    pub fields: Vec<String>,
+    /// Semantic sort fields in precedence order.
+    pub by: Vec<String>,
+    /// Sort direction shared by every sort field.
+    pub direction: Order,
+    /// Optional relation aggregation level.
+    pub group: Option<RelationGroup>,
+    /// Present only for the paged single-section form.
+    pub page_size: Option<usize>,
+    /// Opaque continuation produced by an earlier page.
+    pub cursor: Option<String>,
+    /// Optional bounded structured-search expression.
+    pub search: Option<String>,
+    /// Dedicated bounded Statement query-text lookup.
+    pub first_match: bool,
+    /// Optional maximum rendered text length.
+    pub text: Option<usize>,
+    /// Typed equality predicates.
+    pub filters: Vec<Filter>,
+    /// Optional exact physical layout.
+    pub type_id: Option<u32>,
+    /// Requires `type_id` and addresses a finished source row.
+    pub row_ordinal: Option<u64>,
+}
+
 /// Projection and predicates shared by history and row pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataRequest {

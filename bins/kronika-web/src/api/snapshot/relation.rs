@@ -3,6 +3,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
+use kronika_query::snapshot::{
+    SearchClause, SearchOperator, SearchValue, result_field, search_fields,
+};
 use kronika_query::{
     GroupKey, Metric, RelationAggregate, RelationKind, RelationSource, index_scan_rate_is_zero,
     key_fields,
@@ -10,7 +13,6 @@ use kronika_query::{
 use kronika_reader::{Cell, Row};
 use serde_json::{Map, Value, json};
 
-use super::search::{SearchClause, SearchOperator, SearchValue, result_field, search_fields};
 use super::{
     ApiError, CounterReadings, Order, PageContext, Plan, PreparedSnapshot, RelationGroup,
     SectionPlans, SnapshotCursor, StructuredSearch, identity_of, record, resolved_dictionary,
@@ -28,7 +30,7 @@ pub(super) fn snapshot_physical_fields(
     search: Option<&StructuredSearch>,
 ) -> Result<Vec<String>, ApiError> {
     let kind = RelationKind::from_name(logical_name)?;
-    let query_group = query_group(group);
+    let query_group = group;
     let mut semantic = fields.to_vec();
     semantic.extend(by.iter().map(|name| sort_name(name).to_owned()));
     let mut names = kind
@@ -36,7 +38,7 @@ pub(super) fn snapshot_physical_fields(
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     names.extend(
-        key_fields(kind, kronika_query::RelationGroup::Object)
+        key_fields(kind, RelationGroup::Object)
             .iter()
             .map(|name| (*name).to_owned()),
     );
@@ -99,7 +101,7 @@ impl PreparedSnapshot {
             return Err(ApiError::BadCursor);
         };
         let group = self.group.ok_or(ApiError::BadCursor)?;
-        let query_group = query_group(group);
+        let query_group = group;
         let kind = RelationKind::from_name(&section.logical_name)?;
         let fields = kind.fields(query_group);
         let keys = key_fields(kind, query_group);
@@ -248,7 +250,7 @@ impl PreparedSnapshot {
             return Err(ApiError::BadCursor);
         };
         let group = self.group.ok_or(ApiError::BadCursor)?;
-        let query_group = query_group(group);
+        let query_group = group;
         let kind = RelationKind::from_name(&section.logical_name)?;
         let fields = kind.fields(query_group);
         let keys = key_fields(kind, query_group);
@@ -359,7 +361,7 @@ fn scan_context(
     aggregates: &mut BTreeMap<GroupKey, RelationAggregate>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
-    let query_group = query_group(group);
+    let query_group = group;
     let source_segment = prepared.reader.open_segment(context.source)?;
     let mut offset = 0_u64;
     while offset < context.rows {
@@ -514,7 +516,7 @@ fn matches_search_clause(
             return false;
         };
         return aggregate
-            .metric(kind, query_group(group), result.metric)
+            .metric(kind, group, result.metric)
             .and_then(|metric| metric.compare_ratio(quantity.numerator, quantity.denominator))
             .is_some_and(|ordering| match clause.operator {
                 SearchOperator::Greater => ordering == Ordering::Greater,
@@ -542,7 +544,7 @@ fn relation_layout(
     group: RelationGroup,
     selected: &[String],
 ) -> Result<Vec<u8>, ApiError> {
-    let available = kind.fields(query_group(group));
+    let available = kind.fields(group);
     let columns = selected
         .iter()
         .filter_map(|name| available.iter().find(|field| field.name() == name))
@@ -583,7 +585,7 @@ fn relation_record(
         "record": "relation",
         "logical_name": section.logical_name,
         "group": group_name(group),
-        "key": row.key.json(kind, query_group(group)),
+        "key": row.key.json(kind, group),
         "values": values,
         "sample_from": row.from.map(|value| value.to_string()),
         "sample_to": row.to.map(|value| value.to_string()),
@@ -648,13 +650,4 @@ const fn order_name(order: Order) -> &'static str {
 
 fn sort_name(name: &str) -> &str {
     name.strip_prefix("derived.").unwrap_or(name)
-}
-
-pub(super) const fn query_group(group: RelationGroup) -> kronika_query::RelationGroup {
-    match group {
-        RelationGroup::Database => kronika_query::RelationGroup::Database,
-        RelationGroup::Schema => kronika_query::RelationGroup::Schema,
-        RelationGroup::Tablespace => kronika_query::RelationGroup::Tablespace,
-        RelationGroup::Object => kronika_query::RelationGroup::Object,
-    }
 }

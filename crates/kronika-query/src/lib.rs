@@ -20,6 +20,7 @@ mod row_detail;
 mod row_key;
 mod rows;
 mod selection;
+pub mod snapshot;
 mod time;
 
 pub use catalog::{CatalogFacts, CatalogField, CatalogSection, catalog_facts};
@@ -47,7 +48,8 @@ pub use index_provider::{IndexProvider, IndexResource};
 pub use projection::{OutputField, Plan, plans, resolved_dictionary};
 pub use request::{
     ActiveCursor, CatalogRequest, DataRequest, Filter, HourPart, HourRequest, HourSeriesRequest,
-    IndexRequest, Order, QueryRequest, RelationGroup, RowsRequest, SegmentRequest, Window,
+    IndexRequest, Order, QueryRequest, RelationGroup, RowsRequest, SegmentRequest, SnapshotRequest,
+    Window,
 };
 pub use row_detail::{
     PreparedRowDetail, RowDetailResult, ValidatedRowDetailQuery, execute_row_detail,

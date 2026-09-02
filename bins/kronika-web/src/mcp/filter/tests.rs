@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::{FilterAtom, FilterInput, Op, build_search};
-use crate::api::snapshot::search::{SearchOperator, SearchValue};
+use kronika_query::snapshot::{SearchOperator, SearchValue};
 
 fn scalar(field: &str, op: Op, value: serde_json::Value) -> FilterInput {
     let field = field.to_owned();

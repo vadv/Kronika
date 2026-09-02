@@ -5,6 +5,7 @@ use kronika_query::TimeRange;
 use kronika_query::{
     EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
 };
+pub(crate) use kronika_query::{Filter, Order, RelationGroup, SnapshotRequest};
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -63,28 +64,6 @@ pub(crate) struct HeatmapRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SnapshotRequest {
-    pub(crate) segment_id: i64,
-    pub(crate) at: i64,
-    pub(crate) sections: Vec<String>,
-    pub(crate) fields: Vec<String>,
-    pub(crate) by: Vec<String>,
-    pub(crate) direction: Order,
-    pub(crate) group: Option<RelationGroup>,
-    /// Present only for the paged single-section form.
-    pub(crate) page_size: Option<usize>,
-    pub(crate) cursor: Option<String>,
-    pub(crate) search: Option<String>,
-    /// Dedicated bounded Statement query-text lookup.
-    pub(crate) first_match: bool,
-    pub(crate) text: Option<usize>,
-    pub(crate) filters: Vec<Filter>,
-    pub(crate) type_id: Option<u32>,
-    /// Requires `type_id` and addresses a finished source row.
-    pub(crate) row_ordinal: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HourRequest {
     pub(crate) window: Window,
     pub(crate) series: Option<SeriesRequest>,
@@ -124,13 +103,6 @@ pub(crate) struct SegmentRequest {
     pub(crate) section: String,
 }
 
-/// One exact typed equality predicate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Filter {
-    pub(crate) column: String,
-    pub(crate) value: String,
-}
-
 /// Committed prefix of one active segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActiveCursor {
@@ -146,21 +118,6 @@ pub(crate) struct DataRequest {
     pub(crate) filters: Vec<Filter>,
     pub(crate) type_id: Option<u32>,
     pub(crate) after: Option<ActiveCursor>,
-}
-
-/// Physical row ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Order {
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelationGroup {
-    Database,
-    Schema,
-    Tablespace,
-    Object,
 }
 
 /// Bounded page request.

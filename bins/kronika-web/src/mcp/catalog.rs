@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::api::snapshot::search::SEARCH_MAX_CLAUSES;
 use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
+use kronika_query::snapshot::SEARCH_MAX_CLAUSES;
 use kronika_query::{DEFAULT_TOP, MAX_TOP};
 
 use super::filter::FilterInput;

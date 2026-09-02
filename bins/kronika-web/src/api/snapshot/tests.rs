@@ -666,11 +666,11 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
 
 #[test]
 fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private() {
-    let statements = super::search::search_fields("pg_stat_statements")
+    let statements = kronika_query::snapshot::search_fields("pg_stat_statements")
         .iter()
         .map(|field| field.key)
         .collect::<Vec<_>>();
-    let plans = super::search::search_fields("pg_store_plans")
+    let plans = kronika_query::snapshot::search_fields("pg_store_plans")
         .iter()
         .map(|field| field.key)
         .collect::<Vec<_>>();
@@ -715,7 +715,7 @@ fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private(
         assert!(!statements.contains(&physical));
         assert!(!plans.contains(&physical));
         assert!(
-            !super::search::search_fields("os_process")
+            !kronika_query::snapshot::search_fields("os_process")
                 .iter()
                 .any(|field| field.key == physical)
         );
@@ -744,7 +744,10 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
         "schema:public AND size>100MB AND seq_scan_rate<0.5/s"
     );
     assert_eq!(parsed.clauses[0].columns, ["schemaname"]);
-    assert!(matches!(parsed.expr, super::search::Expr::And(..)));
+    assert!(matches!(
+        parsed.expr,
+        kronika_query::snapshot::Expr::And(..)
+    ));
     assert!(matches!(
         &parsed.clauses[1].value,
         SearchValue::Quantity(quantity)
@@ -866,7 +869,10 @@ fn structured_search_parses_boolean_precedence_groups_and_phase_rules() {
         parsed.canonical(),
         "(schema:public OR schema:audit) AND (size>100MB OR buffer_hit<90%)"
     );
-    assert!(matches!(parsed.expr, super::search::Expr::And(..)));
+    assert!(matches!(
+        parsed.expr,
+        kronika_query::snapshot::Expr::And(..)
+    ));
     parsed
         .validate_grouped_phase()
         .expect("AND may cross the grouped phase boundary");
@@ -882,7 +888,10 @@ fn structured_search_parses_boolean_precedence_groups_and_phase_rules() {
         "pg_stat_user_tables",
     )
     .expect("valid precedence");
-    assert!(matches!(precedence.expr, super::search::Expr::Or { .. }));
+    assert!(matches!(
+        precedence.expr,
+        kronika_query::snapshot::Expr::Or { .. }
+    ));
 
     for expression in [
         "schema:public OR size>100MB",

@@ -1,7 +1,6 @@
 //! Reads one snapshot and derives counter rates.
 
 pub(crate) mod relation;
-pub(crate) mod search;
 pub(crate) mod selector;
 
 use std::borrow::Cow;
@@ -15,17 +14,16 @@ use std::sync::Arc;
 use std::cell::Cell as Counter;
 
 use kronika_query::output_fields as shared_fields;
+#[cfg(test)]
+use kronika_query::snapshot::{GlobPattern, SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
+use kronika_query::snapshot::{
+    Quantity, SearchClause, SearchOperator, SearchValue, StructuredSearch, result_field,
+    search_fields, search_value_matches,
+};
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
-use self::relation::query_group;
-use self::search::{
-    Quantity, SearchClause, SearchOperator, SearchValue, StructuredSearch, result_field,
-    search_fields,
-};
-#[cfg(test)]
-use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use self::selector::FinderResult;
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
@@ -316,16 +314,6 @@ impl CachedFact {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GlobPattern(Vec<GlobToken>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GlobToken {
-    Star,
-    Any,
-    Literal(char),
-}
-
 // One bounded batch covers the maximum public page while amortizing projected
 // section and dictionary reads for snapshot and relation-history consumers.
 const SNAPSHOT_CHUNK_ROWS: usize = 1_024;
@@ -527,7 +515,7 @@ fn prepare_with(
     }
     let relation_fields = request
         .group
-        .map(|group| shared_fields(&request.sections, query_group(group), &request.fields))
+        .map(|group| shared_fields(&request.sections, group, &request.fields))
         .transpose()?
         .unwrap_or_default();
     let (physical_filters, relation_filters) = relation::split_filters(&request)?;
@@ -4336,16 +4324,6 @@ fn search_matches(
     })
 }
 
-pub(super) fn search_value_matches(text: &str, value: &SearchValue) -> bool {
-    match value {
-        SearchValue::Identifier(wanted) => text == wanted,
-        SearchValue::Pattern(pattern) => pattern.matches(text),
-        SearchValue::Quantity(_) => false,
-        SearchValue::AnyOf(values) => values
-            .iter()
-            .any(|candidate| search_value_matches(text, candidate)),
-    }
-}
 fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'a, str>> {
     match value {
         Cell::I16(value) => Some(Cow::Owned(value.to_string())),
@@ -4361,105 +4339,6 @@ fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'
             .map(Cow::Borrowed),
         Cell::Null | Cell::ListI32(_) | Cell::F64(_) => None,
     }
-}
-
-impl GlobPattern {
-    /// An anchored, literal-only pattern: matches a candidate equal to
-    /// `raw` case-insensitively, never a substring. `*` and `?` are
-    /// literal characters here, not wildcards.
-    fn exact(raw: &str) -> Self {
-        Self(raw.chars().map(GlobToken::Literal).collect())
-    }
-
-    fn contains(raw: &str) -> Self {
-        let mut tokens = Vec::with_capacity(raw.chars().count() + 2);
-        tokens.push(GlobToken::Star);
-        tokens.extend(raw.chars().map(GlobToken::Literal));
-        tokens.push(GlobToken::Star);
-        Self(tokens)
-    }
-
-    fn new(raw: &str) -> Self {
-        let mut tokens = vec![GlobToken::Star];
-        for character in raw.chars() {
-            let token = match character {
-                '*' => GlobToken::Star,
-                '?' => GlobToken::Any,
-                literal => GlobToken::Literal(literal),
-            };
-            if token != GlobToken::Star || tokens.last() != Some(&GlobToken::Star) {
-                tokens.push(token);
-            }
-        }
-        if tokens.last() != Some(&GlobToken::Star) {
-            tokens.push(GlobToken::Star);
-        }
-        Self(tokens)
-    }
-
-    fn matches(&self, candidate: &str) -> bool {
-        let mut pattern_index = 0;
-        let mut candidate_index = 0;
-        let mut star = None;
-        let mut retry = 0;
-        while candidate_index < candidate.len() {
-            let Some(character) = candidate
-                .get(candidate_index..)
-                .and_then(|remaining| remaining.chars().next())
-            else {
-                return false;
-            };
-            match self.0.get(pattern_index) {
-                Some(GlobToken::Literal(wanted)) if unicode_char_equal(*wanted, character) => {
-                    pattern_index += 1;
-                    candidate_index += character.len_utf8();
-                }
-                Some(GlobToken::Any) => {
-                    pattern_index += 1;
-                    candidate_index += character.len_utf8();
-                }
-                Some(GlobToken::Star) => {
-                    star = Some(pattern_index);
-                    pattern_index += 1;
-                    retry = candidate_index;
-                }
-                _ if let Some(star_index) = star => {
-                    let Some(retry_character) = candidate
-                        .get(retry..)
-                        .and_then(|remaining| remaining.chars().next())
-                    else {
-                        return false;
-                    };
-                    retry += retry_character.len_utf8();
-                    candidate_index = retry;
-                    pattern_index = star_index + 1;
-                }
-                _ => return false,
-            }
-        }
-        while self.0.get(pattern_index) == Some(&GlobToken::Star) {
-            pattern_index += 1;
-        }
-        pattern_index == self.0.len()
-    }
-
-    fn same_exact(&self, other: &Self) -> bool {
-        self.0.len() == other.0.len()
-            && self
-                .0
-                .iter()
-                .zip(&other.0)
-                .all(|(left, right)| match (left, right) {
-                    (GlobToken::Literal(left), GlobToken::Literal(right)) => {
-                        unicode_char_equal(*left, *right)
-                    }
-                    _ => left == right,
-                })
-    }
-}
-
-fn unicode_char_equal(left: char, right: char) -> bool {
-    left.to_lowercase().eq(right.to_lowercase())
 }
 
 impl SnapshotCursor {

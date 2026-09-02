@@ -1,44 +1,178 @@
-use super::GlobPattern;
+/// Case-insensitive bounded glob used by snapshot search values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobPattern(Vec<GlobToken>);
 
-pub(crate) const SEARCH_MAX_CLAUSES: usize = 8;
-pub(crate) const SEARCH_MAX_VALUE_CHARS: usize = 256;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobToken {
+    Star,
+    Any,
+    Literal(char),
+}
+
+impl GlobPattern {
+    /// An anchored, literal-only pattern: matches a candidate equal to
+    /// `raw` case-insensitively, never a substring. `*` and `?` are
+    /// literal characters here, not wildcards.
+    #[must_use]
+    pub fn exact(raw: &str) -> Self {
+        Self(raw.chars().map(GlobToken::Literal).collect())
+    }
+
+    #[must_use]
+    /// Build a case-insensitive substring pattern with literal wildcard characters.
+    pub fn contains(raw: &str) -> Self {
+        let mut tokens = Vec::with_capacity(raw.chars().count() + 2);
+        tokens.push(GlobToken::Star);
+        tokens.extend(raw.chars().map(GlobToken::Literal));
+        tokens.push(GlobToken::Star);
+        Self(tokens)
+    }
+
+    #[must_use]
+    /// Build the text DSL's case-insensitive substring glob.
+    pub fn new(raw: &str) -> Self {
+        let mut tokens = vec![GlobToken::Star];
+        for character in raw.chars() {
+            let token = match character {
+                '*' => GlobToken::Star,
+                '?' => GlobToken::Any,
+                literal => GlobToken::Literal(literal),
+            };
+            if token != GlobToken::Star || tokens.last() != Some(&GlobToken::Star) {
+                tokens.push(token);
+            }
+        }
+        if tokens.last() != Some(&GlobToken::Star) {
+            tokens.push(GlobToken::Star);
+        }
+        Self(tokens)
+    }
+
+    #[must_use]
+    /// Test a candidate against this pattern.
+    pub fn matches(&self, candidate: &str) -> bool {
+        let mut pattern_index = 0;
+        let mut candidate_index = 0;
+        let mut star = None;
+        let mut retry = 0;
+        while candidate_index < candidate.len() {
+            let Some(character) = candidate
+                .get(candidate_index..)
+                .and_then(|remaining| remaining.chars().next())
+            else {
+                return false;
+            };
+            match self.0.get(pattern_index) {
+                Some(GlobToken::Literal(wanted)) if unicode_char_equal(*wanted, character) => {
+                    pattern_index += 1;
+                    candidate_index += character.len_utf8();
+                }
+                Some(GlobToken::Any) => {
+                    pattern_index += 1;
+                    candidate_index += character.len_utf8();
+                }
+                Some(GlobToken::Star) => {
+                    star = Some(pattern_index);
+                    pattern_index += 1;
+                    retry = candidate_index;
+                }
+                _ if let Some(star_index) = star => {
+                    let Some(retry_character) = candidate
+                        .get(retry..)
+                        .and_then(|remaining| remaining.chars().next())
+                    else {
+                        return false;
+                    };
+                    retry += retry_character.len_utf8();
+                    candidate_index = retry;
+                    pattern_index = star_index + 1;
+                }
+                _ => return false,
+            }
+        }
+        while self.0.get(pattern_index) == Some(&GlobToken::Star) {
+            pattern_index += 1;
+        }
+        pattern_index == self.0.len()
+    }
+
+    #[must_use]
+    /// Compare two anchored literal patterns case-insensitively.
+    pub fn same_exact(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&other.0)
+                .all(|(left, right)| match (left, right) {
+                    (GlobToken::Literal(left), GlobToken::Literal(right)) => {
+                        unicode_char_equal(*left, *right)
+                    }
+                    _ => left == right,
+                })
+    }
+}
+
+fn unicode_char_equal(left: char, right: char) -> bool {
+    left.to_lowercase().eq(right.to_lowercase())
+}
+
+/// Maximum predicates accepted in one structured snapshot search.
+pub const SEARCH_MAX_CLAUSES: usize = 8;
+/// Maximum Unicode scalar values accepted in one search value.
+pub const SEARCH_MAX_VALUE_CHARS: usize = 256;
 const SEARCH_MAX_EXPRESSION_CHARS: usize = 1_024;
 const SEARCH_MAX_GROUP_DEPTH: usize = 4;
 const SEARCH_MAX_TOKENS: usize = 31;
 const SEARCH_MAX_SIGNIFICANT_DIGITS: usize = 38;
 const SEARCH_MAX_FRACTIONAL_DIGITS: usize = 9;
 
+/// Parsed and canonicalized bounded snapshot search.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StructuredSearch {
-    pub(crate) expr: Expr,
-    pub(crate) clauses: Vec<SearchClause>,
+pub struct StructuredSearch {
+    /// Boolean expression evaluated for this search.
+    pub expr: Expr,
+    /// Predicates in source order, used for projection planning.
+    pub clauses: Vec<SearchClause>,
     canonical: String,
 }
 
+/// Boolean expression over structured snapshot predicates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Expr {
+pub enum Expr {
+    /// One predicate.
     Predicate(SearchClause),
+    /// Both operands must match.
     And(Box<Self>, Box<Self>),
+    /// Either operand may match.
     Or {
+        /// Left operand.
         left: Box<Self>,
+        /// Right operand.
         right: Box<Self>,
+        /// Byte span of the operator, retained for diagnostics.
         operator_span: (usize, usize),
     },
 }
 
+/// One resolved structured-search predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SearchClause {
+pub struct SearchClause {
     canonical: String,
-    pub(crate) key: &'static str,
-    pub(crate) columns: &'static [&'static str],
-    pub(crate) operator: SearchOperator,
-    pub(crate) value: SearchValue,
+    /// Canonical public field name.
+    pub key: &'static str,
+    /// Physical columns needed to evaluate the predicate.
+    pub columns: &'static [&'static str],
+    /// Comparison operation.
+    pub operator: SearchOperator,
+    /// Typed comparison value.
+    pub value: SearchValue,
 }
 
 impl SearchClause {
     /// Constructs a typed clause for MCP. `canonical` is empty because typed
     /// MCP searches never bind or resume HTTP cursors.
-    pub(crate) const fn from_parts(
+    pub const fn from_parts(
         key: &'static str,
         columns: &'static [&'static str],
         operator: SearchOperator,
@@ -54,31 +188,40 @@ impl SearchClause {
     }
 }
 
+/// Operation supported by a structured-search predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchOperator {
+pub enum SearchOperator {
+    /// Identifier, text, or equality match.
     Colon,
+    /// Strict greater-than comparison.
     Greater,
+    /// Strict less-than comparison.
     Less,
 }
 
+/// Typed right-hand value of a structured-search predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SearchValue {
+pub enum SearchValue {
+    /// Canonical signed or unsigned identifier.
     Identifier(String),
+    /// Case-insensitive text pattern.
     Pattern(GlobPattern),
+    /// Exact rational quantity.
     Quantity(Quantity),
+    /// Typed disjunction used by MCP `in` filters.
     AnyOf(Vec<Self>),
 }
 
 impl SearchValue {
     /// Builds the text parser's case-insensitive substring glob. `*` and `?`
     /// retain their glob semantics.
-    pub(crate) fn pattern(raw: &str) -> Self {
+    pub fn pattern(raw: &str) -> Self {
         Self::Pattern(GlobPattern::new(raw))
     }
 
     /// Builds a case-insensitive literal substring pattern for typed MCP
     /// filters. Unlike the text DSL, `*` and `?` have no wildcard meaning.
-    pub(crate) fn contains(raw: &str) -> Self {
+    pub fn contains(raw: &str) -> Self {
         Self::Pattern(GlobPattern::contains(raw))
     }
 
@@ -86,11 +229,12 @@ impl SearchValue {
     /// case-insensitive equality — no substring behavior, `*`/`?` taken
     /// literally. The text DSL cannot express this; the typed MCP filter
     /// input uses it for its `eq` operator on string fields.
-    pub(crate) fn exact(raw: &str) -> Self {
+    pub fn exact(raw: &str) -> Self {
         Self::Pattern(GlobPattern::exact(raw))
     }
 
-    pub(crate) fn same_exact(&self, other: &Self) -> bool {
+    /// Whether two identifier or pattern values are exact duplicates.
+    pub fn same_exact(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Identifier(left), Self::Identifier(right)) => left == right,
             (Self::Pattern(left), Self::Pattern(right)) => left.same_exact(right),
@@ -99,17 +243,33 @@ impl SearchValue {
     }
 }
 
+#[must_use]
+/// Match searchable text against a typed search value.
+pub fn search_value_matches(text: &str, value: &SearchValue) -> bool {
+    match value {
+        SearchValue::Identifier(wanted) => text == wanted,
+        SearchValue::Pattern(pattern) => pattern.matches(text),
+        SearchValue::Quantity(_) => false,
+        SearchValue::AnyOf(values) => values
+            .iter()
+            .any(|candidate| search_value_matches(text, candidate)),
+    }
+}
+
+/// Non-negative exact rational quantity in a field's comparison unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Quantity {
-    pub(crate) numerator: u128,
-    pub(crate) denominator: u128,
+pub struct Quantity {
+    /// Exact numerator.
+    pub numerator: u128,
+    /// Non-zero exact denominator.
+    pub denominator: u128,
     canonical: String,
 }
 
 impl Quantity {
     /// Builds a non-negative integer threshold already expressed in the field's
     /// comparison unit.
-    pub(crate) fn from_integer(value: u128) -> Self {
+    pub fn from_integer(value: u128) -> Self {
         Self {
             numerator: value,
             denominator: 1,
@@ -118,49 +278,78 @@ impl Quantity {
     }
 }
 
+/// Units accepted by a numeric structured-search field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum QuantityKind {
+pub enum QuantityKind {
+    /// Bytes per second.
     ByteRate,
+    /// Bytes.
     Bytes,
+    /// Integral count.
     Count,
+    /// Count per second.
     CountRate,
+    /// Duration.
     Duration,
+    /// Duration per second.
     DurationRate,
+    /// Percentage.
     Percentage,
+    /// Unitless scalar.
     Scalar,
 }
 
+/// Derived metric and projection dependencies for a numeric search field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ResultField {
-    pub(super) metric: &'static str,
-    pub(super) kind: QuantityKind,
-    pub(super) dependencies: &'static [&'static str],
+pub struct ResultField {
+    /// Public metric name evaluated after aggregation or rate calculation.
+    pub metric: &'static str,
+    /// Metric comparison unit.
+    pub kind: QuantityKind,
+    /// Physical columns needed to derive the metric.
+    pub dependencies: &'static [&'static str],
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct SearchField {
-    pub(crate) key: &'static str,
+/// Public structured-search field definition for one snapshot surface.
+#[derive(Debug, Clone, Copy)]
+pub struct SearchField {
+    /// Canonical field name.
+    pub key: &'static str,
     aliases: &'static [&'static str],
-    pub(crate) columns: &'static [&'static str],
-    pub(crate) kind: SearchFieldKind,
+    /// Physical columns searched for member values.
+    pub columns: &'static [&'static str],
+    /// Field value and phase semantics.
+    pub kind: SearchFieldKind,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum SearchFieldKind {
-    Identifier { signed: bool },
+/// Value and evaluation phase of a structured-search field.
+#[derive(Debug, Clone, Copy)]
+pub enum SearchFieldKind {
+    /// Signed or unsigned canonical identifier.
+    Identifier {
+        /// Whether a leading minus sign is accepted.
+        signed: bool,
+    },
+    /// Case-insensitive text.
     String,
+    /// Derived numeric result.
     Quantity(ResultField),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SearchDiagnostic {
-    pub(super) code: &'static str,
-    pub(super) start: usize,
-    pub(super) end: usize,
+/// Stable structured-search validation diagnostic with a byte span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchDiagnostic {
+    /// Stable machine-readable diagnostic code.
+    pub code: &'static str,
+    /// Inclusive start byte offset.
+    pub start: usize,
+    /// Exclusive end byte offset.
+    pub end: usize,
 }
 
 impl StructuredSearch {
-    pub(super) fn parse(raw: &str, logical_name: &str) -> Result<Self, SearchDiagnostic> {
+    /// Parse and validate a bounded search for one logical snapshot section.
+    pub fn parse(raw: &str, logical_name: &str) -> Result<Self, SearchDiagnostic> {
         if raw.chars().count() > SEARCH_MAX_EXPRESSION_CHARS {
             return Err(diagnostic("expression_too_long", 0, raw.len()));
         }
@@ -221,13 +410,14 @@ impl StructuredSearch {
         })
     }
 
-    pub(super) fn canonical(&self) -> &str {
+    /// Canonical expression used to bind HTTP page cursors.
+    pub fn canonical(&self) -> &str {
         &self.canonical
     }
 
     /// Constructs a typed MCP search. `canonical` is empty because this path
     /// never creates or validates an HTTP snapshot cursor.
-    pub(crate) const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
+    pub const fn from_expr(expr: Expr, clauses: Vec<SearchClause>) -> Self {
         Self {
             expr,
             clauses,
@@ -235,33 +425,39 @@ impl StructuredSearch {
         }
     }
 
-    pub(super) fn member_clauses(&self) -> impl Iterator<Item = &SearchClause> {
+    /// Member-phase predicates needed while scanning physical rows.
+    pub fn member_clauses(&self) -> impl Iterator<Item = &SearchClause> {
         self.clauses
             .iter()
             .filter(|clause| !matches!(clause.value, SearchValue::Quantity(_)))
     }
 
-    pub(super) fn validate_grouped_phase(&self) -> Result<(), SearchDiagnostic> {
+    /// Reject an `OR` that mixes member and derived-result phases.
+    pub fn validate_grouped_phase(&self) -> Result<(), SearchDiagnostic> {
         phase(&self.expr).map(|_phase| ())
     }
 
-    pub(super) fn matches_member(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+    /// Evaluate the member phase, treating result predicates as deferred matches.
+    pub fn matches_member(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
         evaluate(&self.expr, &mut |clause| {
             matches!(clause.value, SearchValue::Quantity(_)) || predicate(clause)
         })
     }
 
-    pub(super) fn matches_result(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+    /// Evaluate the result phase, treating member predicates as prior matches.
+    pub fn matches_result(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
         evaluate(&self.expr, &mut |clause| {
             !matches!(clause.value, SearchValue::Quantity(_)) || predicate(clause)
         })
     }
 
-    pub(crate) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+    /// Evaluate every predicate through one typed callback.
+    pub fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
         evaluate(&self.expr, &mut predicate)
     }
 
-    pub(super) fn result_clauses(
+    /// Derived-result predicates and their metric definitions.
+    pub fn result_clauses(
         &self,
         logical_name: &str,
     ) -> impl Iterator<Item = (&SearchClause, ResultField)> {
@@ -276,7 +472,8 @@ impl StructuredSearch {
         })
     }
 
-    pub(super) fn first_match_query_id(&self) -> Option<i64> {
+    /// Exact query identifier requested by a valid first-match expression.
+    pub fn first_match_query_id(&self) -> Option<i64> {
         let Expr::Predicate(clause) = &self.expr else {
             return None;
         };
@@ -649,7 +846,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub(crate) fn search_fields(logical_name: &str) -> &'static [SearchField] {
+/// Structured-search field catalog for a logical snapshot section.
+pub fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
         "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
@@ -664,7 +862,8 @@ pub(crate) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     }
 }
 
-pub(crate) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
+/// Derived result definition for one public search field.
+pub fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
     let field = search_fields(logical_name)
         .iter()
         .find(|field| field.key == key)?;
@@ -1003,7 +1202,8 @@ fn canonical_value(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-pub(crate) fn valid_identifier(value: &str, signed: bool) -> bool {
+/// Validate the canonical decimal spelling of a signed or unsigned identifier.
+pub fn valid_identifier(value: &str, signed: bool) -> bool {
     if signed {
         if value == "-0" {
             return false;
