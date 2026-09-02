@@ -29,6 +29,7 @@ COPY crates/kronika-source-os/Cargo.toml crates/kronika-source-os/
 COPY crates/kronika-source-log/Cargo.toml crates/kronika-source-log/
 COPY crates/kronika-source-pg/Cargo.toml crates/kronika-source-pg/
 COPY crates/kronika-index/Cargo.toml crates/kronika-index/
+COPY crates/kronika-query/Cargo.toml crates/kronika-query/
 COPY crates/kronika-bdd/Cargo.toml crates/kronika-bdd/
 COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
 COPY bins/kronika-dump/Cargo.toml bins/kronika-dump/
