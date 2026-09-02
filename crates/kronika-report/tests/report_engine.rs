@@ -276,6 +276,16 @@ fn explicit_segment_id_binds_both_embedded_artifacts() {
             && record["id"].as_str() == Some(rebound_text.as_str())
     }));
 
+    let index = report_bytes(
+        &engine,
+        QueryRequest::Index(IndexRequest {
+            segment_id: rebound.get(),
+            section: "health".to_owned(),
+        }),
+    )
+    .expect("IDX is bound to the explicit identity");
+    assert!(!ndjson(&index).is_empty());
+
     let mut sink = Records::accepting();
     let error = engine
         .execute(
