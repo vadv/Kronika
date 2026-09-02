@@ -154,7 +154,7 @@ fn zms_path(root: &Path, address: SegmentAddress) -> PathBuf {
         .join(address.zms_name())
 }
 
-fn topology(ts: i64, cpu_id: i32, model_name: StrId) -> OsTopology {
+const fn topology(ts: i64, cpu_id: i32, model_name: StrId) -> OsTopology {
     OsTopology {
         ts: Ts(ts),
         cpu_id,
@@ -227,10 +227,18 @@ fn assert_model_names_resolve(segment: &Segment, dictionary: &Dictionary) {
         .rows(OsTopology::CONTRACT.type_id.get())
         .expect("decode rows")
     {
-        let Some(Cell::StrId(id)) = row.get("model_name") else {
-            panic!("model_name must be a StrId")
+        let model_name = row.get("model_name");
+        assert!(
+            matches!(model_name, Some(Cell::StrId(_))),
+            "model_name must be a StrId"
+        );
+        let Some(Cell::StrId(id)) = model_name else {
+            continue;
         };
-        assert!(dictionary.resolve(*id).is_some());
+        assert!(
+            dictionary.resolve(*id).is_some(),
+            "model_name must resolve through the segment dictionary"
+        );
     }
 }
 
@@ -256,7 +264,11 @@ fn finished_product_snapshot<S: ImmutableSegmentSource>(
     assert!(listing.warnings.is_empty(), "unexpected resource notices");
     assert_eq!(listing.resources.len(), 1, "one immutable resource");
     let resource = &listing.resources[0];
-    assert_eq!(resource.identity().kind(), ResourceKind::FinishedSegment);
+    assert_eq!(
+        resource.identity().kind(),
+        ResourceKind::FinishedSegment,
+        "the immutable source must expose a finished segment"
+    );
     let identity = resource.identity();
     let summary = *resource.summary();
     let segment = reader
