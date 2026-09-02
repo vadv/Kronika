@@ -219,7 +219,7 @@ impl<R> FinderResult<R> {
 pub fn execute_processes(
     context: &QueryContext,
     query: &FinderQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<FinderResult<ProcessRowOut>, QueryError> {
     if query.surface != FinderSurface::Processes {
         return Err(QueryError::BadFilter("surface".to_owned()));
@@ -239,7 +239,7 @@ pub fn execute_processes(
 pub fn execute_plain(
     context: &QueryContext,
     query: &FinderQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<FinderResult<PlainRowOut>, QueryError> {
     if matches!(
         query.surface,
@@ -262,7 +262,7 @@ pub fn execute_plain(
 pub fn execute_relation(
     context: &QueryContext,
     query: &FinderQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<FinderResult<RelationRow>, QueryError> {
     if !matches!(
         query.surface,
@@ -285,7 +285,7 @@ pub fn execute_relation(
 pub fn execute_current_plain(
     context: &QueryContext,
     query: CurrentSnapshotQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<Option<FinderResult<PlainRowOut>>, QueryError> {
     let limit = query.limit;
     let Some(prepared) = prepare_current(context, query, cancelled)? else {
@@ -302,7 +302,7 @@ pub fn execute_current_plain(
 pub fn execute_current_relation(
     context: &QueryContext,
     query: CurrentSnapshotQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<Option<FinderResult<RelationRow>>, QueryError> {
     let limit = query.limit;
     let Some(prepared) = prepare_current(context, query, cancelled)? else {
@@ -314,7 +314,7 @@ pub fn execute_current_relation(
 fn prepare_current(
     context: &QueryContext,
     query: CurrentSnapshotQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<Option<PreparedSnapshot>, QueryError> {
     if cancelled() {
         return Err(QueryError::Cancelled);
@@ -360,7 +360,7 @@ fn prepare_current(
 fn prepare(
     context: &QueryContext,
     query: &FinderQuery,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<Option<PreparedSnapshot>, QueryError> {
     if cancelled() {
         return Err(QueryError::Cancelled);
@@ -477,7 +477,7 @@ fn recorded_postgresql_cadence(
     dataset: &dyn QueryDataset,
     segments: &[DatasetSegment],
     at: i64,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<Option<u64>, QueryError> {
     let mut selected: Option<(i64, u64)> = None;
     for segment_ref in segments {

@@ -1257,7 +1257,7 @@ impl PreparedSnapshot {
     fn stream_with(
         self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         if cancelled()
             || !emit(record(json!({
@@ -1308,7 +1308,7 @@ impl PreparedSnapshot {
         &self,
         section: &SectionPlans,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         for plan in &section.plans {
             if cancelled() || !Self::emit_layout(section, plan, emit)? {
@@ -1332,7 +1332,7 @@ impl PreparedSnapshot {
         context: &PageContext<'_>,
         row_ordinal: Option<u64>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         let (start_row, row_count) = row_ordinal.map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         let source = self.dataset.open(context.source)?;
@@ -1406,7 +1406,7 @@ impl PreparedSnapshot {
         selection_dictionary: &Dictionary,
         rows: &mut Vec<(u64, Row)>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         #[cfg(test)]
         CONTEXT_CHUNK_ROWS.set(CONTEXT_CHUNK_ROWS.get().max(rows.len()));
@@ -1461,7 +1461,7 @@ impl PreparedSnapshot {
         layout_index: usize,
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
         facts: &mut HashMap<i64, PageFacts>,
     ) -> Result<bool, QueryError> {
         if !Self::emit_layout(section, plan, emit)? {
@@ -1543,7 +1543,7 @@ impl PreparedSnapshot {
         &self,
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         let (start_row, row_count) = self
             .row_ordinal
@@ -1580,7 +1580,7 @@ impl PreparedSnapshot {
         rows: Vec<(u64, Row)>,
         rates: RateContext<'_>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         let selection_dictionary = plan.selection_dictionary(source, &rows)?;
         let mut staged = Vec::with_capacity(rows.len());
@@ -1607,7 +1607,7 @@ impl PreparedSnapshot {
         staged: Vec<StagedRow>,
         rates: RateContext<'_>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         let dictionary = retained_dictionary(source, &staged)?;
         let process_users = ProcessUsers::load(source, plan)?;
@@ -1638,7 +1638,7 @@ impl PreparedSnapshot {
     fn emit_page(
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -1721,7 +1721,7 @@ impl PreparedSnapshot {
     pub(crate) fn compute_process_rows(
         &self,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<FinderResult<ProcessRowOut>, QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -1746,7 +1746,7 @@ impl PreparedSnapshot {
     pub(crate) fn compute_plain_rows(
         &self,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<FinderResult<PlainRowOut>, QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -1781,7 +1781,7 @@ impl PreparedSnapshot {
     fn ranked_records(
         &self,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(Vec<RankedRecord<'_>>, bool, Option<i64>), QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -1834,7 +1834,7 @@ impl PreparedSnapshot {
         &self,
         contexts: &[PageContext<'_>],
         ranked: &[PageRankedRow],
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let mut targets: HashMap<RankedLocatorKey, u8> = HashMap::with_capacity(ranked.len());
         for ranked in ranked {
@@ -1975,7 +1975,7 @@ impl PreparedSnapshot {
     fn emit_first_match(
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -2035,7 +2035,7 @@ impl PreparedSnapshot {
         &self,
         context: &PageContext<'_>,
         wanted: i64,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Option<(u64, Row, Dictionary)>, QueryError> {
         let query_id = context
             .plan
@@ -2091,7 +2091,7 @@ impl PreparedSnapshot {
                     format!("unresolved dictionary id {id}"),
                 )))
             })?;
-            if stored_bytes(resolved).is_empty() {
+            if resolved.stored_bytes().is_empty() {
                 continue;
             }
             return Ok(Some((ordinal, row, dictionary)));
@@ -2105,7 +2105,7 @@ impl PreparedSnapshot {
         process_users: &HashMap<usize, ProcessUsers>,
         ranked: Vec<PageRankedRow>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<bool, QueryError> {
         let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
         for ranked in &ranked {
@@ -2194,10 +2194,7 @@ impl PreparedSnapshot {
             "next_cursor": metadata.next_cursor,
             "page_size": metadata.page_size,
             "order_by": order_by,
-            "order_direction": match direction {
-                Order::Asc => "asc",
-                Order::Desc => "desc",
-            },
+            "order_direction": direction.as_str(),
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
         }))?);
@@ -2207,7 +2204,7 @@ impl PreparedSnapshot {
     fn page_contexts<'a>(
         &'a self,
         section: &'a SectionPlans,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Vec<PageContext<'a>>, QueryError> {
         if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
             return self.partitioned_contexts(section, cancelled);
@@ -2289,7 +2286,7 @@ impl PreparedSnapshot {
     fn first_match_contexts<'a>(
         &'a self,
         section: &'a SectionPlans,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Vec<PageContext<'a>>, QueryError> {
         let mut contexts = Vec::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
@@ -2350,7 +2347,7 @@ impl PreparedSnapshot {
         layout_index: usize,
         plan: &'a Plan,
         timestamp: &'static str,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
         facts: &mut HashMap<i64, PageFacts>,
     ) -> Result<Vec<PageContext<'a>>, QueryError> {
         let Some(moments) = self.shared_moments(plan, timestamp, cancelled)? else {
@@ -2423,7 +2420,7 @@ impl PreparedSnapshot {
         &self,
         plan: &Plan,
         timestamp: &'static str,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Option<Moments>, QueryError> {
         let anchor = self.dataset.open(&self.anchor)?;
         let here = Self::moments(&anchor, plan, timestamp, self.at, cancelled)?;
@@ -2470,7 +2467,7 @@ impl PreparedSnapshot {
     fn partitioned_contexts<'a>(
         &'a self,
         section: &'a SectionPlans,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Vec<PageContext<'a>>, QueryError> {
         let Some(spec) = SnapshotViewSpec::for_logical_name(&section.logical_name) else {
             return Ok(Vec::new());
@@ -2510,7 +2507,7 @@ impl PreparedSnapshot {
     fn selected_partitions(
         &self,
         section: &SectionPlans,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> BTreeMap<IdentityCell, SelectedPartition> {
         let source_by_id = std::iter::once((self.anchor.id(), PartitionSource::Current))
             .chain(
@@ -2573,7 +2570,7 @@ impl PreparedSnapshot {
         plan: &Plan,
         selected: &BTreeMap<IdentityCell, SelectedPartition>,
         spec: SnapshotViewSpec,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<PartitionRateState, QueryError> {
         let Some(timestamp) = plan.timestamp else {
             return Err(QueryError::BadCursor);
@@ -2724,7 +2721,7 @@ impl PreparedSnapshot {
         partition_column: &'static str,
         partitions: &BTreeMap<IdentityCell, i64>,
         extra_columns: &[&'static str],
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Readings, QueryError> {
         #[cfg(test)]
         PARTITION_PREDECESSOR_VISITS.set(PARTITION_PREDECESSOR_VISITS.get().saturating_add(1));
@@ -2829,7 +2826,7 @@ impl PreparedSnapshot {
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let source = self.dataset.open(context.source)?;
         if !context.plan.needs_selection_dictionary()
@@ -3014,7 +3011,7 @@ impl PreparedSnapshot {
         plan: &Plan,
         timestamp: &'static str,
         at: i64,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Option<Moments>, QueryError> {
         let mut current: Option<i64> = None;
         let mut previous: Option<i64> = None;
@@ -3059,7 +3056,7 @@ impl PreparedSnapshot {
         timestamp: &'static str,
         at: i64,
         extra_columns: &[&'static str],
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<Readings, QueryError> {
         let mut collected = BTreeMap::new();
         let counters = projected_rate_columns(plan);
@@ -3570,13 +3567,6 @@ fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
     }
 }
 
-const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
-    match resolved {
-        Resolved::Str(bytes) => bytes,
-        Resolved::Blob(blob) => blob.stored_bytes,
-    }
-}
-
 fn page_dictionary(
     segment: &Segment,
     context: &PageContext<'_>,
@@ -3667,7 +3657,7 @@ fn column_order_value(
     match stored {
         Cell::StrId(id) => dictionary
             .resolve(*id)
-            .map(stored_bytes)
+            .map(Resolved::stored_bytes)
             .map(<[u8]>::to_vec)
             .map(PageOrderValue::Text),
         _ => match ordered_cell(stored)? {
@@ -4531,7 +4521,7 @@ fn searchable_text<'a>(value: &Cell, dictionary: &'a Dictionary) -> Option<Cow<'
         Cell::Bool(value) => Some(Cow::Owned(value.to_string())),
         Cell::StrId(id) => dictionary
             .resolve(*id)
-            .and_then(|resolved| std::str::from_utf8(stored_bytes(resolved)).ok())
+            .and_then(|resolved| std::str::from_utf8(resolved.stored_bytes()).ok())
             .map(Cow::Borrowed),
         Cell::Null | Cell::ListI32(_) | Cell::F64(_) => None,
     }
@@ -4625,24 +4615,12 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
         hash_part(&mut hash, b"by", by.as_bytes());
     }
     if let Some(group) = request.group {
-        hash_part(
-            &mut hash,
-            b"group",
-            match group {
-                RelationGroup::Database => b"database",
-                RelationGroup::Schema => b"schema",
-                RelationGroup::Tablespace => b"tablespace",
-                RelationGroup::Object => b"object",
-            },
-        );
+        hash_part(&mut hash, b"group", group.as_str().as_bytes());
     }
     hash_part(
         &mut hash,
         b"direction",
-        match request.direction {
-            Order::Asc => b"asc",
-            Order::Desc => b"desc",
-        },
+        request.direction.as_str().as_bytes(),
     );
     hash
 }

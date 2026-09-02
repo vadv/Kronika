@@ -3558,7 +3558,7 @@ fn relation_layout(
     record(json!({
         "record": "relation_layout",
         "logical_name": logical_name,
-        "group": group_name(group),
+        "group": group.as_str(),
         "columns": columns,
     }))
 }
@@ -3573,7 +3573,7 @@ fn relation_record(
     record(json!({
         "record": "relation",
         "logical_name": logical_name,
-        "group": group_name(group),
+        "group": group.as_str(),
         "key": row.key.json(kind, group),
         "values": values,
         "sample_from": row.from.map(|value| value.to_string()),
@@ -3617,13 +3617,6 @@ fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
         Cell::F64(value) if value.is_finite() => Some(OrderedNumber::Float(*value)),
         Cell::Bool(value) => Some(OrderedNumber::Integer(i128::from(*value))),
         Cell::F64(_) | Cell::StrId(_) | Cell::ListI32(_) | Cell::Null => None,
-    }
-}
-
-const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
-    match resolved {
-        Resolved::Str(bytes) => bytes,
-        Resolved::Blob(blob) => blob.stored_bytes,
     }
 }
 
@@ -3721,7 +3714,7 @@ fn text_cell(stored: Option<&Cell>, dictionary: &Dictionary) -> Result<Option<St
     };
     let bytes = dictionary
         .resolve(*id)
-        .map(stored_bytes)
+        .map(Resolved::stored_bytes)
         .ok_or(QueryError::BadCursor)?;
     String::from_utf8(bytes.to_vec())
         .map(Some)
@@ -3760,15 +3753,6 @@ fn number_is_zero(value: OrderedNumber) -> bool {
     match value {
         OrderedNumber::Integer(value) => value == 0,
         OrderedNumber::Float(value) => value == 0.0,
-    }
-}
-
-const fn group_name(group: RelationGroup) -> &'static str {
-    match group {
-        RelationGroup::Database => "database",
-        RelationGroup::Schema => "schema",
-        RelationGroup::Tablespace => "tablespace",
-        RelationGroup::Object => "object",
     }
 }
 

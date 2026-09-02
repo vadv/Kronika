@@ -115,10 +115,7 @@ impl PreparedRows {
                     })),
                 },
                 "logical_name": self.logical_name,
-                "order": match self.order {
-                    Order::Asc => "asc",
-                    Order::Desc => "desc",
-                },
+                "order": self.order.as_str(),
                 "page_size": self.page_size.to_string(),
             }))?)
         {

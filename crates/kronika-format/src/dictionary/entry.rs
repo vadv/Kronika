@@ -26,6 +26,17 @@ pub enum Resolved<'a> {
     Blob(BlobEntry<'a>),
 }
 
+impl<'a> Resolved<'a> {
+    /// Bytes retained in the segment for this dictionary value.
+    #[must_use]
+    pub const fn stored_bytes(self) -> &'a [u8] {
+        match self {
+            Self::Str(bytes) => bytes,
+            Self::Blob(blob) => blob.stored_bytes,
+        }
+    }
+}
+
 /// Current dictionary placement for an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {

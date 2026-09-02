@@ -95,7 +95,7 @@ impl PreparedSnapshot {
     pub(super) fn emit_relation_page(
         &self,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -223,7 +223,7 @@ impl PreparedSnapshot {
         let _connected = emit(record(json!({
             "record": "snapshot_page",
             "logical_name": section.logical_name,
-            "group": group_name(group),
+            "group": group.as_str(),
             "eligible": eligible.to_string(),
             "returned": returned.to_string(),
             "has_more": has_more,
@@ -231,7 +231,7 @@ impl PreparedSnapshot {
             "next_cursor": next_cursor,
             "page_size": page_size,
             "order_by": order_by.into_iter().collect::<Vec<_>>(),
-            "order_direction": order_name(self.direction),
+            "order_direction": self.direction.as_str(),
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
         }))?);
@@ -243,7 +243,7 @@ impl PreparedSnapshot {
     pub(crate) fn compute_relation_rows(
         &self,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<super::selector::FinderResult<RelationRow>, QueryError> {
         let [section] = self.sections.as_slice() else {
             return Err(QueryError::BadCursor);
@@ -356,7 +356,7 @@ fn scan_context(
     group: RelationGroup,
     context: &PageContext<'_>,
     aggregates: &mut BTreeMap<GroupKey, RelationAggregate>,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + ?Sized),
 ) -> Result<(), QueryError> {
     let source_segment = prepared.dataset.open(context.source)?;
     let mut offset = 0_u64;
@@ -556,7 +556,7 @@ fn relation_layout(
     record(json!({
         "record": "relation_layout",
         "logical_name": section.logical_name,
-        "group": group_name(group),
+        "group": group.as_str(),
         "columns": columns,
     }))
 }
@@ -580,7 +580,7 @@ fn relation_record(
     record(json!({
         "record": "relation",
         "logical_name": section.logical_name,
-        "group": group_name(group),
+        "group": group.as_str(),
         "key": row.key.json(kind, group),
         "values": values,
         "sample_from": row.from.map(|value| value.to_string()),
@@ -625,22 +625,6 @@ const fn timestamp_cell(stored: Option<&Cell>) -> Option<i64> {
     match stored {
         Some(Cell::Ts(value)) => Some(*value),
         _ => None,
-    }
-}
-
-const fn group_name(group: RelationGroup) -> &'static str {
-    match group {
-        RelationGroup::Database => "database",
-        RelationGroup::Schema => "schema",
-        RelationGroup::Tablespace => "tablespace",
-        RelationGroup::Object => "object",
-    }
-}
-
-const fn order_name(order: Order) -> &'static str {
-    match order {
-        Order::Asc => "asc",
-        Order::Desc => "desc",
     }
 }
 

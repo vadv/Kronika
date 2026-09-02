@@ -127,6 +127,19 @@ pub enum RelationGroup {
     Object,
 }
 
+impl RelationGroup {
+    /// Stable name used in query output and cursor identities.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::Schema => "schema",
+            Self::Tablespace => "tablespace",
+            Self::Object => "object",
+        }
+    }
+}
+
 /// One current-state snapshot at or before a recorded timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotRequest {
@@ -184,6 +197,17 @@ pub enum Order {
     Asc,
     /// Decreasing physical ordinal.
     Desc,
+}
+
+impl Order {
+    /// Stable name used in query output and cursor identities.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
 }
 
 /// One bounded physical-row page.

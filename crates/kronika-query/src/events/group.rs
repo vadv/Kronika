@@ -482,10 +482,10 @@ impl EventGroups {
             .map(|candidate| candidate.holders.clone());
         if let Some(holders) = holders {
             if let Some(state) = self.locks.get_mut(&holders) {
-                state.observe(row, order, self.from, false, true);
+                state.observe(row, order, self.from, LockObservation::MatchedAcquired);
             }
         } else if let Some(state) = &mut self.standalone_acquired {
-            state.observe(row, order, self.from, false, false);
+            state.observe(row, order, self.from, LockObservation::StandaloneAcquired);
         } else {
             self.standalone_acquired = Some(LockState::new(row, order, self.from, false));
         }
@@ -493,7 +493,7 @@ impl EventGroups {
 
     fn observe_waiting_lock(&mut self, holders: String, row: EventDataRow, order: RowOrder) {
         if let Some(state) = self.locks.get_mut(&holders) {
-            state.observe(row, order, self.from, true, true);
+            state.observe(row, order, self.from, LockObservation::Waiting);
         } else {
             self.locks
                 .insert(holders, LockState::new(row, order, self.from, true));
@@ -734,6 +734,13 @@ fn finish_other_groups(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum LockObservation {
+    Waiting,
+    MatchedAcquired,
+    StandaloneAcquired,
+}
+
 impl LockState {
     fn new(row: EventDataRow, order: RowOrder, from: i64, waiting: bool) -> Self {
         let mut waiters = HashSet::new();
@@ -768,21 +775,19 @@ impl LockState {
         row: EventDataRow,
         order: RowOrder,
         from: i64,
-        waiting: bool,
-        chronological: bool,
+        observation: LockObservation,
     ) {
-        self.waits += usize::from(waiting);
+        self.waits += usize::from(matches!(observation, LockObservation::Waiting));
         self.waiters.insert(text(&row, "pid").unwrap_or_default());
         if let Some(target) = text(&row, "lock_target")
             && !target.is_empty()
         {
-            let target_order = if chronological {
-                order
-            } else {
-                RowOrder {
+            let target_order = match observation {
+                LockObservation::Waiting | LockObservation::MatchedAcquired => order,
+                LockObservation::StandaloneAcquired => RowOrder {
                     timestamp: 0,
                     encounter: order.encounter,
-                }
+                },
             };
             self.targets
                 .entry(target)
@@ -790,10 +795,13 @@ impl LockState {
                 .or_insert(target_order);
         }
         self.max_ms = max_optional(self.max_ms, number(&row, "duration_ms"));
-        if chronological {
-            self.summary.observe_earliest(row, order, from, 1.0);
-        } else {
-            self.summary.observe_physical(row, order, from, 1.0);
+        match observation {
+            LockObservation::Waiting | LockObservation::MatchedAcquired => {
+                self.summary.observe_earliest(row, order, from, 1.0);
+            }
+            LockObservation::StandaloneAcquired => {
+                self.summary.observe_physical(row, order, from, 1.0);
+            }
         }
     }
 
