@@ -2,7 +2,10 @@ import type { DisplayTimeZone } from "./display-time"
 
 const MICROSECONDS_PER_SECOND = 1_000_000
 const SECONDS_PER_HOUR = 3_600
+const MAX_LOCAL_OFFSET_SECONDS = 24 * SECONDS_PER_HOUR
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+
+type CivilSecond = readonly [number, number, number, number, number, number]
 
 export interface ExportRangeDefaults {
   readonly from: string
@@ -21,11 +24,7 @@ export function exportRangeDefaults(hourMicroseconds: number, mode: DisplayTimeZ
   if (!Number.isSafeInteger(hourMicroseconds) || hourMicroseconds % MICROSECONDS_PER_SECOND !== 0) {
     throw new RangeError("the selected hour must have whole-second precision")
   }
-  const selectedSecond = hourMicroseconds / MICROSECONDS_PER_SECOND
-  const selected = new Date(selectedSecond * 1_000)
-  const fromSecond = mode === "utc"
-    ? selectedSecond
-    : selectedSecond - selected.getMinutes() * 60 - selected.getSeconds()
+  const fromSecond = hourMicroseconds / MICROSECONDS_PER_SECOND
   const toSecond = fromSecond + SECONDS_PER_HOUR - 1
   return {
     from: formatExportSecond(fromSecond, mode),
@@ -64,24 +63,68 @@ export function formatExportSecond(second: number, mode: DisplayTimeZone): strin
 function parseExportSecond(text: string, mode: DisplayTimeZone, preferred?: number): number | null {
   const match = LOCAL_DATE_TIME.exec(text.trim())
   if (match === null) return null
-  const values = match.slice(1).map((value) => Number(value ?? "0"))
+  const values: CivilSecond = [
+    Number(match[1]), Number(match[2]), Number(match[3]),
+    Number(match[4]), Number(match[5]), Number(match[6] ?? "0"),
+  ]
   const [year, month, day, hour, minute, second] = values
-  if (year === undefined || month === undefined || day === undefined || hour === undefined || minute === undefined || second === undefined
-      || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null
-  const canonical = `${String(year).padStart(4, "0")}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}:${two(second)}`
-  if (preferred !== undefined && Number.isSafeInteger(preferred) && formatExportSecond(preferred, mode) === canonical) return preferred
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null
 
+  const wallSecond = utcSecond(values)
+  if (wallSecond === null || !matchesCivilSecond(new Date(wallSecond * 1_000), values, true)) return null
+  if (mode === "utc") return wallSecond
+  if (preferred !== undefined && Number.isSafeInteger(preferred)
+      && matchesCivilSecond(new Date(preferred * 1_000), values, false)) return preferred
+  return resolveLocalCivilSecond(values, wallSecond, preferred)
+}
+
+function resolveLocalCivilSecond(values: CivilSecond, wallSecond: number, preferred?: number): number | null {
+  const target = preferredTarget(preferred, wallSecond)
   const date = new Date(0)
-  if (mode === "utc") {
-    date.setUTCFullYear(year, month - 1, day)
-    date.setUTCHours(hour, minute, second, 0)
-  } else {
-    date.setFullYear(year, month - 1, day)
-    date.setHours(hour, minute, second, 0)
+  let selected: number | null = null
+  let selectedDistance = Number.POSITIVE_INFINITY
+  for (let offset = -MAX_LOCAL_OFFSET_SECONDS; offset <= MAX_LOCAL_OFFSET_SECONDS; offset += 1) {
+    const candidate = wallSecond + offset
+    date.setTime(candidate * 1_000)
+    if (!matchesCivilSecond(date, values, false)) continue
+    const distance = target === null ? 0 : Math.abs(candidate - target)
+    if (selected === null || distance < selectedDistance) {
+      selected = candidate
+      selectedDistance = distance
+    }
   }
+  return selected
+}
+
+function preferredTarget(preferred: number | undefined, wallSecond: number): number | null {
+  if (preferred === undefined || !Number.isSafeInteger(preferred)) return null
+  const date = new Date(preferred * 1_000)
+  if (!Number.isFinite(date.getTime())) return null
+  const preferredWall = utcSecond([
+    date.getFullYear(), date.getMonth() + 1, date.getDate(),
+    date.getHours(), date.getMinutes(), date.getSeconds(),
+  ])
+  if (preferredWall === null) return null
+  const target = preferred + wallSecond - preferredWall
+  return Number.isSafeInteger(target) ? target : null
+}
+
+function utcSecond(values: CivilSecond): number | null {
+  const [year, month, day, hour, minute, second] = values
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(hour, minute, second, 0)
   const parsed = date.getTime() / 1_000
-  if (!Number.isSafeInteger(parsed)) return null
-  return formatExportSecond(parsed, mode) === canonical ? parsed : null
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function matchesCivilSecond(date: Date, values: CivilSecond, utc: boolean): boolean {
+  if (!Number.isFinite(date.getTime())) return false
+  return utc
+    ? date.getUTCFullYear() === values[0] && date.getUTCMonth() + 1 === values[1] && date.getUTCDate() === values[2]
+      && date.getUTCHours() === values[3] && date.getUTCMinutes() === values[4] && date.getUTCSeconds() === values[5]
+    : date.getFullYear() === values[0] && date.getMonth() + 1 === values[1] && date.getDate() === values[2]
+      && date.getHours() === values[3] && date.getMinutes() === values[4] && date.getSeconds() === values[5]
 }
 
 function two(value: number | undefined): string {

@@ -55,17 +55,26 @@ test("Browser mode parses and formats the browser's civil time", () => {
   }
 })
 
-test("Browser defaults snap a fractional-offset selection to its civil calendar hour", () => {
+test("Browser and UTC defaults preserve one exact storage hour in a fractional-offset zone", () => {
   const previous = process.env.TZ
   process.env.TZ = "Asia/Kolkata"
   try {
     const hour = Date.UTC(2026, 7, 14, 5) * 1_000
-    assert.deepEqual(exportRangeDefaults(hour, "browser"), {
-      from: "2026-08-14T10:00:00",
-      fromSecond: Date.UTC(2026, 7, 14, 4, 30) / 1_000,
-      to: "2026-08-14T10:59:59",
-      toSecond: Date.UTC(2026, 7, 14, 5, 29, 59) / 1_000,
+    const browser = exportRangeDefaults(hour, "browser")
+    const utc = exportRangeDefaults(hour, "utc")
+    assert.deepEqual(browser, {
+      from: "2026-08-14T10:30:00",
+      fromSecond: Date.UTC(2026, 7, 14, 5) / 1_000,
+      to: "2026-08-14T11:29:59",
+      toSecond: Date.UTC(2026, 7, 14, 5, 59, 59) / 1_000,
     })
+    assert.deepEqual(parseExportRange(browser.from, browser.to, "browser", {
+      from: browser.fromSecond,
+      to: browser.toSecond,
+    }), parseExportRange(utc.from, utc.to, "utc", {
+      from: utc.fromSecond,
+      to: utc.toSecond,
+    }))
   } finally {
     if (previous === undefined) delete process.env.TZ
     else process.env.TZ = previous
@@ -89,12 +98,13 @@ test("civil round-trip validation rejects gaps, normalization and subseconds", (
   }
 })
 
-test("a repeated Browser hour retains the exact selected-hour defaults", () => {
+test("editing the second New York fold preserves its occurrence, order and round-trip", () => {
   const previous = process.env.TZ
   process.env.TZ = "America/New_York"
   try {
     const hour = Date.UTC(2026, 10, 1, 6) * 1_000
     const defaults = exportRangeDefaults(hour, "browser")
+    const preferred = { from: defaults.fromSecond, to: defaults.toSecond }
     assert.equal(defaults.from, "2026-11-01T01:00:00")
     assert.equal(defaults.to, "2026-11-01T01:59:59")
     assert.deepEqual(parseExportRange(defaults.from, defaults.to, "browser", {
@@ -104,6 +114,60 @@ test("a repeated Browser hour retains the exact selected-hour defaults", () => {
       ok: true,
       from: Date.UTC(2026, 10, 1, 6) / 1_000,
       to: Date.UTC(2026, 10, 1, 6, 59, 59) / 1_000,
+    })
+    const edited = parseExportRange("2026-11-01T01:59:59", "2026-11-01T01:00:00", "browser", preferred)
+    assert.deepEqual(edited, { ok: false, error: "order" })
+    const valid = parseExportRange("2026-11-01T01:00:01", "2026-11-01T01:59:58", "browser", preferred)
+    assert.deepEqual(valid, {
+      ok: true,
+      from: Date.UTC(2026, 10, 1, 6, 0, 1) / 1_000,
+      to: Date.UTC(2026, 10, 1, 6, 59, 58) / 1_000,
+    })
+    if (valid.ok) {
+      assert.equal(formatExportSecond(valid.from, "browser"), "2026-11-01T01:00:01")
+      assert.equal(formatExportSecond(valid.to, "browser"), "2026-11-01T01:59:58")
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TZ
+    else process.env.TZ = previous
+  }
+})
+
+test("editing the second Lord Howe fold preserves its thirty-minute occurrence", () => {
+  const previous = process.env.TZ
+  process.env.TZ = "Australia/Lord_Howe"
+  try {
+    const hour = Date.UTC(2026, 3, 4, 15) * 1_000
+    const defaults = exportRangeDefaults(hour, "browser")
+    const preferred = { from: defaults.fromSecond, to: defaults.toSecond }
+    assert.deepEqual(defaults, {
+      from: "2026-04-05T01:30:00",
+      fromSecond: Date.UTC(2026, 3, 4, 15) / 1_000,
+      to: "2026-04-05T02:29:59",
+      toSecond: Date.UTC(2026, 3, 4, 15, 59, 59) / 1_000,
+    })
+    assert.deepEqual(parseExportRange(defaults.from, defaults.to, "browser", preferred), {
+      ok: true,
+      from: defaults.fromSecond,
+      to: defaults.toSecond,
+    })
+    const valid = parseExportRange("2026-04-05T01:30:01", "2026-04-05T01:59:59", "browser", preferred)
+    assert.deepEqual(valid, {
+      ok: true,
+      from: Date.UTC(2026, 3, 4, 15, 0, 1) / 1_000,
+      to: Date.UTC(2026, 3, 4, 15, 29, 59) / 1_000,
+    })
+    if (valid.ok) {
+      assert.equal(formatExportSecond(valid.from, "browser"), "2026-04-05T01:30:01")
+      assert.equal(formatExportSecond(valid.to, "browser"), "2026-04-05T01:59:59")
+    }
+    assert.deepEqual(parseExportRange("2026-04-05T02:00:00", "2026-04-05T01:59:59", "browser", preferred), {
+      ok: false,
+      error: "order",
+    })
+    assert.deepEqual(parseExportRange("2026-10-04T02:15:00", "2026-10-04T02:30:00", "browser"), {
+      ok: false,
+      error: "invalid",
     })
   } finally {
     if (previous === undefined) delete process.env.TZ
