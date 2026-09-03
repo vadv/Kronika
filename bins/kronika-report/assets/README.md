@@ -11,8 +11,9 @@ downloads the pinned static Linux release and verifies its SHA-256 before use.
 Use `scripts/report-assets.sh check` to compare a fresh build with the committed
 JavaScript and deterministic gzip files. `CARGO_BIN` and `NODE_BIN` select the
 Cargo and Node executables when they are not first on `PATH`.
-The build fixes path remaps for the repository and Cargo home so source paths
-remain byte-identical across build hosts.
+The build fixes path remaps for the repository and Cargo home, the
+`const-random` seed, and C compiler identification so bytes remain identical
+across build hosts.
 
 wasm-bindgen first emits its `web` target. The build inserts one bounded
 `initEmbedded` entry point at pinned generated-code markers, then esbuild keeps
@@ -21,9 +22,9 @@ only that entry point and `ReportSession` in the classic-script
 The report compiles its embedded bytes and passes the resulting
 `WebAssembly.Module` to `initEmbedded`, which instantiates asynchronously.
 
-The raw generated WebAssembly is 9,898,337 bytes. Its committed gzip form is
-2,369,576 bytes with SHA-256
-`6b625525f990a1b37c8dddf5887030baab26ae4145077039a65e2a60fdac2e6a`.
+The raw generated WebAssembly is 9,898,300 bytes. Its committed gzip form is
+2,369,548 bytes with SHA-256
+`18ece5f4175147842232787f6bdf76df1b54804d2ac888431ab974b92a8494a8`.
 The 3,885-byte JavaScript binding has SHA-256
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 

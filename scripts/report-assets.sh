@@ -111,8 +111,11 @@ fi
 remap_flags="--remap-path-prefix=${CARGO_HOME_PATH}=/cargo-home"
 remap_flags+=$'\x1f'
 remap_flags+="--remap-path-prefix=$(pwd)=/workspace"
-env -u RUSTFLAGS CARGO_ENCODED_RUSTFLAGS="$remap_flags" \
-    "$CARGO" +"$TOOLCHAIN" build --locked --release \
+env -u CFLAGS -u RUSTFLAGS \
+	CFLAGS_wasm32_unknown_unknown=-fno-ident \
+	CONST_RANDOM_SEED=kronika-report-wasm-v1 \
+	CARGO_ENCODED_RUSTFLAGS="$remap_flags" \
+	"$CARGO" +"$TOOLCHAIN" build --locked --release \
 	--target wasm32-unknown-unknown \
 	-p kronika-report-wasm
 
