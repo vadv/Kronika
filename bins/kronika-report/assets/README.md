@@ -19,9 +19,9 @@ only that entry point and `ReportSession` in the classic-script
 The report compiles its embedded bytes and passes the resulting
 `WebAssembly.Module` to `initEmbedded`, which instantiates asynchronously.
 
-The raw generated WebAssembly is 9,899,217 bytes. Its committed gzip form is
-2,369,964 bytes with SHA-256
-`82acf410d0d800caf0da90343813c92391a8c8616d404216dea6bb70767b3b5a`.
+The raw generated WebAssembly is 9,899,425 bytes. Its committed gzip form is
+2,369,695 bytes with SHA-256
+`e2a9584cdd69584f4a6881a5f50fcb6726fb182260d599cc7fcc9920676bbf76`.
 The 3,885-byte JavaScript binding has SHA-256
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 
@@ -30,5 +30,5 @@ generated binding. Rust adopts those allocations as `Vec<u8>` values and moves
 them into the retained `ReportEngine` without another complete ZMS or IDX
 copy. Returned NDJSON is assembled from the existing streamed records and is
 copied once from WebAssembly into JavaScript. The committed fixture starts the
-module with 2,621,440 bytes of linear memory and grows it to 5,701,632 bytes
-after seven catalog, index, hour, paging and detail requests.
+module with 2,621,440 bytes of linear memory and grows it to 5,767,168 bytes
+after eight catalog, snapshot, index, hour, paging and detail requests.
