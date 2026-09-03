@@ -1,4 +1,4 @@
-//! Report composition over one production-written standalone fixture.
+//! Internal query composition over one production-written standalone fixture.
 
 use std::error::Error as _;
 use std::sync::Arc;

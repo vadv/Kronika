@@ -1,4 +1,4 @@
-//! Portable query composition for one finished embedded segment.
+//! Internal portable query composition for the HTML generator and WASM adapter.
 
 #[cfg(test)]
 use serde_json as _;

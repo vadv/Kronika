@@ -11,7 +11,7 @@ members = [
     "crates/kronika-index",
     "crates/kronika-query",
     "crates/kronika-api",
-    "crates/kronika-report",
+    "crates/kronika-report-wasm",
     "crates/kronika-source-os",
     "crates/kronika-source-log",
     "crates/kronika-source-pg",
@@ -19,6 +19,7 @@ members = [
     "bins/kronika-collector",
     "bins/kronika-dump",
     "bins/kronika-demo",
+    "bins/kronika-report",
     "bins/kronika-web",
 ]
 

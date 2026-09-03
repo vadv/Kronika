@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 crate_root="$repo_root/crates/kronika-query"
 source_root="$crate_root/src"
-report_root="$repo_root/crates/kronika-report"
+report_root="$repo_root/bins/kronika-report"
 report_source_root="$report_root/src"
 cargo_bin=${CARGO_BIN:-cargo}
 rust_toolchain=${RUST_TOOLCHAIN:-1.96.0}

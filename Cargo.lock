@@ -1542,6 +1542,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-report-wasm"
+version = "1.0.0"
+dependencies = [
+ "kronika-api",
+ "kronika-layout",
+ "kronika-query",
+ "kronika-report",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "kronika-source-log"
 version = "1.0.0"
 dependencies = [
