@@ -102,13 +102,18 @@ impl LinePrefix {
                     fields.ts = Some(ts);
                     rest = tail;
                 }
-                other => {
+                Token::User => {
                     let (value, tail) = take_value(rest, self.tokens.get(index + 1));
-                    match other {
-                        Token::User => fields.username = bounded(value),
-                        Token::Database => fields.database = bounded(value),
-                        _ => {}
-                    }
+                    fields.username = bounded(value);
+                    rest = tail;
+                }
+                Token::Database => {
+                    let (value, tail) = take_value(rest, self.tokens.get(index + 1));
+                    fields.database = bounded(value);
+                    rest = tail;
+                }
+                Token::Skipped => {
+                    let (_, tail) = take_value(rest, self.tokens.get(index + 1));
                     rest = tail;
                 }
             }

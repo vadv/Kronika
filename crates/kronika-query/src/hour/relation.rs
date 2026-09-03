@@ -686,7 +686,9 @@ impl GroupKey {
                 | GroupKeyValue::Index { datid, datname, .. } => {
                     GroupKeyValue::Database { datid, datname }
                 }
-                key => key,
+                key @ (GroupKeyValue::Database { .. }
+                | GroupKeyValue::Schema { .. }
+                | GroupKeyValue::Tablespace { .. }) => key,
             },
             RelationGroup::Schema => match self.0 {
                 GroupKeyValue::Table {
@@ -705,11 +707,18 @@ impl GroupKey {
                     datname,
                     schemaname,
                 },
-                key => key,
+                key @ (GroupKeyValue::Database { .. }
+                | GroupKeyValue::Schema { .. }
+                | GroupKeyValue::Tablespace { .. }) => key,
             },
             RelationGroup::Tablespace => match self.0 {
                 key @ GroupKeyValue::Tablespace { .. } => key,
-                _ => unreachable!("tablespace keys are formed directly from physical rows"),
+                GroupKeyValue::Database { .. }
+                | GroupKeyValue::Schema { .. }
+                | GroupKeyValue::Table { .. }
+                | GroupKeyValue::Index { .. } => {
+                    unreachable!("tablespace keys are formed directly from physical rows")
+                }
             },
         })
     }

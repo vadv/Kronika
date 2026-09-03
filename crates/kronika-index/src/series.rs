@@ -177,7 +177,12 @@ impl SeriesBlock {
             SeriesKind::Findings if key.type_id == 0 || finding_layout(key.type_id) => {
                 FindingBlock::decode(key.type_id, bytes).map(Self::Findings)
             }
-            _ => Err(IndexError::BadLayout),
+            SeriesKind::OsHealth
+            | SeriesKind::OverallHealth
+            | SeriesKind::PostgresHealth
+            | SeriesKind::PgTransactionsPerSecond
+            | SeriesKind::PgActiveBackends
+            | SeriesKind::Findings => Err(IndexError::BadLayout),
         }
     }
 }

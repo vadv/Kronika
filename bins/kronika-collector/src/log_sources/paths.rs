@@ -19,7 +19,7 @@ pub(super) fn expand(entry: &str) -> Vec<PathBuf> {
             Vec::new()
         };
     }
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(pattern) = path.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
     };
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
@@ -33,7 +33,7 @@ pub(super) fn expand(entry: &str) -> Vec<PathBuf> {
             entry
                 .file_name()
                 .to_str()
-                .is_some_and(|candidate| matches(name, candidate))
+                .is_some_and(|candidate| matches(pattern, candidate))
         })
         .map(|entry| entry.path())
         .collect();

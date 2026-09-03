@@ -98,7 +98,9 @@ fn session_route_response(request: &Request<()>, now: u64) -> hyper::Response<su
         RequestTarget::Session(target) => {
             session_response(&account(), target).expect("session response")
         }
-        other => panic!("expected session target, got {other:?}"),
+        other @ (RequestTarget::Ui { .. } | RequestTarget::Api { .. } | RequestTarget::Mcp) => {
+            panic!("expected session target, got {other:?}")
+        }
     }
 }
 

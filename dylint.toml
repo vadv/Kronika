@@ -25,16 +25,13 @@ disabled = [
     "stringly_error",
     "stringified_error",
     "unread_error_variant",
-    # These two enum rules infer a narrower API from today's callers. That is
-    # not enough evidence to change a contract; exhaustive local matches are
-    # adopted separately after their existing sites are made explicit.
-    "wildcard_over_own_enum",
+    # These enum rules infer a narrower API from today's callers. That is not
+    # enough evidence to change a contract. Exhaustive local matches remain
+    # enabled so a new crate-local variant requires an explicit choice.
     "param_wider_than_callers",
     "return_wider_than_body",
     # Code-size outlining is opt-in upstream and unmeasured for this binary.
     "generic_body_not_generic",
-    # Enabled after the two existing ambiguous call sites are clarified.
-    "arg_named_like_other_param",
     # This rule is inert until a project-specific identity policy is invented;
     # Kronika does not use a generic key-policy framework.
     "key_not_identity",

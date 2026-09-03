@@ -275,7 +275,17 @@ pub(super) fn layout_io(error: LayoutError) -> io::Error {
 pub(super) fn store_io(error: StoreError) -> io::Error {
     let kind = match error {
         StoreError::Io(ref source) => source.kind(),
-        _ => io::ErrorKind::InvalidData,
+        StoreError::Layout(_)
+        | StoreError::ActivePartTooLarge { .. }
+        | StoreError::TooSmall
+        | StoreError::BadMagic
+        | StoreError::TailIndex(_)
+        | StoreError::UnsupportedFormat { .. }
+        | StoreError::BadCatalogLen
+        | StoreError::Catalog(_)
+        | StoreError::SectionLayout(_)
+        | StoreError::OutOfBounds
+        | StoreError::SectionChecksum { .. } => io::ErrorKind::InvalidData,
     };
     io::Error::new(kind, error)
 }

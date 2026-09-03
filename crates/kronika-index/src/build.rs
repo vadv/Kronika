@@ -437,7 +437,12 @@ fn build_selected_series(
                     points: activity.remove(&key.type_id).unwrap_or_default(),
                 });
             }
-            _ => {}
+            SeriesKind::OsHealth
+            | SeriesKind::OverallHealth
+            | SeriesKind::PostgresHealth
+            | SeriesKind::PgTransactionsPerSecond
+            | SeriesKind::PgActiveBackends
+            | SeriesKind::Findings => {}
         }
     }
     blocks.sort_by_key(SeriesBlock::key);
