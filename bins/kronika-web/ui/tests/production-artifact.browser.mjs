@@ -624,6 +624,7 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
     const cdp = cdpSession(socket)
     trackPage(socket, origin, page)
     await enablePage(cdp)
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Kolkata" })
     await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDirectory })
     await cdp.send("Network.setCookie", {
       name: "kronika_session",
@@ -675,9 +676,35 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
       await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]')?.matches(":modal") === true`, `${width}px export dialog`)
       await settleLayout(cdp)
     }
+    const setDialogRange = (from, to) => cdp.evaluate(`(() => {
+      const set = (selector, value) => {
+        const input = document.querySelector(selector)
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      }
+      set('[data-testid="export-from"]', ${JSON.stringify(from)})
+      set('[data-testid="export-to"]', ${JSON.stringify(to)})
+    })()`)
+    const validationState = () => cdp.evaluate(`(() => {
+      const alert = document.querySelector('[data-testid="export-status"] [role="alert"]')
+      const bounds = alert?.getBoundingClientRect()
+      return {
+        fromInvalid: document.querySelector('[data-testid="export-from"]').getAttribute("aria-invalid"),
+        message: alert?.textContent.trim() ?? null,
+        toInvalid: document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid"),
+        visible: bounds !== undefined && bounds.width > 0 && bounds.height > 0,
+      }
+    })()`)
 
     for (const width of [800, 1280]) {
+      if (width === 800) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+        await settleLayout(cdp)
+        await cdp.evaluate(`document.querySelector('[data-testid="help-trigger"]').click()`)
+        await cdp.waitFor(`document.querySelector('[data-testid="help-panel"]') !== null`, "Help before Export")
+      }
       await openDialog(width)
+      if (width === 800) assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="help-panel"]') === null`), true)
       const idle = await geometry()
       assert.equal(idle.modal, true, `${width}px idle: ${JSON.stringify(idle)}`)
       assert.equal(idle.active, "export-from", `${width}px idle: ${JSON.stringify(idle)}`)
@@ -687,6 +714,38 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
       assert.ok(idle.left >= -1 && idle.right <= width + 1 && idle.top >= -1 && idle.bottom <= 801, `${width}px idle: ${JSON.stringify(idle)}`)
 
       const beforeRequest = exportRequests.length
+      if (width === 800) {
+        const defaults = await cdp.evaluate(`(() => ({
+          from: document.querySelector('[data-testid="export-from"]').value,
+          to: document.querySelector('[data-testid="export-to"]').value,
+        }))()`)
+        assert.deepEqual(defaults, {
+          from: "2026-08-13T10:30",
+          to: "2026-08-13T11:29:59",
+        })
+        const fractionalFrom = defaults.from.length === 16 ? `${defaults.from}:00.500` : `${defaults.from}.500`
+        for (const invalid of [
+          { from: "", message: "Укажите начало и конец диапазона.", to: defaults.to },
+          { from: fractionalFrom, message: "Укажите корректные дату и время с точностью до секунды.", to: defaults.to },
+          { from: defaults.to, message: "Начало должно быть не позже конца.", to: defaults.from },
+        ]) {
+          await setDialogRange(invalid.from, invalid.to)
+          await clickCenter(cdp, '[data-testid="export-submit"]')
+          await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === ${JSON.stringify(invalid.message)}`, "the localized export validation error")
+          await delay(100)
+          assert.deepEqual(await validationState(), {
+            fromInvalid: "true",
+            message: invalid.message,
+            toInvalid: "true",
+            visible: true,
+          })
+          assert.equal(exportRequests.length, beforeRequest, JSON.stringify(invalid))
+        }
+        await setDialogRange(defaults.from, defaults.to)
+        await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]') === null
+          && document.querySelector('[data-testid="export-from"]').getAttribute("aria-invalid") === null
+          && document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid") === null`, "export validation recovery")
+      }
       await cdp.evaluate(`document.querySelector('[data-testid="export-submit"]').focus({ preventScroll: true })`)
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 })
