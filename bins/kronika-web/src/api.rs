@@ -78,7 +78,7 @@ impl Prepared {
         match self {
             Self::Query(prepared) => {
                 let mut sink = NativeSink { emit, cancelled };
-                prepared.execution.stream(&mut sink).map_err(ApiError::from)
+                prepared.execution.stream(&mut sink)
             }
             Self::Empty(_meta) => Ok(()),
         }
@@ -95,7 +95,6 @@ pub(crate) const fn api_error_status(error: &ApiError) -> StatusCode {
         | ApiError::BadFilter(_)
         | ApiError::BadCursor
         | ApiError::BadLocator(_) => StatusCode::BAD_REQUEST,
-        ApiError::Cancelled | ApiError::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -164,19 +163,18 @@ pub(crate) fn prepare_with_demo(
         // Answered directly in `main.rs`.
         return Err(ApiError::NoSuchSection);
     };
-    let request = route.into_query().map_err(ApiError::from)?;
+    let request = route.into_query()?;
     let prepared = match request {
         request @ (QueryRequest::Catalog(_)
         | QueryRequest::History(_)
         | QueryRequest::Events(_)
         | QueryRequest::RowDetail(_)
-        | QueryRequest::Rows(_)) => {
+        | QueryRequest::Rows(_)
+        | QueryRequest::Heatmap(_)) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
+            kronika_query::execute(&context, request).map(prepared_query)
         }
         request @ (QueryRequest::Index(_) | QueryRequest::Hour(_)) => {
             let dataset =
@@ -187,33 +185,19 @@ pub(crate) fn prepare_with_demo(
                 synthetic_demo,
             )
             .with_index_provider(dataset);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::Heatmap(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
+            kronika_query::execute(&context, request).map(prepared_query)
         }
         QueryRequest::Snapshot(request) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            let preparation = kronika_query::snapshot::prepare_snapshot(&context, request)
-                .map_err(ApiError::from)?;
+            let preparation = kronika_query::snapshot::prepare_snapshot(&context, request)?;
             let meta = query_meta(preparation.metadata());
             let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
             if let Some(not_modified) = conditional_not_modified(meta, concrete_validator) {
                 return Ok(not_modified);
             }
-            preparation
-                .finish()
-                .map(prepared_query)
-                .map_err(ApiError::from)
+            preparation.finish().map(prepared_query)
         }
         _ => return Err(ApiError::NoSuchSection),
     }?;

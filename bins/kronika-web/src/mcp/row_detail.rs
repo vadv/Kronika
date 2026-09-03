@@ -35,7 +35,7 @@ pub(crate) fn call(
     let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
     let row = match execute_row_detail(&context, request, &CancellationSink::new(cancelled)) {
         Ok(row) => row,
-        Err(error) => return detail_ref_error(&ApiError::from(error)),
+        Err(error) => return detail_ref_error(&error),
     };
     mcp_structured(Value::Object(row.fields))
 }

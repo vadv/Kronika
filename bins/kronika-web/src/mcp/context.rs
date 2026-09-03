@@ -40,7 +40,7 @@ pub(crate) fn call(
         },
     ) {
         Ok(facts) => facts,
-        Err(error) => return storage_error(&crate::api::ApiError::from(error)),
+        Err(error) => return storage_error(&error),
     };
     let range = match exclusive_recorded_range(facts.recorded_range) {
         Ok(range) => range,

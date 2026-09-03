@@ -115,7 +115,7 @@ fn heatmap_error(error: HeatmapError, source_indices: &[usize]) -> CallToolResul
         .copied()
         .unwrap_or(expanded_index);
     let valid_options = error.valid_options().to_vec();
-    let api_error = ApiError::from(error.into_query());
+    let api_error = error.into_query();
     let message = super::semantics::storage_error_message(&api_error);
     let message = if matches!(api_error, ApiError::BadLocator(_)) {
         message

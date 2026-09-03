@@ -73,7 +73,7 @@ fn run_query(
 ) -> Result<EventsResult, ApiError> {
     let dataset = Arc::new(NativeDataset::from_root(&config.data_root)?);
     let context = QueryContext::new(dataset, config.sources, config.synthetic_demo);
-    execute_events(&context, query, &CancellationSink::new(cancelled)).map_err(ApiError::from)
+    execute_events(&context, query, &CancellationSink::new(cancelled))
 }
 
 fn public_result(result: &EventsResult) -> Result<Value, String> {

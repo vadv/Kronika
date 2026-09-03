@@ -77,7 +77,6 @@ fn run_snapshot_query<R>(
         Err(error) if error.source_changed_during_read() => attempt(),
         result => result,
     }
-    .map_err(crate::api::ApiError::from)
 }
 
 fn run_finder_query<R>(
