@@ -1,4 +1,5 @@
 use std::io::{Read as _, Seek as _, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
 
 use http_body_util::BodyExt as _;
 use hyper::StatusCode;
@@ -154,9 +155,10 @@ async fn streaming_never_exceeds_the_declared_length_and_reports_short_files() {
 }
 
 #[test]
-fn a_small_recording_becomes_a_standalone_offline_html_file() {
+fn a_small_recording_becomes_a_standalone_offline_html_with_the_slice_identity() {
     let mut fixture = crate::tests::artifacts::Fixture::new();
-    fixture.append_process_gauge_rows(&[(MICROS, 42, 1_024, "postgres")]);
+    let first_row = MICROS + 123_456;
+    fixture.append_process_gauge_rows(&[(first_row, 42, 1_024, "postgres")]);
     fixture.finish();
 
     let mut prepared = build(fixture.root(), range(SECOND, SECOND)).expect("build export");
@@ -170,6 +172,13 @@ fn a_small_recording_becomes_a_standalone_offline_html_file() {
     let text = std::str::from_utf8(&html).expect("UTF-8 HTML");
     assert!(text.contains("__KRONIKA_REPORT_RUNTIME__"));
     assert!(text.contains("WebAssembly.compile"));
+    assert!(text.contains(&format!(
+        "new KronikaReportWasm.ReportSession(\"{MICROS}\","
+    )));
+    assert_ne!(
+        MICROS, first_row,
+        "fixture identity must differ from min_ts"
+    );
     for external in [
         "src=\"http:",
         "src=\"https:",
@@ -178,6 +187,25 @@ fn a_small_recording_becomes_a_standalone_offline_html_file() {
     ] {
         assert!(!text.contains(external), "external reference {external}");
     }
+}
+
+#[test]
+fn export_does_not_need_write_access_to_the_recording_root() {
+    let mut fixture = crate::tests::artifacts::Fixture::new();
+    fixture.append_process_gauge_rows(&[(MICROS, 42, 1_024, "postgres")]);
+    fixture.finish();
+
+    let original = std::fs::metadata(fixture.root())
+        .expect("recording root metadata")
+        .permissions();
+    let mut read_only = original.clone();
+    read_only.set_mode(original.mode() & !0o222);
+    std::fs::set_permissions(fixture.root(), read_only).expect("make recording root read-only");
+    let result = build(fixture.root(), range(SECOND, SECOND));
+    std::fs::set_permissions(fixture.root(), original).expect("restore recording permissions");
+
+    let prepared = result.expect("build export without recording-root writes");
+    assert!(prepared.len > 0);
 }
 
 #[test]

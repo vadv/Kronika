@@ -5,7 +5,10 @@ use kronika_query::{SOURCE_OS, SOURCE_POSTGRESQL};
 use kronika_reader::FinishedReader;
 use kronika_store::EmbeddedSource;
 
-use super::{HtmlReportInput, isolated_index, write_html, write_html_from_file};
+use super::{
+    HtmlReportInput, isolated_index, write_html, write_html_from_file,
+    write_html_from_file_with_segment_id,
+};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const ZMS: &[u8] = include_bytes!("../tests/fixtures/standalone.zms");
@@ -74,6 +77,31 @@ fn file_and_vec_writers_produce_identical_html() {
     .expect("write report from file");
 
     assert_eq!(summary.segment_id.get(), SEGMENT_ID);
+    assert_eq!(from_file, from_vec);
+}
+
+#[test]
+fn file_writer_preserves_an_explicit_identity_distinct_from_the_first_row() {
+    let segment_id = SegmentId::new(SEGMENT_ID + 1_000_000).expect("explicit segment id");
+    let mut from_vec = Vec::new();
+    write_html(
+        HtmlReportInput {
+            segment_id,
+            zms: ZMS.to_vec(),
+            max_zms_bytes: ZMS.len() as u64,
+        },
+        &mut from_vec,
+    )
+    .expect("write report from Vec");
+
+    let mut file = tempfile::tempfile().expect("temporary ZMS");
+    std::io::Write::write_all(&mut file, ZMS).expect("write fixture ZMS");
+    let mut from_file = Vec::new();
+    let summary =
+        write_html_from_file_with_segment_id(segment_id, file, ZMS.len() as u64, &mut from_file)
+            .expect("write report from file with explicit identity");
+
+    assert_eq!(summary.segment_id, segment_id);
     assert_eq!(from_file, from_vec);
 }
 

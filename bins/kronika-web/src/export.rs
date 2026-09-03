@@ -10,7 +10,7 @@ use hyper::Response;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, VARY};
 use kronika_dump::{SliceError, SliceRange, UtcSecond, slice_to_zms};
 use kronika_reader::{Reader, ReaderError};
-use kronika_report::{HtmlReportError, write_html_from_file};
+use kronika_report::{HtmlReportError, write_html_from_file_with_segment_id};
 use tokio::sync::mpsc;
 
 use crate::api::CachePolicy;
@@ -157,8 +157,8 @@ fn export_failure(error: &ExportError) -> Response<WebBody> {
 
 fn build(data_root: &Path, range: SliceRange) -> Result<PreparedExport, ExportError> {
     let reader = Reader::open(data_root)?;
-    let mut html = tempfile::tempfile_in(data_root).map_err(ExportError::Temporary)?;
-    let mut zms = tempfile::tempfile_in(data_root).map_err(ExportError::Temporary)?;
+    let mut html = tempfile::tempfile().map_err(ExportError::Temporary)?;
+    let mut zms = tempfile::tempfile().map_err(ExportError::Temporary)?;
     let summary = slice_to_zms(&reader, range, &mut html, &mut zms)?;
     zms.flush().map_err(ExportError::Temporary)?;
     let zms_len = zms.metadata().map_err(ExportError::Temporary)?.len();
@@ -173,7 +173,12 @@ fn build(data_root: &Path, range: SliceRange) -> Result<PreparedExport, ExportEr
         .map_err(ExportError::Temporary)?;
     {
         let mut output = BufWriter::with_capacity(FILE_BUFFER_BYTES, &mut html);
-        write_html_from_file(zms, summary.bytes_written, &mut output)?;
+        write_html_from_file_with_segment_id(
+            summary.segment_id,
+            zms,
+            summary.bytes_written,
+            &mut output,
+        )?;
         output.flush().map_err(ExportError::Temporary)?;
     }
     let len = html.metadata().map_err(ExportError::Temporary)?.len();

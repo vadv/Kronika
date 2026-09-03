@@ -11,6 +11,7 @@ mod generator;
 #[cfg(feature = "generator")]
 pub use generator::{
     HtmlReportError, HtmlReportInput, HtmlReportSummary, write_html, write_html_from_file,
+    write_html_from_file_with_segment_id,
 };
 
 use std::sync::Arc;
