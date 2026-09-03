@@ -46,7 +46,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-setsid "$browser" \
+setsid env -u DBUS_SESSION_BUS_ADDRESS -u DBUS_SYSTEM_BUS_ADDRESS "$browser" \
 	--headless \
 	--disable-background-networking \
 	--disable-component-update \
@@ -85,7 +85,7 @@ if [[ -z $browser_pgid ]]; then
 fi
 
 debug_port=
-for _attempt in $(seq 1 250); do
+for _attempt in $(seq 1 750); do
 	if [[ -s $profile/DevToolsActivePort ]]; then
 		IFS= read -r debug_port <"$profile/DevToolsActivePort"
 		break
