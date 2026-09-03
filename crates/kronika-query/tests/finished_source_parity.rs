@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Dependencies of other targets of this crate; anchored for the
 // `unused_crate_dependencies` lint, which checks each target separately.
@@ -21,8 +22,8 @@ use kronika_query::{
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, HourPart, HourRequest,
     HourSeriesRequest, IndexProvider, IndexRequest, MemoryIndexProvider, NormalizedRanking,
     QueryContext, QueryDataset, QueryRequest, QuerySink, RelationGroup, RelationKind,
-    RowDetailResult, TimeRange, Window, execute, execute_events, execute_heatmap_batch,
-    execute_row_detail, validate_row_detail_ref,
+    RowDetailResult, TimeRange, Window, detail_locator, execute, execute_events,
+    execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
 };
 use kronika_reader::Reader;
 use kronika_registry::instance_metadata::InstanceMetadata;
@@ -203,6 +204,40 @@ fn row_detail_result(dataset: Arc<dyn QueryDataset>, detail_ref: &str) -> RowDet
     let context = QueryContext::new(dataset, 0, false);
     let request = validate_row_detail_ref(detail_ref).expect("validate row detail reference");
     execute_row_detail(&context, request, &Records::default()).expect("execute typed row detail")
+}
+
+#[derive(Debug)]
+struct CountingRowDetailDataset {
+    inner: FinishedDataset<PosixSource>,
+    opens: AtomicUsize,
+}
+
+impl QueryDataset for CountingRowDetailDataset {
+    fn catalog(
+        &self,
+    ) -> Result<Box<dyn kronika_query::CapturedCatalog + '_>, kronika_query::QueryError> {
+        self.inner.catalog()
+    }
+
+    fn segment(&self, id: i64) -> Result<kronika_query::DatasetListing, kronika_query::QueryError> {
+        self.inner.segment(id)
+    }
+
+    fn open(
+        &self,
+        segment: &kronika_query::DatasetSegment,
+    ) -> Result<kronika_reader::Segment, kronika_query::QueryError> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        self.inner.open(segment)
+    }
+
+    fn at_active_position(
+        &self,
+        segment: &kronika_query::DatasetSegment,
+        position: u64,
+    ) -> Result<kronika_query::DatasetSegment, kronika_query::QueryError> {
+        self.inner.at_active_position(segment, position)
+    }
 }
 
 fn finder_query(surface: FinderSurface) -> FinderQuery {
@@ -860,6 +895,41 @@ fn write_events_fixture(root: &Path, segment_id: SegmentId) -> Arc<[u8]> {
     payload
 }
 
+fn write_process_segment(root: &Path, segment_id: SegmentId, timestamp: i64, pid: i32, utime: i64) {
+    let data_root = DataRoot::open(root).expect("open process data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire process writer");
+    let mut journal =
+        Journal::open(&owner, JournalConfig::default()).expect("open process journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let label = fixture_label(&mut interner, b"row-detail");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(OsProcess {
+            ts: Ts(timestamp),
+            pid,
+            utime,
+            ..parity_process(timestamp, label)
+        })
+        .expect("process row fits");
+    let dictionary = dict::encode(interner.window()).expect("encode process dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode process rows")
+        .expect("nonempty process rows");
+    journal
+        .append(segment_id, &part)
+        .expect("append process rows");
+    write_segment(
+        &journal,
+        &owner,
+        SegmentAddress::new(segment_id).expect("process segment address"),
+    )
+    .expect("write process segment");
+    journal.reset().expect("reset process journal");
+}
+
 #[test]
 fn catalog_query_is_byte_identical_for_posix_and_embedded_finished_zms() {
     let segment_id = SegmentId::new(SEGMENT_ID).expect("explicit segment identity");
@@ -1315,6 +1385,43 @@ fn row_detail_is_typed_identical_for_posix_and_embedded_finished_zms() {
             "stored_text": "error-a",
             "truncated": false,
         })
+    );
+}
+
+#[test]
+fn row_detail_uses_the_target_identity_predecessor_once_per_needed_segment() {
+    let root = tempfile::tempdir().expect("process fixture directory");
+    let first = SegmentId::new(SEGMENT_ID).expect("first segment id");
+    let unrelated = SegmentId::new(SEGMENT_ID + 1_000_000).expect("unrelated segment id");
+    let anchor = SegmentId::new(SEGMENT_ID + 2_000_000).expect("anchor segment id");
+    let older = SegmentId::new(SEGMENT_ID - 1_000_000).expect("older segment id");
+    write_process_segment(root.path(), older, SEGMENT_ID - 999_990, 41, 1);
+    write_process_segment(root.path(), first, SEGMENT_ID + 10, 41, 10);
+    write_process_segment(root.path(), unrelated, SEGMENT_ID + 1_000_010, 99, 100);
+    write_process_segment(root.path(), anchor, SEGMENT_ID + 2_000_010, 41, 20);
+
+    let dataset = Arc::new(CountingRowDetailDataset {
+        inner: FinishedDataset::new(PosixSource::open(root.path()).expect("POSIX source")),
+        opens: AtomicUsize::new(0),
+    });
+    let detail_ref = detail_locator(
+        "os_process",
+        anchor.get(),
+        SEGMENT_ID + 2_000_010,
+        1_100_001,
+        0,
+        std::iter::once(("pid".to_owned(), serde_json::Value::String("41".to_owned()))).collect(),
+    )
+    .detail_ref()
+    .expect("process detail reference");
+    let dataset_for_query: Arc<dyn QueryDataset> = Arc::<CountingRowDetailDataset>::clone(&dataset);
+    let result = row_detail_result(dataset_for_query, &detail_ref);
+
+    assert_eq!(result.fields["utime"], serde_json::json!(5.0));
+    assert_eq!(
+        dataset.opens.load(Ordering::Relaxed),
+        3,
+        "prepare opens the anchor once, then only the unrelated and matching predecessor segments"
     );
 }
 

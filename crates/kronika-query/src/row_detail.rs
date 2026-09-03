@@ -1,5 +1,6 @@
 //! One exact stored row addressed by an opaque reference.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ pub struct PreparedRowDetail {
     dataset: Arc<dyn QueryDataset>,
     request: ValidatedRowDetailQuery,
     anchor: DatasetSegment,
+    anchor_segment: Segment,
     other_segments: Vec<DatasetSegment>,
 }
 
@@ -85,11 +87,12 @@ pub fn prepare_row_detail(
         return Err(QueryError::NoSuchSegment);
     };
     let anchor = listing.segments.remove(index);
-    drop(context.dataset.open(&anchor)?);
+    let anchor_segment = context.dataset.open(&anchor)?;
     Ok(PreparedRowDetail {
         dataset: Arc::clone(&context.dataset),
         request,
         anchor,
+        anchor_segment,
         other_segments: listing.segments,
     })
 }
@@ -118,7 +121,7 @@ impl PreparedRowDetail {
             return Err(QueryError::Cancelled);
         }
         let locator = &self.request.locator;
-        let segment = self.dataset.open(&self.anchor)?;
+        let segment = &self.anchor_segment;
         let Some(rows) = segment.rows_of(locator.type_id) else {
             return Err(QueryError::BadCursor);
         };
@@ -142,10 +145,10 @@ impl PreparedRowDetail {
             )));
         }
 
-        let ordinal = locate_row(&segment, contract, timestamp, locator, sink)?;
-        let row = read_row(&segment, contract, ordinal, sink)?;
-        let dictionary = chunk_dictionary(&segment, &[(ordinal, row.clone())])?;
-        let previous = self.previous_readings(contract, timestamp, &row, sink)?;
+        let ordinal = locate_row(segment, contract, timestamp, locator, sink)?;
+        let row = read_row(segment, contract, ordinal, sink)?;
+        let dictionary = chunk_dictionary(segment, &[(ordinal, row.clone())])?;
+        let previous = self.previous_readings(segment, contract, timestamp, sink)?;
         let elapsed = previous
             .as_ref()
             .and_then(|before| locator.at.checked_sub(before.at))
@@ -156,7 +159,7 @@ impl PreparedRowDetail {
                 .is_some_and(|column| row.get(column.name) != before.values.get(column.name));
             (!changed_process).then_some(&before.values)
         });
-        let users = ProcessUsers::load(&segment, contract, sink)?;
+        let users = ProcessUsers::load(segment, contract, sink)?;
         if sink.cancelled() {
             return Err(QueryError::Cancelled);
         }
@@ -223,58 +226,19 @@ impl PreparedRowDetail {
 
     fn previous_readings(
         &self,
+        anchor: &Segment,
         contract: &'static TypeContract,
         timestamp: &'static str,
-        current: &Row,
         sink: &dyn QuerySink,
     ) -> Result<Option<PreviousReadings>, QueryError> {
         let locator = &self.request.locator;
-        let partition = matches!(
-            locator.section.as_str(),
-            "pg_stat_user_tables" | "pg_stat_user_indexes"
-        )
-        .then(|| current.get("datid").cloned())
-        .flatten();
-        let mut previous_at = None;
-        for descriptor in self.candidate_segments() {
-            let segment = self.dataset.open(descriptor)?;
-            let mut projection = vec![timestamp];
-            if partition.is_some() {
-                projection.push("datid");
-            }
-            segment.visit_rows(
-                locator.type_id,
-                &projection,
-                0,
-                usize::MAX,
-                |_ordinal, row| {
-                    if sink.cancelled() {
-                        return false;
-                    }
-                    if partition
-                        .as_ref()
-                        .is_some_and(|wanted| row.get("datid") != Some(wanted))
-                    {
-                        return true;
-                    }
-                    if let Some(stored) = row_timestamp(&row, timestamp)
-                        && stored < locator.at
-                        && previous_at.is_none_or(|chosen| stored > chosen)
-                    {
-                        previous_at = Some(stored);
-                    }
-                    true
-                },
-            )?;
-            if sink.cancelled() {
-                return Err(QueryError::Cancelled);
-            }
-        }
-        let Some(previous_at) = previous_at else {
+        if !contract
+            .columns
+            .iter()
+            .any(|column| column.class == ColumnClass::Cumulative)
+        {
             return Ok(None);
-        };
-
-        let mut values = None;
+        }
         let mut projection = row_key::identity_columns(contract).collect::<Vec<_>>();
         projection.extend(
             contract
@@ -289,57 +253,100 @@ impl PreparedRowDetail {
         projection.push(timestamp);
         projection.sort_unstable();
         projection.dedup();
-        for descriptor in self.candidate_segments() {
-            let segment = self.dataset.open(descriptor)?;
-            segment.visit_rows(
-                locator.type_id,
-                &projection,
-                0,
-                usize::MAX,
-                |_ordinal, row| {
-                    if sink.cancelled() {
-                        return false;
-                    }
-                    if row_timestamp(&row, timestamp) != Some(previous_at) {
-                        return true;
-                    }
-                    if row_key::identity(locator.type_id, &row)
-                        .is_ok_and(|identity| identity == locator.identity)
-                    {
-                        values = Some(
-                            projection
-                                .iter()
-                                .filter_map(|name| {
-                                    row.get(name).cloned().map(|value| (*name, value))
-                                })
-                                .collect(),
-                        );
-                    }
-                    true
-                },
-            )?;
-            if sink.cancelled() {
-                return Err(QueryError::Cancelled);
+
+        let mut candidates = std::iter::once(&self.anchor)
+            .chain(
+                self.other_segments
+                    .iter()
+                    .filter(|segment| segment.id() <= self.anchor.id()),
+            )
+            .filter(|segment| {
+                segment
+                    .sections()
+                    .iter()
+                    .any(|section| section.type_id == locator.type_id)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|segment| Reverse((segment.max_ts(), segment.id())));
+
+        let mut previous: Option<PreviousReadings> = None;
+        for descriptor in candidates {
+            if previous
+                .as_ref()
+                .is_some_and(|selected| descriptor.max_ts() < selected.at)
+            {
+                break;
+            }
+            if descriptor.id() == self.anchor.id() {
+                scan_predecessor(anchor, locator, timestamp, &projection, sink, &mut previous)?;
+            } else {
+                let segment = self.dataset.open(descriptor)?;
+                scan_predecessor(
+                    &segment,
+                    locator,
+                    timestamp,
+                    &projection,
+                    sink,
+                    &mut previous,
+                )?;
             }
         }
-        Ok(values.map(|values| PreviousReadings {
-            at: previous_at,
-            values,
-        }))
-    }
-
-    fn candidate_segments(&self) -> impl Iterator<Item = &DatasetSegment> {
-        std::iter::once(&self.anchor).chain(
-            self.other_segments
-                .iter()
-                .filter(|segment| segment.id() <= self.anchor.id()),
-        )
+        Ok(previous)
     }
 }
 
 struct PreviousReadings {
     at: i64,
     values: BTreeMap<&'static str, Cell>,
+}
+
+fn scan_predecessor(
+    segment: &Segment,
+    locator: &DetailLocator,
+    timestamp: &'static str,
+    projection: &[&'static str],
+    sink: &dyn QuerySink,
+    previous: &mut Option<PreviousReadings>,
+) -> Result<(), QueryError> {
+    segment.visit_rows(
+        locator.type_id,
+        projection,
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            if sink.cancelled() {
+                return false;
+            }
+            let Some(stored) = row_timestamp(&row, timestamp) else {
+                return true;
+            };
+            if stored >= locator.at {
+                return true;
+            }
+            if row_key::identity(locator.type_id, &row)
+                .is_ok_and(|identity| identity == locator.identity)
+            {
+                if previous
+                    .as_ref()
+                    .is_some_and(|selected| selected.at >= stored)
+                {
+                    return true;
+                }
+                *previous = Some(PreviousReadings {
+                    at: stored,
+                    values: projection
+                        .iter()
+                        .filter_map(|name| row.get(name).cloned().map(|value| (*name, value)))
+                        .collect(),
+                });
+            }
+            true
+        },
+    )?;
+    if sink.cancelled() {
+        return Err(QueryError::Cancelled);
+    }
+    Ok(())
 }
 
 fn locate_row(
