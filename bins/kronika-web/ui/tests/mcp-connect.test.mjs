@@ -15,7 +15,7 @@ test("the MCP panel is reachable from the top bar and self-addresses the page or
   // owns the event.
   assert.match(app, /event\.key === "\?"(?:(?!event\.key)[\s\S])*?setMcpOpen\(false\)/)
   assert.match(app, /event\.key === "Escape"(?:(?!event\.key)[\s\S])*?setMcpOpen\(false\)/)
-  assert.match(app, /\{mcpOpen && <McpPanel/)
+  assert.match(app, /\{!KRONIKA_REPORT && mcpOpen && <McpPanel/)
   assert.match(panel, /window\.location\.origin\}\/mcp/)
   for (const label of ["Claude Code", "Codex CLI", "Cursor"]) assert.match(panel, new RegExp(label))
   // One client at a time behind a segmented tab row, in the app's own

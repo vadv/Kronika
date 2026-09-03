@@ -1,27 +1,34 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { gunzipSync } from "node:zlib";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { runInThisContext } from "node:vm";
 
 const SEGMENT_ID = "1709164800000000";
 const SAMPLE_TO = "1709164801000000";
 const SOURCES = 3;
-const [glueArgument, nativeArgument] = process.argv.slice(2);
+const [glueArgument, wasmArgument, nativeArgument] = process.argv.slice(2);
 assert.ok(glueArgument, "generated WebAssembly glue path is required");
+assert.ok(wasmArgument, "compressed WebAssembly path is required");
 assert.ok(nativeArgument, "native oracle path is required");
 
 const gluePath = resolve(glueArgument);
+const wasmPath = resolve(wasmArgument);
 const nativePath = resolve(nativeArgument);
-const wasmPath = gluePath.replace(/\.js$/, "_bg.wasm");
 const fixtureRoot = new URL("../../../bins/kronika-report/tests/fixtures/", import.meta.url);
-const [bindings, wasmBytes, zms, idx] = await Promise.all([
-  import(pathToFileURL(gluePath).href),
+const [glue, wasmGzip, zms, idx] = await Promise.all([
+  readFile(gluePath, "utf8"),
   readFile(wasmPath),
   readFile(new URL("standalone.zms", fixtureRoot)),
   readFile(new URL("standalone.idx", fixtureRoot)),
 ]);
-const wasm = await bindings.default({ module_or_path: wasmBytes });
+runInThisContext(glue, { filename: gluePath });
+const bindings = globalThis.KronikaReportWasm;
+assert.ok(bindings, "browser bindings must expose KronikaReportWasm");
+const wasmBytes = gunzipSync(wasmGzip);
+const module = await WebAssembly.compile(wasmBytes);
+const wasm = await bindings.initEmbedded(module);
 const memoryBeforeBytes = wasm.memory.buffer.byteLength;
 const session = new bindings.ReportSession(
   SEGMENT_ID,
@@ -38,21 +45,26 @@ function nativeBody(path, query) {
     encoding: null,
     maxBuffer: 16 * 1024 * 1024,
   });
+  assert.ifError(result.error);
   assert.equal(
     result.status,
     0,
-    `native request failed: ${result.stderr.toString("utf8")}`,
+    `native request failed: ${result.stderr?.toString("utf8") ?? "missing stderr"}`,
   );
   return result.stdout;
 }
 
 function wasmBody(path, query) {
   const response = session.request(path, query);
-  assert.equal(response.status, 200);
-  assert.equal(response.code, undefined);
-  assert.equal(response.parameter, undefined);
-  assert.equal(response.message, undefined);
-  return Buffer.from(response.takeBody());
+  try {
+    assert.equal(response.status, 200);
+    assert.equal(response.code, undefined);
+    assert.equal(response.parameter, undefined);
+    assert.equal(response.message, undefined);
+    return Buffer.from(response.takeBody());
+  } finally {
+    response.free();
+  }
 }
 
 function compare(name, path, query) {
@@ -112,13 +124,15 @@ compare(
   `detail_ref=${encodeURIComponent(detailRef)}`,
 );
 
-process.stdout.write(
-  `${JSON.stringify({
-    cases,
-    zmsBytes: zms.length,
-    idxBytes: idx.length,
-    outputBytes,
-    memoryBeforeBytes,
-    memoryAfterBytes: wasm.memory.buffer.byteLength,
-  })}\n`,
-);
+const memoryAfterBytes = wasm.memory.buffer.byteLength;
+session.free();
+process.stdout.write(`${JSON.stringify({
+  cases,
+  zmsBytes: zms.length,
+  idxBytes: idx.length,
+  wasmBytes: wasmBytes.length,
+  wasmGzipBytes: wasmGzip.length,
+  outputBytes,
+  memoryBeforeBytes,
+  memoryAfterBytes,
+})}\n`);

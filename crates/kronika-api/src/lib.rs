@@ -28,7 +28,7 @@ const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
 
-/// The requests the server answers.
+/// Recorded-data resource requests accepted by native and embedded adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     /// Actual finished/current segment catalog.
@@ -114,7 +114,7 @@ impl HeatmapRequest {
     }
 }
 
-/// Why a request was refused before touching disk.
+/// Why a request was refused before opening a dataset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteError {
     /// No resource has this path shape.

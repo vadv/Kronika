@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 use serde_json as _;
+#[cfg(feature = "generator")]
+use {base64 as _, flate2 as _, kronika_reader as _, tempfile as _};
 
 use std::sync::Arc;
 
@@ -84,7 +86,7 @@ pub struct ReportEngine {
 }
 
 impl ReportEngine {
-    /// Bind one owned ZMS and its exporter-supplied canonical IDX.
+    /// Bind one owned ZMS and its matching canonical IDX.
     ///
     /// # Errors
     ///

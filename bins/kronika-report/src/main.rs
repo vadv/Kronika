@@ -1,25 +1,45 @@
 //! Standalone Kronika HTML report generator.
 
+mod generator;
+
+use kronika_report as _;
 #[cfg(test)]
 use serde_json as _;
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
-use kronika_index as _;
-use kronika_layout as _;
-use kronika_query as _;
-use kronika_report as _;
-use kronika_store as _;
+const USAGE: &str = "usage: kronika-report <signed-decimal>.zms <output>.html";
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arguments = std::env::args_os();
-    let _program = arguments.next();
-    let _input = arguments
-        .next()
-        .ok_or_else(|| std::io::Error::other("missing standalone ZMS input"))?;
-    let _output = arguments
-        .next()
-        .ok_or_else(|| std::io::Error::other("missing HTML output"))?;
-    if arguments.next().is_some() {
-        return Err(std::io::Error::other("expected one ZMS input and one HTML output").into());
+fn arguments(
+    values: impl IntoIterator<Item = OsString>,
+) -> Result<(PathBuf, PathBuf), &'static str> {
+    let mut values = values.into_iter();
+    let input = values.next().ok_or("missing standalone ZMS input")?;
+    let output = values.next().ok_or("missing HTML output")?;
+    if values.next().is_some() {
+        return Err("expected one ZMS input and one HTML output");
     }
-    Err(std::io::Error::other("HTML generation is not available in this intermediate build").into())
+    Ok((input.into(), output.into()))
 }
+
+fn main() -> ExitCode {
+    let (input, output) = match arguments(std::env::args_os().skip(1)) {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("kronika-report: {error}\n{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match generator::generate(&input, &output) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("kronika-report: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

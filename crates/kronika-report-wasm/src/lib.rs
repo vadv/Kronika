@@ -55,7 +55,7 @@ impl ReportSession {
                     configured_sources,
                     max_zms_bytes,
                 })
-                .map_err(ReportResponse::report)
+                .map_err(|error| ReportResponse::report(&error))
             },
         );
         Self { engine }
@@ -70,7 +70,7 @@ impl ReportSession {
         };
         let request = match route.into_query() {
             Ok(request) => request,
-            Err(error) => return ReportResponse::query(error),
+            Err(error) => return ReportResponse::query(&error),
         };
         let engine = match &self.engine {
             Ok(engine) => engine,
@@ -79,7 +79,7 @@ impl ReportSession {
         let mut sink = NdjsonSink::default();
         match engine.execute(request, &mut sink) {
             Ok(()) => ReportResponse::success(sink.body),
-            Err(error) => ReportResponse::query(error),
+            Err(error) => ReportResponse::query(&error),
         }
     }
 }
@@ -89,6 +89,10 @@ impl ReportResponse {
     /// HTTP-compatible status for this request.
     #[wasm_bindgen(getter)]
     #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "wasm-bindgen exports cannot be const functions"
+    )]
     pub fn status(&self) -> u16 {
         self.status
     }
@@ -122,7 +126,7 @@ impl ReportResponse {
 }
 
 impl ReportResponse {
-    fn success(body: Vec<u8>) -> Self {
+    const fn success(body: Vec<u8>) -> Self {
         Self {
             status: OK,
             code: None,
@@ -170,7 +174,7 @@ impl ReportResponse {
         }
     }
 
-    fn query(error: QueryError) -> Self {
+    fn query(error: &QueryError) -> Self {
         let status = match error {
             QueryError::NoSuchSegment | QueryError::NoSuchSection => NOT_FOUND,
             QueryError::NoSuchColumn(_)
@@ -178,7 +182,6 @@ impl ReportResponse {
             | QueryError::BadFilter(_)
             | QueryError::BadCursor
             | QueryError::BadLocator(_) => BAD_REQUEST,
-            QueryError::Cancelled | QueryError::Unreadable(_) => INTERNAL_SERVER_ERROR,
             _ => INTERNAL_SERVER_ERROR,
         };
         let code = error.code();
@@ -186,7 +189,7 @@ impl ReportResponse {
         Self::refusal(status, code, parameter, error.to_string())
     }
 
-    fn report(error: ReportError) -> Self {
+    fn report(error: &ReportError) -> Self {
         Self::refusal(INTERNAL_SERVER_ERROR, "unreadable", None, error.to_string())
     }
 }

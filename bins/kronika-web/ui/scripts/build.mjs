@@ -14,10 +14,16 @@ const uiDirectory = resolve(scriptsDirectory, "..")
 const repository = resolve(uiDirectory, "../../..")
 const fixtureOutputAt = process.argv.indexOf("--fixture-output")
 const fixtureOutput = fixtureOutputAt < 0 ? null : process.argv[fixtureOutputAt + 1]
+const reportMode = process.argv.includes("--report")
 if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length !== fixtureOutputAt + 2)) {
-  throw new Error("usage: node scripts/build.mjs [--check | --fixture-output OUTPUT_GZIP]")
+  throw new Error("usage: node scripts/build.mjs [--check] [--report] | --fixture-output OUTPUT_GZIP")
 }
-const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
+if (reportMode && fixtureOutput !== null) throw new Error("--report and --fixture-output cannot be combined")
+const artifact = fixtureOutput !== null
+  ? resolve(fixtureOutput)
+  : reportMode
+    ? join(repository, "bins/kronika-report/assets/kronika-report-shell.html.gz")
+    : join(uiDirectory, "kronika-ui.html.gz")
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
 const maximumRawBytes = fixtureOutput === null ? 1_600_000 : 40_000_000
@@ -52,16 +58,18 @@ try {
     { cwd: repository, encoding: "utf8", env: { ...process.env, CARGO_TERM_COLOR: "never" } },
   )
   const translations = await dictionaryModule(new URL("./", import.meta.url))
-  const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null)
+  const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null, reportMode)
   const stylesheet = (await fontFaces()) + (await compileStylesheet(temporary))
   const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
-  const fixture = fixtureOutput === null ? "" : await fixtureScript()
+  const fixture = reportMode
+    ? "/*KRONIKA_REPORT_RUNTIME*/"
+    : fixtureOutput === null ? "" : await fixtureScript()
   const html = template
     .replaceAll("{{KRONIKA_STYLE}}", () => stylesheet)
     .replaceAll("{{KRONIKA_DATA}}", () => fixture)
     .replaceAll("{{KRONIKA_SCRIPT}}", () => javascript)
 
-  validateHtml(html)
+  validateHtml(html, reportMode)
   const compressed = Buffer.from(gzip(Buffer.from(html), { level: 9 }))
   validateGzipHeader(compressed)
   if (Buffer.byteLength(html) > maximumRawBytes || compressed.length > maximumGzipBytes) {
@@ -78,18 +86,21 @@ try {
   } else {
     await writeFile(artifact, compressed)
   }
-  process.stdout.write(`kronika-ui raw=${Buffer.byteLength(html)} gzip=${compressed.length}\n`)
+  process.stdout.write(`kronika-ui${reportMode ? "-report" : ""} raw=${Buffer.byteLength(html)} gzip=${compressed.length}\n`)
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }
 
-async function bundleJavascript(registry, translations, includeFixture) {
+async function bundleJavascript(registry, translations, includeFixture, reportMode) {
   const result = await build({
     absWorkingDir: uiDirectory,
     entryPoints: ["src/app.tsx"],
     bundle: true,
     charset: "utf8",
-    define: { "process.env.NODE_ENV": '"production"' },
+    define: {
+      KRONIKA_REPORT: reportMode ? "true" : "false",
+      "process.env.NODE_ENV": '"production"',
+    },
     drop: ["console"],
     format: "iife",
     legalComments: "none",
@@ -101,6 +112,11 @@ async function bundleJavascript(registry, translations, includeFixture) {
     plugins: [{
       name: "kronika-registry",
       setup(context) {
+        if (reportMode) {
+          context.onResolve({ filter: /^\.\/session$/ }, (args) => ({
+            path: join(args.resolveDir, "report-session.ts"),
+          }))
+        }
         if (!includeFixture) {
           context.onResolve({ filter: /^\.\/fixture$/ }, () => ({
             path: "fixture.ts",
@@ -173,7 +189,7 @@ async function compileStylesheet(temporary) {
   return readFile(output, "utf8")
 }
 
-function validateHtml(html) {
+function validateHtml(html, reportMode) {
   if (!html.startsWith("<!doctype html>")) {
     throw new Error("the built UI is not an HTML document")
   }
@@ -183,6 +199,30 @@ function validateHtml(html) {
   }
   if (/sourceMappingURL/i.test(html)) {
     throw new Error("source maps are forbidden in the production UI")
+  }
+  const reportMarkers = html.split("/*KRONIKA_REPORT_RUNTIME*/").length - 1
+  if (reportMarkers !== (reportMode ? 1 : 0)) {
+    throw new Error(`the UI has ${reportMarkers} report runtime markers`)
+  }
+  if (reportMode) {
+    const serverOnly = [
+      "/auth/session",
+      "/api/mcp-access",
+      "/api/instance-label",
+      "fetch(",
+      "XMLHttpRequest",
+      "WebSocket",
+      "EventSource",
+      "sendBeacon",
+      "X-Kronika-UI",
+      "mcp-trigger",
+      "refresh-action",
+      "logout-action",
+      "login-card",
+    ].filter((needle) => html.includes(needle))
+    if (serverOnly.length !== 0) {
+      throw new Error(`the report UI contains server-only code: ${serverOnly.join(", ")}`)
+    }
   }
   if (/\b(?:src|href)\s*=\s*["']\s*(?:https?:)?\/\//i.test(html)
       || /url\(\s*["']?\s*https?:\/\//i.test(html)) {

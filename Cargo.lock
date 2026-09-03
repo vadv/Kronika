@@ -1534,11 +1534,15 @@ dependencies = [
 name = "kronika-report"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "kronika-index",
  "kronika-layout",
  "kronika-query",
+ "kronika-reader",
  "kronika-store",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

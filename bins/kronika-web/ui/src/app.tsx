@@ -1,7 +1,8 @@
 import { Activity, ChartLine, CircleHelp, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { ProcessesActivity } from "./activity"
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
+import { historyAddress } from "./build-mode"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
@@ -171,7 +172,6 @@ const HELP_EVENTS = [
 ] as const
 
 function Kronika() {
-  const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)
   const [locale, setLocale] = useState<Locale>(initialLocale)
   const [displayZone, setDisplayZone] = useState<DisplayTimeZone>(() => loadDisplayTimeZone(localStorage))
   const t = useMemo<Translate>(() => (key, slots = {}) => {
@@ -183,10 +183,23 @@ function Kronika() {
     try { localStorage.setItem("kronika.locale", locale) } catch {}
   }, [locale])
   useEffect(() => saveDisplayTimeZone(localStorage, displayZone), [displayZone])
+  const application = <DisplayTimeProvider locale={locale} mode={displayZone} setMode={setDisplayZone}><App locale={locale} onLocale={setLocale} t={t} /></DisplayTimeProvider>
+  return KRONIKA_REPORT
+    ? application
+    : <NativeSession locale={locale} onLocale={setLocale} t={t}>{application}</NativeSession>
+}
+
+function NativeSession({ children, locale, onLocale, t }: {
+  readonly children: ReactNode
+  readonly locale: Locale
+  readonly onLocale: (locale: Locale) => void
+  readonly t: Translate
+}) {
+  const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)
   if (session === "pending") return null
   return session === "signed-in"
-    ? <DisplayTimeProvider locale={locale} mode={displayZone} setMode={setDisplayZone}><App locale={locale} onLocale={setLocale} t={t} /></DisplayTimeProvider>
-    : <Login expired={session === "expired"} locale={locale} onLocale={setLocale} t={t} />
+    ? children
+    : <Login expired={session === "expired"} locale={locale} onLocale={onLocale} t={t} />
 }
 
 function App({ locale, onLocale, t }: {
@@ -680,7 +693,7 @@ function App({ locale, onLocale, t }: {
   }, [backgroundReadyHour, backgroundTimeline, hour])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
   useEffect(() => {
-    if (instanceLabelRequest.current !== null || hour === null || !refreshReady
+    if (KRONIKA_REPORT || instanceLabelRequest.current !== null || hour === null || !refreshReady
       || backgroundReadyHour !== hour || foregroundReadyKey.current !== foregroundKey) return
     const controller = new AbortController()
     instanceLabelRequest.current = controller
@@ -692,7 +705,7 @@ function App({ locale, onLocale, t }: {
       })
       .catch(() => {})
   }, [backgroundReadyHour, foregroundKey, hour, refreshReady])
-  useEffect(() => hour === null || !refreshReady || refreshing
+  useEffect(() => KRONIKA_REPORT || hour === null || !refreshReady || refreshing
     ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
   const denseMetadata = currentData.snapshotRows[0]
   const loadMoreDense = useCallback(() => {
@@ -847,10 +860,11 @@ function App({ locale, onLocale, t }: {
   }), [activeRelation, activeRelationLens, cursor, find, inspectorPanel, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
-    if (window.location.pathname + window.location.search === address) return
-    const dragging = steps.current !== null && stepOf(steps.current) === stepOf(address)
-    steps.current = address
-    window["history"][dragging ? "replaceState" : "pushState"]({}, "", address)
+    const destination = historyAddress(address, window.location.pathname)
+    if (window.location.pathname + window.location.search === destination) return
+    const dragging = steps.current !== null && stepOf(steps.current) === stepOf(destination)
+    steps.current = destination
+    window["history"][dragging ? "replaceState" : "pushState"]({}, "", destination)
   }, [address])
   useEffect(() => {
     const back = () => {
@@ -1038,7 +1052,7 @@ function App({ locale, onLocale, t }: {
 
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
-        <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>
+        {!KRONIKA_REPORT && <button aria-label={t("refresh.action")} className="icon-button" data-testid="refresh-action" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>}
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -1046,8 +1060,8 @@ function App({ locale, onLocale, t }: {
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
-        <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>
-        <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>
+        {!KRONIKA_REPORT && <button aria-label={t("auth.logout")} className="icon-button" data-testid="logout-action" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>}
         <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
@@ -1103,7 +1117,7 @@ function App({ locale, onLocale, t }: {
     </InspectorPortalProvider>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
-    {mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
+    {!KRONIKA_REPORT && mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
   </main></DisplayTimeScope>
 }
 
@@ -1245,4 +1259,5 @@ function initialLocale(): Locale {
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("Kronika UI root is missing")
-void bootstrapSession().then(() => createRoot(root).render(<Kronika />))
+const render = () => createRoot(root).render(<Kronika />)
+KRONIKA_REPORT ? render() : void bootstrapSession().then(render)
