@@ -59,7 +59,7 @@ pub(crate) struct PreparedSnapshot {
     binding: u64,
     search: Option<Box<StructuredSearch>>,
     first_match_query_id: Option<i64>,
-    text: Option<usize>,
+    text: Option<u64>,
     row_ordinal: Option<u64>,
     stability: QueryStability,
     validator_shape: String,
@@ -3118,7 +3118,7 @@ impl PreparedSnapshot {
         coordinate: RowCoordinate,
         dictionary: &Dictionary,
         process_users: &ProcessUsers,
-        text_limit: Option<usize>,
+        text_limit: Option<u64>,
     ) -> Result<Value, QueryError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
         let mut values = Vec::with_capacity(plan.fields.len());
@@ -4601,7 +4601,6 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
         hash_part(&mut hash, b"field", field.as_bytes());
     }
     if let Some(text) = request.text {
-        let text = u64::try_from(text).unwrap_or(u64::MAX);
         hash_part(&mut hash, b"text", &text.to_le_bytes());
     }
     for filter in &request.filters {

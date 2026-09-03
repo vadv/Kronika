@@ -96,6 +96,11 @@ compare(
   "/api/hour",
   `from=${SEGMENT_ID}&to=${SAMPLE_TO}&part=base`,
 );
+compare(
+  "snapshot-large-text-limit",
+  `/api/segments/${SEGMENT_ID}/snapshot`,
+  `at=${SAMPLE_TO}&section=os_cpu&field=user&page_size=1&text=5000000000`,
+);
 
 const rowsPath = `/api/segments/${SEGMENT_ID}/sections/os_process/rows`;
 const firstQuery = "field=comm&field=utime&order=asc&page_size=1";

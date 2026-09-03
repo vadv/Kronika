@@ -166,7 +166,7 @@ pub struct SnapshotRequest {
     /// Dedicated bounded Statement query-text lookup.
     pub first_match: bool,
     /// Optional maximum rendered text length.
-    pub text: Option<usize>,
+    pub text: Option<u64>,
     /// Typed equality predicates.
     pub filters: Vec<Filter>,
     /// Optional exact physical layout.

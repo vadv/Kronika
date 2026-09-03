@@ -264,7 +264,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 if kept <= 0 {
                     return Err(RouteError::BadParameter("text".to_owned()));
                 }
-                text = Some(usize::try_from(kept).unwrap_or(usize::MAX));
+                text = Some(u64::try_from(kept).expect("positive i64 fits u64"));
             }
             "page_size" if page_size.is_none() => {
                 page_size = Some(bounded("page_size", raw_value, MAX_SNAPSHOT_PAGE_SIZE)?);

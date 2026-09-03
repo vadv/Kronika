@@ -387,6 +387,18 @@ fn snapshot_accepts_one_unpaged_exact_locator() {
 }
 
 #[test]
+fn snapshot_text_limit_keeps_its_exact_cross_width_value() {
+    let Route::Snapshot(snapshot) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=os_cpu&field=user&page_size=1&text=5000000000"),
+    )
+    .expect("large portable text limit") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(snapshot.text, Some(5_000_000_000));
+}
+
+#[test]
 fn snapshot_page_size_is_positive_and_bounded() {
     let path = "/api/segments/7/snapshot";
     for page_size in [1, MAX_SNAPSHOT_PAGE_SIZE] {

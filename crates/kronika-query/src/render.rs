@@ -101,7 +101,7 @@ fn finite(value: f64) -> Value {
     )
 }
 
-pub(crate) fn shorten(mut value: Value, limit: usize) -> Value {
+pub(crate) fn shorten(mut value: Value, limit: u64) -> Value {
     match &mut value {
         Value::String(text) => shorten_text(text, limit),
         Value::Object(payload) if payload.get("representation") == Some(&json!("text")) => {
@@ -114,7 +114,10 @@ pub(crate) fn shorten(mut value: Value, limit: usize) -> Value {
     value
 }
 
-fn shorten_text(text: &mut String, limit: usize) {
+fn shorten_text(text: &mut String, limit: u64) {
+    let Ok(limit) = usize::try_from(limit) else {
+        return;
+    };
     if text.chars().count() <= limit {
         return;
     }
