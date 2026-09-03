@@ -1,6 +1,6 @@
 //! Resolving the dictionary ids carried by row cells.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::ops::Range;
 
 use arrow_array::{Array as _, BinaryArray, BooleanArray, FixedSizeBinaryArray, UInt64Array};
@@ -15,13 +15,20 @@ use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection,
 };
 
-#[derive(Debug, Clone)]
-enum Value {
+/// One owned string or blob value decoded from a segment dictionary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnedDictionaryValue {
+    /// UTF-8 is not assumed; dictionary strings retain their exact bytes.
     String(Vec<u8>),
+    /// A full blob or its canonical truncated representation.
     Blob {
+        /// Bytes physically stored in the dictionary.
         stored_bytes: Vec<u8>,
+        /// Original byte length before optional truncation.
         full_len: u64,
+        /// Whether only a prefix is stored.
         truncated: bool,
+        /// Full-value digest, present exactly when truncated.
         full_sha256: Option<[u8; 32]>,
     },
 }
@@ -29,7 +36,7 @@ enum Value {
 /// One segment's complete `dict.strings` and `dict.blobs` dictionary.
 #[derive(Debug, Default, Clone)]
 pub struct Dictionary {
-    by_id: HashMap<StrId, Value>,
+    by_id: HashMap<StrId, OwnedDictionaryValue>,
 }
 
 impl Dictionary {
@@ -45,6 +52,22 @@ impl Dictionary {
         self.by_id
             .iter()
             .map(|(&str_id, value)| (str_id.get(), resolved(str_id, value)))
+    }
+
+    /// Consume the dictionary without copying its decoded value bytes.
+    pub fn into_entries(self) -> impl Iterator<Item = (StrId, OwnedDictionaryValue)> {
+        self.by_id.into_iter()
+    }
+
+    fn insert(&mut self, id: StrId, value: OwnedDictionaryValue) -> Result<(), CodecError> {
+        match self.by_id.entry(id) {
+            Entry::Vacant(slot) => {
+                slot.insert(value);
+                Ok(())
+            }
+            Entry::Occupied(slot) if slot.get() == &value => Ok(()),
+            Entry::Occupied(_slot) => Err(CodecError::SchemaMismatch),
+        }
     }
 
     pub(crate) fn decode(
@@ -140,8 +163,7 @@ impl Dictionary {
                         continue;
                     }
                     let id = StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
-                    self.by_id
-                        .insert(id, Value::String(values.value(row).to_vec()));
+                    self.insert(id, OwnedDictionaryValue::String(values.value(row).to_vec()))?;
                 }
             }
             DICT_BLOBS_TYPE_ID => {
@@ -163,15 +185,15 @@ impl Dictionary {
                                 .map_err(|_error| CodecError::SchemaMismatch)?,
                         )
                     };
-                    self.by_id.insert(
+                    self.insert(
                         id,
-                        Value::Blob {
+                        OwnedDictionaryValue::Blob {
                             stored_bytes: stored.value(row).to_vec(),
                             full_len: full_len.value(row),
                             truncated: truncated.value(row),
                             full_sha256,
                         },
-                    );
+                    )?;
                 }
             }
             _ => return Err(CodecError::UnknownType { type_id }),
@@ -232,10 +254,10 @@ fn field_matches(field: &Field, name: &str, ty: &DataType, nullable: bool) -> bo
     field.name() == name && field.data_type() == ty && field.is_nullable() == nullable
 }
 
-fn resolved(str_id: StrId, value: &Value) -> Resolved<'_> {
+fn resolved(str_id: StrId, value: &OwnedDictionaryValue) -> Resolved<'_> {
     match value {
-        Value::String(bytes) => Resolved::Str(bytes),
-        Value::Blob {
+        OwnedDictionaryValue::String(bytes) => Resolved::Str(bytes),
+        OwnedDictionaryValue::Blob {
             stored_bytes,
             full_len,
             truncated,
@@ -281,5 +303,63 @@ fn nullable_hash_array(
         Ok(array)
     } else {
         Err(CodecError::ColumnType { name: NAME })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Dictionary, OwnedDictionaryValue};
+    use kronika_format::StrId;
+
+    #[test]
+    fn repeated_dictionary_id_requires_the_same_representation() {
+        let id = StrId::from_raw(7).expect("nonzero id");
+        let mut dictionary = Dictionary::default();
+        dictionary
+            .insert(id, OwnedDictionaryValue::String(b"same".to_vec()))
+            .expect("first value");
+        dictionary
+            .insert(id, OwnedDictionaryValue::String(b"same".to_vec()))
+            .expect("identical repeat");
+        assert!(
+            dictionary
+                .insert(id, OwnedDictionaryValue::String(b"different".to_vec()),)
+                .is_err(),
+            "a changed value for one id must fail"
+        );
+    }
+
+    #[test]
+    fn repeated_dictionary_id_cannot_change_placement_or_blob_metadata() {
+        let id = StrId::from_raw(8).expect("nonzero id");
+        let blob = OwnedDictionaryValue::Blob {
+            stored_bytes: b"prefix".to_vec(),
+            full_len: 12,
+            truncated: true,
+            full_sha256: Some([3; 32]),
+        };
+        let mut dictionary = Dictionary::default();
+        dictionary.insert(id, blob.clone()).expect("first blob");
+        dictionary.insert(id, blob).expect("identical blob");
+        assert!(
+            dictionary
+                .insert(
+                    id,
+                    OwnedDictionaryValue::Blob {
+                        stored_bytes: b"prefix".to_vec(),
+                        full_len: 13,
+                        truncated: true,
+                        full_sha256: Some([3; 32]),
+                    },
+                )
+                .is_err(),
+            "changed blob metadata must fail"
+        );
+        assert!(
+            dictionary
+                .insert(id, OwnedDictionaryValue::String(b"prefix".to_vec()))
+                .is_err(),
+            "string/blob placement changes must fail"
+        );
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use kronika_layout::SegmentId;
 
-use super::EmbeddedSource;
+use super::{EmbeddedSource, SegmentStorage, SharedSegmentBytes};
 use crate::{
     ImmutableSegmentSource as _, ResourceCatalog as _, ResourceKind, SegmentResource,
     read_resource_catalog,
@@ -10,6 +10,14 @@ use crate::{
 
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
 const FIXTURE_LIMIT: u64 = FIXTURE.len() as u64;
+
+fn owned(bytes: &SharedSegmentBytes) -> &Vec<u8> {
+    match &bytes.storage {
+        SegmentStorage::Owned(bytes) => &bytes.0,
+        #[cfg(feature = "posix")]
+        SegmentStorage::File { .. } => panic!("expected owned bytes"),
+    }
+}
 
 fn source(id: i64) -> EmbeddedSource {
     EmbeddedSource::from_owned(
@@ -61,19 +69,19 @@ fn embedded_owned_source_keeps_the_vec_allocation_across_clones_and_opens() {
         .expect("open owned bytes");
     let opened_clone = opened.clone();
 
-    assert_eq!(source.bytes.bytes.0.as_ptr(), original_ptr);
-    assert_eq!(cloned.bytes.bytes.0.as_ptr(), original_ptr);
-    assert_eq!(opened.bytes.0.as_ptr(), original_ptr);
-    assert_eq!(opened_clone.bytes.0.as_ptr(), original_ptr);
-    assert_eq!(source.bytes.bytes.0.capacity(), original_capacity);
-    assert_eq!(cloned.bytes.bytes.0.capacity(), original_capacity);
-    assert_eq!(opened.len(), original_len);
+    assert_eq!(owned(&source.bytes).as_ptr(), original_ptr);
+    assert_eq!(owned(&cloned.bytes).as_ptr(), original_ptr);
+    assert_eq!(owned(&opened).as_ptr(), original_ptr);
+    assert_eq!(owned(&opened_clone).as_ptr(), original_ptr);
+    assert_eq!(owned(&source.bytes).capacity(), original_capacity);
+    assert_eq!(owned(&cloned.bytes).capacity(), original_capacity);
+    assert_eq!(opened.len(), original_len as u64);
     assert_eq!(listing.resources[0].identity().segment_id().get(), 47);
     drop(source);
     drop(cloned);
     drop(opened);
-    assert_eq!(opened_clone.bytes.0.as_ptr(), original_ptr);
-    assert_eq!(opened_clone.len(), original_len);
+    assert_eq!(owned(&opened_clone).as_ptr(), original_ptr);
+    assert_eq!(opened_clone.len(), original_len as u64);
     assert_eq!(
         read_resource_catalog(&opened_clone).expect("catalog after source drop"),
         read_resource_catalog(&FIXTURE).expect("fixture catalog")
@@ -210,4 +218,92 @@ fn storage_neutral_api_compiles_without_posix_types() {
     }
 
     assert_api(&source(42));
+}
+
+#[test]
+#[cfg(feature = "posix")]
+fn embedded_file_source_reads_the_validated_open_file() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("incident.zms");
+    std::fs::write(&path, FIXTURE).expect("write fixture");
+    let source = EmbeddedSource::from_file(
+        SegmentId::new(49).expect("segment id"),
+        std::fs::File::open(path).expect("open fixture"),
+        FIXTURE_LIMIT,
+    )
+    .expect("valid file source");
+
+    let listing = source.resources().expect("file catalog");
+    let resource = &listing.resources[0];
+    assert_eq!(resource.captured_bytes(), FIXTURE_LIMIT);
+    let opened = source.open_resource(resource).expect("open file bytes");
+    source
+        .validate_opened(resource, &opened)
+        .expect("file remains unchanged");
+    assert_eq!(
+        read_resource_catalog(&opened).expect("file catalog bytes"),
+        read_resource_catalog(&FIXTURE).expect("fixture catalog")
+    );
+}
+
+#[test]
+#[cfg(feature = "posix")]
+fn embedded_file_source_rejects_changes_after_validation() {
+    use std::io::Write as _;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("incident.zms");
+    std::fs::write(&path, FIXTURE).expect("write fixture");
+    let source = EmbeddedSource::from_file(
+        SegmentId::new(50).expect("segment id"),
+        std::fs::File::open(&path).expect("open fixture"),
+        FIXTURE_LIMIT,
+    )
+    .expect("valid file source");
+    let listing = source.resources().expect("file catalog");
+    let resource = &listing.resources[0];
+    let opened = source.open_resource(resource).expect("open file bytes");
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open fixture for append")
+        .write_all(b"changed")
+        .expect("append fixture");
+
+    assert!(matches!(
+        source.validate_opened(resource, &opened),
+        Err(crate::ResourceError::Changed)
+    ));
+}
+
+#[test]
+#[cfg(feature = "posix")]
+fn embedded_file_source_rejects_same_length_rewrites() {
+    use std::os::unix::fs::FileExt as _;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("incident.zms");
+    std::fs::write(&path, FIXTURE).expect("write fixture");
+    let source = EmbeddedSource::from_file(
+        SegmentId::new(51).expect("segment id"),
+        std::fs::File::open(&path).expect("open fixture"),
+        FIXTURE_LIMIT,
+    )
+    .expect("valid file source");
+    let listing = source.resources().expect("file catalog");
+    let resource = &listing.resources[0];
+    let opened = source.open_resource(resource).expect("open file bytes");
+
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open fixture for rewrite");
+    file.write_all_at(b"X", 4).expect("rewrite fixture byte");
+    file.sync_all().expect("sync rewritten fixture");
+
+    assert!(matches!(
+        source.validate_opened(resource, &opened),
+        Err(crate::ResourceError::Changed)
+    ));
 }

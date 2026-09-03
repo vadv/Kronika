@@ -7,7 +7,7 @@ use kronika_format::{
     TAIL_INDEX_LEN, TailIndex, validate_catalog_layout,
 };
 
-use crate::CatalogSummary;
+use crate::{CatalogSummary, ResourceError};
 
 pub(crate) const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
 const CRC_CHUNK_BYTES: usize = 16 * 1024;
@@ -133,6 +133,37 @@ pub(crate) fn read_zms_summary<R: ReadAt>(
     let catalog_len =
         u32::try_from(encoded.bytes.len()).map_err(|_overflow| ZmsError::BadCatalogLength)?;
     Ok(CatalogSummary::from_catalog(&catalog, catalog_len))
+}
+
+/// Validate one complete finished ZMS through the storage-independent reader.
+///
+/// This checks the size admission bound, framing, canonical catalog geometry,
+/// and every section checksum without retaining section bodies.
+///
+/// # Errors
+///
+/// Returns [`ResourceError`] when the object exceeds `max_segment_bytes` or
+/// any required byte, catalog field, layout relation, or checksum is invalid.
+pub fn validate_finished_zms<R: ReadAt>(
+    reader: &R,
+    max_segment_bytes: u64,
+) -> Result<CatalogSummary, ResourceError> {
+    let len = reader
+        .byte_len()
+        .map_err(|problem| ResourceError::from_io(&problem))?;
+    if len > max_segment_bytes {
+        return Err(ResourceError::TooLarge {
+            len,
+            max: max_segment_bytes,
+        });
+    }
+    read_zms_summary(
+        reader,
+        0,
+        kronika_layout::LayoutLimits::default().max_metadata_bytes,
+        FinishedValidation::Complete,
+    )
+    .map_err(ResourceError::from_zms)
 }
 
 fn validate_section_checksums<R: ReadAt>(reader: &R, catalog: &Catalog) -> Result<(), ZmsError> {

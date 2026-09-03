@@ -1,11 +1,14 @@
 mod content;
 mod dictionary;
 mod publish;
+mod standalone;
 
 use std::fs::FileTimes;
 use std::os::unix::fs::FileExt as _;
 
-use kronika_format::{DictLimits, Entry, MAGIC, validate_part};
+use kronika_format::{
+    BlobEntry, DictLimits, Entry, MAGIC, Resolved, StrId as DictStrId, crc32c, validate_part,
+};
 use kronika_layout::{
     ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, LayoutLimits, SegmentAddress, SegmentId,
     WriterOwner,
@@ -13,14 +16,15 @@ use kronika_layout::{
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_topology::OsTopology;
 use kronika_registry::{
-    Bytes, DICT_STRINGS_TYPE_ID, Section, StrId, Ts, VerifiedSection, decode_any,
+    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Section, StrId, Ts, VerifiedSection,
+    decode_any,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::dictionary::{required_binary, required_u64};
 use super::{
-    MAX_CATALOG_ENTRIES, WriteError, arm_after_first_comparison_chunk, checked_catalog_entries,
-    write_segment,
+    FinishedDictionary, FinishedSection, FinishedZmsPlan, MAX_CATALOG_ENTRIES, WriteError,
+    arm_after_first_comparison_chunk, checked_catalog_entries, write_finished_zms, write_segment,
 };
 use crate::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
@@ -168,7 +172,7 @@ fn verified_section(segment: &[u8], entry: &Entry) -> VerifiedSection {
     VerifiedSection::verify(
         Bytes::copy_from_slice(&segment[start..start + len]),
         entry.crc32c,
-        kronika_format::crc32c,
+        crc32c,
     )
     .expect("fixture section CRC matches")
 }

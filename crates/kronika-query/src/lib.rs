@@ -72,6 +72,16 @@ pub const SOURCE_OS: u32 = 1 << 0;
 /// Source-family bit for recorded `PostgreSQL` data.
 pub const SOURCE_POSTGRESQL: u32 = 1 << 1;
 
+/// Return the source-family bit encoded by a registered section type ID.
+#[must_use]
+pub const fn source_bit(type_id: u32) -> Option<u32> {
+    match type_id {
+        1_001_001..=1_019_999 | 1_020_001 | 2_001_001..=2_199_999 => Some(SOURCE_POSTGRESQL),
+        1_100_001..=1_299_999 => Some(SOURCE_OS),
+        _ => None,
+    }
+}
+
 /// Inputs shared by one synchronous query execution.
 #[derive(Clone)]
 pub struct QueryContext {

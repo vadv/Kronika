@@ -1,6 +1,6 @@
 //! Standalone Kronika HTML report generator.
 
-mod generator;
+mod cli;
 
 use kronika_report as _;
 #[cfg(test)]
@@ -8,8 +8,12 @@ use serde_json as _;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use {
+    base64 as _, flate2 as _, kronika_format as _, kronika_index as _, kronika_layout as _,
+    kronika_query as _, kronika_reader as _, kronika_store as _, tempfile as _,
+};
 
-const USAGE: &str = "usage: kronika-report <signed-decimal>.zms <output>.html";
+const USAGE: &str = "usage: kronika-report <input>.zms <output>.html";
 
 fn arguments(
     values: impl IntoIterator<Item = OsString>,
@@ -31,7 +35,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match generator::generate(&input, &output) {
+    match cli::generate(&input, &output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("kronika-report: {error}");

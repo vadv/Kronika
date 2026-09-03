@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arrow_array::Int32Array;
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_cpu::OsCpu;
@@ -678,6 +679,48 @@ fn projected_visit_keeps_stable_active_ordinals_and_stops_at_its_limit() {
     assert_eq!(rows[0].0, 1);
     assert_eq!(rows[0].1.get("cpu_id"), Some(&Cell::I32(200)));
     assert_eq!(rows[0].1.get("ts"), Some(&Cell::Null));
+}
+
+#[test]
+fn batch_visit_keeps_full_schema_and_concatenates_active_part_ordinals() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, address.id, 100, b"first");
+    append_text_window(&mut journal, address.id, 200, b"second");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let segment = one_segment(&reader);
+    let mut ordinals = Vec::new();
+    let mut cpu_ids: Vec<i32> = Vec::new();
+    let visited = segment
+        .visit_batches(
+            OsTopology::CONTRACT.type_id.get(),
+            None,
+            0,
+            usize::MAX,
+            |ordinal, batch| {
+                assert_eq!(batch.num_columns(), OsTopology::CONTRACT.columns.len());
+                assert_eq!(
+                    batch.schema(),
+                    kronika_registry::arrow_schema(&OsTopology::CONTRACT)
+                );
+                ordinals.push(ordinal);
+                let values = batch
+                    .column_by_name("cpu_id")
+                    .expect("cpu_id column")
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("cpu_id is Int32");
+                cpu_ids.extend(values.values());
+                true
+            },
+        )
+        .expect("visit batches");
+    assert_eq!(visited, 2);
+    assert_eq!(ordinals, [0, 1]);
+    assert_eq!(cpu_ids, [100, 200]);
 }
 
 #[test]

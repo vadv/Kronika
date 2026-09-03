@@ -7,11 +7,12 @@ use kronika_reader::{Cell, SegmentKind};
 use kronika_registry::{ColumnClass, contract};
 use serde_json::json;
 
-use crate::catalog::{PreparedCatalog, metric_source_bit, source_bit};
+use crate::catalog::{PreparedCatalog, metric_source_bit};
 use crate::history::stream_plans;
 use crate::index::stream_series;
 use crate::projection::plans;
 use crate::render::record;
+use crate::source_bit;
 use crate::{
     ActiveCursor, DataRequest, DatasetListing, DatasetSegment, HourPart, HourRequest,
     HourSeriesRequest, IndexProvider, QueryDataset, QueryError, QuerySink, QueryStability,

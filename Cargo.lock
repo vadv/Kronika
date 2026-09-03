@@ -1438,11 +1438,16 @@ dependencies = [
 name = "kronika-dump"
 version = "1.0.0"
 dependencies = [
+ "arrow-array",
+ "arrow-select",
+ "chrono",
  "kronika-format",
  "kronika-index",
  "kronika-layout",
  "kronika-reader",
  "kronika-registry",
+ "kronika-report",
+ "kronika-store",
  "kronika-writer",
  "serde_json",
  "tempfile",
@@ -1536,6 +1541,7 @@ version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
+ "kronika-format",
  "kronika-index",
  "kronika-layout",
  "kronika-query",

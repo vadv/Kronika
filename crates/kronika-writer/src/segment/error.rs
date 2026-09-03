@@ -58,6 +58,13 @@ pub enum WriteError {
         /// Conflicting dictionary id.
         str_id: u64,
     },
+    /// The requested finished catalog has inverted timestamp bounds.
+    InvalidTimestampBounds {
+        /// Minimal timestamp supplied by the caller.
+        min_ts: i64,
+        /// Maximal timestamp supplied by the caller.
+        max_ts: i64,
+    },
     /// A checked size, count, or offset calculation overflowed.
     ArithmeticOverflow {
         /// Quantity that overflowed.
@@ -121,6 +128,10 @@ impl fmt::Display for WriteError {
             Self::DictionaryConflict { str_id } => {
                 write!(f, "dictionary id {str_id} has conflicting representations")
             }
+            Self::InvalidTimestampBounds { min_ts, max_ts } => write!(
+                f,
+                "segment timestamp bounds are inverted: {min_ts} is after {max_ts}"
+            ),
             Self::ArithmeticOverflow { what } => write!(f, "{what} overflow"),
             Self::TooManySections { sections, max } => {
                 write!(
@@ -150,6 +161,7 @@ impl Error for WriteError {
             | Self::UnsupportedFormat { .. }
             | Self::RowCountMismatch { .. }
             | Self::DictionaryConflict { .. }
+            | Self::InvalidTimestampBounds { .. }
             | Self::ArithmeticOverflow { .. }
             | Self::TooManySections { .. } => None,
         }

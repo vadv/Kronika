@@ -8,9 +8,16 @@ use tempfile as _;
 
 use crate::{
     CapturedCatalog, CatalogRequest, DatasetListing, DatasetSegment, DatasetWarning, OpaqueCapture,
-    QueryContext, QueryDataset, QueryError, QueryRequest, QuerySink, SegmentBounds,
-    SegmentSelection, Window, execute,
+    QueryContext, QueryDataset, QueryError, QueryRequest, QuerySink, SOURCE_OS, SOURCE_POSTGRESQL,
+    SegmentBounds, SegmentSelection, Window, execute, source_bit,
 };
+
+#[test]
+fn registered_source_families_include_wal_storage_but_not_metadata() {
+    assert_eq!(source_bit(1_020_001), Some(SOURCE_POSTGRESQL));
+    assert_eq!(source_bit(1_021_002), None);
+    assert_eq!(source_bit(1_107_001), Some(SOURCE_OS));
+}
 
 #[derive(Debug)]
 struct FixedDataset {

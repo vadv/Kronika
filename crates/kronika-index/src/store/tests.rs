@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
-use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::instance_metadata::{InstanceMetadata, InstanceMetadataV1};
 use kronika_registry::os_cgroup_memory::OsCgroupMemoryV2;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_loadavg::OsLoadavg;
@@ -176,6 +176,146 @@ fn append_health_fixture(
             &part,
         )
         .expect("append health fixture");
+}
+
+#[derive(Clone, Copy)]
+enum MetadataChange {
+    ManyFacts,
+    BootId,
+    LayoutVersion,
+}
+
+fn append_changed_metadata_fixture(journal: &mut Journal, segment_id: i64, change: MetadataChange) {
+    let mut interner = Interner::new(DictLimits::default());
+    let first = StrId(interner.intern(b"first").expect("intern first label").get());
+    let second = StrId(
+        interner
+            .intern(b"second")
+            .expect("intern second label")
+            .get(),
+    );
+    let active = StrId(interner.intern(b"active").expect("intern state").get());
+    let dictionary = dict::encode(interner.window()).expect("metadata dictionary");
+    let mut buffers = SectionBuffers::new();
+    let first_row = InstanceMetadata {
+        ts: Ts(segment_id),
+        hostname: first,
+        kernel_version: first,
+        environment: 0,
+        clock_ticks_per_sec: 100,
+        page_size_bytes: 4_096,
+        boot_id: first,
+        btime: Ts(segment_id - 10),
+        postgresql_enabled: false,
+        postgresql_interval_seconds: 60,
+        postgresql_effective_cpus: None,
+    };
+    match change {
+        MetadataChange::ManyFacts => {
+            buffers.push(first_row).expect("first metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    hostname: second,
+                    kernel_version: second,
+                    environment: 1,
+                    clock_ticks_per_sec: 250,
+                    page_size_bytes: 8_192,
+                    boot_id: second,
+                    btime: Ts(segment_id - 20),
+                    postgresql_enabled: true,
+                    postgresql_interval_seconds: 30,
+                    postgresql_effective_cpus: Some(2),
+                })
+                .expect("second metadata row");
+        }
+        MetadataChange::BootId => {
+            buffers.push(first_row).expect("first metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    boot_id: second,
+                    ..first_row
+                })
+                .expect("changed boot-id metadata row");
+        }
+        MetadataChange::LayoutVersion => {
+            buffers
+                .push(InstanceMetadataV1 {
+                    ts: first_row.ts,
+                    hostname: first_row.hostname,
+                    kernel_version: first_row.kernel_version,
+                    environment: first_row.environment,
+                    clock_ticks_per_sec: first_row.clock_ticks_per_sec,
+                    page_size_bytes: first_row.page_size_bytes,
+                    boot_id: first_row.boot_id,
+                    btime: first_row.btime,
+                })
+                .expect("v1 metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    ..first_row
+                })
+                .expect("v2 metadata row");
+        }
+    }
+    append_changed_metric_rows(&mut buffers, segment_id, active, second);
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode changed metadata fixture")
+        .expect("nonempty changed metadata fixture");
+    journal
+        .append(
+            SegmentId::new(segment_id).expect("metadata segment id"),
+            &part,
+        )
+        .expect("append changed metadata fixture");
+}
+
+fn append_changed_metric_rows(
+    buffers: &mut SectionBuffers,
+    segment_id: i64,
+    active: StrId,
+    query: StrId,
+) {
+    for timestamp in [segment_id, segment_id + 1] {
+        for resource in 0..3 {
+            buffers
+                .push(OsPsi {
+                    ts: Ts(timestamp),
+                    resource,
+                    some_avg10: 0.0,
+                    some_avg60: 0.0,
+                    some_avg300: 0.0,
+                    some_total: timestamp - segment_id,
+                    full_avg10: None,
+                    full_avg60: None,
+                    full_avg300: None,
+                    full_total: None,
+                    scope: 0,
+                })
+                .expect("metadata-change PSI row");
+        }
+    }
+    for pid in 0..5 {
+        buffers
+            .push(activity_row(segment_id + 2, pid, active, query))
+            .expect("activity row");
+    }
+}
+
+fn completed_changed_metadata(change: MetadataChange) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_changed_metadata_fixture(&mut journal, SEGMENT_ID, change);
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+    directory
 }
 
 fn activity_row(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
@@ -810,6 +950,52 @@ fn health_uses_the_immediately_preceding_psi_snapshot() {
     assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
     assert_eq!(health_values(&selected, "overall"), [Some(90), Some(90)]);
     assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn differing_metadata_rows_suppress_metadata_dependent_values() {
+    let directory = completed_changed_metadata(MetadataChange::ManyFacts);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment_ref = only_segment(&reader, SegmentKind::Finished);
+    let activity = resource(directory.path(), &reader, &segment_ref, "pg_stat_activity")
+        .expect("activity resource");
+    assert!(activity.index.blocks.iter().any(|block| matches!(
+        block,
+        SeriesBlock::Findings(block)
+            if block.type_id == 1_001_004 && block.findings.is_empty()
+    )));
+    let segment = reader.open_segment(&segment_ref).expect("open segment");
+    assert_eq!(segment.rows_of(1_021_002), Some(2));
+}
+
+#[test]
+fn changed_boot_id_with_the_same_boot_time_suppresses_health() {
+    let directory = completed_changed_metadata(MetadataChange::BootId);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn mixed_metadata_layouts_suppress_health() {
+    let directory = completed_changed_metadata(MetadataChange::LayoutVersion);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment_ref = only_segment(&reader, SegmentKind::Finished);
+    let segment = reader.open_segment(&segment_ref).expect("open segment");
+    assert_eq!(segment.rows_of(1_021_001), Some(1));
+    assert_eq!(segment.rows_of(1_021_002), Some(1));
 }
 
 #[test]

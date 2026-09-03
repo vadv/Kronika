@@ -35,17 +35,40 @@ and `musl-gcc`. The repository selects Rust 1.96.0 through
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p kronika-collector -p kronika-report -p kronika-web
+cargo build --release --locked -p kronika-collector -p kronika-dump -p kronika-report -p kronika-web
 ```
+
+## Create a time slice
+
+`kronika-dump slice` reads storage from `KRONIKA_STORAGE_DIR`. Both endpoints
+are inclusive whole seconds in RFC 3339 form. The command writes exactly the
+`.zms` path passed to `--out` and refuses to overwrite an existing file.
+
+```sh
+KRONIKA_STORAGE_DIR=/var/lib/kronika \
+target/x86_64-unknown-linux-musl/release/kronika-dump slice \
+  --from 2024-02-29T00:00:00Z \
+  --to 2024-02-29T00:59:59Z \
+  --out incident.zms
+```
+
+The result is one finished standalone ZMS. It can contain up to 30 seconds of
+sampling context before and after the requested interval. A range with no
+recorded row is an error. The command prints the requested and actual bounds,
+row count, section count, and byte length after validating the finished file.
+The package library exposes the same slicer to in-process callers, which supply
+their own disk-backed scratch file and output sink. The CLI places scratch on
+the output filesystem.
 
 ## Generate a standalone report
 
-The input basename is the canonical signed-decimal segment identity followed
-by `.zms`. The command accepts one finished ZMS and one `.html` output path:
+The command accepts one finished ZMS with any `.zms` basename and one `.html`
+output path. It derives the internal segment identity from the validated ZMS
+catalog:
 
 ```sh
 target/x86_64-unknown-linux-musl/release/kronika-report \
-  /path/to/1709164800000000.zms \
+  /path/to/incident.zms \
   report.html
 ```
 
@@ -55,6 +78,9 @@ interface, its WebAssembly query engine, the ZMS and the IDX. It uses no
 storage root, earlier segment, server, external sidecar, authentication, MCP,
 live refresh or network request. A first rate that needs an earlier sample is
 `null`. See [bins/kronika-report/README.md](bins/kronika-report/README.md).
+The package library also writes this document to a caller-owned sink from ZMS
+bytes and an explicit `SegmentId`; the CLI derives that identity locally from
+the validated input catalog.
 
 Create the PostgreSQL login used below:
 

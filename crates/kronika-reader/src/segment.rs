@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use kronika_format::{Catalog, Entry, ReadAt, crc32c};
 use kronika_registry::{
-    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, contract,
-    logical_section_name, visit_rows,
+    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, RecordBatch, Row, VerifiedSection, contract,
+    logical_section_name, visit_batches as visit_registry_batches, visit_rows,
 };
 use kronika_store::CatalogSummary;
 #[cfg(feature = "posix")]
@@ -362,6 +362,108 @@ impl Segment {
         Ok(visited)
     }
 
+    /// Visit a physical row range as Arrow record batches.
+    ///
+    /// Current-segment ordinals span all journal parts carrying `type_id`.
+    /// `columns` selects exact contract column names; `None` retains the full
+    /// schema. Returning `false` from `visitor` stops after the current batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown type, or when a selected body fails its
+    /// checksum, catalog row-count check, schema check, or Parquet decode.
+    pub fn visit_batches(
+        &self,
+        type_id: u32,
+        columns: Option<&[&str]>,
+        offset: u64,
+        limit: usize,
+        mut visitor: impl FnMut(u64, RecordBatch) -> bool,
+    ) -> Result<usize, ReaderError> {
+        if contract(type_id).is_none() {
+            return Err(ReaderError::Section {
+                type_id,
+                source: kronika_registry::CodecError::UnknownType { type_id },
+            });
+        }
+        let mut visited = 0_usize;
+        match &self.source {
+            Source::Finished { bytes, catalog } => {
+                if let Some(entry) = entry(catalog, type_id) {
+                    let rows = u64::from(entry.rows);
+                    if offset < rows {
+                        let local_offset = usize::try_from(offset).map_err(|_overflow| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "row offset does not fit usize",
+                            )
+                        })?;
+                        let count = visit_batch_body(
+                            type_id,
+                            finished_body(bytes, entry)?,
+                            columns,
+                            BodyVisit {
+                                expected_rows: u64::from(entry.rows),
+                                offset: local_offset,
+                                limit,
+                                base: 0,
+                            },
+                            &mut visitor,
+                        )?;
+                        visited = visited.saturating_add(count);
+                    }
+                }
+            }
+            #[cfg(feature = "posix")]
+            Source::Active(snapshot) => {
+                let mut global_base = 0_u64;
+                let mut remaining_offset = offset;
+                for (part_index, part) in snapshot.parts().iter().enumerate() {
+                    let Some(entry) = entry(&part.catalog, type_id) else {
+                        continue;
+                    };
+                    if visited >= limit {
+                        break;
+                    }
+                    if remaining_offset >= u64::from(entry.rows) {
+                        remaining_offset -= u64::from(entry.rows);
+                        global_base = global_base.saturating_add(u64::from(entry.rows));
+                        continue;
+                    }
+                    let local_offset = usize::try_from(remaining_offset).map_err(|_overflow| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "row offset does not fit usize",
+                        )
+                    })?;
+                    let mut keep_going = true;
+                    let count = visit_batch_body(
+                        type_id,
+                        active_body(snapshot, part_index, entry)?,
+                        columns,
+                        BodyVisit {
+                            expected_rows: u64::from(entry.rows),
+                            offset: local_offset,
+                            limit: limit.saturating_sub(visited),
+                            base: global_base,
+                        },
+                        &mut |ordinal, batch| {
+                            keep_going = visitor(ordinal, batch);
+                            keep_going
+                        },
+                    )?;
+                    visited = visited.saturating_add(count);
+                    remaining_offset = 0;
+                    global_base = global_base.saturating_add(u64::from(entry.rows));
+                    if !keep_going {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(visited)
+    }
+
     /// Decode the complete segment dictionary.
     ///
     /// Both `dict.strings` and `dict.blobs` are included. Current-segment
@@ -480,6 +582,25 @@ fn visit_body(
         request.offset,
         request.limit,
         |local_ordinal, row| visitor(request.base.saturating_add(local_ordinal), row),
+    )
+    .map_err(|source| ReaderError::Section { type_id, source })
+}
+
+fn visit_batch_body(
+    type_id: u32,
+    body: VerifiedSection,
+    columns: Option<&[&str]>,
+    request: BodyVisit,
+    visitor: &mut impl FnMut(u64, RecordBatch) -> bool,
+) -> Result<usize, ReaderError> {
+    visit_registry_batches(
+        type_id,
+        body,
+        columns,
+        Some(request.expected_rows),
+        request.offset,
+        request.limit,
+        |local_ordinal, batch| visitor(request.base.saturating_add(local_ordinal), batch),
     )
     .map_err(|source| ReaderError::Section { type_id, source })
 }

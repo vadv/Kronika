@@ -17,13 +17,14 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{
     Catalog, Crc32c, ENTRY_LEN, Entry, EntrySnapshot, FORMAT_VERSION, HotMark, MAGIC, META_LEN,
-    PartError, Placement, StrId, TAIL_INDEX_LEN, TailIndex, crc32c, validate_catalog_layout,
+    PartError, Placement, Resolved, StrId, TAIL_INDEX_LEN, TailIndex, crc32c,
+    validate_catalog_layout,
 };
 use kronika_layout::{FileIdentity, LayoutError, SegmentAddress, SegmentId, WriterOwner, ZmsTemp};
 use kronika_registry::{
     Bytes, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES,
-    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, encode_final_sections_to,
-    validate_plain_parquet_decode_work,
+    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, contract,
+    encode_final_sections_to, validate_plain_parquet_decode_work,
 };
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 
@@ -36,6 +37,7 @@ mod error;
 #[cfg(test)]
 use compare::arm_after_first_comparison_chunk;
 use compare::{files_equal, validate_segment};
+pub use dictionary::FinishedDictionary;
 use dictionary::normalize_dictionary;
 pub use error::WriteError;
 
@@ -70,6 +72,185 @@ pub struct WriteSummary {
     pub min_ts: i64,
     /// Maximal timestamp across the segment, unix microseconds.
     pub max_ts: i64,
+}
+
+/// One already-final section body stored in a random-access spool.
+///
+/// The descriptor is independent of a ZMS offset. [`write_finished_zms`]
+/// copies the body into canonical type order and writes the final catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinishedSection {
+    type_id: u32,
+    rows: u32,
+    offset: u64,
+    len: u64,
+    crc32c: u32,
+}
+
+impl FinishedSection {
+    /// Describe one complete final Parquet body in a spool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] when the type, row count, or byte length is
+    /// outside the finished-section envelope.
+    pub fn new(
+        type_id: u32,
+        rows: u32,
+        offset: u64,
+        len: u64,
+        crc32c: u32,
+    ) -> Result<Self, WriteError> {
+        if contract(type_id).is_none()
+            && !matches!(type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID)
+        {
+            return Err(CodecError::UnknownType { type_id }.into());
+        }
+        let rows_usize = rows as usize;
+        if rows_usize == 0 || rows_usize > MAX_SECTION_ROWS {
+            return Err(CodecError::TooManyRows {
+                rows: rows_usize,
+                max: MAX_SECTION_ROWS,
+            }
+            .into());
+        }
+        check_final_section_len(len)?;
+        offset
+            .checked_add(len)
+            .ok_or(WriteError::ArithmeticOverflow {
+                what: "spool section end",
+            })?;
+        Ok(Self {
+            type_id,
+            rows,
+            offset,
+            len,
+            crc32c,
+        })
+    }
+
+    /// Registered or dictionary type id.
+    #[must_use]
+    pub const fn type_id(self) -> u32 {
+        self.type_id
+    }
+
+    /// Rows encoded in the body.
+    #[must_use]
+    pub const fn rows(self) -> u32 {
+        self.rows
+    }
+
+    /// Body start in the spool.
+    #[must_use]
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Encoded body length.
+    #[must_use]
+    pub const fn len(self) -> u64 {
+        self.len
+    }
+
+    /// Whether the body is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// CRC32C of the complete body.
+    #[must_use]
+    pub const fn crc32c(self) -> u32 {
+        self.crc32c
+    }
+}
+
+/// Complete metadata for one finished ZMS assembled from spooled sections.
+#[derive(Debug)]
+pub struct FinishedZmsPlan {
+    sections: Vec<FinishedSection>,
+    min_ts: i64,
+    max_ts: i64,
+    window_count: u32,
+}
+
+impl FinishedZmsPlan {
+    /// Validate and canonicalize a standalone segment plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] for inverted timestamps or duplicate section
+    /// types.
+    pub fn new(
+        mut sections: Vec<FinishedSection>,
+        min_ts: i64,
+        max_ts: i64,
+        window_count: u32,
+    ) -> Result<Self, WriteError> {
+        if min_ts > max_ts {
+            return Err(WriteError::InvalidTimestampBounds { min_ts, max_ts });
+        }
+        checked_catalog_entries(0, sections.len())?;
+        sections.sort_unstable_by_key(|section| section.type_id);
+        if sections
+            .windows(2)
+            .any(|pair| pair[0].type_id == pair[1].type_id)
+        {
+            return Err(CodecError::SchemaMismatch.into());
+        }
+        Ok(Self {
+            sections,
+            min_ts,
+            max_ts,
+            window_count,
+        })
+    }
+
+    /// Canonically ordered section descriptors.
+    #[must_use]
+    pub fn sections(&self) -> &[FinishedSection] {
+        &self.sections
+    }
+
+    /// Minimal timestamp carried by selected rows.
+    #[must_use]
+    pub const fn min_ts(&self) -> i64 {
+        self.min_ts
+    }
+
+    /// Maximal timestamp carried by selected rows.
+    #[must_use]
+    pub const fn max_ts(&self) -> i64 {
+        self.max_ts
+    }
+
+    /// Source collection-window count recorded in the catalog.
+    #[must_use]
+    pub const fn window_count(&self) -> u32 {
+        self.window_count
+    }
+}
+
+/// Assemble one standalone finished ZMS from already-final section bodies.
+///
+/// `spool` is read only at the ranges described by `plan`. The output is
+/// written from its current position and flushed before return. Section bytes
+/// and checksums are verified while copying.
+///
+/// # Errors
+///
+/// Returns [`WriteError`] when a spool range cannot be read, a checksum does
+/// not match, or writing the container fails.
+pub fn write_finished_zms(
+    spool: &File,
+    plan: &FinishedZmsPlan,
+    out: &mut impl Write,
+) -> Result<WriteSummary, WriteError> {
+    let mut out = BufWriter::new(out);
+    let summary = write_finished_zms_core(spool, plan, &mut out)?;
+    out.flush()?;
+    Ok(summary)
 }
 
 /// Write journal parts into the immutable segment at `address`.
@@ -208,15 +389,23 @@ fn write_tmp(
     let spool_file = spool_out
         .into_inner()
         .map_err(io::IntoInnerError::into_error)?;
+    let finished = FinishedZmsPlan::new(spooled, plan.min_ts, plan.max_ts, plan.window_count)?;
+    let summary = write_finished_zms(spool_file, &finished, temporary.file_mut())?;
+    temporary.file_mut().sync_all()?;
+    Ok(summary)
+}
 
-    spooled.sort_by_key(|section| section.type_id);
-    let mut out = BufWriter::new(temporary.file_mut());
+fn write_finished_zms_core(
+    spool: &File,
+    plan: &FinishedZmsPlan,
+    out: &mut impl Write,
+) -> Result<WriteSummary, WriteError> {
     out.write_all(&MAGIC)?;
     let mut offset = MAGIC.len() as u64;
     let mut entries: Vec<Entry> = Vec::new();
     let mut copy_buffer = vec![0_u8; COMPARE_BUFFER_BYTES].into_boxed_slice();
-    for section in spooled {
-        copy_spooled_section(spool_file, &mut out, section, &mut copy_buffer)?;
+    for &section in &plan.sections {
+        copy_spooled_section(spool, out, section, &mut copy_buffer)?;
         push_section_entry(&mut entries, &mut offset, section)?;
     }
 
@@ -228,11 +417,18 @@ fn write_tmp(
         format_version: FORMAT_VERSION,
         window_count: plan.window_count,
     };
-    catalog.write_encoded(&mut out)?;
+    let catalog_bytes = catalog.encoded_len().checked_add(TAIL_INDEX_LEN).ok_or(
+        WriteError::ArithmeticOverflow {
+            what: "finished catalog length",
+        },
+    )?;
+    let bytes = offset
+        .checked_add(catalog_bytes as u64)
+        .ok_or(WriteError::ArithmeticOverflow {
+            what: "finished segment length",
+        })?;
+    catalog.write_encoded(out)?;
 
-    let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
-    let bytes = file.metadata()?.len();
-    file.sync_all()?;
     Ok(WriteSummary {
         sections,
         bytes,
@@ -247,7 +443,7 @@ fn spool_data_section(
     descriptors: &[SectionDescriptor],
     out: &mut (impl Write + Send),
     offset: u64,
-) -> Result<SpooledSection, WriteError> {
+) -> Result<FinishedSection, WriteError> {
     let declared_rows = aggregate_rows(type_id, descriptors)?;
     let rows = descriptors
         .iter()
@@ -274,15 +470,15 @@ fn spool_data_section(
     )?;
     let (len, checksum) = sink.finish();
     check_final_section_len(len)?;
-    Ok(SpooledSection {
+    FinishedSection::new(
         type_id,
-        rows: u32::try_from(declared_rows).map_err(|_overflow| WriteError::ArithmeticOverflow {
+        u32::try_from(declared_rows).map_err(|_overflow| WriteError::ArithmeticOverflow {
             what: "section row count",
         })?,
         offset,
         len,
-        crc32c: checksum,
-    })
+        checksum,
+    )
 }
 
 fn spool_dictionary_sections(
@@ -290,35 +486,21 @@ fn spool_dictionary_sections(
     strings: &[SectionDescriptor],
     blobs: &[SectionDescriptor],
     out: &mut (impl Write + Send),
-    spooled: &mut Vec<SpooledSection>,
+    spooled: &mut Vec<FinishedSection>,
     offset: &mut u64,
 ) -> Result<(), WriteError> {
     let dictionary = normalize_dictionary(journal, strings, blobs)?;
-    for section in dictionary.write_sections_to(out)? {
-        check_final_section_len(section.len)?;
-        spooled.push(SpooledSection {
-            type_id: section.type_id,
-            rows: section.rows,
-            offset: *offset,
-            len: section.len,
-            crc32c: section.crc32c,
-        });
-        *offset = offset
-            .checked_add(section.len)
-            .ok_or(WriteError::ArithmeticOverflow {
-                what: "spool offset",
-            })?;
+    for section in dictionary.write_sections_to(out, *offset)? {
+        *offset =
+            section
+                .offset
+                .checked_add(section.len)
+                .ok_or(WriteError::ArithmeticOverflow {
+                    what: "spool offset",
+                })?;
+        spooled.push(section);
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SpooledSection {
-    type_id: u32,
-    rows: u32,
-    offset: u64,
-    len: u64,
-    crc32c: u32,
 }
 
 struct SectionSink<W> {
@@ -375,10 +557,11 @@ fn check_final_section_len(len: u64) -> Result<(), WriteError> {
 fn copy_spooled_section(
     spool: &File,
     out: &mut impl Write,
-    section: SpooledSection,
+    section: FinishedSection,
     buffer: &mut [u8],
 ) -> Result<(), WriteError> {
     let mut copied = 0_u64;
+    let mut checksum = Crc32c::new();
     while copied < section.len {
         let remaining = usize::try_from(section.len - copied).unwrap_or(usize::MAX);
         let chunk = remaining.min(buffer.len());
@@ -390,11 +573,20 @@ fn copy_spooled_section(
             })?;
         spool.read_exact_at(&mut buffer[..chunk], at)?;
         out.write_all(&buffer[..chunk])?;
+        checksum.update(&buffer[..chunk]);
         copied = copied
             .checked_add(chunk as u64)
             .ok_or(WriteError::ArithmeticOverflow {
                 what: "spool copy length",
             })?;
+    }
+    let got = checksum.finalize();
+    if got != section.crc32c {
+        return Err(CodecError::SectionCrcMismatch {
+            expected: section.crc32c,
+            got,
+        }
+        .into());
     }
     Ok(())
 }
@@ -402,7 +594,7 @@ fn copy_spooled_section(
 fn push_section_entry(
     entries: &mut Vec<Entry>,
     offset: &mut u64,
-    section: SpooledSection,
+    section: FinishedSection,
 ) -> Result<(), WriteError> {
     if entries
         .last()

@@ -1,9 +1,17 @@
-//! Internal portable query composition for the HTML generator and WASM adapter.
+//! Portable query and self-contained HTML report composition.
 
 #[cfg(test)]
 use serde_json as _;
 #[cfg(feature = "generator")]
-use {base64 as _, flate2 as _, kronika_reader as _, tempfile as _};
+use {kronika_format as _, tempfile as _};
+
+#[cfg(feature = "generator")]
+mod generator;
+
+#[cfg(feature = "generator")]
+pub use generator::{
+    HtmlReportError, HtmlReportInput, HtmlReportSummary, write_html, write_html_from_file,
+};
 
 use std::sync::Arc;
 

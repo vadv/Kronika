@@ -13,6 +13,7 @@ use crate::dataset::{
 use crate::render::record;
 use crate::{
     CatalogRequest, QueryContext, QueryError, QuerySink, SOURCE_OS, SOURCE_POSTGRESQL, Window,
+    source_bit,
 };
 
 /// Typed recorded-range and logical-section facts.
@@ -314,14 +315,6 @@ fn source_family_values(configured: u32, present: u32, metrics: u32) -> Vec<Valu
             })
         })
         .collect()
-}
-
-pub(crate) const fn source_bit(type_id: u32) -> Option<u32> {
-    match type_id {
-        1_001_001..=1_019_999 | 2_001_001..=2_199_999 => Some(SOURCE_POSTGRESQL),
-        1_100_001..=1_299_999 => Some(SOURCE_OS),
-        _ => None,
-    }
 }
 
 pub(crate) fn metric_source_bit(type_id: u32) -> Option<u32> {

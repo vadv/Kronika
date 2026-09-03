@@ -1,29 +1,60 @@
-//! One immutable ZMS segment retained in owned bytes.
+//! One immutable ZMS segment retained in owned bytes or an owned file handle.
 
+#[cfg(feature = "posix")]
+use std::fs::File;
 use std::io;
 use std::sync::Arc;
 
 use kronika_format::ReadAt;
-use kronika_layout::{LayoutLimits, SegmentId};
+#[cfg(feature = "posix")]
+use kronika_layout::FileIdentity;
+use kronika_layout::SegmentId;
 
-use crate::zms::{FinishedValidation, read_zms_summary};
 use crate::{
     CatalogSummary, ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceIdentity,
-    ResourceListing, SegmentResource,
+    ResourceListing, SegmentResource, validate_finished_zms,
 };
 
 struct OwnedSegment(Vec<u8>);
 
+#[derive(Clone)]
+enum SegmentStorage {
+    Owned(Arc<OwnedSegment>),
+    #[cfg(feature = "posix")]
+    File {
+        file: Arc<File>,
+        identity: FileIdentity,
+    },
+}
+
 /// Shared positional bytes used by an embedded finished segment.
 #[derive(Clone)]
 pub struct SharedSegmentBytes {
-    bytes: Arc<OwnedSegment>,
+    storage: SegmentStorage,
     source_id: Arc<()>,
 }
 
 impl SharedSegmentBytes {
-    fn len(&self) -> usize {
-        self.bytes.0.len()
+    fn len(&self) -> u64 {
+        match &self.storage {
+            SegmentStorage::Owned(bytes) => bytes.0.len() as u64,
+            #[cfg(feature = "posix")]
+            SegmentStorage::File { identity, .. } => identity.len,
+        }
+    }
+
+    fn validate_unchanged(&self) -> Result<(), ResourceError> {
+        match &self.storage {
+            SegmentStorage::Owned(_) => Ok(()),
+            #[cfg(feature = "posix")]
+            SegmentStorage::File { file, identity } => {
+                if FileIdentity::from_file(file)? == *identity {
+                    Ok(())
+                } else {
+                    Err(ResourceError::Changed)
+                }
+            }
+        }
     }
 }
 
@@ -37,11 +68,19 @@ impl std::fmt::Debug for SharedSegmentBytes {
 
 impl ReadAt for SharedSegmentBytes {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        self.bytes.0.read_exact_at(buf, offset)
+        match &self.storage {
+            SegmentStorage::Owned(bytes) => bytes.0.read_exact_at(buf, offset),
+            #[cfg(feature = "posix")]
+            SegmentStorage::File { file, .. } => file.read_exact_at(buf, offset),
+        }
     }
 
     fn byte_len(&self) -> io::Result<u64> {
-        Ok(self.len() as u64)
+        match &self.storage {
+            SegmentStorage::Owned(_) => Ok(self.len()),
+            #[cfg(feature = "posix")]
+            SegmentStorage::File { file, .. } => file.byte_len(),
+        }
     }
 }
 
@@ -61,7 +100,7 @@ pub struct EmbeddedSource {
 impl EmbeddedSource {
     fn resource_is_canonical(&self, resource: &SegmentResource<EmbeddedResource>) -> bool {
         resource.identity() == self.identity
-            && resource.captured_bytes() == self.bytes.len() as u64
+            && resource.captured_bytes() == self.bytes.len()
             && resource.summary() == self.summary.as_ref()
             && Arc::ptr_eq(&resource.token().0, &self.source_id)
     }
@@ -86,25 +125,44 @@ impl EmbeddedSource {
         bytes: Vec<u8>,
         max_segment_bytes: u64,
     ) -> Result<Self, ResourceError> {
-        let len = bytes.len() as u64;
-        if len > max_segment_bytes {
-            return Err(ResourceError::TooLarge {
-                len,
-                max: max_segment_bytes,
-            });
-        }
-        let summary = read_zms_summary(
-            &bytes,
-            0,
-            LayoutLimits::default().max_metadata_bytes,
-            FinishedValidation::Complete,
-        )
-        .map_err(ResourceError::from_zms)?;
+        let summary = validate_finished_zms(&bytes, max_segment_bytes)?;
         let source_id = Arc::new(());
         Ok(Self {
             identity: ResourceIdentity::finished(segment_id),
             bytes: SharedSegmentBytes {
-                bytes: Arc::new(OwnedSegment(bytes)),
+                storage: SegmentStorage::Owned(Arc::new(OwnedSegment(bytes))),
+                source_id: Arc::clone(&source_id),
+            },
+            summary: Arc::new(summary),
+            source_id,
+        })
+    }
+
+    /// Validate and bind an already-open ZMS file without loading its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns a file identity, size, format, layout, or checksum failure.
+    #[cfg(feature = "posix")]
+    pub fn from_file(
+        segment_id: SegmentId,
+        file: File,
+        max_segment_bytes: u64,
+    ) -> Result<Self, ResourceError> {
+        let before = FileIdentity::from_file(&file)?;
+        let summary = validate_finished_zms(&file, max_segment_bytes)?;
+        let after = FileIdentity::from_file(&file)?;
+        if before != after {
+            return Err(ResourceError::Changed);
+        }
+        let source_id = Arc::new(());
+        Ok(Self {
+            identity: ResourceIdentity::finished(segment_id),
+            bytes: SharedSegmentBytes {
+                storage: SegmentStorage::File {
+                    file: Arc::new(file),
+                    identity: after,
+                },
                 source_id: Arc::clone(&source_id),
             },
             summary: Arc::new(summary),
@@ -117,10 +175,11 @@ impl ResourceCatalog for EmbeddedSource {
     type Resource = EmbeddedResource;
 
     fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        self.bytes.validate_unchanged()?;
         Ok(ResourceListing {
             resources: vec![SegmentResource::new(
                 self.identity,
-                self.bytes.len() as u64,
+                self.bytes.len(),
                 Arc::clone(&self.summary),
                 EmbeddedResource(Arc::clone(&self.source_id)),
             )],
@@ -139,6 +198,7 @@ impl ImmutableSegmentSource for EmbeddedSource {
         if !self.resource_is_canonical(resource) {
             return Err(ResourceError::ForeignResource);
         }
+        self.bytes.validate_unchanged()?;
         Ok(self.bytes.clone())
     }
 
@@ -151,7 +211,7 @@ impl ImmutableSegmentSource for EmbeddedSource {
         {
             return Err(ResourceError::ForeignResource);
         }
-        Ok(())
+        self.bytes.validate_unchanged()
     }
 }
 

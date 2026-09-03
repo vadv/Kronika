@@ -30,10 +30,10 @@ use kronika_store::{
     read_resource_catalog,
 };
 
-pub use dictionary::Dictionary;
+pub use dictionary::{Dictionary, OwnedDictionaryValue};
 pub use error::ReaderError;
 pub use kronika_format::{BlobEntry, Resolved, StrId};
-pub use kronika_registry::{Cell, Row};
+pub use kronika_registry::{Cell, RecordBatch, Row};
 #[cfg(feature = "posix")]
 pub use kronika_store::{StoreObject, StoreWarning, StoreWarningReason};
 pub use segment::{Section, Segment};

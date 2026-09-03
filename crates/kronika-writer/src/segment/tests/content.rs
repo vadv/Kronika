@@ -30,8 +30,8 @@ fn writes_journal_parts_into_a_readable_segment() {
     let start = usize::try_from(entry.offset).unwrap();
     let len = usize::try_from(entry.len).unwrap();
     let body = Bytes::copy_from_slice(&segment[start..start + len]);
-    let verified = VerifiedSection::verify(body, entry.crc32c, kronika_format::crc32c)
-        .expect("section crc matches");
+    let verified =
+        VerifiedSection::verify(body, entry.crc32c, crc32c).expect("section crc matches");
     assert_eq!(
         decode_any(1_113_001, verified).expect("decode").stats.rows,
         2

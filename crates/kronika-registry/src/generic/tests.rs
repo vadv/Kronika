@@ -1,7 +1,7 @@
-use super::{Cell, Row, decode_rows, visit_rows};
+use super::{Cell, Row, decode_rows, visit_batches, visit_rows};
 use crate::contract::TypeContract;
 use crate::os_process::{OsProcess, test_row as process_row};
-use crate::{Section, VerifiedSection, registry};
+use crate::{Section, VerifiedSection, arrow_schema, registry};
 
 /// The process contract straight from the registry.
 fn process_contract() -> &'static TypeContract {
@@ -139,6 +139,93 @@ fn projected_visit_applies_offset_limit_and_physical_ordinal() {
     assert_eq!(visited[0].0, 1);
     assert_eq!(visited[0].1.get("pid"), Some(&Cell::I32(20)));
     assert_eq!(visited[0].1.get("ts"), Some(&Cell::Null));
+}
+
+#[test]
+fn batch_visit_keeps_the_full_contract_schema_and_physical_ordinal() {
+    let bytes = OsProcess::encode(&[
+        process_row(10, 10, false),
+        process_row(20, 20, false),
+        process_row(30, 30, false),
+    ])
+    .expect("encode");
+    let mut visited = Vec::new();
+    let count = visit_batches(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        None,
+        Some(3),
+        1,
+        2,
+        |ordinal, batch| {
+            visited.push((ordinal, batch));
+            true
+        },
+    )
+    .expect("batch visit");
+
+    assert_eq!(count, 2);
+    assert_eq!(visited.len(), 1);
+    assert_eq!(visited[0].0, 1);
+    let batch = &visited[0].1;
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.schema(), arrow_schema(process_contract()));
+    assert_eq!(batch.num_columns(), process_contract().columns.len());
+    let pids = batch
+        .column_by_name("pid")
+        .expect("pid column")
+        .as_any()
+        .downcast_ref::<arrow_array::Int32Array>()
+        .expect("pid is Int32");
+    assert_eq!(pids.values(), &[20, 30]);
+}
+
+#[test]
+fn batch_visit_projects_only_requested_arrow_columns() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false), process_row(20, 20, false)])
+        .expect("encode");
+    let mut visited = Vec::new();
+    let count = visit_batches(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        Some(&["ts"]),
+        Some(2),
+        0,
+        usize::MAX,
+        |ordinal, batch| {
+            visited.push((ordinal, batch));
+            true
+        },
+    )
+    .expect("projected batch visit");
+
+    assert_eq!(count, 2);
+    assert_eq!(visited.len(), 1);
+    assert_eq!(visited[0].0, 0);
+    let batch = &visited[0].1;
+    assert_eq!(batch.num_columns(), 1);
+    assert!(batch.column_by_name("ts").is_some());
+    assert!(batch.column_by_name("pid").is_none());
+}
+
+#[test]
+fn batch_visit_checks_the_catalog_row_count() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false)]).expect("encode");
+    let error = visit_batches(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        None,
+        Some(2),
+        0,
+        usize::MAX,
+        |_ordinal, _batch| true,
+    )
+    .expect_err("mismatched catalog row count");
+    assert!(matches!(
+        error,
+        crate::CodecError::Section { source, .. }
+            if matches!(*source, crate::CodecError::RowCountMismatch { expected: 2, got: 1 })
+    ));
 }
 
 #[test]

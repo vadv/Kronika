@@ -60,3 +60,4 @@ pub use source::{
     JournalScan, LocalScan, StoreError, StoreIoFailure, StoreIoOperation, StoreObject,
     StoreWarning, StoreWarningReason,
 };
+pub use zms::validate_finished_zms;

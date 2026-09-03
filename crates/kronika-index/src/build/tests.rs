@@ -30,7 +30,6 @@ fn metadata() -> HealthMetadata {
 #[test]
 fn shared_metadata_projection_only_exposes_valid_postgres_capacity() {
     let projection = MetadataProjection {
-        rows: 1,
         postgresql_enabled: Some(true),
         postgresql_effective_cpus: Some(4),
         ..MetadataProjection::default()
@@ -38,7 +37,7 @@ fn shared_metadata_projection_only_exposes_valid_postgres_capacity() {
     assert_eq!(projection.postgres_cpus(), Some(4));
     assert_eq!(
         MetadataProjection {
-            rows: 2,
+            ambiguous: true,
             ..projection
         }
         .postgres_cpus(),

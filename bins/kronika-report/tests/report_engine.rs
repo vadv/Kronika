@@ -3,7 +3,7 @@
 use std::error::Error as _;
 use std::sync::Arc;
 #[cfg(feature = "generator")]
-use {base64 as _, flate2 as _, kronika_reader as _, tempfile as _};
+use {base64 as _, flate2 as _, kronika_format as _, kronika_reader as _, tempfile as _};
 
 use kronika_index::IndexError;
 use kronika_layout::{LayoutError, SegmentId};
