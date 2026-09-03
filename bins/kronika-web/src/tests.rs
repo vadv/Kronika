@@ -892,11 +892,11 @@ async fn changed_journal_generation_replays_preparation_once() {
 
 #[test]
 fn source_change_detection_reaches_reader_errors_inside_index_wrappers() {
-    let wrapped = ApiError::from(kronika_index::LoadError::Build(
+    let wrapped = ApiError::Unreadable(Box::new(kronika_index::LoadError::Build(
         kronika_index::BuildError::Reader(kronika_reader::ReaderError::Io(std::io::Error::from(
             std::io::ErrorKind::Interrupted,
         ))),
-    ));
+    )));
     assert!(wrapped.source_changed_during_read());
 
     let unrelated = ApiError::Unreadable(Box::new(std::io::Error::from(

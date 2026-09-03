@@ -3226,7 +3226,7 @@ fn assert_api_error(
     parameter: Option<&str>,
     message: &str,
 ) {
-    assert_eq!(error.status(), status);
+    assert_eq!(crate::api::api_error_status(error), status);
     assert_eq!(error.code(), code);
     assert_eq!(error.parameter(), parameter);
     assert_eq!(error.to_string(), message);

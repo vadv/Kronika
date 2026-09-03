@@ -1,11 +1,11 @@
 //! Preparing blocking resource reads and streaming small self-describing records.
 
-use std::error::Error;
 use std::path::Path;
 
 use hyper::StatusCode;
-use kronika_query::{QueryContext, QueryIdentity, QueryRequest, QuerySink, QueryStability};
-use kronika_reader::ReaderError;
+use kronika_query::{
+    QueryContext, QueryError, QueryIdentity, QueryRequest, QuerySink, QueryStability,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
@@ -85,130 +85,18 @@ impl Prepared {
     }
 }
 
-/// Why a resource could not be prepared or streamed.
-#[derive(Debug)]
-pub(crate) enum ApiError {
-    NoSuchSegment,
-    NoSuchSection,
-    NoSuchColumn(String),
-    MixedUnits(String),
-    BadFilter(String),
-    BadCursor,
-    BadLocator(String),
-    Cancelled,
-    Unreadable(Box<dyn Error + Send + Sync>),
-}
+pub(crate) type ApiError = QueryError;
 
-impl ApiError {
-    pub(crate) const fn status(&self) -> StatusCode {
-        match self {
-            Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_)
-            | Self::MixedUnits(_)
-            | Self::BadFilter(_)
-            | Self::BadCursor
-            | Self::BadLocator(_) => StatusCode::BAD_REQUEST,
-            Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub(crate) const fn code(&self) -> &'static str {
-        match self {
-            Self::NoSuchSegment => "no_such_segment",
-            Self::NoSuchSection => "no_such_section",
-            Self::NoSuchColumn(_) => "no_such_column",
-            Self::MixedUnits(_) => "mixed_units",
-            Self::BadFilter(_) => "bad_filter",
-            Self::BadCursor => "bad_cursor",
-            Self::BadLocator(_) => "bad_locator",
-            Self::Cancelled => "cancelled",
-            Self::Unreadable(_) => "unreadable",
-        }
-    }
-
-    pub(crate) fn parameter(&self) -> Option<&str> {
-        match self {
-            Self::NoSuchColumn(column) | Self::MixedUnits(column) | Self::BadFilter(column) => {
-                Some(column)
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn source_changed_during_read(&self) -> bool {
-        let Self::Unreadable(error) = self else {
-            return false;
-        };
-        let mut source: &(dyn Error + 'static) = error.as_ref();
-        loop {
-            if let Some(reader) = source.downcast_ref::<ReaderError>() {
-                return reader.source_changed_during_read();
-            }
-            let Some(next) = source.source() else {
-                return false;
-            };
-            source = next;
-        }
-    }
-}
-
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoSuchSegment => write!(f, "no such segment"),
-            Self::NoSuchSection => write!(f, "no such logical section"),
-            Self::NoSuchColumn(column) => write!(f, "no such column {column:?}"),
-            Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
-            Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
-            Self::BadCursor => write!(f, "invalid page cursor"),
-            Self::BadLocator(message) => message.fmt(f),
-            Self::Cancelled => write!(f, "request cancelled"),
-            Self::Unreadable(error) => error.fmt(f),
-        }
-    }
-}
-
-impl Error for ApiError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Unreadable(error) => Some(error.as_ref()),
-            _ => None,
-        }
-    }
-}
-
-impl From<ReaderError> for ApiError {
-    fn from(error: ReaderError) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
-}
-
-impl From<kronika_index::LoadError> for ApiError {
-    fn from(error: kronika_index::LoadError) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
-}
-
-impl From<serde_json::Error> for ApiError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
-}
-
-impl From<kronika_query::QueryError> for ApiError {
-    fn from(error: kronika_query::QueryError) -> Self {
-        match error {
-            kronika_query::QueryError::NoSuchSegment => Self::NoSuchSegment,
-            kronika_query::QueryError::NoSuchSection => Self::NoSuchSection,
-            kronika_query::QueryError::NoSuchColumn(column) => Self::NoSuchColumn(column),
-            kronika_query::QueryError::MixedUnits(fields) => Self::MixedUnits(fields),
-            kronika_query::QueryError::BadFilter(column) => Self::BadFilter(column),
-            kronika_query::QueryError::BadCursor => Self::BadCursor,
-            kronika_query::QueryError::BadLocator(message) => Self::BadLocator(message),
-            kronika_query::QueryError::Cancelled => Self::Cancelled,
-            kronika_query::QueryError::Unreadable(error) => Self::Unreadable(error),
-            other => Self::Unreadable(Box::new(other)),
-        }
+pub(crate) const fn api_error_status(error: &ApiError) -> StatusCode {
+    match error {
+        ApiError::NoSuchSegment | ApiError::NoSuchSection => StatusCode::NOT_FOUND,
+        ApiError::NoSuchColumn(_)
+        | ApiError::MixedUnits(_)
+        | ApiError::BadFilter(_)
+        | ApiError::BadCursor
+        | ApiError::BadLocator(_) => StatusCode::BAD_REQUEST,
+        ApiError::Cancelled | ApiError::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

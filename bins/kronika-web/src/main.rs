@@ -529,7 +529,11 @@ async fn blocking_stream_inner(
             if matches!(error, ApiError::Unreadable(_)) {
                 eprintln!("kronika-web: resource preparation failed: {error}");
             }
-            refused(error.status(), error.code(), error.parameter())
+            refused(
+                api::api_error_status(&error),
+                error.code(),
+                error.parameter(),
+            )
         }
         Err(_closed) => failed(),
     }

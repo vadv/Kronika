@@ -141,7 +141,7 @@ pub(crate) fn storage_error_message(error: &crate::api::ApiError) -> String {
             "invalid stored-data request".to_owned()
         }
         crate::api::ApiError::BadLocator(_) => "could not produce detail_ref".to_owned(),
-        crate::api::ApiError::Unreadable(_) => "could not read stored data".to_owned(),
+        _ => "could not read stored data".to_owned(),
     }
 }
 
