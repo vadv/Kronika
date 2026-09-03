@@ -179,17 +179,6 @@ impl Error for ApiError {
     }
 }
 
-#[derive(Debug)]
-struct HeatmapOpenError(String);
-
-impl std::fmt::Display for HeatmapOpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "rankings[0]: {}", self.0)
-    }
-}
-
-impl Error for HeatmapOpenError {}
-
 impl From<ReaderError> for ApiError {
     fn from(error: ReaderError) -> Self {
         Self::Unreadable(Box::new(error))
@@ -317,11 +306,8 @@ pub(crate) fn prepare_with_demo(
                 .map_err(ApiError::from)
         }
         request @ QueryRequest::Heatmap(_) => {
-            let dataset = std::sync::Arc::new(
-                crate::query_adapter::NativeDataset::from_root(root).map_err(|error| {
-                    ApiError::Unreadable(Box::new(HeatmapOpenError(error.to_string())))
-                })?,
-            );
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(&context, request)
                 .map(prepared_query)

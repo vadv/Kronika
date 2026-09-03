@@ -38,6 +38,7 @@ pub struct HeatmapError {
     message: String,
     query_error: Option<HeatmapQueryErrorKind>,
     valid_options: Vec<String>,
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl HeatmapError {
@@ -119,15 +120,30 @@ impl HeatmapError {
             message: message.into(),
             query_error: Some(query_error),
             valid_options,
+            source: None,
         }
     }
 
-    fn storage(ranking_index: usize, error: impl std::fmt::Display) -> Self {
+    fn storage<E>(ranking_index: usize, error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         Self {
             ranking_index,
             message: error.to_string(),
             query_error: None,
             valid_options: Vec::new(),
+            source: Some(Box::new(error)),
+        }
+    }
+
+    fn failure(ranking_index: usize, message: impl Into<String>) -> Self {
+        Self {
+            ranking_index,
+            message: message.into(),
+            query_error: None,
+            valid_options: Vec::new(),
+            source: None,
         }
     }
 
@@ -163,7 +179,12 @@ impl std::fmt::Display for HeatmapError {
     }
 }
 
-impl std::error::Error for HeatmapError {}
+impl std::error::Error for HeatmapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let source: &(dyn std::error::Error + 'static) = self.source.as_deref()?;
+        Some(source)
+    }
+}
 
 pub(crate) struct PreparedHeatmap {
     batch: PreparedHeatmapBatch,
@@ -392,7 +413,7 @@ impl PreparedHeatmapBatch {
 
         for (segment_slot, segment_ref) in self.segments.iter().enumerate() {
             if sink.cancelled() {
-                return Err(HeatmapError::storage(0, "request cancelled"));
+                return Err(HeatmapError::failure(0, "request cancelled"));
             }
             {
                 let segment = self.open_for_scan(segment_ref)?;
@@ -440,7 +461,7 @@ impl PreparedHeatmapBatch {
                 continue;
             }
             let Some(index) = indexed_ids.first().map(|(_id, index)| *index) else {
-                return Err(HeatmapError::storage(
+                return Err(HeatmapError::failure(
                     0,
                     "retained dictionary IDs have no dependent ranking",
                 ));
@@ -822,7 +843,7 @@ fn scan_plan(
     segment
         .visit_rows(plan.type_id, &plan.projection, 0, take, |ordinal, row| {
             if sink.cancelled() {
-                failure = Some(HeatmapError::storage(plan.first_index, "request cancelled"));
+                failure = Some(HeatmapError::failure(plan.first_index, "request cancelled"));
                 return false;
             }
             visited = visited.saturating_add(1);
@@ -1966,7 +1987,7 @@ fn render_cell(
         return dictionary
             .get(&(segment_slot, *id))
             .cloned()
-            .ok_or_else(|| HeatmapError::storage(index, format!("unresolved dictionary id {id}")));
+            .ok_or_else(|| HeatmapError::failure(index, format!("unresolved dictionary id {id}")));
     }
     cell(stored, &Dictionary::default()).map_err(|error| HeatmapError::storage(index, error))
 }
@@ -1982,6 +2003,9 @@ fn reserve_ids(
         reserve_id(stored, segment_slot, retained, retained_indices, index);
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 fn reserve_id(
     stored: &Cell,
