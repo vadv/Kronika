@@ -55,6 +55,23 @@ test("Browser mode parses and formats the browser's civil time", () => {
   }
 })
 
+test("Browser defaults snap a fractional-offset selection to its civil calendar hour", () => {
+  const previous = process.env.TZ
+  process.env.TZ = "Asia/Kolkata"
+  try {
+    const hour = Date.UTC(2026, 7, 14, 5) * 1_000
+    assert.deepEqual(exportRangeDefaults(hour, "browser"), {
+      from: "2026-08-14T10:00:00",
+      fromSecond: Date.UTC(2026, 7, 14, 4, 30) / 1_000,
+      to: "2026-08-14T10:59:59",
+      toSecond: Date.UTC(2026, 7, 14, 5, 29, 59) / 1_000,
+    })
+  } finally {
+    if (previous === undefined) delete process.env.TZ
+    else process.env.TZ = previous
+  }
+})
+
 test("civil round-trip validation rejects gaps, normalization and subseconds", () => {
   const previous = process.env.TZ
   process.env.TZ = "America/New_York"

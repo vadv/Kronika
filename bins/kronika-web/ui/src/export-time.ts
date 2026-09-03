@@ -21,7 +21,11 @@ export function exportRangeDefaults(hourMicroseconds: number, mode: DisplayTimeZ
   if (!Number.isSafeInteger(hourMicroseconds) || hourMicroseconds % MICROSECONDS_PER_SECOND !== 0) {
     throw new RangeError("the selected hour must have whole-second precision")
   }
-  const fromSecond = hourMicroseconds / MICROSECONDS_PER_SECOND
+  const selectedSecond = hourMicroseconds / MICROSECONDS_PER_SECOND
+  const selected = new Date(selectedSecond * 1_000)
+  const fromSecond = mode === "utc"
+    ? selectedSecond
+    : selectedSecond - selected.getMinutes() * 60 - selected.getSeconds()
   const toSecond = fromSecond + SECONDS_PER_HOUR - 1
   return {
     from: formatExportSecond(fromSecond, mode),
