@@ -1,18 +1,23 @@
 RUST_TOOLCHAIN ?= 1.96.0
+DYLINT_TOOLCHAIN ?= nightly-2026-05-28
 TARGET ?= $(shell rustc +$(RUST_TOOLCHAIN) -vV | sed -n 's/^host: //p')
 CARGO_BUILD = cargo +$(RUST_TOOLCHAIN) build --locked --target $(TARGET)
 UI_DIR = bins/kronika-web/ui
+REPORT_ASSET_FLAGS ?=
 
-.PHONY: build collector demo web ui-install ui-build ui-check fmt fmt-check lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs diagrams
+.PHONY: build collector demo report web ui-install ui-build ui-check report-assets report-assets-check fmt fmt-check query-boundary dylint lint test bdd-check check test-bdd demo-run demo-image demo-image-run demo-up demo-stop demo-clean demo-status demo-logs diagrams
 
 build: ## Build every binary for the selected target.
-	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo -p kronika-web
+	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo -p kronika-report -p kronika-web
 
 collector: ## Build kronika-collector.
 	@$(CARGO_BUILD) -p kronika-collector
 
 demo: ## Build kronika-demo.
 	@$(CARGO_BUILD) -p kronika-demo
+
+report: ## Build kronika-report from the committed browser assets.
+	@$(CARGO_BUILD) -p kronika-report
 
 web: ## Build kronika-web from the committed interface artifact.
 	@$(CARGO_BUILD) -p kronika-web
@@ -29,13 +34,25 @@ ui-check: ## Type-check and reproduce the committed interface artifact.
 	@npm --prefix $(UI_DIR) run typecheck
 	@RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) npm --prefix $(UI_DIR) run check
 
+report-assets: ui-build ## Rebuild the committed report shell and WebAssembly bindings.
+	@RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) scripts/report-assets.sh build $(REPORT_ASSET_FLAGS)
+
+report-assets-check: ui-check ## Reproduce the committed report shell and WebAssembly bindings.
+	@RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) scripts/report-assets.sh check $(REPORT_ASSET_FLAGS)
+
 fmt: ## Format the workspace.
 	@cargo +$(RUST_TOOLCHAIN) fmt --all
 
 fmt-check: ## Verify workspace formatting without changing files.
 	@cargo +$(RUST_TOOLCHAIN) fmt --all --check
 
-lint: ## Run clippy over the workspace with warnings denied.
+query-boundary: ## Verify the shared query layer remains storage and transport neutral.
+	@scripts/check-query-boundary.sh
+
+dylint: ## Run the pinned repository and Mordant lint set.
+	@DYLINT_TOOLCHAIN=$(DYLINT_TOOLCHAIN) scripts/check-dylints.sh
+
+lint: query-boundary dylint ## Run repository-specific lints and clippy with warnings denied.
 	@cargo +$(RUST_TOOLCHAIN) clippy --locked --workspace --all-targets -- -D warnings
 
 test: ## Run every non-BDD unit and integration test.
@@ -44,7 +61,7 @@ test: ## Run every non-BDD unit and integration test.
 bdd-check: ## Compile the BDD runner and the binaries it exercises, without running scenarios.
 	@cargo +$(RUST_TOOLCHAIN) build --locked -p kronika-collector -p kronika-dump -p kronika-bdd
 
-check: ui-check fmt-check lint test bdd-check ## The full local pre-commit gate.
+check: report-assets-check fmt-check lint test bdd-check ## The full local pre-commit gate.
 
 test-bdd: ## Run BDD inside the cached Docker image.
 	@scripts/bdd-image.sh run

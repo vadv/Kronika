@@ -8,26 +8,8 @@ use anyhow::{Context as _, Result};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-pub(crate) const SOURCE_OS: u32 = 1 << 0;
-pub(crate) const SOURCE_POSTGRESQL: u32 = 1 << 1;
+pub(crate) use kronika_query::{SOURCE_OS, SOURCE_POSTGRESQL};
 const SUPPORTED_SOURCES: u32 = SOURCE_OS | SOURCE_POSTGRESQL;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SourceFamily {
-    pub(crate) name: &'static str,
-    pub(crate) bit: u32,
-}
-
-pub(crate) const SOURCE_FAMILIES: [SourceFamily; 2] = [
-    SourceFamily {
-        name: "os",
-        bit: SOURCE_OS,
-    },
-    SourceFamily {
-        name: "postgresql",
-        bit: SOURCE_POSTGRESQL,
-    },
-];
 
 /// The validated server contract.
 #[derive(Debug, Clone)]

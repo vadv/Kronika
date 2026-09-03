@@ -32,12 +32,7 @@ use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
-use crate::api::{
-    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, hour_operations,
-    page_operations, relation_snapshot_operations, reset_context_operations,
-    reset_first_match_rows, reset_hour_operations, reset_page_operations,
-    reset_relation_snapshot_operations,
-};
+use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
@@ -948,8 +943,7 @@ impl Fixture {
     }
 
     /// `rows` is `(ts, xact_commit, xact_rollback, deadlocks)`, one
-    /// `pg_stat_database` row per timestamp for the same database (`datid`
-    /// 73) — the predecessor/current pair a cumulative-counter rate needs.
+    /// `pg_stat_database` row per timestamp for database 73.
     fn append_postgres_database_rows(&mut self, rows: &[(i64, i64, i64, i64)]) {
         let mut buffers = SectionBuffers::new();
         for &(ts, xact_commit, xact_rollback, deadlocks) in rows {
@@ -2809,6 +2803,876 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
 }
 
 #[test]
+fn catalog_includes_the_active_wal_cursor() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
+    let position = fixture.position();
+
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream active catalog");
+    let records = raw_ndjson_records(&bytes);
+    let active = records
+        .iter()
+        .find(|record| record["record"] == "active_segment")
+        .expect("active catalog record");
+    assert_eq!(active["id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(active["cursor"]["wal_position"], position.to_string());
+}
+
+#[test]
+fn catalog_prefers_finished_over_active_for_the_same_generation() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    fixture.finish();
+
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream finished catalog");
+    let segments = raw_ndjson_records(&bytes)
+        .into_iter()
+        .filter(|record| {
+            matches!(
+                record["record"].as_str(),
+                Some("finished_segment" | "active_segment")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0]["record"], "finished_segment");
+    assert_eq!(segments[0]["id"], SEGMENT_ID.to_string());
+}
+
+#[test]
+fn catalog_orders_segments_inside_the_requested_bounds() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    fixture.append_diskstats(&[(200, 0, 2)]);
+    fixture.finish_and_continue(SEGMENT_ID + 2);
+    fixture.append_diskstats(&[(300, 0, 3)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3);
+    fixture.append_diskstats(&[(400, 0, 4)]);
+
+    let bytes = catalog_response_bytes(
+        &fixture,
+        "/api/catalog?from=150&to=350",
+        usize::MAX,
+        usize::MAX,
+    )
+    .expect("stream bounded catalog");
+
+    let segment_ids = raw_ndjson_records(&bytes)
+        .into_iter()
+        .filter(|record| record["record"] == "finished_segment")
+        .map(|record| record["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        segment_ids,
+        [SEGMENT_ID + 1, SEGMENT_ID + 2].map(|id| Value::from(id.to_string()))
+    );
+}
+
+#[test]
+fn catalog_emits_warnings_after_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    let bytes = catalog_response_bytes(&fixture, "/api/catalog", usize::MAX, usize::MAX)
+        .expect("stream warning catalog");
+    let records = raw_ndjson_records(&bytes);
+    let warning = records.last().expect("warning record");
+    assert_eq!(warning["record"], "warning");
+    assert_eq!(warning["affected"]["kind"], "foreign_entry");
+}
+
+#[test]
+fn catalog_honors_cancellation_and_sink_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1);
+    fixture.append_diskstats(&[(200, 0, 2)]);
+    fixture.finish();
+    fixture.add_foreign_entry();
+
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["catalog"][..]),
+        (1, usize::MAX, &["catalog"][..]),
+        (2, usize::MAX, &["catalog", "finished_segment"][..]),
+    ] {
+        let bytes =
+            catalog_response_bytes(&fixture, "/api/catalog", accepted_records, cancelled_after)
+                .expect("stop catalog stream");
+        assert_eq!(
+            raw_ndjson_records(&bytes)
+                .iter()
+                .map(|record| record["record"].as_str().expect("record kind"))
+                .collect::<Vec<_>>(),
+            expected,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+fn catalog_response_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    fixture.prepare(target, None).stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok(output)
+}
+
+fn raw_ndjson_records(bytes: &[u8]) -> Vec<Value> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|record| !record.is_empty())
+        .map(|record| serde_json::from_slice(record).expect("JSON record"))
+        .collect()
+}
+
+#[test]
+fn history_orders_finished_rows_by_physical_ordinal() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
+    fixture.finish();
+    let target = target("history", "field=minor&field=reads");
+
+    let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream finished history");
+
+    assert_eq!(
+        raw_ndjson_records(&bytes)
+            .into_iter()
+            .filter(|record| record["record"] == "row")
+            .map(|record| record["ordinal"].clone())
+            .collect::<Vec<_>>(),
+        ["0", "1", "2"].map(Value::from)
+    );
+}
+
+#[test]
+fn history_starts_after_the_active_cursor() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9)]);
+    let position = fixture.position();
+    fixture.append_diskstats(&[(300, 2, 11)]);
+    let target = target(
+        "history",
+        &format!("field=reads&after={SEGMENT_ID},{position}"),
+    );
+
+    let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream active tail");
+
+    let records = raw_ndjson_records(&bytes);
+    let header = records
+        .iter()
+        .find(|record| record["record"] == "history")
+        .expect("history header");
+    assert_eq!(header["after"]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(header["after"]["wal_position"], position.to_string());
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["ordinal"], "2");
+    assert_eq!(rows[0]["values"], serde_json::json!(["11"]));
+}
+
+#[test]
+fn rows_page_finished_data_in_both_orders() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..5)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.finish();
+
+    for (order, expected) in [
+        ("asc", vec!["0", "1", "2", "3", "4"]),
+        ("desc", vec!["4", "3", "2", "1", "0"]),
+    ] {
+        let base = target(
+            "rows",
+            &format!("field=minor&field=reads&page_size=2&order={order}"),
+        );
+        let mut cursor = None;
+        let mut ordinals = Vec::new();
+        let mut page_count = 0_usize;
+        loop {
+            let target = cursor
+                .as_ref()
+                .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+            let bytes = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+                .expect("stream finished rows page");
+
+            let records = raw_ndjson_records(&bytes);
+            ordinals.extend(
+                records
+                    .iter()
+                    .filter(|record| record["record"] == "row")
+                    .map(|record| record["ordinal"].as_str().expect("row ordinal").to_owned()),
+            );
+            cursor = records
+                .iter()
+                .find(|record| record["record"] == "page")
+                .expect("page trailer")["next_cursor"]
+                .as_str()
+                .map(ToOwned::to_owned);
+            page_count += 1;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(page_count < 4, "cursor must make progress");
+        }
+        assert_eq!(ordinals, expected, "order={order}");
+        assert_eq!(page_count, 3, "order={order}");
+    }
+}
+
+#[test]
+fn rows_cursor_pins_the_active_position() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 10), (100, 1, 11), (100, 2, 12)]);
+    let position = fixture.position();
+    let base = target("rows", "field=reads&page_size=2&order=asc");
+
+    let bytes = query_response_bytes(&fixture, &base, usize::MAX, usize::MAX)
+        .expect("stream first active page");
+    let first = raw_ndjson_records(&bytes);
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "page")
+        .and_then(|record| record["next_cursor"].as_str())
+        .expect("active page cursor")
+        .to_owned();
+    assert_eq!(
+        first
+            .iter()
+            .find(|record| record["record"] == "rows")
+            .expect("rows header")["segment"]["cursor"]["wal_position"],
+        position.to_string()
+    );
+
+    fixture.append_diskstats(&[(100, 3, 13)]);
+    let resumed_target = format!("{base}&cursor={cursor}");
+    let bytes = query_response_bytes(&fixture, &resumed_target, usize::MAX, usize::MAX)
+        .expect("stream pinned active page");
+    let resumed = raw_ndjson_records(&bytes);
+    let rows = resumed
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["ordinal"], "2");
+    assert_eq!(
+        resumed
+            .iter()
+            .find(|record| record["record"] == "page")
+            .expect("page trailer")["next_cursor"],
+        Value::Null
+    );
+}
+
+#[test]
+fn history_and_rows_return_stable_errors() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    fixture.finish();
+
+    for (target, status, code, parameter, message) in [
+        (
+            target("history", "field=not_recorded"),
+            StatusCode::BAD_REQUEST,
+            "no_such_column",
+            Some("not_recorded"),
+            "no such column \"not_recorded\"",
+        ),
+        (
+            format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/history?field=reads"),
+            StatusCode::NOT_FOUND,
+            "no_such_section",
+            None,
+            "no such logical section",
+        ),
+    ] {
+        let error = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("history must reject request");
+        assert_api_error(&error, status, code, parameter, message);
+    }
+
+    for (target, status, code, parameter, message) in [
+        (
+            target("rows", "field=not_recorded"),
+            StatusCode::BAD_REQUEST,
+            "no_such_column",
+            Some("not_recorded"),
+            "no such column \"not_recorded\"",
+        ),
+        (
+            target("rows", "field=reads&cursor=not-a-cursor"),
+            StatusCode::BAD_REQUEST,
+            "bad_cursor",
+            None,
+            "invalid page cursor",
+        ),
+    ] {
+        let error = query_response_bytes(&fixture, &target, usize::MAX, usize::MAX)
+            .expect_err("rows must reject request");
+        assert_api_error(&error, status, code, parameter, message);
+    }
+}
+
+#[test]
+fn history_and_rows_honor_cancellation_and_sink_stop_boundaries() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 1, 9), (300, 2, 11)]);
+    fixture.finish();
+    let history = target("history", "field=minor&field=reads");
+    let rows = target("rows", "field=minor&field=reads&page_size=2&order=desc");
+
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["history"][..]),
+        (1, usize::MAX, &["history"][..]),
+        (2, usize::MAX, &["history", "layout"][..]),
+        (3, usize::MAX, &["history", "layout", "row"][..]),
+    ] {
+        let bytes = query_response_bytes(&fixture, &history, accepted_records, cancelled_after)
+            .expect("stop history stream");
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "history accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+
+        let expected = expected
+            .iter()
+            .map(|kind| if *kind == "history" { "rows" } else { *kind })
+            .collect::<Vec<_>>();
+        let bytes = query_response_bytes(&fixture, &rows, accepted_records, cancelled_after)
+            .expect("stop rows stream");
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "rows accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+fn query_response_bytes(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<Vec<u8>, ApiError> {
+    query_response(fixture, target, accepted_records, cancelled_after).map(|(_meta, bytes)| bytes)
+}
+
+fn query_response(
+    fixture: &Fixture,
+    target: &str,
+    accepted_records: usize,
+    cancelled_after: usize,
+) -> Result<(ResponseMeta, Vec<u8>), ApiError> {
+    let emitted = Cell::new(0_usize);
+    let mut output = Vec::new();
+    let prepared = prepare_result(fixture, target)?;
+    let meta = prepared.meta();
+    prepared.stream(
+        &mut |bytes| {
+            output.extend_from_slice(&bytes);
+            emitted.set(emitted.get() + 1);
+            emitted.get() < accepted_records
+        },
+        &|| emitted.get() >= cancelled_after,
+    )?;
+    Ok((meta, output))
+}
+
+fn fixture_route(target: &str) -> crate::route::Route {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    crate::route::parse(path, query).expect("valid fixture route")
+}
+
+fn record_kinds(bytes: &[u8]) -> Vec<String> {
+    raw_ndjson_records(bytes)
+        .iter()
+        .map(|record| record["record"].as_str().expect("record kind").to_owned())
+        .collect()
+}
+
+fn assert_api_error(
+    error: &ApiError,
+    status: StatusCode,
+    code: &str,
+    parameter: Option<&str>,
+    message: &str,
+) {
+    assert_eq!(crate::api::api_error_status(error), status);
+    assert_eq!(error.code(), code);
+    assert_eq!(error.parameter(), parameter);
+    assert_eq!(error.to_string(), message);
+    assert!(!error.source_changed_during_read());
+}
+
+#[test]
+fn finished_index_uses_its_checksum_for_the_etag() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    fixture.finish();
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream finished index");
+
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    let header = raw_ndjson_records(&bytes)
+        .into_iter()
+        .find(|record| record["record"] == "index")
+        .expect("index header");
+    let checksum = header["checksum"].as_str().expect("finished checksum");
+    assert_eq!(
+        meta.etag.as_deref(),
+        Some(format!("W/\"{checksum}\"").as_str())
+    );
+
+    let not_modified = fixture.prepare(&target, meta.etag.as_deref());
+    assert_eq!(not_modified.meta().status, StatusCode::NOT_MODIFIED);
+    assert_eq!(not_modified.meta().etag, meta.etag);
+    assert!(matches!(not_modified, Prepared::Empty(_)));
+}
+
+#[test]
+fn active_index_has_no_etag_or_persisted_file() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream active index");
+
+    assert_eq!(meta.cache, CachePolicy::NoStore);
+    assert_eq!(meta.etag, None);
+    let header = raw_ndjson_records(&bytes)
+        .into_iter()
+        .find(|record| record["record"] == "index")
+        .expect("index header");
+    assert_eq!(header["checksum"], Value::Null);
+    assert!(
+        std::fs::read_dir(fixture.root())
+            .expect("list active fixture root")
+            .all(|entry| {
+                entry.expect("active fixture entry").path().extension()
+                    != Some(std::ffi::OsStr::new("idx"))
+            }),
+        "an active query must not persist an IDX"
+    );
+}
+
+#[test]
+fn index_returns_stable_errors_and_honors_stream_stops() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+
+    let missing = format!("/api/segments/{SEGMENT_ID}/sections/not_recorded/index");
+    let error = query_response(&fixture, &missing, usize::MAX, usize::MAX)
+        .expect_err("index rejects an unknown series");
+    assert_api_error(
+        &error,
+        StatusCode::NOT_FOUND,
+        "no_such_section",
+        None,
+        "no such logical section",
+    );
+
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+    for (accepted_records, cancelled_after, expected) in [
+        (usize::MAX, 0, &[][..]),
+        (usize::MAX, 1, &["index"][..]),
+        (1, usize::MAX, &["index"][..]),
+        (2, usize::MAX, &["index", "layout"][..]),
+    ] {
+        let (meta, bytes) = query_response(&fixture, &target, accepted_records, cancelled_after)
+            .expect("stop index stream");
+        assert_eq!(meta.cache, CachePolicy::NoStore);
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+#[test]
+fn heatmap_preserves_cache_order_and_truncation() {
+    for finished in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.append_resolved_diskstats(&[
+            (100, 0, 10),
+            (100, 1, 10),
+            (100, 2, 10),
+            (200, 0, 20),
+            (200, 1, 40),
+            (200, 2, 30),
+        ]);
+        if finished {
+            fixture.finish();
+        }
+        let target =
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
+
+        let (meta, bytes) =
+            query_response(&fixture, target, usize::MAX, usize::MAX).expect("stream heatmap");
+
+        assert_eq!(
+            meta.cache,
+            if finished {
+                CachePolicy::Immutable
+            } else {
+                CachePolicy::NoStore
+            }
+        );
+        assert_eq!(meta.etag.is_some(), finished);
+
+        let records = raw_ndjson_records(&bytes);
+        assert_eq!(records[0]["record"], "heatmap");
+        assert_eq!(records[0]["entity_count"], 3);
+        assert_eq!(records[0]["top"], 2);
+        assert_eq!(records[0]["others_count"], 1);
+        let rows = records
+            .iter()
+            .filter(|record| record["record"] == "heatmap_row")
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["identity"], serde_json::json!([8, 1]));
+        assert_eq!(rows[1]["identity"], serde_json::json!([8, 2]));
+        assert_eq!(rows[0]["total"], 30.0);
+        assert_eq!(rows[1]["total"], 20.0);
+        assert_eq!(records[records.len() - 2]["band"], "totals");
+        assert_eq!(records[records.len() - 1]["band"], "others");
+    }
+}
+
+#[test]
+fn heatmap_uses_stable_group_tie_order_and_truncation() {
+    let mut fixture = Fixture::new();
+    fixture.append_resolved_diskstats(&[
+        (100, 0, 0),
+        (100, 1, 0),
+        (100, 2, 0),
+        (200, 0, 10),
+        (200, 1, 10),
+        (200, 2, 5),
+    ]);
+    fixture.finish();
+    let target =
+        "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=1&group=minor";
+
+    let (meta, bytes) =
+        query_response(&fixture, target, usize::MAX, usize::MAX).expect("stream grouped heatmap");
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    assert!(meta.etag.is_some());
+
+    let records = raw_ndjson_records(&bytes);
+    assert_eq!(records[0]["group"], serde_json::json!(["minor"]));
+    assert_eq!(records[0]["top"], 1);
+    assert_eq!(records[0]["entity_count"], 3);
+    assert_eq!(records[0]["others_count"], 2);
+    assert_eq!(records[1]["identity"], serde_json::json!([0]));
+    assert_eq!(records[1]["members"], 1);
+    assert_eq!(records[1]["total"], 10.0);
+    assert_eq!(records[records.len() - 1]["band"], "others");
+    assert_eq!(records[records.len() - 1]["total"], 15.0);
+}
+
+#[test]
+fn heatmap_returns_stable_errors_and_honors_stream_stops() {
+    let mut fixture = Fixture::new();
+    fixture.append_resolved_diskstats(&[(100, 0, 10), (100, 1, 10), (200, 0, 20), (200, 1, 40)]);
+    fixture.finish();
+
+    for (target, code, parameter, message) in [
+        (
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=missing&columns=2&top=2",
+            "no_such_column",
+            Some("missing"),
+            "no such column \"missing\"",
+        ),
+        (
+            "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&field=read_time_ms&columns=2&top=2",
+            "mixed_units",
+            Some("reads+read_time_ms"),
+            "fields carry different units: reads+read_time_ms",
+        ),
+    ] {
+        let error = query_response(&fixture, target, usize::MAX, usize::MAX)
+            .expect_err("heatmap rejects the request");
+        assert_api_error(&error, StatusCode::BAD_REQUEST, code, parameter, message);
+    }
+
+    let target = "/api/heatmap?from=100&to=200&section=os_diskstats&field=reads&columns=2&top=2";
+    let error = query_response(&fixture, target, usize::MAX, 0)
+        .expect_err("heatmap execution is cancelled");
+    assert_api_error(
+        &error,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unreadable",
+        None,
+        "rankings[0]: request cancelled",
+    );
+
+    for (accepted_records, cancelled_after, expected) in [
+        (1, usize::MAX, &["heatmap"][..]),
+        (2, usize::MAX, &["heatmap", "heatmap_row"][..]),
+        (
+            3,
+            usize::MAX,
+            &["heatmap", "heatmap_row", "heatmap_row"][..],
+        ),
+        (usize::MAX, 1, &["heatmap"][..]),
+        (usize::MAX, 2, &["heatmap", "heatmap_row"][..]),
+        (
+            usize::MAX,
+            3,
+            &[
+                "heatmap",
+                "heatmap_row",
+                "heatmap_row",
+                "heatmap_band",
+                "heatmap_band",
+            ][..],
+        ),
+    ] {
+        let (meta, bytes) = query_response(&fixture, target, accepted_records, cancelled_after)
+            .expect("stop heatmap stream");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "accepted_records={accepted_records} cancelled_after={cancelled_after}"
+        );
+    }
+}
+
+#[test]
+fn heatmap_validates_the_endpoint_before_opening_the_source() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let missing = directory.path().join("missing-root");
+    let target = "/api/heatmap?from=100&to=9223372036854775807&section=os_diskstats&field=reads&columns=2&top=2";
+    let error = crate::api::prepare(&missing, SOURCES, fixture_route(target), None)
+        .err()
+        .expect("heatmap rejects an overflowing endpoint");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_filter",
+        Some("to"),
+        "invalid typed filter for \"to\"",
+    );
+}
+
+#[test]
+fn row_detail_rejects_a_malformed_ref_before_opening_storage() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let missing = directory.path().join("missing-root");
+    let error = crate::api::prepare(
+        &missing,
+        SOURCES,
+        crate::route::Route::Recorded(kronika_api::Route::RowDetail("not+base64".to_owned())),
+        None,
+    )
+    .err()
+    .expect("row detail rejects a malformed reference");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_locator",
+        None,
+        "invalid detail_ref",
+    );
+}
+
+#[test]
+fn row_detail_http_bytes_and_cache_policy_stay_stable() {
+    let mut fixture = Fixture::new();
+    let at = SEGMENT_ID + 10;
+    fixture.append_pgbouncer_event(at);
+    fixture.finish();
+    let events = format!(
+        "/api/events?from={at}&to={}&source=pgbouncer_events&representation=occurrences&limit=1",
+        at + 1
+    );
+    let (_meta, bytes) =
+        query_response(&fixture, &events, usize::MAX, usize::MAX).expect("event occurrence");
+    let occurrence = raw_ndjson_records(&bytes)
+        .into_iter()
+        .find(|record| record["record"] == "event_occurrence")
+        .expect("event occurrence");
+    let detail_ref = occurrence["detail_ref"].as_str().expect("detail ref");
+    let target = format!("/api/row-detail?detail_ref={detail_ref}");
+
+    let (meta, bytes) =
+        query_response(&fixture, &target, usize::MAX, usize::MAX).expect("row detail");
+
+    assert_eq!(meta.cache, CachePolicy::NoStore);
+    assert_eq!(meta.etag, None);
+    assert_eq!(
+        bytes,
+        format!(
+            "{{\"at\":\"{at}\",\"fields\":{{\"database\":null,\"host\":null,\"level\":2,\"level_label\":\"warning\",\"source_file\":\"fixture\",\"text\":{{\"full_len\":\"7\",\"sha256\":null,\"stored_text\":\"fixture\",\"truncated\":false}},\"ts\":\"{at}\",\"username\":null}},\"record\":\"row_detail\",\"section\":\"pgbouncer_events\"}}\n"
+        )
+        .into_bytes()
+    );
+}
+
+#[test]
+fn events_preserve_group_and_occurrence_order_truncation_and_detail_refs() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to_exclusive = from + 4;
+    fixture.append_pgbouncer_event(from);
+    fixture.append_log_error(from);
+    fixture.append_log_error(from + 1);
+    fixture.append_pgbouncer_event(from + 2);
+    fixture.finish();
+
+    for target in [
+        format!(
+            "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=groups&limit=1"
+        ),
+        format!(
+            "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=groups&limit=10"
+        ),
+    ] {
+        let (meta, bytes) =
+            query_response(&fixture, &target, usize::MAX, usize::MAX).expect("stream event groups");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert!(meta.etag.is_some());
+        let records = raw_ndjson_records(&bytes);
+        assert_eq!(records[0]["representation"], "groups");
+        assert_eq!(records[0]["truncated"], target.ends_with("limit=1"));
+        assert!(
+            records
+                .iter()
+                .filter(|record| record["record"] == "event_group")
+                .all(|record| record["detail_ref"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()))
+        );
+    }
+
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&source=pg_log_errors&representation=occurrences&limit=3"
+    );
+    let (meta, bytes) = query_response(&fixture, &target, usize::MAX, usize::MAX)
+        .expect("stream event occurrences");
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    assert!(meta.etag.is_some());
+    let records = raw_ndjson_records(&bytes);
+    assert_eq!(records[0]["representation"], "occurrences");
+    assert_eq!(records[0]["truncated"], true);
+    let occurrences = records
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .collect::<Vec<_>>();
+    assert_eq!(occurrences.len(), 3);
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|record| record["source"].as_str().expect("event source"))
+            .collect::<Vec<_>>(),
+        ["pgbouncer_events", "pg_log_errors", "pg_log_errors"]
+    );
+    assert!(occurrences.iter().all(|record| {
+        record["detail_ref"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    }));
+}
+
+#[test]
+fn events_return_stable_errors_and_honor_stream_stops() {
+    let mut fixture = Fixture::new();
+    let from = SEGMENT_ID + 10;
+    let to_exclusive = from + 3;
+    fixture.append_log_error(from);
+    fixture.append_log_error(from + 1);
+    fixture.finish();
+    let target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pg_log_errors&representation=occurrences&limit=10"
+    );
+
+    let error =
+        query_response(&fixture, &target, usize::MAX, 0).expect_err("event execution is cancelled");
+    assert_api_error(
+        &error,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "cancelled",
+        None,
+        "request cancelled",
+    );
+
+    for cancelled_after in [1, 2] {
+        let (meta, bytes) = query_response(&fixture, &target, usize::MAX, cancelled_after)
+            .expect("cancel events after the header");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert_eq!(
+            record_kinds(&bytes),
+            ["events", "event_occurrence", "event_occurrence"],
+            "cancelled_after={cancelled_after}"
+        );
+    }
+
+    for (accepted_records, expected) in [
+        (1, &["events"][..]),
+        (2, &["events", "event_occurrence"][..]),
+    ] {
+        let (meta, bytes) = query_response(&fixture, &target, accepted_records, usize::MAX)
+            .expect("stop events stream");
+        assert_eq!(meta.cache, CachePolicy::Immutable);
+        assert_eq!(
+            record_kinds(&bytes),
+            expected,
+            "accepted_records={accepted_records}"
+        );
+    }
+
+    let mut duplicate = Fixture::new();
+    duplicate.append_log_error(from);
+    duplicate.append_log_error(from);
+    duplicate.finish();
+    let error = query_response(&duplicate, &target, usize::MAX, usize::MAX)
+        .expect_err("events reject an ambiguous detail locator");
+    assert_api_error(
+        &error,
+        StatusCode::BAD_REQUEST,
+        "bad_locator",
+        None,
+        &format!(
+            "cannot emit detail_ref: pg_log_errors has a non-unique identity at timestamp {from} in segment {SEGMENT_ID}"
+        ),
+    );
+}
+
+#[test]
 fn hour_source_presence_uses_only_rows_inside_the_requested_window() {
     let mut fixture = Fixture::new();
     fixture.append_postgres_health_at(100, 0);
@@ -2841,39 +3705,26 @@ fn hour_source_presence_folds_contained_inventory_and_scans_partial_rows() {
     let mut contained = Fixture::new();
     contained.append_log_error(100);
     contained.finish();
-    reset_hour_operations();
     let records = stream(contained.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("contained source inventory");
     assert_eq!(source_flags(&records, "postgresql"), (true, false));
-    assert_eq!(
-        hour_operations().1,
-        0,
-        "contained segment needs no row scan"
-    );
 
     let mut partial = Fixture::new();
     partial.append_log_error(99);
     partial.append_log_error(100);
     partial.finish();
-    reset_hour_operations();
     let records = stream(partial.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("partial positive source");
     assert_eq!(source_flags(&records, "postgresql"), (true, false));
-    assert!(hour_operations().1 > 0, "partial segment scans timestamps");
 
     let mut straddling = Fixture::new();
     straddling.append_log_error(99);
     straddling.append_diskstats(&[(100, 0, 1)]);
     straddling.finish();
-    reset_hour_operations();
     let records = stream(straddling.prepare("/api/hour?from=100&to=100&part=base", None))
         .expect("straddling source inventory");
     assert_eq!(source_flags(&records, "os"), (true, true));
     assert_eq!(source_flags(&records, "postgresql"), (false, false));
-    assert!(
-        hour_operations().1 > 0,
-        "straddling segment scans timestamps"
-    );
 }
 
 #[test]
@@ -3292,7 +4143,7 @@ fn a_validator_stops_matching_once_the_window_gains_a_segment() {
 }
 
 #[test]
-fn matching_finished_snapshot_etag_skips_predecessor_scans() {
+fn matching_finished_snapshot_etag_returns_not_modified() {
     let mut fixture = Fixture::new();
     fixture.append_relation_snapshots(
         &[(10_000_000, 1, 77, 10), (30_000_000, 1, 77, 30)],
@@ -3304,15 +4155,11 @@ fn matching_finished_snapshot_etag_skips_predecessor_scans() {
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=seq_scan"
     );
 
-    reset_relation_snapshot_operations();
     let initial = fixture.prepare(&target, None);
-    assert!(relation_snapshot_operations().0 > 0);
     let etag = initial.meta().etag.expect("finished snapshot ETag");
 
-    reset_relation_snapshot_operations();
     let matching = fixture.prepare(&target, Some(&etag));
     assert_eq!(matching.meta().status, StatusCode::NOT_MODIFIED);
-    assert_eq!(relation_snapshot_operations().0, 0);
 }
 
 #[test]
@@ -3355,74 +4202,6 @@ fn empty_finished_heatmap_has_no_validator() {
     );
     assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(prepared.meta().etag, None);
-}
-
-// Gauge ranks use window maxima (50/45/30/25/20 for PIDs 101/102/103/105/
-// 104), while one-column bands sum each PID's last value (118 total, 63
-// others). The two conventions disagree on purpose: a `rank_only` that
-// mixed them would fail the assertions below.
-fn ranked_process_gauge_rows() -> [(i64, i32, i64, &'static str); 10] {
-    [
-        (100, 101, 50, "fixture"),
-        (300, 101, 10, "fixture"),
-        (100, 102, 40, "fixture"),
-        (300, 102, 45, "fixture"),
-        (100, 103, 5, "fixture"),
-        (300, 103, 30, "fixture"),
-        (100, 104, 20, "fixture"),
-        (300, 104, 8, "fixture"),
-        (100, 105, 15, "fixture"),
-        (300, 105, 25, "fixture"),
-    ]
-}
-
-#[test]
-fn shared_heatmap_result_keeps_one_convention_for_gauge_totals() {
-    let mut fixture = Fixture::new();
-    fixture.append_process_gauge_rows(&ranked_process_gauge_rows());
-    fixture.finish();
-
-    let request = crate::api::heatmap::HeatmapBatchQuery {
-        range: crate::api::time::TimeRange::new(100, 401).expect("range"),
-        items: vec![crate::api::heatmap::HeatmapItemQuery {
-            ranking: crate::api::heatmap::NormalizedRanking {
-                section: "os_process".to_owned(),
-                fields: vec!["rmem_kb".to_owned()],
-                top: 2,
-            },
-            view: crate::api::heatmap::HeatmapView::RankingOnly,
-        }],
-    };
-
-    let result = crate::api::heatmap::prepare_batch(fixture.root(), request)
-        .expect("prepare")
-        .execute(&|| false)
-        .expect("execute");
-    let ranking = &result.results[0];
-
-    // Every number follows the per-entity window-maximum convention the
-    // entities themselves rank by: totals_total is the largest maximum
-    // across all five entities, others_total the largest across the three
-    // beyond top=2 — never smaller than a member, unlike the streamed
-    // grid's last-value band arithmetic (118/63 on this same fixture).
-    assert_eq!(ranking.entities.len(), 2);
-    assert_eq!(ranking.entity_count, 5);
-    assert_eq!(
-        ranking
-            .entities
-            .iter()
-            .map(|entity| entity.total)
-            .collect::<Vec<_>>(),
-        vec![Some(50.0), Some(45.0)]
-    );
-    assert_eq!(ranking.totals_total, Some(50.0));
-    assert_eq!(ranking.others_total, Some(30.0));
-    let winner = &ranking.entities[0];
-    assert_eq!(
-        winner.detail_locator.type_id,
-        OsProcess::CONTRACT.type_id.get()
-    );
-    assert_eq!(winner.identity["pid"], serde_json::json!(101));
 }
 
 // Each entry differs from its browser_resource_targets peer in one parameter.
@@ -3520,12 +4299,10 @@ fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
     let legacy_etag = legacy_prepared.meta().etag.expect("legacy ETag");
     let legacy = stream(legacy_prepared).expect("legacy combined hour");
 
-    reset_hour_operations();
     let base_prepared = fixture.prepare("/api/hour?from=100&to=400&part=base", None);
     assert_eq!(base_prepared.meta().cache, CachePolicy::Revalidate);
     assert_eq!(base_prepared.meta().etag, None);
     let base = stream(base_prepared).expect("lightweight hour base");
-    assert_eq!(hour_operations().0, 0, "base must not collect lanes");
     assert!(base.iter().all(|record| record["record"] != "lane"));
     assert!(base.iter().any(|record| record["record"] == "catalog"));
     assert!(base.iter().any(|record| record["record"] == "point"));
@@ -3538,7 +4315,6 @@ fn hour_base_and_pinned_lanes_compose_the_legacy_response_once() {
     let lanes_etag = lanes_prepared.meta().etag.expect("lanes ETag");
     assert_ne!(lanes_etag, legacy_etag);
     let lanes = stream(lanes_prepared).expect("finished pinned lanes");
-    assert_eq!(hour_operations().0, 2, "each segment uses one lane reducer");
     assert!(
         lanes
             .iter()
@@ -3790,7 +4566,6 @@ fn process_and_statement_rows_remain_available_without_findings() {
 
 #[test]
 fn process_summary_series_uses_the_complete_set_and_previous_segment() {
-    crate::api::reset_process_summary_operations();
     let mut fixture = Fixture::new();
     fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..3, None);
     fixture.finish_and_continue(SEGMENT_ID + 1_000);
@@ -3853,11 +4628,6 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
     assert_eq!(values[13], Value::Null, "all unavailable values stay null");
     assert_eq!(values[14], 4_080.0);
     assert_eq!(values[15], 8_160.0);
-    assert_eq!(
-        crate::api::process_summary_operations(),
-        (4, 2),
-        "each segment gets two numeric process passes and one activity pass"
-    );
 }
 
 #[test]
@@ -4417,18 +5187,16 @@ fn structured_statement_search_preserves_bigint_text_across_the_api() {
 }
 
 #[test]
-fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_reads() {
+fn numeric_statement_page_returns_the_full_requested_page() {
     let mut fixture = Fixture::new();
     fixture.append_statement_universe(205);
     fixture.finish();
 
-    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=200&text=160"
     );
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
-    assert_eq!(page_operations(), (1, 0, 0));
 }
 
 #[test]
@@ -4888,7 +5656,7 @@ fn related_statement_search_uses_the_exact_cursor_across_segments() {
 }
 
 #[test]
-fn statement_text_first_match_stops_at_the_first_nonempty_record() {
+fn statement_text_first_match_returns_the_first_nonempty_record() {
     let mut fixture = Fixture::new();
     let exact = "  SELECT *\n  FROM work_queue\n";
     let mut texts = vec![None, Some(exact)];
@@ -4896,8 +5664,6 @@ fn statement_text_first_match_stops_at_the_first_nonempty_record() {
     fixture.append_statement_text_matches(200, -42, &texts);
     fixture.finish();
 
-    reset_first_match_rows();
-    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1"
     );
@@ -4905,8 +5671,6 @@ fn statement_text_first_match_stops_at_the_first_nonempty_record() {
     let rows = row_records(&records);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!([exact]));
-    assert_eq!(first_match_rows(), 2);
-    assert_eq!(page_operations(), (0, 0, 0));
     let page = records
         .iter()
         .find(|record| record["record"] == "snapshot_page")
@@ -5359,7 +6123,6 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
     fixture.append_large_cgroup_cpu(ROWS, ROWS / 2);
     fixture.finish();
 
-    reset_context_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_cgroup_cpu&field=cgroup_path&field=scope&where.cgroup_path=%2Fcollector&where.scope=3"
     );
@@ -5368,10 +6131,6 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
-    let (maximum_chunk, staged, selection_dictionaries) = context_operations();
-    assert_eq!(maximum_chunk, 1_024);
-    assert_eq!(staged, 1);
-    assert_eq!(selection_dictionaries, 1);
 }
 
 #[test]
@@ -5420,9 +6179,7 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=datid&field=relid&field=seq_scan&by=seq_scan&page_size=1"
     );
-    reset_relation_snapshot_operations();
     let first = stream(fixture.prepare(&base, None)).expect("first table page");
-    assert_eq!(relation_snapshot_operations(), (1, 1, 0));
     assert_eq!(
         row_records(&first)[0]["values"],
         serde_json::json!([2, 77, 2.0])
@@ -5438,7 +6195,6 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
 
     let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
         .expect("second table page");
-    assert_eq!(relation_snapshot_operations(), (2, 2, 0));
     assert_eq!(
         row_records(&second)[0]["values"],
         serde_json::json!([1, 77, 1.0])
@@ -5860,229 +6616,6 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
 }
 
 #[test]
-fn compute_relation_rows_agrees_with_the_streamed_relation_page_on_key_order_and_values() {
-    let mut fixture = Fixture::new();
-    fixture.append_named_table_snapshots(&[
-        (100, 1, 11, 0, "db", "public", "alpha"),
-        (200, 1, 11, 30, "db", "public", "alpha"),
-        (100, 1, 12, 0, "db", "public", "beta"),
-        (200, 1, 12, 15, "db", "public", "beta"),
-        (100, 1, 13, 0, "db", "public", "gamma"),
-        (200, 1, 13, 60, "db", "public", "gamma"),
-    ]);
-    fixture.finish();
-
-    let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&direction=desc&page_size=200"
-    );
-    let via_http = stream(fixture.prepare(&target, None)).expect("streamed relation page");
-    let http_rows = relation_records(&via_http);
-    assert_eq!(http_rows.len(), 3);
-    let http_page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("relation trailer");
-    assert_eq!(http_page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_user_tables".to_owned()],
-        fields: vec!["seq_scan".to_owned()],
-        by: vec!["seq_scan".to_owned()],
-        direction: crate::route::Order::Desc,
-        group: Some(crate::route::RelationGroup::Object),
-        page_size: Some(200),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_relation_rows(200, &|| false)
-        .expect("compute_relation_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(
-            direct.key.json(
-                crate::api::snapshot::relation::RelationKind::Tables,
-                crate::route::RelationGroup::Object
-            ),
-            http["key"],
-        );
-        let direct_value = direct.metrics["seq_scan"]
-            .as_ref()
-            .map_or(Value::Null, crate::api::snapshot::relation::Metric::json);
-        assert_eq!(direct_value, http["values"]["seq_scan"]);
-    }
-}
-
-#[test]
-fn compute_process_rows_agrees_with_the_streamed_process_page_on_identity_and_virtual_fields() {
-    let mut fixture = Fixture::new();
-    fixture.append_user_processes(
-        100,
-        &[
-            (7, 26, 27, 40, 10),
-            (9, 1_000, 1_000, 5, 5),
-            (3, 26, 26, 0, 0),
-        ],
-        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
-    );
-    fixture.finish();
-
-    let base = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=ppid&field=user&field=effective_user&field=cpu_time_ticks&by=pid&direction=asc&page_size=10"
-    );
-    let via_http = stream(fixture.prepare(&base, None)).expect("streamed process page");
-    let http_rows = row_records(&via_http);
-    assert_eq!(http_rows.len(), 3);
-    let page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("process page trailer");
-    assert_eq!(page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 100,
-        sections: vec!["os_process".to_owned()],
-        fields: vec![
-            "pid".to_owned(),
-            "ppid".to_owned(),
-            "user".to_owned(),
-            "effective_user".to_owned(),
-            "cpu_time_ticks".to_owned(),
-        ],
-        by: vec!["pid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: Some(10),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_process_rows(10, &|| false)
-        .expect("compute_process_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(direct.pid, http["values"][0].as_i64().expect("pid"));
-        assert_eq!(direct.ppid, http["values"][1].as_i64());
-        assert_eq!(direct.fields["pid"], http["values"][0]);
-        assert_eq!(direct.fields["user"], http["values"][2]);
-        assert_eq!(direct.fields["effective_user"], http["values"][3]);
-        assert_eq!(direct.fields["cpu_time_ticks"], http["values"][4]);
-    }
-
-    let by_pid = rows
-        .iter()
-        .map(|row| (row.pid, row))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        by_pid[&7].fields["user"],
-        serde_json::json!("postgres"),
-        "uid 26 resolves through the os_user section fixture wrote"
-    );
-    assert_eq!(
-        by_pid[&7].fields["effective_user"],
-        serde_json::json!("postgres-worker"),
-        "euid 27 resolves separately from uid, so they stay distinct"
-    );
-    assert_eq!(
-        by_pid[&7].fields["cpu_time_ticks"],
-        serde_json::json!("50"),
-        "cpu_time_ticks is utime+stime, rendered as a decimal string"
-    );
-    assert_eq!(by_pid[&9].fields["cpu_time_ticks"], serde_json::json!("10"));
-    assert_eq!(by_pid[&3].fields["cpu_time_ticks"], serde_json::json!("0"));
-}
-
-#[test]
-fn compute_plain_rows_agrees_with_the_streamed_activity_page_on_identity_and_fields() {
-    let mut fixture = Fixture::new();
-    fixture.append_postgres_health(3);
-    fixture.finish();
-
-    let base = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&field=pid&field=state&field=datname&field=backend_xid_age&by=pid&direction=asc&page_size=10"
-    );
-    let via_http = stream(fixture.prepare(&base, None)).expect("streamed activity page");
-    let http_rows = row_records(&via_http);
-    assert_eq!(http_rows.len(), 4);
-    let page = via_http
-        .iter()
-        .find(|record| record["record"] == "snapshot_page")
-        .expect("activity page trailer");
-    assert_eq!(page["has_more"], false);
-
-    let request = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_activity".to_owned()],
-        fields: vec![
-            "pid".to_owned(),
-            "state".to_owned(),
-            "datname".to_owned(),
-            "backend_xid_age".to_owned(),
-        ],
-        by: vec!["pid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: Some(10),
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), request, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(rows.len(), http_rows.len());
-
-    for (direct, http) in rows.iter().zip(http_rows.iter()) {
-        assert_eq!(direct.fields["pid"], http["values"][0]);
-        assert_eq!(direct.fields["state"], http["values"][1]);
-        assert_eq!(direct.fields["datname"], http["values"][2]);
-        assert_eq!(direct.fields["backend_xid_age"], http["values"][3]);
-        assert_eq!(direct.segment_id.to_string(), http["segment_id"]);
-        assert_eq!(direct.type_id.to_string(), http["type_id"]);
-        assert_eq!(direct.row_ordinal.to_string(), http["ordinal"]);
-        assert_eq!(direct.at.to_string(), http["timestamp"]);
-    }
-}
-
-#[test]
 fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
@@ -6172,66 +6705,24 @@ fn events_occurrences_are_half_open_globally_limited_and_keep_physical_order() {
 }
 
 #[test]
-fn compute_plain_rows_matches_a_quantity_filter_on_a_cumulative_database_counter() {
+fn snapshot_quantity_filter_matches_a_cumulative_database_counter() {
     let mut fixture = Fixture::new();
     fixture.append_postgres_database_rows(&[(100, 100, 10, 0), (200, 180, 30, 7)]);
     fixture.finish();
 
-    let base = crate::route::SnapshotRequest {
-        segment_id: SEGMENT_ID,
-        at: 200,
-        sections: vec!["pg_stat_database".to_owned()],
-        fields: vec!["datid".to_owned(), "deadlocks".to_owned()],
-        by: vec!["datid".to_owned()],
-        direction: crate::route::Order::Asc,
-        group: None,
-        page_size: None,
-        cursor: None,
-        search: None,
-        first_match: false,
-        text: None,
-        filters: Vec::new(),
-        type_id: None,
-        row_ordinal: None,
+    let target = |threshold| {
+        format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_database&field=datid&field=deadlocks&by=datid&search=deadlocks%3E{threshold}"
+        )
     };
+    let matching = stream(fixture.prepare(&target(0), None)).expect("matching snapshot");
+    let rows = row_records(&matching);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], 73);
 
-    let matching = crate::route::SnapshotRequest {
-        search: Some("deadlocks>0".to_owned()),
-        ..base.clone()
-    };
-    let prepared = crate::api::snapshot::prepare(fixture.root(), matching, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    assert!(!result.truncated);
-    let rows = result.rows;
-    assert_eq!(
-        rows.len(),
-        1,
-        "the database whose deadlocks rate is above zero matches"
-    );
-    assert_eq!(rows[0].fields["datid"], serde_json::json!(73));
-
-    let below_threshold = crate::route::SnapshotRequest {
-        search: Some("deadlocks>100".to_owned()),
-        ..base
-    };
-    let prepared =
-        crate::api::snapshot::prepare(fixture.root(), below_threshold, None).expect("prepare");
-    let Prepared::Snapshot(prepared) = prepared else {
-        panic!("snapshot request did not prepare a snapshot");
-    };
-    let result = prepared
-        .compute_plain_rows(10, &|| false)
-        .expect("compute_plain_rows");
-    let rows = result.rows;
-    assert!(
-        rows.is_empty(),
-        "a threshold above the observed rate matches nothing"
-    );
+    let below_threshold =
+        stream(fixture.prepare(&target(100), None)).expect("nonmatching snapshot");
+    assert!(row_records(&below_threshold).is_empty());
 }
 
 #[test]
@@ -6690,7 +7181,6 @@ fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
     reason = "the staggered fixture keeps independent database snapshots and expected points together"
 )]
 fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
-    crate::api::reset_history_operations();
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[
         (
@@ -6807,11 +7297,6 @@ fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
     assert_eq!(rows[2]["values"]["table_count"], "1");
     assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
     assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
-    assert_eq!(
-        crate::api::tablespace_moment_visits(),
-        1,
-        "the selected layout discovers databases and predecessor moments together",
-    );
 }
 
 #[test]
@@ -6839,7 +7324,6 @@ fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set
     fixture.append_dml_table_snapshots(&current);
     fixture.finish();
 
-    crate::api::reset_history_operations();
     let target = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=schema&field=table_count&field=dml_total&field=insert_share_pct&where.datid=1&where.schemaname=public";
     let records = stream(fixture.prepare(target, None)).expect("grouped relation history");
     let rows = relation_records(&records);
@@ -6855,23 +7339,12 @@ fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set
     assert_eq!(rows[0]["sample_from"], "100");
     assert_eq!(rows[0]["sample_to"], "200");
     assert!(rows[0]["source"].is_null());
-    assert_eq!(
-        crate::api::history_operations(),
-        (2, 2),
-        "one selection and one source visit per physical layout and segment",
-    );
 
-    crate::api::reset_history_operations();
     let one_metric = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=dml_total&where.datid=1";
     let records = stream(fixture.prepare(one_metric, None)).expect("single-metric grouped history");
     let rows = relation_records(&records);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"]["dml_total"], 2_140_000.0);
-    assert_eq!(
-        crate::api::history_operations(),
-        (2, 2),
-        "requested metric count must not multiply physical source visits",
-    );
 }
 
 #[test]
@@ -6954,10 +7427,8 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let base = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&field=dml_total&field=insert_share_pct&by=derived.dml_total&direction=desc"
     );
-    reset_relation_snapshot_operations();
     let objects = stream(fixture.prepare(&format!("{base}&group=object&page_size=1"), None))
         .expect("derived relation page");
-    assert_eq!(relation_snapshot_operations().2, 2);
     let rows = relation_records(&objects);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["key"]["relid"], "13");

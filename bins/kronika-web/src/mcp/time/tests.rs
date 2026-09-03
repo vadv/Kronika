@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::api::time::SnapshotPoint;
+use kronika_query::snapshot::SnapshotPoint;
 
 use super::{
     TimeSpecInput, resolve_bounded_range, resolve_point, resolve_range, resolve_range_with,
@@ -116,8 +116,8 @@ fn one_clock_anchor_resolves_both_bounds() {
     })
     .expect("range");
     assert_eq!(calls.get(), 1);
-    assert_eq!(range.from, 5_400_000_000);
-    assert_eq!(range.to_exclusive, 9_000_000_000);
+    assert_eq!(range.from(), 5_400_000_000);
+    assert_eq!(range.to_exclusive(), 9_000_000_000);
     assert!(resolve_range_with(&expression("now"), &expression("now-1us"), || Ok(7)).is_err());
     assert!(resolve_range_with(&expression("now"), &expression("now"), || Ok(7)).is_ok());
 
@@ -136,7 +136,7 @@ fn one_clock_anchor_resolves_both_bounds() {
             10,
         )
         .expect("exact maximum width")
-        .to_exclusive,
+        .to_exclusive(),
         10
     );
     assert_eq!(resolve_point(None), Ok(SnapshotPoint::LatestRecorded));

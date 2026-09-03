@@ -112,12 +112,20 @@ fn the_instance_label_names_the_largest_recorded_database() {
         (100, 2, 21, 0, "big", "public", "t2", None, None, 900, None),
     ]);
     fixture.finish();
+    let config = |root: &std::path::Path| crate::config::Config {
+        data_root: root.to_path_buf(),
+        listen: "127.0.0.1:0".parse().expect("listen address"),
+        account: account(),
+        authentication_required: true,
+        sources: crate::config::SOURCE_POSTGRESQL,
+        synthetic_demo: false,
+    };
     assert_eq!(
-        crate::largest_database(fixture.root()),
+        crate::largest_database(&config(fixture.root())),
         Some("big".to_owned())
     );
     let empty = artifacts::Fixture::new();
-    assert_eq!(crate::largest_database(empty.root()), None);
+    assert_eq!(crate::largest_database(&config(empty.root())), None);
 
     let body: serde_json::Value =
         serde_json::from_str(&crate::instance_label_body(Some("big"))).expect("json");
@@ -672,7 +680,7 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
     assert!(matches!(
         route_request(&account(), &request(Method::GET, "/api/catalog")),
         Ok(RequestTarget::Api {
-            route: crate::route::Route::Catalog(_),
+            route: crate::route::Route::Recorded(kronika_api::Route::Catalog(_)),
             ..
         })
     ));
@@ -884,11 +892,11 @@ async fn changed_journal_generation_replays_preparation_once() {
 
 #[test]
 fn source_change_detection_reaches_reader_errors_inside_index_wrappers() {
-    let wrapped = ApiError::from(kronika_index::LoadError::Build(
+    let wrapped = ApiError::Unreadable(Box::new(kronika_index::LoadError::Build(
         kronika_index::BuildError::Reader(kronika_reader::ReaderError::Io(std::io::Error::from(
             std::io::ErrorKind::Interrupted,
         ))),
-    ));
+    )));
     assert!(wrapped.source_changed_during_read());
 
     let unrelated = ApiError::Unreadable(Box::new(std::io::Error::from(

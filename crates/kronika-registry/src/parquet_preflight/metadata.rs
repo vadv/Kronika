@@ -5,6 +5,7 @@ use super::{
     CodecError, Encoding, FileMetaData, MAGIC, MAX_LIST_I32_VALUES_PER_SECTION, MAX_ROW_GROUPS,
     MAX_SECTION_ROWS, PageHeader, PageType, ParquetDecodeProfile, TSerializable,
 };
+use crate::codec::row_count_fits;
 
 pub(super) fn parse_footer(body: &[u8]) -> Result<(FileMetaData, usize), CodecError> {
     if body.len() < 12 || body.get(..4) != Some(MAGIC) || body.get(body.len() - 4..) != Some(MAGIC)
@@ -42,7 +43,7 @@ pub(super) fn validate_file_metadata(
     allow_dictionary: bool,
 ) -> Result<ParquetDecodeProfile, CodecError> {
     let rows = checked_rows(metadata.num_rows)?;
-    if rows > MAX_SECTION_ROWS {
+    if !row_count_fits(rows) {
         return Err(CodecError::TooManyRows {
             rows,
             max: MAX_SECTION_ROWS,
@@ -66,7 +67,7 @@ pub(super) fn validate_file_metadata(
     let mut ranges = Vec::new();
     for group in &metadata.row_groups {
         let group_rows = checked_rows(group.num_rows)?;
-        if group_rows > MAX_SECTION_ROWS {
+        if !row_count_fits(group_rows) {
             return Err(CodecError::TooManyRows {
                 rows: group_rows,
                 max: MAX_SECTION_ROWS,
@@ -155,7 +156,7 @@ pub(super) fn validate_file_metadata(
         while offset < end {
             page_count = page_count
                 .checked_add(1)
-                .filter(|&count| count <= MAX_SECTION_ROWS)
+                .filter(|&count| row_count_fits(count))
                 .ok_or(CodecError::InvalidPageLayout)?;
             let mut protocol = BoundedCompactInput::new(&body[offset..end]);
             let before = protocol.remaining_len();
@@ -295,7 +296,7 @@ pub(super) fn validate_page_header(
             let rows = checked_nonnegative(i64::from(page.num_rows))?;
             let definition = checked_nonnegative(i64::from(page.definition_levels_byte_length))?;
             let repetition = checked_nonnegative(i64::from(page.repetition_levels_byte_length))?;
-            if nulls > values || rows > MAX_SECTION_ROWS {
+            if nulls > values || !row_count_fits(rows) {
                 return Err(CodecError::InvalidPageLayout);
             }
             let levels = definition
@@ -349,7 +350,7 @@ pub(super) fn checked_nonnegative(raw: i64) -> Result<usize, CodecError> {
 }
 
 pub(super) const fn page_value_limit() -> usize {
-    MAX_SECTION_ROWS + MAX_LIST_I32_VALUES_PER_SECTION
+    MAX_SECTION_ROWS.saturating_add(MAX_LIST_I32_VALUES_PER_SECTION)
 }
 
 pub(super) fn add_page_values(total: &mut usize, raw: i32) -> Result<(), CodecError> {

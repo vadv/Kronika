@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use kronika_format::DictLimits;
 use kronika_index::{
     BuildError, Finding, FindingBlock, FindingKind, Index, IndexError, SeriesBlock,
@@ -108,7 +106,7 @@ fn index_dump_emits_an_event_as_only_a_source_locator() {
         rows[1],
         serde_json::json!({
             "kind": "finding",
-            "path": segment.path().display().to_string(),
+            "path": segment.source_label(),
             "mark": "event",
             "type_id": "2001001",
             "field_ordinal": 0,
@@ -121,7 +119,7 @@ fn index_dump_emits_an_event_as_only_a_source_locator() {
         rows[3],
         serde_json::json!({
             "kind": "finding",
-            "path": segment.path().display().to_string(),
+            "path": segment.source_label(),
             "mark": "event",
             "type_id": "2006001",
             "field_ordinal": 0,
@@ -177,7 +175,7 @@ fn a_json_row_carries_its_segment_and_type() {
     let mut output = Vec::new();
     write_json_row(
         &mut output,
-        Path::new("/data/one.zms"),
+        "/data/one.zms",
         1_107_001,
         &serde_json::json!({"ts": 42}),
     )
@@ -295,7 +293,7 @@ fn a_broken_pipe_is_returned_as_an_output_error() {
     };
     let error = write_json_row(
         &mut output,
-        Path::new("/data/one.zms"),
+        "/data/one.zms",
         1_107_001,
         &serde_json::json!({"ts": 42}),
     )
@@ -314,7 +312,7 @@ fn a_non_pipe_failure_is_reported_as_an_output_write() {
     };
     let error = write_json_row(
         &mut output,
-        Path::new("/data/one.zms"),
+        "/data/one.zms",
         1_107_001,
         &serde_json::json!({"ts": 42}),
     )

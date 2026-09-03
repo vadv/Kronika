@@ -126,7 +126,7 @@ pub(super) fn accounted_scan_metadata_bytes(
         .checked_add(summary_allocations)
 }
 
-pub(super) const fn summary_allocation_bytes() -> usize {
+pub(crate) const fn summary_allocation_bytes() -> usize {
     size_of::<CatalogSummary>() + ARC_ALLOCATION_OVERHEAD
 }
 

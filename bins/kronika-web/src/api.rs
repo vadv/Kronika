@@ -1,42 +1,15 @@
 //! Preparing blocking resource reads and streaming small self-describing records.
 
-use std::error::Error;
 use std::path::Path;
 
 use hyper::StatusCode;
-use kronika_reader::{Reader, ReaderError, SegmentRef};
+use kronika_query::{
+    QueryContext, QueryError, QueryIdentity, QueryRequest, QuerySink, QueryStability,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::encoding::etag_matches;
-use crate::route::{ActiveCursor, Route};
-
-pub(crate) mod catalog;
-pub(crate) mod events;
-pub(crate) mod heatmap;
-pub(crate) mod history;
-mod hour;
-mod index;
-mod query;
-mod render;
-pub(crate) mod row_detail;
-pub(crate) mod row_key;
-mod rows;
-pub(crate) mod snapshot;
-pub(crate) mod time;
-
-#[cfg(test)]
-pub(crate) use hour::process_summary::{
-    operations as process_summary_operations, reset_operations as reset_process_summary_operations,
-};
-#[cfg(test)]
-pub(crate) use hour::{operations as hour_operations, reset_operations as reset_hour_operations};
-#[cfg(test)]
-pub(crate) use snapshot::{
-    context_operations, first_match_rows, history_operations, page_operations,
-    relation_snapshot_operations, reset_context_operations, reset_first_match_rows,
-    reset_history_operations, reset_page_operations, reset_relation_snapshot_operations,
-    tablespace_moment_visits,
-};
+use crate::route::Route;
 
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,10 +40,6 @@ pub(crate) struct ResponseMeta {
 }
 
 impl ResponseMeta {
-    const fn ok(cache: CachePolicy) -> Self {
-        Self::ok_with_etag(cache, None)
-    }
-
     const fn ok_with_etag(cache: CachePolicy, etag: Option<String>) -> Self {
         Self {
             status: StatusCode::OK,
@@ -82,31 +51,20 @@ impl ResponseMeta {
 
 /// A prepared response whose disk/Parquet work remains on the blocking thread.
 pub(crate) enum Prepared {
-    Catalog(catalog::PreparedCatalog),
-    Index(index::PreparedIndex),
-    History(history::PreparedHistory),
-    Heatmap(heatmap::PreparedHeatmap),
-    Hour(hour::PreparedHour),
-    Rows(rows::PreparedRows),
-    Snapshot(snapshot::PreparedSnapshot),
-    Events(events::PreparedEvents),
-    RowDetail(row_detail::PreparedRowDetail),
+    Query(Box<PreparedQuery>),
     Empty(ResponseMeta),
+}
+
+pub(crate) struct PreparedQuery {
+    execution: kronika_query::QueryExecution,
+    meta: ResponseMeta,
 }
 
 impl Prepared {
     /// Response status and caching, available before the first body record.
     pub(crate) fn meta(&self) -> ResponseMeta {
         match self {
-            Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
-            Self::Index(prepared) => prepared.meta(),
-            Self::History(prepared) => prepared.meta(),
-            Self::Heatmap(prepared) => prepared.meta(),
-            Self::Hour(prepared) => prepared.meta(),
-            Self::Rows(prepared) => prepared.meta(),
-            Self::Snapshot(prepared) => prepared.meta(),
-            Self::Events(prepared) => prepared.meta(),
-            Self::RowDetail(_prepared) => row_detail::PreparedRowDetail::meta(),
+            Self::Query(prepared) => prepared.meta.clone(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -118,128 +76,68 @@ impl Prepared {
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
         match self {
-            Self::Catalog(prepared) => prepared.stream(emit, cancelled),
-            Self::Index(prepared) => prepared.stream(emit, cancelled),
-            Self::History(prepared) => prepared.stream(emit, cancelled),
-            Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
-            Self::Hour(prepared) => prepared.stream(emit, cancelled),
-            Self::Rows(prepared) => prepared.stream(emit, cancelled),
-            Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
-            Self::Events(prepared) => prepared.stream(emit, cancelled),
-            Self::RowDetail(prepared) => prepared.stream(emit, cancelled),
+            Self::Query(prepared) => {
+                let mut sink = NativeSink { emit, cancelled };
+                prepared.execution.stream(&mut sink)
+            }
             Self::Empty(_meta) => Ok(()),
         }
     }
 }
 
-/// Why a resource could not be prepared or streamed.
-#[derive(Debug)]
-pub(crate) enum ApiError {
-    NoSuchSegment,
-    NoSuchSection,
-    NoSuchColumn(String),
-    MixedUnits(String),
-    BadFilter(String),
-    BadCursor,
-    BadLocator(String),
-    Cancelled,
-    Unreadable(Box<dyn Error + Send + Sync>),
-}
+pub(crate) type ApiError = QueryError;
 
-impl ApiError {
-    pub(crate) const fn status(&self) -> StatusCode {
-        match self {
-            Self::NoSuchSegment | Self::NoSuchSection => StatusCode::NOT_FOUND,
-            Self::NoSuchColumn(_)
-            | Self::MixedUnits(_)
-            | Self::BadFilter(_)
-            | Self::BadCursor
-            | Self::BadLocator(_) => StatusCode::BAD_REQUEST,
-            Self::Cancelled | Self::Unreadable(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub(crate) const fn code(&self) -> &'static str {
-        match self {
-            Self::NoSuchSegment => "no_such_segment",
-            Self::NoSuchSection => "no_such_section",
-            Self::NoSuchColumn(_) => "no_such_column",
-            Self::MixedUnits(_) => "mixed_units",
-            Self::BadFilter(_) => "bad_filter",
-            Self::BadCursor => "bad_cursor",
-            Self::BadLocator(_) => "bad_locator",
-            Self::Cancelled => "cancelled",
-            Self::Unreadable(_) => "unreadable",
-        }
-    }
-
-    pub(crate) fn parameter(&self) -> Option<&str> {
-        match self {
-            Self::NoSuchColumn(column) | Self::MixedUnits(column) | Self::BadFilter(column) => {
-                Some(column)
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn source_changed_during_read(&self) -> bool {
-        let Self::Unreadable(error) = self else {
-            return false;
-        };
-        let mut source: &(dyn Error + 'static) = error.as_ref();
-        loop {
-            if let Some(reader) = source.downcast_ref::<ReaderError>() {
-                return reader.source_changed_during_read();
-            }
-            let Some(next) = source.source() else {
-                return false;
-            };
-            source = next;
-        }
+pub(crate) const fn api_error_status(error: &ApiError) -> StatusCode {
+    match error {
+        ApiError::NoSuchSegment | ApiError::NoSuchSection => StatusCode::NOT_FOUND,
+        ApiError::NoSuchColumn(_)
+        | ApiError::MixedUnits(_)
+        | ApiError::BadFilter(_)
+        | ApiError::BadCursor
+        | ApiError::BadLocator(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoSuchSegment => write!(f, "no such segment"),
-            Self::NoSuchSection => write!(f, "no such logical section"),
-            Self::NoSuchColumn(column) => write!(f, "no such column {column:?}"),
-            Self::MixedUnits(fields) => write!(f, "fields carry different units: {fields}"),
-            Self::BadFilter(column) => write!(f, "invalid typed filter for {column:?}"),
-            Self::BadCursor => write!(f, "invalid page cursor"),
-            Self::BadLocator(message) => message.fmt(f),
-            Self::Cancelled => write!(f, "request cancelled"),
-            Self::Unreadable(error) => error.fmt(f),
-        }
+struct NativeSink<'a, E, C> {
+    emit: &'a mut E,
+    cancelled: &'a C,
+}
+
+impl<E, C> QuerySink for NativeSink<'_, E, C>
+where
+    E: FnMut(Vec<u8>) -> bool,
+    C: Fn() -> bool,
+{
+    fn record(&mut self, bytes: Vec<u8>) -> bool {
+        (self.emit)(bytes)
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.cancelled)()
     }
 }
 
-impl Error for ApiError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Unreadable(error) => Some(error.as_ref()),
-            _ => None,
-        }
-    }
+fn query_meta(metadata: kronika_query::QueryMetadata<'_>) -> ResponseMeta {
+    let cache = match metadata.stability() {
+        QueryStability::Mutable => CachePolicy::NoStore,
+        QueryStability::Revalidate => CachePolicy::Revalidate,
+        QueryStability::Immutable => CachePolicy::Immutable,
+    };
+    let etag = metadata.identity().and_then(|identity| match identity {
+        QueryIdentity::IndexChecksum(checksum) => Some(format!("W/\"{checksum:08x}\"")),
+        QueryIdentity::SegmentSet {
+            resource,
+            shape,
+            segments,
+        } => weak_dataset_etag(resource, shape, segments),
+    });
+    ResponseMeta::ok_with_etag(cache, etag)
 }
 
-impl From<ReaderError> for ApiError {
-    fn from(error: ReaderError) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
-}
-
-impl From<kronika_index::LoadError> for ApiError {
-    fn from(error: kronika_index::LoadError) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
-}
-
-impl From<serde_json::Error> for ApiError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Unreadable(Box::new(error))
-    }
+fn prepared_query(execution: kronika_query::QueryExecution) -> Prepared {
+    let meta = query_meta(execution.metadata());
+    Prepared::Query(Box::new(PreparedQuery { execution, meta }))
 }
 
 /// Perform request validation and initial I/O outside the Tokio worker.
@@ -261,24 +159,47 @@ pub(crate) fn prepare_with_demo(
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
-    let prepared = match route {
-        Route::Catalog(window) => {
-            catalog::prepare(root, window, sources, synthetic_demo).map(Prepared::Catalog)
-        }
-        Route::Index(request) => index::prepare(root, request).map(Prepared::Index),
-        Route::History(request) => history::prepare(root, request).map(Prepared::History),
-        Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
-        Route::Events(request) => events::prepare(root, request).map(Prepared::Events),
-        Route::RowDetail(detail_ref) => {
-            row_detail::prepare(root, &detail_ref).map(Prepared::RowDetail)
-        }
-        Route::Hour(request) => {
-            hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
-        }
-        Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, *request, if_none_match),
+    let Route::Recorded(route) = route else {
         // Answered directly in `main.rs`.
-        Route::McpAccess | Route::InstanceLabel => return Err(ApiError::NoSuchSection),
+        return Err(ApiError::NoSuchSection);
+    };
+    let request = route.into_query()?;
+    let prepared = match request {
+        request @ (QueryRequest::Catalog(_)
+        | QueryRequest::History(_)
+        | QueryRequest::Events(_)
+        | QueryRequest::RowDetail(_)
+        | QueryRequest::Rows(_)
+        | QueryRequest::Heatmap(_)) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            kronika_query::execute(&context, request).map(prepared_query)
+        }
+        request @ (QueryRequest::Index(_) | QueryRequest::Hour(_)) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(
+                std::sync::Arc::<crate::query_adapter::NativeDataset>::clone(&dataset),
+                sources,
+                synthetic_demo,
+            )
+            .with_index_provider(dataset);
+            kronika_query::execute(&context, request).map(prepared_query)
+        }
+        QueryRequest::Snapshot(request) => {
+            let dataset =
+                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
+            let context = QueryContext::new(dataset, sources, synthetic_demo);
+            let preparation = kronika_query::snapshot::prepare_snapshot(&context, request)?;
+            let meta = query_meta(preparation.metadata());
+            let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
+            if let Some(not_modified) = conditional_not_modified(meta, concrete_validator) {
+                return Ok(not_modified);
+            }
+            preparation.finish().map(prepared_query)
+        }
+        _ => return Err(ApiError::NoSuchSection),
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {
@@ -300,11 +221,11 @@ fn conditional_not_modified(meta: ResponseMeta, if_none_match: Option<&str>) -> 
         })
 }
 
-fn weak_etag<I, S>(resource: &str, shape: &str, segments: I) -> Option<String>
-where
-    I: IntoIterator<Item = S>,
-    S: std::borrow::Borrow<SegmentRef>,
-{
+fn weak_dataset_etag(
+    resource: &str,
+    shape: &str,
+    segments: &[kronika_query::DatasetSegment],
+) -> Option<String> {
     let mut digest = Sha256::new();
     digest.update(resource.len().to_le_bytes());
     digest.update(resource.as_bytes());
@@ -312,7 +233,6 @@ where
     digest.update(shape.as_bytes());
     let mut found = false;
     for segment in segments {
-        let segment = segment.borrow();
         if segment.kind() == kronika_reader::SegmentKind::Active {
             return None;
         }
@@ -328,72 +248,4 @@ where
         }
     }
     found.then(|| format!("W/\"{:x}\"", digest.finalize()))
-}
-
-fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
-    let started = std::time::Instant::now();
-    let reader = Reader::open(root)?;
-    let listing = reader.catalog_segment(id)?;
-    log_warnings(&listing.warnings);
-    let segment = listing
-        .segments
-        .into_iter()
-        .next()
-        .ok_or(ApiError::NoSuchSegment)?;
-    log_segment_open(&segment, started.elapsed());
-    Ok((reader, segment))
-}
-
-fn explicit_segment_with_listing(
-    root: &Path,
-    id: i64,
-) -> Result<(Reader, SegmentRef, Vec<SegmentRef>, bool), ApiError> {
-    let started = std::time::Instant::now();
-    let reader = Reader::open(root)?;
-    let listing = reader.catalog_segments(..)?;
-    let clean = listing.warnings.is_empty();
-    log_warnings(&listing.warnings);
-    let mut segments = listing.segments;
-    let index = segments
-        .iter()
-        .position(|segment| segment.id() == id)
-        .ok_or(ApiError::NoSuchSegment)?;
-    let segment = segments.remove(index);
-    log_segment_open(&segment, started.elapsed());
-    Ok((reader, segment, segments, clean))
-}
-
-fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
-    eprintln!(
-        "kronika-web: segment_open id={} kind={} sections={} elapsed_us={}",
-        segment.id(),
-        match segment.kind() {
-            kronika_reader::SegmentKind::Finished => "finished",
-            kronika_reader::SegmentKind::Active => "active",
-        },
-        segment.sections().len(),
-        elapsed.as_micros(),
-    );
-}
-
-fn active_tail(
-    current: &SegmentRef,
-    after: Option<ActiveCursor>,
-) -> Result<Option<SegmentRef>, ApiError> {
-    let Some(after) = after else {
-        return Ok(None);
-    };
-    if current.kind() != kronika_reader::SegmentKind::Active || current.id() != after.segment_id {
-        return Err(ApiError::BadCursor);
-    }
-    current
-        .at_active_position(after.wal_position)
-        .map(Some)
-        .map_err(|_error| ApiError::BadCursor)
-}
-
-fn log_warnings(warnings: &[kronika_reader::StoreWarning]) {
-    for warning in warnings {
-        eprintln!("kronika-web: store warning code={}", warning.reason.code());
-    }
 }

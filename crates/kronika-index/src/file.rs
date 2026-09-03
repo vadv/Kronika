@@ -66,6 +66,19 @@ pub struct TargetedIndex {
     pub blocks: Vec<SeriesBlock>,
 }
 
+impl TargetedIndex {
+    /// Whether selected blocks cover every required requested key.
+    ///
+    /// `PostgresHealth` is optional because a valid index omits it when
+    /// `PostgreSQL` collection was disabled for the segment.
+    #[must_use]
+    pub fn contains_targets(&self, keys: &[SeriesKey]) -> bool {
+        keys.iter()
+            .filter(|key| !matches!(key.kind, SeriesKind::PostgresHealth))
+            .all(|key| self.blocks.iter().any(|block| block.key() == *key))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct TocEntry {
     key: SeriesKey,

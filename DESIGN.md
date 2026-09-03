@@ -440,6 +440,34 @@ the valid prefix of `active.wal`. Finished segments are immutable and
 browser-cacheable. Web revalidates the catalog and refreshes append-only active
 resources when a user requests current data.
 
+### Bounded ZMS slices
+
+`kronika-dump slice --from <RFC3339> --to <RFC3339> --out <FILE>` reads through
+`KRONIKA_STORAGE_DIR`. Its whole-second endpoints are inclusive. The binary
+writes the exact `.zms` path supplied by the caller and fails if that path
+already exists or if the requested range contains no recorded row.
+
+The `kronika-dump` library accepts a `Reader`, typed bounds, a caller-owned
+disk-backed scratch file, and a caller-owned output sink. Each attempt captures
+`Reader::segments` for the requested interval plus at most 30 seconds on either
+side. That capture includes finished segments and one committed prefix of
+`active.wal`, with finished-segment precedence. If that current source is
+replaced between passes, the library truncates the same scratch file and
+repeats the complete capture and preparation once. It does not touch the output
+sink before preparation succeeds. The CLI creates its scratch file beside the
+requested output; another caller chooses its own scratch placement.
+
+Selection does not branch on the storage form. It preserves every selected
+row, including repeated rows and changing metadata values, without comparing
+host or PostgreSQL identity fields.
+
+The slicer uses the registry's batch decoder and encoders, retains only the
+referenced dictionary entries, and preserves complete blob metadata. Missing or
+conflicting dictionary entries fail the operation. The final write calls the
+same sink-oriented finished-ZMS assembler as the normal writer and emits one
+standalone ZMS with `window_count=0`. `kronika-writer` does not depend on the
+reader.
+
 ### Current-state finders
 
 The nine MCP current-state finders share one snapshot selector and the existing
@@ -529,6 +557,37 @@ document. HEAD and matching validators use build-time metadata without decoding,
 while a gzip-capable client receives the original bytes without decoding. Both
 representations have their own strong ETag and exact length, and responses vary
 on authorization and content encoding.
+
+### Standalone HTML report
+
+`kronika-report` accepts exactly one finished ZMS path and one `.html` output
+path. The input may have any `.zms` basename. After validating the ZMS, the
+command derives a deterministic CLI-local `SegmentId` from the catalog's
+`min_ts` and binds both the embedded ZMS and generated IDX to that identity.
+It accepts neither a storage root nor an earlier segment. It builds the
+canonical IDX from that ZMS alone, so a first rate that needs an earlier sample
+remains `null`.
+
+The command writes a temporary in the output directory, synchronizes it and
+atomically replaces the output. The resulting deterministic HTML contains the
+report build of the production React interface, the pinned JavaScript and
+WebAssembly query adapter, the ZMS and the generated IDX. It creates no
+external sidecar. The filesystem adapter keeps the ZMS behind its open file
+handle, validates every section before writing output, builds the IDX through
+that file-backed production reader, and streams the embedded ZMS in bounded
+base64 chunks rather than allocating another complete copy.
+
+The report interface sends the same product-data paths and query parameters to
+the shared portable `kronika-api` parser. The package library supplies the
+`ReportEngine` composition used by the WebAssembly adapter and a sink-oriented
+HTML writer that accepts ZMS bytes with an explicit `SegmentId`. The package
+binary remains the filesystem adapter and derives that identity from the
+validated catalog. The adapter retains one engine, which combines the embedded
+source and in-memory index with the existing query implementation. Report mode
+has no authentication, MCP, live refresh or server-only controls. Opening the
+file performs no network request. The interface shell, JavaScript bindings and
+compressed WebAssembly are built ahead of the Rust binary and committed as
+reproducible assets, so an ordinary Cargo build needs no Node installation.
 
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal

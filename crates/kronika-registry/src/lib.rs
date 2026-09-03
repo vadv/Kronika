@@ -63,6 +63,7 @@ pub use parquet_preflight::{
     validate_parquet_decode_work, validate_plain_parquet_decode_work,
 };
 // Only the in-crate derive and tests need the shared section-body entry points.
+pub use arrow_array::RecordBatch;
 pub use codec::pg_locks::{PgLocksV1, PgLocksV2};
 pub use codec::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
@@ -112,7 +113,7 @@ pub use codec::{
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
 };
-pub use generic::{Cell, Row, decode_rows, visit_rows};
+pub use generic::{Cell, Row, decode_rows, visit_batches, visit_rows};
 pub use pool::{BytesPool, PoolStats};
 pub use section::Section;
 #[cfg(test)]

@@ -1,17 +1,5 @@
-use chrono::{Local, NaiveDateTime, TimeZone as _};
-
 use super::LinePrefix;
-
-fn local_micros(text: &str) -> i64 {
-    let naive =
-        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").expect("a readable wall clock");
-    Local
-        .from_local_datetime(&naive)
-        .earliest()
-        .expect("the host timezone maps this reading")
-        .timestamp()
-        * 1_000_000
-}
+use crate::timestamp::local_micros;
 
 #[test]
 fn the_debian_default_names_the_user_and_the_database() {

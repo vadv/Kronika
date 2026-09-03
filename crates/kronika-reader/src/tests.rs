@@ -1,7 +1,10 @@
 use super::{before_start, overlaps};
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use arrow_array::Int32Array;
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_cpu::OsCpu;
@@ -10,7 +13,12 @@ use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use sha2::{Digest as _, Sha256};
 
-use super::{Dictionary, Reader, ReaderError, Segment};
+use super::{Dictionary, FinishedReader, Reader, ReaderError, Segment, SegmentKind};
+
+use kronika_store::{
+    CatalogSummary, EmbeddedSource, ImmutableSegmentSource, PosixSource, ResourceCatalog,
+    ResourceError, ResourceIdentity, ResourceKind, ResourceListing, SegmentResource,
+};
 
 /// A segment covering ten to twenty microseconds.
 const MIN: i64 = 10;
@@ -44,6 +52,13 @@ fn only_replaced_io_sources_are_reopenable() {
         );
     }
     assert!(!ReaderError::Store(kronika_store::StoreError::BadMagic).source_changed_during_read());
+    assert!(ReaderError::Resource(ResourceError::Changed).source_changed_during_read());
+    assert!(
+        ReaderError::Resource(ResourceError::Unavailable(
+            kronika_store::ResourceFailureKind::NotFound,
+        ))
+        .source_changed_during_read()
+    );
 }
 
 #[test]
@@ -133,7 +148,14 @@ fn address(raw_id: i64) -> SegmentAddress {
         .expect("segment address")
 }
 
-fn topology(ts: i64, cpu_id: i32, model_name: StrId) -> OsTopology {
+fn zms_path(root: &Path, address: SegmentAddress) -> PathBuf {
+    root.join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name())
+}
+
+const fn topology(ts: i64, cpu_id: i32, model_name: StrId) -> OsTopology {
     OsTopology {
         ts: Ts(ts),
         cpu_id,
@@ -206,11 +228,291 @@ fn assert_model_names_resolve(segment: &Segment, dictionary: &Dictionary) {
         .rows(OsTopology::CONTRACT.type_id.get())
         .expect("decode rows")
     {
-        let Some(Cell::StrId(id)) = row.get("model_name") else {
-            panic!("model_name must be a StrId")
+        let model_name = row.get("model_name");
+        assert!(
+            matches!(model_name, Some(Cell::StrId(_))),
+            "model_name must be a StrId"
+        );
+        let Some(Cell::StrId(id)) = model_name else {
+            continue;
         };
-        assert!(dictionary.resolve(*id).is_some());
+        assert!(
+            dictionary.resolve(*id).is_some(),
+            "model_name must resolve through the segment dictionary"
+        );
     }
+}
+
+#[derive(Debug, PartialEq)]
+struct FinishedProductSnapshot {
+    identity: ResourceIdentity,
+    summary: CatalogSummary,
+    kind: SegmentKind,
+    captured_bytes: u64,
+    window_count: u32,
+    sections: Vec<(u32, super::Section)>,
+    topology_rows: Vec<kronika_registry::Row>,
+    cpu_rows: Vec<kronika_registry::Row>,
+    projected_topology: Vec<(u64, kronika_registry::Row)>,
+    model_name: Vec<u8>,
+}
+
+fn finished_product_snapshot<S: ImmutableSegmentSource>(
+    reader: &FinishedReader<S>,
+    model_id: StrId,
+) -> FinishedProductSnapshot {
+    let listing = reader.resources().expect("discover immutable resources");
+    assert!(listing.warnings.is_empty(), "unexpected resource notices");
+    assert_eq!(listing.resources.len(), 1, "one immutable resource");
+    let resource = &listing.resources[0];
+    assert_eq!(
+        resource.identity().kind(),
+        ResourceKind::FinishedSegment,
+        "the immutable source must expose a finished segment"
+    );
+    let identity = resource.identity();
+    let summary = *resource.summary();
+    let segment = reader
+        .open_segment(resource)
+        .expect("open immutable product segment");
+    let mut projected_topology = Vec::new();
+    segment
+        .visit_rows(
+            OsTopology::CONTRACT.type_id.get(),
+            &["cpu_id", "model_name"],
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                projected_topology.push((ordinal, row));
+                true
+            },
+        )
+        .expect("project topology rows");
+    let dictionary = segment.dictionary().expect("decode product dictionary");
+    let model_name = match dictionary.resolve(model_id.get()).expect("model name") {
+        Resolved::Str(bytes) => bytes.to_vec(),
+        Resolved::Blob(blob) => blob.stored_bytes.to_vec(),
+    };
+    FinishedProductSnapshot {
+        identity,
+        summary,
+        kind: segment.kind(),
+        captured_bytes: segment.captured_bytes(),
+        window_count: segment.window_count(),
+        sections: segment.sections().collect(),
+        topology_rows: segment
+            .rows(OsTopology::CONTRACT.type_id.get())
+            .expect("topology rows"),
+        cpu_rows: segment
+            .rows(OsCpu::CONTRACT.type_id.get())
+            .expect("CPU rows"),
+        projected_topology,
+        model_name,
+    }
+}
+
+#[test]
+fn finished_sources_match_for_catalog_and_product_reads() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let segment_address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    let model_id = append_text_window(
+        &mut journal,
+        segment_address.id,
+        100,
+        b"storage-boundary-model",
+    );
+    append_cpu_window(&mut journal, segment_address.id, 200);
+    let written = write_segment(&journal, &owner, segment_address).expect("publish segment");
+    journal.reset().expect("leave no active segment");
+
+    let payload =
+        std::fs::read(zms_path(directory.path(), segment_address)).expect("read embedded fixture");
+    assert_eq!(payload.len() as u64, written.bytes);
+    let embedded = EmbeddedSource::from_owned(segment_address.id, payload, written.bytes)
+        .expect("embedded source");
+
+    let posix = PosixSource::open(directory.path()).expect("POSIX source");
+    let posix_snapshot = finished_product_snapshot(&FinishedReader::new(posix), model_id);
+    let embedded_snapshot = finished_product_snapshot(&FinishedReader::new(embedded), model_id);
+    assert_eq!(posix_snapshot, embedded_snapshot);
+}
+
+#[test]
+fn embedded_product_uses_supplied_identity_and_rejects_foreign_resource() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let first_id = SegmentId::new(42).expect("first id");
+    let second_id = SegmentId::new(43).expect("second id");
+    let first = FinishedReader::new(
+        EmbeddedSource::from_owned(first_id, ZMS.to_vec(), ZMS.len() as u64).expect("first source"),
+    );
+    let second = FinishedReader::new(
+        EmbeddedSource::from_owned(second_id, ZMS.to_vec(), ZMS.len() as u64)
+            .expect("second source"),
+    );
+    let listing = first.resources().expect("first resources");
+    assert_eq!(listing.resources[0].identity().segment_id(), first_id);
+    assert_eq!(
+        first
+            .open_segment(&listing.resources[0])
+            .expect("first segment")
+            .id(),
+        42
+    );
+    let error = second
+        .open_segment(&listing.resources[0])
+        .expect_err("resource token belongs to its source");
+    assert!(matches!(
+        error,
+        ReaderError::Resource(ResourceError::ForeignResource)
+    ));
+}
+
+#[derive(Debug)]
+struct ChangedAfterCatalogFailure {
+    identity: ResourceIdentity,
+    summary: CatalogSummary,
+}
+
+impl ResourceCatalog for ChangedAfterCatalogFailure {
+    type Resource = ();
+
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        Ok(ResourceListing {
+            resources: vec![SegmentResource::new(
+                self.identity,
+                0,
+                Arc::new(self.summary),
+                (),
+            )],
+            warnings: Vec::new(),
+        })
+    }
+}
+
+impl ImmutableSegmentSource for ChangedAfterCatalogFailure {
+    type Bytes = &'static [u8];
+
+    fn open_resource(
+        &self,
+        _resource: &SegmentResource<Self::Resource>,
+    ) -> Result<Self::Bytes, ResourceError> {
+        Ok(b"")
+    }
+
+    fn validate_opened(
+        &self,
+        _resource: &SegmentResource<Self::Resource>,
+        _bytes: &Self::Bytes,
+    ) -> Result<(), ResourceError> {
+        Err(ResourceError::Changed)
+    }
+}
+
+#[test]
+fn opened_identity_failure_wins_over_catalog_failure() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_owned(
+        SegmentId::new(47).expect("segment id"),
+        ZMS.to_vec(),
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let reader = FinishedReader::new(ChangedAfterCatalogFailure {
+        identity: ResourceIdentity::finished(SegmentId::new(47).expect("segment id")),
+        summary,
+    });
+    let listing = reader.resources().expect("resources");
+
+    let error = reader
+        .open_segment(&listing.resources[0])
+        .expect_err("changed identity must replace the catalog error");
+    assert!(matches!(
+        error,
+        ReaderError::Resource(ResourceError::Changed)
+    ));
+}
+
+#[derive(Debug)]
+struct ReverseCatalog {
+    summary: CatalogSummary,
+    ids: [i64; 2],
+}
+
+impl ResourceCatalog for ReverseCatalog {
+    type Resource = i64;
+
+    fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
+        let resources = self
+            .ids
+            .into_iter()
+            .map(|raw_id| {
+                SegmentResource::new(
+                    ResourceIdentity::finished(SegmentId::new(raw_id).expect("segment id")),
+                    0,
+                    Arc::new(self.summary),
+                    raw_id,
+                )
+            })
+            .collect();
+        Ok(ResourceListing {
+            resources,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn immutable_resources_are_normalized_by_identity() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_owned(
+        SegmentId::new(42).expect("segment id"),
+        ZMS.to_vec(),
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let listing = FinishedReader::new(ReverseCatalog {
+        summary,
+        ids: [2, 1],
+    })
+    .resources()
+    .expect("normalized resources");
+
+    assert_eq!(
+        listing
+            .resources
+            .iter()
+            .map(|resource| resource.identity().segment_id().get())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
+#[test]
+fn immutable_resources_reject_duplicate_identities() {
+    static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
+    let embedded = EmbeddedSource::from_owned(
+        SegmentId::new(42).expect("segment id"),
+        ZMS.to_vec(),
+        ZMS.len() as u64,
+    )
+    .expect("embedded source");
+    let summary = *embedded.resources().expect("resources").resources[0].summary();
+    let error = FinishedReader::new(ReverseCatalog {
+        summary,
+        ids: [1, 1],
+    })
+    .resources()
+    .expect_err("duplicate identity");
+
+    assert!(matches!(
+        error,
+        ReaderError::Resource(ResourceError::DuplicateIdentity(identity))
+            if identity.segment_id().get() == 1
+    ));
 }
 
 #[test]
@@ -380,6 +682,48 @@ fn projected_visit_keeps_stable_active_ordinals_and_stops_at_its_limit() {
 }
 
 #[test]
+fn batch_visit_keeps_full_schema_and_concatenates_active_part_ordinals() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, address.id, 100, b"first");
+    append_text_window(&mut journal, address.id, 200, b"second");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let segment = one_segment(&reader);
+    let mut ordinals = Vec::new();
+    let mut cpu_ids: Vec<i32> = Vec::new();
+    let visited = segment
+        .visit_batches(
+            OsTopology::CONTRACT.type_id.get(),
+            None,
+            0,
+            usize::MAX,
+            |ordinal, batch| {
+                assert_eq!(batch.num_columns(), OsTopology::CONTRACT.columns.len());
+                assert_eq!(
+                    batch.schema(),
+                    kronika_registry::arrow_schema(&OsTopology::CONTRACT)
+                );
+                ordinals.push(ordinal);
+                let values = batch
+                    .column_by_name("cpu_id")
+                    .expect("cpu_id column")
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("cpu_id is Int32");
+                cpu_ids.extend(values.values());
+                true
+            },
+        )
+        .expect("visit batches");
+    assert_eq!(visited, 2);
+    assert_eq!(ordinals, [0, 1]);
+    assert_eq!(cpu_ids, [100, 200]);
+}
+
+#[test]
 fn finished_segment_wins_over_the_same_active_generation() {
     let directory = tempfile::tempdir().expect("tempdir");
     let owner = writer(&directory);
@@ -390,13 +734,14 @@ fn finished_segment_wins_over_the_same_active_generation() {
 
     let reader = Reader::open(directory.path()).expect("open reader");
     let segment = one_segment(&reader);
+    assert_eq!(segment.kind(), SegmentKind::Finished);
     assert_eq!(
-        segment.path().extension().and_then(std::ffi::OsStr::to_str),
-        Some("zms")
+        segment.source_label(),
+        zms_path(directory.path(), address).display().to_string()
     );
     assert_eq!(
         segment.captured_bytes(),
-        std::fs::metadata(segment.path())
+        std::fs::metadata(zms_path(directory.path(), address))
             .expect("finished segment metadata")
             .len()
     );
@@ -410,19 +755,15 @@ fn finished_segment_wins_over_the_same_active_generation() {
     );
 
     let predecessor = reader
-        .catalog_segments_with_predecessor(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments_with_predecessor(200..=200)
         .expect("select canonical predecessor");
     assert_eq!(predecessor.segments.len(), 1);
     let predecessor = reader
         .open_segment(&predecessor.segments[0])
         .expect("open canonical predecessor");
-    assert_eq!(
-        predecessor
-            .path()
-            .extension()
-            .and_then(std::ffi::OsStr::to_str),
-        Some("zms")
-    );
+    assert_eq!(predecessor.kind(), SegmentKind::Finished);
 }
 
 #[test]
@@ -499,12 +840,7 @@ fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
     append_text_window(&mut journal, address.id, 100, b"one row");
     write_segment(&journal, &owner, address).expect("publish finished segment");
 
-    let path = directory
-        .path()
-        .join(address.day.year_component())
-        .join(address.day.month_component())
-        .join(address.day.day_component())
-        .join(address.zms_name());
+    let path = zms_path(directory.path(), address);
     let mut bytes = std::fs::read(&path).expect("read finished segment");
     bytes[kronika_format::MAGIC.len()] ^= 0xff;
     std::fs::write(&path, bytes).expect("damage finished section body");
@@ -516,9 +852,10 @@ fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
     let segment = reader
         .open_segment(&listing.segments[0])
         .expect("open active fallback");
+    assert_eq!(segment.kind(), SegmentKind::Active);
     assert_eq!(
-        segment.path().file_name().and_then(std::ffi::OsStr::to_str),
-        Some("active.wal")
+        segment.source_label(),
+        directory.path().join("active.wal").display().to_string()
     );
 }
 
@@ -632,13 +969,7 @@ fn finished_dictionary_preserves_boundary_blob_metadata() {
     write_segment(&journal, &owner, finished_address).expect("publish finished blob output");
     let reader = Reader::open(directory.path()).expect("open finished reader");
     let finished = one_segment(&reader);
-    assert_eq!(
-        finished
-            .path()
-            .extension()
-            .and_then(std::ffi::OsStr::to_str),
-        Some("zms")
-    );
+    assert_eq!(finished.kind(), SegmentKind::Finished);
     let dictionary = finished.dictionary().expect("finished dictionary");
     assert_eq!(
         dictionary.resolve(boundary_id.get()),
@@ -666,12 +997,7 @@ fn range_discovery_checks_bodies_only_after_selection() {
     write_segment(&journal, &owner, second_address).expect("publish second");
     journal.reset().expect("leave no active segment");
 
-    let second_path = directory
-        .path()
-        .join(second_address.day.year_component())
-        .join(second_address.day.month_component())
-        .join(second_address.day.day_component())
-        .join(second_address.zms_name());
+    let second_path = zms_path(directory.path(), second_address);
     let mut bytes = std::fs::read(&second_path).expect("read second segment");
     bytes[kronika_format::MAGIC.len()] ^= 0xff;
     std::fs::write(&second_path, bytes).expect("damage one selected body");
@@ -695,7 +1021,9 @@ fn range_discovery_checks_bodies_only_after_selection() {
     ));
 
     let catalog = reader
-        .catalog_segments(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(200..=200)
         .expect("catalog-only discovery");
     assert_eq!(catalog.segments.len(), 1, "catalog remains discoverable");
     assert!(catalog.warnings.is_empty());
@@ -744,7 +1072,9 @@ fn range_discovery_checks_bodies_only_after_selection() {
     );
 
     let with_predecessor = reader
-        .catalog_segments_with_predecessor(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments_with_predecessor(200..=200)
         .expect("bounded catalogs with predecessor");
     assert_eq!(
         with_predecessor

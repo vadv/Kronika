@@ -45,7 +45,7 @@ pub(crate) fn sizes(
         ))
     })?;
     if json_output {
-        let path = segment.path().display().to_string();
+        let path = segment.source_label();
         say(
             output,
             &json!({
@@ -87,7 +87,7 @@ pub(crate) fn sizes(
     writeln!(
         output,
         "{}  ts={}..{}  windows={}  captured_bytes={captured_bytes}  section_bytes={section_bytes}  overhead_bytes={overhead_bytes}",
-        segment.path().display(),
+        segment.source_label(),
         segment.min_ts(),
         segment.max_ts(),
         segment.window_count()
@@ -147,18 +147,18 @@ fn write_index(
     segment: &Segment,
     built: &kronika_index::Index,
 ) -> Result<(), DumpError> {
-    let path = segment.path().display().to_string();
+    let path = segment.source_label();
     if json_output {
         for block in &built.blocks {
             match block {
                 SeriesBlock::OsHealth(points) => {
-                    write_health_points(output, &path, "os_health", points)?;
+                    write_health_points(output, path, "os_health", points)?;
                 }
                 SeriesBlock::OverallHealth(points) => {
-                    write_health_points(output, &path, "overall_health", points)?;
+                    write_health_points(output, path, "overall_health", points)?;
                 }
                 SeriesBlock::PostgresHealth(points) => {
-                    write_health_points(output, &path, "postgres_health", points)?;
+                    write_health_points(output, path, "postgres_health", points)?;
                 }
                 SeriesBlock::PgTransactions { type_id, points } => {
                     for point in points {
@@ -341,7 +341,7 @@ pub(crate) fn section(
         writeln!(
             output,
             "{}  {} ({type_id})  rows={}",
-            segment.path().display(),
+            segment.source_label(),
             section_name(type_id).unwrap_or("unknown"),
             total_rows
         )?;
@@ -352,7 +352,12 @@ pub(crate) fn section(
                 .iter()
                 .map(|(name, cell)| ((*name).to_owned(), json_cell(cell, &dictionary)))
                 .collect();
-            write_json_row(output, segment.path(), type_id, &Value::Object(object))?;
+            write_json_row(
+                output,
+                segment.source_label(),
+                type_id,
+                &Value::Object(object),
+            )?;
         } else {
             let body: Vec<String> = row
                 .iter()
@@ -394,7 +399,7 @@ fn dictionary_section(
         writeln!(
             output,
             "{}  {} ({type_id})  rows={}",
-            segment.path().display(),
+            segment.source_label(),
             section_name(type_id).unwrap_or("unknown"),
             entries.len()
         )?;
@@ -403,7 +408,7 @@ fn dictionary_section(
     for (id, resolved) in entries.iter().take(shown) {
         if json_output {
             let row = dictionary_json(*id, *resolved);
-            write_json_row(output, segment.path(), type_id, &row)?;
+            write_json_row(output, segment.source_label(), type_id, &row)?;
         } else {
             match resolved {
                 Resolved::Str(bytes) => {
@@ -443,7 +448,7 @@ fn dictionary_json(id: u64, resolved: Resolved<'_>) -> Value {
 
 fn write_json_row(
     output: &mut impl Write,
-    path: &std::path::Path,
+    source_label: &str,
     type_id: u32,
     row: &Value,
 ) -> Result<(), DumpError> {
@@ -451,7 +456,7 @@ fn write_json_row(
         output,
         &json!({
             "kind": "row",
-            "path": path.display().to_string(),
+            "path": source_label,
             "type_id": type_id,
             "row": row,
         }),

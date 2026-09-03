@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
+use kronika_query::snapshot::PlainRowOut;
 use serde_json::{Value, json};
 
 use super::select_settings;
-use crate::api::snapshot::PlainRowOut;
 use crate::mcp::catalog::SettingsScopeInput;
 
 fn row(source: Option<Value>, ordinal: u64) -> PlainRowOut {

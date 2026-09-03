@@ -19,6 +19,7 @@ pub trait ReadAt {
     fn byte_len(&self) -> io::Result<u64>;
 }
 
+#[cfg(unix)]
 impl ReadAt for std::fs::File {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
         std::os::unix::fs::FileExt::read_exact_at(self, buf, offset)
@@ -73,6 +74,7 @@ mod tests {
         assert!(data.read_exact_at(&mut buf, 0).is_err());
         assert!(data.read_exact_at(&mut buf, 3).is_err());
     }
+    #[cfg(unix)]
     #[test]
     fn file_reads_at_offset() {
         use std::io::Write;

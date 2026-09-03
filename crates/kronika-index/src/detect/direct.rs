@@ -36,6 +36,7 @@ struct ActiveSnapshot {
 }
 
 impl FindingBuilder {
+    #[cfg(feature = "posix")]
     pub(super) fn observe_prior_cpu(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if segment.rows_of(OS_CPU).is_none() {
             return Ok(());
@@ -52,6 +53,7 @@ impl FindingBuilder {
         Ok(())
     }
 
+    #[cfg(feature = "posix")]
     pub(super) fn observe_prior_oom(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if segment.rows_of(OS_VMSTAT).is_none() {
             return Ok(());
@@ -73,6 +75,7 @@ impl FindingBuilder {
         Ok(())
     }
 
+    #[cfg(feature = "posix")]
     pub(super) fn observe_prior_database_counters(
         &mut self,
         segment: &Segment,
@@ -117,6 +120,7 @@ impl FindingBuilder {
         Ok(())
     }
 
+    #[cfg(feature = "posix")]
     pub(super) fn observe_prior_archiver(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if segment.rows_of(PG_STAT_ARCHIVER).is_none() {
             return Ok(());
@@ -138,6 +142,7 @@ impl FindingBuilder {
         Ok(())
     }
 
+    #[cfg(feature = "posix")]
     pub(super) fn observe_prior_cgroup_oom(
         &mut self,
         segment: &Segment,

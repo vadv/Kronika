@@ -6,23 +6,9 @@ use hyper::header::{ACCEPT, CONTENT_TYPE, HOST};
 use hyper::{Method, Request};
 use serde_json::json;
 
-use super::response;
-use crate::config::{Account, Config};
+use super::{response, test_config};
+use crate::config::Config;
 use crate::tests::artifacts::Fixture;
-
-fn test_config(data_root: std::path::PathBuf) -> Arc<Config> {
-    Arc::new(Config {
-        data_root,
-        listen: "127.0.0.1:0".parse().expect("listen address"),
-        account: Account {
-            user: "dba".to_owned(),
-            password: "secret".to_owned(),
-        },
-        authentication_required: true,
-        sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
-        synthetic_demo: false,
-    })
-}
 
 const FORBIDDEN_COORDINATE_KEYS: [&str; 5] = [
     "detail_locator",
@@ -2101,6 +2087,31 @@ fn get_row_detail_rejects_the_old_structured_locator_input() {
 }
 
 #[test]
+fn get_row_detail_rejects_a_malformed_ref_before_opening_storage() {
+    let directory = tempfile::tempdir().expect("temporary parent");
+    let config = test_config(directory.path().join("missing-root"));
+    let arguments = json!({"detail_ref": "not+base64"})
+        .as_object()
+        .expect("arguments")
+        .clone();
+
+    let result = crate::mcp::row_detail::call(&config, arguments, &|| false);
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.content[0].as_text().expect("error").text,
+        "invalid detail_ref"
+    );
+    assert_eq!(
+        result.structured_content,
+        Some(json!({
+            "record": "error",
+            "message": "invalid detail_ref",
+        }))
+    );
+}
+
+#[test]
 fn find_events_returns_structural_fields_with_one_opaque_ref() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
@@ -2200,7 +2211,7 @@ fn find_events_default_and_explicit_groups_are_identical() {
         assert_eq!(http.remove("record"), Some(json!("event_group")));
         let http_ref = http.remove("detail_ref").expect("HTTP detail ref");
         assert_eq!(mcp_ref, http_ref);
-        assert_eq!(mcp, http, "HTTP and MCP keep the same product fields");
+        assert_eq!(mcp, http, "HTTP and MCP keep the same semantic fields");
         assert_no_storage_coordinate_keys(&serde_json::Value::Object(http));
     }
 }
@@ -2612,6 +2623,66 @@ fn get_row_detail_uses_an_opaque_ref_for_the_complete_identity() {
     assert_eq!(rejected.is_error, Some(true));
     let message = &rejected.content[0].as_text().expect("text").text;
     assert!(message.contains("invalid detail_ref"), "{message}");
+}
+
+#[test]
+fn get_row_detail_maps_cancelled_missing_and_non_unique_lookups_stably() {
+    let mut source = Fixture::new();
+    source.append_process_gauge_rows(&[(100, 101, 50, "source")]);
+    source.finish();
+    let source_config = test_config(source.root().to_path_buf());
+    let found = crate::mcp::processes::call(
+        &source_config,
+        json!({"filters": [], "limit": 1})
+            .as_object()
+            .expect("arguments")
+            .clone(),
+        &|| false,
+    );
+    let row = &found.structured_content.expect("finder result")["rows"][0];
+    let arguments = detail_arguments(row);
+
+    let cancelled = crate::mcp::row_detail::call(&source_config, arguments.clone(), &|| true);
+    assert_eq!(cancelled.is_error, Some(true));
+    assert_eq!(
+        cancelled.content[0].as_text().expect("error").text,
+        "request cancelled"
+    );
+    assert_eq!(
+        cancelled.structured_content,
+        Some(json!({
+            "record": "error",
+            "message": "request cancelled",
+        }))
+    );
+
+    let mut missing = Fixture::new();
+    missing.append_process_gauge_rows(&[(100, 102, 40, "other")]);
+    missing.finish();
+    let missing = crate::mcp::row_detail::call(
+        &test_config(missing.root().to_path_buf()),
+        arguments.clone(),
+        &|| false,
+    );
+    assert_eq!(missing.is_error, Some(true));
+    assert_eq!(
+        missing.content[0].as_text().expect("error").text,
+        "detail_ref does not identify one recorded row"
+    );
+
+    let mut duplicate = Fixture::new();
+    duplicate.append_process_gauge_rows(&[(100, 101, 50, "first"), (100, 101, 60, "second")]);
+    duplicate.finish();
+    let duplicate = crate::mcp::row_detail::call(
+        &test_config(duplicate.root().to_path_buf()),
+        arguments,
+        &|| false,
+    );
+    assert_eq!(duplicate.is_error, Some(true));
+    assert_eq!(
+        duplicate.content[0].as_text().expect("error").text,
+        "detail_ref does not identify one recorded row"
+    );
 }
 
 #[test]

@@ -5,7 +5,9 @@ if (debugPort === undefined || pageUrl === undefined) {
   throw new Error("usage: node tests/browser-smoke.mjs DEBUG_PORT PAGE_URL")
 }
 
-const origin = new URL(pageUrl).origin
+const requestedUrl = new URL(pageUrl)
+const origin = requestedUrl.origin
+const reportMode = requestedUrl.protocol === "file:"
 const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) => response.json())
 const target = targets.find((candidate) => candidate.type === "page")
 if (target === undefined) throw new Error("Chromium did not expose a page target")
@@ -17,6 +19,10 @@ await new Promise((resolve, reject) => {
 })
 let sequence = 0
 const pending = new Map()
+socket.addEventListener("close", () => {
+  for (const request of pending.values()) request.reject(new Error("Chromium closed the page connection"))
+  pending.clear()
+})
 const errors = []
 const external = []
 socket.addEventListener("message", (event) => {
@@ -42,8 +48,13 @@ socket.addEventListener("message", (event) => {
     if (!unsignedBootstrap) errors.push(`${response.status}:${response.url}`)
   }
   if (message.method === "Network.requestWillBeSent") {
-    const url = message.params.request.url
-    if (!url.startsWith("data:") && !url.startsWith("blob:") && new URL(url).origin !== origin) external.push(url)
+    const rawUrl = message.params.request.url
+    const url = new URL(rawUrl)
+    const reportDocument = reportMode
+      && url.protocol === "file:"
+      && url.pathname === requestedUrl.pathname
+    if (!rawUrl.startsWith("data:") && !rawUrl.startsWith("blob:")
+        && (reportMode ? !reportDocument : url.origin !== origin)) external.push(rawUrl)
   }
 })
 
@@ -71,9 +82,9 @@ async function waitFor(expression, description, timeout = 10_000) {
 }
 
 await Promise.all([send("Page.enable"), send("Runtime.enable"), send("Network.enable"), send("Log.enable")])
-await send("Page.navigate", { url: pageUrl })
 errors.length = 0
 external.length = 0
+await send("Page.navigate", { url: pageUrl })
 await waitFor(`document.readyState === "complete" && (document.querySelector('[data-testid="login-card"]') !== null || document.querySelector('[data-testid="hour-picker-trigger"]') !== null)`, "login or application")
 if (await evaluate(`document.querySelector('[data-testid="login-card"]') !== null`)) {
   await evaluate(`(() => {
@@ -88,33 +99,70 @@ if (await evaluate(`document.querySelector('[data-testid="login-card"]') !== nul
   })()`)
 }
 await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "application")
+if (reportMode) {
+  const beforeReload = await evaluate(`location.href`)
+  const reportState = await evaluate(`(() => ({
+    login: document.querySelector('[data-testid="login-card"]') !== null,
+    mcp: document.querySelector('[data-testid="mcp-trigger"]') !== null,
+    refresh: document.querySelector('[data-testid="refresh-action"]') !== null,
+    logout: document.querySelector('[data-testid="logout-action"]') !== null,
+    pathname: location.pathname,
+  }))()`)
+  assert.equal(reportState.login, false)
+  assert.equal(reportState.mcp, false)
+  assert.equal(reportState.refresh, false)
+  assert.equal(reportState.logout, false)
+  assert.equal(reportState.pathname, requestedUrl.pathname)
+  await send("Page.reload")
+  await waitFor(`document.readyState === "complete" && document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "reloaded report", 30_000)
+  await waitFor(`location.href === ${JSON.stringify(beforeReload)}`, "reloaded report address", 30_000)
+  assert.equal(await evaluate(`location.href`), beforeReload)
+  assert.equal(await evaluate(`location.pathname`), requestedUrl.pathname)
+}
 await evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
-await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows")
+await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows", reportMode ? 30_000 : 10_000)
 await evaluate(`document.querySelector(".process-table .entity-row").click()`)
-await waitFor(`document.querySelector('[data-testid="process-history"] .uplot-host canvas') !== null`, "process history")
-const result = await evaluate(`(() => ({
-  backingRatio: (() => {
-    const canvas = document.querySelector('[data-testid="process-history"] .uplot-host canvas')
-    return canvas.width / canvas.getBoundingClientRect().width
-  })(),
-  canvasAriaHidden: document.querySelector('[data-testid="process-history"] .uplot-host canvas').getAttribute("aria-hidden"),
-  canvases: document.querySelectorAll('[data-testid="process-history"] .uplot-host canvas').length,
-  chartHeight: document.querySelector('[data-testid="process-history"] .uplot-figure').getBoundingClientRect().height,
-  hostLabel: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("aria-label"),
-  hostRole: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("role"),
-  navigators: document.querySelectorAll('[data-testid="process-history"] input.chart-navigator[type="range"]').length,
-  rows: document.querySelectorAll(".process-table .entity-row").length,
-  summaries: document.querySelectorAll('[data-testid="process-history"] .chart-summary').length,
-}))()`)
-assert.equal(result.chartHeight, 200)
-assert.equal(result.canvasAriaHidden, "true")
-assert.equal(result.canvases, 1)
-assert.equal(result.hostRole, "img")
-assert.ok(result.hostLabel.length > 0)
-assert.equal(result.navigators, 1)
-assert.ok(result.rows > 0)
-assert.equal(result.summaries, 1)
-assert.ok(result.backingRatio >= 1)
+let result
+if (reportMode) {
+  // A standalone segment need not have a predecessor-derived process rate,
+  // so its real fixture can open Detail without drawing a history line.
+  await waitFor(`document.querySelector('[data-testid="process-dock"]') !== null`, "process detail", 30_000)
+  result = await evaluate(`(() => ({
+    command: document.querySelector('[data-testid="process-cmdline"]')?.textContent ?? "",
+    detailRows: document.querySelectorAll('[data-testid="process-dock"] dl > div').length,
+    pathname: location.pathname,
+    rows: document.querySelectorAll(".process-table .entity-row").length,
+  }))()`)
+  assert.ok(result.command.length > 0)
+  assert.ok(result.detailRows > 0)
+  assert.equal(result.pathname, requestedUrl.pathname)
+  assert.ok(result.rows > 0)
+} else {
+  await waitFor(`document.querySelector('[data-testid="process-history"] .uplot-host canvas') !== null`, "process history")
+  result = await evaluate(`(() => ({
+    backingRatio: (() => {
+      const canvas = document.querySelector('[data-testid="process-history"] .uplot-host canvas')
+      return canvas.width / canvas.getBoundingClientRect().width
+    })(),
+    canvasAriaHidden: document.querySelector('[data-testid="process-history"] .uplot-host canvas').getAttribute("aria-hidden"),
+    canvases: document.querySelectorAll('[data-testid="process-history"] .uplot-host canvas').length,
+    chartHeight: document.querySelector('[data-testid="process-history"] .uplot-figure').getBoundingClientRect().height,
+    hostLabel: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("aria-label"),
+    hostRole: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("role"),
+    navigators: document.querySelectorAll('[data-testid="process-history"] input.chart-navigator[type="range"]').length,
+    rows: document.querySelectorAll(".process-table .entity-row").length,
+    summaries: document.querySelectorAll('[data-testid="process-history"] .chart-summary').length,
+  }))()`)
+  assert.equal(result.chartHeight, 200)
+  assert.equal(result.canvasAriaHidden, "true")
+  assert.equal(result.canvases, 1)
+  assert.equal(result.hostRole, "img")
+  assert.ok(result.hostLabel.length > 0)
+  assert.equal(result.navigators, 1)
+  assert.ok(result.rows > 0)
+  assert.equal(result.summaries, 1)
+  assert.ok(result.backingRatio >= 1)
+}
 assert.deepEqual(errors, [])
 assert.deepEqual(external, [])
 socket.close()

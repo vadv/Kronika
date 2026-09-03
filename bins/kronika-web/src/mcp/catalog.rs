@@ -5,12 +5,11 @@ use std::sync::Arc;
 use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::api::events::{EventsRepresentation, EventsResult};
-use crate::api::heatmap::{DEFAULT_TOP, HeatmapBatchResult, MAX_TOP};
-use crate::api::snapshot::search::SEARCH_MAX_CLAUSES;
 use crate::route::{MAX_SNAPSHOT_PAGE_SIZE, Order, RelationGroup};
+use kronika_query::snapshot::SEARCH_MAX_CLAUSES;
+use kronika_query::{DEFAULT_TOP, MAX_TOP};
 
 use super::filter::FilterInput;
 use super::instance::InstanceOutput;
@@ -120,6 +119,172 @@ struct RecordedFieldOutput {
     class: String,
     /// Field unit, or null when the field has no unit.
     unit: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct HeatmapBatchResult {
+    results: Vec<HeatmapItemResult>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct HeatmapItemResult {
+    ranking: NormalizedRanking,
+    coverage: HeatmapCoverage,
+    class: String,
+    unit: Option<String>,
+    entities: Vec<HeatmapEntity>,
+    totals_total: Option<f64>,
+    others_total: Option<f64>,
+    entity_count: String,
+    out_of_order: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct NormalizedRanking {
+    section: String,
+    #[schemars(length(min = 1, max = 1))]
+    fields: Vec<String>,
+    top: usize,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct HeatmapCoverage {
+    state: CoverageState,
+    window_rows: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "schema-only variants mirror serialized query results"
+)]
+enum CoverageState {
+    Data,
+    NoData,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct HeatmapEntity {
+    identity: std::collections::BTreeMap<String, Value>,
+    labels: std::collections::BTreeMap<String, Value>,
+    detail_ref: String,
+    total: Option<f64>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(tag = "representation", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "schema-only variants mirror serialized query results"
+)]
+enum EventsResult {
+    Groups {
+        groups: Vec<EventGroup>,
+        truncated: bool,
+    },
+    Occurrences {
+        occurrences: Vec<EventOccurrence>,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "schema-only variants mirror serialized query results"
+)]
+enum EventTier {
+    Critical,
+    Notable,
+    Routine,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct EventGroup {
+    key: String,
+    section: String,
+    tier: EventTier,
+    label: Option<String>,
+    count: f64,
+    first_ts: i64,
+    last_ts: i64,
+    representative_ts: i64,
+    minutes: Vec<f64>,
+    stat: EventStat,
+    #[serde(rename = "detail_ref")]
+    detail_ref: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind")]
+#[expect(
+    dead_code,
+    reason = "schema-only variants mirror serialized query results"
+)]
+enum EventStat {
+    #[serde(rename = "pg.errors")]
+    Errors {
+        severity: f64,
+        category: Option<f64>,
+        sqlstate: Option<String>,
+        database: Option<String>,
+        username: Option<String>,
+    },
+    #[serde(rename = "pg.slow", rename_all = "camelCase")]
+    Slow {
+        max_ms: f64,
+        total_ms: f64,
+        threshold_ms: Option<f64>,
+    },
+    #[serde(rename = "pg.autovacuum", rename_all = "camelCase")]
+    Autovacuum {
+        analyze: bool,
+        runs: usize,
+        total_ms: Option<f64>,
+        tuples_removed: Option<f64>,
+        tuples_dead: Option<f64>,
+    },
+    #[serde(rename = "pg.checkpoints", rename_all = "camelCase")]
+    Checkpoints {
+        completes: usize,
+        timed: usize,
+        requested: usize,
+        max_sync_ms: Option<f64>,
+        buffers: Option<f64>,
+    },
+    #[serde(rename = "pg.checkpoint_warning", rename_all = "camelCase")]
+    CheckpointWarning { seconds_apart: Option<f64> },
+    #[serde(rename = "pg.locks", rename_all = "camelCase")]
+    Locks {
+        holders: Option<String>,
+        acquired: bool,
+        waiters: usize,
+        max_ms: Option<f64>,
+        targets: Vec<String>,
+    },
+    #[serde(rename = "pg.lifecycle")]
+    Lifecycle {
+        lifecycle: f64,
+        pid: Option<f64>,
+        signal: Option<f64>,
+        mode: Option<String>,
+    },
+    #[serde(rename = "pgbouncer.events")]
+    Pgbouncer {
+        level: f64,
+        database: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct EventOccurrence {
+    #[serde(flatten)]
+    fields: Map<String, Value>,
+    source: String,
+    detail_ref: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -499,9 +664,25 @@ pub(crate) struct RowDetailInput {
     /// `kronika_get_row_detail`.
     #[schemars(length(
         min = 1,
-        max = crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES
+        max = kronika_query::DETAIL_REF_MAX_ENCODED_BYTES
     ))]
     pub(crate) detail_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EventsRepresentation {
+    Groups,
+    Occurrences,
+}
+
+impl EventsRepresentation {
+    pub(crate) const fn into_query(self) -> kronika_query::EventsRepresentation {
+        match self {
+            Self::Groups => kronika_query::EventsRepresentation::Groups,
+            Self::Occurrences => kronika_query::EventsRepresentation::Occurrences,
+        }
+    }
 }
 
 /// Reads selected recorded event sections over a half-open time window.
@@ -743,13 +924,14 @@ fn row_detail_output_schema() -> Arc<JsonObject> {
     )
 }
 
-/// Adapts shared HTTP schemas to the opaque MCP detail boundary.
+/// Adapts typed result schemas to the stable opaque MCP detail boundary.
 fn opaque_output_schema<T: JsonSchema>() -> Arc<JsonObject> {
     let generator = schemars::generate::SchemaSettings::draft2020_12()
         .for_serialize()
         .into_generator();
     let schema = generator.into_root_schema_for::<T>();
     let mut value = serde_json::to_value(schema).expect("schema serializes to JSON");
+    strip_schema_descriptions(&mut value);
     if let Some(definitions) = value.get_mut("$defs").and_then(Value::as_object_mut) {
         definitions.remove("DetailLocator");
     }
@@ -759,22 +941,40 @@ fn opaque_output_schema<T: JsonSchema>() -> Arc<JsonObject> {
     Arc::new(object.clone())
 }
 
+fn strip_schema_descriptions(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("description");
+            for child in object.values_mut() {
+                strip_schema_descriptions(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                strip_schema_descriptions(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn rewrite_detail_schema(value: &mut Value) {
     match value {
         Value::Object(object) => {
             if object.get("format").and_then(Value::as_str) == Some("uint") {
                 object.remove("format");
             }
-            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut)
-                && properties.remove("detail_locator").is_some()
-            {
-                properties.insert(
-                    "detail_ref".to_owned(),
-                    json!({
-                        "description": "Opaque server-produced row-detail reference; copy it unchanged.",
-                        "type": "string",
-                    }),
-                );
+            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+                let had_locator = properties.remove("detail_locator").is_some();
+                if had_locator || properties.contains_key("detail_ref") {
+                    properties.insert(
+                        "detail_ref".to_owned(),
+                        json!({
+                            "description": "Opaque server-produced row-detail reference; copy it unchanged.",
+                            "type": "string",
+                        }),
+                    );
+                }
             }
             if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
                 for name in required.iter_mut() {

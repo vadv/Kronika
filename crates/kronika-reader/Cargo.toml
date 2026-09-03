@@ -8,10 +8,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["posix"]
+posix = ["kronika-store/posix"]
+
 [dependencies]
 kronika-format = { path = "../kronika-format" }
 kronika-registry = { path = "../kronika-registry" }
-kronika-store = { path = "../kronika-store" }
+kronika-store = { path = "../kronika-store", default-features = false }
 arrow-array = "55"
 arrow-schema = "55"
 parquet = { version = "55", default-features = false, features = ["arrow", "zstd"] }

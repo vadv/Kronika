@@ -3,10 +3,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::DateTime;
+use kronika_query::snapshot::SnapshotPoint;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::time::{SnapshotPoint, TimeRange};
+use kronika_query::TimeRange;
 
 const VALID_FORMS: &str = "a JSON integer or canonical signed decimal-string i64 Unix timestamp in microseconds, RFC 3339 with Z or a numeric UTC offset, now, or now-N{us,ms,s,m,h,d,w}";
 
@@ -55,7 +56,7 @@ pub(crate) fn resolve_bounded_range(
     max_width: i64,
 ) -> Result<TimeRange, TimeSpecError> {
     let range = resolve_range_with(from, to, system_now_micros)?;
-    TimeRange::bounded(range.from, range.to_exclusive, max_width).map_err(TimeSpecError)
+    TimeRange::bounded(range.from(), range.to_exclusive(), max_width).map_err(TimeSpecError)
 }
 
 pub(crate) fn resolve_point(at: Option<&TimeSpecInput>) -> Result<SnapshotPoint, TimeSpecError> {

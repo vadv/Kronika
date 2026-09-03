@@ -26,16 +26,38 @@
 //! Journal v1 is the journal format shipped in Kronika 1.0.0. There is no
 //! alternate-version reader or migration path.
 
+// Cargo exposes Unix-only dev dependencies to every host test build.
+#[cfg(all(test, not(feature = "posix"), unix))]
+use tempfile as _;
+
 mod catalog_summary;
+mod embedded;
+#[cfg(feature = "posix")]
 mod local;
+#[cfg(feature = "posix")]
+mod posix;
+mod resource;
+#[cfg(feature = "posix")]
 mod source;
+mod zms;
 
 pub use catalog_summary::{
     CatalogDigest, CatalogLayoutDigest, CatalogSummary, CatalogSummaryError, catalog_digests,
 };
+pub use embedded::{EmbeddedResource, EmbeddedSource, SharedSegmentBytes};
+#[cfg(feature = "posix")]
 pub use local::{LocalDir, is_active_journal_scan_error, read_catalog};
+#[cfg(feature = "posix")]
+pub use posix::{PosixResource, PosixSegmentBytes, PosixSource};
+pub use resource::{
+    ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceFailureKind, ResourceIdentity,
+    ResourceKind, ResourceListing, ResourceWarning, ResourceWarningSubject, SegmentResource,
+    read_resource_catalog,
+};
+#[cfg(feature = "posix")]
 pub use source::{
     ActiveJournalWarningReason, ActivePart, ActiveSnapshot, FinalUnit, InvalidZmsReason,
     JournalScan, LocalScan, StoreError, StoreIoFailure, StoreIoOperation, StoreObject,
     StoreWarning, StoreWarningReason,
 };
+pub use zms::validate_finished_zms;

@@ -8,10 +8,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["posix"]
+posix = ["kronika-layout/posix", "kronika-reader/posix"]
+
 [dependencies]
 kronika-format = { path = "../kronika-format" }
-kronika-layout = { path = "../kronika-layout" }
-kronika-reader = { path = "../kronika-reader" }
+kronika-layout = { path = "../kronika-layout", default-features = false, optional = true }
+kronika-reader = { path = "../kronika-reader", default-features = false }
 kronika-registry = { path = "../kronika-registry" }
 
 [dev-dependencies]

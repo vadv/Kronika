@@ -8,10 +8,11 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use kronika_query::snapshot::PlainRowOut;
+
 use super::catalog::{GetInstanceInput, SettingsScopeInput};
 use super::postgresql::{plain_row_to_json, plain_rows};
 use super::semantics::{mcp_error, mcp_structured};
-use crate::api::snapshot::PlainRowOut;
 use crate::config::Config;
 
 #[derive(Debug, Serialize, JsonSchema)]

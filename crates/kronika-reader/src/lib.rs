@@ -11,21 +11,98 @@ mod dictionary;
 mod error;
 mod segment;
 
+#[cfg(feature = "posix")]
 use std::cmp::Reverse;
+#[cfg(feature = "posix")]
 use std::collections::BTreeSet;
+#[cfg(feature = "posix")]
 use std::ops::{Bound, RangeBounds};
+#[cfg(feature = "posix")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "posix")]
 use kronika_format::Catalog;
+#[cfg(feature = "posix")]
 use kronika_store::{ActiveSnapshot, FinalUnit, LocalDir, read_catalog};
+use kronika_store::{
+    ImmutableSegmentSource, ResourceCatalog, ResourceError, ResourceListing, SegmentResource,
+    read_resource_catalog,
+};
 
-pub use dictionary::Dictionary;
+pub use dictionary::{Dictionary, OwnedDictionaryValue};
 pub use error::ReaderError;
 pub use kronika_format::{BlobEntry, Resolved, StrId};
-pub use kronika_registry::{Cell, Row};
+pub use kronika_registry::{Cell, RecordBatch, Row};
+#[cfg(feature = "posix")]
 pub use kronika_store::{StoreObject, StoreWarning, StoreWarningReason};
 pub use segment::{Section, Segment};
+
+/// Product reader for immutable segments from one storage source.
+///
+/// Catalog discovery stays separate from opening positional bytes. The source
+/// decides how an object is prepared; decoding remains synchronous.
+#[derive(Debug)]
+pub struct FinishedReader<S> {
+    source: S,
+}
+
+impl<S> FinishedReader<S> {
+    /// Bind a product reader to one immutable source.
+    #[must_use]
+    pub const fn new(source: S) -> Self {
+        Self { source }
+    }
+}
+
+impl<S: ResourceCatalog> FinishedReader<S> {
+    /// Discover immutable identities and compact catalogs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the bounded catalog pass cannot complete.
+    pub fn resources(&self) -> Result<ResourceListing<S::Resource>, ReaderError> {
+        let mut listing = self.source.resources()?;
+        listing
+            .resources
+            .sort_unstable_by_key(SegmentResource::identity);
+        if let Some(identity) = listing
+            .resources
+            .windows(2)
+            .find(|pair| pair[0].identity() == pair[1].identity())
+            .map(|pair| pair[0].identity())
+        {
+            return Err(ResourceError::DuplicateIdentity(identity).into());
+        }
+        Ok(listing)
+    }
+}
+
+impl<S: ImmutableSegmentSource> FinishedReader<S> {
+    /// Open one discovered resource through the production row decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or changed resource, an unreadable
+    /// object, or an invalid full catalog.
+    pub fn open_segment(
+        &self,
+        resource: &SegmentResource<S::Resource>,
+    ) -> Result<Segment, ReaderError> {
+        let bytes = self.source.open_resource(resource)?;
+        let catalog = read_resource_catalog(&bytes);
+        self.source.validate_opened(resource, &bytes)?;
+        let catalog = Arc::new(catalog?);
+        Ok(Segment::open_finished(
+            bytes,
+            catalog,
+            resource.identity().segment_id().get(),
+            resource.captured_bytes(),
+            resource.summary(),
+            format!("segment:{}", resource.identity().segment_id().get()),
+        ))
+    }
+}
 
 /// Whether a listed segment is immutable or the captured journal prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +124,7 @@ pub struct SegmentSection {
     pub bytes: u64,
 }
 
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 enum SegmentSource {
     Finished(FinalUnit),
@@ -57,6 +135,7 @@ enum SegmentSource {
 ///
 /// The underlying source is deliberately opaque so finished `.zms` files and
 /// the current `active.wal` prefix are opened through the same API.
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 pub struct SegmentRef {
     source: SegmentSource,
@@ -68,6 +147,7 @@ pub struct SegmentRef {
     sections: Arc<[SegmentSection]>,
 }
 
+#[cfg(feature = "posix")]
 impl SegmentRef {
     /// Stable segment id: unix microseconds of its first appended window.
     #[must_use]
@@ -113,6 +193,12 @@ impl SegmentRef {
         &self.sections
     }
 
+    /// Share the compact section catalog without copying its entries.
+    #[must_use]
+    pub fn shared_sections(&self) -> Arc<[SegmentSection]> {
+        Arc::clone(&self.sections)
+    }
+
     /// Pin an active reference to an earlier committed cursor position.
     ///
     /// Finished references and positions that are not complete frame
@@ -146,6 +232,7 @@ impl SegmentRef {
 }
 
 /// What one directory scan found.
+#[cfg(feature = "posix")]
 #[derive(Debug)]
 pub struct Listing {
     /// Finished and current segments overlapping the requested range, oldest
@@ -160,12 +247,22 @@ pub struct Listing {
 ///
 /// A caller can inspect all recorded time ranges, choose a window, and then
 /// materialize references only for segments that overlap that window.
+#[cfg(feature = "posix")]
 #[derive(Debug, Clone)]
 pub struct CatalogDiscovery<'a> {
     reader: &'a Reader,
     scan: kronika_store::LocalScan,
 }
 
+#[cfg(feature = "posix")]
+#[derive(Clone, Copy)]
+enum ListingMode {
+    Catalog,
+    CatalogWithPredecessor,
+    Validated,
+}
+
+#[cfg(feature = "posix")]
 impl CatalogDiscovery<'_> {
     /// Time bounds of every canonical segment found by the scan.
     pub fn ranges(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
@@ -193,7 +290,7 @@ impl CatalogDiscovery<'_> {
     /// Returns an I/O error when a selected segment changed or its catalog
     /// cannot be read safely.
     pub fn segments<R: RangeBounds<i64>>(self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, false)
+        self.list_segments(range, ListingMode::Catalog)
     }
 
     /// Open section catalogs in `range` and the closest canonical predecessor.
@@ -207,7 +304,7 @@ impl CatalogDiscovery<'_> {
         self,
         range: R,
     ) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, true)
+        self.list_segments(range, ListingMode::CatalogWithPredecessor)
     }
 
     /// Open section catalogs in `range` and the closest predecessor carrying
@@ -228,7 +325,7 @@ impl CatalogDiscovery<'_> {
         type_ids: &[u32],
     ) -> Result<Listing, ReaderError> {
         let bounds = owned_bounds(&range);
-        let mut listing = self.clone().list_segments(bounds, false, false)?;
+        let mut listing = self.clone().list_segments(bounds, ListingMode::Catalog)?;
         let mut remaining = type_ids.iter().copied().collect::<BTreeSet<_>>();
         if remaining.is_empty() {
             return Ok(listing);
@@ -321,8 +418,7 @@ impl CatalogDiscovery<'_> {
     fn list_segments<R: RangeBounds<i64>>(
         mut self,
         range: R,
-        validate_bodies: bool,
-        include_predecessor: bool,
+        mode: ListingMode,
     ) -> Result<Listing, ReaderError> {
         let mut segments = Vec::new();
         let finished = Arc::clone(&self.scan.finished);
@@ -333,10 +429,10 @@ impl CatalogDiscovery<'_> {
                 .iter()
                 .any(|unit| unit.address.id.get() == active_id)
         });
-        let canonical_active = (validate_bodies || !finished_exists)
+        let canonical_active = (matches!(mode, ListingMode::Validated) || !finished_exists)
             .then_some(active_id.zip(active_time_bounds))
             .flatten();
-        let predecessor = include_predecessor
+        let predecessor = matches!(mode, ListingMode::CatalogWithPredecessor)
             .then(|| {
                 finished
                     .iter()
@@ -355,7 +451,9 @@ impl CatalogDiscovery<'_> {
             overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
                 || predecessor == Some(unit.address.id.get())
         }) {
-            if validate_bodies && !self.reader.dir.validate_finished(&mut self.scan, unit)? {
+            if matches!(mode, ListingMode::Validated)
+                && !self.reader.dir.validate_finished(&mut self.scan, unit)?
+            {
                 continue;
             }
             let file = self.reader.dir.open_finished(unit)?;
@@ -412,6 +510,7 @@ impl CatalogDiscovery<'_> {
 }
 
 /// An open data directory.
+#[cfg(feature = "posix")]
 #[derive(Debug)]
 pub struct Reader {
     dir: LocalDir,
@@ -419,6 +518,7 @@ pub struct Reader {
     provenance: Arc<()>,
 }
 
+#[cfg(feature = "posix")]
 impl Reader {
     /// Open `root` as a data directory.
     ///
@@ -437,6 +537,12 @@ impl Reader {
         })
     }
 
+    /// Native data-directory path retained for sibling derived resources.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// List finished segments and the captured current segment whose
     /// timestamps overlap `range`.
     ///
@@ -448,7 +554,7 @@ impl Reader {
     ///
     /// Returns an I/O error when the directory cannot be walked.
     pub fn segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, true, false)
+        self.list_segments(range, ListingMode::Validated)
     }
 
     /// Scan compact catalog summaries before choosing which full catalogs to
@@ -463,21 +569,6 @@ impl Reader {
             reader: self,
             scan: self.dir.scan_catalogs()?,
         })
-    }
-
-    /// List segment catalogs without reading finished section bodies.
-    ///
-    /// This narrow discovery path lets a caller validate and use an existing
-    /// derived index without paying to checksum every source section first.
-    /// Opening rows through [`open_segment`](Self::open_segment) still verifies
-    /// each selected body before decoding it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the directory or a segment catalog cannot be
-    /// read safely.
-    pub fn catalog_segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, false)
     }
 
     /// Find one segment by its stable id without opening unrelated catalogs.
@@ -530,31 +621,12 @@ impl Reader {
         })
     }
 
-    /// List segment catalogs in `range` plus the closest canonical predecessor.
-    ///
-    /// The predecessor is selected from scan summaries before section catalogs
-    /// are opened. This supports bounded counter lookback without opening every
-    /// older segment merely to locate the adjacent sample.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the directory or a selected segment catalog
-    /// cannot be read safely.
-    pub fn catalog_segments_with_predecessor<R: RangeBounds<i64>>(
-        &self,
-        range: R,
-    ) -> Result<Listing, ReaderError> {
-        self.list_segments(range, false, true)
-    }
-
     fn list_segments<R: RangeBounds<i64>>(
         &self,
         range: R,
-        validate_bodies: bool,
-        include_predecessor: bool,
+        mode: ListingMode,
     ) -> Result<Listing, ReaderError> {
-        self.catalog_discovery()?
-            .list_segments(range, validate_bodies, include_predecessor)
+        self.catalog_discovery()?.list_segments(range, mode)
     }
 
     /// Open one of the segments a listing returned.
@@ -572,7 +644,20 @@ impl Reader {
             )
             .into());
         }
-        Segment::open(&self.dir, &self.root, unit)
+        let source_label = match &unit.source {
+            SegmentSource::Finished(finished) => {
+                let day = finished.address.day;
+                self.root
+                    .join(day.year_component())
+                    .join(day.month_component())
+                    .join(day.day_component())
+                    .join(finished.address.zms_name())
+            }
+            SegmentSource::Active(_) => self.root.join("active.wal"),
+        }
+        .display()
+        .to_string();
+        Segment::open(&self.dir, unit, source_label)
     }
 }
 
@@ -580,6 +665,7 @@ impl Reader {
     single_use_lifetimes,
     reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
 )]
+#[cfg(feature = "posix")]
 fn sections_of<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> Vec<SegmentSection> {
     let mut sections = std::collections::BTreeMap::<u32, SegmentSection>::new();
     for catalog in catalogs {
@@ -596,6 +682,7 @@ fn sections_of<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> Vec<Segme
     sections.into_values().collect()
 }
 
+#[cfg(feature = "posix")]
 fn active_bounds(parts: &[kronika_store::ActivePart]) -> Option<(i64, i64)> {
     if parts.is_empty() {
         return None;
@@ -618,6 +705,7 @@ fn active_bounds(parts: &[kronika_store::ActivePart]) -> Option<(i64, i64)> {
 /// Timestamps are whole microseconds, so an excluded bound moves one
 /// microsecond inwards and both ends become inclusive. An empty range then
 /// yields no instants at all and matches nothing.
+#[cfg(feature = "posix")]
 fn overlaps<R: RangeBounds<i64>>(range: &R, min_ts: i64, max_ts: i64) -> bool {
     let start = match range.start_bound() {
         Bound::Unbounded => i64::MIN,
@@ -642,6 +730,7 @@ fn overlaps<R: RangeBounds<i64>>(range: &R, min_ts: i64, max_ts: i64) -> bool {
     min_ts.max(start) <= max_ts.min(end)
 }
 
+#[cfg(feature = "posix")]
 fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
     match range.start_bound() {
         Bound::Unbounded => false,
@@ -650,9 +739,10 @@ fn before_start<R: RangeBounds<i64>>(range: &R, max_ts: i64) -> bool {
     }
 }
 
+#[cfg(feature = "posix")]
 fn owned_bounds<R: RangeBounds<i64>>(range: &R) -> (Bound<i64>, Bound<i64>) {
     (range.start_bound().cloned(), range.end_bound().cloned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "posix"))]
 mod tests;

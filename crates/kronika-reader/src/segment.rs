@@ -1,36 +1,73 @@
 //! One finished or current logical segment, opened.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::File;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kronika_format::{Catalog, Entry, ReadAt as _, crc32c};
+use kronika_format::{Catalog, Entry, ReadAt, crc32c};
 use kronika_registry::{
-    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, contract,
-    logical_section_name, visit_rows,
+    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, RecordBatch, Row, VerifiedSection, contract,
+    logical_section_name, visit_batches as visit_registry_batches, visit_rows,
 };
+use kronika_store::CatalogSummary;
+#[cfg(feature = "posix")]
 use kronika_store::{ActiveSnapshot, LocalDir};
 
+use crate::SegmentKind;
 use crate::dictionary::Dictionary;
 use crate::error::ReaderError;
-use crate::{SegmentKind, SegmentRef, SegmentSource};
+#[cfg(feature = "posix")]
+use crate::{SegmentRef, SegmentSource};
+
+trait SegmentBytes: ReadAt + Send + Sync {}
+
+impl<T: ReadAt + Send + Sync> SegmentBytes for T {}
+
+// Type erasure stays private and occurs only after a generic source opens one
+// object, keeping the public product segment common to POSIX, embedded, and
+// captured active bytes.
+struct OpenedSegmentBytes(Box<dyn SegmentBytes>);
+
+impl OpenedSegmentBytes {
+    fn new(bytes: impl ReadAt + Send + Sync + 'static) -> Self {
+        Self(Box::new(bytes))
+    }
+}
+
+impl std::fmt::Debug for OpenedSegmentBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedSegmentBytes").finish_non_exhaustive()
+    }
+}
+
+impl ReadAt for OpenedSegmentBytes {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        self.0.read_exact_at(buf, offset)
+    }
+
+    fn byte_len(&self) -> std::io::Result<u64> {
+        self.0.byte_len()
+    }
+}
 
 #[derive(Debug)]
 enum Source {
-    Finished { file: File, catalog: Arc<Catalog> },
+    Finished {
+        bytes: OpenedSegmentBytes,
+        catalog: Arc<Catalog>,
+    },
+    #[cfg(feature = "posix")]
     Active(ActiveSnapshot),
 }
 
 /// An open finished `.zms` or captured `active.wal` logical segment.
 ///
-/// Section bodies are read on demand. A finished segment holds one file
-/// descriptor; a current segment holds one descriptor for its captured prefix.
+/// Section bodies are read on demand. A finished segment holds one positional
+/// byte source; a current segment holds one descriptor for its captured prefix.
 #[derive(Debug)]
 pub struct Segment {
     id: i64,
     kind: SegmentKind,
-    path: PathBuf,
+    source_label: String,
     source: Source,
     min_ts: i64,
     max_ts: i64,
@@ -52,28 +89,25 @@ pub struct Section {
 }
 
 impl Segment {
+    #[cfg(feature = "posix")]
     pub(crate) fn open(
         dir: &LocalDir,
-        root: &Path,
         unit: &SegmentRef,
+        source_label: String,
     ) -> Result<Self, ReaderError> {
         match &unit.source {
             SegmentSource::Finished(finished) => {
                 let file = dir.open_finished(finished)?;
                 let catalog = Arc::new(kronika_store::read_catalog(&file)?);
                 dir.validate_finished_file(&file, finished)?;
-                let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
-                Ok(Self {
-                    id: unit.segment_id,
-                    kind: SegmentKind::Finished,
-                    path: finished_path(root, finished),
-                    source: Source::Finished { file, catalog },
-                    min_ts: unit.min_ts,
-                    max_ts: unit.max_ts,
-                    captured_bytes: unit.captured_bytes,
-                    window_count: finished.summary.window_count,
-                    section_rows,
-                })
+                Ok(Self::open_finished(
+                    file,
+                    catalog,
+                    unit.segment_id,
+                    unit.captured_bytes,
+                    &finished.summary,
+                    source_label,
+                ))
             }
             SegmentSource::Active(snapshot) => {
                 let window_count = u32::try_from(snapshot.parts().len()).map_err(|_overflow| {
@@ -86,7 +120,7 @@ impl Segment {
                 Ok(Self {
                     id: unit.segment_id,
                     kind: SegmentKind::Active,
-                    path: root.join("active.wal"),
+                    source_label,
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
@@ -95,6 +129,31 @@ impl Segment {
                     section_rows,
                 })
             }
+        }
+    }
+
+    pub(crate) fn open_finished(
+        bytes: impl ReadAt + Send + Sync + 'static,
+        catalog: Arc<Catalog>,
+        segment_id: i64,
+        captured_bytes: u64,
+        summary: &CatalogSummary,
+        source_label: String,
+    ) -> Self {
+        let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
+        Self {
+            id: segment_id,
+            kind: SegmentKind::Finished,
+            source_label,
+            source: Source::Finished {
+                bytes: OpenedSegmentBytes::new(bytes),
+                catalog,
+            },
+            min_ts: summary.min_ts,
+            max_ts: summary.max_ts,
+            captured_bytes,
+            window_count: summary.window_count,
+            section_rows,
         }
     }
 
@@ -119,10 +178,13 @@ impl Segment {
         }
     }
 
-    /// Where the segment was read from.
+    /// Storage-neutral display label for the source object.
+    ///
+    /// The native directory reader supplies the same path text exposed by the
+    /// previous API. Other sources use their logical resource identity.
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn source_label(&self) -> &str {
+        &self.source_label
     }
 
     /// Earliest timestamp the segment carries, unix microseconds.
@@ -137,7 +199,7 @@ impl Segment {
         self.max_ts
     }
 
-    /// Bytes in the finished file or captured current-journal prefix.
+    /// Bytes in the finished object or captured current-journal prefix.
     #[must_use]
     pub const fn captured_bytes(&self) -> u64 {
         self.captured_bytes
@@ -223,23 +285,20 @@ impl Segment {
         mut visitor: impl FnMut(u64, Row) -> bool,
     ) -> Result<usize, ReaderError> {
         let mut visited = 0_usize;
-        let mut global_base = 0_u64;
-        let mut remaining_offset = offset;
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 if let Some(entry) = entry(catalog, type_id) {
                     let rows = u64::from(entry.rows);
-                    if remaining_offset < rows {
-                        let local_offset =
-                            usize::try_from(remaining_offset).map_err(|_overflow| {
-                                std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "row offset does not fit usize",
-                                )
-                            })?;
+                    if offset < rows {
+                        let local_offset = usize::try_from(offset).map_err(|_overflow| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "row offset does not fit usize",
+                            )
+                        })?;
                         let count = visit_body(
                             type_id,
-                            finished_body(file, entry)?,
+                            finished_body(bytes, entry)?,
                             columns,
                             BodyVisit {
                                 expected_rows: u64::from(entry.rows),
@@ -253,7 +312,10 @@ impl Segment {
                     }
                 }
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
+                let mut global_base = 0_u64;
+                let mut remaining_offset = offset;
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     let Some(entry) = entry(&part.catalog, type_id) else {
                         continue;
@@ -300,6 +362,108 @@ impl Segment {
         Ok(visited)
     }
 
+    /// Visit a physical row range as Arrow record batches.
+    ///
+    /// Current-segment ordinals span all journal parts carrying `type_id`.
+    /// `columns` selects exact contract column names; `None` retains the full
+    /// schema. Returning `false` from `visitor` stops after the current batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown type, or when a selected body fails its
+    /// checksum, catalog row-count check, schema check, or Parquet decode.
+    pub fn visit_batches(
+        &self,
+        type_id: u32,
+        columns: Option<&[&str]>,
+        offset: u64,
+        limit: usize,
+        mut visitor: impl FnMut(u64, RecordBatch) -> bool,
+    ) -> Result<usize, ReaderError> {
+        if contract(type_id).is_none() {
+            return Err(ReaderError::Section {
+                type_id,
+                source: kronika_registry::CodecError::UnknownType { type_id },
+            });
+        }
+        let mut visited = 0_usize;
+        match &self.source {
+            Source::Finished { bytes, catalog } => {
+                if let Some(entry) = entry(catalog, type_id) {
+                    let rows = u64::from(entry.rows);
+                    if offset < rows {
+                        let local_offset = usize::try_from(offset).map_err(|_overflow| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "row offset does not fit usize",
+                            )
+                        })?;
+                        let count = visit_batch_body(
+                            type_id,
+                            finished_body(bytes, entry)?,
+                            columns,
+                            BodyVisit {
+                                expected_rows: u64::from(entry.rows),
+                                offset: local_offset,
+                                limit,
+                                base: 0,
+                            },
+                            &mut visitor,
+                        )?;
+                        visited = visited.saturating_add(count);
+                    }
+                }
+            }
+            #[cfg(feature = "posix")]
+            Source::Active(snapshot) => {
+                let mut global_base = 0_u64;
+                let mut remaining_offset = offset;
+                for (part_index, part) in snapshot.parts().iter().enumerate() {
+                    let Some(entry) = entry(&part.catalog, type_id) else {
+                        continue;
+                    };
+                    if visited >= limit {
+                        break;
+                    }
+                    if remaining_offset >= u64::from(entry.rows) {
+                        remaining_offset -= u64::from(entry.rows);
+                        global_base = global_base.saturating_add(u64::from(entry.rows));
+                        continue;
+                    }
+                    let local_offset = usize::try_from(remaining_offset).map_err(|_overflow| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "row offset does not fit usize",
+                        )
+                    })?;
+                    let mut keep_going = true;
+                    let count = visit_batch_body(
+                        type_id,
+                        active_body(snapshot, part_index, entry)?,
+                        columns,
+                        BodyVisit {
+                            expected_rows: u64::from(entry.rows),
+                            offset: local_offset,
+                            limit: limit.saturating_sub(visited),
+                            base: global_base,
+                        },
+                        &mut |ordinal, batch| {
+                            keep_going = visitor(ordinal, batch);
+                            keep_going
+                        },
+                    )?;
+                    visited = visited.saturating_add(count);
+                    remaining_offset = 0;
+                    global_base = global_base.saturating_add(u64::from(entry.rows));
+                    if !keep_going {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(visited)
+    }
+
     /// Decode the complete segment dictionary.
     ///
     /// Both `dict.strings` and `dict.blobs` are included. Current-segment
@@ -311,11 +475,12 @@ impl Segment {
     pub fn dictionary(&self) -> Result<Dictionary, ReaderError> {
         let mut dictionary = Dictionary::default();
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_dictionary_catalog(&mut dictionary, catalog, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_dictionary_catalog(&mut dictionary, &part.catalog, |entry| {
@@ -342,11 +507,12 @@ impl Segment {
             return Ok(dictionary);
         }
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_selected_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_selected_dictionary_catalog(
@@ -375,11 +541,12 @@ impl Segment {
             return Ok(dictionary);
         }
         match &self.source {
-            Source::Finished { file, catalog } => {
+            Source::Finished { bytes, catalog } => {
                 decode_once_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
-                    finished_body(file, entry)
+                    finished_body(bytes, entry)
                 })?;
             }
+            #[cfg(feature = "posix")]
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
                     decode_once_dictionary_catalog(&mut dictionary, &part.catalog, ids, |entry| {
@@ -415,6 +582,25 @@ fn visit_body(
         request.offset,
         request.limit,
         |local_ordinal, row| visitor(request.base.saturating_add(local_ordinal), row),
+    )
+    .map_err(|source| ReaderError::Section { type_id, source })
+}
+
+fn visit_batch_body(
+    type_id: u32,
+    body: VerifiedSection,
+    columns: Option<&[&str]>,
+    request: BodyVisit,
+    visitor: &mut impl FnMut(u64, RecordBatch) -> bool,
+) -> Result<usize, ReaderError> {
+    visit_registry_batches(
+        type_id,
+        body,
+        columns,
+        Some(request.expected_rows),
+        request.offset,
+        request.limit,
+        |local_ordinal, batch| visitor(request.base.saturating_add(local_ordinal), batch),
     )
     .map_err(|source| ReaderError::Section { type_id, source })
 }
@@ -492,7 +678,7 @@ fn decode_dictionary_catalog(
     Ok(())
 }
 
-fn finished_body(file: &File, entry: &Entry) -> Result<VerifiedSection, ReaderError> {
+fn finished_body(bytes: &impl ReadAt, entry: &Entry) -> Result<VerifiedSection, ReaderError> {
     let len = usize::try_from(entry.len).map_err(|_overflow| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -500,10 +686,11 @@ fn finished_body(file: &File, entry: &Entry) -> Result<VerifiedSection, ReaderEr
         )
     })?;
     let mut buffer = vec![0_u8; len];
-    file.read_exact_at(&mut buffer, entry.offset)?;
+    bytes.read_exact_at(&mut buffer, entry.offset)?;
     verified_body(entry, buffer)
 }
 
+#[cfg(feature = "posix")]
 fn active_body(
     snapshot: &ActiveSnapshot,
     part_index: usize,
@@ -520,12 +707,4 @@ fn verified_body(entry: &Entry, body: Vec<u8>) -> Result<VerifiedSection, Reader
             source,
         }
     })
-}
-
-fn finished_path(root: &Path, unit: &kronika_store::FinalUnit) -> PathBuf {
-    let day = unit.address.day;
-    root.join(day.year_component())
-        .join(day.month_component())
-        .join(day.day_component())
-        .join(unit.address.zms_name())
 }

@@ -21,6 +21,7 @@ pub(super) use crate::source::{
     ActiveJournalWarningReason, InvalidZmsReason, StoreIoOperation, StoreObject, StoreWarning,
     StoreWarningReason,
 };
+pub(super) use crate::zms::MAX_CATALOG_BYTES;
 pub(super) use kronika_format::MAX_JOURNAL_PARTS;
 use kronika_format::{FrameHeader, PartMeta, SectionInput, build_part, crc32c};
 use kronika_layout::SegmentAddress;

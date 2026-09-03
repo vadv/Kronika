@@ -37,6 +37,18 @@ pub(crate) fn parse_local(text: &str) -> Option<(i64, &str)> {
     ))
 }
 
+#[cfg(test)]
+pub(crate) fn local_micros(text: &str) -> i64 {
+    let naive =
+        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").expect("a readable wall clock");
+    Local
+        .from_local_datetime(&naive)
+        .earliest()
+        .expect("the host timezone maps this reading")
+        .timestamp()
+        * 1_000_000
+}
+
 fn parse_naive(date: &str, clock: &str) -> Option<NaiveDateTime> {
     let year = date.get(..4)?.parse().ok()?;
     let month = date.get(5..7)?.parse().ok()?;

@@ -10,6 +10,32 @@ use serde_json::{Map, Value};
 use crate::budget::ByteBudget;
 use crate::route::MAX_QUERY_BYTES;
 
+pub(crate) struct CancellationSink<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl std::fmt::Debug for CancellationSink<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancellationSink").finish_non_exhaustive()
+    }
+}
+
+impl<'a> CancellationSink<'a> {
+    pub(crate) const fn new(cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self { cancelled }
+    }
+}
+
+impl kronika_query::QuerySink for CancellationSink<'_> {
+    fn record(&mut self, _bytes: Vec<u8>) -> bool {
+        false
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct FinderOutput {
@@ -115,7 +141,7 @@ pub(crate) fn storage_error_message(error: &crate::api::ApiError) -> String {
             "invalid stored-data request".to_owned()
         }
         crate::api::ApiError::BadLocator(_) => "could not produce detail_ref".to_owned(),
-        crate::api::ApiError::Unreadable(_) => "could not read stored data".to_owned(),
+        _ => "could not read stored data".to_owned(),
     }
 }
 

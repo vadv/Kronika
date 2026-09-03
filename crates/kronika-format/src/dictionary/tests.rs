@@ -59,6 +59,21 @@ fn empty_string_is_a_regular_value() {
 }
 
 #[test]
+fn resolved_exposes_stored_bytes_for_both_placements() {
+    let string = Resolved::Str(b"string");
+    let blob = Resolved::Blob(BlobEntry {
+        str_id: id_of(b"blob"),
+        stored_bytes: b"blob",
+        full_len: 4,
+        truncated: false,
+        full_sha256: None,
+    });
+
+    assert_eq!(string.stored_bytes(), b"string");
+    assert_eq!(blob.stored_bytes(), b"blob");
+}
+
+#[test]
 fn zero_hash_is_a_collision() {
     // No xxh3 preimage of zero is known, so the rule is tested on the
     // extracted conversion that every public intern call goes through.

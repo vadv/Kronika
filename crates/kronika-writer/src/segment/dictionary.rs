@@ -3,14 +3,14 @@
 use super::error::WriteError;
 use super::{
     Array, ArrowReaderOptions, BTreeMap, BinaryArray, BooleanArray, CodecError, DICT_BLOBS_TYPE_ID,
-    DICT_STRINGS_TYPE_ID, DataType, EntrySnapshot, Field, FixedSizeBinaryArray, HotMark, Journal,
-    MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS,
-    ParquetRecordBatchReaderBuilder, Placement, RecordBatch, Schema, SectionDescriptor, StrId,
-    UInt64Array, read_verified_body, validate_plain_parquet_decode_work,
+    DICT_STRINGS_TYPE_ID, DataType, EntrySnapshot, Field, FinishedSection, FixedSizeBinaryArray,
+    HotMark, Journal, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES,
+    MAX_SECTION_ROWS, ParquetRecordBatchReaderBuilder, Placement, RecordBatch, Resolved, Schema,
+    SectionDescriptor, StrId, UInt64Array, read_verified_body, validate_plain_parquet_decode_work,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum DictionaryValue {
+enum DictionaryValue {
     String(Vec<u8>),
     Blob {
         bytes: Vec<u8>,
@@ -20,8 +20,9 @@ pub(super) enum DictionaryValue {
     },
 }
 
+/// Canonical dictionary entries retained for one finished ZMS.
 #[derive(Debug, Default)]
-pub(super) struct NormalizedDictionary {
+pub struct FinishedDictionary {
     values: BTreeMap<StrId, DictionaryValue>,
     string_rows: usize,
     blob_rows: usize,
@@ -29,8 +30,128 @@ pub(super) struct NormalizedDictionary {
     blob_bytes: usize,
 }
 
-impl NormalizedDictionary {
-    fn insert(&mut self, str_id: StrId, value: DictionaryValue) -> Result<(), WriteError> {
+impl FinishedDictionary {
+    /// Add one preserved string or blob representation.
+    ///
+    /// Repeating an identical entry is accepted. Reusing an id with different
+    /// bytes, placement, or blob metadata is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] when the representation is malformed,
+    /// conflicts with an earlier entry, or exceeds a finished dictionary cap.
+    pub fn insert(&mut self, str_id: StrId, resolved: Resolved<'_>) -> Result<(), WriteError> {
+        let value = match resolved {
+            Resolved::Str(bytes) => {
+                if StrId::of(bytes) != Some(str_id) {
+                    return Err(CodecError::SchemaMismatch.into());
+                }
+                if let Some(existing) = self.values.get(&str_id) {
+                    return if matches!(existing, DictionaryValue::String(stored) if stored == bytes)
+                    {
+                        Ok(())
+                    } else {
+                        Err(WriteError::DictionaryConflict {
+                            str_id: str_id.get(),
+                        })
+                    };
+                }
+                DictionaryValue::String(bytes.to_vec())
+            }
+            Resolved::Blob(blob) => {
+                if blob.str_id != str_id {
+                    return Err(CodecError::SchemaMismatch.into());
+                }
+                let valid = if blob.truncated {
+                    (blob.stored_bytes.len() as u64) < blob.full_len && blob.full_sha256.is_some()
+                } else {
+                    blob.stored_bytes.len() as u64 == blob.full_len
+                        && blob.full_sha256.is_none()
+                        && StrId::of(blob.stored_bytes) == Some(str_id)
+                };
+                if !valid {
+                    return Err(CodecError::SchemaMismatch.into());
+                }
+                if let Some(existing) = self.values.get(&str_id) {
+                    return if matches!(
+                        existing,
+                        DictionaryValue::Blob {
+                            bytes,
+                            full_len,
+                            truncated,
+                            full_sha256,
+                        } if bytes == blob.stored_bytes
+                            && *full_len == blob.full_len
+                            && *truncated == blob.truncated
+                            && *full_sha256 == blob.full_sha256
+                    ) {
+                        Ok(())
+                    } else {
+                        Err(WriteError::DictionaryConflict {
+                            str_id: str_id.get(),
+                        })
+                    };
+                }
+                DictionaryValue::Blob {
+                    bytes: blob.stored_bytes.to_vec(),
+                    full_len: blob.full_len,
+                    truncated: blob.truncated,
+                    full_sha256: blob.full_sha256,
+                }
+            }
+        };
+        self.insert_value(str_id, value)
+    }
+
+    /// Add an already-owned string representation without copying its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] when the id does not match the bytes, conflicts
+    /// with an earlier entry, or exceeds a finished dictionary cap.
+    pub fn insert_owned_string(&mut self, str_id: StrId, bytes: Vec<u8>) -> Result<(), WriteError> {
+        if StrId::of(&bytes) != Some(str_id) {
+            return Err(CodecError::SchemaMismatch.into());
+        }
+        self.insert_value(str_id, DictionaryValue::String(bytes))
+    }
+
+    /// Add an already-owned blob representation without copying its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] when the blob representation is malformed,
+    /// conflicts with an earlier entry, or exceeds a finished dictionary cap.
+    pub fn insert_owned_blob(
+        &mut self,
+        str_id: StrId,
+        bytes: Vec<u8>,
+        full_len: u64,
+        truncated: bool,
+        full_sha256: Option<[u8; 32]>,
+    ) -> Result<(), WriteError> {
+        let valid = if truncated {
+            (bytes.len() as u64) < full_len && full_sha256.is_some()
+        } else {
+            bytes.len() as u64 == full_len
+                && full_sha256.is_none()
+                && StrId::of(&bytes) == Some(str_id)
+        };
+        if !valid {
+            return Err(CodecError::SchemaMismatch.into());
+        }
+        self.insert_value(
+            str_id,
+            DictionaryValue::Blob {
+                bytes,
+                full_len,
+                truncated,
+                full_sha256,
+            },
+        )
+    }
+
+    fn insert_value(&mut self, str_id: StrId, value: DictionaryValue) -> Result<(), WriteError> {
         match self.values.get(&str_id) {
             Some(existing) if existing == &value => return Ok(()),
             Some(_) => {
@@ -77,10 +198,19 @@ impl NormalizedDictionary {
         Ok(())
     }
 
-    pub(super) fn write_sections_to(
+    /// Append canonical finished dictionary bodies to a spool.
+    ///
+    /// Returned descriptors begin at `offset` and can be combined with data
+    /// descriptors in [`super::FinishedZmsPlan`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError`] when encoding fails or offsets overflow.
+    pub fn write_sections_to(
         &self,
         out: &mut (impl std::io::Write + Send),
-    ) -> Result<Vec<crate::dict::WrittenDictSection>, WriteError> {
+        mut offset: u64,
+    ) -> Result<Vec<FinishedSection>, WriteError> {
         let snapshots = self.values.iter().map(|(&str_id, value)| {
             let (stored_bytes, full_len, truncated, full_sha256, placement) = match value {
                 DictionaryValue::String(bytes) => (
@@ -114,7 +244,25 @@ impl NormalizedDictionary {
                 blob_required: placement == Placement::Blobs,
             }
         });
-        crate::dict::encode_final_entries_to(snapshots, out).map_err(WriteError::Codec)
+        let encoded =
+            crate::dict::encode_final_entries_to(snapshots, out).map_err(WriteError::Codec)?;
+        let mut sections = Vec::with_capacity(encoded.len());
+        for section in encoded {
+            let finished = FinishedSection::new(
+                section.type_id,
+                section.rows,
+                offset,
+                section.len,
+                section.crc32c,
+            )?;
+            offset = offset
+                .checked_add(section.len)
+                .ok_or(WriteError::ArithmeticOverflow {
+                    what: "dictionary spool offset",
+                })?;
+            sections.push(finished);
+        }
+        Ok(sections)
     }
 }
 
@@ -122,8 +270,8 @@ pub(super) fn normalize_dictionary(
     journal: &Journal,
     strings: &[SectionDescriptor],
     blobs: &[SectionDescriptor],
-) -> Result<NormalizedDictionary, WriteError> {
-    let mut normalized = NormalizedDictionary::default();
+) -> Result<FinishedDictionary, WriteError> {
+    let mut normalized = FinishedDictionary::default();
     for &descriptor in strings.iter().chain(blobs) {
         decode_dictionary_body(journal, descriptor, &mut normalized)?;
     }
@@ -137,7 +285,7 @@ pub(super) fn normalize_dictionary(
 pub(super) fn decode_dictionary_body(
     journal: &Journal,
     descriptor: SectionDescriptor,
-    normalized: &mut NormalizedDictionary,
+    normalized: &mut FinishedDictionary,
 ) -> Result<(), WriteError> {
     let type_id = descriptor.entry.type_id;
     let is_blob = match type_id {
@@ -221,7 +369,7 @@ pub(super) fn decode_dictionary_body(
                 if !valid {
                     return Err(CodecError::SchemaMismatch.into());
                 }
-                normalized.insert(
+                normalized.insert_value(
                     str_id,
                     DictionaryValue::Blob {
                         bytes: stored.to_vec(),
@@ -239,7 +387,7 @@ pub(super) fn decode_dictionary_body(
                 if StrId::of(stored) != Some(str_id) {
                     return Err(CodecError::SchemaMismatch.into());
                 }
-                normalized.insert(str_id, DictionaryValue::String(stored.to_vec()))?;
+                normalized.insert_value(str_id, DictionaryValue::String(stored.to_vec()))?;
             }
         }
     }

@@ -30,7 +30,10 @@ pub use buffer::{FlushSummary, FlushedPart, SectionBuffers, SectionFlushSummary}
 pub use interner::{FinishedSegment, FlushedEntry, Interner};
 pub use journal::{Journal, JournalConfig, JournalError, JournalPartRef};
 pub use kronika_format::{MAX_JOURNAL_LEN, MAX_JOURNAL_PARTS, MAX_PART_LEN};
-pub use segment::{WriteError, WriteSummary, write_segment};
+pub use segment::{
+    FinishedDictionary, FinishedSection, FinishedZmsPlan, WriteError, WriteSummary,
+    write_finished_zms, write_segment,
+};
 
 #[cfg(test)]
 mod composition_tests {

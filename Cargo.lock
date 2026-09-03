@@ -1371,6 +1371,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-api"
+version = "1.0.0"
+dependencies = [
+ "kronika-query",
+]
+
+[[package]]
 name = "kronika-bdd"
 version = "1.0.0"
 dependencies = [
@@ -1431,11 +1438,16 @@ dependencies = [
 name = "kronika-dump"
 version = "1.0.0"
 dependencies = [
+ "arrow-array",
+ "arrow-select",
+ "chrono",
  "kronika-format",
  "kronika-index",
  "kronika-layout",
  "kronika-reader",
  "kronika-registry",
+ "kronika-report",
+ "kronika-store",
  "kronika-writer",
  "serde_json",
  "tempfile",
@@ -1473,6 +1485,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-query"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "icu_collator",
+ "icu_locale_core",
+ "kronika-format",
+ "kronika-index",
+ "kronika-layout",
+ "kronika-reader",
+ "kronika-registry",
+ "kronika-store",
+ "kronika-writer",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kronika-reader"
 version = "1.0.0"
 dependencies = [
@@ -1502,6 +1533,33 @@ dependencies = [
  "parquet",
  "serde_json",
  "thrift",
+]
+
+[[package]]
+name = "kronika-report"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "kronika-format",
+ "kronika-index",
+ "kronika-layout",
+ "kronika-query",
+ "kronika-reader",
+ "kronika-store",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kronika-report-wasm"
+version = "1.0.0"
+dependencies = [
+ "kronika-api",
+ "kronika-layout",
+ "kronika-query",
+ "kronika-report",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1556,11 +1614,11 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "icu_collator",
- "icu_locale_core",
+ "kronika-api",
  "kronika-format",
  "kronika-index",
  "kronika-layout",
+ "kronika-query",
  "kronika-reader",
  "kronika-registry",
  "kronika-writer",

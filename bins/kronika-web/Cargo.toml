@@ -16,12 +16,10 @@ flate2 = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-icu_collator = "2.3.1"
-icu_locale_core = "2.3.0"
 kronika-index = { path = "../../crates/kronika-index" }
-kronika-format = { path = "../../crates/kronika-format" }
+kronika-api = { path = "../../crates/kronika-api" }
+kronika-query = { path = "../../crates/kronika-query" }
 kronika-reader = { path = "../../crates/kronika-reader" }
-kronika-registry = { path = "../../crates/kronika-registry" }
 rmcp = { version = "3.1.4", features = ["server", "transport-streamable-http-server"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -30,7 +28,9 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 
 [dev-dependencies]
+kronika-format = { path = "../../crates/kronika-format" }
 kronika-layout = { path = "../../crates/kronika-layout" }
+kronika-registry = { path = "../../crates/kronika-registry" }
 kronika-writer = { path = "../../crates/kronika-writer" }
 tempfile = "3"
 

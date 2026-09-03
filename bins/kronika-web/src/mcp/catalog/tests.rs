@@ -5,6 +5,7 @@ use super::{
     FIND_PROCESSES_TOOL, GET_CONTEXT_TOOL, GET_INSTANCE_TOOL, GET_ROW_DETAIL_TOOL, OVERVIEW_TOOL,
     tools,
 };
+use sha2::{Digest as _, Sha256};
 
 const FINDER_TOOLS: [&str; 9] = [
     FIND_POSTGRESQL_TABLES_TOOL,
@@ -51,6 +52,66 @@ fn find_property<'a>(value: &'a serde_json::Value, name: &str) -> Option<&'a ser
             values.iter().find_map(|child| find_property(child, name))
         }
         _ => None,
+    }
+}
+
+fn collect_descriptions<'a>(value: &'a serde_json::Value, found: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(description) = object
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+            {
+                found.push(description);
+            }
+            for child in object.values() {
+                collect_descriptions(child, found);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_descriptions(child, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn schema_digest(value: &serde_json::Value) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).expect("encode schema golden"))
+    )
+}
+
+#[test]
+fn mass_tool_schemas_match_stable_goldens() {
+    for (tool_name, input_golden, output_golden) in [
+        (
+            OVERVIEW_TOOL,
+            "f8a4fc079c35b2ec5d95e4a2a6875cd2444144153e6da8ffd6438bef0f403ac9",
+            "3d3b4283c384abf8821ccf0ab68c8014f42ab10c3d624296e24ae23c4fcfc867",
+        ),
+        (
+            FIND_EVENTS_TOOL,
+            "6c4cb6472bfdff67bd2b7c2c5897ddc99ab683572e23618ef50eaf076e72a408",
+            "8e3405f4913912608f6717dd307c295041e760fe4756ea5764099b5b02e59030",
+        ),
+    ] {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} tool"));
+        let input = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+        let output = serde_json::Value::Object(
+            tool.output_schema
+                .as_ref()
+                .expect("output schema")
+                .as_ref()
+                .clone(),
+        );
+        assert_eq!(schema_digest(&input), input_golden, "{tool_name} input");
+        assert_eq!(schema_digest(&output), output_golden, "{tool_name} output");
     }
 }
 
@@ -256,6 +317,29 @@ fn mass_event_schema_has_opaque_detail_refs_without_embedded_raw_rows() {
         );
     }
     assert_no_internal_coordinates("Events output", &schema);
+}
+
+#[test]
+fn typed_query_docs_do_not_change_the_stable_mass_output_schemas() {
+    for (tool_name, expected_detail_descriptions) in [(OVERVIEW_TOOL, 1), (FIND_EVENTS_TOOL, 2)] {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} tool"));
+        let schema = serde_json::Value::Object(
+            tool.output_schema
+                .as_ref()
+                .expect("output schema")
+                .as_ref()
+                .clone(),
+        );
+        let mut descriptions = Vec::new();
+        collect_descriptions(&schema, &mut descriptions);
+        assert_eq!(descriptions.len(), expected_detail_descriptions);
+        assert!(descriptions.iter().all(|description| {
+            *description == "Opaque server-produced row-detail reference; copy it unchanged."
+        }));
+    }
 }
 
 #[test]
@@ -538,7 +622,7 @@ fn row_detail_accepts_only_one_opaque_string() {
     assert_eq!(properties["detail_ref"]["minLength"], 1);
     assert_eq!(
         properties["detail_ref"]["maxLength"],
-        crate::api::row_key::DETAIL_REF_MAX_ENCODED_BYTES
+        kronika_query::DETAIL_REF_MAX_ENCODED_BYTES
     );
     let description = detail.description.as_deref().expect("detail description");
     assert!(description.contains("{stored_text, full_len, truncated, sha256}"));

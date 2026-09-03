@@ -134,52 +134,53 @@ pub struct OsProcess {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::OsProcess;
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, contract::lint};
-
-    fn row(ts: i64, pid: i32, io: bool) -> OsProcess {
-        OsProcess {
-            ts: Ts(ts),
-            pid,
-            starttime: Ts(1_700_000_000_000_000 + i64::from(pid)),
-            ppid: 1,
-            uid: 1000,
-            euid: 1000,
-            gid: 1000,
-            egid: 1000,
-            state: b'S',
-            num_threads: 3,
-            tty: 0,
-            comm: StrId(10),
-            cmdline: Some(StrId(11)),
-            utime: 100,
-            stime: 50,
-            nice: 0,
-            prio: 20,
-            rtprio: 0,
-            policy: 0,
-            curcpu: 2,
-            rundelay_ns: 1234,
-            blkdelay_ticks: 5,
-            nvcsw: 9,
-            nivcsw: 1,
-            minflt: 77,
-            majflt: 3,
-            vmem_kb: 2048,
-            rmem_kb: 1024,
-            vswap_kb: 0,
-            syscr: io.then_some(1),
-            syscw: io.then_some(2),
-            rchar: io.then_some(3),
-            wchar: io.then_some(4),
-            read_bytes: io.then_some(5),
-            write_bytes: io.then_some(6),
-            cancelled_write_bytes: io.then_some(7),
-            exit_signal: 17,
-            scope: 0,
-        }
+pub(crate) fn test_row(ts: i64, pid: i32, io: bool) -> OsProcess {
+    OsProcess {
+        ts: Ts(ts),
+        pid,
+        starttime: Ts(1_700_000_000_000_000 + i64::from(pid)),
+        ppid: 1,
+        uid: 1000,
+        euid: 1000,
+        gid: 1000,
+        egid: 1000,
+        state: b'S',
+        num_threads: 3,
+        tty: 0,
+        comm: StrId(10),
+        cmdline: Some(StrId(11)),
+        utime: 100,
+        stime: 50,
+        nice: 0,
+        prio: 20,
+        rtprio: 0,
+        policy: 0,
+        curcpu: 2,
+        rundelay_ns: 1234,
+        blkdelay_ticks: 5,
+        nvcsw: 9,
+        nivcsw: 1,
+        minflt: 77,
+        majflt: 3,
+        vmem_kb: 2048,
+        rmem_kb: 1024,
+        vswap_kb: 0,
+        syscr: io.then_some(1),
+        syscw: io.then_some(2),
+        rchar: io.then_some(3),
+        wchar: io.then_some(4),
+        read_bytes: io.then_some(5),
+        write_bytes: io.then_some(6),
+        cancelled_write_bytes: io.then_some(7),
+        exit_signal: 17,
+        scope: 0,
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OsProcess, test_row};
+    use crate::{Section, Unit, VerifiedSection, contract::lint};
 
     #[test]
     fn contract_passes_the_linter() {
@@ -202,12 +203,12 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        crate::assert_roundtrips(&[row(1, 10, true), row(2, 11, false)]);
+        crate::assert_roundtrips(&[test_row(1, 10, true), test_row(2, 11, false)]);
     }
 
     #[test]
     fn io_nulls_survive() {
-        let bytes = OsProcess::encode(&[row(1, 10, false)]).expect("encode");
+        let bytes = OsProcess::encode(&[test_row(1, 10, false)]).expect("encode");
         let decoded = OsProcess::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
         assert_eq!(decoded[0].syscr, None);
         assert_eq!(decoded[0].read_bytes, None);

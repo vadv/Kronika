@@ -154,7 +154,7 @@ pub fn read_list_i32<'a>(
     Ok(ListColumn { array })
 }
 
-pub(super) fn validate_list_i32_batch(
+pub(crate) fn validate_list_i32_batch(
     batch: &RecordBatch,
     name: &'static str,
 ) -> Result<usize, CodecError> {

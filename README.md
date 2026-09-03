@@ -5,7 +5,8 @@
 Kronika records periodic snapshots of a Linux host and its databases for later
 inspection. The collector reads operating-system and PostgreSQL metrics and
 parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
-through a browser interface and MCP.
+through a browser interface and MCP. `kronika-report` turns one finished
+segment into a self-contained HTML file that opens without a server.
 
 ![Kronika architecture](docs/images/architecture.svg)
 
@@ -34,8 +35,52 @@ and `musl-gcc`. The repository selects Rust 1.96.0 through
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p kronika-collector -p kronika-web
+cargo build --release --locked -p kronika-collector -p kronika-dump -p kronika-report -p kronika-web
 ```
+
+## Create a time slice
+
+`kronika-dump slice` reads storage from `KRONIKA_STORAGE_DIR`. Both endpoints
+are inclusive whole seconds in RFC 3339 form. The command writes exactly the
+`.zms` path passed to `--out` and refuses to overwrite an existing file.
+
+```sh
+KRONIKA_STORAGE_DIR=/var/lib/kronika \
+target/x86_64-unknown-linux-musl/release/kronika-dump slice \
+  --from 2024-02-29T00:00:00Z \
+  --to 2024-02-29T00:59:59Z \
+  --out incident.zms
+```
+
+The result is one finished standalone ZMS. It can contain up to 30 seconds of
+sampling context before and after the requested interval. A range with no
+recorded row is an error. The command prints the requested and actual bounds,
+row count, section count, and byte length after validating the finished file.
+The package library exposes the same slicer to in-process callers, which supply
+their own disk-backed scratch file and output sink. The CLI places scratch on
+the output filesystem.
+
+## Generate a standalone report
+
+The command accepts one finished ZMS with any `.zms` basename and one `.html`
+output path. It derives the internal segment identity from the validated ZMS
+catalog:
+
+```sh
+target/x86_64-unknown-linux-musl/release/kronika-report \
+  /path/to/incident.zms \
+  report.html
+```
+
+The command builds the isolated canonical IDX and atomically replaces the
+output with one deterministic document. That document contains the production
+interface, its WebAssembly query engine, the ZMS and the IDX. It uses no
+storage root, earlier segment, server, external sidecar, authentication, MCP,
+live refresh or network request. A first rate that needs an earlier sample is
+`null`. See [bins/kronika-report/README.md](bins/kronika-report/README.md).
+The package library also writes this document to a caller-owned sink from ZMS
+bytes and an explicit `SegmentId`; the CLI derives that identity locally from
+the validated input catalog.
 
 Create the PostgreSQL login used below:
 
@@ -67,8 +112,8 @@ target/x86_64-unknown-linux-musl/release/kronika-collector
 storage configuration](bins/kronika-collector/README.md#storage) describes the
 fixed and automatic modes.
 
-The measured M1 workload with 452 tables and 3,502 indexes writes about
-184 MB/day. A 2 GiB budget therefore keeps roughly 11 days; `active.wal` and
+In one measurement with roughly 500 tables and 3,000 indexes, Kronika wrote
+about 184 MB/day. A 2 GiB budget therefore keeps roughly 11 days; `active.wal` and
 `.idx` files share that budget.
 
 In another terminal, start web with the same data directory.
@@ -103,6 +148,8 @@ Claude Code, Codex CLI, Cursor, and `mcp-remote` setup.
 ## Documentation
 
 - [bins/kronika-demo/README.md](bins/kronika-demo/README.md) — demo commands.
+- [bins/kronika-report/README.md](bins/kronika-report/README.md) — standalone
+  HTML reports.
 - [docs/mcp-clients.md](docs/mcp-clients.md) — MCP client configuration.
 - [docs/type-registry/](docs/type-registry/) — recorded sections and fields:
   [OS](docs/type-registry/os.md),

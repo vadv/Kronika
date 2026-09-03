@@ -9,7 +9,19 @@ fn layout(extversion: &str) -> Option<StatementsVersion> {
     parse_version(extversion).and_then(statements_version)
 }
 
-fn inventory(extversion: &str, reader: bool, full_visibility: bool) -> InventoryEntry {
+#[derive(Clone, Copy)]
+enum StatementAccess {
+    Full,
+    Hidden,
+    MissingReader,
+}
+
+fn inventory(extversion: &str, access: StatementAccess) -> InventoryEntry {
+    let (reader, full_visibility) = match access {
+        StatementAccess::Full => (true, true),
+        StatementAccess::Hidden => (true, false),
+        StatementAccess::MissingReader => (false, true),
+    };
     InventoryEntry {
         name: "pg_stat_statements".to_owned(),
         extversion: extversion.to_owned(),
@@ -158,23 +170,23 @@ fn every_query_carries_the_marker_and_bounds_statement_text() {
 
 #[test]
 fn statement_collection_requires_full_visibility() {
-    assert!(capability(&inventory("1.12", true, true), 18).is_some());
-    assert!(capability(&inventory("1.12", true, false), 18).is_none());
+    assert!(capability(&inventory("1.12", StatementAccess::Full), 18).is_some());
+    assert!(capability(&inventory("1.12", StatementAccess::Hidden), 18).is_none());
 }
 
 #[test]
 fn the_reader_and_schema_must_be_usable() {
-    assert!(capability(&inventory("1.12", false, true), 18).is_none());
-    let mut inaccessible = inventory("1.12", true, true);
+    assert!(capability(&inventory("1.12", StatementAccess::MissingReader), 18).is_none());
+    let mut inaccessible = inventory("1.12", StatementAccess::Full);
     inaccessible.schema_usable = false;
     assert!(capability(&inaccessible, 18).is_none());
 }
 
 #[test]
 fn postgres_fourteen_requires_a_toplevel_aware_extension_layout() {
-    assert!(capability(&inventory("1.8", true, true), 13).is_some());
-    assert!(capability(&inventory("1.8", true, true), 14).is_none());
-    assert!(capability(&inventory("1.9", true, true), 14).is_some());
+    assert!(capability(&inventory("1.8", StatementAccess::Full), 13).is_some());
+    assert!(capability(&inventory("1.8", StatementAccess::Full), 14).is_none());
+    assert!(capability(&inventory("1.9", StatementAccess::Full), 14).is_some());
 }
 
 #[test]

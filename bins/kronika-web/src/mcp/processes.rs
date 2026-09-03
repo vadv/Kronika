@@ -3,15 +3,16 @@
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 
-use crate::api::snapshot::ProcessRowOut;
-use crate::api::snapshot::selector::{FinderOrder, FinderQuery, FinderSurface, execute_processes};
-use crate::api::time::SnapshotPoint;
+use kronika_query::snapshot::{
+    FinderOrder, FinderQuery, FinderSurface, ProcessRowOut, SnapshotPoint, execute_processes,
+};
+
 use crate::config::Config;
 use crate::route::MAX_SNAPSHOT_PAGE_SIZE;
 
 use super::catalog::{ProcessesInput, SortInput};
 use super::filter::{FilterInput, build_search};
-use super::semantics::{bounded_limit, finder_output, finder_storage_error, mcp_structured};
+use super::semantics::{bounded_limit, finder_output, mcp_structured};
 use super::time::resolve_point;
 
 const LOGICAL_NAME: &str = "os_process";
@@ -78,17 +79,21 @@ fn call_with(
         group: None,
         limit,
     };
-    let result = match execute_processes(&config.data_root, query, &|| cancelled()) {
-        Ok(result) => result,
-        Err(error) => return finder_storage_error(LOGICAL_NAME, &error),
-    };
-
-    let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
-        Ok(rows) => rows,
-        Err(_error) => return super::semantics::mcp_error("could not produce detail_ref"),
-    };
-    let output = finder_output(rows, result.truncated);
-    mcp_structured(output)
+    super::run_finder_query(
+        config,
+        LOGICAL_NAME,
+        |context| execute_processes(context, &query, cancelled),
+        |result| {
+            let rows: Vec<Value> = match result.rows.into_iter().map(row_to_json).collect() {
+                Ok(rows) => rows,
+                Err(_error) => {
+                    return super::semantics::mcp_error("could not produce detail_ref");
+                }
+            };
+            let output = finder_output(rows, result.truncated);
+            mcp_structured(output)
+        },
+    )
 }
 
 /// Keeps compact fields, overwrites `pid`/`ppid` from the typed identity, and
@@ -100,7 +105,7 @@ fn row_to_json(row: ProcessRowOut) -> Result<Value, String> {
         "ppid".to_owned(),
         row.ppid.map_or(Value::Null, |ppid| json!(ppid)),
     );
-    let detail_ref = crate::api::row_key::detail_locator(
+    let detail_ref = kronika_query::detail_locator(
         LOGICAL_NAME,
         row.segment_id,
         row.at,
@@ -109,7 +114,7 @@ fn row_to_json(row: ProcessRowOut) -> Result<Value, String> {
         row.identity,
     )
     .detail_ref()?;
-    object.retain(|field, _| !crate::api::row_key::is_detail_text(LOGICAL_NAME, field));
+    object.retain(|field, _| !kronika_query::is_detail_text(LOGICAL_NAME, field));
     object.insert("detail_ref".to_owned(), Value::String(detail_ref));
     Ok(Value::Object(object))
 }

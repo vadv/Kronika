@@ -4,12 +4,10 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use crate::build::{BuildError, build_from_reader, build_selected_from_reader};
-use crate::detect::finding_layout;
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
-use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
+use crate::series::SeriesKey;
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
-use kronika_registry::logical_section_name;
 
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
@@ -107,25 +105,6 @@ pub fn read(path: &Path) -> Result<Index, LoadError> {
     read_all(&mut file).map_err(LoadError::Bad)
 }
 
-/// Load one logical index resource, rebuilding derived data when necessary.
-///
-/// Finished resources use the atomically published sibling IDX. Active
-/// resources are computed only for the captured committed prefix and are never
-/// persisted.
-///
-/// # Errors
-///
-/// Returns reader, index, layout, build, or publication failures.
-pub fn resource(
-    root: &Path,
-    reader: &Reader,
-    segment_ref: &SegmentRef,
-    logical_name: &str,
-) -> Result<ResourceIndex, LoadError> {
-    let keys = series_keys(segment_ref, logical_name);
-    resource_selected(root, reader, segment_ref, &keys)
-}
-
 /// Load selected blocks through the same validated resource path.
 ///
 /// # Errors
@@ -153,7 +132,7 @@ pub fn resource_selected(
             for wait in [true, false] {
                 if let Some(mut file) = data_root.open_idx(address)?
                     && let Ok(selected) = read_target(&mut file, keys)
-                    && contains_targets(&selected, keys)
+                    && selected.contains_targets(keys)
                 {
                     return Ok(ResourceIndex {
                         index: selected,
@@ -199,74 +178,6 @@ pub fn resource_selected(
             })
         }
     }
-}
-
-/// Return every sparse-finding block present in one segment.
-#[must_use]
-pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
-    let mut keys = segment
-        .sections()
-        .iter()
-        .filter(|section| finding_layout(section.type_id))
-        .map(|section| SeriesKey {
-            kind: SeriesKind::Findings,
-            type_id: section.type_id,
-        })
-        .collect::<Vec<_>>();
-    keys.push(SeriesKey {
-        kind: SeriesKind::Findings,
-        type_id: 0,
-    });
-    keys.sort_unstable();
-    keys.dedup();
-    keys
-}
-
-/// Return the allowlisted series exposed by one logical section.
-#[must_use]
-pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
-    if logical_name == "health" {
-        return vec![
-            SeriesKey::OS_HEALTH,
-            SeriesKey::OVERALL_HEALTH,
-            SeriesKey::POSTGRES_HEALTH,
-            SeriesKey {
-                kind: SeriesKind::Findings,
-                type_id: 0,
-            },
-        ];
-    }
-    let mut keys = Vec::new();
-    for section in segment.sections() {
-        match logical_name {
-            "pg_stat_database" if pg_database_layout(section.type_id) => keys.push(SeriesKey {
-                kind: SeriesKind::PgTransactionsPerSecond,
-                type_id: section.type_id,
-            }),
-            "pg_stat_activity" if pg_activity_layout(section.type_id) => keys.push(SeriesKey {
-                kind: SeriesKind::PgActiveBackends,
-                type_id: section.type_id,
-            }),
-            _ => {}
-        }
-        if finding_layout(section.type_id)
-            && logical_section_name(section.type_id).is_some_and(|name| name == logical_name)
-        {
-            keys.push(SeriesKey {
-                kind: SeriesKind::Findings,
-                type_id: section.type_id,
-            });
-        }
-    }
-    keys.sort_unstable();
-    keys.dedup();
-    keys
-}
-
-fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {
-    keys.iter()
-        .filter(|key| !matches!(key.kind, SeriesKind::PostgresHealth))
-        .all(|key| index.blocks.iter().any(|block| block.key() == *key))
 }
 
 fn address_of(raw_id: i64) -> Result<SegmentAddress, LayoutError> {

@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::api::snapshot::search::{
+use kronika_query::snapshot::{
     Expr, Quantity, SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS, SearchClause, SearchField,
     SearchFieldKind, SearchOperator, SearchValue, StructuredSearch, search_fields,
     valid_identifier,

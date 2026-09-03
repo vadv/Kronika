@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
-use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::instance_metadata::{InstanceMetadata, InstanceMetadataV1};
 use kronika_registry::os_cgroup_memory::OsCgroupMemoryV2;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_loadavg::OsLoadavg;
@@ -23,9 +23,12 @@ use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
-use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
+use crate::{
+    BuildError, FindingKind, LoadError, SeriesBlock, finding_keys_for_sections,
+    series_keys_for_sections,
+};
 
-use super::{finding_keys, path_of, read, resource, series_keys};
+use super::{path_of, read, resource_selected};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 
@@ -35,6 +38,28 @@ fn address() -> SegmentAddress {
 
 fn address_at(raw: i64) -> SegmentAddress {
     SegmentAddress::new(SegmentId::new(raw).expect("segment id")).expect("address")
+}
+
+fn zms_path(root: &Path, segment: &SegmentRef) -> PathBuf {
+    let address = address_at(segment.id());
+    root.join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name())
+}
+
+fn resource(
+    root: &Path,
+    reader: &Reader,
+    segment: &SegmentRef,
+    logical_name: &str,
+) -> Result<super::ResourceIndex, LoadError> {
+    resource_selected(
+        root,
+        reader,
+        segment,
+        &series_keys_for_sections(segment.sections(), logical_name),
+    )
 }
 
 fn row(ts: i64, model_name: StrId, mhz: f64) -> OsTopology {
@@ -151,6 +176,146 @@ fn append_health_fixture(
             &part,
         )
         .expect("append health fixture");
+}
+
+#[derive(Clone, Copy)]
+enum MetadataChange {
+    ManyFacts,
+    BootId,
+    LayoutVersion,
+}
+
+fn append_changed_metadata_fixture(journal: &mut Journal, segment_id: i64, change: MetadataChange) {
+    let mut interner = Interner::new(DictLimits::default());
+    let first = StrId(interner.intern(b"first").expect("intern first label").get());
+    let second = StrId(
+        interner
+            .intern(b"second")
+            .expect("intern second label")
+            .get(),
+    );
+    let active = StrId(interner.intern(b"active").expect("intern state").get());
+    let dictionary = dict::encode(interner.window()).expect("metadata dictionary");
+    let mut buffers = SectionBuffers::new();
+    let first_row = InstanceMetadata {
+        ts: Ts(segment_id),
+        hostname: first,
+        kernel_version: first,
+        environment: 0,
+        clock_ticks_per_sec: 100,
+        page_size_bytes: 4_096,
+        boot_id: first,
+        btime: Ts(segment_id - 10),
+        postgresql_enabled: false,
+        postgresql_interval_seconds: 60,
+        postgresql_effective_cpus: None,
+    };
+    match change {
+        MetadataChange::ManyFacts => {
+            buffers.push(first_row).expect("first metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    hostname: second,
+                    kernel_version: second,
+                    environment: 1,
+                    clock_ticks_per_sec: 250,
+                    page_size_bytes: 8_192,
+                    boot_id: second,
+                    btime: Ts(segment_id - 20),
+                    postgresql_enabled: true,
+                    postgresql_interval_seconds: 30,
+                    postgresql_effective_cpus: Some(2),
+                })
+                .expect("second metadata row");
+        }
+        MetadataChange::BootId => {
+            buffers.push(first_row).expect("first metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    boot_id: second,
+                    ..first_row
+                })
+                .expect("changed boot-id metadata row");
+        }
+        MetadataChange::LayoutVersion => {
+            buffers
+                .push(InstanceMetadataV1 {
+                    ts: first_row.ts,
+                    hostname: first_row.hostname,
+                    kernel_version: first_row.kernel_version,
+                    environment: first_row.environment,
+                    clock_ticks_per_sec: first_row.clock_ticks_per_sec,
+                    page_size_bytes: first_row.page_size_bytes,
+                    boot_id: first_row.boot_id,
+                    btime: first_row.btime,
+                })
+                .expect("v1 metadata row");
+            buffers
+                .push(InstanceMetadata {
+                    ts: Ts(segment_id + 1),
+                    ..first_row
+                })
+                .expect("v2 metadata row");
+        }
+    }
+    append_changed_metric_rows(&mut buffers, segment_id, active, second);
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode changed metadata fixture")
+        .expect("nonempty changed metadata fixture");
+    journal
+        .append(
+            SegmentId::new(segment_id).expect("metadata segment id"),
+            &part,
+        )
+        .expect("append changed metadata fixture");
+}
+
+fn append_changed_metric_rows(
+    buffers: &mut SectionBuffers,
+    segment_id: i64,
+    active: StrId,
+    query: StrId,
+) {
+    for timestamp in [segment_id, segment_id + 1] {
+        for resource in 0..3 {
+            buffers
+                .push(OsPsi {
+                    ts: Ts(timestamp),
+                    resource,
+                    some_avg10: 0.0,
+                    some_avg60: 0.0,
+                    some_avg300: 0.0,
+                    some_total: timestamp - segment_id,
+                    full_avg10: None,
+                    full_avg60: None,
+                    full_avg300: None,
+                    full_total: None,
+                    scope: 0,
+                })
+                .expect("metadata-change PSI row");
+        }
+    }
+    for pid in 0..5 {
+        buffers
+            .push(activity_row(segment_id + 2, pid, active, query))
+            .expect("activity row");
+    }
+}
+
+fn completed_changed_metadata(change: MetadataChange) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_changed_metadata_fixture(&mut journal, SEGMENT_ID, change);
+    write_segment(&journal, &writer, address()).expect("finish segment");
+    journal.reset().expect("leave no active segment");
+    directory
 }
 
 fn activity_row(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
@@ -702,7 +867,11 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category:
 }
 
 fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
-    let listing = reader.catalog_segments(..).expect("list fixture");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("list fixture");
     let segments: Vec<_> = listing
         .segments
         .into_iter()
@@ -715,7 +884,9 @@ fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
 fn health_at(root: &Path, segment_id: i64) -> super::ResourceIndex {
     let reader = Reader::open(root).expect("reader");
     let segment = reader
-        .catalog_segments(..)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
         .expect("catalog")
         .segments
         .into_iter()
@@ -779,6 +950,52 @@ fn health_uses_the_immediately_preceding_psi_snapshot() {
     assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
     assert_eq!(health_values(&selected, "overall"), [Some(90), Some(90)]);
     assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn differing_metadata_rows_suppress_metadata_dependent_values() {
+    let directory = completed_changed_metadata(MetadataChange::ManyFacts);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment_ref = only_segment(&reader, SegmentKind::Finished);
+    let activity = resource(directory.path(), &reader, &segment_ref, "pg_stat_activity")
+        .expect("activity resource");
+    assert!(activity.index.blocks.iter().any(|block| matches!(
+        block,
+        SeriesBlock::Findings(block)
+            if block.type_id == 1_001_004 && block.findings.is_empty()
+    )));
+    let segment = reader.open_segment(&segment_ref).expect("open segment");
+    assert_eq!(segment.rows_of(1_021_002), Some(2));
+}
+
+#[test]
+fn changed_boot_id_with_the_same_boot_time_suppresses_health() {
+    let directory = completed_changed_metadata(MetadataChange::BootId);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn mixed_metadata_layouts_suppress_health() {
+    let directory = completed_changed_metadata(MetadataChange::LayoutVersion);
+
+    let selected = health_at(directory.path(), SEGMENT_ID);
+    assert_eq!(health_values(&selected, "os"), [None, None]);
+    assert_eq!(health_values(&selected, "overall"), [None, None]);
+    assert!(health_values(&selected, "postgres").is_empty());
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment_ref = only_segment(&reader, SegmentKind::Finished);
+    let segment = reader.open_segment(&segment_ref).expect("open segment");
+    assert_eq!(segment.rows_of(1_021_001), Some(1));
+    assert_eq!(segment.rows_of(1_021_002), Some(1));
 }
 
 #[test]
@@ -1052,8 +1269,8 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     write_segment(&journal, &writer, address()).expect("finish segment");
     let reader = Reader::open(directory.path()).expect("finished reader");
     let finished_ref = only_segment(&reader, SegmentKind::Finished);
-    let index_path = path_of(reader.open_segment(&finished_ref).expect("segment").path())
-        .expect("finished index path");
+    let index_path =
+        path_of(&zms_path(directory.path(), &finished_ref)).expect("finished index path");
 
     let contended_owner = data_root
         .acquire_index(LayoutLimits::default())
@@ -1099,11 +1316,7 @@ fn a_published_index_does_not_require_its_finished_source_body() {
 
     let reader = Reader::open(directory.path()).expect("finished reader");
     let finished_ref = only_segment(&reader, SegmentKind::Finished);
-    let source_path = reader
-        .open_segment(&finished_ref)
-        .expect("open finished segment")
-        .path()
-        .to_path_buf();
+    let source_path = zms_path(directory.path(), &finished_ref);
     let published = resource(directory.path(), &reader, &finished_ref, "health")
         .expect("publish finished index");
     assert!(published.persisted);
@@ -1122,7 +1335,11 @@ fn a_published_index_does_not_require_its_finished_source_body() {
         "invalid_zms_section_checksum"
     );
 
-    let catalog = reader.catalog_segments(..).expect("catalog-only discovery");
+    let catalog = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog-only discovery");
     assert!(catalog.warnings.is_empty());
     assert_eq!(catalog.segments.len(), 1);
     let recovered = resource(directory.path(), &reader, &catalog.segments[0], "health")
@@ -1146,13 +1363,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     let finished = only_segment(&reader, SegmentKind::Finished);
     let published = resource(directory.path(), &reader, &finished, "pg_log_errors")
         .expect("publish current index");
-    let path = path_of(
-        reader
-            .open_segment(&finished)
-            .expect("finished segment")
-            .path(),
-    )
-    .expect("index path");
+    let path = path_of(&zms_path(directory.path(), &finished)).expect("index path");
     let canonical = std::fs::read(&path).expect("canonical index");
 
     std::fs::write(&path, &canonical[..10]).expect("truncate derived index");
@@ -1292,22 +1503,16 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
     let raw = reader.open_segment(&segment).expect("finished segment");
     assert_eq!(raw.rows_of(2_007_001), Some(1));
     assert!(
-        finding_keys(&segment)
+        finding_keys_for_sections(segment.sections())
             .iter()
             .all(|key| key.type_id != 2_007_001)
     );
-    assert!(series_keys(&segment, "pg_log_temp_files").is_empty());
+    assert!(series_keys_for_sections(segment.sections(), "pg_log_temp_files").is_empty());
     let selected = resource(directory.path(), &reader, &segment, "pg_log_temp_files")
         .expect("raw temporary-file section has no index resource");
     assert!(selected.index.blocks.is_empty());
 
-    let path = path_of(
-        reader
-            .open_segment(&segment)
-            .expect("finished segment")
-            .path(),
-    )
-    .expect("index path");
+    let path = path_of(&zms_path(directory.path(), &segment)).expect("index path");
     assert!(
         read(&path).expect("current index").blocks.iter().all(
             |block| !matches!(block, SeriesBlock::Findings(block) if block.type_id == 2_007_001)
@@ -1374,7 +1579,11 @@ fn pg_stat_database_boundaries_use_exact_production_fields() {
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
-    let listing = reader.catalog_segments(..).expect("catalog segments");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog segments");
     let current = listing
         .segments
         .into_iter()
@@ -1553,7 +1762,11 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
-    let listing = reader.catalog_segments(..).expect("catalog segments");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog segments");
     let current = listing
         .segments
         .into_iter()
@@ -1569,7 +1782,7 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     assert!(process.index.blocks.is_empty());
     assert!(statements.index.blocks.is_empty());
     assert!(
-        finding_keys(&current)
+        finding_keys_for_sections(current.sections())
             .iter()
             .all(|key| { !matches!(key.type_id, 1_100_001 | 1_002_001..=1_002_006) })
     );
@@ -1584,13 +1797,7 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
         Some(u64::try_from(statement_current.len()).expect("small statement fixture"))
     );
 
-    let index_path = path_of(
-        reader
-            .open_segment(&current)
-            .expect("open current segment")
-            .path(),
-    )
-    .expect("finished index path");
+    let index_path = path_of(&zms_path(directory.path(), &current)).expect("finished index path");
     assert!(read(&index_path).expect("read published index").blocks.iter().all(
         |block| !matches!(block, SeriesBlock::Findings(block) if matches!(block.type_id, 1_100_001 | 1_002_001..=1_002_006))
     ));
