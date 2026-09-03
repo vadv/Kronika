@@ -174,6 +174,7 @@ fn authentication_is_mandatory_and_central() {
         "/api",
         "/api/",
         "/api/catalog",
+        "/api/export?from=0&to=0",
         "/api/mcp-access",
         "/api/instance-label",
         "/api/not-a-resource",
@@ -653,6 +654,13 @@ fn route_recognition_precedes_the_method_check() {
         Some(&hyper::header::HeaderValue::from_static("GET"))
     );
 
+    let export = rejection(Method::POST, "/api/export?from=0&to=0");
+    assert_eq!(export.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        export.headers().get(ALLOW),
+        Some(&hyper::header::HeaderValue::from_static("GET"))
+    );
+
     let api_head = rejection(Method::HEAD, "/api/catalog");
     assert_eq!(api_head.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
@@ -756,6 +764,25 @@ fn an_api_client_that_refuses_every_coding_gets_an_explicit_406() {
     );
     let response = route_request(&account(), &request)
         .expect_err("no API representation is acceptable")
+        .response();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Cookie, Accept-Encoding"
+        ))
+    );
+}
+
+#[test]
+fn an_export_client_must_accept_the_identity_artifact() {
+    let mut request = request(Method::GET, "/api/export?from=0&to=0");
+    request.headers_mut().insert(
+        ACCEPT_ENCODING,
+        hyper::header::HeaderValue::from_static("gzip, identity;q=0"),
+    );
+    let response = route_request(&account(), &request)
+        .expect_err("an HTML export is never content encoded")
         .response();
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     assert_eq!(

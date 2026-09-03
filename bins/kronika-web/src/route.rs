@@ -7,6 +7,7 @@ pub(crate) use kronika_query::{Order, RelationGroup};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Route {
     Recorded(kronika_api::Route),
+    Export(kronika_dump::SliceRange),
     McpAccess,
     InstanceLabel,
 }
@@ -14,6 +15,7 @@ pub(crate) enum Route {
 pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError> {
     let query = query.unwrap_or("");
     match path {
+        "/api/export" => crate::export::parse(query).map(Route::Export),
         "/api/mcp-access" => native(query, Route::McpAccess),
         "/api/instance-label" => native(query, Route::InstanceLabel),
         _ => kronika_api::parse(path, Some(query)).map(Route::Recorded),
