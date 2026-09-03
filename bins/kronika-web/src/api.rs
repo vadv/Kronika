@@ -278,10 +278,6 @@ pub(crate) fn prepare(
 }
 
 /// Prepare a response with the deployment identity exposed in its catalog.
-#[expect(
-    clippy::too_many_lines,
-    reason = "route preparation keeps every blocking response family in one match"
-)]
 pub(crate) fn prepare_with_demo(
     root: &Path,
     sources: u32,
@@ -295,7 +291,11 @@ pub(crate) fn prepare_with_demo(
     };
     let request = route.into_query().map_err(ApiError::from)?;
     let prepared = match request {
-        request @ QueryRequest::Catalog(_) => {
+        request @ (QueryRequest::Catalog(_)
+        | QueryRequest::History(_)
+        | QueryRequest::Events(_)
+        | QueryRequest::RowDetail(_)
+        | QueryRequest::Rows(_)) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
@@ -303,7 +303,7 @@ pub(crate) fn prepare_with_demo(
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        request @ QueryRequest::Index(_) => {
+        request @ (QueryRequest::Index(_) | QueryRequest::Hour(_)) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(
@@ -312,14 +312,6 @@ pub(crate) fn prepare_with_demo(
                 synthetic_demo,
             )
             .with_index_provider(dataset);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::History(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(&context, request)
                 .map(prepared_query)
                 .map_err(ApiError::from)
@@ -330,43 +322,6 @@ pub(crate) fn prepare_with_demo(
                     ApiError::Unreadable(Box::new(HeatmapOpenError(error.to_string())))
                 })?,
             );
-            let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::Events(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::RowDetail(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::Hour(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
-            let context = QueryContext::new(
-                std::sync::Arc::<crate::query_adapter::NativeDataset>::clone(&dataset),
-                sources,
-                synthetic_demo,
-            )
-            .with_index_provider(dataset);
-            kronika_query::execute(&context, request)
-                .map(prepared_query)
-                .map_err(ApiError::from)
-        }
-        request @ QueryRequest::Rows(_) => {
-            let dataset =
-                std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
             kronika_query::execute(&context, request)
                 .map(prepared_query)
