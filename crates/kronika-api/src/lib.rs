@@ -1,25 +1,28 @@
 //! Strict portable parsing of recorded-data resource paths.
 
-use kronika_query::DETAIL_REF_MAX_ENCODED_BYTES;
-use kronika_query::TimeRange;
 use kronika_query::{
-    EventsQuery, EventsRepresentation, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+    ActiveCursor, CatalogRequest, DETAIL_REF_MAX_ENCODED_BYTES, DataRequest, EventsQuery,
+    EventsRepresentation, Filter, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, HourPart,
+    HourRequest, HourSeriesRequest, IndexRequest, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
+    NormalizedRanking, Order, QueryError, QueryRequest, RelationGroup, RowsRequest, SegmentRequest,
+    SnapshotRequest, TimeRange, Window,
 };
-pub use kronika_query::{Filter, Order, RelationGroup, SnapshotRequest};
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
-pub const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
+const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
+/// Maximum accepted encoded query-string length.
 pub const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
+/// Maximum number of rows accepted by a snapshot page request.
 pub const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
-pub const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
+const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
 const DEFAULT_HEATMAP_COLUMNS: usize = 60;
 const MAX_HEATMAP_COLUMNS: usize = 1_440;
 const DEFAULT_HEATMAP_TOP: usize = 25;
-pub const MAX_HEATMAP_TOP: usize = 500;
+const MAX_HEATMAP_TOP: usize = 500;
 const MAX_HEATMAP_FIELDS: usize = 4;
 const MAX_HEATMAP_GROUP: usize = 4;
 const MAX_FILTERS: usize = 64;
@@ -29,14 +32,16 @@ const MAX_ORDER_FIELDS: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     /// Actual finished/current segment catalog.
-    Catalog(Window),
+    Catalog(CatalogRequest),
+    /// One composed timeline hour.
     Hour(HourRequest),
     /// One logical indexed series in one explicit segment.
-    Index(SegmentRequest),
+    Index(IndexRequest),
     /// Projected full-resolution history in one explicit segment.
     History(DataRequest),
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
+    /// One current-state snapshot in one explicit segment.
     Snapshot(Box<SnapshotRequest>),
     /// The ranked top view of one section over one window.
     Heatmap(HeatmapRequest),
@@ -49,80 +54,64 @@ pub enum Route {
 /// Parsed HTTP shape for one ranked heatmap resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeatmapRequest {
-    pub from: i64,
-    pub to: i64,
-    pub section: String,
-    pub fields: Vec<String>,
-    pub columns: usize,
-    pub top: usize,
-    pub group: Vec<String>,
-    pub type_id: Option<u32>,
+    from: i64,
+    to: i64,
+    section: String,
+    fields: Vec<String>,
+    columns: usize,
+    top: usize,
+    group: Vec<String>,
+    type_id: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HourRequest {
-    pub window: Window,
-    pub series: Option<SeriesRequest>,
-    pub part: HourPart,
-    pub segments: Option<Vec<i64>>,
-    pub active: Option<ActiveCursor>,
+impl Route {
+    /// Convert the parsed resource into the existing transport-neutral query.
+    ///
+    /// # Errors
+    ///
+    /// Returns the shared semantic refusal for a heatmap range or row-detail
+    /// reference that is intentionally validated after route recognition.
+    pub fn into_query(self) -> Result<QueryRequest, QueryError> {
+        match self {
+            Self::Catalog(request) => Ok(QueryRequest::Catalog(request)),
+            Self::Hour(request) => Ok(QueryRequest::Hour(request)),
+            Self::Index(request) => Ok(QueryRequest::Index(request)),
+            Self::History(request) => Ok(QueryRequest::History(request)),
+            Self::Rows(request) => Ok(QueryRequest::Rows(request)),
+            Self::Snapshot(request) => Ok(QueryRequest::Snapshot(*request)),
+            Self::Heatmap(request) => request.into_query().map(QueryRequest::Heatmap),
+            Self::Events(request) => Ok(QueryRequest::Events(request)),
+            Self::RowDetail(detail_ref) => {
+                kronika_query::validate_row_detail_ref(&detail_ref).map(QueryRequest::RowDetail)
+            }
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HourPart {
-    #[default]
-    Combined,
-    Base,
-    Lanes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesRequest {
-    pub section: String,
-    pub fields: Vec<String>,
-    pub filters: Vec<Filter>,
-    pub type_id: Option<u32>,
-    pub group: Option<RelationGroup>,
-}
-
-/// Optional inclusive timestamp bounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Window {
-    pub from: Option<i64>,
-    pub to: Option<i64>,
-}
-
-/// One logical section in one explicit segment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SegmentRequest {
-    pub segment_id: i64,
-    pub section: String,
-}
-
-/// Committed prefix of one active segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActiveCursor {
-    pub segment_id: i64,
-    pub wal_position: u64,
-}
-
-/// Projection and predicates shared by history and rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataRequest {
-    pub segment: SegmentRequest,
-    pub fields: Vec<String>,
-    pub filters: Vec<Filter>,
-    pub type_id: Option<u32>,
-    pub after: Option<ActiveCursor>,
-}
-
-/// Bounded page request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowsRequest {
-    pub data: DataRequest,
-    pub order: Order,
-    pub page_size: usize,
-    pub cursor: Option<String>,
+impl HeatmapRequest {
+    fn into_query(self) -> Result<kronika_query::ValidatedHeatmapQuery, QueryError> {
+        let to_exclusive = self
+            .to
+            .checked_add(1)
+            .ok_or_else(|| QueryError::BadFilter("to".to_owned()))?;
+        let range = TimeRange::new(self.from, to_exclusive)
+            .map_err(|_error| QueryError::BadFilter("to".to_owned()))?;
+        kronika_query::validate_heatmap_request(HeatmapBatchQuery {
+            range,
+            items: vec![HeatmapItemQuery {
+                ranking: NormalizedRanking {
+                    section: self.section,
+                    fields: self.fields,
+                    top: self.top,
+                },
+                view: HeatmapView::Grid {
+                    columns: self.columns,
+                    group: self.group,
+                    type_id: self.type_id,
+                },
+            }],
+        })
+    }
 }
 
 /// Why a request was refused before touching disk.
@@ -191,7 +180,10 @@ pub fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError> {
         section,
     };
     match pieces[3] {
-        "index" if query.is_empty() => Ok(Route::Index(segment)),
+        "index" if query.is_empty() => Ok(Route::Index(IndexRequest {
+            segment_id: segment.segment_id,
+            section: segment.section,
+        })),
         "index" => Err(RouteError::BadParameter("query".to_owned())),
         "history" => parse_data(segment, query).map(Route::History),
         "rows" => parse_rows(segment, query).map(Route::Rows),
@@ -528,7 +520,7 @@ fn bounded(name: &str, value: &str, cap: usize) -> Result<usize, RouteError> {
         .ok_or_else(|| RouteError::BadParameter(name.to_owned()))
 }
 
-fn parse_catalog(query: &str) -> Result<Window, RouteError> {
+fn parse_catalog(query: &str) -> Result<CatalogRequest, RouteError> {
     let mut window = Window::default();
     for (raw_name, raw_value) in pairs(query)? {
         let name = decoded("parameter", raw_name, true)?;
@@ -539,7 +531,7 @@ fn parse_catalog(query: &str) -> Result<Window, RouteError> {
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
-    valid_window(window)
+    valid_window(window).map(|window| CatalogRequest { window })
 }
 
 fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
@@ -628,7 +620,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     validate_relation_series(&section, &fields, &filters, type_id, group)?;
     Ok(HourRequest {
         window,
-        series: Some(SeriesRequest {
+        series: Some(HourSeriesRequest {
             section,
             fields,
             filters,
@@ -893,3 +885,6 @@ fn unsigned_64(name: &str, value: &str) -> Result<u64, RouteError> {
         .parse()
         .map_err(|_error| RouteError::BadParameter(name.to_owned()))
 }
+
+#[cfg(test)]
+mod tests;

@@ -4,9 +4,7 @@ use std::error::Error;
 use std::path::Path;
 
 use hyper::StatusCode;
-use kronika_query::{
-    CatalogRequest, QueryContext, QueryIdentity, QueryRequest, QuerySink, QueryStability,
-};
+use kronika_query::{QueryContext, QueryIdentity, QueryRequest, QuerySink, QueryStability};
 use kronika_reader::ReaderError;
 use sha2::{Digest as _, Sha256};
 
@@ -291,24 +289,21 @@ pub(crate) fn prepare_with_demo(
     route: Route,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
-    let prepared = match route {
-        Route::Catalog(window) => {
+    let Route::Recorded(route) = route else {
+        // Answered directly in `main.rs`.
+        return Err(ApiError::NoSuchSection);
+    };
+    let request = route.into_query().map_err(ApiError::from)?;
+    let prepared = match request {
+        request @ QueryRequest::Catalog(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(
-                &context,
-                QueryRequest::Catalog(CatalogRequest {
-                    window: kronika_query::Window {
-                        from: window.from,
-                        to: window.to,
-                    },
-                }),
-            )
-            .map(prepared_query)
-            .map_err(ApiError::from)
+            kronika_query::execute(&context, request)
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
-        Route::Index(request) => {
+        request @ QueryRequest::Index(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(
@@ -317,79 +312,46 @@ pub(crate) fn prepare_with_demo(
                 synthetic_demo,
             )
             .with_index_provider(dataset);
-            kronika_query::execute(
-                &context,
-                QueryRequest::Index(kronika_query::IndexRequest {
-                    segment_id: request.segment_id,
-                    section: request.section,
-                }),
-            )
-            .map(prepared_query)
-            .map_err(ApiError::from)
+            kronika_query::execute(&context, request)
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
-        Route::History(request) => {
+        request @ QueryRequest::History(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(
-                &context,
-                QueryRequest::History(shared_data_request(request)),
-            )
-            .map(prepared_query)
-            .map_err(ApiError::from)
+            kronika_query::execute(&context, request)
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
-        Route::Heatmap(request) => {
-            let to_exclusive = request
-                .to
-                .checked_add(1)
-                .ok_or_else(|| ApiError::BadFilter("to".to_owned()))?;
-            let range = kronika_query::TimeRange::new(request.from, to_exclusive)
-                .map_err(|_error| ApiError::BadFilter("to".to_owned()))?;
-            let query = kronika_query::HeatmapBatchQuery {
-                range,
-                items: vec![kronika_query::HeatmapItemQuery {
-                    ranking: kronika_query::NormalizedRanking {
-                        section: request.section,
-                        fields: request.fields,
-                        top: request.top,
-                    },
-                    view: kronika_query::HeatmapView::Grid {
-                        columns: request.columns,
-                        group: request.group,
-                        type_id: request.type_id,
-                    },
-                }],
-            };
-            let query = kronika_query::validate_heatmap_request(query).map_err(ApiError::from)?;
+        request @ QueryRequest::Heatmap(_) => {
             let dataset = std::sync::Arc::new(
                 crate::query_adapter::NativeDataset::from_root(root).map_err(|error| {
                     ApiError::Unreadable(Box::new(HeatmapOpenError(error.to_string())))
                 })?,
             );
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, QueryRequest::Heatmap(query))
+            kronika_query::execute(&context, request)
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        Route::Events(request) => {
+        request @ QueryRequest::Events(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, QueryRequest::Events(request))
+            kronika_query::execute(&context, request)
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        Route::RowDetail(detail_ref) => {
-            let request =
-                kronika_query::validate_row_detail_ref(&detail_ref).map_err(ApiError::from)?;
+        request @ QueryRequest::RowDetail(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(&context, QueryRequest::RowDetail(request))
+            kronika_query::execute(&context, request)
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        Route::Hour(request) => {
+        request @ QueryRequest::Hour(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(
@@ -398,31 +360,23 @@ pub(crate) fn prepare_with_demo(
                 synthetic_demo,
             )
             .with_index_provider(dataset);
-            kronika_query::execute(&context, QueryRequest::Hour(shared_hour_request(request)))
+            kronika_query::execute(&context, request)
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        Route::Rows(request) => {
+        request @ QueryRequest::Rows(_) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            kronika_query::execute(
-                &context,
-                QueryRequest::Rows(kronika_query::RowsRequest {
-                    data: shared_data_request(request.data),
-                    order: request.order,
-                    page_size: request.page_size,
-                    cursor: request.cursor,
-                }),
-            )
-            .map(prepared_query)
-            .map_err(ApiError::from)
+            kronika_query::execute(&context, request)
+                .map(prepared_query)
+                .map_err(ApiError::from)
         }
-        Route::Snapshot(request) => {
+        QueryRequest::Snapshot(request) => {
             let dataset =
                 std::sync::Arc::new(crate::query_adapter::NativeDataset::from_root(root)?);
             let context = QueryContext::new(dataset, sources, synthetic_demo);
-            let preparation = kronika_query::snapshot::prepare_snapshot(&context, *request)
+            let preparation = kronika_query::snapshot::prepare_snapshot(&context, request)
                 .map_err(ApiError::from)?;
             let meta = query_meta(preparation.metadata());
             let concrete_validator = if_none_match.filter(|offered| offered.trim() != "*");
@@ -434,58 +388,13 @@ pub(crate) fn prepare_with_demo(
                 .map(prepared_query)
                 .map_err(ApiError::from)
         }
-        // Answered directly in `main.rs`.
-        Route::McpAccess | Route::InstanceLabel => return Err(ApiError::NoSuchSection),
+        _ => return Err(ApiError::NoSuchSection),
     }?;
     let meta = prepared.meta();
     if let Some(not_modified) = conditional_not_modified(meta, if_none_match) {
         return Ok(not_modified);
     }
     Ok(prepared)
-}
-
-fn shared_data_request(request: crate::route::DataRequest) -> kronika_query::DataRequest {
-    kronika_query::DataRequest {
-        segment: kronika_query::SegmentRequest {
-            segment_id: request.segment.segment_id,
-            section: request.segment.section,
-        },
-        fields: request.fields,
-        filters: request.filters,
-        type_id: request.type_id,
-        after: request.after.map(|after| kronika_query::ActiveCursor {
-            segment_id: after.segment_id,
-            wal_position: after.wal_position,
-        }),
-    }
-}
-
-fn shared_hour_request(request: crate::route::HourRequest) -> kronika_query::HourRequest {
-    kronika_query::HourRequest {
-        window: kronika_query::Window {
-            from: request.window.from,
-            to: request.window.to,
-        },
-        series: request
-            .series
-            .map(|series| kronika_query::HourSeriesRequest {
-                section: series.section,
-                fields: series.fields,
-                filters: series.filters,
-                type_id: series.type_id,
-                group: series.group,
-            }),
-        part: match request.part {
-            crate::route::HourPart::Combined => kronika_query::HourPart::Combined,
-            crate::route::HourPart::Base => kronika_query::HourPart::Base,
-            crate::route::HourPart::Lanes => kronika_query::HourPart::Lanes,
-        },
-        segments: request.segments,
-        active: request.active.map(|active| kronika_query::ActiveCursor {
-            segment_id: active.segment_id,
-            wal_position: active.wal_position,
-        }),
-    }
 }
 
 fn conditional_not_modified(meta: ResponseMeta, if_none_match: Option<&str>) -> Option<Prepared> {

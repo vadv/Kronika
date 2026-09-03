@@ -3496,7 +3496,7 @@ fn row_detail_rejects_a_malformed_ref_before_opening_storage() {
     let error = crate::api::prepare(
         &missing,
         SOURCES,
-        crate::route::Route::RowDetail("not+base64".to_owned()),
+        crate::route::Route::Recorded(kronika_api::Route::RowDetail("not+base64".to_owned())),
         None,
     )
     .err()
