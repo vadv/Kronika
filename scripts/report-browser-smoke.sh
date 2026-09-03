@@ -63,8 +63,23 @@ setsid "$browser" \
 	about:blank \
 	2>"$diagnostics" &
 browser_pid=$!
-browser_pgid=$(ps -o pgid= -p "$browser_pid" | tr -d ' ')
-if [[ $browser_pgid != "$browser_pid" ]]; then
+
+# `setsid` and this shell run concurrently after `&`; wait until the child has
+# actually entered its new process group before trusting that group for cleanup.
+observed_pgid=
+for _attempt in $(seq 1 50); do
+	observed_pgid=$(ps -o pgid= -p "$browser_pid" 2>/dev/null | tr -d ' ' || true)
+	if [[ $observed_pgid == "$browser_pid" ]]; then
+		browser_pgid=$observed_pgid
+		break
+	fi
+	if ! kill -0 "$browser_pid" 2>/dev/null; then
+		tail -100 "$diagnostics" >&2
+		exit 1
+	fi
+	sleep 0.02
+done
+if [[ -z $browser_pgid ]]; then
 	echo "Chromium did not start in its own process group" >&2
 	exit 1
 fi
