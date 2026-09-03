@@ -23,6 +23,13 @@ const [bindings, wasmBytes, zms, idx] = await Promise.all([
 ]);
 const wasm = await bindings.default({ module_or_path: wasmBytes });
 const memoryBeforeBytes = wasm.memory.buffer.byteLength;
+const session = new bindings.ReportSession(
+  SEGMENT_ID,
+  zms,
+  idx,
+  SOURCES,
+  BigInt(zms.length),
+);
 let cases = 0;
 let outputBytes = 0;
 
@@ -40,15 +47,7 @@ function nativeBody(path, query) {
 }
 
 function wasmBody(path, query) {
-  const response = bindings.request(
-    SEGMENT_ID,
-    zms,
-    idx,
-    SOURCES,
-    BigInt(zms.length),
-    path,
-    query,
-  );
+  const response = session.request(path, query);
   assert.equal(response.status, 200);
   assert.equal(response.code, undefined);
   assert.equal(response.parameter, undefined);

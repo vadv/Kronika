@@ -449,7 +449,8 @@ fn binding(request: &RowsRequest) -> u64 {
 }
 
 fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
-    for byte in bytes.len().to_le_bytes().iter().chain(bytes) {
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    for byte in len.to_le_bytes().iter().chain(bytes) {
         hash_byte(hash, *byte);
     }
 }

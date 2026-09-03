@@ -13,13 +13,75 @@ const INTERNAL_SERVER_ERROR: u16 = 500;
 
 /// Stable response parts sufficient to construct a Fetch `Response`.
 #[wasm_bindgen]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReportResponse {
     status: u16,
     code: Option<String>,
     parameter: Option<String>,
     message: Option<String>,
     body: Vec<u8>,
+}
+
+/// One retained report engine built from the owned embedded artifacts.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct ReportSession {
+    engine: Result<ReportEngine, ReportResponse>,
+}
+
+#[wasm_bindgen]
+impl ReportSession {
+    /// Bind one decimal segment identity, finished ZMS, and canonical IDX.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new(
+        segment_id: &str,
+        zms: Vec<u8>,
+        idx: Vec<u8>,
+        configured_sources: u32,
+        max_zms_bytes: u64,
+    ) -> Self {
+        let segment_id = segment_id
+            .parse::<i64>()
+            .ok()
+            .and_then(|value| SegmentId::new(value).ok());
+        let engine = segment_id.map_or_else(
+            || Err(ReportResponse::bad_parameter("segment_id")),
+            |segment_id| {
+                ReportEngine::new(ReportInput {
+                    segment_id,
+                    zms,
+                    idx,
+                    configured_sources,
+                    max_zms_bytes,
+                })
+                .map_err(ReportResponse::report)
+            },
+        );
+        Self { engine }
+    }
+
+    /// Answer one shared path/query request with unchanged NDJSON bytes.
+    #[must_use]
+    pub fn request(&self, path: &str, query: &str) -> ReportResponse {
+        let route = match kronika_api::parse(path, Some(query)) {
+            Ok(route) => route,
+            Err(error) => return ReportResponse::route(error),
+        };
+        let request = match route.into_query() {
+            Ok(request) => request,
+            Err(error) => return ReportResponse::query(error),
+        };
+        let engine = match &self.engine {
+            Ok(engine) => engine,
+            Err(response) => return response.clone(),
+        };
+        let mut sink = NdjsonSink::default();
+        match engine.execute(request, &mut sink) {
+            Ok(()) => ReportResponse::success(sink.body),
+            Err(error) => ReportResponse::query(error),
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -142,52 +204,6 @@ impl QuerySink for NdjsonSink {
 
     fn cancelled(&self) -> bool {
         false
-    }
-}
-
-/// Answer one parsed request from one owned finished ZMS and canonical IDX.
-///
-/// The decimal segment text is converted immediately because JavaScript
-/// numbers cannot represent every valid segment identity.
-#[wasm_bindgen]
-#[must_use]
-pub fn request(
-    segment_id: &str,
-    zms: Vec<u8>,
-    idx: Vec<u8>,
-    configured_sources: u32,
-    max_zms_bytes: u64,
-    path: &str,
-    query: &str,
-) -> ReportResponse {
-    let Ok(segment_id) = segment_id.parse::<i64>() else {
-        return ReportResponse::bad_parameter("segment_id");
-    };
-    let Ok(segment_id) = SegmentId::new(segment_id) else {
-        return ReportResponse::bad_parameter("segment_id");
-    };
-    let route = match kronika_api::parse(path, Some(query)) {
-        Ok(route) => route,
-        Err(error) => return ReportResponse::route(error),
-    };
-    let request = match route.into_query() {
-        Ok(request) => request,
-        Err(error) => return ReportResponse::query(error),
-    };
-    let engine = match ReportEngine::new(ReportInput {
-        segment_id,
-        zms,
-        idx,
-        configured_sources,
-        max_zms_bytes,
-    }) {
-        Ok(engine) => engine,
-        Err(error) => return ReportResponse::report(error),
-    };
-    let mut sink = NdjsonSink::default();
-    match engine.execute(request, &mut sink) {
-        Ok(()) => ReportResponse::success(sink.body),
-        Err(error) => ReportResponse::query(error),
     }
 }
 

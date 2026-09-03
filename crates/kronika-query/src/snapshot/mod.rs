@@ -4601,6 +4601,7 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
         hash_part(&mut hash, b"field", field.as_bytes());
     }
     if let Some(text) = request.text {
+        let text = u64::try_from(text).unwrap_or(u64::MAX);
         hash_part(&mut hash, b"text", &text.to_le_bytes());
     }
     for filter in &request.filters {
@@ -4631,7 +4632,8 @@ fn hash_part(hash: &mut u64, tag: &[u8], bytes: &[u8]) {
 }
 
 fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
-    for byte in bytes.len().to_le_bytes().iter().chain(bytes) {
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    for byte in len.to_le_bytes().iter().chain(bytes) {
         *hash ^= u64::from(*byte);
         *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
