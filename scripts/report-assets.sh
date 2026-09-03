@@ -9,6 +9,7 @@ DOWNLOAD=${2:-}
 TOOLCHAIN=${RUST_TOOLCHAIN:-1.96.0}
 CARGO=${CARGO_BIN:-cargo}
 NODE=${NODE_BIN:-node}
+CARGO_HOME_PATH=${CARGO_HOME:-$HOME/.cargo}
 BINDGEN_VERSION=0.2.127
 BINDGEN_ARCHIVE=wasm-bindgen-${BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz
 BINDGEN_SHA256=61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a
@@ -49,6 +50,14 @@ validate_gzip() {
 	gzip --test "$compressed"
 	if [[ $(od -An -tu1 -N8 "$compressed" | tr -s ' ' | sed 's/^ //') != "31 139 8 0 0 0 0 0" ]]; then
 		echo "generated WebAssembly gzip has a non-deterministic header" >&2
+		exit 1
+	fi
+}
+
+validate_wasm_paths() {
+	local wasm=$1
+	if grep -aFq "$CARGO_HOME_PATH" "$wasm" || grep -aFq "$(pwd)" "$wasm"; then
+		echo "generated WebAssembly retains an absolute build path" >&2
 		exit 1
 	fi
 }
@@ -99,7 +108,11 @@ if [[ -z ${CC_wasm32_unknown_unknown:-} ]]; then
 		export CC_wasm32_unknown_unknown=clang-18
 	fi
 fi
-"$CARGO" +"$TOOLCHAIN" build --locked --release \
+remap_flags="--remap-path-prefix=${CARGO_HOME_PATH}=/cargo-home"
+remap_flags+=$'\x1f'
+remap_flags+="--remap-path-prefix=$(pwd)=/workspace"
+env -u RUSTFLAGS CARGO_ENCODED_RUSTFLAGS="$remap_flags" \
+    "$CARGO" +"$TOOLCHAIN" build --locked --release \
 	--target wasm32-unknown-unknown \
 	-p kronika-report-wasm
 
@@ -121,6 +134,7 @@ compressed_wasm=$temporary/kronika-report-wasm.wasm.gz
 "$NODE" bins/kronika-web/ui/scripts/bundle-report-wasm.mjs \
 	"$module_javascript" \
 	"$javascript"
+validate_wasm_paths "$bound_wasm"
 gzip --no-name --best --stdout "$bound_wasm" >"$compressed_wasm"
 
 validate_javascript "$javascript"
