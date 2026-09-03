@@ -207,6 +207,7 @@ function validateHtml(html, reportMode) {
   if (reportMode) {
     const serverOnly = [
       "/auth/session",
+      "/api/export",
       "/api/mcp-access",
       "/api/instance-label",
       "fetch(",
@@ -215,6 +216,7 @@ function validateHtml(html, reportMode) {
       "EventSource",
       "sendBeacon",
       "X-Kronika-UI",
+      "export-trigger",
       "mcp-trigger",
       "refresh-action",
       "logout-action",

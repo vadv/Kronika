@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -553,6 +553,268 @@ test("the MCP drawer copies exactly through real legacy behavior and restores mo
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
+test("web export keeps the view stable and downloads one authenticated HTML artifact", { timeout: 90_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const exportHtml = "<!doctype html><title>Kronika export artifact</title>"
+  const exportFilename = "kronika-2026-08-13-050000-2026-08-13-055959-utc.html"
+  const exportRequests = []
+  const heldExports = []
+  const page = { errors: [], external: [], responses: [] }
+  let exportMode = "error"
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname === "/api/export") {
+      exportRequests.push({
+        ...requestRecord(request, url),
+        accept: request.headers.accept ?? null,
+        host: request.headers.host ?? null,
+      })
+      if (exportMode === "error") {
+        heldExports.push(response)
+        return
+      }
+      response.writeHead(200, {
+        "Cache-Control": "private,no-store",
+        "Content-Disposition": `attachment; filename="${exportFilename}"`,
+        "Content-Length": Buffer.byteLength(exportHtml),
+        "Content-Type": "text/html",
+      })
+      response.end(exportHtml)
+      return
+    }
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("section") === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
+      return ndjson(response, timelineRecords(HOUR, true))
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("export browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const downloadDirectory = join(profile, "downloads")
+  await mkdir(downloadDirectory)
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDirectory })
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    const pageUrl = `${origin}/?at=${AT}&lens=disk`
+    await cdp.send("Page.navigate", { url: pageUrl })
+    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, "the export action", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian export locale")
+    const initialUrl = await cdp.evaluate("location.href")
+    const expectedFrom = HOUR / 1_000_000
+    const expectedTo = expectedFrom + 3_599
+    const expectedQuery = `?from=${expectedFrom}&to=${expectedTo}`
+
+    const geometry = () => cdp.evaluate(`(() => {
+      const dialog = document.querySelector('[data-testid="export-dialog"]')
+      const bounds = dialog.getBoundingClientRect()
+      const status = dialog.querySelector('[data-testid="export-status"]')
+      return {
+        active: document.activeElement?.dataset.testid ?? null,
+        ariaBusy: dialog.querySelector("form").getAttribute("aria-busy"),
+        bottom: bounds.bottom,
+        documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        height: bounds.height,
+        left: bounds.left,
+        modal: dialog.matches(":modal"),
+        right: bounds.right,
+        status: status.textContent.trim(),
+        statusHeight: status.getBoundingClientRect().height,
+        submitDisabled: dialog.querySelector('[data-testid="export-submit"]').disabled,
+        top: bounds.top,
+        width: bounds.width,
+      }
+    })()`)
+    const assertStable = (before, after, label) => {
+      for (const field of ["height", "left", "top", "width"]) {
+        assert.ok(Math.abs(before[field] - after[field]) <= 1, `${label} ${field}: ${JSON.stringify({ before, after })}`)
+      }
+      assert.ok(Math.abs(before.statusHeight - after.statusHeight) <= 1, `${label} status: ${JSON.stringify({ before, after })}`)
+    }
+    const openDialog = async (width) => {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+      await settleLayout(cdp)
+      await cdp.evaluate(`document.querySelector('[data-testid="export-trigger"]').focus({ preventScroll: true })`)
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 })
+      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]')?.matches(":modal") === true`, `${width}px export dialog`)
+      await settleLayout(cdp)
+    }
+
+    for (const width of [800, 1280]) {
+      await openDialog(width)
+      const idle = await geometry()
+      assert.equal(idle.modal, true, `${width}px idle: ${JSON.stringify(idle)}`)
+      assert.equal(idle.active, "export-from", `${width}px idle: ${JSON.stringify(idle)}`)
+      assert.equal(idle.ariaBusy, "false", `${width}px idle: ${JSON.stringify(idle)}`)
+      assert.equal(idle.status, "", `${width}px idle: ${JSON.stringify(idle)}`)
+      assert.equal(idle.documentOverflow, false, `${width}px idle: ${JSON.stringify(idle)}`)
+      assert.ok(idle.left >= -1 && idle.right <= width + 1 && idle.top >= -1 && idle.bottom <= 801, `${width}px idle: ${JSON.stringify(idle)}`)
+
+      const beforeRequest = exportRequests.length
+      await cdp.evaluate(`document.querySelector('[data-testid="export-submit"]').focus({ preventScroll: true })`)
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 })
+      await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
+      await waitForRequests(() => exportRequests.length === beforeRequest + 1)
+      await delay(100)
+      assert.equal(exportRequests.length, beforeRequest + 1, `${width}px duplicate submission`)
+      const request = exportRequests.at(-1)
+      assert.deepEqual(request, {
+        accept: "text/html",
+        authorization: null,
+        cookie: SESSION_COOKIE,
+        host: new URL(origin).host,
+        marker: "1",
+        method: "GET",
+        path: "/api/export",
+        query: expectedQuery,
+      })
+      const busy = await geometry()
+      assert.equal(busy.ariaBusy, "true", `${width}px busy: ${JSON.stringify(busy)}`)
+      assert.equal(busy.submitDisabled, true, `${width}px busy: ${JSON.stringify(busy)}`)
+      assert.equal(busy.status, "Формируем отчёт…", `${width}px busy: ${JSON.stringify(busy)}`)
+      assertStable(idle, busy, `${width}px idle/busy geometry`)
+      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px busy URL`)
+
+      const errorStart = page.errors.length
+      const held = heldExports.shift()
+      assert.notEqual(held, undefined)
+      held.writeHead(500, { "Cache-Control": "no-store", "Content-Type": "application/json" })
+      held.end('{"error":"export_failed"}')
+      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === "Не удалось сформировать отчёт."`, `${width}px retained export error`)
+      await settleLayout(cdp)
+      const failed = await geometry()
+      assert.equal(failed.ariaBusy, "false", `${width}px error: ${JSON.stringify(failed)}`)
+      assert.equal(failed.submitDisabled, false, `${width}px error: ${JSON.stringify(failed)}`)
+      assert.equal(failed.status, "Не удалось сформировать отчёт.", `${width}px error: ${JSON.stringify(failed)}`)
+      assertStable(idle, failed, `${width}px idle/error geometry`)
+      await delay(100)
+      assert.equal((await geometry()).status, failed.status, `${width}px retained error text`)
+      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px error URL`)
+      const expectedErrors = page.errors.splice(errorStart)
+      assert.ok(expectedErrors.every((message) => /500|Internal Server Error/.test(message)), JSON.stringify(expectedErrors))
+
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, `${width}px export Escape`)
+      await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, `${width}px export opener restore`)
+      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px closed URL`)
+    }
+
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English export control")
+    await openDialog(1280)
+    const english = await geometry()
+    assert.equal(english.modal, true, `English control: ${JSON.stringify(english)}`)
+    assert.equal(english.active, "export-from", `English control: ${JSON.stringify(english)}`)
+    assert.equal(english.documentOverflow, false, `English control: ${JSON.stringify(english)}`)
+    assert.ok(english.left >= -1 && english.right <= 1281 && english.top >= -1 && english.bottom <= 801, `English control: ${JSON.stringify(english)}`)
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      description: document.querySelector('[data-testid="export-dialog"] > p').textContent.trim(),
+      from: document.querySelector('[data-testid="export-from"]').closest("label").querySelector("span").textContent.trim(),
+      title: document.querySelector('[data-testid="export-dialog"] h2').textContent.trim(),
+      to: document.querySelector('[data-testid="export-to"]').closest("label").querySelector("span").textContent.trim(),
+    }))()`), {
+      description: "Times use Browser time. Both endpoints are included.",
+      from: "From",
+      title: "Export HTML report",
+      to: "To",
+    })
+    const beforeCancel = exportRequests.length
+    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
+    await waitForRequests(() => exportRequests.length === beforeCancel + 1)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-form"]').getAttribute("aria-busy") === "true"`, "English export busy state")
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "English export Escape")
+    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "English export focus restore")
+    assert.equal(await cdp.evaluate("location.href"), initialUrl, "English export URL")
+    const canceled = heldExports.shift()
+    assert.notEqual(canceled, undefined)
+    canceled.destroy()
+
+    exportMode = "success"
+    await cdp.evaluate(`(() => {
+      const created = []
+      const revoked = []
+      const createObjectUrl = URL.createObjectURL.bind(URL)
+      const revokeObjectUrl = URL.revokeObjectURL.bind(URL)
+      globalThis.__exportObjectUrls = { created, revoked }
+      URL.createObjectURL = (blob) => {
+        const url = createObjectUrl(blob)
+        created.push({ size: blob.size, type: blob.type, url })
+        return url
+      }
+      URL.revokeObjectURL = (url) => {
+        revoked.push(url)
+        return revokeObjectUrl(url)
+      }
+    })()`)
+    await openDialog(1280)
+    const beforeSuccess = exportRequests.length
+    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "successful export close")
+    await cdp.waitFor(`globalThis.__exportObjectUrls.revoked.length === 1`, "export object URL revocation")
+    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "successful export focus restore")
+    assert.equal(exportRequests.length, beforeSuccess + 1)
+    assert.equal(await cdp.evaluate("location.href"), initialUrl)
+    const objectUrls = await cdp.evaluate("globalThis.__exportObjectUrls")
+    assert.equal(objectUrls.created.length, 1, JSON.stringify(objectUrls))
+    assert.equal(objectUrls.created[0].size, Buffer.byteLength(exportHtml), JSON.stringify(objectUrls))
+    assert.equal(objectUrls.created[0].type, "text/html", JSON.stringify(objectUrls))
+    assert.deepEqual(objectUrls.revoked, [objectUrls.created[0].url], JSON.stringify(objectUrls))
+
+    const downloadedPath = join(downloadDirectory, exportFilename)
+    let downloaded = null
+    for (let attempt = 0; attempt < 250 && downloaded === null; attempt += 1) {
+      try {
+        downloaded = await readFile(downloadedPath, "utf8")
+      } catch (reason) {
+        if (reason?.code !== "ENOENT") throw reason
+        await delay(20)
+      }
+    }
+    assert.equal(downloaded, exportHtml, `downloaded ${downloadedPath}`)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    for (const response of heldExports) response.destroy()
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))

@@ -1,4 +1,4 @@
-import { Activity, ChartLine, CircleHelp, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
+import { Activity, ChartLine, CircleHelp, Download, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { ProcessesActivity } from "./activity"
 import { historyAddress } from "./build-mode"
@@ -40,6 +40,7 @@ import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display
 import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
+import { ExportDialog } from "./export-dialog"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { McpPanel } from "./mcp-connect"
@@ -291,6 +292,7 @@ function App({ locale, onLocale, t }: {
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -724,10 +726,12 @@ function App({ locale, onLocale, t }: {
       if (event.key === "?") {
         setHelpOpen((current) => !current)
         setMcpOpen(false)
+        setExportOpen(false)
       }
       if (event.key === "Escape") {
         setHelpOpen(false)
         setMcpOpen(false)
+        setExportOpen(false)
       }
     }
     window.addEventListener("keydown", shortcuts)
@@ -1053,6 +1057,7 @@ function App({ locale, onLocale, t }: {
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         {!KRONIKA_REPORT && <button aria-label={t("refresh.action")} className="icon-button" data-testid="refresh-action" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={exportOpen} aria-haspopup="dialog" aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0" data-testid="export-trigger" disabled={hour === null} onClick={() => { setExportOpen(true); setMcpOpen(false); setHelpOpen(false) }} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -1061,8 +1066,8 @@ function App({ locale, onLocale, t }: {
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
         {!KRONIKA_REPORT && <button aria-label={t("auth.logout")} className="icon-button" data-testid="logout-action" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>}
-        {!KRONIKA_REPORT && <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>}
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
+        {!KRONIKA_REPORT && <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false); setExportOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>}
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false); setExportOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
 
@@ -1118,6 +1123,7 @@ function App({ locale, onLocale, t }: {
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
     {!KRONIKA_REPORT && mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
+    {!KRONIKA_REPORT && exportOpen && hour !== null && <ExportDialog hour={hour} mode={time.mode} onClose={() => setExportOpen(false)} t={t} />}
   </main></DisplayTimeScope>
 }
 

@@ -190,11 +190,12 @@ test("project dictionaries cover the active UI keys", async () => {
   validateDictionaries(english, russian)
 
   const roots = new Set()
-  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|lens|process|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
+  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|export|lens|process|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
   const sourceFiles = [
     "app.tsx",
     "detail.tsx",
     "events-view.tsx",
+    "export-dialog.tsx",
     "help.tsx",
     "hour-picker.tsx",
     "postgres-view.tsx",
