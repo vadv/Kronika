@@ -43,10 +43,10 @@ impl SharedSegmentBytes {
         }
     }
 
-    fn validate_unchanged(&self) -> Result<(), ResourceError> {
+    #[cfg(feature = "posix")]
+    fn validate_file_unchanged(&self) -> Result<(), ResourceError> {
         match &self.storage {
             SegmentStorage::Owned(_) => Ok(()),
-            #[cfg(feature = "posix")]
             SegmentStorage::File { file, identity } => {
                 if FileIdentity::from_file(file)? == *identity {
                     Ok(())
@@ -175,7 +175,8 @@ impl ResourceCatalog for EmbeddedSource {
     type Resource = EmbeddedResource;
 
     fn resources(&self) -> Result<ResourceListing<Self::Resource>, ResourceError> {
-        self.bytes.validate_unchanged()?;
+        #[cfg(feature = "posix")]
+        self.bytes.validate_file_unchanged()?;
         Ok(ResourceListing {
             resources: vec![SegmentResource::new(
                 self.identity,
@@ -198,7 +199,8 @@ impl ImmutableSegmentSource for EmbeddedSource {
         if !self.resource_is_canonical(resource) {
             return Err(ResourceError::ForeignResource);
         }
-        self.bytes.validate_unchanged()?;
+        #[cfg(feature = "posix")]
+        self.bytes.validate_file_unchanged()?;
         Ok(self.bytes.clone())
     }
 
@@ -211,7 +213,9 @@ impl ImmutableSegmentSource for EmbeddedSource {
         {
             return Err(ResourceError::ForeignResource);
         }
-        self.bytes.validate_unchanged()
+        #[cfg(feature = "posix")]
+        self.bytes.validate_file_unchanged()?;
+        Ok(())
     }
 }
 
