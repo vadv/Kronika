@@ -530,6 +530,31 @@ while a gzip-capable client receives the original bytes without decoding. Both
 representations have their own strong ETag and exact length, and responses vary
 on authorization and content encoding.
 
+### Standalone HTML report
+
+`kronika-report` accepts exactly one finished ZMS path and one `.html` output
+path. The input basename is the canonical signed-decimal `SegmentId` followed
+by `.zms`; the command accepts neither a storage root nor an earlier segment.
+It builds the canonical IDX from that ZMS alone, so a first rate that needs an
+earlier sample remains `null`.
+
+The command writes a temporary in the output directory, synchronizes it and
+atomically replaces the output. The resulting deterministic HTML contains the
+report build of the production React interface, the pinned JavaScript and
+WebAssembly query adapter, the ZMS and the generated IDX. It creates no
+external sidecar.
+
+The report interface sends the same product-data paths and query parameters to
+the shared portable `kronika-api` parser. The package binary is the report
+generator; its library target supplies only the internal `ReportEngine`
+composition used by the WebAssembly adapter. That adapter retains one engine,
+which combines the embedded source and in-memory index with the existing query
+implementation. Report mode has no authentication, MCP, live refresh or
+server-only controls. Opening the file performs no network request. The
+interface shell, JavaScript bindings and compressed WebAssembly are built ahead
+of the Rust binary and committed as reproducible assets, so an ordinary Cargo
+build needs no Node installation.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the

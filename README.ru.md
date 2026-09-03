@@ -6,7 +6,8 @@ Kronika сохраняет периодические снимки состоя�
 ней баз данных для последующего просмотра. Коллектор читает метрики
 операционной системы и PostgreSQL, а также разбирает журналы PostgreSQL и
 PgBouncer. `kronika-web` показывает сохранённые данные в браузере и отдаёт их
-через MCP.
+через MCP. `kronika-report` превращает один готовый сегмент в самодостаточный
+HTML-файл, который открывается без сервера.
 
 ![Архитектура Kronika](docs/images/architecture.svg)
 
@@ -35,8 +36,28 @@ make demo-up
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p kronika-collector -p kronika-web
+cargo build --release --locked -p kronika-collector -p kronika-report -p kronika-web
 ```
+
+## Создание автономного отчёта
+
+Имя входного файла состоит из канонической знаковой десятичной записи
+идентификатора сегмента и суффикса `.zms`. Команда принимает один готовый ZMS
+и один выходной путь с суффиксом `.html`:
+
+```sh
+target/x86_64-unknown-linux-musl/release/kronika-report \
+  /path/to/1709164800000000.zms \
+  report.html
+```
+
+Команда строит изолированный канонический IDX и атомарно заменяет выходной файл
+одним детерминированным документом. В документ входят рабочий интерфейс,
+WebAssembly-движок запросов, ZMS и IDX. Ему не нужны корень хранилища,
+предыдущий сегмент, сервер, внешние дополнительные файлы, аутентификация, MCP,
+живое обновление или сетевые запросы. Первое значение скорости, которому нужен
+более ранний отсчёт, равно `null`. Подробности приведены в
+[bins/kronika-report/README.md](bins/kronika-report/README.md).
 
 Создайте учётную запись PostgreSQL, которая используется ниже:
 
@@ -108,6 +129,8 @@ CLI, Cursor и `mcp-remote` описана в
 
 - [bins/kronika-demo/README.ru.md](bins/kronika-demo/README.ru.md) — команды
   демо.
+- [bins/kronika-report/README.md](bins/kronika-report/README.md) — автономные
+  HTML-отчёты.
 - [docs/mcp-clients.ru.md](docs/mcp-clients.ru.md) — настройка MCP-клиентов.
 - [docs/type-registry/](docs/type-registry/) — записываемые секции и поля:
   [OS](docs/type-registry/os.ru.md),

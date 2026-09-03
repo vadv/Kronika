@@ -5,7 +5,8 @@
 Kronika records periodic snapshots of a Linux host and its databases for later
 inspection. The collector reads operating-system and PostgreSQL metrics and
 parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
-through a browser interface and MCP.
+through a browser interface and MCP. `kronika-report` turns one finished
+segment into a self-contained HTML file that opens without a server.
 
 ![Kronika architecture](docs/images/architecture.svg)
 
@@ -34,8 +35,26 @@ and `musl-gcc`. The repository selects Rust 1.96.0 through
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p kronika-collector -p kronika-web
+cargo build --release --locked -p kronika-collector -p kronika-report -p kronika-web
 ```
+
+## Generate a standalone report
+
+The input basename is the canonical signed-decimal segment identity followed
+by `.zms`. The command accepts one finished ZMS and one `.html` output path:
+
+```sh
+target/x86_64-unknown-linux-musl/release/kronika-report \
+  /path/to/1709164800000000.zms \
+  report.html
+```
+
+The command builds the isolated canonical IDX and atomically replaces the
+output with one deterministic document. That document contains the production
+interface, its WebAssembly query engine, the ZMS and the IDX. It uses no
+storage root, earlier segment, server, external sidecar, authentication, MCP,
+live refresh or network request. A first rate that needs an earlier sample is
+`null`. See [bins/kronika-report/README.md](bins/kronika-report/README.md).
 
 Create the PostgreSQL login used below:
 
@@ -103,6 +122,8 @@ Claude Code, Codex CLI, Cursor, and `mcp-remote` setup.
 ## Documentation
 
 - [bins/kronika-demo/README.md](bins/kronika-demo/README.md) — demo commands.
+- [bins/kronika-report/README.md](bins/kronika-report/README.md) — standalone
+  HTML reports.
 - [docs/mcp-clients.md](docs/mcp-clients.md) — MCP client configuration.
 - [docs/type-registry/](docs/type-registry/) — recorded sections and fields:
   [OS](docs/type-registry/os.md),
