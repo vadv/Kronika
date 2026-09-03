@@ -8,6 +8,7 @@ lint_crate="$repo_root/lints/kronika_lints"
 library_target="$repo_root/target/dylint/libraries/${toolchain}-${host}"
 lint_library="$library_target/release/libkronika_lints@${toolchain}-${host}.so"
 mordant_library="$library_target/release/libmordant@${toolchain}-${host}.so"
+perfectionist_library="$library_target/release/libperfectionist@${toolchain}-${host}.so"
 fixture_manifest="$lint_crate/fixtures/Cargo.toml"
 dylint_toml=$(<"$repo_root/dylint.toml")
 scratch=$(mktemp -d)
@@ -30,17 +31,18 @@ fi
         --locked \
         --release \
         --target-dir "$library_target" \
-        --config 'target."cfg(all())".rustflags=["-C","linker=dylint-link"]'
+        --config 'target."cfg(all())".rustflags=["-D","warnings","-C","linker=dylint-link"]'
 )
 test -f "$lint_library"
 
-# Build the single exact Mordant revision declared by the workspace metadata.
-# Fixtures and the workspace gate below load this same library file.
+# Build both exact external revisions declared by the workspace metadata.
+# Fixtures and the workspace gate below load these same library files.
 (
     cd "$scratch"
     cargo dylint list --all --manifest-path "$repo_root/Cargo.toml" >/dev/null
 )
 test -f "$mordant_library"
+test -f "$perfectionist_library"
 
 positive="$scratch/positive.json"
 if (
@@ -51,6 +53,7 @@ if (
         --no-metadata \
         --lib-path "$lint_library" \
         --lib-path "$mordant_library" \
+        --lib-path "$perfectionist_library" \
         --manifest-path "$fixture_manifest" \
         --pipe-stdout "$positive" \
         -- \
@@ -84,7 +87,9 @@ with open(sys.argv[1], encoding="utf-8") as stream:
             "same_match_twice",
             "reimplemented_helper",
             "bare_bool_args",
-            "discarded_error",
+        "discarded_error",
+            "perfectionist::impure_macro_arguments",
+            "perfectionist::unpinned_repo_ref",
         }:
             codes[name] += 1
 
@@ -92,6 +97,13 @@ expected = collections.Counter(
     identity_enum_match=1,
     borrowed_forwarding_closure=1,
     discarded_error=1,
+    same_match_twice=1,
+    reimplemented_helper=1,
+    bare_bool_args=1,
+    **{
+        "perfectionist::impure_macro_arguments": 1,
+        "perfectionist::unpinned_repo_ref": 1,
+    },
 )
 if codes != expected:
     raise SystemExit(f"unexpected positive fixture diagnostics: {codes!r}")
@@ -106,6 +118,7 @@ negative="$scratch/negative.json"
         --no-metadata \
         --lib-path "$lint_library" \
         --lib-path "$mordant_library" \
+        --lib-path "$perfectionist_library" \
         --manifest-path "$fixture_manifest" \
         --pipe-stdout "$negative" \
         -- \
@@ -132,7 +145,9 @@ for line in open(sys.argv[1], encoding="utf-8"):
         "same_match_twice",
         "reimplemented_helper",
         "bare_bool_args",
-        "discarded_error",
+            "discarded_error",
+            "perfectionist::impure_macro_arguments",
+            "perfectionist::unpinned_repo_ref",
     }:
         raise SystemExit(f"negative lint fixture emitted {code}")
 PY
@@ -142,6 +157,7 @@ DYLINT_TOML="$dylint_toml" DYLINT_RUSTFLAGS="-D warnings" cargo dylint \
     --no-metadata \
     --lib-path "$lint_library" \
     --lib-path "$mordant_library" \
+    --lib-path "$perfectionist_library" \
     --workspace \
     -- \
     --all-targets \

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+// Immutable repository reference:
+// <https://github.com/example/project/blob/8c1f6e2a6d33c1b1a2f9e0e1d3b8a4c7d6e5f4a3/src/lib.rs>
+
 #[derive(Clone, Copy)]
 enum Shared {
     One,
@@ -46,6 +49,14 @@ fn extra_work(cancelled: &dyn Fn() -> bool) -> bool {
         let cancelled = cancelled();
         cancelled && std::hint::black_box(true)
     })
+}
+
+fn bound_macro_side_effect(counter: &mut u8) {
+    let value = {
+        *counter += 1;
+        *counter
+    };
+    debug_assert_eq!(value, 1);
 }
 
 fn main() {}

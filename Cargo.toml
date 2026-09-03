@@ -26,6 +26,7 @@ members = [
 [workspace.metadata.dylint]
 libraries = [
     { git = "https://github.com/scarletindustries/mordant", rev = "8f0803f66dee128cca7cc0e950d8ec051cdd537a" },
+    { git = "https://github.com/KSXGitHub/perfectionist.git", rev = "0f00807cf657b443918de1e33f6f8d94d0c1670c" },
 ]
 
 [workspace.package]

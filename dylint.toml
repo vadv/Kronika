@@ -1,18 +1,94 @@
 [mordant]
-# Keep only the four high-signal rules accepted for the blocking gate.
+# Broad state-shape surveys conflict with Kronika's deliberately flat storage
+# and best-effort runtime models. Keep only narrow checks for crash-only
+# Option fields and a provably redundant bool beside an Option.
 disabled = [
-    "group:state",
-    "group:checks",
-    "group:enums",
-    "group:keys_locks",
-    "group:comments",
-    "group:custom",
+    "options_as_enum",
+    "parallel_bools",
+    "bool_cluster",
+    "runtime_typestate",
+    "derived_field",
+    "field_valid_only_when",
+    "parallel_vecs",
+    "parallel_params",
+    "stringly_state",
+    "tuple_wants_struct",
+    "some_still_unchecked",
+    # Construction policy is boundary-specific in a best-effort collector.
+    # Retain fallback checks only where Mordant proves a local validation error
+    # is converted to success or discarded without being logged or stored.
+    "unchecked_construction",
+    "unchecked_input_len",
+    "guard_blind_to_action",
+    # Text is the intentional error contract at CLI, MCP, and query adapter
+    # boundaries; private error payloads are also consumed through Display.
     "stringly_error",
     "stringified_error",
     "unread_error_variant",
-    "arg_named_like_other_param",
-    "interchangeable_aliases",
-    "index_of_other_kind",
-    "unit_mismatch",
+    # These two enum rules infer a narrower API from today's callers. That is
+    # not enough evidence to change a contract; exhaustive local matches are
+    # adopted separately after their existing sites are made explicit.
+    "wildcard_over_own_enum",
+    "param_wider_than_callers",
+    "return_wider_than_body",
+    # Code-size outlining is opt-in upstream and unmeasured for this binary.
     "generic_body_not_generic",
+    # Enabled after the two existing ambiguous call sites are clarified.
+    "arg_named_like_other_param",
+    # This rule is inert until a project-specific identity policy is invented;
+    # Kronika does not use a generic key-policy framework.
+    "key_not_identity",
+    # The workspace denies unsafe code, so SAFETY-comment bookkeeping adds no
+    # signal. Panic-message identifier drift remains enabled.
+    "stale_safety_comment",
+    # Kronika does not maintain a generic reachability-ban policy graph.
+    "forbidden_reach",
 ]
+
+[perfectionist]
+# Perfectionist has no default-off mode, so every rejected active rule is
+# named explicitly. Rules are selected for correctness or repository-policy
+# value, not because they belong to the upstream pack.
+enable = [
+    "impure_macro_arguments",
+    "unknown_perfectionist_lints",
+    "unpinned_repo_ref",
+]
+disable = [
+    { name = "allow_attributes", reason = "enabled after the current deterministic suppressions are audited" },
+    { name = "allow_attributes_without_reason", reason = "the workspace already enables Clippy's exact restriction lint" },
+    { name = "avoidable_string_escapes", reason = "raw strings are not clearer for Kronika's escape-heavy parser and protocol fixtures" },
+    { name = "bare_email", reason = "ordinary comments have no repository-wide Markdown autolink contract" },
+    { name = "bare_identifier_reference", reason = "backticks often denote wire, schema, and field names rather than Rust API links" },
+    { name = "bare_issue_reference", reason = "Kronika has no declared forge-link style for ordinary comments" },
+    { name = "bare_url", reason = "whether a comment is rendered as Markdown is context-dependent" },
+    { name = "clap_help_markdown", reason = "Kronika does not use Clap, so the rule cannot protect its CLI" },
+    { name = "excessive_inline_tests", reason = "enabled after existing long test modules are extracted" },
+    { name = "exhaustive_error_enums", reason = "all crates are internal and non_exhaustive would weaken useful exhaustive matches" },
+    { name = "import_granularity_mismatch", reason = "stable rustfmt owns import layout; a second style gate adds churn only" },
+    { name = "import_grouping_mismatch", reason = "stable rustfmt owns import grouping; the upstream rule is an inactive style policy" },
+    { name = "lint_attribute_trailing_comment", reason = "Clippy already requires a reason field on every suppression" },
+    { name = "macro_trailing_comma", reason = "rustfmt owns macro layout and the survey produced broad style-only churn" },
+    { name = "named_prelude_imports", reason = "explicit imports keep dependencies bounded and avoid prelude namespace growth" },
+    { name = "needless_borrowed_parameters", reason = "parameter ownership depends on callers and is an API decision, not a global rule" },
+    { name = "overly_long_print_macro", reason = "line wrapping has no correctness value beyond the existing formatter" },
+    { name = "single_letter_closure_param", reason = "short local callback names are idiomatic when their scope is immediately visible" },
+    { name = "single_letter_const_generic", reason = "single-letter const generics are conventional and unambiguous in small signatures" },
+    { name = "single_letter_const_item", reason = "the survey found no defect and naming remains context-dependent" },
+    { name = "single_letter_function_param", reason = "parameter clarity depends on scope and domain, not identifier length" },
+    { name = "single_letter_generic", reason = "T, E, R, and W are established Rust type-role names" },
+    { name = "single_letter_let_binding", reason = "short locals are clearer in tight iterator and numeric scopes" },
+    { name = "single_letter_static_item", reason = "the survey found no defect and naming remains context-dependent" },
+    { name = "thiserror_usage", reason = "error derive selection is dependency-specific, not a blanket repository policy" },
+    { name = "uncombined_self_import", reason = "the alternative import forms can bind different namespaces and save no behavior" },
+    { name = "unicode_ellipsis_in_comments", reason = "typographic ellipses are intentional readable prose" },
+    { name = "unicode_ellipsis_in_docs", reason = "typographic ellipses are intentional readable prose" },
+    { name = "unicode_ellipsis_in_panic_messages", reason = "message typography does not affect the diagnostic contract" },
+    { name = "unordered_derives", reason = "derive order is behavior-neutral and the survey produced broad churn" },
+    { name = "wildcard_imports", reason = "test modules intentionally consume private parent surfaces; explicit mirrors add brittle boilerplate" },
+]
+
+["perfectionist::impure_macro_arguments"]
+# The deny set catches debug-only side effects without flagging DSL macros such
+# as proptest's prop_oneof!, whose arguments are deliberately expressions.
+mode = "deny_only"
