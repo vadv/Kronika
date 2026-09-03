@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use kronika_query::{
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView, MAX_FIELDS,
-    NormalizedRanking, QueryContext, TimeRange, execute_heatmap_batch,
+    NormalizedRanking, QueryContext, execute_heatmap_batch,
 };
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
@@ -52,10 +52,6 @@ pub(crate) fn call(
         return mcp_error_indexed("rankings[0]: rankings must not be empty", 0);
     }
     let range = match super::time::resolve_range(&input.from, &input.to) {
-        Ok(range) => range,
-        Err(error) => return mcp_error_indexed(format!("rankings[0]: {error}"), 0),
-    };
-    let range = match TimeRange::new(range.from, range.to_exclusive) {
         Ok(range) => range,
         Err(error) => return mcp_error_indexed(format!("rankings[0]: {error}"), 0),
     };

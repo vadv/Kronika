@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use kronika_query::{
-    EventsQuery, EventsResult, MAX_EVENTS_WINDOW_MICROS, QueryContext, TimeRange, execute_events,
+    EventsQuery, EventsResult, MAX_EVENTS_WINDOW_MICROS, QueryContext, execute_events,
 };
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
@@ -46,10 +46,6 @@ pub(crate) fn call(
     ) {
         Ok(range) => range,
         Err(error) => return mcp_error(error.to_string()),
-    };
-    let range = match TimeRange::new(range.from, range.to_exclusive) {
-        Ok(range) => range,
-        Err(error) => return mcp_error(error),
     };
     let query = match EventsQuery::normalize(
         range,
