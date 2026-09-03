@@ -1,5 +1,9 @@
 use std::io::{Read as _, Seek as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::task::{Context, Poll, Waker};
 
 use http_body_util::BodyExt as _;
 use hyper::StatusCode;
@@ -8,7 +12,9 @@ use hyper::header::{
 };
 use kronika_dump::{RangeError, SliceError, SliceRange, UtcSecond};
 
-use super::{ExportError, PreparedExport, build, filename, parse, prepared_response};
+use super::{
+    ExportError, PreparedExport, build, filename, parse, prepared_response, response_with,
+};
 
 const SECOND: i64 = 1_709_164_800;
 const MICROS: i64 = SECOND * 1_000_000;
@@ -19,6 +25,44 @@ fn range(from: i64, to: i64) -> SliceRange {
         UtcSecond::from_unix_seconds(to).expect("valid last second"),
     )
     .expect("ordered range")
+}
+
+fn test_build_failure() -> ExportError {
+    ExportError::Temporary(std::io::Error::other("test export preparation"))
+}
+
+fn test_prepared_export() -> PreparedExport {
+    let mut file = tempfile::tempfile().expect("temporary HTML");
+    file.write_all(b"x").expect("write HTML");
+    file.rewind().expect("rewind HTML");
+    PreparedExport {
+        file,
+        len: 1,
+        filename: "kronika-test.html".to_owned(),
+    }
+}
+
+fn poll_ready<F: Future>(future: Pin<&mut F>) -> F::Output {
+    let mut context = Context::from_waker(Waker::noop());
+    match future.poll(&mut context) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("busy export response must not queue"),
+    }
+}
+
+async fn assert_error_response(
+    response: hyper::Response<crate::WebBody>,
+    status: StatusCode,
+    body: &[u8],
+) {
+    assert_eq!(response.status(), status);
+    let actual = response
+        .into_body()
+        .collect()
+        .await
+        .expect("error response")
+        .to_bytes();
+    assert_eq!(actual.as_ref(), body);
 }
 
 #[test]
@@ -154,6 +198,155 @@ async fn streaming_never_exceeds_the_declared_length_and_reports_short_files() {
     assert!(response.into_body().collect().await.is_err());
 }
 
+#[tokio::test]
+async fn a_second_export_is_refused_immediately_without_starting_a_build() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(1));
+    let builds = Arc::new(AtomicUsize::new(0));
+    let (started_send, started_receive) = tokio::sync::oneshot::channel();
+    let (release_send, release_receive) = mpsc::channel();
+    let first_gate = Arc::clone(&gate);
+    let first_builds = Arc::clone(&builds);
+    let first = tokio::spawn(async move {
+        response_with(first_gate, move || {
+            first_builds.fetch_add(1, Ordering::SeqCst);
+            started_send.send(()).expect("test waits for build");
+            release_receive.recv().expect("test releases build");
+            Err(test_build_failure())
+        })
+        .await
+    });
+    started_receive.await.expect("build started");
+
+    let second_builds = Arc::clone(&builds);
+    let mut second = Box::pin(response_with(Arc::clone(&gate), move || {
+        second_builds.fetch_add(1, Ordering::SeqCst);
+        Err(test_build_failure())
+    }));
+    let busy = poll_ready(second.as_mut());
+    assert_error_response(
+        busy,
+        StatusCode::SERVICE_UNAVAILABLE,
+        br#"{"error":"export_busy"}"#,
+    )
+    .await;
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+
+    release_send.send(()).expect("release first build");
+    assert_eq!(
+        first.await.expect("first response task").status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test]
+async fn caller_cancellation_does_not_release_a_running_build() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(1));
+    let builds = Arc::new(AtomicUsize::new(0));
+    let (started_send, started_receive) = tokio::sync::oneshot::channel();
+    let (release_send, release_receive) = mpsc::channel();
+    let first_gate = Arc::clone(&gate);
+    let first_builds = Arc::clone(&builds);
+    let first = tokio::spawn(async move {
+        response_with(first_gate, move || {
+            first_builds.fetch_add(1, Ordering::SeqCst);
+            started_send.send(()).expect("test waits for build");
+            release_receive.recv().expect("test releases build");
+            Err(test_build_failure())
+        })
+        .await
+    });
+    started_receive.await.expect("build started");
+    first.abort();
+    assert!(
+        first
+            .await
+            .expect_err("caller task is cancelled")
+            .is_cancelled()
+    );
+
+    let second_builds = Arc::clone(&builds);
+    let mut second = Box::pin(response_with(Arc::clone(&gate), move || {
+        second_builds.fetch_add(1, Ordering::SeqCst);
+        Err(test_build_failure())
+    }));
+    let busy = poll_ready(second.as_mut());
+    assert_error_response(
+        busy,
+        StatusCode::SERVICE_UNAVAILABLE,
+        br#"{"error":"export_busy"}"#,
+    )
+    .await;
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+
+    release_send.send(()).expect("release abandoned build");
+    let released = Arc::clone(&gate)
+        .acquire_owned()
+        .await
+        .expect("export gate remains open");
+    drop(released);
+    let after_builds = Arc::clone(&builds);
+    let after = response_with(Arc::clone(&gate), move || {
+        after_builds.fetch_add(1, Ordering::SeqCst);
+        Err(test_build_failure())
+    })
+    .await;
+    assert_eq!(after.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(builds.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn admission_is_released_after_success_failure_and_panic() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(1));
+    let builds = Arc::new(AtomicUsize::new(0));
+
+    let successful_builds = Arc::clone(&builds);
+    let successful = response_with(Arc::clone(&gate), move || {
+        successful_builds.fetch_add(1, Ordering::SeqCst);
+        Ok(test_prepared_export())
+    })
+    .await;
+    assert_eq!(successful.status(), StatusCode::OK);
+    assert_eq!(
+        successful
+            .into_body()
+            .collect()
+            .await
+            .expect("successful response")
+            .to_bytes(),
+        "x"
+    );
+
+    let failed_builds = Arc::clone(&builds);
+    let failed = response_with(Arc::clone(&gate), move || {
+        failed_builds.fetch_add(1, Ordering::SeqCst);
+        Err(test_build_failure())
+    })
+    .await;
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let panicked_builds = Arc::clone(&builds);
+    let panicked = response_with(Arc::clone(&gate), move || {
+        panicked_builds.fetch_add(1, Ordering::SeqCst);
+        panic!("test export preparation panic")
+    })
+    .await;
+    assert_error_response(
+        panicked,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        br#"{"error":"export_failed"}"#,
+    )
+    .await;
+
+    let final_builds = Arc::clone(&builds);
+    let final_response = response_with(gate, move || {
+        final_builds.fetch_add(1, Ordering::SeqCst);
+        Err(test_build_failure())
+    })
+    .await;
+    assert_eq!(final_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(builds.load(Ordering::SeqCst), 4);
+}
+
 #[test]
 fn a_small_recording_becomes_a_standalone_offline_html_with_the_slice_identity() {
     let mut fixture = crate::tests::artifacts::Fixture::new();
@@ -222,7 +415,12 @@ fn an_empty_selected_second_is_a_typed_error() {
 async fn an_empty_selected_second_returns_only_the_stable_public_error() {
     let fixture = crate::tests::artifacts::Fixture::new();
     let private_root = fixture.root().display().to_string();
-    let response = super::response(fixture.root().to_path_buf(), range(SECOND, SECOND)).await;
+    let response = super::response(
+        fixture.root().to_path_buf(),
+        range(SECOND, SECOND),
+        Arc::new(tokio::sync::Semaphore::new(1)),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = response
         .into_body()

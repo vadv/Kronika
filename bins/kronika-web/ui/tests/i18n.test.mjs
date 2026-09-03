@@ -25,6 +25,18 @@ test("locale validation checks key and placeholder parity", () => {
   )
 })
 
+test("transient export admission is concise in both locales", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  assert.equal(english["export.error.export_busy"], "Another report is already being built. Try again shortly.")
+  assert.equal(russian["export.error.export_busy"], "Другой отчёт уже формируется. Повторите попытку позже.")
+})
+
 test("PostgreSQL buffer and block metric labels stay canonical English in RU", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),

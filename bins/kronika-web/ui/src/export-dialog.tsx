@@ -12,7 +12,7 @@ interface DialogError {
   readonly message: string
 }
 
-const SERVER_ERROR_KEYS = new Set(["bad_parameter", "export_empty", "export_failed"])
+const SERVER_ERROR_KEYS = new Set(["bad_parameter", "export_busy", "export_empty", "export_failed"])
 
 export function ExportDialog({ hour, mode, onClose, t }: {
   readonly hour: number

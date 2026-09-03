@@ -594,11 +594,18 @@ adapter for the same composition. Its inclusive range of signed whole Unix
 seconds passes directly, in-process, through `kronika_dump::slice_to_zms` and
 then `kronika_report::write_html_from_file_with_segment_id`, preserving the
 slice identity when its context makes catalog `min_ts` differ; the existing
-`write_html_from_file` keeps its catalog-derived identity contract. Web uses two
-storage-agnostic, auto-deleted disk-backed files, reuses the slicer's scratch
-file for the complete HTML, validates that result before sending headers, and
-streams the `.html` attachment without HTTP content coding in bounded chunks.
-The report build omits this live-only control.
+`write_html_from_file` keeps its catalog-derived identity contract. Each web
+process prepares at most one export at a time and does not queue another
+request. Until the slice and report build finishes, another authenticated
+request immediately receives `503 Service Unavailable` with `export_busy`.
+The blocking build retains its admission permit if the request is abandoned.
+Web creates two auto-deleted filesystem temporary files in the operating
+system's standard temporary directory, following the platform and `TMPDIR`
+selection used by `tempfile`, and reuses the slicer's scratch file for the
+complete HTML. It validates that result before sending headers and streams the
+`.html` attachment without HTTP content coding in bounded chunks; preparation
+and delivery remain bounded in memory. The report build omits this live-only
+control.
 
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal

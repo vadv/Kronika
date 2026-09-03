@@ -93,7 +93,12 @@ async fn answer(
         }
         RequestTarget::Api { route, accepted } => {
             if let route::Route::Export(range) = route {
-                export::response(config.data_root.clone(), range).await
+                export::response(
+                    config.data_root.clone(),
+                    range,
+                    Arc::clone(&config.export_gate),
+                )
+                .await
             } else if matches!(route, route::Route::McpAccess) {
                 mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
             } else if matches!(route, route::Route::InstanceLabel) {

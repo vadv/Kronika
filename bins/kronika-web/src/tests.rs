@@ -119,6 +119,7 @@ fn the_instance_label_names_the_largest_recorded_database() {
         authentication_required: true,
         sources: crate::config::SOURCE_POSTGRESQL,
         synthetic_demo: false,
+        export_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
     };
     assert_eq!(
         crate::largest_database(&config(fixture.root())),
@@ -1000,6 +1001,7 @@ fn mcp_access_body_carries_the_basic_value_only_when_authentication_is_on() {
         authentication_required,
         sources: crate::config::SOURCE_OS,
         synthetic_demo: false,
+        export_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
     };
 
     let with_auth: serde_json::Value =

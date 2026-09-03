@@ -774,20 +774,24 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
       const errorStart = page.errors.length
       const held = heldExports.shift()
       assert.notEqual(held, undefined)
-      held.writeHead(500, { "Cache-Control": "no-store", "Content-Type": "application/json" })
-      held.end('{"error":"export_failed"}')
-      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === "Не удалось сформировать отчёт."`, `${width}px retained export error`)
+      const exportError = width === 800
+        ? { code: "export_busy", message: "Другой отчёт уже формируется. Повторите попытку позже.", status: 503 }
+        : { code: "export_failed", message: "Не удалось сформировать отчёт.", status: 500 }
+      held.writeHead(exportError.status, { "Cache-Control": "no-store", "Content-Type": "application/json" })
+      held.end(JSON.stringify({ error: exportError.code }))
+      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === ${JSON.stringify(exportError.message)}`, `${width}px retained export error`)
       await settleLayout(cdp)
       const failed = await geometry()
       assert.equal(failed.ariaBusy, "false", `${width}px error: ${JSON.stringify(failed)}`)
       assert.equal(failed.submitDisabled, false, `${width}px error: ${JSON.stringify(failed)}`)
-      assert.equal(failed.status, "Не удалось сформировать отчёт.", `${width}px error: ${JSON.stringify(failed)}`)
+      assert.equal(failed.status, exportError.message, `${width}px error: ${JSON.stringify(failed)}`)
       assertStable(idle, failed, `${width}px idle/error geometry`)
       await delay(100)
       assert.equal((await geometry()).status, failed.status, `${width}px retained error text`)
       assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px error URL`)
       const expectedErrors = page.errors.splice(errorStart)
-      assert.ok(expectedErrors.every((message) => /500|Internal Server Error/.test(message)), JSON.stringify(expectedErrors))
+      const expectedStatus = width === 800 ? /503|Service Unavailable/ : /500|Internal Server Error/
+      assert.ok(expectedErrors.every((message) => expectedStatus.test(message)), JSON.stringify(expectedErrors))
 
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })

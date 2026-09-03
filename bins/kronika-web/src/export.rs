@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use http_body_util::BodyExt as _;
@@ -11,7 +12,7 @@ use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HeaderVal
 use kronika_dump::{SliceError, SliceRange, UtcSecond, slice_to_zms};
 use kronika_reader::{Reader, ReaderError};
 use kronika_report::{HtmlReportError, write_html_from_file_with_segment_id};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::api::CachePolicy;
 use crate::body::{BodyError, BodyItem, ChannelBody};
@@ -132,8 +133,28 @@ impl From<HtmlReportError> for ExportError {
     }
 }
 
-pub(crate) async fn response(data_root: PathBuf, range: SliceRange) -> Response<WebBody> {
-    match tokio::task::spawn_blocking(move || build(&data_root, range)).await {
+pub(crate) async fn response(
+    data_root: PathBuf,
+    range: SliceRange,
+    gate: Arc<Semaphore>,
+) -> Response<WebBody> {
+    response_with(gate, move || build(&data_root, range)).await
+}
+
+async fn response_with(
+    gate: Arc<Semaphore>,
+    prepare: impl FnOnce() -> Result<PreparedExport, ExportError> + Send + 'static,
+) -> Response<WebBody> {
+    let Ok(permit) = gate.try_acquire_owned() else {
+        return refused(hyper::StatusCode::SERVICE_UNAVAILABLE, "export_busy", None);
+    };
+    match tokio::task::spawn_blocking(move || {
+        // The blocking work retains admission if its caller abandons the request.
+        let _permit = permit;
+        prepare()
+    })
+    .await
+    {
         Ok(Ok(prepared)) => {
             prepared_response(prepared).unwrap_or_else(|error| export_failure(&error))
         }

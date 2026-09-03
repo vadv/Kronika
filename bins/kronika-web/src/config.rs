@@ -3,8 +3,10 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
+use tokio::sync::Semaphore;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
@@ -26,6 +28,8 @@ pub(crate) struct Config {
     pub(crate) sources: u32,
     /// Whether the server exposes the bundled synthetic demo dataset.
     pub(crate) synthetic_demo: bool,
+    /// Process-wide admission for standalone export preparation.
+    pub(crate) export_gate: Arc<Semaphore>,
 }
 
 /// Credentials accepted directly and used to derive browser sessions.
@@ -74,6 +78,7 @@ impl Config {
             authentication_required,
             sources,
             synthetic_demo,
+            export_gate: Arc::new(Semaphore::new(1)),
         })
     }
 }
