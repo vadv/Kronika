@@ -10,6 +10,7 @@ members = [
     "crates/kronika-reader",
     "crates/kronika-index",
     "crates/kronika-query",
+    "crates/kronika-api",
     "crates/kronika-report",
     "crates/kronika-source-os",
     "crates/kronika-source-log",

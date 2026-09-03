@@ -1371,6 +1371,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-api"
+version = "1.0.0"
+dependencies = [
+ "kronika-query",
+]
+
+[[package]]
 name = "kronika-bdd"
 version = "1.0.0"
 dependencies = [
@@ -1586,6 +1593,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "kronika-api",
  "kronika-format",
  "kronika-index",
  "kronika-layout",

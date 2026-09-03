@@ -17,6 +17,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 kronika-index = { path = "../../crates/kronika-index" }
+kronika-api = { path = "../../crates/kronika-api" }
 kronika-query = { path = "../../crates/kronika-query" }
 kronika-reader = { path = "../../crates/kronika-reader" }
 rmcp = { version = "3.1.4", features = ["server", "transport-streamable-http-server"] }
