@@ -67,7 +67,7 @@ test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.match(entityTable, /const \[horizontalRailHeight, setHorizontalRailHeight\] = useState\(0\)/)
   assert.match(entityTable, /root\.offsetHeight - root\.clientHeight/)
   assert.match(entityTable, /new ResizeObserver\(measureRail\)/)
-  assert.match(entityTable, /contentSized \? \(rendered\.length === 0 \? \(loading \? headHeight \+ SKELETON_ROWS \* ROW_PX : 72\) : Math\.min\(310, headHeight \+ rendered\.length \* ROW_PX\)\) \+ horizontalRailHeight/)
+  assert.match(entityTable, /contentSized \? \(rendered\.length === 0 \? 72 : Math\.min\(310, headHeight \+ rendered\.length \* ROW_PX\)\) \+ horizontalRailHeight/)
 })
 
 test("the shared Chart Inspector uses one compact metric selector and one body scroll axis", async () => {

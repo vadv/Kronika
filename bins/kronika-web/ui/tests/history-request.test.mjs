@@ -36,6 +36,7 @@ test("full-hour histories refresh on the shared data generation, not cursor move
   assert.match(app, /useHistoryRequest\(processHistoryKey, refreshVersion,/)
   assert.match(app, /<SystemView[^>]*historyRevision=\{refreshVersion\}/)
   assert.match(app, /<PostgresView[^>]*historyRevision=\{refreshVersion\}/)
+  assert.match(postgres, /useHistoryRequest\(String\(hour\), historyRevision,/)
   for (const source of [postgres, relations, system]) {
     assert.doesNotMatch(source, /useHistoryRequest\([^\n]*, (?:row|selectedRow)\?*\.?timestamp/)
   }

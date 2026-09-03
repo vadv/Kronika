@@ -38,14 +38,17 @@ import { emptyHourStatusKey } from "./refresh"
 import { PostgresSummary, type PostgresSummaryState } from "./postgres-summary"
 import { SeriesChart } from "./series-chart"
 import type { SearchRequestState } from "./search-request"
+import type { TableRequestPhase } from "./table-request"
 import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
+
+const NO_RATE_FIELDS: readonly string[] = []
 
 export interface PostgresRelationsViewProps {
   readonly blockSize: number | null
   readonly cursor: number
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
-  readonly tablesLoading: boolean
+  readonly requestPhase: TableRequestPhase
   readonly filters: Readonly<Record<string, string>>
   readonly historyRevision: number
   readonly hour: number
@@ -71,10 +74,11 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { blockSize, cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, summary, t } = props
+  const { blockSize, cursor, data, densePageState, requestPhase, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, summary, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
-  const rateFields = data.rateColumns[section] ?? []
+  const rateFieldsKey = (data.rateColumns[section] ?? NO_RATE_FIELDS).join("\u0000")
+  const rateFields = useMemo(() => rateFieldsKey === "" ? NO_RATE_FIELDS : rateFieldsKey.split("\u0000"), [rateFieldsKey])
   const columns = useMemo(() => postgresByteColumns(relationColumns(section, lens, level, rateFields, t), blockSize), [blockSize, lens, level, rateFields, section, t])
   const activeOrder = order !== undefined && columns.some(({ field, sortable }) => field === order.column && sortable === true)
     ? order
@@ -101,7 +105,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
       <EntityTable
         columns={columns}
         contentSized={rows.length < 10 && !hasMore}
-        loading={tablesLoading || rows.length === 0 && densePageState === "loading"}
+        requestPhase={requestPhase}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}

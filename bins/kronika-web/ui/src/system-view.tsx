@@ -13,6 +13,7 @@ import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
+import type { TableRequestPhase } from "./table-request"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
 import { UseTable, type LedgerKey, type UseResourceKey } from "./use-table"
 
@@ -382,12 +383,6 @@ export function recordedEnvironment(data: Pick<HourData, "sections">, cursor: nu
   return environment === 0 ? "machine" : environment === 1 ? "container" : null
 }
 
-export function clearCgroupSnapshotRows(data: HourData): HourData {
-  const sections: Record<string, readonly DataRow[]> = { ...data.sections }
-  for (const section of CGROUP_SECTIONS) delete sections[section]
-  return { ...data, sections }
-}
-
 export function SystemView({
   context,
   contextRow,
@@ -409,7 +404,7 @@ export function SystemView({
   onSelectedKey,
   selectedLane,
   selectedKey,
-  tablesLoading = false,
+  requestPhase = "ready",
   t,
 }: {
   readonly context: EntityContext | null
@@ -432,7 +427,7 @@ export function SystemView({
   readonly onSelectedKey: (key: string | null) => void
   readonly selectedLane: string
   readonly selectedKey: string | null
-  readonly tablesLoading?: boolean | undefined
+  readonly requestPhase?: TableRequestPhase | undefined
   readonly t: Translate
 }) {
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
@@ -515,7 +510,7 @@ export function SystemView({
           const allRows = systemEntityRows(data, entity.section, cursor)
           const activeContext = context?.logicalName === entity.section ? context : null
           const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
-          if (rows.length === 0 && activeContext === null && !tablesLoading) return null
+          if (rows.length === 0 && activeContext === null && requestPhase === "ready") return null
           if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
           const finding = focus?.logicalName === entity.section ? focus : null
           return <SystemEntityPanel
@@ -536,7 +531,7 @@ export function SystemView({
             section={entity.section}
             selectedField={metric}
             selectedKey={selectedKey}
-            tablesLoading={tablesLoading}
+            requestPhase={requestPhase}
             t={t}
           />
         })}
@@ -767,7 +762,7 @@ function SystemEntityPanel({
   columns,
   contextLabel,
   cursor,
-  tablesLoading,
+  requestPhase,
   finding,
   historyRevision,
   hour,
@@ -796,7 +791,7 @@ function SystemEntityPanel({
   readonly onMetric: (field: string | null) => void
   readonly onSelectedKey: (key: string | null) => void
   readonly rows: readonly DataRow[]
-  readonly tablesLoading?: boolean | undefined
+  readonly requestPhase: TableRequestPhase
   readonly section: string
   readonly selectedField: string | null
   readonly selectedKey: string | null
@@ -808,9 +803,9 @@ function SystemEntityPanel({
     ? []
     : metricColumns.filter((column) => Object.hasOwn(selectedRow.values, physicalField(column, selectedRow.typeId))), [metricColumns, selectedRow])
   useEffect(() => {
-    if (selectedKey !== null && selectedRow === null && !tablesLoading
+    if (selectedKey !== null && selectedRow === null && requestPhase !== "pending"
       && entityKeyOwnedBySection(selectedKey, section)) onSelectedKey(null)
-  }, [onSelectedKey, section, selectedKey, selectedRow, tablesLoading])
+  }, [onSelectedKey, requestPhase, section, selectedKey, selectedRow])
   useEffect(() => {
     if (selectedRow === null) return
     if (availableColumns.some((column) => column.field === selectedField)) return
@@ -847,7 +842,7 @@ function SystemEntityPanel({
       contentSized
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
-      loading={tablesLoading && rows.length === 0}
+      requestPhase={requestPhase}
       finding={finding}
       findingField={finding === null ? null : fieldNameForLocator(finding)}
       label={label}

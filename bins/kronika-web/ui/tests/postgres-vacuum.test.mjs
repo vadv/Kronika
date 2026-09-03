@@ -141,7 +141,10 @@ test("the hour fetch names no fields: an empty list, not a fixed union across PG
   // the three layouts — which is most hours. An empty list asks the server
   // for exactly what each segment's own layout defines.
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /loadSeries\(hour, "pg_stat_progress_vacuum", \{\}, \[\], controller\.signal\)/)
+  assert.match(source, /useHistoryRequest\(String\(hour\), historyRevision,/)
+  assert.match(source, /\(signal\) => loadSeries\(hour, "pg_stat_progress_vacuum", \{\}, \[\], signal\)/)
+  assert.match(source, /const vacuumRequestPhase = hourRows\.status === "loading" \? "pending" : hourRows\.status/)
+  assert.match(source, /requestPhase=\{vacuumRequestPhase\}/)
 })
 
 function processRow(atSeconds, pid, values) {

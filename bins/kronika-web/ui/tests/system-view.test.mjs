@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -314,26 +314,6 @@ test("System loads cgroups only for the recorded container environment", () => {
   assert.equal(helpers.recordedEnvironment({ sections: {} }, 12), null)
 })
 
-test("changing a cgroup snapshot key removes every prior exact entity row", () => {
-  const preserved = [{ logicalName: "os_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1102001", values: {} }]
-  const cleared = helpers.clearCgroupSnapshotRows({
-    sections: {
-      os_cpu: preserved,
-      os_cgroup_context: [{ logicalName: "os_cgroup_context", ordinal: "context", segmentId: "s", timestamp: 1, typeId: "1205001", values: {} }],
-      os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
-      os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
-      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203002", values: {} }],
-      os_cgroup_pids: [{ logicalName: "os_cgroup_pids", ordinal: "pids", segmentId: "s", timestamp: 1, typeId: "1204001", values: {} }],
-    },
-  })
-  assert.equal(cleared.sections.os_cpu, preserved)
-  assert.equal(cleared.sections.os_cgroup_context, undefined)
-  assert.equal(cleared.sections.os_cgroup_cpu, undefined)
-  assert.equal(cleared.sections.os_cgroup_memory, undefined)
-  assert.equal(cleared.sections.os_cgroup_io, undefined)
-  assert.equal(cleared.sections.os_cgroup_pids, undefined)
-})
-
 test("System never depends on process rows loaded by another view", async () => {
   assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_process"), false)
   assert.equal(helpers.SYSTEM_METRICS.some(({ id }) => id.startsWith("process_")), false)
@@ -616,7 +596,7 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
-  assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
+  assert.match(source, /rows\.length === 0 && activeContext === null && requestPhase === "ready"/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

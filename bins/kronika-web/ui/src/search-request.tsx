@@ -28,7 +28,7 @@ export function SearchRequestMessage({ request, t }: {
   const pending = request.phase === "pending"
   const key = `filter.${pending ? "searching" : "search_failed"}${request.retained ? "_retained" : ""}`
   return <span aria-live={pending ? "polite" : undefined} className={`flex min-w-0 flex-1 items-center gap-2${pending ? "" : " text-bad"}`} role={pending ? "status" : "alert"}>
-    {pending && <progress style={{ width: 44 }} />}
+    {pending && <progress aria-hidden="true" style={{ width: 44 }} />}
     <span className="min-w-0 overflow-hidden text-ellipsis">{t(key)}</span>
   </span>
 }

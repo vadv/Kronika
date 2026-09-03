@@ -27,6 +27,7 @@ import {
 import { canonicalSearch } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import type { TableRequestPhase } from "./table-request"
 import { filterProcessForest } from "./process-tree"
 
 export interface Field {
@@ -240,6 +241,7 @@ export function ProcessTable({
   onRetry,
   order,
   pattern,
+  requestPhase,
   rows,
   searchRequest,
   selectedKey,
@@ -262,6 +264,7 @@ export function ProcessTable({
   readonly onSelect: (row: DataRow) => void
   readonly onRetry: () => void
   readonly pattern: string
+  readonly requestPhase: TableRequestPhase
   readonly rows: readonly DataRow[]
   readonly searchRequest: SearchRequestState
   readonly selectedKey: string | null
@@ -300,7 +303,7 @@ export function ProcessTable({
     <EntityTable
     className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-s1"
     columns={columns}
-    loading={rows.length === 0 && densePageState === "loading"}
+    requestPhase={requestPhase}
     contextLabel={contextLabel}
     empty={t("table.empty")}
     finding={finding}

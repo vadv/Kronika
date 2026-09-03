@@ -337,6 +337,397 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
   }
 })
 
+test("held current Process and Vacuum views stay locally busy before successful empty results", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const timeline = processReviewTimelineRecords()
+  let pendingTree = null
+  let pendingVacuum = null
+  let releaseTreeRequest
+  let releaseVacuumRequest
+  const treeRequest = new Promise((resolve) => { releaseTreeRequest = resolve })
+  const vacuumRequest = new Promise((resolve) => { releaseVacuumRequest = resolve })
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("section") === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 0))
+      if (url.searchParams.getAll("section").length === 1 && url.searchParams.get("section") === "pg_stat_progress_vacuum") {
+        pendingVacuum = response
+        releaseVacuumRequest()
+        return
+      }
+      return ndjson(response, timeline)
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = url.searchParams.getAll("section")
+      if (sections.includes("os_process") && !url.searchParams.has("page_size") && pendingTree === null) {
+        pendingTree = response
+        releaseTreeRequest()
+        return
+      }
+      return ndjson(response, [])
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("held Process view server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 800 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=tree` })
+    await treeRequest
+    await cdp.waitFor(`document.querySelector('[data-testid="process-table"] [data-testid="table-skeleton"]') !== null`, "the local Process loading rows", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian loading label")
+    const geometry = () => cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      const scroll = table.querySelector('.entity-scroll')
+      const head = table.querySelector('.entity-head')
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      return { head: rect(head), scroll: rect(scroll), table: rect(table) }
+    })()`)
+    const pending = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      const scroll = table.querySelector('.entity-scroll')
+      const live = table.querySelector('[role="status"][aria-live="polite"]')
+      return {
+        busy: table.getAttribute('aria-busy'),
+        empty: table.textContent.includes('На выбранный момент нет данных о процессах'),
+        live: live?.textContent ?? '',
+        progress: live?.querySelector('progress') !== null,
+        rows: table.querySelectorAll('.entity-row').length,
+        scrollBusy: scroll.getAttribute('aria-busy'),
+        skeleton: table.querySelector('[data-testid="table-skeleton"]') !== null,
+      }
+    })()`)
+    assert.deepEqual(pending, {
+      busy: "false",
+      empty: false,
+      live: "Загружаем строки…",
+      progress: true,
+      rows: 0,
+      scrollBusy: "true",
+      skeleton: true,
+    })
+    const before = await geometry()
+    const response = pendingTree
+    pendingTree = null
+    ndjson(response, [])
+    await cdp.waitFor(`document.querySelector('[data-testid="process-table"]')?.textContent.includes('На выбранный момент нет данных о процессах') === true`, "the successful empty Process result", 15_000)
+    await settleLayout(cdp)
+    const ready = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      const scroll = table.querySelector('.entity-scroll')
+      return {
+        busy: table.getAttribute('aria-busy'),
+        empty: table.textContent.includes('На выбранный момент нет данных о процессах'),
+        live: table.querySelector('[role="status"][aria-live="polite"]') !== null,
+        progress: table.querySelector('progress') !== null,
+        scrollBusy: scroll.getAttribute('aria-busy'),
+        skeleton: table.querySelector('[data-testid="table-skeleton"]') !== null,
+      }
+    })()`)
+    assert.deepEqual(ready, {
+      busy: "false",
+      empty: true,
+      live: false,
+      progress: false,
+      scrollBusy: "false",
+      skeleton: false,
+    })
+    const after = await geometry()
+    for (const part of ["head", "scroll", "table"]) {
+      for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+        assert.ok(Math.abs(after[part][edge] - before[part][edge]) <= 1, `${part}.${edge}: ${JSON.stringify({ after, before })}`)
+      }
+    }
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.vacuum` })
+    await vacuumRequest
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-scroll')?.getAttribute('aria-busy') === 'true'`, "the local Vacuum loading state", 15_000)
+    assert.equal(await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-vacuum-table"]')
+      return table !== null && table.textContent.includes('Загружаем строки…')
+        && !table.textContent.includes('Нет записанных данных о ходе VACUUM.')
+        && table.querySelector('[role="status"][aria-live="polite"] progress') !== null
+    })()`), true)
+    ndjson(pendingVacuum, [])
+    pendingVacuum = null
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"]')?.textContent.includes('Нет записанных данных о ходе VACUUM.') === true`, "the successful empty Vacuum result", 15_000)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-scroll')?.getAttribute('aria-busy')`), "false")
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+    process.stdout.write(`${JSON.stringify({ heldProcessTable: { after, before } }, null, 2)}\n`)
+  } finally {
+    pendingVacuum?.destroy()
+    pendingTree?.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
+test("the Process Inspector plot keeps its DOM while the shared cursor request settles", { timeout: 90_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const timeline = processReviewTimelineRecords()
+  const heldCompanions = []
+  const heldPages = []
+  const historyRequests = []
+  let holdCursorPages = false
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/hour") {
+      const section = url.searchParams.get("section")
+      if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
+      if (section === "os_process" && url.searchParams.has("where.pid")) {
+        historyRequests.push(url.search)
+        return ndjson(response, processHistoryRecords(url))
+      }
+      return ndjson(response, timeline)
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const at = Number(url.searchParams.get("at") ?? AT)
+      const sections = url.searchParams.getAll("section")
+      if (sections.length === 1 && sections[0] === "os_process" && url.searchParams.has("page_size")) {
+        if (holdCursorPages) {
+          heldPages.push({ at, response })
+          return
+        }
+        return ndjson(response, processSnapshotRecordsAt(at))
+      }
+      if (holdCursorPages) {
+        heldCompanions.push({ at, response })
+        return
+      }
+      return ndjson(response, instanceMetadataRecords(at))
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("stable Inspector server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=cpu` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the initial Process snapshot", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English Inspector labels")
+    await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the Process Detail Inspector")
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs [role="tab"]')].find((button) => button.textContent === 'Chart')).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector-chart"] [data-testid="process-history"] .uplot-host canvas') !== null && document.querySelector('[data-testid="inspector-chart"] [data-testid="series-status"]') === null`, "the settled Process history plot", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-history-metric-stime"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-history-metric-stime"]')?.getAttribute('aria-pressed') === 'true' && document.querySelector('[data-testid="inspector-chart"] [data-testid="series-status"]') === null`, "the selected system-time series")
+    await settleLayout(cdp)
+    const hoverPoint = await cdp.evaluate(`(() => {
+      const box = document.querySelector('[data-testid="process-history"] .u-over').getBoundingClientRect()
+      return { x: box.left + box.width * .55, y: box.top + box.height * .5 }
+    })()`)
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
+    await cdp.waitFor(`document.querySelector('[data-testid="process-history"] [data-testid="chart-hover-readout"]') !== null`, "the Process history hover readout")
+    const baseline = await cdp.evaluate(`(() => {
+      const figure = document.querySelector('[data-testid="process-history"] .uplot-figure')
+      const host = figure.querySelector('.uplot-host')
+      const plot = host.querySelector('.uplot')
+      const over = host.querySelector('.u-over')
+      const canvases = [...host.querySelectorAll('canvas')]
+      const tooltip = figure.querySelector('[data-testid="chart-hover-readout"]')
+      const observerTarget = document.querySelector('[data-testid="inspector-chart"]')
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      const tracked = { blankFrames: 0, canvases, figure, host, observer: null, over, plot, removed: 0, running: true, tooltip }
+      tracked.observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.removedNodes) {
+          if (node === host || node === plot || node === tooltip || canvases.includes(node)
+            || node.nodeType === Node.ELEMENT_NODE && (node.contains(host) || node.contains(plot) || node.contains(tooltip) || canvases.some((canvas) => node.contains(canvas)))) tracked.removed += 1
+        }
+      })
+      tracked.observer.observe(observerTarget, { childList: true, subtree: true })
+      const watch = () => {
+        if (!tracked.running) return
+        const currentCanvases = [...tracked.host.querySelectorAll('canvas')]
+        if (!tracked.figure.isConnected || !tracked.host.isConnected || !tracked.plot.isConnected || !tracked.over.isConnected
+          || currentCanvases.length !== tracked.canvases.length || tracked.canvases.some((canvas, index) => !canvas.isConnected || currentCanvases[index] !== canvas || canvas.getBoundingClientRect().width < 1 || canvas.getBoundingClientRect().height < 1)) tracked.blankFrames += 1
+        requestAnimationFrame(watch)
+      }
+      requestAnimationFrame(watch)
+      window.__stableProcessChart = tracked
+      return {
+        ariaLabel: host.getAttribute('aria-label'),
+        boxes: { figure: rect(figure), host: rect(host), over: rect(over), plot: rect(plot), canvases: canvases.map(rect) },
+        canvasCount: canvases.length,
+        hovered: figure.dataset.hoveredTimestamp,
+        metric: document.querySelector('[data-testid="process-history"] [aria-pressed="true"]')?.dataset.testid,
+        navigationCount: figure.dataset.navigationCount,
+        row: new URL(location.href).searchParams.get('row'),
+        selected: figure.dataset.selectedTimestamp,
+        summaryShape: figure.querySelector('.chart-summary')?.textContent.match(/\\d+ samples, \\d+ explicit nulls/)?.[0] ?? null,
+        summaryText: figure.querySelector('.chart-summary')?.textContent ?? null,
+        tooltipText: tooltip.textContent,
+      }
+    })()`)
+    assert.ok(baseline.canvasCount > 0, JSON.stringify(baseline))
+    assert.equal(baseline.metric, "process-history-metric-stime")
+    assert.notEqual(baseline.row, null)
+    assert.equal(baseline.selected, String(AT))
+
+    const currentChart = () => cdp.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      const tracked = window.__stableProcessChart
+      const figure = document.querySelector('[data-testid="process-history"] .uplot-figure')
+      const host = figure?.querySelector('.uplot-host') ?? null
+      const plot = host?.querySelector('.uplot') ?? null
+      const over = host?.querySelector('.u-over') ?? null
+      const canvases = host === null ? [] : [...host.querySelectorAll('canvas')]
+      const tooltip = figure?.querySelector('[data-testid="chart-hover-readout"]') ?? null
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      resolve({
+        ariaLabel: host?.getAttribute('aria-label') ?? null,
+        blankFrames: tracked.blankFrames,
+        boxes: figure === null || host === null || plot === null || over === null ? null : { figure: rect(figure), host: rect(host), over: rect(over), plot: rect(plot), canvases: canvases.map(rect) },
+        fallback: document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') !== null,
+        identity: figure === tracked.figure && host === tracked.host && plot === tracked.plot && over === tracked.over
+          && tooltip === tracked.tooltip && canvases.length === tracked.canvases.length && tracked.canvases.every((canvas, index) => canvases[index] === canvas),
+        hovered: figure?.dataset.hoveredTimestamp ?? null,
+        metric: document.querySelector('[data-testid="process-history"] [aria-pressed="true"]')?.dataset.testid ?? null,
+        navigationCount: figure?.dataset.navigationCount ?? null,
+        removed: tracked.removed,
+        row: new URL(location.href).searchParams.get('row'),
+        selected: figure?.dataset.selectedTimestamp ?? null,
+        summaryShape: figure?.querySelector('.chart-summary')?.textContent.match(/\\d+ samples, \\d+ explicit nulls/)?.[0] ?? null,
+        summaryText: figure?.querySelector('.chart-summary')?.textContent ?? null,
+        tooltipConnected: tracked.tooltip?.isConnected === true,
+        tooltipText: tooltip?.textContent ?? null,
+      })
+    })))`)
+    const assertStable = async (target, stage, changedUnit = null) => {
+      const current = await currentChart()
+      assert.equal(current.identity, true, `${stage} identity: ${JSON.stringify(current)}`)
+      assert.equal(current.removed, 0, `${stage} removals: ${JSON.stringify(current)}`)
+      assert.equal(current.blankFrames, 0, `${stage} blank frames: ${JSON.stringify(current)}`)
+      assert.equal(current.fallback, false, `${stage} fallback: ${JSON.stringify(current)}`)
+      assert.equal(current.hovered, baseline.hovered, `${stage} hover timestamp`)
+      assert.equal(current.metric, baseline.metric, `${stage} metric`)
+      assert.equal(current.navigationCount, baseline.navigationCount, `${stage} timestamps`)
+      assert.equal(current.row, baseline.row, `${stage} row`)
+      assert.equal(current.selected, String(target), `${stage} selected timestamp`)
+      assert.equal(current.summaryShape, baseline.summaryShape, `${stage} samples and nulls`)
+      assert.equal(current.tooltipConnected, true, `${stage} hover node`)
+      if (changedUnit === null) assert.equal(current.tooltipText, baseline.tooltipText, `${stage} hover text`)
+      else {
+        assert.match(current.ariaLabel, new RegExp(changedUnit.replace("/", "\\/")), `${stage} image label`)
+        assert.match(current.tooltipText, new RegExp(changedUnit.replace("/", "\\/")), `${stage} hover unit`)
+        assert.doesNotMatch(current.tooltipText, /—/, `${stage} preserved hover sample`)
+        assert.notEqual(current.tooltipText, baseline.tooltipText, `${stage} converted value`)
+      }
+      assert.notEqual(current.boxes, null, `${stage} boxes`)
+      for (const part of ["figure", "host", "over", "plot"]) {
+        for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+          assert.ok(Math.abs(current.boxes[part][edge] - baseline.boxes[part][edge]) <= .75, `${stage} ${part}.${edge}: ${JSON.stringify({ baseline, current })}`)
+        }
+      }
+      assert.equal(current.boxes.canvases.length, baseline.boxes.canvases.length, `${stage} canvases`)
+      current.boxes.canvases.forEach((box, index) => {
+        for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+          assert.ok(Math.abs(box[edge] - baseline.boxes.canvases[index][edge]) <= .75, `${stage} canvas ${index}.${edge}: ${JSON.stringify({ baseline, current })}`)
+        }
+      })
+    }
+    const moveCursor = async (key, target, leaveCompanionPending = false, ticksPerSecond = 100) => {
+      const existingCompanions = heldCompanions.length
+      const existing = heldPages.length
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: ${JSON.stringify(key)} }))`)
+      await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${target}"`, `the ${target} cursor address`)
+      await waitForRequests(() => heldPages.length > existing && heldPages.some((entry) => entry.at === target)
+        && heldCompanions.length > existingCompanions && heldCompanions.some((entry) => entry.at === target))
+      await cdp.waitFor(`document.querySelector('[data-testid="process-table"] .entity-scroll')?.getAttribute('aria-busy') === 'true'`, `the ${target} Process pending state`)
+      assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="process-table"]')?.textContent.includes('No process data at the selected time') === false`), true)
+      await assertStable(target, `${target} pending`)
+      const held = heldPages.find((entry, index) => index >= existing && entry.at === target)
+      assert.notEqual(held, undefined)
+      ndjson(held.response, processSnapshotRecordsAt(target))
+      await cdp.waitFor(`document.querySelector('[data-testid="process-table"] .entity-scroll')?.getAttribute('aria-busy') === 'false' && document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, `the ${target} Process replacement`, 15_000)
+      await assertStable(target, `${target} companion pending`)
+      const companion = heldCompanions.find((entry, index) => index >= existingCompanions && entry.at === target)
+      assert.notEqual(companion, undefined)
+      if (leaveCompanionPending) return companion
+      ndjson(companion.response, instanceMetadataRecords(target, ticksPerSecond))
+      if (ticksPerSecond === null) {
+        await cdp.waitFor(`document.querySelector('[data-testid="process-history"] .uplot-host')?.getAttribute('aria-label').includes('ticks/s') === true`, `the ${target} authoritative raw-tick unit`)
+      }
+      await delay(50)
+      await settleLayout(cdp)
+      await assertStable(target, `${target} ready`, ticksPerSecond === null ? "ticks/s" : null)
+      return companion
+    }
+    holdCursorPages = true
+    const staleCompanion = await moveCursor("ArrowLeft", BEFORE_AT, true)
+    await moveCursor("ArrowRight", AT)
+    await waitForRequests(() => staleCompanion.response.destroyed)
+    await moveCursor("ArrowRight", AFTER_AT, false, null)
+    const finalState = await currentChart()
+    assert.equal(historyRequests.length, 1, JSON.stringify(historyRequests))
+    assert.equal(finalState.removed, 0)
+    assert.equal(finalState.blankFrames, 0)
+    await cdp.evaluate(`(() => { window.__stableProcessChart.running = false; window.__stableProcessChart.observer.disconnect() })()`)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+    process.stdout.write(`${JSON.stringify({ stableProcessChart: { baseline, final: finalState } }, null, 2)}\n`)
+  } finally {
+    for (const held of heldCompanions) if (!held.response.writableEnded) held.response.destroy()
+    for (const held of heldPages) if (!held.response.writableEnded) held.response.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("the MCP drawer copies exactly through real legacy behavior and restores modal focus", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -4232,18 +4623,26 @@ test("structured search pending state and snapshot targets preserve exact newest
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary System target B")
     await waitForRequests(() => pendingSystemFailure !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"] .loading-ring') !== null`, "ordinary System target B loading", 15_000)
-    // The metric chips clear while the new key loads; the rows stay expanded
-    // and the device panel keeps its frame, saying it is loading.
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null`), true)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_available"]') === null`), true)
+    // The last successful rows and derived readings stay visible while their
+    // same-surface replacement is unresolved.
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_available"]') !== null`), true)
     assert.equal(await cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-testid="system-panel-os_diskstats"]')
-      return panel !== null && panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows")
+      return panel !== null && panel.querySelectorAll(".entity-row").length > 0
+        && panel.textContent.includes("device_target_A") && panel.textContent.includes("Previous rows remain visible")
     })()`), true)
     brokenNdjson(pendingSystemFailure)
     pendingSystemFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary System target B error", 15_000)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_available"]') === null && document.querySelector('[data-testid="system-panel-os_diskstats"]') === null`), true)
+    assert.equal(await cdp.evaluate(`(() => {
+      const panel = document.querySelector('[data-testid="system-panel-os_diskstats"]')
+      return document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null
+        && document.querySelector('[data-testid="system-metric-mem_available"]') !== null
+        && panel !== null && panel.textContent.includes("device_target_A")
+        && panel.textContent.includes("Could not load rows. Previous rows remain visible.")
+        && panel.querySelector('[role="alert"]') !== null
+    })()`), true)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
 
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
@@ -4254,14 +4653,17 @@ test("structured search pending state and snapshot targets preserve exact newest
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"] .loading-ring') !== null`, "ordinary PostgreSQL target B loading", 15_000)
     assert.equal(await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-activity-table"]')
-      return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null
+      return table !== null && table.textContent.includes("activity_target_A")
+        && table.textContent.includes("Previous rows remain visible") && table.querySelector('.entity-row') !== null
     })()`), true)
     brokenNdjson(pendingActivityFailure)
     pendingActivityFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary PostgreSQL target B error", 15_000)
     assert.equal(await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-activity-table"]')
-      return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null
+      return table !== null && table.textContent.includes("activity_target_A")
+        && table.textContent.includes("Could not load rows. Previous rows remain visible.")
+        && table.querySelector('.entity-row') !== null && table.querySelector('[role="alert"]') !== null
     })()`), true)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
 
@@ -4433,6 +4835,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     assert.equal(loadingRelation.rows, 0)
     assert.doesNotMatch(loadingRelation.text, /relation_target_A/)
     assert.doesNotMatch(loadingRelation.status, /333/)
+    assert.match(loadingRelation.status, /Loading rows/)
     brokenNdjson(pendingRelationFailure)
     pendingRelationFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "relation target B error", 15_000)
@@ -4443,7 +4846,8 @@ test("structured search pending state and snapshot targets preserve exact newest
     assert.equal(failedRelation.rows, 0)
     assert.doesNotMatch(failedRelation.text, /relation_target_A/)
     assert.doesNotMatch(failedRelation.status, /333/)
-    assert.match(failedRelation.status, /Calculation interval: unavailable/)
+    assert.match(failedRelation.status, /Could not load rows/)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] [role="alert"]') !== null`), true)
     await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"]')?.textContent.includes("relation_target_B") === true`, "relation target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 444/)
@@ -6230,6 +6634,75 @@ function snapshotRecords() {
         String(AT - 120_000_000), String(AT - 45_000_000), String(AT - 7_000_000), String(AT - 2_500_000),
       ],
     },
+  ]
+}
+
+function processReviewTimelineRecords() {
+  return snapshotTargetTimelineRecords().map((record) => record.record !== "finished_segment"
+    ? record
+    : {
+        ...record,
+        sections: [...record.sections, {
+          logical_name: "instance_metadata", physical_name: "instance_metadata", type_id: "1000001",
+          implementation: "linux", source_family: "system", rows: "1", bytes: "64",
+        }],
+      })
+}
+
+function snapshotRecordsAt(timestamp) {
+  const records = snapshotRecords()
+  const columns = new Map(records
+    .filter((record) => record.record === "layout")
+    .map((record) => [record.layout.type_id, record.layout.columns.map(({ name }) => name)]))
+  return records.map((record) => {
+    if (record.record !== "row") return record
+    const names = columns.get(record.type_id) ?? []
+    const ts = names.indexOf("ts")
+    return {
+      ...record,
+      timestamp: String(timestamp),
+      values: ts < 0 ? record.values : record.values.map((value, index) => index === ts ? String(timestamp) : value),
+    }
+  })
+}
+
+function processSnapshotRecordsAt(timestamp) {
+  return snapshotRecordsAt(timestamp).filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) === "1100001")
+}
+
+function instanceMetadataRecords(timestamp, ticksPerSecond = 100) {
+  return [
+    layout("1000001", "instance_metadata", ["ts", "postgresql_interval_seconds", "clock_ticks_per_sec", "environment"]),
+    row("1000001", "metadata", [String(timestamp), 30, ticksPerSecond, 1], timestamp),
+  ]
+}
+
+function processHistoryRecords(url) {
+  const fields = url.searchParams.getAll("field")
+  const records = snapshotRecords()
+  const sourceLayout = records.find((record) => record.record === "layout" && record.layout.type_id === "1100001")
+  const sourceRow = records.find((record) => record.record === "row" && record.type_id === "1100001")
+  const sourceFields = sourceLayout.layout.columns.map(({ name }) => name)
+  const source = Object.fromEntries(sourceFields.map((field, index) => [field, sourceRow.values[index]]))
+  const counterStep = {
+    blkdelay_ticks: 7, cancelled_write_bytes: 512, majflt: 2, minflt: 19, nivcsw: 4, nvcsw: 13,
+    rchar: 4096, read_bytes: 2048, rundelay_ns: 900_000, stime: 80, syscr: 5, syscw: 6,
+    utime: 170, wchar: 8192, write_bytes: 3072,
+  }
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("1100001", "os_process", fields),
+    ...[BEFORE_AT, AT, AFTER_AT].map((timestamp, index) => row(
+      "1100001",
+      `history-${index}`,
+      fields.map((field) => {
+        if (field === "pid") return Number(url.searchParams.get("where.pid") ?? source.pid)
+        const base = source[field]
+        const step = counterStep[field]
+        return step === undefined || typeof base !== "number" ? base ?? null : base + step * index
+      }),
+      timestamp,
+    )),
   ]
 }
 

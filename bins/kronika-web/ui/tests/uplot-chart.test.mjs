@@ -190,9 +190,16 @@ test("tooltip uses seconds only when two samples share a displayed minute", () =
 
 test("y-axis labels carry only the unit, series names live in the caption", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  assert.match(source, /!compact && unit !== "" && line\.tickAxis !== "duration" \? \{ label: unit \} : \{\}/)
+  assert.match(source, /!compact && initialLine\.unit !== "" && initialLine\.tickAxis !== "duration" \? \{ label: \(\) => runtime\.current\.series/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
   assert.match(source, /chart-series-labels/)
+})
+
+test("same-topology chart data updates the existing plot in place", async () => {
+  const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
+  assert.match(source, /chart\.setData\(latest\.frame\.data, false\)/)
+  assert.match(source, /chart\.setScale\(partition\.key, \{ min, max \}\)/)
+  assert.match(source, /runtime\.current\.frame\.isolated/)
 })
 
 test("the shared time scale reserves a stable right-end label gutter", () => {

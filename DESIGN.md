@@ -845,6 +845,11 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Every current-view entity table owns a target-keyed local request state. Until
+the newest target succeeds, pending or failure is shown locally and completed
+empty copy is suppressed; the last successful same-surface rows remain labelled
+as retained. Only a successful zero-row response is empty.
+
 Processes uses the whole viewport row left after the time preview and compact
 controls. Its four summary readings live in the lens bar instead of a separate
 height band. The virtual table is the primary surface. A selected row uses the
@@ -858,6 +863,9 @@ gutter without exposing horizontal overflow.
 CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
+Across same-surface cursor requests, a selected entity's Inspector portal and
+plot DOM remain mounted. Only its cursor marker, readout and cursor-dependent
+values update; the successful replacement remains authoritative.
 
 The compact preview control rail is never a horizontal scroll region. Its Chart
 action owns a fixed edge slot, while lane labels and readings share only the

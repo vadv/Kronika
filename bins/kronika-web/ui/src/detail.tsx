@@ -214,6 +214,7 @@ function formatProcessChartValue(
   ticksPerSecond: number | null,
 ): string {
   if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return humanCores(reading, locale, t("unit.cores"))
+  if (kind === "cores") return measure(reading, locale)
   if (kind === "ns") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   if (kind === "kib") return humanBytes(reading, locale)
   if (kind === "bytes") return humanBytes(reading, locale, t("unit.per_second"))
