@@ -1,8 +1,6 @@
 //! Reading a finished segment: its catalog, its checksums, and why one is
 //! rejected.
 
-#![allow(unreachable_pub, reason = "used through the parent module")]
-
 use std::fs::File;
 use std::io;
 

@@ -19,11 +19,6 @@
 //! `PostgreSQL`- and Linux-specific meaning belongs here in declarative
 //! contracts. Collection, storage, cross-segment queries, and HTTP responses
 //! belong to their respective crates.
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "the registry's arrow/parquet stack pulls duplicate transitive versions outside this crate"
-)]
-
 #[cfg(test)]
 use serde_json as _;
 
