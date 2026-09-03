@@ -277,8 +277,9 @@ pub(crate) fn build_selected_from_reader(
     requested: &[SeriesKey],
 ) -> Result<Index, BuildError> {
     let mut finder = FindingBuilder::new(segment, requested);
-    let listing =
-        reader.catalog_segments_with_predecessor(finder.window_start()..segment_ref.min_ts())?;
+    let listing = reader
+        .catalog_discovery()?
+        .segments_with_predecessor(finder.window_start()..segment_ref.min_ts())?;
     let predecessor = listing
         .segments
         .iter()

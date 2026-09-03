@@ -23,9 +23,12 @@ use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
-use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
+use crate::{
+    BuildError, FindingKind, LoadError, SeriesBlock, finding_keys_for_sections,
+    series_keys_for_sections,
+};
 
-use super::{finding_keys, path_of, read, resource, series_keys};
+use super::{path_of, read, resource_selected};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 
@@ -43,6 +46,20 @@ fn zms_path(root: &Path, segment: &SegmentRef) -> PathBuf {
         .join(address.day.month_component())
         .join(address.day.day_component())
         .join(address.zms_name())
+}
+
+fn resource(
+    root: &Path,
+    reader: &Reader,
+    segment: &SegmentRef,
+    logical_name: &str,
+) -> Result<super::ResourceIndex, LoadError> {
+    resource_selected(
+        root,
+        reader,
+        segment,
+        &series_keys_for_sections(segment.sections(), logical_name),
+    )
 }
 
 fn row(ts: i64, model_name: StrId, mhz: f64) -> OsTopology {
@@ -710,7 +727,11 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category:
 }
 
 fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
-    let listing = reader.catalog_segments(..).expect("list fixture");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("list fixture");
     let segments: Vec<_> = listing
         .segments
         .into_iter()
@@ -723,7 +744,9 @@ fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
 fn health_at(root: &Path, segment_id: i64) -> super::ResourceIndex {
     let reader = Reader::open(root).expect("reader");
     let segment = reader
-        .catalog_segments(..)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
         .expect("catalog")
         .segments
         .into_iter()
@@ -1126,7 +1149,11 @@ fn a_published_index_does_not_require_its_finished_source_body() {
         "invalid_zms_section_checksum"
     );
 
-    let catalog = reader.catalog_segments(..).expect("catalog-only discovery");
+    let catalog = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog-only discovery");
     assert!(catalog.warnings.is_empty());
     assert_eq!(catalog.segments.len(), 1);
     let recovered = resource(directory.path(), &reader, &catalog.segments[0], "health")
@@ -1290,11 +1317,11 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
     let raw = reader.open_segment(&segment).expect("finished segment");
     assert_eq!(raw.rows_of(2_007_001), Some(1));
     assert!(
-        finding_keys(&segment)
+        finding_keys_for_sections(segment.sections())
             .iter()
             .all(|key| key.type_id != 2_007_001)
     );
-    assert!(series_keys(&segment, "pg_log_temp_files").is_empty());
+    assert!(series_keys_for_sections(segment.sections(), "pg_log_temp_files").is_empty());
     let selected = resource(directory.path(), &reader, &segment, "pg_log_temp_files")
         .expect("raw temporary-file section has no index resource");
     assert!(selected.index.blocks.is_empty());
@@ -1366,7 +1393,11 @@ fn pg_stat_database_boundaries_use_exact_production_fields() {
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
-    let listing = reader.catalog_segments(..).expect("catalog segments");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog segments");
     let current = listing
         .segments
         .into_iter()
@@ -1545,7 +1576,11 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
-    let listing = reader.catalog_segments(..).expect("catalog segments");
+    let listing = reader
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(..)
+        .expect("catalog segments");
     let current = listing
         .segments
         .into_iter()
@@ -1561,7 +1596,7 @@ fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     assert!(process.index.blocks.is_empty());
     assert!(statements.index.blocks.is_empty());
     assert!(
-        finding_keys(&current)
+        finding_keys_for_sections(current.sections())
             .iter()
             .all(|key| { !matches!(key.type_id, 1_100_001 | 1_002_001..=1_002_006) })
     );

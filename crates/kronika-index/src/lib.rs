@@ -20,11 +20,9 @@ pub use build::{
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use findings::{Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK};
 pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
-#[cfg(feature = "posix")]
-pub use selection::{finding_keys, series_keys};
 pub use selection::{finding_keys_for_sections, series_keys_for_sections};
 pub use series::{
     ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
 };
 #[cfg(feature = "posix")]
-pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource, resource_selected};
+pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource_selected};

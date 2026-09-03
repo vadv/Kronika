@@ -1,19 +1,10 @@
 //! Pure selection of index blocks from neutral segment metadata.
 
-#[cfg(feature = "posix")]
-use kronika_reader::SegmentRef;
 use kronika_reader::SegmentSection;
 use kronika_registry::logical_section_name;
 
 use crate::detect::finding_layout;
 use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
-
-/// Return every sparse-finding block present in one segment.
-#[cfg(feature = "posix")]
-#[must_use]
-pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
-    finding_keys_for_sections(segment.sections())
-}
 
 /// Return every sparse-finding block described by neutral segment metadata.
 #[must_use]
@@ -33,13 +24,6 @@ pub fn finding_keys_for_sections(sections: &[SegmentSection]) -> Vec<SeriesKey> 
     keys.sort_unstable();
     keys.dedup();
     keys
-}
-
-/// Return the allowlisted series exposed by one logical section.
-#[cfg(feature = "posix")]
-#[must_use]
-pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
-    series_keys_for_sections(segment.sections(), logical_name)
 }
 
 /// Return the allowlisted series described by neutral segment metadata.

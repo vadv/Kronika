@@ -716,7 +716,9 @@ fn finished_segment_wins_over_the_same_active_generation() {
     );
 
     let predecessor = reader
-        .catalog_segments_with_predecessor(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments_with_predecessor(200..=200)
         .expect("select canonical predecessor");
     assert_eq!(predecessor.segments.len(), 1);
     let predecessor = reader
@@ -980,7 +982,9 @@ fn range_discovery_checks_bodies_only_after_selection() {
     ));
 
     let catalog = reader
-        .catalog_segments(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments(200..=200)
         .expect("catalog-only discovery");
     assert_eq!(catalog.segments.len(), 1, "catalog remains discoverable");
     assert!(catalog.warnings.is_empty());
@@ -1029,7 +1033,9 @@ fn range_discovery_checks_bodies_only_after_selection() {
     );
 
     let with_predecessor = reader
-        .catalog_segments_with_predecessor(200..=200)
+        .catalog_discovery()
+        .expect("capture catalog scan")
+        .segments_with_predecessor(200..=200)
         .expect("bounded catalogs with predecessor");
     assert_eq!(
         with_predecessor

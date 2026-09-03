@@ -5,9 +5,6 @@ use std::path::{Path, PathBuf};
 
 use crate::build::{BuildError, build_from_reader, build_selected_from_reader};
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
-#[cfg(test)]
-use crate::selection::finding_keys;
-use crate::selection::series_keys;
 use crate::series::SeriesKey;
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
@@ -106,25 +103,6 @@ pub fn path_of(segment: &Path) -> Option<PathBuf> {
 pub fn read(path: &Path) -> Result<Index, LoadError> {
     let mut file = std::fs::File::open(path).map_err(LoadError::Io)?;
     read_all(&mut file).map_err(LoadError::Bad)
-}
-
-/// Load one logical index resource, rebuilding derived data when necessary.
-///
-/// Finished resources use the atomically published sibling IDX. Active
-/// resources are computed only for the captured committed prefix and are never
-/// persisted.
-///
-/// # Errors
-///
-/// Returns reader, index, layout, build, or publication failures.
-pub fn resource(
-    root: &Path,
-    reader: &Reader,
-    segment_ref: &SegmentRef,
-    logical_name: &str,
-) -> Result<ResourceIndex, LoadError> {
-    let keys = series_keys(segment_ref, logical_name);
-    resource_selected(root, reader, segment_ref, &keys)
 }
 
 /// Load selected blocks through the same validated resource path.

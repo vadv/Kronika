@@ -571,21 +571,6 @@ impl Reader {
         })
     }
 
-    /// List segment catalogs without reading finished section bodies.
-    ///
-    /// This narrow discovery path lets a caller validate and use an existing
-    /// derived index without paying to checksum every source section first.
-    /// Opening rows through [`open_segment`](Self::open_segment) still verifies
-    /// each selected body before decoding it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the directory or a segment catalog cannot be
-    /// read safely.
-    pub fn catalog_segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
-        self.list_segments(range, ListingMode::Catalog)
-    }
-
     /// Find one segment by its stable id without opening unrelated catalogs.
     ///
     /// # Errors
@@ -634,23 +619,6 @@ impl Reader {
             segments,
             warnings: scan.warnings,
         })
-    }
-
-    /// List segment catalogs in `range` plus the closest canonical predecessor.
-    ///
-    /// The predecessor is selected from scan summaries before section catalogs
-    /// are opened. This supports bounded counter lookback without opening every
-    /// older segment merely to locate the adjacent sample.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the directory or a selected segment catalog
-    /// cannot be read safely.
-    pub fn catalog_segments_with_predecessor<R: RangeBounds<i64>>(
-        &self,
-        range: R,
-    ) -> Result<Listing, ReaderError> {
-        self.list_segments(range, ListingMode::CatalogWithPredecessor)
     }
 
     fn list_segments<R: RangeBounds<i64>>(
