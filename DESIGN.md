@@ -589,6 +589,17 @@ file performs no network request. The interface shell, JavaScript bindings and
 compressed WebAssembly are built ahead of the Rust binary and committed as
 reproducible assets, so an ordinary Cargo build needs no Node installation.
 
+`GET /api/export?from=<unix_second>&to=<unix_second>` is the authenticated web
+adapter for the same composition. Its inclusive range of signed whole Unix
+seconds passes directly, in-process, through `kronika_dump::slice_to_zms` and
+then `kronika_report::write_html_from_file_with_segment_id`, preserving the
+slice identity when its context makes catalog `min_ts` differ; the existing
+`write_html_from_file` keeps its catalog-derived identity contract. Web uses two
+storage-agnostic, auto-deleted disk-backed files, reuses the slicer's scratch
+file for the complete HTML, validates that result before sending headers, and
+streams the `.html` attachment without HTTP content coding in bounded chunks.
+The report build omits this live-only control.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the
