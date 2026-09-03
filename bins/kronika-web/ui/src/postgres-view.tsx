@@ -569,6 +569,7 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
     [cursor, data.sections.pg_stat_activity],
   )
   const workerMax = settingAt(data.sections.pg_settings ?? [], "autovacuum_max_workers", cursor)
+  const contentSized = displayRows.length < 10
 
   return <>
     <div className="lensbar !mt-0 border-t-0">
@@ -582,9 +583,10 @@ function VacuumView({ cursor, data, historyRevision, hour, locale, onCursor, onO
         <strong className="font-mono text-xs font-normal tabular-nums text-fg2">{workerMax === null ? String(workerCount) : `${workerCount} / ${workerMax}`}</strong>
       </span>
     </div>
-    <div className="pg-entity-layout grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden">
+    <div className={`pg-entity-layout grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)]${contentSized ? "" : " pg-entity-fill"}`} data-content-sized={contentSized || undefined}>
       <EntityTable
         columns={columns}
+        contentSized={contentSized}
         empty={t("pg.vacuum.empty")}
         label={t("pg.section.vacuum")}
         requestPhase={vacuumRequestPhase}

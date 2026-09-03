@@ -467,19 +467,62 @@ test("held current Process and Vacuum views stay locally busy before successful 
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.vacuum` })
     await vacuumRequest
     await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-scroll')?.getAttribute('aria-busy') === 'true'`, "the local Vacuum loading state", 15_000)
-    assert.equal(await cdp.evaluate(`(() => {
+    const vacuumBefore = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-vacuum-table"]')
-      return table !== null && table.textContent.includes('Загружаем строки…')
-        && !table.textContent.includes('Нет записанных данных о ходе VACUUM.')
-        && table.querySelector('[role="status"][aria-live="polite"] progress') !== null
-    })()`), true)
+      const scroll = table.querySelector('.entity-scroll')
+      const head = table.querySelector('.entity-head')
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      window.__heldVacuumTable = table
+      window.__heldVacuumScroll = scroll
+      return {
+        contentSized: table.parentElement.dataset.contentSized,
+        empty: table.textContent.includes('Нет записанных данных о ходе VACUUM.'),
+        geometry: { head: rect(head), scroll: rect(scroll), table: rect(table) },
+        live: table.querySelector('[role="status"][aria-live="polite"]')?.textContent ?? '',
+        progress: table.querySelector('[role="status"][aria-live="polite"] progress') !== null,
+        scrollBusy: scroll.getAttribute('aria-busy'),
+      }
+    })()`)
+    assert.deepEqual({ ...vacuumBefore, geometry: undefined }, {
+      contentSized: "true",
+      empty: false,
+      geometry: undefined,
+      live: "Загружаем строки…",
+      progress: true,
+      scrollBusy: "true",
+    })
     ndjson(pendingVacuum, [])
     pendingVacuum = null
     await cdp.waitFor(`document.querySelector('[data-testid="pg-vacuum-table"]')?.textContent.includes('Нет записанных данных о ходе VACUUM.') === true`, "the successful empty Vacuum result", 15_000)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-vacuum-table"] .entity-scroll')?.getAttribute('aria-busy')`), "false")
+    await settleLayout(cdp)
+    const vacuumAfter = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-vacuum-table"]')
+      const scroll = table.querySelector('.entity-scroll')
+      const head = table.querySelector('.entity-head')
+      const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+      return {
+        contentSized: table.parentElement.dataset.contentSized,
+        empty: table.textContent.includes('Нет записанных данных о ходе VACUUM.'),
+        geometry: { head: rect(head), scroll: rect(scroll), table: rect(table) },
+        sameNodes: window.__heldVacuumTable === table && window.__heldVacuumScroll === scroll,
+        scrollBusy: scroll.getAttribute('aria-busy'),
+      }
+    })()`)
+    assert.deepEqual({ ...vacuumAfter, geometry: undefined }, {
+      contentSized: "true",
+      empty: true,
+      geometry: undefined,
+      sameNodes: true,
+      scrollBusy: "false",
+    })
+    for (const part of ["head", "scroll", "table"]) {
+      for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+        assert.ok(Math.abs(vacuumAfter.geometry[part][edge] - vacuumBefore.geometry[part][edge]) <= 1, `${part}.${edge}: ${JSON.stringify({ vacuumAfter, vacuumBefore })}`)
+      }
+    }
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
-    process.stdout.write(`${JSON.stringify({ heldProcessTable: { after, before } }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ heldProcessTable: { after, before }, heldVacuumTable: { after: vacuumAfter, before: vacuumBefore } }, null, 2)}\n`)
   } finally {
     pendingVacuum?.destroy()
     pendingTree?.destroy()

@@ -96,6 +96,18 @@ test("pending, failure, and successful empty table states stay distinct", () => 
   assert.equal(ready, "")
 })
 
+test("a content-sized empty table keeps one compact frame while loading", () => {
+  const pending = table("pending")
+  const ready = table("ready")
+  const height = (markup) => markup.match(/aria-label="Processes"[^>]*style="height:([^"]+)"/)?.[1]
+
+  assert.equal(height(pending), "72px")
+  assert.equal(height(ready), "72px")
+  assert.match(pending, /data-testid="table-skeleton"/)
+  assert.doesNotMatch(pending, /No process data at the selected time/)
+  assert.match(ready, /No process data at the selected time/)
+})
+
 test("retained rows are labelled during replacement and failure", () => {
   for (const phase of ["pending", "error"]) {
     const state = request.tableRequestState(phase, true)
