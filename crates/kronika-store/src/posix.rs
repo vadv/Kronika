@@ -103,16 +103,6 @@ impl PosixSource {
         })
     }
 
-    /// Complete segment payload bytes retained in memory by this source.
-    #[must_use]
-    #[expect(
-        clippy::unused_self,
-        reason = "the instance metric matches EmbeddedSource copy accounting"
-    )]
-    pub const fn retained_segment_bytes(&self) -> usize {
-        0
-    }
-
     fn checked_resource<'a>(
         &self,
         resource: &'a SegmentResource<PosixResource>,
@@ -244,18 +234,6 @@ impl std::fmt::Debug for PosixResource {
 pub struct PosixSegmentBytes {
     file: File,
     source_id: Arc<()>,
-}
-
-impl PosixSegmentBytes {
-    /// Complete segment payload bytes retained in memory by this reader.
-    #[must_use]
-    #[expect(
-        clippy::unused_self,
-        reason = "the instance metric matches embedded byte-reader copy accounting"
-    )]
-    pub const fn retained_segment_bytes(&self) -> usize {
-        0
-    }
 }
 
 impl std::fmt::Debug for PosixSegmentBytes {

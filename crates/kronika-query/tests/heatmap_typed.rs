@@ -297,10 +297,10 @@ fn batch(items: Vec<HeatmapItemQuery>) -> HeatmapBatchQuery {
     }
 }
 
-fn context(payload: Arc<[u8]>) -> (QueryContext, Arc<CountingDataset>, Arc<ResourceCounts>) {
-    let source = EmbeddedSource::from_shared(
+fn context(payload: &Arc<[u8]>) -> (QueryContext, Arc<CountingDataset>, Arc<ResourceCounts>) {
+    let source = EmbeddedSource::from_owned(
         SegmentId::new(SEGMENT_ID).expect("segment id"),
-        payload,
+        payload.as_ref().to_vec(),
         u64::MAX,
     )
     .expect("embedded segment");
@@ -373,12 +373,12 @@ fn cpu_payload(first: i64, second: i64) -> Arc<[u8]> {
 #[test]
 fn same_section_batch_and_duplicate_use_one_physical_scan() {
     let payload = cpu_payload(10, 20);
-    let (single_context, single_dataset, single_resources) = context(Arc::clone(&payload));
+    let (single_context, single_dataset, single_resources) = context(&payload);
     let single = execute_heatmap_batch(&single_context, batch(vec![ranking(1)]), &NeverCancelled)
         .expect("single ranking");
     let single_reads = single_resources.snapshot();
 
-    let (batch_context, batch_dataset, batch_resources) = context(payload);
+    let (batch_context, batch_dataset, batch_resources) = context(&payload);
     let result = execute_heatmap_batch(
         &batch_context,
         batch(vec![ranking(1), ranking(2), ranking(1)]),
@@ -416,15 +416,15 @@ fn same_section_batch_and_duplicate_use_one_physical_scan() {
 
 #[test]
 fn typed_batch_opens_the_active_version_captured_by_selection() {
-    let old = EmbeddedSource::from_shared(
+    let old = EmbeddedSource::from_owned(
         SegmentId::new(SEGMENT_ID).expect("segment id"),
-        cpu_payload(10, 20),
+        cpu_payload(10, 20).as_ref().to_vec(),
         u64::MAX,
     )
     .expect("old segment");
-    let current = EmbeddedSource::from_shared(
+    let current = EmbeddedSource::from_owned(
         SegmentId::new(SEGMENT_ID).expect("segment id"),
-        cpu_payload(100, 1),
+        cpu_payload(100, 1).as_ref().to_vec(),
         u64::MAX,
     )
     .expect("current segment");
@@ -448,7 +448,8 @@ fn typed_batch_opens_the_active_version_captured_by_selection() {
 
 #[test]
 fn cancellation_after_open_releases_the_segment() {
-    let (context, dataset, resources) = context(cpu_payload(10, 20));
+    let payload = cpu_payload(10, 20);
+    let (context, dataset, resources) = context(&payload);
     let error = execute_heatmap_batch(
         &context,
         batch(vec![ranking(1)]),
@@ -466,7 +467,8 @@ fn cancellation_after_open_releases_the_segment() {
 
 #[test]
 fn validation_reports_the_expanded_index_and_ordered_options_without_opening_data() {
-    let (context, dataset, _resources) = context(cpu_payload(10, 20));
+    let payload = cpu_payload(10, 20);
+    let (context, dataset, _resources) = context(&payload);
     let missing = HeatmapItemQuery {
         ranking: NormalizedRanking {
             section: "os_mountinfo".to_owned(),

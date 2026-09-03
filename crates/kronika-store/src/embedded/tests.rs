@@ -11,20 +11,18 @@ use crate::{
 const FIXTURE: &[u8] = include_bytes!("../../../kronika-format/tests/fixtures/minimal.zms");
 const FIXTURE_LIMIT: u64 = FIXTURE.len() as u64;
 
-fn source(id: i64) -> (Arc<[u8]>, EmbeddedSource) {
-    let bytes: Arc<[u8]> = Arc::from(FIXTURE);
-    let source = EmbeddedSource::from_shared(
+fn source(id: i64) -> EmbeddedSource {
+    EmbeddedSource::from_owned(
         SegmentId::new(id).expect("segment id"),
-        Arc::clone(&bytes),
+        FIXTURE.to_vec(),
         FIXTURE_LIMIT,
     )
-    .expect("valid embedded fixture");
-    (bytes, source)
+    .expect("valid embedded fixture")
 }
 
 #[test]
-fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
-    let (bytes, source) = source(42);
+fn embedded_catalog_keeps_explicit_identity() {
+    let source = source(42);
     let listing = source.resources().expect("embedded catalog");
     assert!(listing.warnings.is_empty());
     assert_eq!(listing.resources.len(), 1);
@@ -37,14 +35,6 @@ fn embedded_catalog_keeps_explicit_identity_and_shared_bytes() {
     source
         .validate_opened(resource, &opened)
         .expect("validate embedded bytes");
-    assert_eq!(
-        opened.as_ptr(),
-        bytes.as_ptr(),
-        "open must not copy the ZMS"
-    );
-    assert_eq!(source.retained_segment_ptr(), bytes.as_ptr());
-    assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
-    assert_eq!(source.bytes.bytes.allocation_capacity(), FIXTURE.len());
     assert_eq!(
         read_resource_catalog(&opened).expect("embedded catalog"),
         read_resource_catalog(&FIXTURE).expect("fixture catalog")
@@ -71,19 +61,18 @@ fn embedded_owned_source_keeps_the_vec_allocation_across_clones_and_opens() {
         .expect("open owned bytes");
     let opened_clone = opened.clone();
 
-    assert_eq!(source.retained_segment_ptr(), original_ptr);
-    assert_eq!(cloned.retained_segment_ptr(), original_ptr);
-    assert_eq!(opened.as_ptr(), original_ptr);
-    assert_eq!(opened_clone.as_ptr(), original_ptr);
-    assert_eq!(source.retained_segment_bytes(), original_len);
-    assert_eq!(source.bytes.bytes.allocation_capacity(), original_capacity);
-    assert_eq!(cloned.bytes.bytes.allocation_capacity(), original_capacity);
+    assert_eq!(source.bytes.bytes.0.as_ptr(), original_ptr);
+    assert_eq!(cloned.bytes.bytes.0.as_ptr(), original_ptr);
+    assert_eq!(opened.bytes.0.as_ptr(), original_ptr);
+    assert_eq!(opened_clone.bytes.0.as_ptr(), original_ptr);
+    assert_eq!(source.bytes.bytes.0.capacity(), original_capacity);
+    assert_eq!(cloned.bytes.bytes.0.capacity(), original_capacity);
     assert_eq!(opened.len(), original_len);
     assert_eq!(listing.resources[0].identity().segment_id().get(), 47);
     drop(source);
     drop(cloned);
     drop(opened);
-    assert_eq!(opened_clone.as_ptr(), original_ptr);
+    assert_eq!(opened_clone.bytes.0.as_ptr(), original_ptr);
     assert_eq!(opened_clone.len(), original_len);
     assert_eq!(
         read_resource_catalog(&opened_clone).expect("catalog after source drop"),
@@ -120,58 +109,16 @@ fn embedded_owned_source_keeps_validation_and_limit_failures() {
 }
 
 #[test]
-fn embedded_static_catalog_keeps_the_static_slice_without_copying() {
-    let source = EmbeddedSource::from_static(
-        SegmentId::new(43).expect("segment id"),
-        FIXTURE,
-        FIXTURE_LIMIT,
-    )
-    .expect("valid static fixture");
-    let listing = source.resources().expect("embedded catalog");
-    let resource = &listing.resources[0];
-    let opened = source.open_resource(resource).expect("open static bytes");
-
-    assert_eq!(opened.as_ptr(), FIXTURE.as_ptr());
-    assert_eq!(source.retained_segment_ptr(), FIXTURE.as_ptr());
-    assert_eq!(source.retained_segment_bytes(), FIXTURE.len());
-    assert_eq!(source.bytes.bytes.allocation_capacity(), 0);
-    assert_eq!(
-        read_resource_catalog(&opened).expect("static catalog"),
-        read_resource_catalog(&FIXTURE).expect("fixture catalog")
-    );
-    source
-        .validate_opened(resource, &opened)
-        .expect("validate static bytes");
-}
-
-#[test]
-fn embedded_source_enforces_the_explicit_complete_byte_limit() {
-    let error = EmbeddedSource::from_static(
-        SegmentId::new(44).expect("segment id"),
-        FIXTURE,
-        FIXTURE_LIMIT - 1,
-    )
-    .expect_err("fixture must exceed the limit");
-    assert!(matches!(
-        error,
-        crate::ResourceError::TooLarge {
-            len: FIXTURE_LIMIT,
-            max
-        } if max == FIXTURE_LIMIT - 1
-    ));
-}
-
-#[test]
 fn identical_zms_bytes_keep_each_supplied_segment_identity() {
-    let first = EmbeddedSource::from_static(
+    let first = EmbeddedSource::from_owned(
         SegmentId::new(45).expect("segment id"),
-        FIXTURE,
+        FIXTURE.to_vec(),
         FIXTURE_LIMIT,
     )
     .expect("first source");
-    let second = EmbeddedSource::from_static(
+    let second = EmbeddedSource::from_owned(
         SegmentId::new(46).expect("segment id"),
-        FIXTURE,
+        FIXTURE.to_vec(),
         FIXTURE_LIMIT,
     )
     .expect("second source");
@@ -194,8 +141,8 @@ fn identical_zms_bytes_keep_each_supplied_segment_identity() {
 
 #[test]
 fn embedded_resource_is_bound_to_the_source_that_listed_it() {
-    let (_first_bytes, first) = source(42);
-    let (_second_bytes, second) = source(42);
+    let first = source(42);
+    let second = source(42);
     let listing = first.resources().expect("first catalog");
     let error = second
         .open_resource(&listing.resources[0])
@@ -205,7 +152,7 @@ fn embedded_resource_is_bound_to_the_source_that_listed_it() {
 
 #[test]
 fn embedded_resource_rejects_forged_length_and_summary() {
-    let (_bytes, source) = source(42);
+    let source = source(42);
     let listing = source.resources().expect("catalog");
     let resource = &listing.resources[0];
     let forged_length = SegmentResource::new(
@@ -235,9 +182,12 @@ fn embedded_resource_rejects_forged_length_and_summary() {
 
 #[test]
 fn embedded_constructor_rejects_invalid_zms_without_deriving_an_id() {
-    let bytes: Arc<[u8]> = Arc::from(&b"not a ZMS"[..]);
-    let error = EmbeddedSource::from_shared(SegmentId::new(77).expect("segment id"), bytes, 64)
-        .expect_err("invalid bytes");
+    let error = EmbeddedSource::from_owned(
+        SegmentId::new(77).expect("segment id"),
+        b"not a ZMS".to_vec(),
+        64,
+    )
+    .expect_err("invalid bytes");
     assert!(matches!(
         error,
         crate::ResourceError::TailIndex(_) | crate::ResourceError::TooSmall
@@ -259,6 +209,5 @@ fn storage_neutral_api_compiles_without_posix_types() {
             .expect("opened bytes");
     }
 
-    let (_bytes, embedded) = source(42);
-    assert_api(&embedded);
+    assert_api(&source(42));
 }

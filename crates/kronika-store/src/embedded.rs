@@ -1,4 +1,4 @@
-//! One immutable ZMS segment retained in owned, shared, or static bytes.
+//! One immutable ZMS segment retained in owned bytes.
 
 use std::io;
 use std::sync::Arc;
@@ -12,58 +12,18 @@ use crate::{
     ResourceListing, SegmentResource,
 };
 
-#[derive(Clone)]
-enum EmbeddedBytes {
-    Owned(Arc<OwnedSegment>),
-    Shared(Arc<[u8]>),
-    Static(&'static [u8]),
-}
-
 struct OwnedSegment(Vec<u8>);
-
-impl EmbeddedBytes {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Owned(bytes) => bytes.0.as_slice(),
-            Self::Shared(bytes) => bytes.as_ref(),
-            Self::Static(bytes) => bytes,
-        }
-    }
-
-    #[cfg(test)]
-    fn allocation_capacity(&self) -> usize {
-        match self {
-            Self::Owned(bytes) => bytes.0.capacity(),
-            Self::Shared(bytes) => bytes.len(),
-            Self::Static(_bytes) => 0,
-        }
-    }
-}
 
 /// Shared positional bytes used by an embedded finished segment.
 #[derive(Clone)]
 pub struct SharedSegmentBytes {
-    bytes: EmbeddedBytes,
+    bytes: Arc<OwnedSegment>,
     source_id: Arc<()>,
 }
 
 impl SharedSegmentBytes {
-    /// Complete retained object length.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.bytes.as_slice().len()
-    }
-
-    /// Whether the retained object is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.bytes.as_slice().is_empty()
-    }
-
-    /// Allocation address, used by copy-accounting tests.
-    #[must_use]
-    pub fn as_ptr(&self) -> *const u8 {
-        self.bytes.as_slice().as_ptr()
+    fn len(&self) -> usize {
+        self.bytes.0.len()
     }
 }
 
@@ -77,7 +37,7 @@ impl std::fmt::Debug for SharedSegmentBytes {
 
 impl ReadAt for SharedSegmentBytes {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        self.bytes.as_slice().read_exact_at(buf, offset)
+        self.bytes.0.read_exact_at(buf, offset)
     }
 
     fn byte_len(&self) -> io::Result<u64> {
@@ -126,57 +86,7 @@ impl EmbeddedSource {
         bytes: Vec<u8>,
         max_segment_bytes: u64,
     ) -> Result<Self, ResourceError> {
-        Self::from_bytes(
-            segment_id,
-            EmbeddedBytes::Owned(Arc::new(OwnedSegment(bytes))),
-            max_segment_bytes,
-        )
-    }
-
-    /// Validate shared owned ZMS bytes under the supplied segment identity.
-    ///
-    /// The ZMS format does not contain its segment ID, so the caller must
-    /// provide it. Construction retains the caller's shared allocation and
-    /// does not copy the complete segment. `max_segment_bytes` is checked
-    /// before format validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a limit, format, checksum, or bounded-metadata error for invalid
-    /// bytes.
-    pub fn from_shared(
-        segment_id: SegmentId,
-        bytes: Arc<[u8]>,
-        max_segment_bytes: u64,
-    ) -> Result<Self, ResourceError> {
-        Self::from_bytes(segment_id, EmbeddedBytes::Shared(bytes), max_segment_bytes)
-    }
-
-    /// Validate static ZMS bytes under the supplied segment identity.
-    ///
-    /// The ZMS format does not contain its segment ID, so the caller must
-    /// provide it. Construction retains only the static slice and does not
-    /// copy the complete segment. `max_segment_bytes` is checked before format
-    /// validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a limit, format, checksum, or bounded-metadata error for invalid
-    /// bytes.
-    pub fn from_static(
-        segment_id: SegmentId,
-        bytes: &'static [u8],
-        max_segment_bytes: u64,
-    ) -> Result<Self, ResourceError> {
-        Self::from_bytes(segment_id, EmbeddedBytes::Static(bytes), max_segment_bytes)
-    }
-
-    fn from_bytes(
-        segment_id: SegmentId,
-        bytes: EmbeddedBytes,
-        max_segment_bytes: u64,
-    ) -> Result<Self, ResourceError> {
-        let len = bytes.as_slice().len() as u64;
+        let len = bytes.len() as u64;
         if len > max_segment_bytes {
             return Err(ResourceError::TooLarge {
                 len,
@@ -184,7 +94,7 @@ impl EmbeddedSource {
             });
         }
         let summary = read_zms_summary(
-            &bytes.as_slice(),
+            &bytes,
             0,
             LayoutLimits::default().max_metadata_bytes,
             FinishedValidation::Complete,
@@ -194,24 +104,12 @@ impl EmbeddedSource {
         Ok(Self {
             identity: ResourceIdentity::finished(segment_id),
             bytes: SharedSegmentBytes {
-                bytes,
+                bytes: Arc::new(OwnedSegment(bytes)),
                 source_id: Arc::clone(&source_id),
             },
             summary: Arc::new(summary),
             source_id,
         })
-    }
-
-    /// Logical bytes retained for the complete embedded segment.
-    #[must_use]
-    pub fn retained_segment_bytes(&self) -> usize {
-        self.bytes.len()
-    }
-
-    /// Allocation address retained from the caller.
-    #[must_use]
-    pub fn retained_segment_ptr(&self) -> *const u8 {
-        self.bytes.as_ptr()
     }
 }
 

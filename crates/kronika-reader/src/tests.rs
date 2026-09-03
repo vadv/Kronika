@@ -326,18 +326,13 @@ fn finished_sources_match_for_catalog_and_product_reads() {
     let written = write_segment(&journal, &owner, segment_address).expect("publish segment");
     journal.reset().expect("leave no active segment");
 
-    let payload: Arc<[u8]> = std::fs::read(zms_path(directory.path(), segment_address))
-        .expect("read embedded fixture")
-        .into();
+    let payload =
+        std::fs::read(zms_path(directory.path(), segment_address)).expect("read embedded fixture");
     assert_eq!(payload.len() as u64, written.bytes);
-    let embedded =
-        EmbeddedSource::from_shared(segment_address.id, Arc::clone(&payload), written.bytes)
-            .expect("embedded source");
-    assert_eq!(embedded.retained_segment_bytes() as u64, written.bytes);
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
+    let embedded = EmbeddedSource::from_owned(segment_address.id, payload, written.bytes)
+        .expect("embedded source");
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
     let posix_snapshot = finished_product_snapshot(&FinishedReader::new(posix), model_id);
     let embedded_snapshot = finished_product_snapshot(&FinishedReader::new(embedded), model_id);
     assert_eq!(posix_snapshot, embedded_snapshot);
@@ -349,10 +344,11 @@ fn embedded_product_uses_supplied_identity_and_rejects_foreign_resource() {
     let first_id = SegmentId::new(42).expect("first id");
     let second_id = SegmentId::new(43).expect("second id");
     let first = FinishedReader::new(
-        EmbeddedSource::from_static(first_id, ZMS, ZMS.len() as u64).expect("first source"),
+        EmbeddedSource::from_owned(first_id, ZMS.to_vec(), ZMS.len() as u64).expect("first source"),
     );
     let second = FinishedReader::new(
-        EmbeddedSource::from_static(second_id, ZMS, ZMS.len() as u64).expect("second source"),
+        EmbeddedSource::from_owned(second_id, ZMS.to_vec(), ZMS.len() as u64)
+            .expect("second source"),
     );
     let listing = first.resources().expect("first resources");
     assert_eq!(listing.resources[0].identity().segment_id(), first_id);
@@ -416,9 +412,9 @@ impl ImmutableSegmentSource for ChangedAfterCatalogFailure {
 #[test]
 fn opened_identity_failure_wins_over_catalog_failure() {
     static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
-    let embedded = EmbeddedSource::from_static(
+    let embedded = EmbeddedSource::from_owned(
         SegmentId::new(47).expect("segment id"),
-        ZMS,
+        ZMS.to_vec(),
         ZMS.len() as u64,
     )
     .expect("embedded source");
@@ -470,9 +466,9 @@ impl ResourceCatalog for ReverseCatalog {
 #[test]
 fn immutable_resources_are_normalized_by_identity() {
     static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
-    let embedded = EmbeddedSource::from_static(
+    let embedded = EmbeddedSource::from_owned(
         SegmentId::new(42).expect("segment id"),
-        ZMS,
+        ZMS.to_vec(),
         ZMS.len() as u64,
     )
     .expect("embedded source");
@@ -497,9 +493,9 @@ fn immutable_resources_are_normalized_by_identity() {
 #[test]
 fn immutable_resources_reject_duplicate_identities() {
     static ZMS: &[u8] = include_bytes!("../../kronika-format/tests/fixtures/minimal.zms");
-    let embedded = EmbeddedSource::from_static(
+    let embedded = EmbeddedSource::from_owned(
         SegmentId::new(42).expect("segment id"),
-        ZMS,
+        ZMS.to_vec(),
         ZMS.len() as u64,
     )
     .expect("embedded source");

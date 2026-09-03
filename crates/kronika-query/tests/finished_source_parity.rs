@@ -937,30 +937,16 @@ fn catalog_query_is_byte_identical_for_posix_and_embedded_finished_zms() {
     write_posix_fixture(directory.path(), segment_id);
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(
-        posix.retained_segment_bytes(),
-        0,
-        "the POSIX query source must not copy the complete segment"
-    );
-    let posix_bytes = catalog_bytes(Arc::new(FinishedDataset::new(posix.clone())));
-    assert_eq!(
-        posix.retained_segment_bytes(),
-        0,
-        "the completed POSIX query must retain no segment payload"
-    );
+    let posix_bytes = catalog_bytes(Arc::new(FinishedDataset::new(posix)));
 
     let payload: Arc<[u8]> = Arc::from(ZMS);
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(ZMS.len()).expect("fixture length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), ZMS.len());
-    let embedded_bytes = catalog_bytes(Arc::new(FinishedDataset::new(embedded.clone())));
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), ZMS.len());
+    let embedded_bytes = catalog_bytes(Arc::new(FinishedDataset::new(embedded)));
 
     assert_eq!(posix_bytes, embedded_bytes);
     let records = embedded_bytes
@@ -984,23 +970,17 @@ fn heatmap_query_is_byte_identical_for_posix_and_embedded_finished_zms() {
     let payload = write_heatmap_fixture(directory.path(), segment_id);
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix.clone()));
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix));
     let posix_bytes = heatmap_bytes(Arc::clone(&posix_dataset));
-    assert_eq!(posix.retained_segment_bytes(), 0);
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded.clone()));
+    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded));
     let embedded_bytes = heatmap_bytes(Arc::clone(&embedded_dataset));
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
 
     assert_eq!(posix_bytes, embedded_bytes);
     let records = embedded_bytes
@@ -1073,18 +1053,15 @@ fn hour_products_are_byte_identical_for_posix_and_embedded_finished_zms() {
     ];
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix.clone()));
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix));
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded.clone()));
+    let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded));
 
     let mut outputs = Vec::new();
     for request in requests {
@@ -1093,9 +1070,6 @@ fn hour_products_are_byte_identical_for_posix_and_embedded_finished_zms() {
         assert_eq!(posix_bytes, embedded_bytes);
         outputs.push(embedded_bytes);
     }
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
 
     assert!(
         outputs[0]
@@ -1150,7 +1124,6 @@ fn native_built_index_drives_real_posix_and_owned_embedded_queries() {
     let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix));
     let payload = std::fs::read(finished_path(directory.path(), segment_id))
         .expect("read finished ZMS into owned bytes");
-    let payload_ptr = payload.as_ptr();
     let payload_len = payload.len();
     let embedded = EmbeddedSource::from_owned(
         segment_id,
@@ -1158,8 +1131,6 @@ fn native_built_index_drives_real_posix_and_owned_embedded_queries() {
         u64::try_from(payload_len).expect("payload length fits u64"),
     )
     .expect("owned embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload_ptr);
-    assert_eq!(embedded.retained_segment_bytes(), payload_len);
     let embedded_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(embedded));
 
     let requests = [
@@ -1206,23 +1177,15 @@ fn ranking_only_batch_is_typed_identical_for_posix_and_embedded_finished_zms() {
     let query = ranking_only_query();
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_result =
-        ranking_only_result(Arc::new(FinishedDataset::new(posix.clone())), query.clone());
-    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_result = ranking_only_result(Arc::new(FinishedDataset::new(posix)), query.clone());
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_result =
-        ranking_only_result(Arc::new(FinishedDataset::new(embedded.clone())), query);
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_result = ranking_only_result(Arc::new(FinishedDataset::new(embedded)), query);
 
     assert_eq!(posix_result, embedded_result);
     let results = &embedded_result.results;
@@ -1271,21 +1234,15 @@ fn events_result_is_typed_identical_for_posix_and_embedded_finished_zms() {
     let query = events_query();
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_result = events_result(Arc::new(FinishedDataset::new(posix.clone())), query.clone());
-    assert_eq!(posix.retained_segment_bytes(), 0);
+    let posix_result = events_result(Arc::new(FinishedDataset::new(posix)), query.clone());
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_result = events_result(Arc::new(FinishedDataset::new(embedded.clone())), query);
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_result = events_result(Arc::new(FinishedDataset::new(embedded)), query);
 
     assert_eq!(posix_result, embedded_result);
     let EventsResult::Occurrences {
@@ -1339,8 +1296,7 @@ fn row_detail_is_typed_identical_for_posix_and_embedded_finished_zms() {
     let payload = write_events_fixture(directory.path(), segment_id);
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix.clone()));
+    let posix_dataset: Arc<dyn QueryDataset> = Arc::new(FinishedDataset::new(posix));
     let listing = events_result(Arc::clone(&posix_dataset), events_query());
     let EventsResult::Occurrences { occurrences, .. } = listing else {
         panic!("occurrence result");
@@ -1351,22 +1307,14 @@ fn row_detail_is_typed_identical_for_posix_and_embedded_finished_zms() {
         .detail_ref()
         .expect("error detail reference");
     let posix_result = row_detail_result(posix_dataset, &detail_ref);
-    assert_eq!(posix.retained_segment_bytes(), 0);
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_result = row_detail_result(
-        Arc::new(FinishedDataset::new(embedded.clone())),
-        &detail_ref,
-    );
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
+    let embedded_result = row_detail_result(Arc::new(FinishedDataset::new(embedded)), &detail_ref);
 
     assert_eq!(posix_result, embedded_result);
     assert_eq!(embedded_result.section, "pg_log_errors");
@@ -1432,23 +1380,15 @@ fn all_snapshot_finders_are_typed_identical_for_posix_and_embedded_finished_zms(
     let payload = write_heatmap_fixture(directory.path(), segment_id);
 
     let posix = PosixSource::open(directory.path()).expect("POSIX source");
-    assert_eq!(posix.retained_segment_bytes(), 0);
-    let posix_context =
-        QueryContext::new(Arc::new(FinishedDataset::new(posix.clone())), 0b11, false);
+    let posix_context = QueryContext::new(Arc::new(FinishedDataset::new(posix)), 0b11, false);
 
-    let embedded = EmbeddedSource::from_shared(
+    let embedded = EmbeddedSource::from_owned(
         segment_id,
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("payload length fits u64"),
     )
     .expect("embedded source");
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
-    let embedded_context = QueryContext::new(
-        Arc::new(FinishedDataset::new(embedded.clone())),
-        0b11,
-        false,
-    );
+    let embedded_context = QueryContext::new(Arc::new(FinishedDataset::new(embedded)), 0b11, false);
 
     for surface in [
         FinderSurface::Processes,
@@ -1525,12 +1465,4 @@ fn all_snapshot_finders_are_typed_identical_for_posix_and_embedded_finished_zms(
     let relation = embedded_relation.expect("current table relation");
     assert_eq!(relation["rows"][0]["key"]["relname"], "parity_table");
     assert_eq!(relation["rows"][0]["metrics"]["seq_scan"], 10.0);
-
-    assert_eq!(
-        posix.retained_segment_bytes(),
-        0,
-        "POSIX execution must not retain a whole segment"
-    );
-    assert_eq!(embedded.retained_segment_ptr(), payload.as_ptr());
-    assert_eq!(embedded.retained_segment_bytes(), payload.len());
 }

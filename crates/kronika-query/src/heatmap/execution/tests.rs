@@ -18,11 +18,7 @@ fn storage_error_keeps_its_source_chain() {
 
     let remote = HeatmapError::storage(0, RemoteError).into_query();
     let heatmap = remote.source().expect("heatmap wrapper");
-    assert!(
-        heatmap
-            .source()
-            .is_some_and(|source| source.is::<RemoteError>())
-    );
+    assert!(heatmap.source().is_some_and(<dyn Error>::is::<RemoteError>));
 }
 
 #[derive(Debug)]

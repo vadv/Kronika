@@ -42,8 +42,6 @@ fn posix_catalog_opens_opaque_positional_bytes_without_retaining_payload() {
     assert_eq!(resource.captured_bytes(), FIXTURE.len() as u64);
 
     let bytes = source.open_resource(resource).expect("opened bytes");
-    assert_eq!(source.retained_segment_bytes(), 0);
-    assert_eq!(bytes.retained_segment_bytes(), 0);
     assert_eq!(bytes.byte_len().expect("byte length"), FIXTURE.len() as u64);
     assert_eq!(
         read_resource_catalog(&bytes).expect("POSIX catalog bytes"),

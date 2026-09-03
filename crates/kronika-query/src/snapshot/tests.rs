@@ -111,9 +111,9 @@ fn snapshot_request(section: &str, fields: &[&str]) -> SnapshotRequest {
 }
 
 fn snapshot_records(payload: &Arc<[u8]>, request: SnapshotRequest) -> Vec<Value> {
-    let source = EmbeddedSource::from_shared(
+    let source = EmbeddedSource::from_owned(
         SegmentId::new(SEGMENT_ID).expect("snapshot segment id"),
-        Arc::clone(payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("snapshot payload length fits u64"),
     )
     .expect("embedded snapshot source");
@@ -374,9 +374,9 @@ fn snapshot_preflight_exposes_identity_before_predecessor_scans() {
             .push(table(SNAPSHOT_AT, 11, 20, label))
             .expect("current row fits");
     });
-    let source = EmbeddedSource::from_shared(
+    let source = EmbeddedSource::from_owned(
         SegmentId::new(SEGMENT_ID).expect("snapshot segment id"),
-        Arc::clone(&payload),
+        payload.as_ref().to_vec(),
         u64::try_from(payload.len()).expect("snapshot payload length fits u64"),
     )
     .expect("embedded snapshot source");
