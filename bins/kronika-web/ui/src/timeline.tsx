@@ -5,7 +5,7 @@ import { buildMetricSamples } from "./chart"
 import { CursorRow } from "./cursor-row"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { useDisplayTime } from "./display-time-context"
-import { findingOrder, findingSummary } from "./finding-presentation"
+import { findingOrder, findingSummary, summarizeFindings } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
 import { asNumber, compact, humanDuration, humanPercent, type Locale, value } from "./model"
@@ -342,14 +342,16 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   const first = marker.findings[0]
   const last = marker.findings.at(-1)
   if (first === undefined || last === undefined) return null
-  const count = marker.findings.length
+  const count = marker.composition.reduce((total, item) => total + item.count, 0)
+  const displayKind = marker.composition[0]?.kind ?? first.kind
   const kindSummary = findingSummary(marker.findings, t)
   const timeSummary = first.timestamp === last.timestamp ? time(first.timestamp) : `${time(first.timestamp)}–${time(last.timestamp)}`
   return <button
-    aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
-    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
+    aria-label={`${kindSummary} · ${timeSummary}`}
+    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${displayKind}` : " marker-aggregate"}`}
     data-marker-composition={marker.composition.map(({ count, kind }) => `${kind}:${count}`).join(" ")}
     data-marker-count={count}
+    data-marker-locator-count={marker.findings.length}
     data-marker-kinds={marker.composition.map(({ kind }) => kind).join(" ")}
     onClick={activate}
     onKeyDown={(event) => {
@@ -361,17 +363,17 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
     type="button"
   >
     {count === 1
-      ? <FindingGlyph kind={first.kind} />
+      ? <FindingGlyph kind={displayKind} />
       : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-4 items-center gap-1 rounded-full border border-line3 bg-s2/95 pl-1.5 pr-1.5 shadow-[0_1px_3px_var(--color-shadow)]">
-        <span className="flex items-center gap-0.5 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ kind }) => <FindingGlyph key={kind} kind={kind} />)}</span>
-        <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(count)}</strong>
+        <span className="flex items-center gap-1 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ count: kindCount, kind }) => <span className="flex items-center gap-0.5" key={kind}>
+          <FindingGlyph kind={kind} />
+          <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(kindCount)}</strong>
+        </span>)}</span>
       </span>}
   </button>
 }
 
-// The badge names the kinds by shape and sizes the cluster by one number; the
-// per-kind split lives in the accessible label and the events console. Counts
-// above 999 stop informing at marker size.
+// Counts above 999 stop informing at marker size.
 function markerCount(count: number): string {
   return count > 999 ? "999+" : String(count)
 }
@@ -393,7 +395,7 @@ export function healthTimelineSeries(rows: readonly DataRow[]): { readonly serie
     { color: "amber", field: "os_health", points: series(rows, "os_health") },
     { color: "violet", field: "postgres_health", points: series(rows, "postgres_health") },
   ]
-  const shown = candidates.filter((candidate) => candidate.points.length !== 0)
+  const shown = candidates.filter((candidate) => candidate.points.some((point) => point.value !== null))
   return { series: shown, ...(shown.some((candidate) => candidate.field === "overall_health") ? { threshold: 50 } : {}) }
 }
 
@@ -417,13 +419,18 @@ export function groupFindings(findings: readonly Finding[], hour: number, end: n
     }
   }
   if (active.length !== 0) stored.push(active)
-  return stored.map((group) => ({
-    composition: FINDING_KINDS.flatMap((kind) => {
-      const count = group.filter((finding) => finding.kind === kind).length
-      return count === 0 ? [] : [{ count, kind }]
-    }),
-    findings: group,
-  }))
+  return stored.map((group) => {
+    const summary = summarizeFindings(group)
+    const counts: Readonly<Record<Finding["kind"], number>> = {
+      event: summary.event,
+      known_bad: summary.knownBad,
+      spike: summary.spike,
+    }
+    return {
+      composition: FINDING_KINDS.flatMap((kind) => counts[kind] === 0 ? [] : [{ count: counts[kind], kind }]),
+      findings: group,
+    }
+  })
 }
 
 const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]

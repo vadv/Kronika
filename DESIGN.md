@@ -222,7 +222,9 @@ Health is up to three ordinary nullable point series from 0 to 100: OS,
 PostgreSQL, and their combined value. A component penalty is `100 - health`.
 Disabled PostgreSQL contributes no penalty. Enabled PostgreSQL with no usable
 snapshot is `null`, and makes combined health `null` rather than silently
-healthy.
+healthy. The timeline omits a component whose selected range contains only
+`null` values and keeps every component with a numeric value visible. The
+combined threshold is drawn only when combined health itself is visible.
 
 OS health is the share of the interval in which nothing was waiting for the
 most contended resource:
@@ -780,10 +782,17 @@ truncation only when the global limit excludes matching entries and have no
 continuation cursor. The browser keeps that incomplete-result notice visible
 while local filters narrow the returned groups.
 
-A timeline cluster narrows the grouped console by the event sources it
-represents. A group's representative timestamp is used for auto-expansion only
+A selected timeline cluster narrows the grouped console to the exact half-open
+interval from its first event locator through one microsecond after its last
+event locator, and to only the event sources represented there. Clearing the
+selection restores the whole-hour query. The selection reports log rows,
+threshold crossings, and sharp rises as separate typed counts; it never labels
+their raw locator sum as one event total. An independent threshold locator on a
+log row is retained for selection and severity but is not counted as a second
+log row. A group's representative timestamp is used for auto-expansion only
 when it identifies one returned group for that source; it is not a list of the
-group's member rows.
+group's member rows. Pending and failed log reads have no numeric result; zero
+is displayed only after a successful empty result.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern, and their representative row is the slowest occurrence.
@@ -925,9 +934,9 @@ Shared charts reserve room at the end for the last time label after accounting
 for every visible side axis. The compact timeline shell is exactly 124 px; its
 94 px figure keeps a dedicated marker lane above the plot — finding markers
 never occlude the drawn lines — and the x-axis, cursor and labels inside the
-instrument before the following navigation. A marker cluster names the kinds
-present by shape and sizes the cluster with one count; the per-kind split
-lives in the accessible name and the events console. The Inspector's Chart
+instrument before the following navigation. A marker cluster pairs each kind
+shape with its own count and exposes the same typed split in its accessible
+name and the Events selection. It has no untyped aggregate count. The Inspector's Chart
 panel belongs to the selection: a selected row shows its own metric history
 there, with a wrapped metric-button selector instead of a hidden horizontal
 scrollbar, while the Detail panel keeps the facts. Only without such a history
@@ -1310,8 +1319,12 @@ reference and are the browser and MCP transitions to the complete stored row.
 The server privately binds the stateless, versioned reference to the complete
 stable logical identity and treats its ordering information only as a hint. If
 finishing active data reorders rows, row detail resolves the exact same logical
-identity and returns the same row. A missing, altered or non-unique identity is
-an error, never another row. Each
+identity and returns the same row. For `event_stream`, timestamp plus every
+stored non-timestamp field is the complete row content: multiple physical rows
+with that identical identity retain their full occurrence multiplicity, and a
+reference may resolve to any content-equivalent match. Other non-unique
+identities, and every missing or altered identity, are errors and never resolve
+to another row. Each
 potentially large text field in that response has one stable object shape:
 `stored_text`, decimal `full_len`, `truncated`, and `sha256`. These fields
 preserve collector-side truncation facts; a short untruncated value uses

@@ -642,12 +642,13 @@ test("event groups use one half-open request and validate the server-owned shape
   try {
     const groups = await api.loadEventGroups(
       START,
+      START + 300_000_001,
       ["pg_log_errors", "pg_log_slow_queries"],
       new AbortController().signal,
     )
     assert.equal(request?.pathname, "/api/events")
     assert.equal(request?.searchParams.get("from"), String(START))
-    assert.equal(request?.searchParams.get("to"), String(START + 3_600_000_000))
+    assert.equal(request?.searchParams.get("to"), String(START + 300_000_001))
     assert.equal(request?.searchParams.get("representation"), "groups")
     assert.equal(request?.searchParams.get("limit"), "5000")
     assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
@@ -666,7 +667,7 @@ test("event groups use one half-open request and validate the server-owned shape
       },
     ])
     await assert.rejects(
-      api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
+      api.loadEventGroups(START, START + 1, ["pg_log_errors"], new AbortController().signal),
       /event detail reference/,
     )
   } finally {

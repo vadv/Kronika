@@ -2133,6 +2133,8 @@ test("the first Events table settles before timeline lanes start", { timeout: 60
     await delay(100)
     assert.equal(requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("part") === "lanes"), false)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="events-console"]') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="events-console"] > header [role="status"]')?.textContent`), "Loading log…")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="events-console"] > header').textContent.includes("0")`), false)
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
 
     ndjson(held.events, slowQueryEventRecords())
@@ -4206,7 +4208,7 @@ test("the slow-query group loads one opaque representative detail and preserves 
       return
     }
     if (url.pathname === "/api/events") {
-      ndjson(response, slowQueryEventRecords())
+      ndjson(response, slowQueryEventRecords(Number(url.searchParams.get("from"))))
       return
     }
     if (url.pathname === "/api/row-detail") {
@@ -4248,7 +4250,7 @@ test("the slow-query group loads one opaque representative detail and preserves 
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
     await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the slow-query entry")
-    await cdp.waitFor(`document.querySelector('[data-marker-count="2"]') !== null`, "the non-representative event marker")
+    await cdp.waitFor(`document.querySelector('[data-marker-count="4"]') !== null`, "the mixed timeline marker")
     await cdp.waitFor(`document.querySelector('[data-testid="events-truncated"]') !== null`, "the incomplete Events notice")
     await waitForRequests(() => requests.filter(({ path }) => path.startsWith("/api/")).length >= 4)
     await delay(200)
@@ -4359,8 +4361,40 @@ test("the slow-query group loads one opaque representative detail and preserves 
     })()`), { at: String(AT), find: matchingFind, view: "events" })
     assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 1)
 
-    await cdp.evaluate(`document.querySelector('[data-marker-count="2"]').click()`)
+    assert.deepEqual(await cdp.evaluate(`(() => {
+      const marker = document.querySelector('[data-marker-count="4"]')
+      return {
+        composition: marker.dataset.markerComposition,
+        locators: marker.dataset.markerLocatorCount,
+        text: marker.textContent,
+      }
+    })()`), { composition: "event:2 known_bad:2", locators: "5", text: "22" })
+    await cdp.evaluate(`document.querySelector('[data-marker-count="4"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-entry-title"]') !== null`, "the non-representative event scope")
+    await cdp.waitFor(`document.querySelector('[data-testid="events-scope"]')?.dataset.eventMarks === "2"`, "the explicit timeline selection")
+    await waitForRequests(() => requests.filter(({ path }) => path === "/api/events").length === 2)
+    const selectedScope = await cdp.evaluate(`(() => {
+      const scope = document.querySelector('[data-testid="events-scope"]')
+      const marks = document.querySelector('[data-testid="event-marks"]')
+      return {
+        log: scope.dataset.eventMarks,
+        sharp: scope.dataset.sharpRiseMarks,
+        text: scope.textContent,
+        threshold: scope.dataset.thresholdMarks,
+        thresholdText: marks.textContent,
+      }
+    })()`)
+    assert.equal(selectedScope.log, "2")
+    assert.equal(selectedScope.sharp, "0")
+    assert.equal(selectedScope.threshold, "2")
+    assert.match(selectedScope.text, /Выбрано на шкале.*События журнала: 2.*Срабатывания порогов: 2.*Весь час/s)
+    assert.match(selectedScope.thresholdText, /Показатели: 2 · Срабатывания: 2/)
+    assert.equal((selectedScope.thresholdText.match(/×1/g) ?? []).length, 2)
+    const scopedRequest = requests.filter(({ path }) => path === "/api/events").at(-1)
+    const scopedQuery = new URLSearchParams(scopedRequest.query)
+    assert.equal(scopedQuery.get("from"), String(EVENT_SCOPE_AT))
+    assert.equal(scopedQuery.get("to"), String(EVENT_SCOPE_AFTER + 1))
+    assert.deepEqual(scopedQuery.getAll("source"), ["pg_log_slow_queries"])
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
@@ -4370,6 +4404,9 @@ test("the slow-query group loads one opaque representative detail and preserves 
     assert.equal(narrow.chips.every(({ gap, sameRow }) => sameRow && gap >= 0 && gap <= 12), true, JSON.stringify(narrow.chips))
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 1280 })
+    await cdp.evaluate(`document.querySelector('[data-testid="events-scope"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="events-scope"]') === null`, "the whole-hour Events scope")
+    await waitForRequests(() => requests.filter(({ path }) => path === "/api/events").length === 3)
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="events-console"] input[type="search"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "text:never-present")
@@ -4380,7 +4417,7 @@ test("the slow-query group loads one opaque representative detail and preserves 
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /результат неполный/)
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="events-truncated"]').textContent`), /result is incomplete/)
-    assert.equal(requests.filter(({ path }) => path === "/api/events").length, 1)
+    assert.equal(requests.filter(({ path }) => path === "/api/events").length, 3)
     assert.equal(requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("section")).length, 0)
     assert.equal(requests.filter(({ path }) => path === "/api/row-detail").length, 1)
     assert.deepEqual(page.errors, [])
@@ -6215,10 +6252,20 @@ function slowQueryTimelineRecords() {
     },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(EVENT_SCOPE_AFTER),
-      sections: [{
-        logical_name: "pg_log_slow_queries", physical_name: "pg_log_slow_queries", type_id: "2004001",
-        implementation: "postgresql", source_family: "postgresql", rows: "3", bytes: "512",
-      }],
+      sections: [
+        {
+          logical_name: "pg_log_slow_queries", physical_name: "pg_log_slow_queries", type_id: "2004001",
+          implementation: "postgresql", source_family: "postgresql", rows: "3", bytes: "512",
+        },
+        {
+          logical_name: "os_mountinfo", physical_name: "os_mountinfo", type_id: "1112002",
+          implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+        },
+        {
+          logical_name: "pg_locks", physical_name: "pg_locks", type_id: "1011002",
+          implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "128",
+        },
+      ],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
     { record: "lane", segment_id: SEGMENT, lane: "pg_running", ts: String(AT), value: 1 },
@@ -6231,16 +6278,32 @@ function slowQueryTimelineRecords() {
       field_ordinal: 0, row_ordinal: "4", ts: String(EVENT_SCOPE_AT),
     },
     {
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "known_bad", type_id: "2004001",
+      field_ordinal: 0, row_ordinal: "4", ts: String(EVENT_SCOPE_AT),
+    },
+    {
+      record: "finding", logical_name: "os_mountinfo", kind: "known_bad", type_id: "1112002",
+      field_ordinal: 9, row_ordinal: "8", ts: String(EVENT_SCOPE_AT),
+    },
+    {
       record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
       field_ordinal: 0, row_ordinal: "5", ts: String(EVENT_SCOPE_AFTER),
+    },
+    {
+      record: "finding", logical_name: "pg_locks", kind: "known_bad", type_id: "1011002",
+      field_ordinal: 2, row_ordinal: "9", ts: String(EVENT_SCOPE_AFTER),
     },
   ]
 }
 
-function slowQueryEventRecords() {
+function slowQueryEventRecords(from = HOUR) {
   const minutes = Array.from({ length: 60 }, () => 0)
-  minutes[Math.floor((AT - HOUR) / 60_000_000)] = 1
-  minutes[Math.floor((EVENT_SCOPE_AT - HOUR) / 60_000_000)] = 2
+  const selected = from === EVENT_SCOPE_AT
+  if (selected) minutes[0] = 2
+  else {
+    minutes[Math.floor((AT - HOUR) / 60_000_000)] = 1
+    minutes[Math.floor((EVENT_SCOPE_AT - HOUR) / 60_000_000)] = 2
+  }
   return [
     { record: "events", representation: "groups", truncated: true },
     {
@@ -6249,13 +6312,13 @@ function slowQueryEventRecords() {
       section: "pg_log_slow_queries",
       tier: "notable",
       label: SLOW_PATTERN,
-      count: 3,
-      firstTs: AT,
+      count: selected ? 2 : 3,
+      firstTs: selected ? EVENT_SCOPE_AT : AT,
       lastTs: EVENT_SCOPE_AFTER,
       minutes,
       stat: { kind: "pg.slow", maxMs: 6_290, totalMs: 12_580, thresholdMs: null },
       detail_ref: SLOW_DETAIL_REF,
-      representativeTs: AT,
+      representativeTs: selected ? EVENT_SCOPE_AT : AT,
     },
   ]
 }

@@ -523,15 +523,15 @@ export async function loadSeries(
 }
 
 export async function loadEventGroups(
-  selectedHour: number,
+  from: number,
+  to: number,
   sources: readonly string[],
   signal: AbortSignal,
 ): Promise<{ readonly rows: readonly EventEntry[]; readonly truncated: boolean }> {
   signal.throwIfAborted()
-  const from = floorHour(selectedHour)
   const query = [
     `from=${from}`,
-    `to=${from + 3_600_000_000}`,
+    `to=${to}`,
     "representation=groups",
     "limit=5000",
     ...sources.map((source) => `source=${encodeURIComponent(source)}`),

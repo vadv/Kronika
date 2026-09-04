@@ -7,7 +7,7 @@ import { useDisplayTime } from "./display-time-context"
 import { EventTierSection, MinuteStrip, SECTION_ICONS, entryChips, entryTitle, sectionLabel, tiersOf } from "./events-console"
 import { categoryLabel } from "./events-format"
 import { MINUTE_COLUMNS, type EventEntry } from "./events-groups"
-import { findingKey, findingMetric, findingOrder, findingSource, type FindingMetric } from "./finding-presentation"
+import { findingKey, findingMetric, findingOrder, findingSource, isEventFindingSource, summarizeFindings, type FindingMetric } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
 import { compact, type Locale } from "./model"
@@ -67,7 +67,9 @@ export function EventsView({
   readonly selectedLane: string
   readonly t: Translate
 }) {
-  const events = useEventGroups(data, hour, revision, onReady)
+  const time = useDisplayTime()
+  const eventSelection = useMemo(() => eventGroupSelection(data.availableSections, hour, scope), [data.availableSections, hour, scope])
+  const events = useEventGroups(eventSelection, revision, onReady)
   const entries = events.rows
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   useEffect(() => setExpandedKey(null), [hour])
@@ -94,11 +96,7 @@ export function EventsView({
   const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
   const [digest, setDigest] = useState<string | null>(null)
   useEffect(() => setDigest(null), [hour])
-  const scoped = useMemo(() => {
-    if (entries === null) return null
-    if (scope === null) return entries
-    return entries.filter((entry) => entryInScope(entry, scope))
-  }, [entries, scope])
+  const scoped = entries
   const chosen = useMemo(() => {
     if (scoped === null || digest === null) return scoped
     return scoped.filter((entry) => digest === "critical" ? entry.tier === "critical" : entry.section === digest)
@@ -121,14 +119,35 @@ export function EventsView({
     return evaluateExpr(parsedSearch.query.expr, (clause) => matches({ key: clause.key, value: clause.value }))
   }), [chosen, locale, parsedSearch, t])
   const marks = useMemo(() => (scope ?? data.findings)
-    .filter((finding) => finding.kind !== "event" && !finding.logicalName.startsWith("pg_log_"))
+    .filter((finding) => finding.kind !== "event" && !isEventFindingSource(finding.logicalName))
     .slice()
     .sort((left, right) => findingOrder(right, left)), [data.findings, scope])
   const markGroups = useMemo(() => groupMarks(marks, hour, t), [hour, marks, t])
-  const totalCount = visible?.reduce((sum, entry) => sum + entry.count, 0) ?? 0
+  const scopeSummary = useMemo(() => scope === null ? null : summarizeFindings(scope), [scope])
   const busy = loading || events.loading
+  const consoleStatus = eventConsoleStatus(visible, busy, events.failed)
+  const consoleCount = t(consoleStatus.key, consoleStatus.slots)
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} t={t} />
+    {scopeSummary !== null && <section
+      aria-describedby="events-scope-help"
+      aria-label={t("events.scope")}
+      className="flex min-h-[38px] items-center gap-3 border-b border-line2 bg-s2 px-1.5 py-1 max-[620px]:flex-wrap max-[620px]:gap-x-2 max-[620px]:gap-y-1"
+      data-event-marks={scopeSummary.event}
+      data-sharp-rise-marks={scopeSummary.spike}
+      data-testid="events-scope"
+      data-threshold-marks={scopeSummary.knownBad}
+    >
+      <span className="text-xs font-medium text-fg2">{t("events.scope")}</span>
+      <time className="font-mono text-xs tabular-nums text-fg3">{scopeSummary.from === scopeSummary.to ? time.timestamp(scopeSummary.from) : `${time.timestamp(scopeSummary.from)}–${time.timestamp(scopeSummary.to)}`}</time>
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-fg3">
+        {scopeSummary.event > 0 && <span>{t("events.scope.event", { count: scopeSummary.event })}</span>}
+        {scopeSummary.knownBad > 0 && <span>{t("events.scope.known_bad", { count: scopeSummary.knownBad })}</span>}
+        {scopeSummary.spike > 0 && <span>{t("events.scope.spike", { count: scopeSummary.spike })}</span>}
+      </span>
+      <span className="sr-only" id="events-scope-help">{t("events.scope.help")}</span>
+      <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s1 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3 coarse:min-h-11" onClick={onShowAll} type="button">{t("events.show_all")}</button>
+    </section>}
     {markGroups.length > 0 && (digest === null || digest === MARKS_TILE)
       ? <section className="mt-2" data-testid="event-marks">
         <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1">
@@ -136,7 +155,7 @@ export function EventsView({
             <Diamond aria-hidden="true" className="text-bad" size={13} />
             <span className="text-xs font-medium text-fg2">{t("events.marks")}</span>
           </span>
-          <span className="text-xs tabular-nums text-fg3">{t("events.console.count", { groups: markGroups.length, count: marks.length })}</span>
+          <span className="text-xs tabular-nums text-fg3">{t("events.marks.count", { groups: markGroups.length, count: marks.length })}</span>
         </header>
         {markGroups.map((group) => <MarkGroupRow
           expanded={expandedKey === group.key}
@@ -154,8 +173,7 @@ export function EventsView({
     <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
         <span className="text-xs font-medium text-fg2">{t("events.console")}</span>
-        <span className="text-xs tabular-nums text-fg3">{busy && visible !== null ? t("table.loading") : t("events.console.count", { groups: visible?.length ?? 0, count: totalCount })}</span>
-        {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
+        <span aria-live="polite" className="text-xs tabular-nums text-fg3" role={events.failed ? "alert" : "status"}>{consoleCount}</span>
       </header>
       {scoped !== null && scoped.length > 0 && <EventsDigest active={digest} entries={scoped} locale={locale} marks={markGroups} onChoose={(key) => setDigest((current) => current === key ? null : key)} t={t} />}
       <TableFilter kept={visible?.length ?? 0} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={chosen?.length ?? 0} />
@@ -166,8 +184,9 @@ export function EventsView({
         {visible === null && events.failed && <p className="table-empty" role="status">{t("events.console.error")}</p>}
         {visible === null && !events.failed && <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>}
         {visible !== null && visible.length === 0 && <EventsEmptyState
-          filtered={pattern !== "" || scope !== null}
+          filtered={pattern !== "" || digest !== null}
           onClear={() => { onPattern(""); onShowAll() }}
+          selected={scope !== null}
           t={t}
           truncated={events.truncated}
         />}
@@ -175,7 +194,7 @@ export function EventsView({
           entries={tierEntries}
           expandedKey={expandedKey}
           filtered={digest !== null || pattern !== "" || scope !== null}
-          hour={hour}
+          hour={eventSelection.from}
           key={tier}
           locale={locale}
           onCursor={onCursor}
@@ -198,15 +217,18 @@ export function EventsIncompleteNotice({ locale, t }: {
   </p>
 }
 
-export function EventsEmptyState({ filtered, onClear, t, truncated }: {
+export function EventsEmptyState({ filtered, onClear, selected = false, t, truncated }: {
   readonly filtered: boolean
   readonly onClear: () => void
+  readonly selected?: boolean | undefined
   readonly t: Translate
   readonly truncated: boolean
 }) {
   return <div className="table-empty flex items-center gap-2.5">{filtered
     ? <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={onClear} type="button">{t("filter.clear")}</button></>
-    : t(truncated ? "events.console.truncated_none" : "events.console.empty")}</div>
+    : selected
+      ? t("events.console.empty_selection")
+      : t(truncated ? "events.console.truncated_none" : "events.console.empty")}</div>
 }
 
 interface DigestTile {
@@ -406,8 +428,41 @@ export function entryOf(entries: readonly EventEntry[], finding: Finding): Event
   return matches.length === 1 ? matches[0] ?? null : null
 }
 
-export function entryInScope(entry: EventEntry, scope: readonly Finding[]): boolean {
-  return scope.some((finding) => finding.kind === "event" && finding.logicalName === entry.section)
+interface EventGroupSelection {
+  readonly from: number
+  readonly sources: readonly string[]
+  readonly to: number
+}
+
+interface EventConsoleStatus {
+  readonly key: string
+  readonly slots?: Readonly<Record<string, string | number>> | undefined
+}
+
+export function eventConsoleStatus(rows: readonly EventEntry[] | null, loading: boolean, failed: boolean): EventConsoleStatus {
+  if (rows === null) return { key: failed ? "events.console.unavailable" : "events.console.loading" }
+  if (loading) return { key: "events.console.loading" }
+  const slots = { groups: rows.length, count: rows.reduce((sum, entry) => sum + entry.count, 0) }
+  return { key: failed ? "events.console.update_failed" : "events.console.count", slots }
+}
+
+export function eventGroupSelection(availableSections: readonly string[], hour: number, scope: readonly Finding[] | null): EventGroupSelection {
+  const available = new Set(availableSections)
+  if (scope === null) {
+    return {
+      from: hour,
+      sources: EVENT_SOURCES.filter((source) => available.has(source)),
+      to: hour + 3_600_000_000,
+    }
+  }
+  const selected = scope.filter((finding) => finding.kind === "event" && available.has(finding.logicalName))
+  if (selected.length === 0) return { from: hour, sources: [], to: hour + 1 }
+  const timestamps = selected.map((finding) => finding.timestamp)
+  return {
+    from: Math.min(...timestamps),
+    sources: EVENT_SOURCES.filter((source) => selected.some((finding) => finding.logicalName === source)),
+    to: Math.max(...timestamps) + 1,
+  }
 }
 
 interface StreamState {
@@ -421,11 +476,9 @@ interface StreamState {
 // Live-hour revisions are frequent; full log sections refresh at most once per minute.
 const STREAM_REFRESH_MIN_MS = 60_000
 
-function useEventGroups(data: HourData, hour: number, revision: number, onReady: () => void): StreamState {
-  const wanted = EVENT_SOURCES
-    .filter((source) => data.availableSections.includes(source))
-    .join(",")
-  const key = `${hour}:${wanted}`
+function useEventGroups(selection: EventGroupSelection, revision: number, onReady: () => void): StreamState {
+  const wanted = selection.sources.join(",")
+  const key = `${selection.from}:${selection.to}:${wanted}`
   const [state, setState] = useState<StreamState>({ key: "", rows: null, truncated: false, loading: false, failed: false })
   const lastRead = useRef({ key: "", at: 0 })
   useEffect(() => {
@@ -438,10 +491,10 @@ function useEventGroups(data: HourData, hour: number, revision: number, onReady:
     if (lastRead.current.key === key && now - lastRead.current.at < STREAM_REFRESH_MIN_MS) return
     lastRead.current = { key, at: now }
     setState((current) => current.key === key
-      ? { ...current, loading: true }
+      ? { ...current, loading: true, failed: false }
       : { key, rows: null, truncated: false, loading: true, failed: false })
     const controller = new AbortController()
-    const load = loadEventGroups(hour, wanted.split(","), controller.signal)
+    const load = loadEventGroups(selection.from, selection.to, wanted.split(","), controller.signal)
     acceptResponse(
       load,
       controller.signal,
@@ -464,6 +517,6 @@ function useEventGroups(data: HourData, hour: number, revision: number, onReady:
       if (!controller.signal.aborted) console.error("events load failed", error)
     })
     return () => controller.abort()
-  }, [hour, key, onReady, revision, wanted])
+  }, [key, onReady, revision, selection.from, selection.to, wanted])
   return state
 }

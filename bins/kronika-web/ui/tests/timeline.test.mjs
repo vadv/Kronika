@@ -150,7 +150,7 @@ test("marker clustering is deterministic and separates locators when more pixels
   )
 })
 
-test("mixed clusters show numeric composition without rail labels or a band", async () => {
+test("mixed clusters show each semantic count without a raw locator total", async () => {
   const findings = [
     ...Array.from({ length: 12 }, (_, index) => finding("event", 100, String(index))),
     ...Array.from({ length: 11 }, (_, index) => finding("known_bad", 100, String(index + 20))),
@@ -161,12 +161,16 @@ test("mixed clusters show numeric composition without rail labels or a band", as
     marker,
     onActivate() {},
     share: 0.1,
-    t: (key) => ({ "locator.event": "Event", "locator.known_bad": "Known bad", "locator.spike": "Spike", "events.source.process": "Process" })[key] ?? key,
+    t: (key, slots = {}) => ({
+      "events.scope.event": `Log events: ${slots.count}`,
+      "events.scope.known_bad": `Threshold crossings: ${slots.count}`,
+      "events.scope.spike": `Sharp rises: ${slots.count}`,
+    })[key] ?? key,
   }))
   assert.equal((markup.match(/data-marker-shape=/g) ?? []).length, 3)
   assert.match(markup, /data-marker-composition="event:12 known_bad:11 spike:10"/)
-  assert.match(markup, />33</)
-  assert.match(markup, /aria-label="[^"]*×33/)
+  assert.doesNotMatch(markup, />33</)
+  assert.match(markup, /aria-label="Log events: 12 · Threshold crossings: 11 · Sharp rises: 10 · 100"/)
   assert.match(markup, new RegExp(`clamp\\(${helpers.MARKER_CLUSTER_PX / 2}px`))
   assert.doesNotMatch(markup.replace(/aria-label="[^"]*"|title="[^"]*"/g, ""), /Event|Known bad|Spike|Process/)
   const [source, styles] = await Promise.all([
@@ -177,6 +181,24 @@ test("mixed clusters show numeric composition without rail labels or a band", as
   assert.doesNotMatch(styles, /\.marker-cluster-summary|\.finding-rail|\.neutral-rail/)
   assert.match(source, /marker-cluster-badge/)
   assert.deepEqual(helpers.groupFindings([], 0, 1_000, 100), [])
+})
+
+test("a log severity locator does not count the same physical log row twice", () => {
+  const event = { ...finding("event", 100, "1"), logicalName: "pg_log_slow_queries", typeId: "2004001" }
+  const severity = { ...event, kind: "known_bad" }
+  const [marker] = helpers.groupFindings([event, severity], 0, 1_000, 100, 10)
+  assert.equal(marker.findings.length, 2)
+  assert.deepEqual(marker.composition, [{ count: 1, kind: "event" }])
+  const markup = renderToStaticMarkup(createElement(helpers.FindingMarker, {
+    marker,
+    onActivate() {},
+    share: 0.1,
+    t: (key, slots = {}) => key === "events.scope.event" ? `Log events: ${slots.count}` : key,
+  }))
+  assert.match(markup, /data-marker-count="1"/)
+  assert.match(markup, /data-marker-locator-count="2"/)
+  assert.match(markup, /data-marker-composition="event:1"/)
+  assert.doesNotMatch(markup, /marker-cluster-badge/)
 })
 
 test("finding kinds have non-color shape identities", () => {
@@ -214,6 +236,13 @@ test("health metrics share stored evaluation timestamps and a strict nonfuture c
   ])
   assert.deepEqual(osOnly.series.map(({ field }) => field), ["overall_health", "os_health"])
   assert.equal(osOnly.series.some(({ field }) => field === "postgres_health"), false)
+
+  const container = helpers.healthTimelineSeries([
+    { logicalName: "health", ordinal: "4", segmentId: "d", timestamp: 400, typeId: "0", values: { os_health: null, overall_health: null, postgres_health: 100 } },
+    { logicalName: "health", ordinal: "5", segmentId: "d", timestamp: 410, typeId: "0", values: { os_health: null, overall_health: null, postgres_health: 95 } },
+  ])
+  assert.deepEqual(container.series.map(({ field }) => field), ["postgres_health"])
+  assert.equal(container.threshold, undefined)
 })
 
 test("all shared lanes own exact heterogeneous navigation timestamps", () => {
