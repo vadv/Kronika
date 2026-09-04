@@ -994,15 +994,28 @@ test("the MCP drawer copies exactly through real legacy behavior and restores mo
   }
 })
 
-test("web export keeps the view stable and downloads one authenticated HTML artifact", { timeout: 90_000 }, async () => {
+test("the live Export range panel preserves exact time and reports its uncancellable transfer", { timeout: 180_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
+  const reportHtml = gunzipSync(await readFile(new URL("../../../kronika-report/assets/kronika-report-shell.html.gz", import.meta.url)))
+  assert.equal(reportHtml.includes("export."), false)
+  assert.equal(reportHtml.includes("export-panel"), false)
+  assert.equal(reportHtml.includes("export-trigger"), false)
+  assert.equal(reportHtml.includes("/api/export"), false)
+
   const authState = { valid: true }
-  const exportHtml = "<!doctype html><title>Kronika export artifact</title>"
-  const exportFilename = "kronika-2026-08-13-050000-2026-08-13-055959-utc.html"
+  const exportFilename = "kronika-2026-08-13-182958-2026-08-13-183001-utc.html"
+  const exportChunks = [
+    "<!doctype html><title>Kronika export artifact</title><main>",
+    "x".repeat(4_096),
+    "y".repeat(8_192) + "</main>",
+  ]
+  const exportHtml = exportChunks.join("")
   const exportRequests = []
+  const exportPlans = []
   const heldExports = []
+  const abandonedExports = []
+  let dropExports = false
   const page = { errors: [], external: [], responses: [] }
-  let exportMode = "error"
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname === "/") {
@@ -1014,27 +1027,37 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname === "/api/export") {
-      exportRequests.push({
+      const recorded = {
         ...requestRecord(request, url),
         accept: request.headers.accept ?? null,
         host: request.headers.host ?? null,
+      }
+      exportRequests.push(recorded)
+      response.once("close", () => {
+        if (!response.writableEnded) abandonedExports.push(recorded.query)
       })
-      if (exportMode === "error") {
+      if (dropExports) {
+        response.destroy()
+        return
+      }
+      const plan = exportPlans.shift()
+      if (plan === "stream") {
         heldExports.push(response)
         return
       }
-      response.writeHead(200, {
-        "Cache-Control": "private,no-store",
-        "Content-Disposition": `attachment; filename="${exportFilename}"`,
-        "Content-Length": Buffer.byteLength(exportHtml),
-        "Content-Type": "text/html",
-      })
-      response.end(exportHtml)
+      if (plan === "busy") {
+        response.writeHead(503, { "Cache-Control": "no-store", "Content-Type": "application/json" })
+        response.end('{"error":"export_busy"}')
+        return
+      }
+      response.writeHead(500, { "Cache-Control": "no-store", "Content-Type": "application/json" })
+      response.end('{"error":"export_failed"}')
       return
     }
     if (url.pathname === "/api/hour") {
-      if (url.searchParams.get("section") === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
-      return ndjson(response, timelineRecords(HOUR, true))
+      const hour = Number(url.searchParams.get("from") ?? HOUR)
+      if (url.searchParams.get("section") === "os_process_summary") return ndjson(response, processSummaryRecords(hour, 3, 80))
+      return ndjson(response, timelineRecords(hour, true))
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
     response.writeHead(404)
@@ -1067,206 +1090,338 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
     })
     const pageUrl = `${origin}/?at=${AT}&lens=disk`
     await cdp.send("Page.navigate", { url: pageUrl })
-    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, "the export action", 15_000)
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian export locale")
-    const initialUrl = await cdp.evaluate("location.href")
-    const expectedFrom = HOUR / 1_000_000
-    const expectedTo = expectedFrom + 3_599
-    const expectedQuery = `?from=${expectedFrom}&to=${expectedTo}`
+    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, "the Export action", 15_000)
 
+    const setViewport = async (width) => {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+      await cdp.send("Emulation.setTouchEmulationEnabled", width === 360
+        ? { enabled: true, maxTouchPoints: 1 }
+        : { enabled: false })
+      await settleLayout(cdp)
+    }
+    const setLocale = async (locale) => {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${locale} locale`)
+    }
+    const setTheme = async (theme) => {
+      await cdp.evaluate(`(() => {
+        if (document.documentElement.dataset.theme === ${JSON.stringify(theme)}) return
+        const control = [...document.querySelectorAll(".top-actions button")]
+          .find((button) => ["Theme", "Тема"].includes(button.getAttribute("aria-label")))
+        if (control === undefined) throw new Error("theme control is missing")
+        control.click()
+      })()`)
+      await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(theme)}`, `${theme} theme`)
+    }
+    const reloadForZone = async (timezoneId) => {
+      await cdp.send("Emulation.setTimezoneOverride", { timezoneId })
+      await cdp.send("Page.reload")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, `${timezoneId} Export action`, 15_000)
+      await settleLayout(cdp)
+    }
+    const openPanel = async () => {
+      await clickCenter(cdp, '[data-testid="export-trigger"]')
+      await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') !== null
+        && document.querySelector('[data-testid="export-panel"]').style.visibility !== "hidden"`, "the Export range panel")
+      await settleLayout(cdp)
+    }
+    const pressEscape = async () => {
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    }
+    const closeIdlePanel = async () => {
+      await pressEscape()
+      await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle Export close")
+      await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "Export trigger focus")
+    }
+    const replaceWithKeyboard = async (selector, value) => {
+      await clickCenter(cdp, selector)
+      await controlKey(cdp, "a", "KeyA", 65)
+      if (value === "") {
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 })
+      } else {
+        await cdp.send("Input.insertText", { text: value })
+      }
+      await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`, `${selector} keyboard value`)
+    }
+    const chooseCrossDayRange = async () => {
+      await clickCenter(cdp, '[data-testid="export-from-target"]')
+      await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-13"]')
+      await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-14"]')
+      await replaceWithKeyboard('[data-testid="export-from-time"]', "23:59:58")
+      await replaceWithKeyboard('[data-testid="export-to-time"]', "00:00:01")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-duration"]')?.textContent.trim() === "4 с"`, "the inclusive four-second duration")
+    }
+    const endpointState = () => cdp.evaluate(`(() => {
+      const panel = document.querySelector('[data-testid="export-panel"]')
+      return {
+        from: panel.dataset.rangeFrom,
+        fromDate: document.querySelector('[data-testid="export-from-date"]').value,
+        fromTime: document.querySelector('[data-testid="export-from-time"]').value,
+        to: panel.dataset.rangeTo,
+        toDate: document.querySelector('[data-testid="export-to-date"]').value,
+        toTime: document.querySelector('[data-testid="export-to-time"]').value,
+      }
+    })()`)
     const geometry = () => cdp.evaluate(`(() => {
-      const dialog = document.querySelector('[data-testid="export-dialog"]')
-      const bounds = dialog.getBoundingClientRect()
-      const status = dialog.querySelector('[data-testid="export-status"]')
+      const rect = (node) => {
+        const value = node.getBoundingClientRect()
+        return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width }
+      }
+      const panel = document.querySelector('[data-testid="export-panel"]')
+      const fromDate = document.querySelector('[data-testid="export-from-date"]')
+      const fromTime = document.querySelector('[data-testid="export-from-time"]')
+      const toDate = document.querySelector('[data-testid="export-to-date"]')
+      const toTime = document.querySelector('[data-testid="export-to-time"]')
+      const status = document.querySelector('[data-testid="export-status"]')
+      const targetSizes = [...panel.querySelectorAll("button, input")].map((node) => ({
+        id: node.dataset.testid ?? node.tagName,
+        ...rect(node),
+      })).filter(({ height, width }) => height > 0 && width > 0)
       return {
         active: document.activeElement?.dataset.testid ?? null,
-        ariaBusy: dialog.querySelector("form").getAttribute("aria-busy"),
-        bottom: bounds.bottom,
+        ariaBusy: panel.querySelector("form").getAttribute("aria-busy"),
+        ariaModal: panel.getAttribute("aria-modal"),
+        calendar: rect(document.querySelector('[data-testid="export-calendar"]')),
+        coarse: matchMedia("(pointer: coarse)").matches || matchMedia("(hover: none)").matches,
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-        height: bounds.height,
-        left: bounds.left,
-        modal: dialog.matches(":modal"),
-        right: bounds.right,
+        fromDate: rect(fromDate),
+        fromFont: Number.parseFloat(getComputedStyle(fromDate).fontSize),
+        fromTime: rect(fromTime),
+        inputLabels: [...panel.querySelectorAll("input")].every((input) => input.labels?.length === 1),
+        inputTypes: [...panel.querySelectorAll("input")].map((input) => input.type),
+        liveRegions: panel.querySelectorAll("[aria-live]").length,
+        mainAriaHidden: document.querySelector("main").getAttribute("aria-hidden"),
+        mainInert: document.querySelector("main").inert,
+        modal: panel.matches(":modal"),
+        panel: rect(panel),
+        panelClientHeight: panel.clientHeight,
+        panelScrollHeight: panel.scrollHeight,
+        phase: panel.dataset.phase,
         status: status.textContent.trim(),
-        statusHeight: status.getBoundingClientRect().height,
-        submitDisabled: dialog.querySelector('[data-testid="export-submit"]').disabled,
-        top: bounds.top,
-        width: bounds.width,
+        statusHeight: rect(status).height,
+        statusScrollHeight: status.scrollHeight,
+        submitDisabled: document.querySelector('[data-testid="export-submit"]').disabled,
+        targetSizes,
+        title: panel.querySelector("h2").textContent.trim(),
+        toDate: rect(toDate),
+        toTime: rect(toTime),
+        trigger: rect(document.querySelector('[data-testid="export-trigger"]')),
+        viewport: { height: innerHeight, width: innerWidth },
       }
     })()`)
     const assertStable = (before, after, label) => {
       for (const field of ["height", "left", "top", "width"]) {
-        assert.ok(Math.abs(before[field] - after[field]) <= 1, `${label} ${field}: ${JSON.stringify({ before, after })}`)
+        assert.ok(Math.abs(before.panel[field] - after.panel[field]) <= 1, `${label} ${field}: ${JSON.stringify({ after, before })}`)
       }
-      assert.ok(Math.abs(before.statusHeight - after.statusHeight) <= 1, `${label} status: ${JSON.stringify({ before, after })}`)
+      assert.ok(Math.abs(before.statusHeight - after.statusHeight) <= 1, `${label} status: ${JSON.stringify({ after, before })}`)
     }
-    const openDialog = async (width) => {
-      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
-      await settleLayout(cdp)
-      await cdp.evaluate(`document.querySelector('[data-testid="export-trigger"]').focus({ preventScroll: true })`)
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 })
-      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]')?.matches(":modal") === true`, `${width}px export dialog`)
-      await settleLayout(cdp)
-    }
-    const setDialogRange = (from, to) => cdp.evaluate(`(() => {
-      const set = (selector, value) => {
-        const input = document.querySelector(selector)
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value)
-        input.dispatchEvent(new Event("input", { bubbles: true }))
-      }
-      set('[data-testid="export-from"]', ${JSON.stringify(from)})
-      set('[data-testid="export-to"]', ${JSON.stringify(to)})
-    })()`)
-    const validationState = () => cdp.evaluate(`(() => {
-      const alert = document.querySelector('[data-testid="export-status"] [role="alert"]')
-      const bounds = alert?.getBoundingClientRect()
-      return {
-        fromInvalid: document.querySelector('[data-testid="export-from"]').getAttribute("aria-invalid"),
-        message: alert?.textContent.trim() ?? null,
-        toInvalid: document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid"),
-        visible: bounds !== undefined && bounds.width > 0 && bounds.height > 0,
-      }
-    })()`)
 
-    for (const width of [800, 1280]) {
-      if (width === 800) {
-        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
-        await settleLayout(cdp)
-        await cdp.evaluate(`document.querySelector('[data-testid="help-trigger"]').click()`)
-        await cdp.waitFor(`document.querySelector('[data-testid="help-panel"]') !== null`, "Help before Export")
-      }
-      await openDialog(width)
-      if (width === 800) assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="help-panel"]') === null`), true)
-      const idle = await geometry()
-      assert.equal(idle.modal, true, `${width}px idle: ${JSON.stringify(idle)}`)
-      assert.equal(idle.active, "export-from", `${width}px idle: ${JSON.stringify(idle)}`)
-      assert.equal(idle.ariaBusy, "false", `${width}px idle: ${JSON.stringify(idle)}`)
-      assert.equal(idle.status, "", `${width}px idle: ${JSON.stringify(idle)}`)
-      assert.equal(idle.documentOverflow, false, `${width}px idle: ${JSON.stringify(idle)}`)
-      assert.ok(idle.left >= -1 && idle.right <= width + 1 && idle.top >= -1 && idle.bottom <= 801, `${width}px idle: ${JSON.stringify(idle)}`)
-
-      const beforeRequest = exportRequests.length
-      if (width === 800) {
-        const defaults = await cdp.evaluate(`(() => ({
-          from: document.querySelector('[data-testid="export-from"]').value,
-          to: document.querySelector('[data-testid="export-to"]').value,
-        }))()`)
-        assert.deepEqual(defaults, {
-          from: "2026-08-13T10:30",
-          to: "2026-08-13T11:29:59",
-        })
-        const fractionalFrom = defaults.from.length === 16 ? `${defaults.from}:00.500` : `${defaults.from}.500`
-        for (const invalid of [
-          { from: "", message: "Укажите начало и конец диапазона.", to: defaults.to },
-          { from: fractionalFrom, message: "Укажите корректные дату и время с точностью до секунды.", to: defaults.to },
-          { from: defaults.to, message: "Начало должно быть не позже конца.", to: defaults.from },
-        ]) {
-          await setDialogRange(invalid.from, invalid.to)
-          await clickCenter(cdp, '[data-testid="export-submit"]')
-          await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === ${JSON.stringify(invalid.message)}`, "the localized export validation error")
-          await delay(100)
-          assert.deepEqual(await validationState(), {
-            fromInvalid: "true",
-            message: invalid.message,
-            toInvalid: "true",
-            visible: true,
-          })
-          assert.equal(exportRequests.length, beforeRequest, JSON.stringify(invalid))
+    const matrix = new Map()
+    for (const width of [360, 800, 1280]) {
+      await setViewport(width)
+      for (const locale of ["ru", "en"]) {
+        await setLocale(locale)
+        for (const theme of ["dark", "light"]) {
+          await setTheme(theme)
+          await openPanel()
+          const measured = await geometry()
+          const label = `${width}px ${locale} ${theme}`
+          assert.equal(measured.ariaBusy, "false", `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.ariaModal, "false", `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.modal, false, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.mainAriaHidden, null, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.mainInert, false, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.documentOverflow, false, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.active, "export-from-date", `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.inputLabels, true, `${label}: ${JSON.stringify(measured)}`)
+          assert.deepEqual(measured.inputTypes, ["text", "text", "text", "text"], `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.liveRegions, 1, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.phase, "idle", `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.statusHeight, 44, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.fromFont, 12, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.title, locale === "ru" ? "Экспорт HTML-отчёта" : "Export HTML report", label)
+          assert.ok(measured.panel.left >= 7 && measured.panel.right <= width - 7, `${label}: ${JSON.stringify(measured)}`)
+          assert.ok(measured.panel.top >= 7 && measured.panel.bottom <= 793, `${label}: ${JSON.stringify(measured)}`)
+          assert.ok(measured.panel.height <= 784 && measured.panel.width <= width - 16, `${label}: ${JSON.stringify(measured)}`)
+          assert.ok(measured.fromDate.right + 4 <= measured.fromTime.left, `${label}: ${JSON.stringify(measured)}`)
+          assert.ok(measured.toDate.right + 4 <= measured.toTime.left, `${label}: ${JSON.stringify(measured)}`)
+          assert.ok(measured.calendar.left >= measured.panel.left && measured.calendar.right <= measured.panel.right, `${label}: ${JSON.stringify(measured)}`)
+          if (width === 360) {
+            assert.equal(measured.coarse, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.ok(measured.trigger.height >= 43.5 && measured.trigger.width >= 43.5, `${label}: ${JSON.stringify(measured.trigger)}`)
+            assert.ok(measured.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), `${label}: ${JSON.stringify(measured.targetSizes)}`)
+          }
+          const matrixKey = `${width}:${locale}`
+          const prior = matrix.get(matrixKey)
+          if (prior === undefined) matrix.set(matrixKey, measured)
+          else {
+            assert.ok(Math.abs(prior.panel.width - measured.panel.width) <= 1, `${label}: ${JSON.stringify({ measured, prior })}`)
+            assert.ok(Math.abs(prior.panel.height - measured.panel.height) <= 1, `${label}: ${JSON.stringify({ measured, prior })}`)
+          }
+          await closeIdlePanel()
         }
-        await setDialogRange(defaults.from, defaults.to)
-        await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]') === null
-          && document.querySelector('[data-testid="export-from"]').getAttribute("aria-invalid") === null
-          && document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid") === null`, "export validation recovery")
       }
-      await cdp.evaluate(`document.querySelector('[data-testid="export-submit"]').focus({ preventScroll: true })`)
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 })
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 })
-      await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
-      await waitForRequests(() => exportRequests.length === beforeRequest + 1)
-      await delay(100)
-      assert.equal(exportRequests.length, beforeRequest + 1, `${width}px duplicate submission`)
-      const request = exportRequests.at(-1)
-      assert.deepEqual(request, {
-        accept: "text/html",
-        authorization: null,
-        cookie: SESSION_COOKIE,
-        host: new URL(origin).host,
-        marker: "1",
-        method: "GET",
-        path: "/api/export",
-        query: expectedQuery,
-      })
-      const busy = await geometry()
-      assert.equal(busy.ariaBusy, "true", `${width}px busy: ${JSON.stringify(busy)}`)
-      assert.equal(busy.submitDisabled, true, `${width}px busy: ${JSON.stringify(busy)}`)
-      assert.equal(busy.status, "Формируем отчёт…", `${width}px busy: ${JSON.stringify(busy)}`)
-      assertStable(idle, busy, `${width}px idle/busy geometry`)
-      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px busy URL`)
-
-      const errorStart = page.errors.length
-      const held = heldExports.shift()
-      assert.notEqual(held, undefined)
-      const exportError = width === 800
-        ? { code: "export_busy", message: "Другой отчёт уже формируется. Повторите попытку позже.", status: 503 }
-        : { code: "export_failed", message: "Не удалось сформировать отчёт.", status: 500 }
-      held.writeHead(exportError.status, { "Cache-Control": "no-store", "Content-Type": "application/json" })
-      held.end(JSON.stringify({ error: exportError.code }))
-      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] [role="alert"]')?.textContent.trim() === ${JSON.stringify(exportError.message)}`, `${width}px retained export error`)
-      await settleLayout(cdp)
-      const failed = await geometry()
-      assert.equal(failed.ariaBusy, "false", `${width}px error: ${JSON.stringify(failed)}`)
-      assert.equal(failed.submitDisabled, false, `${width}px error: ${JSON.stringify(failed)}`)
-      assert.equal(failed.status, exportError.message, `${width}px error: ${JSON.stringify(failed)}`)
-      assertStable(idle, failed, `${width}px idle/error geometry`)
-      await delay(100)
-      assert.equal((await geometry()).status, failed.status, `${width}px retained error text`)
-      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px error URL`)
-      const expectedErrors = page.errors.splice(errorStart)
-      const expectedStatus = width === 800 ? /503|Service Unavailable/ : /500|Internal Server Error/
-      assert.ok(expectedErrors.every((message) => expectedStatus.test(message)), JSON.stringify(expectedErrors))
-
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
-      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, `${width}px export Escape`)
-      await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, `${width}px export opener restore`)
-      assert.equal(await cdp.evaluate("location.href"), initialUrl, `${width}px closed URL`)
     }
+    assert.equal(matrix.get("360:ru").panel.width, 344)
+    assert.equal(matrix.get("800:ru").panel.width, 640)
+    assert.equal(matrix.get("1280:ru").panel.width, 640)
 
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English export control")
-    await openDialog(1280)
-    const english = await geometry()
-    assert.equal(english.modal, true, `English control: ${JSON.stringify(english)}`)
-    assert.equal(english.active, "export-from", `English control: ${JSON.stringify(english)}`)
-    assert.equal(english.documentOverflow, false, `English control: ${JSON.stringify(english)}`)
-    assert.ok(english.left >= -1 && english.right <= 1281 && english.top >= -1 && english.bottom <= 801, `English control: ${JSON.stringify(english)}`)
+    await reloadForZone("Australia/Lord_Howe")
+    await setLocale("en")
+    await openPanel()
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-zone"]').textContent`), "Australia/Lord_Howe")
+    const requestsBeforeDst = exportRequests.length
+    await replaceWithKeyboard('[data-testid="export-from-date"]', "2026-04-05")
+    await replaceWithKeyboard('[data-testid="export-from-time"]', "01:30:00")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="export-from-occurrence"] input').length === 2`, "Lord Howe repeated-time choices")
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Choose the first or second occurrence of the From time."`, "the unresolved Lord Howe occurrence")
     assert.deepEqual(await cdp.evaluate(`(() => ({
-      description: document.querySelector('[data-testid="export-dialog"] > p').textContent.trim(),
-      from: document.querySelector('[data-testid="export-from"]').closest("label").querySelector("span").textContent.trim(),
-      title: document.querySelector('[data-testid="export-dialog"] h2').textContent.trim(),
-      to: document.querySelector('[data-testid="export-to"]').closest("label").querySelector("span").textContent.trim(),
-    }))()`), {
-      description: "Times use Browser time. Both endpoints are included.",
-      from: "From",
-      title: "Export HTML report",
-      to: "To",
-    })
-    const beforeCancel = exportRequests.length
-    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
-    await waitForRequests(() => exportRequests.length === beforeCancel + 1)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-form"]').getAttribute("aria-busy") === "true"`, "English export busy state")
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
-    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "English export Escape")
-    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "English export focus restore")
-    assert.equal(await cdp.evaluate("location.href"), initialUrl, "English export URL")
-    const canceled = heldExports.shift()
-    assert.notEqual(canceled, undefined)
-    canceled.destroy()
+      active: document.activeElement?.parentElement?.parentElement?.dataset.testid ?? null,
+      checked: [...document.querySelectorAll('[data-testid="export-from-occurrence"] input')].map((input) => input.checked),
+      invalid: document.querySelector('[data-testid="export-from-occurrence"]').getAttribute("aria-invalid"),
+    }))()`), { active: "export-from-occurrence", checked: [false, false], invalid: "true" })
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="export-from-occurrence"] input')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom === "1775313000"`, "the first Lord Howe occurrence")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="export-from-occurrence"] input')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom === "1775314800"`, "the second Lord Howe occurrence")
+    await replaceWithKeyboard('[data-testid="export-from-date"]', "2026-10-04")
+    await replaceWithKeyboard('[data-testid="export-from-time"]', "02:15:00")
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "The From local time does not exist because the clock moves forward."`, "the Lord Howe skipped local time")
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      active: document.activeElement?.dataset.testid ?? null,
+      dateInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
+      timeInvalid: document.querySelector('[data-testid="export-from-time"]').getAttribute("aria-invalid"),
+    }))()`), { active: "export-from-time", dateInvalid: null, timeInvalid: "true" })
+    assert.equal(exportRequests.length, requestsBeforeDst)
+    await closeIdlePanel()
+    await reloadForZone("Asia/Kolkata")
 
-    exportMode = "success"
+    await setViewport(1280)
+    await setLocale("ru")
+    await setTheme("dark")
+    if (await cdp.evaluate(`${ZONE_VALUE} !== "browser"`)) await switchZone(cdp, "browser")
+    await openPanel()
+    const initialContext = await cdp.evaluate(`(() => ({
+      cursor: document.querySelector('[data-testid="cursor-time"]').textContent,
+      href: location.href,
+      mode: ${ZONE_VALUE},
+      zone: document.querySelector('[data-testid="export-zone"]')?.textContent ?? null,
+    }))()`)
+    assert.equal(initialContext.mode, "browser")
+    assert.match(initialContext.zone, /^Asia\/(?:Calcutta|Kolkata)$/)
+    assert.doesNotMatch(initialContext.zone, /GMT|UTC[+-]/)
+    assert.deepEqual(await endpointState(), {
+      from: String(HOUR / 1_000_000),
+      fromDate: "2026-08-13",
+      fromTime: "10:30:00",
+      to: String(HOUR / 1_000_000 + 3_599),
+      toDate: "2026-08-13",
+      toTime: "11:29:59",
+    })
+
+    await chooseCrossDayRange()
+    const crossFrom = Date.UTC(2026, 7, 13, 18, 29, 58) / 1_000
+    const crossTo = Date.UTC(2026, 7, 13, 18, 30, 1) / 1_000
+    const browserRange = await cdp.evaluate(`(() => ({
+      from: document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom,
+      fromBand: document.querySelector('[data-testid="export-calendar-day"][data-day="2026-08-13"]').dataset.range,
+      href: location.href,
+      to: document.querySelector('[data-testid="export-panel"]').dataset.rangeTo,
+      toBand: document.querySelector('[data-testid="export-calendar-day"][data-day="2026-08-14"]').dataset.range,
+      cursor: document.querySelector('[data-testid="cursor-time"]').textContent,
+    }))()`)
+    assert.deepEqual(browserRange, {
+      cursor: initialContext.cursor,
+      from: String(crossFrom),
+      fromBand: "from",
+      href: initialContext.href,
+      to: String(crossTo),
+      toBand: "to",
+    })
+
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "18:29:58"`, "UTC Export representation")
+    const utcRange = await endpointState()
+    assert.deepEqual(utcRange, {
+      from: String(crossFrom),
+      fromDate: "2026-08-13",
+      fromTime: "18:29:58",
+      to: String(crossTo),
+      toDate: "2026-08-13",
+      toTime: "18:30:01",
+    })
+    assert.equal(await cdp.evaluate(`${ZONE_VALUE} === "utc" && document.querySelector('[data-testid="export-zone"]') === null`), true)
+    exportPlans.push("busy")
+    const beforeUtcError = await geometry()
+    const utcErrorStart = page.errors.length
+    const requestsBeforeUtc = exportRequests.length
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Другой отчёт уже формируется. Повторите попытку позже."`, "the UTC Export response")
+    await settleLayout(cdp)
+    const afterUtcError = await geometry()
+    assert.equal(exportRequests.length, requestsBeforeUtc + 1)
+    assert.equal(exportRequests.at(-1).query, `?from=${crossFrom}&to=${crossTo}`)
+    assert.equal(afterUtcError.ariaBusy, "false", JSON.stringify(afterUtcError))
+    assert.equal(afterUtcError.submitDisabled, false, JSON.stringify(afterUtcError))
+    assert.equal(afterUtcError.statusScrollHeight <= 44, true, JSON.stringify(afterUtcError))
+    assertStable(beforeUtcError, afterUtcError, "UTC server error geometry")
+    const utcErrors = page.errors.splice(utcErrorStart)
+    assert.ok(utcErrors.length >= 1 && utcErrors.every((message) => /503|Service Unavailable/.test(message)), JSON.stringify(utcErrors))
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-to-date"]').value === "2026-08-14"`, "Browser Export representation")
+    assert.deepEqual(await endpointState(), {
+      from: String(crossFrom), fromDate: "2026-08-13", fromTime: "23:59:58",
+      to: String(crossTo), toDate: "2026-08-14", toTime: "00:00:01",
+    })
+
+    const beforeValidation = await geometry()
+    const requestsBeforeValidation = exportRequests.length
+    await replaceWithKeyboard('[data-testid="export-from-date"]', "")
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Укажите дату начала."`, "the From date error")
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      active: document.activeElement?.dataset.testid ?? null,
+      fromInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
+      toInvalid: document.querySelector('[data-testid="export-to-date"]').getAttribute("aria-invalid"),
+    }))()`), { active: "export-from-date", fromInvalid: "true", toInvalid: null })
+    assertStable(beforeValidation, await geometry(), "From date error geometry")
+    assert.equal(exportRequests.length, requestsBeforeValidation)
+
+    await clickCenter(cdp, '[data-testid="export-selected-hour"]')
+    await replaceWithKeyboard('[data-testid="export-to-date"]', "2026-08-12")
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Начало должно быть не позже конца."`, "the range order error")
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      active: document.activeElement?.dataset.testid ?? null,
+      fromInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
+      toInvalid: document.querySelector('[data-testid="export-to-date"]').getAttribute("aria-invalid"),
+    }))()`), { active: "export-to-date", fromInvalid: null, toInvalid: "true" })
+    assert.equal(exportRequests.length, requestsBeforeValidation)
+    await clickCenter(cdp, '[data-testid="export-selected-hour"]')
+    await closeIdlePanel()
+
+    const idleBaseUrl = await cdp.evaluate("location.href")
+    await cdp.evaluate(`(() => {
+      const next = new URL(location.href)
+      next.searchParams.set("export_probe", "idle")
+      history.pushState({}, "", next)
+    })()`)
+    await openPanel()
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle Back close")
+    await cdp.waitFor(`location.href === ${JSON.stringify(idleBaseUrl)}`, "idle Back address")
+
+    await openPanel()
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle hour close")
+    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "the next selected hour", 15_000)
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored selected hour", 15_000)
+
     await cdp.evaluate(`(() => {
       const created = []
       const revoked = []
@@ -1283,14 +1438,112 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
         return revokeObjectUrl(url)
       }
     })()`)
-    await openDialog(1280)
-    const beforeSuccess = exportRequests.length
+    await openPanel()
+    await chooseCrossDayRange()
+    const activeBaseUrl = await cdp.evaluate("location.href")
+    await cdp.evaluate(`(() => {
+      const next = new URL(location.href)
+      next.searchParams.set("export_probe", "active")
+      history.pushState({}, "", next)
+    })()`)
+    exportPlans.push("stream")
+    const beforeActive = exportRequests.length
+    const heldStartedAt = Date.now()
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await waitForRequests(() => exportRequests.length === beforeActive + 1)
+    const request = exportRequests.at(-1)
+    assert.deepEqual(request, {
+      accept: "text/html",
+      authorization: null,
+      cookie: SESSION_COOKIE,
+      host: new URL(origin).host,
+      marker: "1",
+      method: "GET",
+      path: "/api/export",
+      query: `?from=${crossFrom}&to=${crossTo}`,
+    })
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "preparing"`, "Export preparation")
+    const frozenRange = await endpointState()
+    assert.deepEqual(frozenRange, {
+      from: String(crossFrom), fromDate: "2026-08-13", fromTime: "23:59:58",
+      to: String(crossTo), toDate: "2026-08-14", toTime: "00:00:01",
+    })
+    const preparing = await geometry()
+    assert.equal(preparing.ariaBusy, "true", JSON.stringify(preparing))
+    assert.equal(preparing.submitDisabled, true, JSON.stringify(preparing))
+    assert.match(preparing.status, /^Формируем отчёт · \d+ с$/)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-status"] progress') === null`), true)
+
+    await pressEscape()
+    await clickCenter(cdp, '[data-testid="export-close"]')
+    await clickCenter(cdp, '[data-testid="export-trigger"]')
     await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "successful export close")
-    await cdp.waitFor(`globalThis.__exportObjectUrls.revoked.length === 1`, "export object URL revocation")
-    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "successful export focus restore")
-    assert.equal(exportRequests.length, beforeSuccess + 1)
-    assert.equal(await cdp.evaluate("location.href"), initialUrl)
+    await cdp.evaluate(`document.querySelector('[data-testid="help-trigger"]').click()`)
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      disabled: document.querySelector('[data-testid="help-trigger"]').disabled,
+      panel: document.querySelector('[data-testid="help-panel"]') !== null,
+    }))()`), { disabled: true, panel: false })
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`location.href === ${JSON.stringify(activeBaseUrl)}`, "active Back address")
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
+    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "active hour navigation", 15_000)
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "18:29:58"`, "active UTC representation")
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "23:59:58"`, "active Browser representation")
+    await delay(150)
+    assert.equal(exportRequests.length, beforeActive + 1)
+    assert.deepEqual(abandonedExports, [])
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      closeDisabled: document.querySelector('[data-testid="export-close"]').disabled,
+      fieldDisabled: document.querySelector('[data-testid="export-from-date"]').matches(":disabled"),
+      from: document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom,
+      panelPresent: document.querySelector('[data-testid="export-panel"]') !== null,
+      to: document.querySelector('[data-testid="export-panel"]').dataset.rangeTo,
+    }))()`), { closeDisabled: true, fieldDisabled: true, from: String(crossFrom), panelPresent: true, to: String(crossTo) })
+
+    await cdp.waitFor(`(() => {
+      const status = document.querySelector('[data-testid="export-status"]')?.textContent ?? ""
+      const elapsed = /Формируем отчёт · (\\d+) с/.exec(status)?.[1]
+      return elapsed !== undefined && Number(elapsed) >= 30
+    })()`, "thirty seconds of measured Export preparation", 36_000)
+    assert.ok(Date.now() - heldStartedAt >= 29_500)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-panel"]').dataset.phase`), "preparing")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-status"] progress') === null`), true)
+    assert.equal(exportRequests.length, beforeActive + 1)
+    assert.deepEqual(abandonedExports, [])
+
+    const held = heldExports.shift()
+    assert.notEqual(held, undefined)
+    held.writeHead(200, {
+      "Cache-Control": "private,no-store",
+      "Content-Disposition": `attachment; filename="${exportFilename}"`,
+      "Content-Length": Buffer.byteLength(exportHtml),
+      "Content-Type": "text/html",
+    })
+    held.flushHeaders()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "downloading"`, "Export response headers")
+    const headersProgress = await cdp.evaluate(`(() => {
+      const progress = document.querySelector('[data-testid="export-status"] progress')
+      return { max: progress.max, text: progress.parentElement.textContent.trim(), value: progress.value }
+    })()`)
+    assert.equal(headersProgress.max, Buffer.byteLength(exportHtml), JSON.stringify(headersProgress))
+    assert.equal(headersProgress.value, 0, JSON.stringify(headersProgress))
+    assert.match(headersProgress.text, /^Скачиваем · 0 B \/ .+(?:KiB|B)$/, JSON.stringify(headersProgress))
+
+    let received = 0
+    for (const chunk of exportChunks.slice(0, -1)) {
+      held.write(chunk)
+      received += Buffer.byteLength(chunk)
+      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] progress')?.value === ${received}`, `${received} received Export bytes`)
+      assert.match(await cdp.evaluate(`document.querySelector('[data-testid="export-status"]').textContent.trim()`), /^Скачиваем · .+ \/ .+$/)
+    }
+    held.end(exportChunks.at(-1))
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "completed Export close")
+    await cdp.waitFor(`globalThis.__exportObjectUrls.revoked.length === 1`, "Export object URL revocation")
+    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "completed Export focus")
+    assert.equal(exportRequests.length, beforeActive + 1)
+    assert.deepEqual(abandonedExports, [])
     const objectUrls = await cdp.evaluate("globalThis.__exportObjectUrls")
     assert.equal(objectUrls.created.length, 1, JSON.stringify(objectUrls))
     assert.equal(objectUrls.created[0].size, Buffer.byteLength(exportHtml), JSON.stringify(objectUrls))
@@ -1308,8 +1561,26 @@ test("web export keeps the view stable and downloads one authenticated HTML arti
       }
     }
     assert.equal(downloaded, exportHtml, `downloaded ${downloadedPath}`)
+
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
+
+    dropExports = true
+    await openPanel()
+    const beforeUnknown = exportRequests.length
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "unknown"`, "unknown server state after a pre-header disconnect", 10_000)
+    assert.ok(exportRequests.length > beforeUnknown)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="export-status"]').textContent.trim()`), /повторный запуск заблокирован/)
+    const requestsAtUnknown = exportRequests.length
+    await pressEscape()
+    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
+    await delay(100)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-panel"]') !== null`), true)
+    assert.equal(exportRequests.length, requestsAtUnknown)
+    assert.equal(abandonedExports.at(-1), exportRequests.at(-1).query)
+    const disconnectErrors = page.errors.splice(0)
+    assert.ok(disconnectErrors.length >= 1 && disconnectErrors.every((message) => /ERR_EMPTY_RESPONSE|Failed to fetch/.test(message)), JSON.stringify(disconnectErrors))
   } finally {
     for (const response of heldExports) response.destroy()
     socket?.close()
@@ -2611,7 +2882,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
     assert.match(preview.search, /Search rows/)
-    assert.match(preview.status, /filtered page is loading/i)
+    assert.match(preview.status, /Loading rows/)
+    assert.match(preview.status, /Previous rows remain visible/)
     assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
     assert.equal(preview.detail, false)
 

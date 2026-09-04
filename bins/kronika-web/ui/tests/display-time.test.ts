@@ -91,5 +91,8 @@ test("DST repeated local hours retain distinct exact instants behind plain label
 
 test("calendar rendering enumerates civil dates without constructing selectable hours", () => {
   assert.equal(calendarMonthDays("2027-02").length, 28)
+  assert.equal(calendarMonthDays("0000-02").length, 29)
+  assert.equal(calendarMonthDays("9999-12").length, 31)
+  assert.deepEqual(calendarMonthDays("2027-13"), [])
   assert.deepEqual(calendarMonthDays("bad"), [])
 })

@@ -57,9 +57,9 @@ try {
     [`+${rustToolchain}`, "run", "--locked", "--quiet", "--target", rustHost, "-p", "kronika-registry", "--example", "ui_metadata"],
     { cwd: repository, encoding: "utf8", env: { ...process.env, CARGO_TERM_COLOR: "never" } },
   )
-  const translations = await dictionaryModule(new URL("./", import.meta.url))
+  const translations = await dictionaryModule(new URL("./", import.meta.url), reportMode ? ["export."] : [])
   const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null, reportMode)
-  const stylesheet = (await fontFaces()) + (await compileStylesheet(temporary))
+  const stylesheet = (await fontFaces()) + (await compileStylesheet(temporary, reportMode))
   const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
   const fixture = reportMode
     ? "/*KRONIKA_REPORT_RUNTIME*/"
@@ -179,11 +179,28 @@ async function fixtureScript() {
   return `globalThis.__KRONIKA_REAL_HOUR__=${safe};`
 }
 
-async function compileStylesheet(temporary) {
+async function compileStylesheet(temporary, reportMode) {
+  let input = join(uiDirectory, "src/styles.css")
+  if (reportMode) {
+    const exportStart = "/* KRONIKA_EXPORT_STYLES_BEGIN */"
+    const exportEnd = "/* KRONIKA_EXPORT_STYLES_END */"
+    const source = await readFile(input, "utf8")
+    const start = source.indexOf(exportStart)
+    const end = source.indexOf(exportEnd)
+    if (start < 0 || end < start) throw new Error("export stylesheet markers are missing or out of order")
+    const sourceDirectory = join(uiDirectory, "src").replaceAll("\\", "/")
+    const tailwindStylesheet = join(uiDirectory, "node_modules/tailwindcss/index.css").replaceAll("\\", "/")
+    const reportSource = (source.slice(0, start) + source.slice(end + exportEnd.length))
+      .replace('@import "tailwindcss";', `@import "${tailwindStylesheet}" source(none);`)
+      .replace('@source "./*.tsx";', `@source "${sourceDirectory}/*.tsx";\n@source not "${sourceDirectory}/export-panel.tsx";`)
+      .replace('@source "./clipboard.ts";', `@source "${sourceDirectory}/clipboard.ts";`)
+    input = join(temporary, "kronika-report.css")
+    await writeFile(input, reportSource)
+  }
   const output = join(temporary, "kronika.css")
   execFileSync(
     join(uiDirectory, "node_modules/.bin/tailwindcss"),
-    ["-i", join(uiDirectory, "src/styles.css"), "-o", output, "--minify"],
+    ["-i", input, "-o", output, "--minify"],
     { cwd: uiDirectory, stdio: "pipe" },
   )
   return readFile(output, "utf8")
@@ -216,6 +233,8 @@ function validateHtml(html, reportMode) {
       "EventSource",
       "sendBeacon",
       "X-Kronika-UI",
+      "export.",
+      "export-panel",
       "export-trigger",
       "mcp-trigger",
       "refresh-action",

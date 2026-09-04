@@ -607,6 +607,31 @@ complete HTML. It validates that result before sending headers and streams the
 and delivery remain bounded in memory. The report build omits this live-only
 control.
 
+The live Export action opens a compact non-modal range panel attached to its
+top-bar control. It does not alter the one-hour timeline, address, view or
+cursor. Two deterministic text editors per endpoint expose `YYYY-MM-DD` and
+`HH:mm:ss`; a shared month calendar edits either endpoint and highlights the
+date span. The exact inclusive duration and a selected-hour reset remain
+visible. The current global Browser/UTC mode controls presentation only. In
+Browser mode the panel names the browser's resolved IANA zone. A local civil
+time skipped by a clock transition is rejected at that endpoint; a repeated
+civil time alone exposes first/second occurrence controls derived from the
+actual candidates, including transitions that are not one hour.
+
+An accepted export keeps immutable signed Unix-second bounds. Until response
+headers arrive, the panel reports preparation with measured elapsed time and
+offers no cancellation or restart. It cannot be dismissed during that work,
+while the rest of the interface and its navigation remain available. After
+headers, the panel reports received bytes and the declared `Content-Length`
+when present while assembling the streamed body. Completion creates one HTML
+download and revokes its object URL. An HTTP error, response-body failure or
+local-download failure returns the same bounded panel to its editable state.
+If the connection ends before any response status, server preparation remains
+unobservable: the panel retains its submitted range, reports that state and
+keeps close and restart unavailable. Browser Back and hour navigation close an
+idle panel; during an active export they leave the panel and its submitted
+range in place.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the

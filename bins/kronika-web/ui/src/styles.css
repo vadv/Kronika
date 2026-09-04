@@ -369,7 +369,7 @@
   body { background: var(--color-bg); min-height: 100vh; min-width: 320px; }
 }
 
-.mcp-dialog::backdrop, .export-dialog::backdrop { background: var(--color-shadow-a); }
+.mcp-dialog::backdrop { background: var(--color-shadow-a); }
 @layer base {
   button:focus-visible { outline: 2px solid var(--color-accent); }
   h1, h2 { color: var(--color-fg-hi); font-weight: 600; margin: 0; }
@@ -380,6 +380,29 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: 0ms !important; }
   }
+}
+
+/* KRONIKA_EXPORT_STYLES_BEGIN */
+.export-panel input[aria-invalid="true"],
+.export-panel fieldset[aria-invalid="true"] { border-color: var(--color-warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warn) 45%, transparent); }
+.export-panel input[aria-invalid="true"]:focus-visible { outline: 2px solid var(--color-warn-edge); outline-offset: 1px; }
+.export-panel :is(button, input):disabled { cursor: not-allowed; opacity: .5; pointer-events: none; }
+.export-panel .export-status { border-left-color: transparent; color: var(--color-fg3); }
+.export-panel .export-status[data-error="true"] { border-left-color: var(--color-warn); color: var(--color-fg2); }
+.export-panel[data-phase="preparing"] .export-status,
+.export-panel[data-phase="downloading"] .export-status { border-left-color: var(--color-accent-line); color: var(--color-fg2); }
+.export-calendar-day[data-range="inside"] { background: var(--color-accent-soft); border-color: var(--color-accent-line); color: var(--color-fg2); }
+.export-calendar-day:is([data-range="from"], [data-range="to"], [data-range="single"]) { background: var(--color-s4); border-color: var(--color-accent2); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
+@media (min-width: 641px) and (hover: none), (min-width: 641px) and (pointer: coarse) {
+  .export-panel-body { grid-template-columns: minmax(260px, 1fr) 331px; }
+}
+/* KRONIKA_EXPORT_STYLES_END */
+@media (hover: none), (pointer: coarse) {
+  .topbar { flex-basis: 44px; height: 44px; min-height: 44px; }
+  .topbar > .top-actions { height: 44px; }
+}
+@media (max-width: 1000px) and (hover: none), (max-width: 1000px) and (pointer: coarse) {
+  .topbar { flex-basis: 80px; grid-template-rows: 32px 44px; height: 80px; min-height: 80px; }
 }
 
 /* 28px rail + 94px figure must match the preview chart. */

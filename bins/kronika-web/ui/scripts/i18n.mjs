@@ -46,7 +46,7 @@ export function validateDictionaries(english, russian) {
   return enKeys
 }
 
-export async function dictionaryModule(directory) {
+export async function dictionaryModule(directory, excludedPrefixes = []) {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", directory), "utf8"),
     readFile(new URL("../i18n/ru.yaml", directory), "utf8"),
@@ -55,6 +55,7 @@ export async function dictionaryModule(directory) {
   const russian = parseDictionary(russianSource, "ru.yaml")
   const reversed = (value) => [...value].reverse().join("")
   const keys = validateDictionaries(english, russian)
+    .filter((key) => excludedPrefixes.every((prefix) => !key.startsWith(prefix)))
     .sort((left, right) => compare(reversed(russian[left]), reversed(russian[right])) || compare(reversed(english[left]), reversed(english[right])) || compare(left, right))
   const keyType = keys.map(JSON.stringify).join("|")
   const common = keys.map((key) => english[key])

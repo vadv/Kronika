@@ -10,9 +10,21 @@ export class ExportResponseError extends Error {
   }
 }
 
+export class ExportServerStateUnknownError extends Error {
+  constructor() {
+    super("the export request ended before the server returned a status")
+    this.name = "ExportServerStateUnknownError"
+  }
+}
+
 export interface ExportArtifact {
   readonly blob: Blob
   readonly filename: string
+}
+
+export interface ExportTransferProgress {
+  readonly received: number
+  readonly total: number | null
 }
 
 type AuthenticatedFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -27,20 +39,59 @@ export async function fetchExportArtifact(
   fetcher: AuthenticatedFetch,
   from: number,
   to: number,
-  signal: AbortSignal,
+  onProgress: (progress: ExportTransferProgress) => void,
 ): Promise<ExportArtifact> {
-  const response = await fetcher(exportPath(from, to), {
-    headers: { Accept: "text/html" },
-    signal,
-  })
+  let response: Response
+  try {
+    response = await fetcher(exportPath(from, to), {
+      headers: { Accept: "text/html" },
+    })
+  } catch {
+    throw new ExportServerStateUnknownError()
+  }
   if (!response.ok) {
     const detail = (await response.text()).trim()
     throw new ExportResponseError(detail, responseErrorCode(detail))
   }
+  const total = responseContentLength(response.headers.get("Content-Length"))
+  onProgress({ received: 0, total })
+  const chunks: ArrayBuffer[] = []
+  let received = 0
+  if (response.body === null) {
+    const chunk = await response.arrayBuffer()
+    chunks.push(chunk)
+    received = chunk.byteLength
+    onProgress({ received, total })
+  } else {
+    const reader = response.body.getReader()
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        chunks.push(copyBuffer(chunk.value))
+        received += chunk.value.byteLength
+        onProgress({ received, total })
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
   return {
-    blob: await response.blob(),
+    blob: new Blob(chunks, { type: response.headers.get("Content-Type") ?? "text/html" }),
     filename: exportFilename(response.headers.get("Content-Disposition")),
   }
+}
+
+function copyBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(copy).set(bytes)
+  return copy
+}
+
+export function responseContentLength(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value)) return null
+  const length = Number(value)
+  return Number.isSafeInteger(length) ? length : null
 }
 
 export function exportFilename(disposition: string | null): string {
