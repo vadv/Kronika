@@ -819,7 +819,9 @@ namespace Network host row; host CPU, memory, and storage rows and lanes are
 hidden. The overview reads each controller through the same exact entity-history
 identity as its detail table and shows compact CPU, memory, I/O, and Tasks
 history with cursor readings. I/O stays separate per `(cgroup_path, major,
-minor)` and is never summed. Tasks uses the exact unified path only for cgroup
+minor)` and is never summed. When every ranked I/O row has one exact cgroup
+path, the ledger names that path once and labels rows by exact `major:minor`;
+with multiple paths, each row retains its path. Tasks uses the exact unified path only for cgroup
 v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as

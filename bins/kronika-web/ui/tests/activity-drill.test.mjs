@@ -5,7 +5,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const activity = await importModule(
-  'export { cursorColumnOf, intervalInstant, planTextsByPlanId, rowPeakColumn, statementTextsByQueryId } from "../src/activity.tsx"; export { activityPreview } from "../src/activity-cuts.ts"',
+  'export { cgroupActivityIdentity, cgroupIoSharedPath, cursorColumnOf, intervalInstant, planTextsByPlanId, rowPeakColumn, statementTextsByQueryId } from "../src/activity.tsx"; export { activityPreview } from "../src/activity-cuts.ts"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -33,6 +33,21 @@ test("a row's peak is its first strictly positive maximum, and a silent row has 
   assert.equal(activity.rowPeakColumn([null, null]), null)
   assert.equal(activity.rowPeakColumn([0, 0, 0]), null)
   assert.equal(activity.rowPeakColumn([]), null)
+})
+
+test("cgroup I/O hoists one shared path and keeps differing paths on their device rows", () => {
+  const row = (path, major, minor) => ({ typeId: "1203002", identity: [path, major, minor], labels: {}, members: null, total: 1, cells: [1] })
+  const rows = [row("/", "259", "0"), row("/", "252", "0")]
+  const view = { cumulative: true, intervals: [], rows, totals: { cells: [2], total: 2 }, others: { cells: [0], total: 0 }, othersCount: 0, entityCount: 2 }
+  assert.equal(activity.cgroupIoSharedPath(view), "/")
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true), { text: "259:0", prefix: "/" })
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true), { text: "252:0", prefix: "/" })
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], false), { text: "/", prefix: null })
+
+  const split = { ...view, rows: [rows[0], row("/batch", "252", "0")] }
+  assert.equal(activity.cgroupIoSharedPath(split), null)
+  assert.deepEqual(activity.cgroupActivityIdentity(split.rows[1], true), { text: "252:0", prefix: "/batch" })
+  assert.equal(activity.cgroupIoSharedPath({ ...view, othersCount: 1, entityCount: 3 }), null)
 })
 
 test("a drill moves the cursor only when the drilled row is silent at it", async () => {

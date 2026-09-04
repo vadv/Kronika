@@ -75,13 +75,14 @@ interface RowLabel {
   readonly prefix: string | null
 }
 
-function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour, keys, label, locale, onCursor, scales, section, storageKey, t }: {
+function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, headingContext, hour, keys, label, locale, onCursor, scales, section, storageKey, t }: {
   readonly columns: number
   readonly cursor: number
   readonly cuts: readonly ActivityCut[]
   readonly defaultCut: string
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
   readonly group?: readonly string[] | undefined
+  readonly headingContext?: ((view: HeatmapView) => string | null) | undefined
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
@@ -181,6 +182,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, hour,
     loading={state.loading}
     chosen={chosen}
     drill={choose}
+    headingContext={headingContext?.(view) ?? null}
     hour={hour}
     keys={keys}
     label={label}
@@ -405,11 +407,21 @@ export function CgroupActivity({ cursor, hour, io, locale, onCursor, t }: {
   readonly onCursor: (timestamp: number) => void
   readonly t: Translate
 }) {
-  const label = (row: HeatmapViewRow): RowLabel => ({
-    text: row.identity[0] ?? "—",
-    prefix: io && row.identity[1] != null ? `${row.identity[1]}:${row.identity[2] ?? ""}` : null,
-  })
-  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
+  const label = (row: HeatmapViewRow): RowLabel => cgroupActivityIdentity(row, io)
+  return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} headingContext={io ? cgroupIoSharedPath : undefined} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
+}
+
+export function cgroupActivityIdentity(row: HeatmapViewRow, io: boolean): RowLabel {
+  return {
+    text: io && row.identity[1] != null ? `${row.identity[1]}:${row.identity[2] ?? ""}` : row.identity[0] ?? "—",
+    prefix: io ? row.identity[0] ?? "—" : null,
+  }
+}
+
+export function cgroupIoSharedPath(view: HeatmapView): string | null {
+  if (view.rows.length === 0 || view.othersCount !== 0 || view.rows.length !== view.entityCount) return null
+  const path = view.rows[0]?.identity[0] ?? null
+  return path !== null && view.rows.every((row) => row.identity[0] === path) ? path : null
 }
 
 const DATABASE_KEYS: LedgerKeys = { title: "activity.databases", bands: "activity.databases" }
@@ -459,7 +471,7 @@ export function planTextsByPlanId(rows: readonly DataRow[]): ReadonlyMap<string,
   return textsById(rows, "planid", "plan")
 }
 
-function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
+function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, headingContext, hour, keys, label, loadedCut, loading, locale, maximized, onCollapse, onCursor, onCut, onMaximized, onScale, onTop, scale, scales, section, t, top, view }: {
   readonly columns: number
   readonly cursor: number
   readonly cut: ActivityCut
@@ -468,6 +480,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
   readonly loading: boolean
   readonly chosen: string | null
   readonly drill?: ((row: HeatmapViewRow) => void) | undefined
+  readonly headingContext: string | null
   readonly hour: number
   readonly keys: LedgerKeys
   readonly label: (row: HeatmapViewRow) => RowLabel
@@ -506,6 +519,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
         <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} />
         {t(`${keys.title}.title`)}
       </button>
+      {headingContext !== null && <span aria-label={`${t("system.field.cgroup_path.label")}: ${headingContext}`} className="font-sans text-xs text-fg4" data-testid="activity-heading-context">· <span className="font-mono text-fg2">{headingContext}</span></span>}
       <LabelHelp helpKey={`${keys.title}.title.help`} iconOnly labelKey={`${keys.title}.title`} t={t} />
       <div aria-label={t("activity.cut_label")} className="lens-tabs" role="group">
         {cuts.map((candidate) => <button aria-pressed={cut.id === candidate.id} data-testid={`activity-cut-${candidate.id}`} key={candidate.id} onClick={() => onCut(candidate.id)} type="button">{t(`activity.cut.${candidate.id}`)}</button>)}
@@ -529,7 +543,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, hour, keys, 
       <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.totals.help`} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
         const { prefix, text } = label(row)
-        return <ActivityRow active={chosen === rowKey(row)} cells={row.cells} cursor={cursor} hour={hour} key={rowKey(row)} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
+        return <ActivityRow active={chosen === rowKey(row)} cells={row.cells} cursor={cursor} hour={hour} key={rowKey(row)} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={headingContext !== null && prefix === headingContext ? null : prefix} reading={atCursor(row.cells)} testId="activity-row" text={text} total={total(row.total)} />
       })}
       {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.othersCount) })} total={total(view.others.total)} />}
     </div>}
