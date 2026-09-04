@@ -477,7 +477,7 @@ export function ExportPanel({ anchor, hour, locale, mode, onActiveChange, onClos
             <span className="min-w-0 font-sans text-sm text-fg3">
               {t("export.duration")}: <strong className="font-mono font-medium tabular-nums text-fg" data-testid="export-duration">{duration === null ? "—" : formatExportDuration(duration, locale)}</strong>
             </span>
-            <button aria-label={t("export.selected_hour")} className="inline-flex h-7 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[var(--radius-xs)] border-0 bg-transparent px-1.5 font-sans text-sm font-medium text-fg3 hover:bg-s3 hover:text-fg coarse:h-11" data-testid="export-selected-hour" onClick={reset} title={t("export.selected_hour")} type="button"><RotateCcw aria-hidden="true" size={12} /><span className="max-[519px]:hidden">{t("export.selected_hour")}</span><span aria-hidden="true" className="hidden max-[519px]:inline">{t("export.selected_hour.short")}</span></button>
+            <button aria-label={t("export.selected_hour")} className="inline-flex h-7 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[var(--radius-xs)] border-0 bg-transparent px-1.5 font-sans text-sm font-medium text-fg3 hover:bg-s3 hover:text-fg coarse:h-11" data-testid="export-selected-hour" disabled={busy} onClick={reset} title={t("export.selected_hour")} type="button"><RotateCcw aria-hidden="true" size={12} /><span className="max-[519px]:hidden">{t("export.selected_hour")}</span><span aria-hidden="true" className="hidden max-[519px]:inline">{t("export.selected_hour.short")}</span></button>
           </div>
         </div>
         {!compact && calendar}

@@ -1222,6 +1222,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
         status: status?.textContent.trim() ?? "",
         statusHeight: status === null ? 0 : rect(status).height,
         statusScrollHeight: status?.scrollHeight ?? 0,
+        selectedHourDisabled: document.querySelector('[data-testid="export-selected-hour"]')?.disabled ?? null,
         submitDisabled: document.querySelector('[data-testid="export-submit"]')?.disabled ?? null,
         targetSizes,
         timelineControlExposed: hitCenter(cursorStep),
@@ -1425,6 +1426,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
     assert.equal(exportRequests.length, requestsBeforeUtc + 1)
     assert.equal(exportRequests.at(-1).query, `?from=${crossFrom}&to=${crossTo}`)
     assert.equal(afterUtcError.ariaBusy, "false", JSON.stringify(afterUtcError))
+    assert.equal(afterUtcError.selectedHourDisabled, false, JSON.stringify(afterUtcError))
     assert.equal(afterUtcError.submitDisabled, false, JSON.stringify(afterUtcError))
     assert.equal(afterUtcError.statusScrollHeight <= 44, true, JSON.stringify(afterUtcError))
     assertStable(beforeUtcError, afterUtcError, "UTC server error geometry")
@@ -1529,6 +1531,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
     })
     const preparing = await geometry()
     assert.equal(preparing.ariaBusy, "true", JSON.stringify(preparing))
+    assert.equal(preparing.selectedHourDisabled, true, JSON.stringify(preparing))
     assert.equal(preparing.submitDisabled, true, JSON.stringify(preparing))
     assert.match(preparing.status, /^Формируем отчёт · \d+ с$/)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-status"] progress') === null`), true)
@@ -1584,9 +1587,15 @@ test("the live Export range panel preserves exact time and reports its uncancell
     await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "downloading"`, "Export response headers")
     const headersProgress = await cdp.evaluate(`(() => {
       const progress = document.querySelector('[data-testid="export-status"] progress')
-      return { max: progress.max, text: progress.parentElement.textContent.trim(), value: progress.value }
+      return {
+        max: progress.max,
+        selectedHourDisabled: document.querySelector('[data-testid="export-selected-hour"]').disabled,
+        text: progress.parentElement.textContent.trim(),
+        value: progress.value,
+      }
     })()`)
     assert.equal(headersProgress.max, Buffer.byteLength(exportHtml), JSON.stringify(headersProgress))
+    assert.equal(headersProgress.selectedHourDisabled, true, JSON.stringify(headersProgress))
     assert.equal(headersProgress.value, 0, JSON.stringify(headersProgress))
     assert.match(headersProgress.text, /^Скачиваем · 0 B \/ .+(?:KiB|B)$/, JSON.stringify(headersProgress))
 
