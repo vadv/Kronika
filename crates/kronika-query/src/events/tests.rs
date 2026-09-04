@@ -346,6 +346,6 @@ fn typed_execution_keeps_content_equivalent_event_occurrences() {
     };
     assert!(!truncated);
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].count, 2.0);
+    assert_eq!(groups[0].count.to_bits(), 2.0_f64.to_bits());
     assert_eq!(groups[0].representative_ts, SEGMENT_ID + 10);
 }
