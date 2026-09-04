@@ -8,6 +8,10 @@ parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
 through a browser interface and MCP. `kronika-report` turns one finished
 segment into a self-contained HTML file that opens without a server.
 
+Open the [one-hour synthetic demo report](https://vadv.github.io/Kronika/).
+The Pages workflow builds the full production report as one self-contained
+HTML file with no external assets.
+
 ![Kronika architecture](docs/images/architecture.svg)
 
 The collector writes the current journal to `active.wal` and finished segments
