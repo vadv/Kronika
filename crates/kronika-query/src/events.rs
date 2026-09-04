@@ -1,6 +1,6 @@
 //! Shared recorded-event query, decoding, grouping, and result contract.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kronika_reader::{Cell, Row, Segment, SegmentKind};
@@ -526,7 +526,6 @@ pub(crate) struct PreparedEvents {
 struct RetainedOccurrence {
     source: EventSource,
     row: EventDataRow,
-    duplicate_locator: bool,
 }
 
 struct OccurrenceAccumulator {
@@ -548,20 +547,6 @@ impl OccurrenceAccumulator {
         let encounter = self.encounters[source_rank];
         self.encounters[source_rank] = encounter.saturating_add(1);
         let key = (row.timestamp, source_rank, encounter);
-        let mut duplicate_locator = false;
-        for retained in self
-            .rows
-            .range_mut((row.timestamp, source_rank, 0)..=(row.timestamp, source_rank, u64::MAX))
-            .map(|(_key, retained)| retained)
-        {
-            if retained.row.segment_id == row.segment_id
-                && retained.row.type_id == row.type_id
-                && retained.row.identity == row.identity
-            {
-                retained.duplicate_locator = true;
-                duplicate_locator = true;
-            }
-        }
         let capacity = self.limit.saturating_add(1);
         if self.rows.len() == capacity {
             if self
@@ -573,29 +558,10 @@ impl OccurrenceAccumulator {
             }
             self.rows.pop_last();
         }
-        self.rows.insert(
-            key,
-            RetainedOccurrence {
-                source,
-                row,
-                duplicate_locator,
-            },
-        );
+        self.rows.insert(key, RetainedOccurrence { source, row });
     }
 
-    fn finish(self) -> Result<EventsResult, QueryError> {
-        for retained in self.rows.values().take(self.limit) {
-            let row = &retained.row;
-            if retained.duplicate_locator {
-                return Err(QueryError::BadLocator(format!(
-                    "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
-                    retained.source.as_str(),
-                    row.timestamp,
-                    row.segment_id,
-                )));
-            }
-        }
-
+    fn finish(self) -> EventsResult {
         let truncated = self.rows.len() > self.limit;
         let occurrences = self
             .rows
@@ -603,10 +569,10 @@ impl OccurrenceAccumulator {
             .take(self.limit)
             .map(|retained| occurrence(retained.source, retained.row))
             .collect();
-        Ok(EventsResult::Occurrences {
+        EventsResult::Occurrences {
             occurrences,
             truncated,
-        })
+        }
     }
 }
 
@@ -764,7 +730,7 @@ impl PreparedEvents {
         if sink.cancelled() {
             return Err(QueryError::Cancelled);
         }
-        occurrences.finish()
+        Ok(occurrences.finish())
     }
 
     pub(crate) fn stream(self, sink: &mut dyn QuerySink) -> Result<(), QueryError> {
@@ -997,23 +963,6 @@ fn groups_result(
     threshold_ms: Option<f64>,
 ) -> Result<EventsResult, QueryError> {
     let mut groups = groups.finish(threshold_ms)?;
-    let mut seen = HashSet::new();
-    for group in &groups {
-        let locator = &group.detail_locator;
-        let identity = serde_json::to_string(&locator.identity)?;
-        if !seen.insert((
-            locator.section.as_str(),
-            locator.segment_id,
-            locator.type_id,
-            locator.at,
-            identity,
-        )) {
-            return Err(QueryError::BadLocator(format!(
-                "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
-                locator.section, locator.at, locator.segment_id,
-            )));
-        }
-    }
     let truncated = groups.len() > query.limit;
     groups.truncate(query.limit);
     Ok(EventsResult::Groups { groups, truncated })

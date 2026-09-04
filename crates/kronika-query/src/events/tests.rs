@@ -243,7 +243,7 @@ fn occurrence_retention_is_limit_plus_one_and_keeps_semantic_order() {
     let EventsResult::Occurrences {
         occurrences,
         truncated,
-    } = accumulator.finish().expect("unique retained locators")
+    } = accumulator.finish()
     else {
         panic!("occurrence result");
     };
@@ -298,7 +298,7 @@ fn typed_execution_orders_timestamp_then_requested_source_and_truncates() {
 }
 
 #[test]
-fn typed_execution_rejects_an_ambiguous_retained_locator() {
+fn typed_execution_keeps_content_equivalent_event_occurrences() {
     let fixture = finished_fixture(
         &[
             (SEGMENT_ID + 10, "duplicate"),
@@ -310,16 +310,42 @@ fn typed_execution_rejects_an_ambiguous_retained_locator() {
         TimeRange::new(SEGMENT_ID, SEGMENT_ID + 100).expect("valid event range"),
         Some(vec!["pg_log_errors".to_owned()]),
         EventsRepresentation::Occurrences,
-        1,
+        2,
     )
     .expect("valid event query");
 
-    assert!(matches!(
-        execute_events(&fixture.context, query, &Control(false)),
-        Err(QueryError::BadLocator(message))
-            if message == format!(
-                "cannot emit detail_ref: pg_log_errors has a non-unique identity at timestamp {} in segment {SEGMENT_ID}",
-                SEGMENT_ID + 10,
-            )
-    ));
+    let EventsResult::Occurrences {
+        occurrences,
+        truncated,
+    } = execute_events(&fixture.context, query, &Control(false)).expect("duplicate events")
+    else {
+        panic!("occurrence result");
+    };
+    assert!(!truncated);
+    assert_eq!(occurrences.len(), 2);
+    assert_ne!(
+        occurrences[0].detail_locator.row_ordinal,
+        occurrences[1].detail_locator.row_ordinal,
+    );
+    assert_eq!(
+        occurrences[0].detail_locator.identity,
+        occurrences[1].detail_locator.identity,
+    );
+
+    let query = EventsQuery::normalize(
+        TimeRange::new(SEGMENT_ID, SEGMENT_ID + 100).expect("valid event range"),
+        Some(vec!["pg_log_errors".to_owned()]),
+        EventsRepresentation::Groups,
+        2,
+    )
+    .expect("valid event query");
+    let EventsResult::Groups { groups, truncated } =
+        execute_events(&fixture.context, query, &Control(false)).expect("duplicate event group")
+    else {
+        panic!("group result");
+    };
+    assert!(!truncated);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].count, 2.0);
+    assert_eq!(groups[0].representative_ts, SEGMENT_ID + 10);
 }
