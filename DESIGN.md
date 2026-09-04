@@ -731,6 +731,20 @@ section-specific metric. Metrics may sum counters or scale them with recorded
 block-size or clock-rate metadata; missing metadata leaves raw counts.
 The ledger makes no request until opened, and its open state persists locally.
 
+The Statements table initially omits only rows whose Query text starts with
+the exact, case-sensitive `/* kronika:` prefix. This is a presentation scope
+for Kronika's own collector statements, not attribution to an application. A
+visible checkbox includes those rows and reports how many matches are hidden
+among the rows already loaded. The scope does not change the server request,
+sort, eligible count, continuation cursor, or page button; while further pages
+exist, the hidden count remains explicitly a count of loaded rows. An explicit
+Statements search or entity context, and an exact opened collector row,
+include matching rows so related navigation and focus remain intact. The
+hourly Statements activity and inclusive summary stay absent in the default
+scope because the heatmap intentionally carries no Query text and therefore
+cannot apply the same exact classification. They appear only when the reader
+explicitly includes collector queries.
+
 Each entity row shows interval cells, its hour total, and its value at the
 cursor. The pinned Total row includes all entities; Other includes entities
 outside the displayed ranking. Global color scaling is the default; per-row

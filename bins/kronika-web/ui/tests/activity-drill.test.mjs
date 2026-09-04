@@ -98,6 +98,17 @@ test("ranked statement and plan previews use the first nonempty loaded table tex
   assert.match(source, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
   assert.match(source, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
   assert.doesNotMatch(source, /labelText\(row, "(?:query|plan)"\)|loadRelatedStatementTextRow|first_match/)
-  assert.match(view, /<StatementsActivity[^>]+rows=\{data\.sections\.pg_stat_statements \?\? NO_ROWS\}/)
+  assert.match(view, /showMonitorQueries && <StatementsActivity[^>]+rows=\{statementRows\}/)
+  assert.match(view, /summary=\{showMonitorQueries \? summary\("statements", statementLens\) : undefined\}/)
+  assert.doesNotMatch(view, /monitorQueriesVisible && <StatementsActivity|summary=\{monitorQueriesVisible/)
   assert.match(view, /<PlansActivity[^>]+rows=\{data\.sections\.pg_store_plans \?\? NO_ROWS\}/)
+})
+
+test("Statements scope overrides only the table for explicit navigation", async () => {
+  const view = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(view, /const statementScopeOverride = pattern\.trim\(\) !== ""\s*\|\| context\?\.logicalName === "pg_stat_statements"\s*\|\| exactMonitorQuery\s*\|\| selectedMonitorQuery/)
+  assert.match(view, /const monitorQueriesVisible = showMonitorQueries \|\| statementScopeOverride/)
+  assert.match(view, /forced=\{statementScopeOverride\}/)
+  assert.match(view, /statusRowCount=\{monitorQueriesVisible \? undefined : statementRows\.length\}/)
+  assert.match(view, /visibleStatementRows\(rows, monitorQueriesVisible\)/)
 })

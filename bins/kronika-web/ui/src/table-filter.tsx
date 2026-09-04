@@ -7,6 +7,7 @@ import type { Translate } from "./help"
 import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchExpr, type SearchSurface, withoutSearchClause } from "./search"
 
 export function TableFilter({
+  accessory,
   context,
   kept,
   onContextClear,
@@ -18,6 +19,7 @@ export function TableFilter({
   t,
   total,
 }: {
+  readonly accessory?: ReactNode | undefined
   readonly context?: string | undefined
   readonly kept: number
   readonly onContextClear?: (() => void) | undefined
@@ -96,6 +98,7 @@ export function TableFilter({
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
       </>}
+      {accessory}
       {status !== undefined && <span className="ml-auto flex flex-none items-center gap-x-[14px] whitespace-nowrap text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{status}</span>}
     </div>
     {applied?.structured === true && applied.expr !== null && <div aria-label={`${t("filter.tokens")}: ${applied.canonical}`} className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="search-chips">

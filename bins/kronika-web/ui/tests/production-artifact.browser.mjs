@@ -2244,9 +2244,11 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       if (sections.includes("pg_store_plans")) return ndjson(response, planRecords())
       const statements = sections.includes("pg_stat_statements")
       return ndjson(response, statements
-        ? statementRecords(true).map((record) => record.record !== "row" ? record : {
+        ? statementRecords(true, 2, false, 2).map((record) => record.record !== "row" ? record : {
             ...record,
-            values: record.values.map((stored, index) => index === 1 ? "101" : stored),
+            values: record.values.map((stored, index) => index === 1
+              ? record.ordinal === "91" ? "101" : "102"
+              : index === 7 && record.ordinal !== "91" ? "/* kronika:1.0.0 statements */ select monitor" : stored),
           })
         : snapshotRecords())
     }
@@ -2278,8 +2280,46 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
     })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 1`, "the workload Statements path", 15_000)
     await settleLayout(cdp)
+
+    const defaultScope = await cdp.evaluate(`(() => ({
+      activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
+      checked: document.querySelector('[data-testid="statement-monitor-scope"] input')?.checked,
+      count: document.querySelector('[data-testid="statement-monitor-count"]')?.textContent,
+      rows: document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length,
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent,
+      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
+    }))()`)
+    assert.deepEqual({ ...defaultScope, status: undefined }, { activity: false, checked: false, count: "1 loaded hidden", rows: 1, status: undefined, summary: false })
+    assert.match(defaultScope.status, /Loaded 2 of 2/)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian statement scope")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
+    await settleLayout(cdp)
+    const narrowScope = await cdp.evaluate(`(() => {
+      const scope = document.querySelector('[data-testid="statement-monitor-scope"]')
+      const label = scope.querySelector('span:not([data-testid])').getBoundingClientRect()
+      const count = scope.querySelector('[data-testid="statement-monitor-count"]').getBoundingClientRect()
+      const bounds = scope.getBoundingClientRect()
+      const toolbar = scope.closest('[data-search-surface]').getBoundingClientRect()
+      return {
+        bounds: { left: bounds.left, right: bounds.right },
+        countBelowLabel: count.top >= label.bottom - 1,
+        documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        toolbar: { left: toolbar.left, right: toolbar.right },
+      }
+    })()`)
+    assert.equal(narrowScope.documentOverflow, false, JSON.stringify(narrowScope))
+    assert.equal(narrowScope.countBelowLabel, true, JSON.stringify(narrowScope))
+    assert.ok(narrowScope.bounds.left >= narrowScope.toolbar.left - 1 && narrowScope.bounds.right <= narrowScope.toolbar.right + 1, JSON.stringify(narrowScope))
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English statement scope")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await settleLayout(cdp)
+    await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-scope"] input').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 2 && document.querySelector('[data-testid="activity-pg_stat_statements"] [data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the Statements collector-query scope")
 
     const postgresSummaryRequests = () => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "postgresql_summary")
     await postgresSummaryRequest
@@ -2754,7 +2794,11 @@ test("the production artifact preserves wire keys and exact finding page state",
           heldContextPage = response
           contextPageRequested()
         } else {
-          ndjson(response, filtered ? statementRecords(true) : statementRecords(true, 4_807, true, 50))
+          const records = filtered ? statementRecords(true) : statementRecords(true, 4_807, true, 50)
+          ndjson(response, filtered ? records : records.map((record) => record.record !== "row" || record.ordinal !== "91" ? record : {
+            ...record,
+            values: record.values.map((stored, index) => index === 7 ? "/* kronika:1.0.0 statements */ select monitor" : stored),
+          }))
         }
       } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
         ndjson(response, relationRecords(url, relationMode))
@@ -3393,20 +3437,28 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
+      activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
+      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input') !== null,
       chip: document.querySelector('[data-testid="entity-context-filter"]')?.textContent ?? "",
       detail: document.querySelector(".pg-detail") !== null,
       row: document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent ?? "",
       search: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-label") ?? "",
+      scopeRole: document.querySelector('[data-testid="statement-monitor-scope"]')?.getAttribute("role"),
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
     }))()`)
+    assert.equal(preview.activity, false)
+    assert.equal(preview.checkbox, false)
     assert.match(preview.chip, /Query ID 9007199254740991 · operators · reporterShow all/)
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
     assert.match(preview.search, /Search rows/)
+    assert.equal(preview.scopeRole, "status")
     assert.match(preview.status, /Loading rows/)
     assert.match(preview.status, /Previous rows remain visible/)
     assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
     assert.equal(preview.detail, false)
+    assert.equal(preview.summary, false)
 
     ndjson(heldContextPage, statementRecords(true))
     heldContextPage = null
@@ -3433,6 +3485,20 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector(".inspector-close").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the paged full statement set")
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') !== null`, "active statement paging")
+    const pagedScope = await cdp.evaluate(`(() => ({
+      activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
+      checked: document.querySelector('[data-testid="statement-monitor-scope"] input')?.checked,
+      count: document.querySelector('[data-testid="statement-monitor-count"]')?.textContent,
+      paging: document.querySelector('[data-testid="table-paging"] button')?.disabled,
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
+      virtualHeight: document.querySelector('[data-testid="pg-statements-table"] [data-testid="virtual-body"]')?.style.height,
+    }))()`)
+    assert.deepEqual(pagedScope, {
+      activity: false, checked: false, count: "1 loaded hidden", paging: false,
+      status: pagedScope.status, summary: false, virtualHeight: "1176px",
+    })
+    assert.match(pagedScope.status, /Loaded 50 of 4,807/)
 
     const invalidSearchStart = requests.length
     const lastValidRows = await cdp.evaluate(`(() => ({
@@ -3462,6 +3528,12 @@ test("the production artifact preserves wire keys and exact finding page state",
     const quantitativeSearch = "exec_time_rate>500ms/s AND call_rate>1/s"
     await cdp.evaluate('(() => { const input = document.querySelector("[data-testid=table-filter]"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "exec_time_rate>500ms/s AND call_rate>1/s"); input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" })); input.form.requestSubmit() })()')
     await cdp.waitFor('new URL(location.href).searchParams.get("find") === "exec_time_rate>500ms/s AND call_rate>1/s" && document.querySelectorAll("[data-testid=search-chips] button").length === 2', "quantitative statement chips")
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
+      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input') !== null,
+      forced: document.querySelector('[data-testid="statement-monitor-scope"]')?.getAttribute("role"),
+      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
+    }))()`), { activity: false, checkbox: false, forced: "status", summary: false })
     const quantitativeState = await cdp.evaluate('(() => ({ aria: document.querySelector("[data-testid=search-chips]")?.getAttribute("aria-label") ?? "", fields: [...document.querySelectorAll("[data-testid=search-chips] strong")].map((field) => field.textContent), text: document.querySelector("[data-testid=search-chips]")?.textContent ?? "" }))()')
     assert.deepEqual(quantitativeState.fields, ["Execution time/s", "Calls/s"])
     assert.match(quantitativeState.text, /> 500 ms\/sANDCalls\/s · > 1 \/s/)
