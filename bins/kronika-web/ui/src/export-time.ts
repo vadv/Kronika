@@ -115,8 +115,8 @@ export function formatExportDuration(seconds: number, locale: Locale): string {
     seconds % 60,
   ]
   const number = new Intl.NumberFormat(locale)
-  const parts = values.flatMap((value, index) => value === 0 ? [] : [`${number.format(value)} ${units[index]}`])
-  return parts.length === 0 ? `0 ${units[3]}` : parts.join(" ")
+  const parts = values.flatMap((value, index) => value === 0 ? [] : [`${number.format(value)}\u00a0${units[index]}`])
+  return parts.length === 0 ? `0\u00a0${units[3]}` : parts.join(" ")
 }
 
 export function exportCalendarCells(month: string): readonly (string | null)[] {

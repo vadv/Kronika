@@ -99,10 +99,10 @@ test("Lord Howe exposes two occurrences thirty minutes apart", () => {
 
 test("duration text is exact, inclusive, and readable across days", () => {
   assert.equal(exportDurationSeconds(50, 50), 1)
-  assert.equal(formatExportDuration(1, "en"), "1 s")
-  assert.equal(formatExportDuration(3_600, "ru"), "1 ч")
-  assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "ru"), "2 д 4 ч 30 мин 1 с")
-  assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "en"), "2 d 4 h 30 min 1 s")
+  assert.equal(formatExportDuration(1, "en"), "1\u00a0s")
+  assert.equal(formatExportDuration(3_600, "ru"), "1\u00a0ч")
+  assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "ru"), "2\u00a0д 4\u00a0ч 30\u00a0мин 1\u00a0с")
+  assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "en"), "2\u00a0d 4\u00a0h 30\u00a0min 1\u00a0s")
 })
 
 test("the calendar is a stable Monday-first six-week grid", () => {

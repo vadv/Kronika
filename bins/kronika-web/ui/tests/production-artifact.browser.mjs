@@ -1091,6 +1091,9 @@ test("the live Export range panel preserves exact time and reports its uncancell
     const pageUrl = `${origin}/?at=${AT}&lens=disk`
     await cdp.send("Page.navigate", { url: pageUrl })
     await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, "the Export action", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null
+      && document.querySelector('[data-testid="process-table"] .entity-row') !== null
+      && [...document.querySelectorAll('[data-testid="cursor-row"] .cursor-row-step')].some((button) => !button.disabled)`, "the interactive timeline and process table", 15_000)
 
     const setViewport = async (width) => {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
@@ -1151,7 +1154,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
       await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-14"]')
       await replaceWithKeyboard('[data-testid="export-from-time"]', "23:59:58")
       await replaceWithKeyboard('[data-testid="export-to-time"]', "00:00:01")
-      await cdp.waitFor(`document.querySelector('[data-testid="export-duration"]')?.textContent.trim() === "4 с"`, "the inclusive four-second duration")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-duration"]')?.textContent.trim() === "4\\u00a0с"`, "the inclusive four-second duration")
     }
     const endpointState = () => cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-testid="export-panel"]')
@@ -1169,12 +1172,25 @@ test("the live Export range panel preserves exact time and reports its uncancell
         const value = node.getBoundingClientRect()
         return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width }
       }
+      const hitCenter = (node) => {
+        const value = node.getBoundingClientRect()
+        const hit = document.elementFromPoint(value.left + value.width / 2, value.top + value.height / 2)
+        return hit !== null && (hit === node || node.contains(hit))
+      }
       const panel = document.querySelector('[data-testid="export-panel"]')
+      const panelRect = panel.getBoundingClientRect()
+      const calendar = document.querySelector('[data-testid="export-calendar"]')
       const fromDate = document.querySelector('[data-testid="export-from-date"]')
       const fromTime = document.querySelector('[data-testid="export-from-time"]')
       const toDate = document.querySelector('[data-testid="export-to-date"]')
       const toTime = document.querySelector('[data-testid="export-to-time"]')
+      const duration = document.querySelector('[data-testid="export-duration"]')
       const status = document.querySelector('[data-testid="export-status"]')
+      const timeline = document.querySelector('[data-testid="hour-timeline"]')
+      const table = document.querySelector('[data-testid="process-table"]')
+      const firstRow = table.querySelector('.entity-row')
+      const cursorStep = [...document.querySelectorAll('[data-testid="cursor-row"] .cursor-row-step')].find((button) => !button.disabled)
+      const tableRect = table.getBoundingClientRect()
       const targetSizes = [...panel.querySelectorAll("button, input")].map((node) => ({
         id: node.dataset.testid ?? node.tagName,
         ...rect(node),
@@ -1183,9 +1199,13 @@ test("the live Export range panel preserves exact time and reports its uncancell
         active: document.activeElement?.dataset.testid ?? null,
         ariaBusy: panel.querySelector("form").getAttribute("aria-busy"),
         ariaModal: panel.getAttribute("aria-modal"),
-        calendar: rect(document.querySelector('[data-testid="export-calendar"]')),
+        calendar: calendar.hidden ? null : rect(calendar),
+        calendarExpanded: document.querySelector('[data-testid="export-from-target"]').getAttribute("aria-expanded"),
         coarse: matchMedia("(pointer: coarse)").matches || matchMedia("(hover: none)").matches,
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        durationText: duration.textContent.trim(),
+        editorHidden: panel.querySelector("fieldset").hidden,
+        firstRowExposed: hitCenter(firstRow),
         fromDate: rect(fromDate),
         fromFont: Number.parseFloat(getComputedStyle(fromDate).fontSize),
         fromTime: rect(fromTime),
@@ -1199,16 +1219,19 @@ test("the live Export range panel preserves exact time and reports its uncancell
         panelClientHeight: panel.clientHeight,
         panelScrollHeight: panel.scrollHeight,
         phase: panel.dataset.phase,
-        status: status.textContent.trim(),
-        statusHeight: rect(status).height,
-        statusScrollHeight: status.scrollHeight,
-        submitDisabled: document.querySelector('[data-testid="export-submit"]').disabled,
+        status: status?.textContent.trim() ?? "",
+        statusHeight: status === null ? 0 : rect(status).height,
+        statusScrollHeight: status?.scrollHeight ?? 0,
+        submitDisabled: document.querySelector('[data-testid="export-submit"]')?.disabled ?? null,
         targetSizes,
+        timelineControlExposed: hitCenter(cursorStep),
         title: panel.querySelector("h2").textContent.trim(),
         toDate: rect(toDate),
         toTime: rect(toTime),
         trigger: rect(document.querySelector('[data-testid="export-trigger"]')),
+        view: panel.dataset.view,
         viewport: { height: innerHeight, width: innerWidth },
+        visibleTableHeight: Math.max(0, Math.min(tableRect.bottom, panelRect.top) - tableRect.top),
       }
     })()`)
     const assertStable = (before, after, label) => {
@@ -1241,17 +1264,53 @@ test("the live Export range panel preserves exact time and reports its uncancell
           assert.equal(measured.phase, "idle", `${label}: ${JSON.stringify(measured)}`)
           assert.equal(measured.statusHeight, 44, `${label}: ${JSON.stringify(measured)}`)
           assert.equal(measured.fromFont, 12, `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.durationText, locale === "ru" ? "1\u00a0ч" : "1\u00a0h", `${label}: ${JSON.stringify(measured)}`)
+          assert.equal(measured.editorHidden, false, `${label}: ${JSON.stringify(measured)}`)
           assert.equal(measured.title, locale === "ru" ? "Экспорт HTML-отчёта" : "Export HTML report", label)
+          assert.equal(measured.view, "editor", `${label}: ${JSON.stringify(measured)}`)
           assert.ok(measured.panel.left >= 7 && measured.panel.right <= width - 7, `${label}: ${JSON.stringify(measured)}`)
           assert.ok(measured.panel.top >= 7 && measured.panel.bottom <= 793, `${label}: ${JSON.stringify(measured)}`)
           assert.ok(measured.panel.height <= 784 && measured.panel.width <= width - 16, `${label}: ${JSON.stringify(measured)}`)
           assert.ok(measured.fromDate.right + 4 <= measured.fromTime.left, `${label}: ${JSON.stringify(measured)}`)
           assert.ok(measured.toDate.right + 4 <= measured.toTime.left, `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.calendar.left >= measured.panel.left && measured.calendar.right <= measured.panel.right, `${label}: ${JSON.stringify(measured)}`)
           if (width === 360) {
+            assert.equal(measured.calendar, null, `${label}: ${JSON.stringify(measured)}`)
+            assert.equal(measured.calendarExpanded, "false", `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.coarse, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.equal(measured.firstRowExposed, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.equal(measured.timelineControlExposed, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.ok(measured.panel.height <= 440, `${label}: ${JSON.stringify(measured)}`)
+            assert.ok(measured.visibleTableHeight >= 96, `${label}: ${JSON.stringify(measured)}`)
             assert.ok(measured.trigger.height >= 43.5 && measured.trigger.width >= 43.5, `${label}: ${JSON.stringify(measured.trigger)}`)
             assert.ok(measured.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), `${label}: ${JSON.stringify(measured.targetSizes)}`)
+          } else {
+            assert.equal(measured.calendarExpanded, null, `${label}: ${JSON.stringify(measured)}`)
+            assert.ok(measured.calendar.left >= measured.panel.left && measured.calendar.right <= measured.panel.right, `${label}: ${JSON.stringify(measured)}`)
+          }
+          if (width === 360 && locale === "ru" && theme === "dark") {
+            await clickCenter(cdp, '[data-testid="export-from-target"]')
+            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.view === "calendar"
+              && document.querySelector('[data-testid="export-calendar"]')?.hidden === false`, "the compact Export calendar subview")
+            await settleLayout(cdp)
+            const calendarView = await geometry()
+            assert.equal(calendarView.calendarExpanded, "true", JSON.stringify(calendarView))
+            assert.equal(calendarView.editorHidden, true, JSON.stringify(calendarView))
+            assert.equal(calendarView.statusHeight, 0, JSON.stringify(calendarView))
+            assert.equal(calendarView.submitDisabled, null, JSON.stringify(calendarView))
+            assert.equal(calendarView.timelineControlExposed, true, JSON.stringify(calendarView))
+            assert.equal(calendarView.view, "calendar", JSON.stringify(calendarView))
+            assert.ok(calendarView.panel.height <= 640, JSON.stringify(calendarView))
+            assert.ok(calendarView.calendar.left >= calendarView.panel.left && calendarView.calendar.right <= calendarView.panel.right, JSON.stringify(calendarView))
+            assert.ok(calendarView.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), JSON.stringify(calendarView.targetSizes))
+            await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-13"]')
+            await cdp.waitFor(`document.querySelector('[data-testid="export-calendar-to-target"]')?.getAttribute("aria-pressed") === "true"`, "the compact To date target")
+            await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-14"]')
+            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.view === "editor"
+              && document.querySelector('[data-testid="export-from-date"]')?.value === "2026-08-13"
+              && document.querySelector('[data-testid="export-to-date"]')?.value === "2026-08-14"`, "the compact touch-selected date range")
+            await clickCenter(cdp, '[data-testid="export-selected-hour"]')
+            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.rangeFrom === "${HOUR / 1_000_000}"
+              && document.querySelector('[data-testid="export-panel"]')?.dataset.rangeTo === "${HOUR / 1_000_000 + 3_599}"`, "the compact selected-hour reset")
           }
           const matrixKey = `${width}:${locale}`
           const prior = matrix.get(matrixKey)
