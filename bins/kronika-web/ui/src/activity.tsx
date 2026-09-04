@@ -562,7 +562,7 @@ function ActivityPanel({ chosen, columns, cursor, cut, cuts, drill, headingConte
     {view.entityCount > 0 && <div className={`${maximized ? "min-h-0 flex-1 overflow-y-auto" : ""}${loading ? " animate-pulse opacity-55 transition-opacity" : ""}`} data-loading={loading || undefined}>
       <ActivityRow cells={view.totals.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.totals.help`} iconOnly labelKey="activity.totals" t={t} />} hour={hour} max={totalsMax} muted onCursor={onCursor} reading={atCursor(view.totals.cells)} testId="activity-row-totals" text={t("activity.totals")} total={total(view.totals.total)} />
       {view.rows.map((row) => {
-        const { detail, prefix, semantic, text, title } = label(row)
+        const { detail = null, prefix, semantic = false, text, title } = label(row)
         return <ActivityRow active={chosen === rowKey(row)} cells={row.cells} cursor={cursor} detail={detail} hour={hour} key={rowKey(row)} labelTitle={title} max={rowMax(row.cells)} onClick={drill === undefined ? undefined : () => drill(row)} onCursor={onCursor} prefix={headingContext !== null && prefix === headingContext ? null : prefix} reading={atCursor(row.cells)} semantic={semantic} testId="activity-row" text={text} total={total(row.total)} />
       })}
       {view.othersCount > 0 && <ActivityRow cells={view.others.cells} cursor={cursor} help={<LabelHelp helpKey={`${keys.bands}.others.help`} iconOnly labelKey={`${keys.bands}.others_label`} t={t} />} hour={hour} max={rowMax(view.others.cells)} muted onCursor={onCursor} reading={atCursor(view.others.cells)} testId="activity-row-others" text={t(`${keys.bands}.others`, { count: String(view.othersCount) })} total={total(view.others.total)} />}

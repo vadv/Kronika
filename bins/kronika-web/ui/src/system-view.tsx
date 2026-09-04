@@ -540,7 +540,8 @@ export function SystemView({
     const modes = LEDGER_MODES[key] ?? []
     const requestedMode = groupMode[key] === undefined ? LEDGER_DEFAULT_MODE[key] ?? null : groupMode[key]!
     const cgroupModes = key === "cgroups" ? availableCgroupModes(data.availableSections) : []
-    const mode = key === "cgroups" && (requestedMode === null || !cgroupModes.includes(requestedMode))
+    const requestedCgroupMode = isCgroupMode(requestedMode) ? requestedMode : null
+    const mode = key === "cgroups" && (requestedCgroupMode === null || !cgroupModes.includes(requestedCgroupMode))
       ? cgroupModes[0] ?? null
       : requestedMode
     const entities = sectionEntities(sectionName, mode)
@@ -629,6 +630,10 @@ const CGROUP_MODE_SECTION: Readonly<Record<CgroupMode, string>> = {
   memory: "os_cgroup_memory",
   io: "os_cgroup_io",
   tasks: "os_cgroup_pids",
+}
+
+function isCgroupMode(mode: HostMode | null): mode is CgroupMode {
+  return mode !== null && mode in CGROUP_MODE_SECTION
 }
 
 function availableCgroupModes(sections: readonly string[]): readonly CgroupMode[] {
