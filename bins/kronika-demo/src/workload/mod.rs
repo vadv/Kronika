@@ -147,6 +147,11 @@ impl WorkloadConfig {
             !self.dsn.trim().is_empty(),
             "KRONIKA_DEMO_WORKLOAD_DSN must not be blank"
         );
+        self.validate_dimensions()?;
+        self.validate_timings()
+    }
+
+    fn validate_dimensions(&self) -> Result<()> {
         for (key, value) in [
             ("KRONIKA_DEMO_WORKLOAD_SCHEMAS", self.schemas),
             (
@@ -211,6 +216,10 @@ impl WorkloadConfig {
             self.max_orders >= self.sessions,
             "KRONIKA_DEMO_WORKLOAD_MAX_ORDERS must be at least KRONIKA_DEMO_WORKLOAD_SESSIONS"
         );
+        Ok(())
+    }
+
+    fn validate_timings(&self) -> Result<()> {
         anyhow::ensure!(
             self.lock_chain_depth > 1,
             "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH must be at least two"
