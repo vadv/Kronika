@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
+import { gunzipSync } from "node:zlib"
 
 
 const stylesheet = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
@@ -28,7 +29,7 @@ test("all detail key/value rows share a readable label track and bounded value t
   assert.match(stylesheet, /@utility detail-dd \{[^}]*@media \(max-width: 520px\) \{ text-align: left; \}/s)
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)
-  assert.match(composition, /className={`detail-dd/)
+  assert.match(composition, /valueRole === "machine" \? "detail-dd detail-dd-machine" : "detail-dd"/)
   for (const view of ["detail.tsx", "detail-activity.tsx", "detail-plans.tsx", "detail-process.tsx", "postgres-view.tsx", "postgres-relations-view.tsx", "system-view.tsx"]) {
     const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
     assert.match(source, /DetailList/, view)
@@ -39,6 +40,16 @@ test("all detail key/value rows share a readable label track and bounded value t
   assert.match(console_, /data-testid="event-entry-facts"/)
   const relation = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
   assert.doesNotMatch(relation, /<dl>|<dt>|<dd>/)
+})
+
+test("live and report artifacts retain the shared Detail value style", async () => {
+  const [live, report] = await Promise.all([
+    readFile(new URL("../kronika-ui.html.gz", import.meta.url)),
+    readFile(new URL("../../../kronika-report/assets/kronika-report-shell.html.gz", import.meta.url)),
+  ])
+  for (const [name, artifact] of [["live", live], ["report", report]]) {
+    assert.match(gunzipSync(artifact).toString("utf8"), /\.detail-dd\{/s, name)
+  }
 })
 
 test("narrow detail rows stack labels above values", () => {

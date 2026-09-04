@@ -15,6 +15,6 @@ export function DetailRow({ children, term, valueRole = "semantic" }: {
 }) {
   return <div className="detail-row max-[520px]:detail-row-stacked">
     <dt className="detail-dt">{term}</dt>
-    <dd className={`detail-dd${valueRole === "machine" ? " detail-dd-machine" : ""}`} data-value-role={valueRole}>{children}</dd>
+    <dd className={valueRole === "machine" ? "detail-dd detail-dd-machine" : "detail-dd"} data-value-role={valueRole}>{children}</dd>
   </div>
 }

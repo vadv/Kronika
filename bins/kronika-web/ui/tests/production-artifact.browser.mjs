@@ -830,13 +830,27 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
         hostResourcesHidden: ["cpu", "memory", "disk"].every((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]') === null),
         network: document.querySelector('[data-testid="use-toggle-network"]') !== null,
         hostRowsHidden: !document.querySelector('.system-main').textContent.includes("device_B1") && !document.querySelector('.system-main').textContent.includes("/data-B1"),
-        overview: [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')].map((node) => ({ id: node.dataset.testid, text: node.textContent })),
+        overview: [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')].map((node) => {
+          const label = node.firstElementChild
+          const reading = label?.nextElementSibling
+          return {
+            id: node.dataset.testid,
+            label: label?.textContent,
+            labelFont: Number.parseFloat(getComputedStyle(label).fontSize),
+            labelTruncated: label.scrollWidth > label.clientWidth,
+            readingFont: Number.parseFloat(getComputedStyle(reading).fontSize),
+            text: node.textContent,
+          }
+        }),
+        recordedCopy: document.querySelector('[data-testid="use-group-cgroups"]').textContent.includes("Recorded workload"),
       }
     })()`)
     assert.equal(containerState.cgroupsFirst, true, JSON.stringify(containerState))
     assert.equal(containerState.hostResourcesHidden, true, JSON.stringify(containerState))
     assert.equal(containerState.network, true, JSON.stringify(containerState))
     assert.equal(containerState.hostRowsHidden, true, JSON.stringify(containerState))
+    assert.equal(containerState.recordedCopy, false, JSON.stringify(containerState))
+    assert.equal(containerState.overview.every(({ labelFont, labelTruncated, readingFont }) => labelFont >= 12 && readingFont >= 12 && !labelTruncated), true, JSON.stringify(containerState))
     assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-cpu"), true, JSON.stringify(containerState))
     assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-memory"), false, JSON.stringify(containerState))
     assert.deepEqual(containerState.overview.filter(({ id }) => id === "cgroup-overview-io").map(({ text }) => text.includes("8:0") ? "8:0" : text.includes("253:0") ? "253:0" : null).sort(), ["253:0", "8:0"], JSON.stringify(containerState))
@@ -849,6 +863,15 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]') === null`), true)
     await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[2].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_io"] .entity-row') !== null`, "the successful cgroup I/O rows")
+    const ioPresentation = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="system-os_cgroup_io"]')
+      return {
+        commonPath: document.querySelector('[data-testid="system-common-cgroup-path"]')?.textContent,
+        hasPathColumn: [...table.querySelectorAll('.entity-header-cell')].some((node) => node.textContent.trim() === "Cgroup"),
+        minCellFont: Math.min(...[...table.querySelectorAll('.entity-header-cell, .entity-cell')].map((node) => Number.parseFloat(getComputedStyle(node).fontSize))),
+      }
+    })()`)
+    assert.deepEqual(ioPresentation, { commonPath: "/", hasPathColumn: false, minCellFont: 12 })
     const primaryState = await cdp.evaluate(`({
       emptyCopy: document.querySelector('.system-main').textContent.includes("No system metrics in the selected hour"),
       requestFrame: document.querySelector('[data-testid="system-request-state"]') !== null,

@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { collectorCgroupOverview, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { collectorCgroupOverview, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -589,6 +589,13 @@ test("storage topology exposes only recorded partition parents and mount roots",
     [row("os_block_topology", { major: 259, minor: 1, parent_major: 259, parent_minor: 0 })],
     [row("os_mountinfo", { major: 259, minor: 1, mount_point: "/data", root: "/subvol", source: "/dev/nvme0n1p1" })],
   ), [{ associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parent: "259:0" }])
+})
+
+test("a shared cgroup path is displayed once without hiding mixed paths", () => {
+  const row = (path) => ({ logicalName: "os_cgroup_io", ordinal: path, segmentId: "a", timestamp: 1, typeId: "1203002", values: { cgroup_path: path } })
+  assert.equal(helpers.sharedCgroupPath([row("/"), row("/")]), "/")
+  assert.equal(helpers.sharedCgroupPath([row("/"), row("/child")]), null)
+  assert.equal(helpers.sharedCgroupPath([]), null)
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {

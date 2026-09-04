@@ -683,10 +683,10 @@ function ContainerCgroupOverviewRow({ cursor, historyRevision, hour, locale, onS
   const currentText = current === null ? "—" : entityMetricValue(current, locale, primary, metadata)
   const secondText = secondary === undefined ? null : secondCurrent === null ? "—" : entityMetricValue(secondCurrent, locale, secondary, secondaryMetadata)
   const limitText = limit === null || limit <= 0 || limitColumn === undefined ? null : entityMetricValue(limit, locale, limitColumn, null)
-  const identity = target.section === "os_cgroup_io" ? deviceId(target.row) : rawText(value(target.row, "cgroup_path"))
+  const identity = target.section === "os_cgroup_io" ? deviceId(target.row) : null
   return <button className="grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_minmax(92px,0.9fr)] items-center gap-x-3 gap-y-1 border-0 border-b border-r border-line bg-s1 px-2 py-2 text-left hover:bg-s2" data-testid={`cgroup-overview-${target.mode}`} onClick={onSelect} type="button">
-    <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-xs font-medium text-fg2">{t(entity.label)}{identity === null ? "" : ` · ${identity}`}</span>
-    <strong className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right font-mono text-xs font-normal tabular-nums text-fg2" title={[currentText, secondText, limitText].filter((part) => part !== null).join(" · ")}>{currentText}{secondText === null ? "" : ` · ${secondText}`}{limitText === null ? "" : ` / ${limitText}`}</strong>
+    <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-sm font-medium text-fg2">{t(`host.mode.${target.mode}`)}{identity === null ? "" : ` · ${identity}`}</span>
+    <strong className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right font-mono text-sm font-normal tabular-nums text-fg2" title={[currentText, secondText, limitText].filter((part) => part !== null).join(" · ")}>{currentText}{secondText === null ? "" : ` · ${secondText}`}{limitText === null ? "" : ` / ${limitText}`}</strong>
     <span className="col-span-2 min-w-0"><SparkCell cursor={cursor} end={hour + 3_600_000_000} hour={hour} limit={limit === null ? undefined : limit} max={max} points={primaryPoints} second={secondaryPoints} /></span>
     {history.status !== "ready" && <span className={`col-span-2 text-xs ${history.status === "error" ? "text-warn" : "text-fg4"}`} role={history.status === "error" ? "alert" : "status"}>{t(`history.${history.status}`)}</span>}
   </button>
@@ -940,6 +940,8 @@ function SystemEntityPanel({
   readonly selectedKey: string | null
   readonly t: Translate
 }) {
+  const commonPath = section.startsWith("os_cgroup_") ? sharedCgroupPath(rows) : null
+  const tableColumns = commonPath === null ? columns : columns.filter(({ field }) => field !== "cgroup_path")
   const metricColumns = useMemo(() => chartableEntityColumns(columns), [columns])
   const selectedRow = selectedKey === null ? null : rows.find((row) => entityRowKey(row) === selectedKey) ?? null
   const availableColumns = useMemo(() => selectedRow === null
@@ -978,10 +980,11 @@ function SystemEntityPanel({
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
   return <section className="entity-panel panel min-w-0" data-testid={`system-panel-${section}`}>
-    <h2 className="panel-head"><span>{label}</span></h2>
+    <h2 className="panel-head"><span>{label}</span>{commonPath !== null && <span className="font-mono text-sm font-normal text-fg3" data-testid="system-common-cgroup-path">{commonPath}</span>}</h2>
     <div className="contents">
     <EntityTable
-      columns={columns}
+      className={section.startsWith("os_cgroup_") ? "cgroup-entity-table" : undefined}
+      columns={tableColumns}
       contentSized
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
@@ -1094,6 +1097,12 @@ function entityMetricPoints(rows: readonly DataRow[], column: SystemEntityColumn
   return first !== undefined && registryColumn(first.typeId, physicalField(column, first.typeId))?.class === "cumulative"
     ? cumulativeRate(points)
     : points
+}
+
+export function sharedCgroupPath(rows: readonly DataRow[]): string | null {
+  const first = rawText(value(rows[0] ?? null, "cgroup_path"))
+  if (first === null || first === "") return null
+  return rows.every((row) => rawText(value(row, "cgroup_path")) === first) ? first : null
 }
 
 function entityRowLabel(row: DataRow): string {

@@ -813,14 +813,16 @@ System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
-equivalents on labelled scales. In a recorded container environment, the Host
-ledger starts with an open collector-cgroup overview and retains only the
+equivalents on labelled scales. When `instance_metadata.environment` is
+`container`, the Host ledger starts with an open collector-cgroup overview and retains only the
 namespace Network host row; host CPU, memory, and storage rows and lanes are
 hidden. The overview reads each controller through the same exact entity-history
 identity as its detail table and shows compact CPU, memory, I/O, and Tasks
-history with cursor readings. I/O stays separate per `(cgroup_path, major,
-minor)` and is never summed. When every ranked I/O row has one exact cgroup
-path, the ledger names that path once and labels rows by exact `major:minor`;
+history with cursor readings. Its cards use only the mode name because the
+collector-cgroup heading already supplies their context. I/O stays separate
+per `(cgroup_path, major, minor)` and is never summed. When every ranked I/O
+row has one exact cgroup path, the ledger and entity table name that path once
+and label rows by exact `major:minor`;
 with multiple paths, each row retains its path. Tasks uses the exact unified path only for cgroup
 v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
@@ -972,6 +974,8 @@ navigation, labels, buttons and prose — plus enums and ordinary or humanized
 values. JetBrains Mono is reserved for exact machine strings that benefit from
 fixed glyph widths: PIDs, OIDs, query IDs, timestamps, code, raw identifiers
 and tabular numeric contexts. Both ship embedded in the single artifact.
+The live and report builds retain the same Detail value classes: ordinary and
+humanized values never fall back to browser-default typography.
 Labels are sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
 a small radius scale and brief 80–120 ms transitions, honoring reduced-motion.
 Chart series identity uses its own palette, validated for colour-vision
