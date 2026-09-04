@@ -180,8 +180,10 @@ counter does not suppress the other recorded counters in that row.
 threads identified by TIDs in that cgroup and its descendants, including each
 process's main thread. It is not a count of process rows. `os_cgroup_pids.max`
 is the local `pids.max` setting for that subtree; an ancestor can impose a
-lower limit. A recorded null limit means unlimited, while an absent field is
-unavailable.
+lower limit. Both controller files must be readable: `pids.current` must contain
+a nonnegative integer, and `pids.max` must contain a nonnegative integer or the
+literal `max`. Only that literal is recorded as a null unlimited limit; any
+other missing or invalid value omits the row.
 
 Inside a container, `os_cgroup_context` records cgroup version, the collector's
 exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective

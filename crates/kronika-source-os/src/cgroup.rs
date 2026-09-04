@@ -965,27 +965,37 @@ pub fn read_memory_path(
 }
 
 fn read_pids_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupPidsRow> {
-    let current = parse_i64(&sys.read(&rel(path, "pids.current")).ok()?).unwrap_or(0);
+    let current = sys.read(&rel(path, "pids.current")).ok()?;
+    let max = sys.read(&rel(path, "pids.max")).ok()?;
+    let (current, max) = parse_pids_values(&current, &max)?;
     Some(CgroupPidsRow {
         ts,
         cgroup_path: path.to_owned(),
         current,
-        max: sys
-            .read(&rel(path, "pids.max"))
-            .ok()
-            .and_then(|content| parse_optional_max(&content)),
+        max,
     })
 }
 
 fn read_pids_v1(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupPidsRow> {
-    let current = parse_i64(&read_first_v1(sys, PIDS_V1_DIRS, path, "pids.current")?).unwrap_or(0);
+    let current = read_first_v1(sys, PIDS_V1_DIRS, path, "pids.current")?;
+    let max = read_first_v1(sys, PIDS_V1_DIRS, path, "pids.max")?;
+    let (current, max) = parse_pids_values(&current, &max)?;
     Some(CgroupPidsRow {
         ts,
         cgroup_path: path.to_owned(),
         current,
-        max: read_first_v1(sys, PIDS_V1_DIRS, path, "pids.max")
-            .and_then(|content| parse_optional_max(&content)),
+        max,
     })
+}
+
+fn parse_pids_values(current: &str, max: &str) -> Option<(i64, Option<i64>)> {
+    let current = parse_i64(current).filter(|value| *value >= 0)?;
+    let max = if max == "max" {
+        None
+    } else {
+        Some(parse_i64(max).filter(|value| *value >= 0)?)
+    };
+    Some((current, max))
 }
 
 fn discover_v2_paths(sys: &SysFs) -> Vec<String> {

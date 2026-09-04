@@ -118,7 +118,36 @@ fn write_v2_workload_files(dir: &tempfile::TempDir, path: &str, io_stat: &str) {
     std::fs::write(workload.join("memory.current"), "4096\n")
         .expect("write workload memory.current");
     std::fs::write(workload.join("pids.current"), "4\n").expect("write workload pids.current");
+    std::fs::write(workload.join("pids.max"), "max\n").expect("write workload pids.max");
     std::fs::write(workload.join("io.stat"), io_stat).expect("write workload io.stat");
+}
+
+fn write_optional_file(path: &std::path::Path, content: Option<&str>) {
+    if let Some(content) = content {
+        std::fs::write(path, content).expect("write optional cgroup fixture");
+    }
+}
+
+fn collect_v2_pids_fixture(current: Option<&str>, max: Option<&str>) -> CgroupCollection {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("fs/cgroup");
+    let workload = root.join("workload");
+    std::fs::create_dir_all(&workload).expect("mkdir v2 pids fixture");
+    std::fs::write(root.join("cgroup.controllers"), "pids\n").expect("write v2 controllers");
+    write_optional_file(&workload.join("pids.current"), current);
+    write_optional_file(&workload.join("pids.max"), max);
+
+    collect(&SysFs::new(dir.path().to_path_buf()), 7, 100)
+}
+
+fn collect_v1_pids_fixture(current: Option<&str>, max: Option<&str>) -> CgroupCollection {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workload = dir.path().join("fs/cgroup/pids/workload");
+    std::fs::create_dir_all(&workload).expect("mkdir v1 pids fixture");
+    write_optional_file(&workload.join("pids.current"), current);
+    write_optional_file(&workload.join("pids.max"), max);
+
+    collect(&SysFs::new(dir.path().to_path_buf()), 7, 100)
 }
 
 #[test]
@@ -245,6 +274,7 @@ fn workload_v1_keeps_controller_memberships_separate() {
     std::fs::write(cpu.join("cpuacct.stat"), "user 6\nsystem 4\n").expect("write cpu stat");
     std::fs::write(memory.join("memory.usage_in_bytes"), "4096\n").expect("write memory usage");
     std::fs::write(pids.join("pids.current"), "9\n").expect("write pids current");
+    std::fs::write(pids.join("pids.max"), "max\n").expect("write pids max");
     std::fs::write(
         io.join("blkio.throttle.io_service_bytes"),
         "8:0 Read 1\n8:0 Write 2\n",
@@ -262,6 +292,39 @@ fn workload_v1_keeps_controller_memberships_separate() {
     assert_eq!(rows.memory[0].cgroup_path, "/service/memory");
     assert_eq!(rows.io[0].cgroup_path, "/service/io");
     assert_eq!(rows.pids[0].cgroup_path, "/service/tasks");
+    assert_eq!(rows.pids[0].max, None);
+}
+
+#[test]
+fn v2_pids_omits_rows_without_a_valid_current_value() {
+    for current in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v2_pids_fixture(current, Some("128\n"));
+        assert!(rows.pids.is_empty(), "current={current:?}");
+    }
+}
+
+#[test]
+fn v2_pids_omits_rows_without_a_valid_max_value() {
+    for max in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v2_pids_fixture(Some("9\n"), max);
+        assert!(rows.pids.is_empty(), "max={max:?}");
+    }
+}
+
+#[test]
+fn v1_pids_omits_rows_without_a_valid_current_value() {
+    for current in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v1_pids_fixture(current, Some("128\n"));
+        assert!(rows.pids.is_empty(), "current={current:?}");
+    }
+}
+
+#[test]
+fn v1_pids_omits_rows_without_a_valid_max_value() {
+    for max in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v1_pids_fixture(Some("9\n"), max);
+        assert!(rows.pids.is_empty(), "max={max:?}");
+    }
 }
 
 #[test]

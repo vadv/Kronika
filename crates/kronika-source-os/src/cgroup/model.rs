@@ -120,8 +120,8 @@ pub struct CgroupPidsRow {
     pub ts: i64,
     /// Normalized cgroup path.
     pub cgroup_path: String,
-    /// Current process count.
+    /// Current thread count identified by TIDs in this cgroup and its descendants.
     pub current: i64,
-    /// Process limit; `None` means unlimited.
+    /// Local thread limit; `None` means unlimited.
     pub max: Option<i64>,
 }
