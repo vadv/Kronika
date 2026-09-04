@@ -105,8 +105,8 @@ export function UseTable({
   const end = hour + 3_600_000_000
   if (shown.length === 0 && !cgroups) return null
   const cgroupRow = cgroups && <div data-testid="use-group-cgroups">
-    <div className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-expanded={expanded.has("cgroups") || undefined} data-testid="use-row-cgroups" onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle("cgroups") }}>
-      <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
+    <div className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-expanded={expanded.has("cgroups") || undefined} data-testid="use-row-cgroups">
+      <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 hover:bg-s3 coarse:min-h-11 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
         {expanded.has("cgroups") ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
         {t("section.cgroups")}
       </button>
@@ -117,8 +117,8 @@ export function UseTable({
   const resourceRow = (resource: UseResource) => {
     const open = expanded.has(resource.key)
     return <div data-testid={`use-group-${resource.key}`} key={resource.key}>
-      <div className="use-row" data-expanded={open || undefined} data-testid={`use-row-${resource.key}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle(resource.key) }}>
-        <button aria-expanded={open} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid={`use-toggle-${resource.key}`} onClick={() => onToggle(resource.key)} type="button">
+      <div className="use-row" data-expanded={open || undefined} data-testid={`use-row-${resource.key}`}>
+        <button aria-expanded={open} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 hover:bg-s3 coarse:min-h-11 max-[760px]:px-[5px]" data-testid={`use-toggle-${resource.key}`} onClick={() => onToggle(resource.key)} type="button">
           {open ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
           {t(containerScopes && resource.key === "network" ? "use.resource.namespace_network" : `use.resource.${resource.key}`)}
         </button>
@@ -135,19 +135,18 @@ export function UseTable({
           const laneLabels = [t(`use.lane.${cell.lane}`), ...(cell.second === undefined ? [] : [t(`use.lane.${cell.second}`)])]
           const readings = [primary, ...(secondary === null ? [] : [secondary])]
           const accessibleName = `${resourceLabel} · ${t(`use.${column}`)} · ${laneLabels.map((label, index) => `${label}: ${readings[index]}`).join(" · ")}`
-          return <span className="use-cell relative min-w-0 px-2 py-1.5 max-[760px]:px-[5px]" key={column}>
+          return <span className="use-cell relative min-w-0 px-2 py-1.5 coarse:min-h-11 max-[760px]:px-[5px]" key={column}>
             <button
               aria-label={accessibleName}
               aria-pressed={metric === cell.metric}
-              className="use-cell-action absolute inset-0 z-0 cursor-pointer border-0 bg-transparent coarse:min-h-11"
+              className="use-cell-action absolute inset-0 z-0 cursor-pointer border-0 bg-transparent"
               data-testid={`use-cell-${resource.key}-${column}`}
               onClick={(event) => { event.stopPropagation(); onCellSelect(resource.key, cell.metric) }}
               title={accessibleName}
               type="button"
             />
-            <span className="use-lane pointer-events-none relative z-[1] flex items-baseline justify-start gap-[7px] max-[760px]:flex-wrap max-[760px]:gap-x-[5px] max-[760px]:gap-y-0.5 max-[760px]:[&>span]:flex-none [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-sm [&>span]:text-fg3 [&_strong]:ml-auto [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-sm [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2 [&_.label-help]:pointer-events-auto [&_.label-help]:z-[2] max-[760px]:[&_strong]:ml-0 max-[760px]:[&_strong]:w-full max-[760px]:[&_strong]:whitespace-normal max-[760px]:[&_strong]:leading-tight">
-              <LabelHelp helpKey={useLaneHelp(cell.lane)} labelKey={`use.lane.${cell.lane}`} t={t} />
-              {cell.second !== undefined && <LabelHelp helpKey={useLaneHelp(cell.second)} labelKey={`use.lane.${cell.second}`} t={t} />}
+            <span className="use-lane pointer-events-none relative z-[1] flex items-baseline justify-start gap-[7px] max-[760px]:flex-wrap max-[760px]:gap-x-[5px] max-[760px]:gap-y-0.5 max-[760px]:[&>span]:flex-none [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-sm [&>span]:text-fg3 [&_strong]:ml-auto [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-sm [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2 max-[760px]:[&_strong]:ml-0 max-[760px]:[&_strong]:w-full max-[760px]:[&_strong]:whitespace-normal max-[760px]:[&_strong]:leading-tight">
+              <span>{laneLabels.join(" · ")}</span>
               <strong>{readings.join(" · ")}</strong>
             </span>
             <span className="pointer-events-none relative z-[1]"><SparkCell cursor={cursor} end={end} hour={hour} max={sparkScaleMax(cell.kind, [points, ...(second === undefined ? [] : [second])])} points={points} second={second} /></span>
@@ -232,24 +231,6 @@ export function currentLaneReading(
 ): string {
   const stored = readingAt(laneSeriesPoints(lanePoints, lane), cursor)
   return stored === null ? "—" : reading(stored, locale, kind, perSecond)
-}
-
-const USE_LANE_HELP: Readonly<Record<string, string>> = {
-  cpu_busy: "lane.cpu_busy.help",
-  cpu_stall: "lane.cpu_stall.help",
-  disk_busy: "use.lane.disk_busy.help",
-  disk_queue: "use.lane.disk_queue.help",
-  mem_oom: "system.metric.oom_kill.help",
-  mem_swap: "use.lane.mem_swap.help",
-  memory: "lane.memory.help",
-  net_drop: "use.lane.net_drop.help",
-  net_errors: "system.metric.network_errors.help",
-  net_rx: "system.metric.network_rx.help",
-  net_tx: "system.metric.network_tx.help",
-}
-
-export function useLaneHelp(lane: string): string {
-  return USE_LANE_HELP[lane] ?? "chart.metric.help"
 }
 
 export function reading(value: number, locale: Locale, kind: UseCell["kind"], perSecond: string): string {

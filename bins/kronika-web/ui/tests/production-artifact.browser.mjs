@@ -569,7 +569,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     layout("1112002", "os_mountinfo", ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"]),
     row("1112002", `mount-${target}`, [String(at), 8, 0, `/data-${target}`, "/", "ext4", `/dev/${target}`, false, 8_388_608, 4_194_304, 8_192, 7_168, 0], at),
     layout("1106001", "os_netdev", ["ts", "iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "scope"]),
-    row("1106001", `net-${target}`, [String(at), `interface_${target}`, 1000, 2000, 10, 20, 0, 0, 0, 0, 0], at),
+    row("1106001", `net-${target}`, [String(at), `interface_${target}`, 1000, 2000, 10, 20, 0, 0, 0, 0, 2], at),
   ]
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
@@ -826,11 +826,10 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     const containerState = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="use-table"]')
       return {
-        cgroupsFirst: table.querySelector(':scope > [data-testid^="use-group-"]')?.dataset.testid === "use-group-cgroups",
-        hostResourcesHidden: ["cpu", "memory", "disk"].every((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]') === null),
+        order: [...table.children].flatMap((node) => node.dataset.testid === undefined ? [] : [node.dataset.testid]),
+        hostResourcesPresent: ["cpu", "memory", "disk"].every((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]') !== null),
         network: document.querySelector('[data-testid="use-toggle-network"]') !== null,
-        hostRowsHidden: document.querySelector('[data-testid="system-panel-os_diskstats"]') === null
-          && document.querySelector('[data-testid="system-panel-os_mountinfo"]') === null,
+        timeline: [...document.querySelectorAll('.timeline-lane-name')].map((node) => node.textContent),
         cgroupTabs: document.querySelector('[data-testid="host-cgroups-modes"]') !== null,
         io: (() => {
           const control = document.querySelector('[data-testid="cgroup-overview-io"]')
@@ -866,10 +865,14 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
         recordedCopy: document.querySelector('[data-testid="use-group-cgroups"]').textContent.includes("Recorded workload"),
       }
     })()`)
-    assert.equal(containerState.cgroupsFirst, true, JSON.stringify(containerState))
-    assert.equal(containerState.hostResourcesHidden, true, JSON.stringify(containerState))
+    assert.deepEqual(containerState.order, [
+      "use-scope-container", "use-group-cgroups", "use-cgroup-activity",
+      "use-scope-namespace", "use-group-network",
+      "use-scope-host", "use-group-cpu", "use-group-memory", "use-group-disk",
+    ], JSON.stringify(containerState))
+    assert.equal(containerState.hostResourcesPresent, true, JSON.stringify(containerState))
     assert.equal(containerState.network, true, JSON.stringify(containerState))
-    assert.equal(containerState.hostRowsHidden, true, JSON.stringify(containerState))
+    assert.deepEqual(containerState.timeline, ["Health"], JSON.stringify(containerState))
     assert.equal(containerState.cgroupTabs, false, JSON.stringify(containerState))
     assert.equal(containerState.recordedCopy, false, JSON.stringify(containerState))
     assert.equal(containerState.overview.every(({ labelFont, labelTruncated, readingFont }) => labelFont >= 12 && readingFont >= 12 && !labelTruncated), true, JSON.stringify(containerState))
@@ -886,6 +889,22 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     assert.deepEqual([containerState.io.unmappedSize, containerState.io.unmappedWeight], ["12px", "400"])
     assert.equal(containerState.io.idStyles.every(({ font, size, weight }) => /JetBrains Mono/.test(font) && size === "12px" && weight === "400"), true, JSON.stringify(containerState.io.idStyles))
     assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-tasks"), true, JSON.stringify(containerState))
+    const emptyBefore = await cdp.evaluate(`(() => ({
+      expanded: document.querySelector('[data-testid="use-toggle-cpu"]').getAttribute('aria-expanded'),
+      metric: new URL(location.href).searchParams.get('metric'),
+      tag: document.querySelector('[data-testid="use-empty-cpu-errors"]').tagName,
+    }))()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="use-empty-cpu-errors"]').click()`)
+    assert.deepEqual(await cdp.evaluate(`(() => ({
+      expanded: document.querySelector('[data-testid="use-toggle-cpu"]').getAttribute('aria-expanded'),
+      metric: new URL(location.href).searchParams.get('metric'),
+      tag: document.querySelector('[data-testid="use-empty-cpu-errors"]').tagName,
+    }))()`), emptyBefore)
+    await cdp.evaluate(`document.querySelector('[data-testid="use-cell-disk-utilisation"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('metric') === 'disk_busy'
+      && document.querySelector('[data-testid="use-toggle-disk"]')?.getAttribute('aria-expanded') === 'true'
+      && document.querySelector('[data-testid="use-cell-disk-utilisation"]')?.getAttribute('aria-pressed') === 'true'`, "the exact USE disk action")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-group-chart-disk"]') !== null`), true)
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "ru"`, "the RU cgroup controls")
     for (const [width, columns] of [[360, 1], [800, 2], [1280, 4]]) {
@@ -3850,30 +3869,22 @@ test("the production artifact preserves wire keys and exact finding page state",
     await settleLayout(cdp)
     const ledger = await cdp.evaluate(`(() => {
       const cells = [...document.querySelectorAll('.use-cell')].flatMap((cell) => {
-        const label = cell.querySelector(':scope > span > span')
+        const label = cell.querySelector('.use-lane > span')
         const value = cell.querySelector('strong')
-        const dot = cell.querySelector('.label-help')
         if (label === null || value === null) return []
-        const dotBounds = dot?.getBoundingClientRect()
-        const valueBounds = value.getBoundingClientRect()
         return [{
           clipped: label.scrollWidth > label.clientWidth || value.scrollWidth > value.clientWidth,
           label: label.textContent,
-          under: dotBounds === undefined ? false : dotBounds.right > valueBounds.left + .5
-            && dotBounds.left < valueBounds.right - .5 && dotBounds.bottom > valueBounds.top + .5
-            && dotBounds.top < valueBounds.bottom - .5,
           value: value.textContent,
         }]
       })
-      const network = [...document.querySelectorAll('[data-testid="use-row-network"] .use-cell .label-help > span')]
+      const network = [...document.querySelectorAll('[data-testid="use-row-network"] .use-lane > span')]
         .map((label) => label.textContent).join(" · ")
       return { cells, network, sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth }
     })()`)
-    // A cell that prints two readings must name both: labelled "RX" over
-    // "884 B/s · 888 B/s", the second number has no name.
+    // A cell that prints two readings names both in its single action.
     assert.equal(ledger.network, "RX · TX", JSON.stringify(ledger))
     assert.deepEqual(ledger.cells.filter((cell) => cell.clipped), [], `phone ledger clips: ${JSON.stringify(ledger.cells)}`)
-    assert.deepEqual(ledger.cells.filter((cell) => cell.under), [], `phone help dot sits on the value: ${JSON.stringify(ledger.cells)}`)
     assert.equal(ledger.sideways, false, JSON.stringify(ledger))
     for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
@@ -8452,8 +8463,8 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU chips")
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     const selectedMetric = await cdp.evaluate(`document.querySelector('[data-testid="system-group-chart-cpu"] button[aria-pressed="true"]')?.dataset.testid`)
-    await cdp.evaluate(`document.querySelector('.use-cell .help-dot').click()`)
-    await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the System metric help")
+    await cdp.evaluate(`document.querySelector('.use-header-cell .help-dot').click()`)
+    await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the USE methodology help")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-group-chart-cpu"] button[aria-pressed="true"]')?.dataset.testid`), selectedMetric)
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
 

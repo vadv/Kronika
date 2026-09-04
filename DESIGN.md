@@ -692,8 +692,11 @@ column labels are the canonical `Utilization`, `Saturation`, and `Errors` in
 every locale: a row per resource whose cells carry the hour's shape at
 sparkline size with the cursor reading beside it. Every populated cell is a
 native action that opens its resource and selects that exact recorded metric;
-an unavailable cell remains an inert dash. Rows expand in place — several at
-once — into the group's metric chips, its inline
+an unavailable cell remains an inert dash. The cell action owns its complete
+label, reading, keyboard focus, and coarse-pointer target; lane text is not a
+second nested help action. Column-header help defines USE methodology, while
+the selected inline chart owns metric-specific help. Rows expand in place —
+several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
@@ -876,7 +879,10 @@ first with the open collector-cgroup overview and both cgroup activity ledgers.
 Network namespace follows and owns the one Network row; it is never labelled
 as Host. Host follows separately with the recorded host CPU, memory, and
 storage rows. These readings remain distinct from cgroup use and limits, and
-Network is not duplicated into Host. The overview contains one control for
+Network is not duplicated into Host. The compact timeline in a container does
+not relabel host CPU, memory, or storage lanes as container signals; it keeps
+Health and PostgreSQL activity lanes, while exact scope-specific charts live
+in their ledger rows. The overview contains one control for
 every cgroup controller present
 in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
 These controls are the sole mode selector and expose their selected state. A

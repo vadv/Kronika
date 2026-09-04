@@ -54,6 +54,7 @@ interface MetricSpec {
   readonly series?: string
   readonly resource?: number
   readonly unit: string
+  readonly useOnly?: boolean
 }
 
 interface SystemEntityColumn extends EntityColumn {
@@ -240,6 +241,7 @@ const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
   disk: "disk_busy",
   network: "network_rx",
 }
+const EXACT_TIMELINE_METRIC_LANES: ReadonlySet<string> = new Set(["cpu_busy", "cpu_stall", "memory"])
 
 function resourceSelection(available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
   const lane = RESOURCE_LANE[resource]
@@ -252,17 +254,8 @@ function metricResource(spec: MetricSpec): UseResourceKey | null {
   return (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === spec.group) ?? null
 }
 
-function groupLane(group: MetricSpec["group"]): string {
-  const match = (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === group)
-  return match === undefined ? "health" : RESOURCE_LANE[match]
-}
-
 function metricLane(spec: MetricSpec): string {
-  const normalized = normalizedMetricLanes(spec)[0]?.[0]
-  if (normalized !== undefined) return normalized
-  const lane = timelineLane(spec.id)
-  if (lane !== "health" || spec.id === "health") return lane
-  return groupLane(spec.group)
+  return normalizedMetricLanes(spec).map(([lane]) => lane).find((lane) => EXACT_TIMELINE_METRIC_LANES.has(lane)) ?? "health"
 }
 
 export const SYSTEM_ENTITIES: readonly {
@@ -621,18 +614,22 @@ export function SystemView({
       </section>}
     </div>
   }
-  const namespaceLanePoints = environment === "container"
-    ? data.lanePoints.filter(({ lane }) => lane.startsWith("net_"))
+  const timelineLanePoints = environment === "container"
+    ? data.lanePoints.filter(({ lane }) => lane.startsWith("pg_"))
     : data.lanePoints
   const primaryTimelineLane = environment === "container" ? "health" : selectedSpec === undefined ? "health" : metricLane(selectedSpec)
+  const cgroupActivity = environment === "container"
+    && (data.availableSections.includes("os_cgroup_cpu") || data.availableSections.includes("os_cgroup_io"))
+    ? <>
+      {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
+      {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} devices={cgroupDevices} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
+    </>
+    : undefined
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={namespaceLanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={primaryTimelineLane} selectedLane={selectedLane} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={timelineLanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={primaryTimelineLane} selectedLane={selectedLane} t={t} />
     <div className="system-main mt-0 min-w-0">
       <UseTable
-        afterCgroups={environment === "container" ? <>
-          {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
-          {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} devices={cgroupDevices} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
-        </> : undefined}
+        afterCgroups={cgroupActivity}
         cgroups={cgroupsPresent}
         cgroupsFirst={environment === "container"}
         containerScopes={environment === "container"}
@@ -901,7 +898,15 @@ function SystemGroupChart({
     }, ...componentSeries]
   }, [componentSeries, locale, selectedMetric.spec, selectedPoints, t])
   const secondLane = secondMetricLane(selectedMetric.spec)
-  const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
+  const secondPoints = useMemo(() => {
+    if (secondLane === null) return undefined
+    if (loadedHistory.value !== null) {
+      const secondSpec = SYSTEM_METRICS.find((spec) => spec.id === "network_tx")
+      const loaded = secondSpec === undefined ? [] : metricHistoryPoints(secondSpec, loadedHistory.value)
+      if (loaded.length !== 0) return loaded
+    }
+    return laneChartPoints(data, secondLane)
+  }, [data, loadedHistory.value, secondLane])
   if (SYSTEM_METRICS.every((spec) => spec.id !== metricId)) return null
   return <div className="grid min-w-0 gap-[7px]" data-testid={`system-group-chart-${groupKey}`}>
     <div aria-label={t(`section.${selectedMetric.spec.group}`)} className="dock-tabs history-selector flex max-w-full flex-wrap gap-[5px] p-px" role="group">
@@ -1301,13 +1306,6 @@ function entityMetricValue(reading: number, locale: Locale, column: SystemEntity
   return measure(reading, locale, suffix)
 }
 
-function timelineLane(metric: string | undefined): string {
-  if (metric?.endsWith("_pressure") === true) return "health"
-  if (metric?.startsWith("cpu_") === true) return "cpu_busy"
-  if (metric?.startsWith("mem_") === true) return "memory"
-  return "health"
-}
-
 function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
   const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
     cpu_busy: [["cpu_busy", (number) => number]],
@@ -1382,6 +1380,8 @@ export function dockGroupMetrics(
   groupMetrics: readonly MetricSpec[],
   laneId: string | undefined,
 ): { readonly chips: readonly MetricSpec[]; readonly chartChip: (id: string) => string } {
+  const ordinary = groupMetrics.filter((spec) => spec.useOnly !== true)
+  groupMetrics = ordinary.length === 0 ? groupMetrics : ordinary
   const offered = groupMetrics.filter((spec) => !INVENTORY_METRIC_IDS.has(spec.id))
   groupMetrics = offered.length === 0 ? groupMetrics : offered
   const members = groupMetrics.filter((spec) => BREAKDOWN_MEMBER_IDS.has(spec.id))
@@ -1440,10 +1440,12 @@ export function metricHistoryRequest(spec: MetricSpec): MetricHistoryRequest | n
   const section = spec.derive === undefined ? spec.section : DERIVE_INPUTS[spec.derive][0]
   if (section === undefined) return null
   const derivedFields = spec.derive === undefined ? [] : DERIVE_INPUTS[spec.derive][1]
+  const pairedFields = spec.id === "network_rx" ? ["tx_bytes"] : []
   const compositionFields = MEMORY_BREAKDOWN_IDS.includes(spec.id as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_FIELDS : []
   const fields = uniqueStrings([
     ...(spec.field === undefined ? [] : [spec.field]),
     ...derivedFields,
+    ...pairedFields,
     ...compositionFields,
     ...(spec.resource === undefined ? [] : ["resource"]),
     ...registry.filter((layout) => layout.logicalName === section).flatMap((layout) => layout.identity),
@@ -1914,7 +1916,7 @@ function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: 
   } else if (row.logicalName === "os_cgroup_io") {
     values.cgroup_device_target = presentation === null ? null : cgroupDevicePrimary(presentation)
     values.cgroup_device_detail = presentation === null ? null : uniqueStrings([presentation.source, presentation.device].filter((part): part is string => part !== null)).join(" · ") || null
-    values.cgroup_mount_associations = presentation === null ? null : { associations: presentation.associations }
+    values.cgroup_mount_associations = presentation === null || presentation.associations.length === 0 ? null : { associations: presentation.associations }
   } else if (row.logicalName === "os_cgroup_pids") {
     if (Object.hasOwn(row.values, "current")) values.tasks_current = value(row, "current")
     if (Object.hasOwn(row.values, "max")) values.tasks_max = value(row, "max")
@@ -2042,7 +2044,7 @@ function laneMetric(id: string, group: MetricSpec["group"], label: string, unit:
 }
 
 function exactLaneMetric(id: string, group: MetricSpec["group"], label: string, help: string, unit: string): MetricSpec {
-  return { id, group, label, help, unit }
+  return { id, group, label, help, unit, useOnly: true }
 }
 
 function pressureMetric(id: string, group: SystemGroup, label: string, resource: number): MetricSpec {

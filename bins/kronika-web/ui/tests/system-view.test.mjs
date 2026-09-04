@@ -317,6 +317,7 @@ test("container overview follows the collector's exact v2 paths and keeps I/O de
   assert.deepEqual(targets.filter(({ mode }) => mode === "io").map(({ row }) => row.values.device_id), ["252:0", "259:0"])
   assert.equal(targets.find(({ mode }) => mode === "io").row.values.cgroup_device_target, "data-docker → /var/lib/kronika/data")
   assert.equal(targets.filter(({ mode }) => mode === "io")[1].row.values.cgroup_device_target, null)
+  assert.equal(targets.filter(({ mode }) => mode === "io")[1].row.values.cgroup_mount_associations, null)
   assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.cgroup_path, "/")
   assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_current, 4)
   assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_max, 100)
@@ -450,6 +451,10 @@ test("System history requests are selected-metric keys with exact physical input
   const memory = helpers.SYSTEM_METRICS.find(({ id }) => id === "mem_anon")
   const memoryRequest = helpers.metricHistoryRequest(memory)
   for (const field of ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]) assert.ok(memoryRequest.fields.includes(field))
+  const network = helpers.SYSTEM_METRICS.find(({ id }) => id === "network_rx")
+  const networkRequest = helpers.metricHistoryRequest(network)
+  assert.ok(networkRequest.fields.includes("rx_bytes"))
+  assert.ok(networkRequest.fields.includes("tx_bytes"))
   assert.equal(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(100, cpu, cpuRequest))
   assert.notEqual(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(200, cpu, cpuRequest))
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "B")
@@ -475,6 +480,9 @@ test("the dock offers one chip for a breakdown instead of a strip that repeats t
   const plain = helpers.dockGroupMetrics(network, undefined)
   assert.deepEqual(plain.chips.map(({ id }) => id), ["network_rx", "network_tx"])
   assert.equal(plain.chartChip("network_tx"), "network_tx")
+  const exactUse = { ...metric("disk_busy", "storage"), useOnly: true }
+  const detail = metric("device_busy", "storage")
+  assert.deepEqual(helpers.dockGroupMetrics([exactUse, detail], "disk_busy").chips.map(({ id }) => id), ["device_busy"])
 })
 
 test("System entity charts include numeric measurements and exclude identities and categories", () => {
@@ -640,7 +648,11 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   // dedicated, and Disk separates device I/O, filesystems and topology.
   assert.match(source, /disk: \["io", "filesystems", "topology"\]/)
   assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
-  assert.match(source, /namespaceLanePoints = environment === "container"[\s\S]*lane\.startsWith\("net_"\)/)
+  assert.match(source, /timelineLanePoints = environment === "container"[\s\S]*lane\.startsWith\("pg_"\)/)
+  assert.match(source, /EXACT_TIMELINE_METRIC_LANES[^\n]+\["cpu_busy", "cpu_stall", "memory"\]/)
+  assert.doesNotMatch(source, /function groupLane/)
+  assert.doesNotMatch(source, /function timelineLane/)
+  assert.match(source, /afterCgroups=\{cgroupActivity\}/)
   assert.match(source, /environment !== "container" \|\| openedContainer\.current[\s\S]*new Set\(\[\.\.\.current, "cgroups"\]\)/)
   assert.match(source, /<ContainerCgroupOverview/)
   assert.match(source, /cgroup-overview:\$\{request\.key\}/)
