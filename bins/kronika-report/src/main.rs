@@ -38,7 +38,7 @@ fn arguments(values: impl IntoIterator<Item = OsString>) -> Result<Arguments, &'
                 .and_then(|value| value.parse::<i64>().ok())
                 .ok_or("invalid --to-exclusive Unix microseconds")?;
             let range = ReportTimeRange::new(from, to_exclusive)
-                .ok_or("report time range must be non-empty")?;
+                .ok_or("report range must use positive JavaScript-safe Unix microseconds")?;
             (input, output, Some(range))
         }
         [] => return Err("missing standalone ZMS input"),

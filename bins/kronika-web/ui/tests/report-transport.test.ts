@@ -59,6 +59,22 @@ test("report navigation accepts only exact instants inside the embedded visible 
   }
 })
 
+test("report navigation rejects nonpositive and unsafe embedded bounds", () => {
+  const session = { request() { throw new Error("unused") } }
+  for (const [from, toExclusive] of [
+    ["0", "1"],
+    ["-1", "1"],
+    ["9007199254740991", "9007199254740992"],
+  ]) {
+    const restore = installRuntime(session, from, toExclusive)
+    try {
+      assert.equal(reportVisibleRange(), null)
+    } finally {
+      restore()
+    }
+  }
+})
+
 test("report transport returns unchanged NDJSON and releases the response", async () => {
   const expected = new TextEncoder().encode('{"record":"hour"}\n')
   let freed = 0
@@ -83,6 +99,64 @@ test("report transport returns unchanged NDJSON and releases the response", asyn
     assert.equal(response.headers.get("Content-Type"), "application/x-ndjson")
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), expected)
     assert.equal(freed, 1)
+  } finally {
+    restore()
+  }
+})
+
+test("report transport keeps every product range inside the embedded visible range", async () => {
+  const seen: string[] = []
+  const restore = installRuntime({
+    request(path, query) {
+      seen.push(`${path}?${query}`)
+      return {
+        status: 200,
+        code: undefined,
+        parameter: undefined,
+        message: undefined,
+        takeBody: () => new Uint8Array(),
+        free() {},
+      }
+    },
+  }, "1788523200000000", "1788526800000000")
+
+  try {
+    await reportFetch("/api/events?from=1788523199999999&to=1788526800000001&representation=groups&limit=5000")
+    await reportFetch("/api/hour?from=1788523199999999&to=1788526800000001&section=os_process&field=pid")
+    await reportFetch("/api/heatmap?from=1788523199999999&to=1788526800000001&section=os_process&field=cpu_ticks&columns=60&top=25")
+    assert.deepEqual(seen, [
+      "/api/events?from=1788523200000000&to=1788526800000000&representation=groups&limit=5000",
+      "/api/hour?from=1788523200000000&to=1788526799999999&section=os_process&field=pid",
+      "/api/heatmap?from=1788523200000000&to=1788526799999999&section=os_process&field=cpu_ticks&columns=60&top=25",
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test("report transport does not query retained context outside its visible range", async () => {
+  let requests = 0
+  const restore = installRuntime({
+    request() {
+      requests += 1
+      throw new Error("unreachable")
+    },
+  }, "1788523200000000", "1788526800000000")
+
+  try {
+    await assert.rejects(
+      reportFetch("/api/events?from=1788523190000000&to=1788523200000000&representation=groups&limit=5000"),
+      /outside its visible range/,
+    )
+    await assert.rejects(
+      reportFetch("/api/hour?from=1788526800000000&to=1788526809999999&section=os_process&field=pid"),
+      /outside its visible range/,
+    )
+    await assert.rejects(
+      reportFetch("/api/heatmap?from=1788526800000000&to=1788526809999999&section=os_process&field=cpu_ticks"),
+      /outside its visible range/,
+    )
+    assert.equal(requests, 0)
   } finally {
     restore()
   }

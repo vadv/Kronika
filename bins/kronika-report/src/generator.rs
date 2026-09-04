@@ -33,6 +33,7 @@ const RUNTIME_SOURCES: &[u8] = br#"",z,i,"#;
 const RUNTIME_LENGTH: &[u8] = br#",BigInt(""#;
 const RUNTIME_END: &[u8] = br#""));})()};})();"#;
 const BASE64_INPUT_BYTES: usize = 12 * 1024;
+const MAX_JAVASCRIPT_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 /// Owned input for one self-contained HTML document.
 #[derive(Debug)]
@@ -55,10 +56,10 @@ pub struct ReportTimeRange {
 }
 
 impl ReportTimeRange {
-    /// Build a non-empty half-open time range.
+    /// Build a positive, JavaScript-safe, non-empty half-open time range.
     #[must_use]
     pub const fn new(from: i64, to_exclusive: i64) -> Option<Self> {
-        if from < to_exclusive {
+        if from > 0 && from < to_exclusive && to_exclusive <= MAX_JAVASCRIPT_SAFE_INTEGER {
             Some(Self { from, to_exclusive })
         } else {
             None
@@ -127,7 +128,9 @@ impl std::fmt::Display for HtmlReportError {
             Self::InputTooLarge(bytes) => {
                 write!(f, "a {bytes}-byte ZMS is too large for the report ABI")
             }
-            Self::InvalidTimeRange => f.write_str("invalid report-visible time range"),
+            Self::InvalidTimeRange => f.write_str(
+                "report-visible bounds must be positive JavaScript-safe Unix microseconds",
+            ),
             Self::Layout(source) => source.fmt(f),
             Self::Resource(source) => source.fmt(f),
             Self::Reader(source) => source.fmt(f),

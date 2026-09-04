@@ -15,6 +15,29 @@ const VISIBLE_TO: i64 = SEGMENT_ID + 1_000_001;
 const ZMS: &[u8] = include_bytes!("../tests/fixtures/standalone.zms");
 const IDX: &[u8] = include_bytes!("../tests/fixtures/standalone.idx");
 
+#[test]
+fn report_range_requires_positive_javascript_safe_microseconds() {
+    const MAX_SAFE: i64 = 9_007_199_254_740_991;
+
+    assert_eq!(
+        ReportTimeRange::new(1, MAX_SAFE),
+        Some(ReportTimeRange {
+            from: 1,
+            to_exclusive: MAX_SAFE,
+        })
+    );
+    for (from, to_exclusive) in [
+        (0, 1),
+        (-1, 1),
+        (1, 1),
+        (2, 1),
+        (1, MAX_SAFE + 1),
+        (MAX_SAFE, MAX_SAFE + 1),
+    ] {
+        assert_eq!(ReportTimeRange::new(from, to_exclusive), None);
+    }
+}
+
 fn script_blocks(html: &str) -> Option<usize> {
     let mut tail = html;
     let mut count = 0;

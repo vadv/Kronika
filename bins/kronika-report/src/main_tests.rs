@@ -60,6 +60,18 @@ fn command_line_requires_exactly_two_paths() {
             OsString::from("incident.zms"),
             OsString::from("report.html"),
         ]),
-        Err("report time range must be non-empty")
+        Err("report range must use positive JavaScript-safe Unix microseconds")
+    );
+
+    assert_eq!(
+        arguments([
+            OsString::from("--from"),
+            OsString::from("9007199254740992"),
+            OsString::from("--to-exclusive"),
+            OsString::from("9007199254740993"),
+            OsString::from("incident.zms"),
+            OsString::from("report.html"),
+        ]),
+        Err("report range must use positive JavaScript-safe Unix microseconds")
     );
 }

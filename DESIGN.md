@@ -582,11 +582,19 @@ remains `null`.
 Each generated document embeds one exact half-open visible range. Web export
 uses the user's requested bounds; the CLI accepts optional `--from` and
 `--to-exclusive` Unix-microsecond bounds and otherwise uses the physical ZMS
-range. Rows retained immediately outside an exported interval remain available
-to interval calculations but do not create hours in the report picker. Report
-startup and browser-history navigation accept an `at` value only inside the
-visible range; an outside value returns to the document's default recorded
-instant and is replaced in the file URL instead of creating an empty hour.
+range. Explicit and derived bounds must be positive JavaScript-safe integers,
+so the browser preserves every microsecond exactly. Rows retained immediately
+outside an exported interval remain available to interval calculations but do
+not create hours in the report picker. Report startup and browser-history
+navigation accept an `at` value only inside the visible range; an outside value
+returns to the document's default recorded instant and is replaced in the file
+URL instead of creating an empty hour.
+
+Every report-mode Events request intersects its half-open range with the
+embedded visible range. History-series and heatmap requests do the same before
+converting the exclusive report end to their inclusive `to` parameter. Rows
+retained outside the visible range remain calculation input only and are not
+eligible for these range-bearing responses.
 
 The command writes a temporary in the output directory, synchronizes it and
 atomically replaces the output. The resulting deterministic HTML contains the
