@@ -618,8 +618,9 @@ compressed WebAssembly are built ahead of the Rust binary and committed as
 reproducible assets, so an ordinary Cargo build needs no Node installation.
 
 `GET /api/export?from=<unix_second>&to=<unix_second>` is the authenticated web
-adapter for the same composition. Its inclusive range of signed whole Unix
-seconds passes directly, in-process, through `kronika_dump::slice_to_zms` and
+adapter for the same composition. The inclusive range consists of positive
+whole Unix seconds, and its half-open microsecond bounds must be JavaScript-safe.
+It passes directly, in-process, through `kronika_dump::slice_to_zms` and
 then `kronika_report::write_html_from_file_with_segment_id`, preserving the
 slice identity when its context makes catalog `min_ts` differ; the existing
 `write_html_from_file` keeps its catalog-derived identity contract. Each web
@@ -646,7 +647,7 @@ time skipped by a clock transition is rejected at that endpoint; a repeated
 civil time alone exposes first/second occurrence controls derived from the
 actual candidates, including transitions that are not one hour.
 
-An accepted export keeps immutable signed Unix-second bounds. Until response
+An accepted export keeps immutable positive Unix-second bounds. Until response
 headers arrive, the panel reports preparation with measured elapsed time and
 offers no cancellation or restart. It cannot be dismissed during that work,
 while the rest of the interface and its navigation remain available. After

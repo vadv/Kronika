@@ -43,7 +43,10 @@ pub(crate) fn parse(query: &str) -> Result<SliceRange, RouteError> {
     }
     let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
     let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
-    SliceRange::new(from, to).map_err(|_error| RouteError::BadParameter("from".to_owned()))
+    let range =
+        SliceRange::new(from, to).map_err(|_error| RouteError::BadParameter("from".to_owned()))?;
+    validate_report_range(&range)?;
+    Ok(range)
 }
 
 fn second(name: &str, value: &str) -> Result<UtcSecond, RouteError> {
@@ -51,6 +54,24 @@ fn second(name: &str, value: &str) -> Result<UtcSecond, RouteError> {
         .parse::<i64>()
         .map_err(|_error| RouteError::BadParameter(name.to_owned()))?;
     UtcSecond::from_unix_seconds(value).map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn validate_report_range(range: &SliceRange) -> Result<(), RouteError> {
+    let from = range
+        .from()
+        .unix_seconds()
+        .checked_mul(1_000_000)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
+    let to_exclusive = range
+        .to()
+        .unix_seconds()
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(1_000_000))
+        .ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    ReportTimeRange::new(from, to_exclusive)
+        .ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    Ok(())
 }
 
 #[derive(Debug)]
