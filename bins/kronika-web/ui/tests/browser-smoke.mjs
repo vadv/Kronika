@@ -100,6 +100,11 @@ if (await evaluate(`document.querySelector('[data-testid="login-card"]') !== nul
 }
 await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "application")
 if (reportMode) {
+  await waitFor(`(() => {
+    const at = Number(new URL(location.href).searchParams.get("at"))
+    return Number.isSafeInteger(at) && at > 0
+      && document.querySelectorAll(".process-table .entity-row").length > 0
+  })()`, "canonical report address", 30_000)
   const beforeReload = await evaluate(`location.href`)
   const reportState = await evaluate(`(() => ({
     export: document.querySelector('[data-testid="export-trigger"]') !== null,
