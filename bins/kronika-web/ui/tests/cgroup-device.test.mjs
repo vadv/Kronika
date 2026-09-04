@@ -23,7 +23,7 @@ test("cgroup device labels use only exact major:minor mount and disk metadata", 
     row("os_mountinfo", "root", { major: 252, minor: 0, mount_point: "/volumes/kronika-pages-08c6f4d0-data-2/_data", root: "/", source: "/dev/mapper/data-docker", is_k8s_infra: false, scope: 0 }),
     row("os_mountinfo", "data", { major: 252, minor: 0, mount_point: "/var/lib/kronika/data", root: "/volumes/kronika-pages-08c6f4d0-data-2/_data", source: "/dev/mapper/data-docker", is_k8s_infra: false, scope: 0 }),
     row("os_mountinfo", "hosts", { major: 252, minor: 0, mount_point: "/etc/hosts", root: "/containers/id/hosts", source: "/dev/mapper/data-docker", is_k8s_infra: "true", scope: 0 }),
-    row("os_mountinfo", "other", { major: 259, minor: 0, mount_point: "/wrong", source: "/dev/nvme0n1", is_k8s_infra: false, scope: 0 }),
+    row("os_mountinfo", "other", { major: 259, minor: 4, mount_point: "/wrong", source: "/dev/nvme0n1p4", is_k8s_infra: false, scope: 0 }),
   ]
   const diskRows = [
     row("os_diskstats", "dm-0", { major: 252, minor: 0, device: "dm-0", scope: 0 }),
