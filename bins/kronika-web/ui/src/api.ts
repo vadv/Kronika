@@ -234,6 +234,11 @@ export interface TimelineData {
   readonly postgresqlPresent?: boolean
 }
 
+export interface TimelineRange {
+  readonly from: number
+  readonly toExclusive: number
+}
+
 export interface ResolvedLocator {
   readonly logicalName: string
   readonly row: DataRow
@@ -304,7 +309,12 @@ export interface SnapshotRequestGroup {
   readonly requests: readonly SectionRequest[]
 }
 
-export async function loadTimeline(start: number | null, signal: AbortSignal, onBytes?: (received: number) => void): Promise<TimelineData> {
+export async function loadTimeline(
+  start: number | null,
+  signal: AbortSignal,
+  onBytes?: (received: number) => void,
+  visibleRange: TimelineRange | null = null,
+): Promise<TimelineData> {
   const range = bundledFixtureRange()
   const requested = floorHour(start ?? range?.from ?? 0)
   const fixture = bundledFixtureHour(requested)
@@ -321,16 +331,17 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     }
   }
   const query = new URLSearchParams({ part: "base" })
-  if (start !== null) {
-    query.set("from", String(start))
-    query.set("to", String(start + 3_600_000_000 - 1))
+  if (start !== null || visibleRange !== null) {
+    const window = timelineWindow(requested, visibleRange)
+    query.set("from", String(window.from))
+    query.set("to", String(window.toExclusive - 1))
   }
   const records = await request(`/api/hour?${query}`, signal, onBytes)
   const header = records.find((record) => record.record === "hour")
   const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
     ? floorHour(Date.now() * 1_000)
-    : integer(header.from, "hour start")
+    : floorHour(integer(header.from, "hour start"))
   const end = hour + 3_600_000_000
   const all = catalogSegments(records)
   const segments = all
@@ -411,12 +422,14 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
 export async function loadTimelineLanes(
   timeline: Pick<TimelineData, "hour" | "segments">,
   signal: AbortSignal,
+  visibleRange: TimelineRange | null = null,
 ): Promise<TimelineLanes> {
   const fixture = bundledFixtureHour(timeline.hour)
   if (fixture !== null) return { contexts: [], points: fixture.lanePoints }
+  const window = timelineWindow(timeline.hour, visibleRange)
   const query = new URLSearchParams({
-    from: String(timeline.hour),
-    to: String(timeline.hour + 3_600_000_000 - 1),
+    from: String(window.from),
+    to: String(window.toExclusive - 1),
     part: "lanes",
     segments: timeline.segments.map((segment) => segment.id).join(","),
   })
@@ -446,6 +459,13 @@ export async function loadTimelineLanes(
     }
   }
   return { contexts, points }
+}
+
+function timelineWindow(hour: number, visibleRange: TimelineRange | null): TimelineRange {
+  const from = Math.max(hour, visibleRange?.from ?? hour)
+  const toExclusive = Math.min(hour + 3_600_000_000, visibleRange?.toExclusive ?? hour + 3_600_000_000)
+  if (from >= toExclusive) throw new Error("timeline hour is outside the visible report range")
+  return { from, toExclusive }
 }
 
 export function withTimelineLanes(base: HourData, lanes: TimelineLanes): HourData {

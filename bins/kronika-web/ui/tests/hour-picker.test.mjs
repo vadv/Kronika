@@ -10,6 +10,7 @@ const picker = await importModule(`export {
   hourHasData,
   hoursForDay,
   pickerFocusIndex,
+  visibleHours,
 } from "../src/hour-picker.tsx";
 export { calendarMonthDays, calendarMonthLabel, createDisplayTimeFormatter } from "../src/display-time.ts"`)
 
@@ -22,6 +23,20 @@ test("the picker enumerates exact catalogue instants and retains an exact curren
   assert.deepEqual(hours, [first, current, first + 2 * HOUR])
   assert.equal(picker.hourHasData(current, [first, first + 2 * HOUR]), false)
   assert.equal(picker.hourHasData(first, [first, first + 2 * HOUR]), true)
+})
+
+test("report navigation exposes requested hour buckets without context or foreign URL hours", () => {
+  const requested = Date.UTC(2026, 8, 4, 12) * 1_000
+  const context = requested - HOUR
+  const foreign = requested + 2 * HOUR
+  assert.deepEqual(
+    picker.catalogueHours([context, requested], foreign, { from: requested, toExclusive: requested + HOUR }),
+    [requested],
+  )
+  assert.deepEqual(picker.visibleHours({
+    from: requested + 15 * 60_000_000,
+    toExclusive: requested + 2 * HOUR + 20 * 60_000_000,
+  }), [requested, requested + HOUR, requested + 2 * HOUR])
 })
 
 test("active-zone civil days group exact instants across UTC and half-hour boundaries", () => {

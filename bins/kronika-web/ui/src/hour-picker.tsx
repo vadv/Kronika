@@ -6,22 +6,27 @@ import { calendarDateLabel, calendarMonthDays, calendarMonthLabel, type DisplayT
 import { useDisplayTime } from "./display-time-context"
 import type { Translate } from "./help"
 import type { Locale } from "./model"
+import type { ReportVisibleRange } from "./report-transport"
+
+const HOUR_MICROS = 3_600_000_000
 
 export function HourPicker({
   availableHours,
   changeHour,
   hour,
   locale,
+  visibleRange = null,
   t,
 }: {
   readonly availableHours: readonly number[]
   readonly changeHour: (hour: number) => void
   readonly hour: number | null
   readonly locale: Locale
+  readonly visibleRange?: ReportVisibleRange | null | undefined
   readonly t: Translate
 }) {
   const time = useDisplayTime()
-  const selectable = useMemo(() => catalogueHours(availableHours, hour), [availableHours, hour])
+  const selectable = useMemo(() => catalogueHours(availableHours, hour, visibleRange), [availableHours, hour, visibleRange])
   const committedDay = hour === null ? "" : time.dayKey(hour)
   const committedMonth = hour === null ? "" : time.monthKey(hour)
   const [open, setOpen] = useState(false)
@@ -162,8 +167,22 @@ export function hourPopoverPlacement(
   return { left, maxHeight: Math.max(0, viewport.height - top - edge), top, width }
 }
 
-export function catalogueHours(available: readonly number[], current: number | null): readonly number[] {
+export function catalogueHours(
+  available: readonly number[],
+  current: number | null,
+  visibleRange: ReportVisibleRange | null = null,
+): readonly number[] {
+  if (visibleRange !== null) return visibleHours(visibleRange)
   return [...new Set([...available, current].filter((candidate): candidate is number => candidate !== null && Number.isSafeInteger(candidate)))].sort((left, right) => left - right)
+}
+
+export function visibleHours(range: ReportVisibleRange): readonly number[] {
+  if (!Number.isSafeInteger(range.from) || !Number.isSafeInteger(range.toExclusive) || range.from >= range.toExclusive) return []
+  const first = Math.floor(range.from / HOUR_MICROS) * HOUR_MICROS
+  const last = Math.floor((range.toExclusive - 1) / HOUR_MICROS) * HOUR_MICROS
+  const hours: number[] = []
+  for (let hour = first; hour <= last; hour += HOUR_MICROS) hours.push(hour)
+  return hours
 }
 
 export function hoursForDay(hours: readonly number[], day: string, time: Pick<DisplayTimeFormatter, "dayKey">): readonly number[] {

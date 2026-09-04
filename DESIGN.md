@@ -570,6 +570,15 @@ It accepts neither a storage root nor an earlier segment. It builds the
 canonical IDX from that ZMS alone, so a first rate that needs an earlier sample
 remains `null`.
 
+Each generated document embeds one exact half-open visible range. Web export
+uses the user's requested bounds; the CLI accepts optional `--from` and
+`--to-exclusive` Unix-microsecond bounds and otherwise uses the physical ZMS
+range. Rows retained immediately outside an exported interval remain available
+to interval calculations but do not create hours in the report picker. Report
+startup and browser-history navigation accept an `at` value only inside the
+visible range; an outside value returns to the document's default recorded
+instant and is replaced in the file URL instead of creating an empty hour.
+
 The command writes a temporary in the output directory, synchronizes it and
 atomically replaces the output. The resulting deterministic HTML contains the
 report build of the production React interface, the pinned JavaScript and

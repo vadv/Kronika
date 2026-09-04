@@ -886,7 +886,7 @@ test("the timeline carries every finding without per-section index requests", as
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(url)
     return ndjson([
-      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+      { record: "hour", from: String(START + 1), to: String(START + 9), available_hours: [String(START)] },
       {
         record: "finished_segment", id: "7", min_ts: String(START), max_ts: String(START + 10),
         sections: [
@@ -904,10 +904,18 @@ test("the timeline carries every finding without per-section index requests", as
     ])
   }
   try {
-    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    const timeline = await api.loadTimeline(
+      START,
+      new AbortController().signal,
+      undefined,
+      { from: START + 1, toExclusive: START + 10 },
+    )
     assert.equal(seen.length, 1)
     assert.equal(seen[0]?.pathname, "/api/hour")
     assert.equal(seen[0]?.searchParams.get("part"), "base")
+    assert.equal(seen[0]?.searchParams.get("from"), String(START + 1))
+    assert.equal(seen[0]?.searchParams.get("to"), String(START + 9))
+    assert.equal(timeline.hour, START)
     assert.deepEqual(timeline.findings.map((item) => [item.segmentId, item.logicalName, item.rowOrdinal]), [
       ["7", "os_process", "1"],
       ["7", "pg_stat_activity", "2"],
@@ -976,10 +984,16 @@ test("background lanes carry the exact ordered base segments and lossless active
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
     assert.equal(timeline.segments[1]?.activeWalPosition, "18446744073709551615")
-    await api.loadTimelineLanes(timeline, new AbortController().signal)
+    await api.loadTimelineLanes(
+      timeline,
+      new AbortController().signal,
+      { from: START + 1, toExclusive: START + 10 },
+    )
     const background = seen[1]
     assert.equal(background?.searchParams.get("segments"), "41,42")
     assert.equal(background?.searchParams.get("active"), "42,18446744073709551615")
+    assert.equal(background?.searchParams.get("from"), String(START + 1))
+    assert.equal(background?.searchParams.get("to"), String(START + 9))
   } finally {
     globalThis.fetch = originalFetch
   }

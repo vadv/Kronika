@@ -1,7 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { reportFetch } from "../src/report-transport.ts"
+import {
+  reportFetch,
+  reportLatestHour,
+  reportVisibleAt,
+  reportVisibleCursor,
+  reportVisibleRange,
+} from "../src/report-transport.ts"
 
 type Result = {
   readonly status: number
@@ -16,7 +22,7 @@ type Session = {
   request(path: string, query: string): Result
 }
 
-function installRuntime(session: Session): () => void {
+function installRuntime(session: Session, visibleFrom?: string, visibleToExclusive?: string): () => void {
   const location = Object.getOwnPropertyDescriptor(globalThis, "location")
   const runtime = Object.getOwnPropertyDescriptor(globalThis, "__KRONIKA_REPORT_RUNTIME__")
   Object.defineProperty(globalThis, "location", {
@@ -25,7 +31,7 @@ function installRuntime(session: Session): () => void {
   })
   Object.defineProperty(globalThis, "__KRONIKA_REPORT_RUNTIME__", {
     configurable: true,
-    value: { ready: Promise.resolve(session) },
+    value: { ready: Promise.resolve(session), visibleFrom, visibleToExclusive },
   })
   return () => {
     if (location === undefined) Reflect.deleteProperty(globalThis, "location")
@@ -34,6 +40,24 @@ function installRuntime(session: Session): () => void {
     else Object.defineProperty(globalThis, "__KRONIKA_REPORT_RUNTIME__", runtime)
   }
 }
+
+test("report navigation accepts only exact instants inside the embedded visible range", () => {
+  const session = { request() { throw new Error("unused") } }
+  const restore = installRuntime(session, "1788523200000000", "1788526800000000")
+  try {
+    const range = reportVisibleRange()
+    assert.deepEqual(range, { from: 1788523200000000, toExclusive: 1788526800000000 })
+    assert.equal(reportVisibleAt(1788523200000000, range), 1788523200000000)
+    assert.equal(reportVisibleAt(1788526799999999, range), 1788526799999999)
+    assert.equal(reportVisibleAt(1788526800000000, range), null)
+    assert.equal(reportVisibleAt(1788530400000000, range), null)
+    assert.equal(reportLatestHour(range), 1788523200000000)
+    assert.equal(reportVisibleCursor(1788523199999999, range), 1788523200000000)
+    assert.equal(reportVisibleCursor(1788526800000000, range), 1788526799999999)
+  } finally {
+    restore()
+  }
+})
 
 test("report transport returns unchanged NDJSON and releases the response", async () => {
   const expected = new TextEncoder().encode('{"record":"hour"}\n')

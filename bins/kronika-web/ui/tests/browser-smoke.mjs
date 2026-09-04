@@ -120,6 +120,53 @@ if (reportMode) {
   await waitFor(`location.href === ${JSON.stringify(beforeReload)}`, "reloaded report address", 30_000)
   assert.equal(await evaluate(`location.href`), beforeReload)
   assert.equal(await evaluate(`location.pathname`), requestedUrl.pathname)
+
+  const visibleRange = await evaluate(`(() => {
+    const runtime = globalThis.__KRONIKA_REPORT_RUNTIME__
+    const from = Number(runtime?.visibleFrom)
+    const toExclusive = Number(runtime?.visibleToExclusive)
+    return Number.isSafeInteger(from) && Number.isSafeInteger(toExclusive) && from < toExclusive
+      ? { from, toExclusive }
+      : null
+  })()`)
+  if (visibleRange !== null) {
+    const invalidAt = visibleRange.toExclusive + 3_600_000_000
+    const previousTimeOrigin = await evaluate(`performance.timeOrigin`)
+    const invalidUrl = await evaluate(`(() => {
+      const url = new URL(location.href)
+      url.searchParams.set("at", ${JSON.stringify(String(invalidAt))})
+      return url.href
+    })()`)
+    await send("Page.navigate", { url: invalidUrl })
+    await waitFor(`performance.timeOrigin !== ${previousTimeOrigin} && document.readyState === "complete"`, "out-of-range report reload", 30_000)
+    await waitFor(`(() => {
+      const at = Number(new URL(location.href).searchParams.get("at"))
+      return at >= ${visibleRange.from} && at < ${visibleRange.toExclusive}
+        && document.querySelectorAll(".process-table .entity-row").length > 0
+    })()`, "out-of-range initial report address recovery", 30_000)
+    assert.notEqual(await evaluate(`new URL(location.href).searchParams.get("at")`), String(invalidAt))
+
+    await evaluate(`(() => {
+      const url = new URL(location.href)
+      url.searchParams.set("at", ${JSON.stringify(String(invalidAt))})
+      history.pushState({}, "", url)
+      dispatchEvent(new PopStateEvent("popstate"))
+    })()`)
+    await waitFor(`(() => {
+      const at = Number(new URL(location.href).searchParams.get("at"))
+      return at >= ${visibleRange.from} && at < ${visibleRange.toExclusive}
+        && document.querySelectorAll(".process-table .entity-row").length > 0
+    })()`, "out-of-range report address recovery", 30_000)
+    assert.notEqual(await evaluate(`new URL(location.href).searchParams.get("at")`), String(invalidAt))
+
+    await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "bounded report hour picker")
+    const pickerHours = await evaluate(`[...document.querySelectorAll('[data-testid="hour-cell"]')].map((node) => Number(node.dataset.instant))`)
+    assert.ok(pickerHours.length > 0)
+    assert.equal(pickerHours.includes(invalidAt), false)
+    assert.equal(pickerHours.every((hour) => hour < visibleRange.toExclusive && hour + 3_600_000_000 > visibleRange.from), true)
+    await evaluate(`dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`)
+  }
 }
 await evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
 await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows", reportMode ? 30_000 : 10_000)

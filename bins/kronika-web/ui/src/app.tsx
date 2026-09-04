@@ -74,6 +74,7 @@ import { isRelationLens, relationRequest, type RelationGroup, type RelationLens,
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
+import { reportLatestHour, reportVisibleAt, reportVisibleCursor, reportVisibleRange } from "./report-transport"
 import type { ChartPoint } from "./series-chart"
 import { apiFetch, bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
@@ -212,6 +213,9 @@ function App({ locale, onLocale, t }: {
 }) {
   const time = useDisplayTime()
   const opened = useRef(readAddress(window.location.search))
+  const [reportRange] = useState(() => KRONIKA_REPORT ? reportVisibleRange() : null)
+  const initialAt = reportVisibleAt(opened.current.at, reportRange)
+  const replaceReportAddress = useRef(KRONIKA_REPORT)
   const [cursor, setCursor] = useState(0)
   const cursorClock = useRef<HTMLSpanElement>(null)
   const cursorClockPreview = useRef<number | null>(null)
@@ -235,11 +239,11 @@ function App({ locale, onLocale, t }: {
     }
   }, [database])
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
-  const wanted = useRef(opened.current.at)
+  const [hour, setHour] = useState<number | null>(initialAt === null ? null : floorHour(initialAt))
+  const wanted = useRef(initialAt)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   useEffect(() => previewClock(cursorClockPreview.current), [cursor, previewClock, time])
-  const followsLatest = useRef(opened.current.at === null)
+  const followsLatest = useRef(initialAt === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
   const [backgroundTimeline, setBackgroundTimeline] = useState<TimelineData | null>(null)
   const backgroundTimelineRef = useRef(backgroundTimeline)
@@ -430,8 +434,8 @@ function App({ locale, onLocale, t }: {
   const requestRefresh = beginRefresh
   const chooseCursor = useCallback((next: number) => {
     followsLatest.current = false
-    setCursor(next)
-  }, [])
+    setCursor(reportVisibleCursor(next, reportRange))
+  }, [reportRange])
   const previousView = useRef(baseViewKey)
   useEffect(() => {
     if (previousView.current === baseViewKey) return
@@ -447,6 +451,7 @@ function App({ locale, onLocale, t }: {
     if (!refresh) finishRefresh(false)
     if (hour !== null && drawn.current === hour && !refresh) return
     const controller = new AbortController()
+    const requestedHour = hour ?? reportLatestHour(reportRange)
     setRefreshFailed(false)
     if (!refresh) {
       setBackgroundTimeline(null)
@@ -457,15 +462,15 @@ function App({ locale, onLocale, t }: {
       setLoadProgress({ received: 0, startedAt: Date.now() * 1_000, lastSeconds: readLastLoadSeconds() })
     }
     const loadStartedAt = Date.now() * 1_000
-    void loadTimeline(hour, controller.signal, refresh ? undefined : (received) => {
+    void loadTimeline(requestedHour, controller.signal, refresh ? undefined : (received) => {
       const now = Date.now()
       if (now - loadThrottle.current < 250) return
       loadThrottle.current = now
       setLoadProgress((current) => current === undefined ? current : { ...current, received })
-    }).then((timeline) => {
+    }, reportRange).then((timeline) => {
       const asked = wanted.current
       wanted.current = null
-      const latest = latestTimelineTimestamp(timeline)
+      const latest = reportVisibleCursor(latestTimelineTimestamp(timeline), reportRange)
       if (refresh) {
         pendingRefresh.current = { timeline, previousCursor: cursor, previousSegments: segmentsRef.current }
         const next = refreshedCursor(cursor, followsLatest.current, timeline)
@@ -498,7 +503,7 @@ function App({ locale, onLocale, t }: {
         finishRefresh(false)
         return
       }
-      const fallback = hour ?? floorHour(Date.now() * 1_000)
+      const fallback = requestedHour ?? floorHour(Date.now() * 1_000)
       drawn.current = fallback
       setHour(fallback)
       setSegments([])
@@ -506,12 +511,12 @@ function App({ locale, onLocale, t }: {
       setBackgroundTimeline(null)
       setBackgroundReadyHour(null)
       setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
-      setCursor(fallback)
+      setCursor(reportVisibleCursor(fallback, reportRange))
       setError(reason instanceof Error ? reason.message : String(reason))
       setLoading(false)
     })
     return () => controller.abort()
-  }, [finishRefresh, hour, refreshVersion])
+  }, [finishRefresh, hour, refreshVersion, reportRange])
   const [snapshotRequest, setSnapshotRequest] = useState<SnapshotRequestState>(READY_SNAPSHOT_REQUEST)
   const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
   const cursorState = visibleSnapshotRequest(snapshotRequest, snapshotTarget)
@@ -707,14 +712,14 @@ function App({ locale, onLocale, t }: {
       || backgroundReadyHour !== backgroundTimeline.hour
       || hour !== backgroundTimeline.hour) return
     const controller = new AbortController()
-    void loadTimelineLanes(backgroundTimeline, controller.signal).then((lanes) => {
+    void loadTimelineLanes(backgroundTimeline, controller.signal, reportRange).then((lanes) => {
       if (controller.signal.aborted || backgroundTimelineRef.current !== backgroundTimeline) return
       setTimelineData((current) => withTimelineLanes(current, lanes))
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) console.error("kronika: timeline lanes failed", reason)
     })
     return () => controller.abort()
-  }, [backgroundReadyHour, backgroundTimeline, hour])
+  }, [backgroundReadyHour, backgroundTimeline, hour, reportRange])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
   useEffect(() => {
     if (KRONIKA_REPORT || instanceLabelRequest.current !== null || hour === null || !refreshReady
@@ -898,15 +903,19 @@ function App({ locale, onLocale, t }: {
   }), [activeRelation, activeRelationLens, cursor, find, inspectorPanel, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
+    if (KRONIKA_REPORT && loading) return
     const destination = historyAddress(address, window.location.pathname)
+    const replace = replaceReportAddress.current
+    replaceReportAddress.current = false
     if (window.location.pathname + window.location.search === destination) return
     const dragging = steps.current !== null && stepOf(steps.current) === stepOf(destination)
     steps.current = destination
-    window["history"][dragging ? "replaceState" : "pushState"]({}, "", destination)
-  }, [address])
+    window["history"][replace || dragging ? "replaceState" : "pushState"]({}, "", destination)
+  }, [address, loading])
   useEffect(() => {
     const back = () => {
       const opening = readAddress(window.location.search)
+      const openingAt = reportVisibleAt(opening.at, reportRange)
       setSource(sourceOf(opening.view))
       setSystemMetric(opening.metric)
       setPgSection(pgSectionOf(opening.view))
@@ -925,16 +934,23 @@ function App({ locale, onLocale, t }: {
       setSearchRequest(IDLE_SEARCH_REQUEST)
       clearEntityContext()
       closeExport()
-      if (opening.at !== null) {
+      if (openingAt !== null) {
         followsLatest.current = false
-        wanted.current = opening.at
-        setCursor(opening.at)
-        setHour(floorHour(opening.at))
+        wanted.current = openingAt
+        setCursor(openingAt)
+        setHour(floorHour(openingAt))
+      } else if (KRONIKA_REPORT) {
+        replaceReportAddress.current = true
+        followsLatest.current = true
+        wanted.current = null
+        setLoading(true)
+        setCursor(0)
+        setHour(null)
       }
     }
     window.addEventListener("popstate", back)
     return () => window.removeEventListener("popstate", back)
-  }, [clearEntityContext, closeExport])
+  }, [clearEntityContext, closeExport, reportRange])
   const navigateRelation = useCallback((navigation: RelationNavigation) => {
     const nextSection = navigation.section === "pg_stat_user_tables" ? "tables" : "indexes"
     const crossing = nextSection !== pgSection
@@ -987,7 +1003,7 @@ function App({ locale, onLocale, t }: {
   }, [])
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
     followsLatest.current = false
-    setCursor(finding.timestamp)
+    setCursor(reportVisibleCursor(finding.timestamp, reportRange))
     setFindingRow(null)
     if (grouped.length > 1) {
       setSelectedFinding(null)
@@ -1035,7 +1051,7 @@ function App({ locale, onLocale, t }: {
     navigateSearchSurface("events")
     setSource("events")
     setInspectorPanel("detail")
-  }, [data, navigateSearchSurface])
+  }, [data, navigateSearchSurface, reportRange])
   const eventsPresent = data.findings.length !== 0
   const helpItems = visibleSource === "postgresql"
     ? HELP_POSTGRESQL
@@ -1082,7 +1098,7 @@ function App({ locale, onLocale, t }: {
         <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { navigateSearchSurface("events"); setEventScope(null); setSelectedFinding(null); setInspectorPanel(null); setSource("events") }} title={eventsPresent ? undefined : t("nav.no_data")} type="button">{t("nav.events")}</button>
       </nav>
 
-      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
+      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} visibleRange={reportRange} />
       <div className="cursor-time max-[760px]:order-9">
         <span data-testid="cursor-time" ref={cursorClock}>{cursor === 0 ? "—" : time.clock(cursor)}</span>
         {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
