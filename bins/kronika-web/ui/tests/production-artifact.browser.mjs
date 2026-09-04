@@ -912,7 +912,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
       await settleLayout(cdp)
       const controls = await cdp.evaluate(`(() => { const nodes = [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')]; return {
         columns: new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left))).size,
-        headers: [...document.querySelectorAll('[data-testid="use-table"] > header > span')].map((node) => node.textContent.trim()),
+        headers: [...document.querySelectorAll('[data-testid="use-table"] > header > span')].map((node) => node.querySelector('.label-help > span')?.textContent.trim() ?? node.textContent.trim()),
         inventory: document.querySelector('[data-testid="cgroup-io-inventory"]').textContent,
         minHeight: Math.min(...nodes.map((node) => node.getBoundingClientRect().height)),
         resources: ['network', 'cpu', 'memory', 'disk'].map((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]').textContent.trim()),
