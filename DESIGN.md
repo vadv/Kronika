@@ -761,6 +761,11 @@ hourly Statements activity and inclusive summary stay absent in the default
 scope because the heatmap intentionally carries no Query text and therefore
 cannot apply the same exact classification. They appear only when the reader
 explicitly includes collector queries.
+Statement query text uses the 12 px regular monospace data face and the scope
+copy uses the interface face at no less than 12 px. With a coarse pointer,
+Statement lens and search actions, table headers, and selectable rows each own
+at least a 44 px target; the virtual row stride changes with that target so
+rows never overlap.
 
 Each entity row shows interval cells, its hour total, and its value at the
 cursor. The pinned Total row includes all entities; Other includes entities

@@ -410,6 +410,8 @@
 @media (hover: none), (pointer: coarse) {
   .topbar { flex-basis: 44px; height: 44px; min-height: 44px; }
   .topbar > .top-actions { height: 44px; }
+  .lens-tabs > button, .pg-tabs > button { min-height: 44px; }
+  .pg-tabs { min-height: 44px; }
 }
 @media (max-width: 1000px) and (hover: none), (max-width: 1000px) and (pointer: coarse) {
   .topbar { flex-basis: 80px; grid-template-rows: 32px 44px; height: 80px; min-height: 80px; }
@@ -737,7 +739,7 @@
     display: flex;
     gap: 5px;
     margin-top: 8px;
-    min-height: 38px;
+    min-height: 52px;
     padding: 0 6px;
   }
   .mobile-controls > button {
@@ -752,7 +754,7 @@
     font-size: var(--text-sm);
     font-weight: 500;
     gap: 5px;
-    height: 30px;
+    height: 44px;
     padding: 0 10px;
     white-space: nowrap;
   }

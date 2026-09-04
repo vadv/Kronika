@@ -21,8 +21,8 @@ export function MobileControls({
 }) {
   return <>
     <div className="mobile-controls" data-testid="mobile-controls">
-      <button onClick={onOpenChart} type="button"><ChartLine aria-hidden="true" size={13} />{t("inspector.chart")}</button>
-      <button aria-pressed={filtered} data-testid="mobile-search-open" onClick={() => onSearch(true)} type="button"><Search aria-hidden="true" size={13} />{t("filter.short")}</button>
+      <button className="coarse:min-h-11" onClick={onOpenChart} type="button"><ChartLine aria-hidden="true" size={13} />{t("inspector.chart")}</button>
+      <button aria-pressed={filtered} className="coarse:min-h-11" data-testid="mobile-search-open" onClick={() => onSearch(true)} type="button"><Search aria-hidden="true" size={13} />{t("filter.short")}</button>
     </div>
     {searchOpen && <div className="mobile-panel-head" data-testid="mobile-search-head">
       <button aria-label={t("common.close")} onClick={() => onSearch(false)} type="button"><X aria-hidden="true" size={16} /></button>

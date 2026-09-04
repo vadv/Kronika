@@ -2316,6 +2316,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian statement scope")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 })
     await settleLayout(cdp)
     const narrowScope = await cdp.evaluate(`(() => {
       const scope = document.querySelector('[data-testid="statement-monitor-scope"]')
@@ -2323,15 +2324,35 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       const count = scope.querySelector('[data-testid="statement-monitor-count"]').getBoundingClientRect()
       const bounds = scope.getBoundingClientRect()
       const toolbar = scope.closest('[data-search-surface]').getBoundingClientRect()
+      const query = document.querySelector('[data-testid="pg-statements-table"] [data-field="query"] .entity-value')
+      const row = document.querySelector('[data-testid="pg-statements-table"] .entity-row')
+      const header = document.querySelector('[data-testid="pg-statements-table"] .entity-head')
+      const style = (element) => {
+        const computed = getComputedStyle(element)
+        return { family: computed.fontFamily, size: parseFloat(computed.fontSize), weight: computed.fontWeight }
+      }
+      const heights = [...document.querySelectorAll('[data-testid^="statement-lens-"]'), document.querySelector('[data-testid="mobile-search-open"]'), row, header]
+        .filter(Boolean).map((element) => ({ name: element.dataset.testid ?? element.className, height: element.getBoundingClientRect().height }))
       return {
         bounds: { left: bounds.left, right: bounds.right },
+        coarse: matchMedia('(pointer: coarse)').matches,
         countBelowLabel: count.top >= label.bottom - 1,
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        heights,
+        human: style(scope.querySelector('span:not([data-testid])')),
+        query: style(query),
         toolbar: { left: toolbar.left, right: toolbar.right },
       }
     })()`)
+    assert.equal(narrowScope.coarse, true, JSON.stringify(narrowScope))
     assert.equal(narrowScope.documentOverflow, false, JSON.stringify(narrowScope))
     assert.equal(narrowScope.countBelowLabel, true, JSON.stringify(narrowScope))
+    assert.equal(narrowScope.query.size, 12, JSON.stringify(narrowScope))
+    assert.match(narrowScope.query.family, /JetBrains Mono/)
+    assert.equal(narrowScope.query.weight, "400")
+    assert.equal(narrowScope.human.size, 12, JSON.stringify(narrowScope))
+    assert.match(narrowScope.human.family, /IBM Plex Sans/)
+    assert.ok(narrowScope.heights.every(({ height }) => height >= 44), JSON.stringify(narrowScope))
     assert.ok(narrowScope.bounds.left >= narrowScope.toolbar.left - 1 && narrowScope.bounds.right <= narrowScope.toolbar.right + 1, JSON.stringify(narrowScope))
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "en"`, "the English statement scope")

@@ -8,7 +8,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
@@ -26,9 +26,26 @@ import { semanticValueTone } from "./value-tone"
 
 // Must match --spacing-row.
 const ROW_PX = 24
+const COARSE_ROW_PX = 44
+const COARSE_POINTER = "(hover: none), (pointer: coarse)"
 const SKELETON_ROWS = 8
 // Past half the narrow rung, a pinned column leaves room for no other.
 const NARROW_STICKY_MAX = 260
+
+function coarsePointer(): boolean {
+  return typeof window !== "undefined" && window.matchMedia(COARSE_POINTER).matches
+}
+
+function subscribeCoarsePointer(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {}
+  const media = window.matchMedia(COARSE_POINTER)
+  media.addEventListener("change", listener)
+  return () => media.removeEventListener("change", listener)
+}
+
+export function entityRowHeight(coarse: boolean): number {
+  return coarse ? COARSE_ROW_PX : ROW_PX
+}
 
 export interface EntityColumn {
   readonly field: string
@@ -123,6 +140,7 @@ export function EntityTable({
   readonly t: Translate
 }) {
   const [sizing, setSizing] = useState<ColumnSizingState>({})
+  const rowHeight = entityRowHeight(useSyncExternalStore(subscribeCoarsePointer, coarsePointer, () => false))
   const ordering = useMemo<SortingState>(() => order === undefined
     ? []
     : [{ id: order.column, desc: order.descending }], [order])
@@ -182,7 +200,7 @@ export function EntityTable({
   useLayoutEffect(() => {
     const measured = head.current?.getBoundingClientRect().height
     if (measured !== undefined && measured !== headHeight) setHeadHeight(measured)
-  }, [fields, headHeight, locale])
+  }, [fields, headHeight, locale, rowHeight])
   useEffect(() => {
     const row = head.current
     if (row === null) return
@@ -214,7 +232,8 @@ export function EntityTable({
     setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
   }, [])
   const rendered = table.getRowModel().rows
-  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => ROW_PX, getScrollElement: () => parent.current, overscan: 10 })
+  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => rowHeight, getScrollElement: () => parent.current, overscan: 10 })
+  useLayoutEffect(() => virtual.measure(), [rowHeight, virtual])
   const lastVirtualIndex = virtual.getVirtualItems().at(-1)?.index ?? -1
   useEffect(() => {
     if (onNearEnd !== undefined && rendered.length !== 0 && lastVirtualIndex >= rendered.length - 10) onNearEnd()
@@ -247,8 +266,8 @@ export function EntityTable({
     observer.observe(root)
     return () => observer.disconnect()
   }, [contentSized, rendered.length, width])
-  const contentHeight = contentSized ? (rendered.length === 0 ? 72 : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
-  const virtualHeight = contentSized ? rendered.length * ROW_PX : virtual.getTotalSize()
+  const contentHeight = contentSized ? (rendered.length === 0 ? 72 : Math.min(310, headHeight + rendered.length * rowHeight)) + horizontalRailHeight : undefined
+  const virtualHeight = virtual.getTotalSize()
   const searchPending = searchRequest.phase === "pending"
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
     ? <SearchRequestMessage request={searchRequest} t={t} />
@@ -265,7 +284,7 @@ export function EntityTable({
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter accessory={accessory} context={contextLabel} grouped={searchGrouped} kept={serverSorted === true && filterRows === undefined ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={activeMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     {standaloneMessage && <div className="pointer-events-none absolute left-2 right-2 top-[calc(var(--spacing-head)+4px)] z-40 flex min-h-[24px] items-center rounded-[var(--radius-xs)] border border-line2 bg-s1/95 px-2 py-1 text-xs text-fg3 shadow-sm">{activeMessage}</div>}
     <div aria-busy={busy} aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
-      <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
+      <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-11 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: pinnedLeft.get(header.column.id), width: header.getSize() }}>
@@ -316,7 +335,7 @@ export function EntityTable({
                 onSelect(row.original)
               }}
               role="row"
-              style={{ height: item.size, paddingRight: TABLE_END_GUTTER, transform: `translateY(${contentSized ? item.index * ROW_PX : item.start}px)`, width: contentWidth }}
+              style={{ height: item.size, paddingRight: TABLE_END_GUTTER, transform: `translateY(${item.start}px)`, width: contentWidth }}
               tabIndex={onSelect === undefined ? undefined : 0}
             >
               {row.getVisibleCells().map((cell) => {

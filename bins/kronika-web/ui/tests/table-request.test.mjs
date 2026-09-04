@@ -15,7 +15,7 @@ const compiled = await build({
   format: "cjs",
   platform: "node",
   stdin: {
-    contents: 'export * from "../src/table-request.tsx"; export { EntityTable } from "../src/entity-table.tsx"',
+    contents: 'export * from "../src/table-request.tsx"; export { EntityTable, entityRowHeight } from "../src/entity-table.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -71,6 +71,11 @@ test("keyed snapshot requests make a new target pending and ignore stale settlem
   assert.equal(request.tableRequestPhase("missing", "idle"), "error")
   assert.equal(request.tableRequestPhase("ready", "loading"), "pending")
   assert.equal(request.tableRequestPhase("ready", "idle"), "ready")
+})
+
+test("entity row stride follows the active pointer target", () => {
+  assert.equal(request.entityRowHeight(false), 24)
+  assert.equal(request.entityRowHeight(true), 44)
 })
 
 test("the same table owner keeps its last success until a replacement settles", () => {
