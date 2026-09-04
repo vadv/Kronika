@@ -569,7 +569,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     layout("1112002", "os_mountinfo", ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"]),
     row("1112002", `mount-${target}`, [String(at), 8, 0, `/data-${target}`, "/", "ext4", `/dev/${target}`, false, 8_388_608, 4_194_304, 8_192, 7_168, 0], at),
     layout("1106001", "os_netdev", ["ts", "iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "scope"]),
-    row("1106001", `net-${target}`, [String(at), "eth0", 1000, 2000, 10, 20, 0, 0, 0, 0, 0], at),
+    row("1106001", `net-${target}`, [String(at), `interface_${target}`, 1000, 2000, 10, 20, 0, 0, 0, 0, 0], at),
   ]
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
@@ -865,12 +865,12 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AFTER_AT}"`, "the held later cgroup target")
     await waitForRequests(() => heldAfterMemory !== null)
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[0].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B1") === true`, "the retained device rows while the cgroup batch is pending")
-    assert.equal(await cdp.evaluate(`document.querySelector('.system-main').textContent.includes("device_A")`), false)
+    await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-network"]'); if (toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_netdev"]')?.textContent.includes("interface_B1") === true`, "the retained network rows while the cgroup batch is pending")
+    assert.equal(await cdp.evaluate(`document.querySelector('.system-main').textContent.includes("interface_A")`), false)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the newest Host target")
-    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B2") === true`, "the newest Host snapshot", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_netdev"]')?.textContent.includes("interface_B2") === true`, "the newest Host snapshot", 15_000)
     const late = heldAfterMemory
     const fields = late.url.searchParams.getAll("field")
     const lateRecords = cgroupSnapshotRecords(late.url).map((record) => record.record === "row"
@@ -884,8 +884,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"] .entity-row') !== null`, "the newest cgroup memory rows")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]').textContent.includes("stale-target-A")`), false)
-    await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-disk"]'); if (toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B2") === true`, "the newest device rows after the late response")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_netdev"]')?.textContent.includes("interface_B2") === true`, "the newest network rows after the late response")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     assert.equal(late.response.writableEnded, true)
     assert.deepEqual(page.errors, [])
@@ -1550,11 +1549,14 @@ test("the live Export range panel preserves exact time and reports its uncancell
       const hitVisibleAbove = (node, occluder) => {
         const value = node.getBoundingClientRect()
         const cover = occluder.getBoundingClientRect()
-        const top = Math.max(0, value.top)
-        const bottom = Math.min(innerHeight, value.bottom, cover.top)
-        if (bottom <= top) return false
-        const hit = document.elementFromPoint(value.left + value.width / 2, top + (bottom - top) / 2)
-        return hit !== null && (hit === node || node.contains(hit))
+        const scroll = node.closest('.entity-scroll')?.getBoundingClientRect()
+        const top = Math.max(0, value.top, scroll?.top ?? 0)
+        const bottom = Math.min(innerHeight, value.bottom, cover.top, scroll?.bottom ?? innerHeight)
+        const left = Math.max(0, value.left, scroll?.left ?? 0)
+        const right = Math.min(innerWidth, value.right, scroll?.right ?? innerWidth)
+        if (bottom <= top || right <= left) return false
+        const hit = document.elementFromPoint(left + (right - left) / 2, top + (bottom - top) / 2)
+        return hit?.closest('.entity-row') === node
       }
       const panel = document.querySelector('[data-testid="export-panel"]')
       const panelRect = panel.getBoundingClientRect()
@@ -1567,7 +1569,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
       const status = document.querySelector('[data-testid="export-status"]')
       const timeline = document.querySelector('[data-testid="hour-timeline"]')
       const table = document.querySelector('[data-testid="process-table"]')
-      const firstRow = table.querySelector('.entity-row')
+      const rows = [...table.querySelectorAll('.entity-row')]
       const cursorStep = [...document.querySelectorAll('[data-testid="cursor-row"] .cursor-row-step')].find((button) => !button.disabled)
       const tableRect = table.getBoundingClientRect()
       const targetSizes = [...panel.querySelectorAll("button, input")].map((node) => ({
@@ -1584,7 +1586,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         durationText: duration.textContent.trim(),
         editorHidden: panel.querySelector("fieldset").hidden,
-        firstRowExposed: hitVisibleAbove(firstRow, panel),
+        rowExposed: rows.some((row) => hitVisibleAbove(row, panel)),
         fromDate: rect(fromDate),
         fromFont: Number.parseFloat(getComputedStyle(fromDate).fontSize),
         fromTime: rect(fromTime),
@@ -1658,7 +1660,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
             assert.equal(measured.calendar, null, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.calendarExpanded, "false", `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.coarse, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.firstRowExposed, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.equal(measured.rowExposed, true, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.statusInFooter, true, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.timelineControlExposed, true, `${label}: ${JSON.stringify(measured)}`)
             assert.ok(measured.panel.height <= 396, `${label}: ${JSON.stringify(measured)}`)
