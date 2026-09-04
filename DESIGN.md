@@ -687,10 +687,13 @@ buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
 both dictionaries; Russian help explains their semantics in Russian.
 
-The interface covers one selected calendar hour. Host is one
-utilisation/saturation/errors ledger: a row per resource whose cells carry the
-hour's shape at sparkline size with the cursor reading beside it, expanding in
-place — several rows at once — into the group's metric chips, its inline
+The interface covers one selected calendar hour. Host is one USE ledger whose
+column labels are the canonical `Utilization`, `Saturation`, and `Errors` in
+every locale: a row per resource whose cells carry the hour's shape at
+sparkline size with the cursor reading beside it. Every populated cell is a
+native action that opens its resource and selects that exact recorded metric;
+an unavailable cell remains an inert dash. Rows expand in place — several at
+once — into the group's metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
@@ -864,9 +867,13 @@ interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
 equivalents on labelled scales. When `instance_metadata.environment` is
-`container`, the Host ledger starts with an open collector-cgroup overview and retains only the
-namespace Network host row; host CPU, memory, and storage rows and lanes are
-hidden. The overview contains one control for every cgroup controller present
+`container`, the ledger keeps three recorded scopes in order. Container comes
+first with the open collector-cgroup overview and both cgroup activity ledgers.
+Network namespace follows and owns the one Network row; it is never labelled
+as Host. Host follows separately with the recorded host CPU, memory, and
+storage rows. These readings remain distinct from cgroup use and limits, and
+Network is not duplicated into Host. The overview contains one control for
+every cgroup controller present
 in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
 These controls are the sole mode selector and expose their selected state. A
 control click changes the detail mode and clears an entity selection; an exact

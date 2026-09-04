@@ -76,7 +76,7 @@ export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === " cores") return "cores"
   if (spec.unit === " MHz") return "MHz"
   if (spec.unit === " B") return ""
-  if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
+  if (["mem_swap", "net_drop", "network_errors", "network_drops"].includes(spec.id)) return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
   return locale === "ru" ? "количество" : "count"
 }
@@ -104,6 +104,7 @@ export interface CgroupSnapshotPlan {
 
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   laneMetric("cpu_busy", "cpu", "system.metric.cpu_busy", "%"),
+  exactLaneMetric("cpu_stall", "cpu", "use.lane.cpu_stall", "lane.cpu_stall.help", "%"),
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
   derivedMetric("cpu_actual_frequency", "cpu", "system.metric.cpu_actual_frequency", "cpu_actual_frequency", "cpu_actual_frequency", " MHz"),
@@ -122,6 +123,8 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("load15", "cpu", "system.metric.load15", "os_loadavg", "load15", ""),
   metric("runnable", "cpu", "system.metric.runnable", "os_loadavg", "running", ""),
   metric("tasks", "cpu", "system.metric.tasks", "os_loadavg", "total", ""),
+  exactLaneMetric("memory", "memory", "use.lane.memory", "lane.memory.help", "%"),
+  exactLaneMetric("mem_swap", "memory", "use.lane.mem_swap", "use.lane.mem_swap.help", ""),
   metric("mem_available", "memory", "system.metric.mem_available", "os_meminfo", "mem_available", " KiB"),
   metric("mem_total", "memory", "system.metric.mem_total", "os_meminfo", "mem_total", " KiB"),
   metric("mem_anon", "memory", "system.metric.mem_anon", "os_meminfo", "anon_pages", " KiB"),
@@ -136,6 +139,8 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   pressureMetric("cpu_pressure", "cpu", "system.metric.cpu_pressure", 0),
   pressureMetric("memory_pressure", "memory", "system.metric.memory_pressure", 1),
   pressureMetric("io_pressure", "storage", "system.metric.io_pressure", 2),
+  exactLaneMetric("disk_busy", "storage", "use.lane.disk_busy", "use.lane.disk_busy.help", "%"),
+  exactLaneMetric("disk_queue", "storage", "use.lane.disk_queue", "use.lane.disk_queue.help", ""),
   derivedMetric("device_busy", "storage", "system.metric.device_busy", "os_device_busy", "device_busy", "%"),
   derivedMetric("device_average_queue", "storage", "system.metric.device_average_queue", "os_device_average_queue", "device_average_queue", ""),
   derivedMetric("filesystem_free_min", "storage", "system.metric.filesystem_free_min", "os_min_filesystem_free_percent", "filesystem_free_min", "%"),
@@ -145,6 +150,7 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   derivedMetric("interface_count", "network", "system.metric.interface_count", "os_interface_count", "interface_count", ""),
   derivedMetric("network_rx", "network", "system.metric.network_rx", "os_network_rx", "network_rx", " B"),
   derivedMetric("network_tx", "network", "system.metric.network_tx", "os_network_tx", "network_tx", " B"),
+  exactLaneMetric("net_drop", "network", "use.lane.net_drop", "use.lane.net_drop.help", ""),
   derivedMetric("network_errors", "network", "system.metric.network_errors", "os_network_errors", "network_errors", ""),
   derivedMetric("network_drops", "network", "system.metric.network_drops", "os_network_drops", "network_drops", ""),
 ]
@@ -208,8 +214,6 @@ const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
   disk: "storage",
   network: "network",
 }
-const CONTAINER_USE_RESOURCES: ReadonlySet<UseResourceKey> = new Set(["network"])
-
 export type SystemGroup = "cpu" | "memory" | "storage" | "network"
 type HostMode = "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
 
@@ -232,8 +236,8 @@ const LEDGER_DEFAULT_MODE: Partial<Readonly<Record<LedgerKey, HostMode>>> = {
 
 const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
   cpu: "cpu_busy",
-  memory: "mem_available",
-  disk: "device_busy",
+  memory: "memory",
+  disk: "disk_busy",
   network: "network_rx",
 }
 
@@ -254,7 +258,8 @@ function groupLane(group: MetricSpec["group"]): string {
 }
 
 function metricLane(spec: MetricSpec): string {
-  if (normalizedMetricLanes(spec).some(([lane]) => lane === spec.id)) return spec.id
+  const normalized = normalizedMetricLanes(spec)[0]?.[0]
+  if (normalized !== undefined) return normalized
   const lane = timelineLane(spec.id)
   if (lane !== "health" || spec.id === "health") return lane
   return groupLane(spec.group)
@@ -497,10 +502,18 @@ export function SystemView({
     return next
   })
   const chooseMetric = (key: LedgerKey, id: string) => {
+    setExpanded((current) => current.has(key) ? current : new Set([...current, key]))
     setGroupMetric((current) => ({ ...current, [key]: id }))
     onSelectedKey(null)
     onMetric(id)
   }
+  useEffect(() => {
+    if (selectedSpec === undefined) return
+    const key = metricResource(selectedSpec)
+    if (key === null) return
+    setExpanded((current) => current.has(key) ? current : new Set([...current, key]))
+    setGroupMetric((current) => current[key] === selectedSpec.id ? current : { ...current, [key]: selectedSpec.id })
+  }, [selectedSpec])
   const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
     if (focus === null) {
@@ -615,9 +628,26 @@ export function SystemView({
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={namespaceLanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={primaryTimelineLane} selectedLane={selectedLane} t={t} />
     <div className="system-main mt-0 min-w-0">
-      <UseTable cgroups={cgroupsPresent} cgroupsFirst={environment === "container"} cursor={cursor} expanded={expanded} hour={hour} lanePoints={namespaceLanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} visibleResources={environment === "container" ? CONTAINER_USE_RESOURCES : undefined} withContent={withContent} />
-      {environment === "container" && data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
-      {environment === "container" && data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} devices={cgroupDevices} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
+      <UseTable
+        afterCgroups={environment === "container" ? <>
+          {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
+          {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} devices={cgroupDevices} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
+        </> : undefined}
+        cgroups={cgroupsPresent}
+        cgroupsFirst={environment === "container"}
+        containerScopes={environment === "container"}
+        cursor={cursor}
+        expanded={expanded}
+        hour={hour}
+        lanePoints={data.lanePoints}
+        locale={locale}
+        metric={metric}
+        onCellSelect={chooseMetric}
+        onToggle={toggleRow}
+        renderExpansion={renderExpansion}
+        t={t}
+        withContent={withContent}
+      />
       {available.length === 0 && <TableRequestPlaceholder empty={t("system.no_metrics")} phase={requestPhase} t={t} testId="system-request-state" />}
     </div>
   </>
@@ -1272,9 +1302,8 @@ function entityMetricValue(reading: number, locale: Locale, column: SystemEntity
 }
 
 function timelineLane(metric: string | undefined): string {
+  if (metric?.endsWith("_pressure") === true) return "health"
   if (metric?.startsWith("cpu_") === true) return "cpu_busy"
-  if (metric === "cpu_pressure") return "cpu_stall"
-  if (metric === "io_pressure") return "io_stall"
   if (metric?.startsWith("mem_") === true) return "memory"
   return "health"
 }
@@ -1282,11 +1311,14 @@ function timelineLane(metric: string | undefined): string {
 function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
   const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
     cpu_busy: [["cpu_busy", (number) => number]],
-    cpu_pressure: [["cpu_stall", (number) => number]],
-    io_pressure: [["io_stall", (number) => number]],
+    cpu_stall: [["cpu_stall", (number) => number]],
+    disk_busy: [["disk_busy", (number) => number]],
+    disk_queue: [["disk_queue", (number) => number]],
+    memory: [["memory", (number) => number]],
+    mem_swap: [["mem_swap", (number) => number]],
+    net_drop: [["net_drop", (number) => number]],
     network_rx: [["net_rx", (number) => number], ["net_tx", (number) => number]],
     network_errors: [["net_errors", (number) => number]],
-    network_drops: [["net_drop", (number) => number]],
     oom_kill: [["mem_oom", (number) => number]],
   }
   return mapping[spec.id] ?? []
@@ -2007,6 +2039,10 @@ function derivedMetric(id: string, group: MetricSpec["group"], label: string, se
 
 function laneMetric(id: string, group: MetricSpec["group"], label: string, unit: string): MetricSpec {
   return { id, group, label: `${label}.label`, help: `${label}.help`, unit }
+}
+
+function exactLaneMetric(id: string, group: MetricSpec["group"], label: string, help: string, unit: string): MetricSpec {
+  return { id, group, label, help, unit }
 }
 
 function pressureMetric(id: string, group: SystemGroup, label: string, resource: number): MetricSpec {

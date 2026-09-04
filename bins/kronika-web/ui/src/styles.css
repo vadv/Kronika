@@ -180,6 +180,15 @@
 @utility use-table {
   background: var(--color-s2); border-bottom: 1px solid var(--color-line2); margin-top: 8px;
 }
+@utility use-scope {
+  background: var(--color-s1); border-bottom: 1px solid var(--color-line2); border-left: 2px solid var(--color-accent-line); color: var(--color-fg2); font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 600; line-height: 28px; margin: 0; min-height: 28px; padding: 0 8px;
+}
+@utility use-cell-action {
+  transition: background-color 80ms var(--ease-out), box-shadow 80ms var(--ease-out);
+  &:hover { background: var(--color-s3); }
+  &:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  &[aria-pressed="true"] { background: var(--color-accent-soft); box-shadow: inset 2px 0 var(--color-accent); }
+}
 @utility activity-block {
   background: var(--color-s1);
   border: 1px solid var(--color-line2);
