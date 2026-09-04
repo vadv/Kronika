@@ -47,6 +47,12 @@ const table = (requestPhase, rows = [], searchRequest = { phase: "idle" }) => re
   t,
   testId: "process-table",
 }))
+const placeholder = (phase) => renderToStaticMarkup(createElement(request.TableRequestPlaceholder, {
+  empty: "No Host metrics at the selected time",
+  phase,
+  t,
+  testId: "system-request-state",
+}))
 
 test("keyed snapshot requests make a new target pending and ignore stale settlements", () => {
   let state = request.READY_SNAPSHOT_REQUEST
@@ -94,6 +100,27 @@ test("pending, failure, and successful empty table states stay distinct", () => 
   const ready = renderToStaticMarkup(createElement(request.TableRequestMessage, { request: readyState, t }))
   assert.deepEqual(readyState, { phase: "ready" })
   assert.equal(ready, "")
+})
+
+test("compact request placeholders reserve one frame and show empty copy only when ready", () => {
+  const pending = placeholder("pending")
+  assert.match(pending, /aria-busy="true"/)
+  assert.match(pending, /h-\[72px\]/)
+  assert.match(pending, /aria-live="polite"[^>]*role="status"/)
+  assert.match(pending, /<progress aria-hidden="true"/)
+  assert.doesNotMatch(pending, /No Host metrics/)
+
+  const failed = placeholder("error")
+  assert.match(failed, /aria-busy="false"/)
+  assert.match(failed, /h-\[72px\]/)
+  assert.match(failed, /role="alert"/)
+  assert.doesNotMatch(failed, /No Host metrics|<progress/)
+
+  const ready = placeholder("ready")
+  assert.match(ready, /aria-busy="false"/)
+  assert.match(ready, /h-\[72px\]/)
+  assert.match(ready, /No Host metrics at the selected time/)
+  assert.doesNotMatch(ready, /role="status"|role="alert"|<progress/)
 })
 
 test("a content-sized empty table keeps one compact frame while loading", () => {

@@ -597,6 +597,11 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
   assert.match(source, /rows\.length === 0 && activeContext === null && requestPhase === "ready"/)
+  assert.equal((source.match(/<TableRequestPlaceholder/g) ?? []).length, 3)
+  assert.match(source, /<CpuTopologyReference[^>]*requestPhase=\{requestPhase\}/)
+  assert.match(source, /<StorageTopologyReference[\s\S]*?requestPhase=\{requestPhase\}[\s\S]*?\/>/)
+  assert.match(source, /empty=\{t\("system\.no_metrics"\)\} phase=\{requestPhase\}/)
+  assert.match(source, /empty=\{t\("status\.no_data"\)\} phase=\{requestPhase\}/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

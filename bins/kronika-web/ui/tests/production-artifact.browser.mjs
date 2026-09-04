@@ -533,6 +533,357 @@ test("held current Process and Vacuum views stay locally busy before successful 
   }
 })
 
+test("held first Host snapshot reserves local request frames and filtered cgroup failure keeps primary rows", { timeout: 90_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const systemSeries = new Set(systemIndexRecords(String(AT)).map(({ series }) => series))
+  const extraSections = [{
+    logical_name: "os_meminfo", physical_name: "os_meminfo", type_id: "1104001",
+    implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+  }, {
+    logical_name: "os_diskstats", physical_name: "os_diskstats", type_id: "1108001",
+    implementation: "linux", source_family: "system", rows: "1", bytes: "256",
+  }, {
+    logical_name: "os_mountinfo", physical_name: "os_mountinfo", type_id: "1112002",
+    implementation: "linux", source_family: "system", rows: "1", bytes: "256",
+  }]
+  const timeline = timelineRecords(HOUR, true)
+    .filter((record) => record.record !== "point" || !systemSeries.has(record.series))
+    .map((record) => record.record === "finished_segment" ? { ...record, sections: [...record.sections, ...extraSections] } : record)
+  const requests = []
+  let initial = true
+  let initialHost = null
+  let failedHost = null
+  let failedMemory = false
+  let heldLanes = null
+  let holdAfterMemory = false
+  let heldAfterMemory = null
+  let readyAt = 0
+  const primaryRecords = (at, target) => [
+    ...systemSnapshotRecords(true, at).map((record) => record.record === "row" && record.type_id === "1108001"
+      ? { ...record, values: record.values.map((stored, index) => index === 3 ? `device_${target}` : stored) }
+      : record),
+    layout("1112002", "os_mountinfo", ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"]),
+    row("1112002", `mount-${target}`, [String(at), 8, 0, `/data-${target}`, "/", "ext4", `/dev/${target}`, false, 8_388_608, 4_194_304, 8_192, 7_168, 0], at),
+  ]
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.get("part") === "lanes") {
+        heldLanes = response
+        return
+      }
+      return ndjson(response, url.searchParams.has("section") ? [] : timeline)
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const at = Number(url.searchParams.get("at") ?? AT)
+      const sections = url.searchParams.getAll("section")
+      if (sections.includes("os_cpu")) {
+        if (at === AT && initial) {
+          initialHost = response
+          return
+        }
+        if (at === BEFORE_AT) {
+          failedHost = response
+          return
+        }
+        const target = at === AFTER_AT ? "A" : `B${readyAt += 1}`
+        return ndjson(response, primaryRecords(at, target))
+      }
+      if (sections.length === 1 && sections[0].startsWith("os_cgroup")) {
+        if (at === AFTER_AT && sections[0] === "os_cgroup_memory" && holdAfterMemory) {
+          heldAfterMemory = { response, url }
+          return
+        }
+        if (at === AT && sections[0] === "os_cgroup_memory" && !failedMemory) {
+          failedMemory = true
+          return brokenNdjson(response)
+        }
+        return ndjson(response, cgroupSnapshotRecords(url))
+      }
+      return ndjson(response, [])
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("Host request-state server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+      const lateSignals = new WeakSet()
+      const nativeFetch = window.fetch.bind(window)
+      const nativeAbort = AbortController.prototype.abort
+      window.fetch = (input, init = {}) => {
+        const requestUrl = new URL(input instanceof Request ? input.url : String(input), location.href)
+        if (requestUrl.pathname.endsWith("/snapshot")
+          && requestUrl.searchParams.get("at") === "${AFTER_AT}"
+          && requestUrl.searchParams.getAll("section").length === 1
+          && requestUrl.searchParams.get("section") === "os_cgroup_memory"
+          && init.signal !== undefined) lateSignals.add(init.signal)
+        return nativeFetch(input, init)
+      }
+      AbortController.prototype.abort = function(reason) {
+        if (lateSignals.has(this.signal)) {
+          window.__lateHostAbortSuppressed = (window.__lateHostAbortSuppressed ?? 0) + 1
+          return
+        }
+        return nativeAbort.call(this, reason)
+      }
+    })()` })
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 800 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
+    await waitForRequests(() => initialHost !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-request-state"]')?.getAttribute('aria-busy') === 'true'`, "the first Host request frame", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="use-toggle-disk"]') !== null`, "the pending disk ledger row", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="use-toggle-disk"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-storage-modes"]') !== null`, "the pending storage modes")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[2].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="storage-topology-request-state"]')?.getAttribute('aria-busy') === 'true'`, "the pending storage topology frame")
+    await cdp.evaluate(`(() => {
+      window.__hostRequestFrames = {
+        system: document.querySelector('[data-testid="system-request-state"]'),
+        topology: document.querySelector('[data-testid="storage-topology-request-state"]'),
+      }
+      return true
+    })()`)
+
+    const frameState = () => cdp.evaluate(`(() => {
+      const read = (name, selector) => {
+        const node = document.querySelector(selector)
+        const box = node.getBoundingClientRect()
+        return {
+          busy: node.getAttribute('aria-busy'),
+          box: { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width },
+          live: node.querySelector('[role="status"]')?.getAttribute('aria-live') ?? null,
+          progress: node.querySelector('progress') !== null,
+          role: node.querySelector('[role="status"], [role="alert"]')?.getAttribute('role') ?? null,
+          same: window.__hostRequestFrames[name] === node,
+          text: node.textContent.trim(),
+        }
+      }
+      return {
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        surfaceText: document.querySelector('.system-main').textContent,
+        system: read('system', '[data-testid="system-request-state"]'),
+        topology: read('topology', '[data-testid="storage-topology-request-state"]'),
+      }
+    })()`)
+    const copy = {
+      en: { empty: "No system metrics in the selected hour", error: "Could not load rows.", loading: "Loading rows…", topology: "No data in the selected hour" },
+      ru: { empty: "В выбранном часу нет системных показателей", error: "Не удалось загрузить строки.", loading: "Загружаем строки…", topology: "В выбранном часу нет данных" },
+    }
+    const pending = {}
+    for (const locale of ["ru", "en"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${locale} Host loading copy`)
+      pending[locale] = {}
+      for (const width of [800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+        await settleLayout(cdp)
+        const measured = await frameState()
+        assert.equal(measured.overflow, false, `${locale} ${width}px pending overflow`)
+        assert.equal(measured.surfaceText.includes(copy[locale].empty), false, `${locale} ${width}px pending Host empty copy`)
+        assert.equal(measured.surfaceText.includes(copy[locale].topology), false, `${locale} ${width}px pending topology empty copy`)
+        for (const frame of [measured.system, measured.topology]) {
+          assert.equal(frame.busy, "true", `${locale} ${width}px pending busy`)
+          assert.equal(frame.live, "polite", `${locale} ${width}px pending live region`)
+          assert.equal(frame.progress, true, `${locale} ${width}px pending progress`)
+          assert.equal(frame.role, "status", `${locale} ${width}px pending role`)
+          assert.equal(frame.text, copy[locale].loading, `${locale} ${width}px pending copy`)
+          assert.equal(frame.box.height, 72, `${locale} ${width}px pending height`)
+        }
+        pending[locale][width] = measured
+      }
+    }
+
+    const response = initialHost
+    initialHost = null
+    initial = false
+    ndjson(response, [])
+    await waitForRequests(() => heldLanes !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-request-state"]')?.getAttribute('aria-busy') === 'false'`, "the authoritative empty Host result", 15_000)
+    const ready = {}
+    for (const locale of ["ru", "en"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${locale} Host empty copy`)
+      ready[locale] = {}
+      for (const width of [800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+        await settleLayout(cdp)
+        const measured = await frameState()
+        assert.equal(measured.overflow, false, `${locale} ${width}px ready overflow`)
+        assert.equal(measured.system.text, copy[locale].empty, `${locale} ${width}px Host empty copy`)
+        assert.equal(measured.topology.text, copy[locale].topology, `${locale} ${width}px topology empty copy`)
+        for (const name of ["system", "topology"]) {
+          assert.equal(measured[name].busy, "false", `${locale} ${width}px ready busy`)
+          assert.equal(measured[name].progress, false, `${locale} ${width}px ready progress`)
+          assert.equal(measured[name].role, null, `${locale} ${width}px ready role`)
+          assert.equal(measured[name].same, true, `${locale} ${width}px stable node`)
+          for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+            assert.ok(Math.abs(measured[name].box[edge] - pending[locale][width][name].box[edge]) <= 1, `${locale} ${width}px ${name}.${edge}: ${JSON.stringify({ pending: pending[locale][width], ready: measured })}`)
+          }
+        }
+        assert.ok(Math.abs((measured.system.box.top - measured.topology.box.bottom) - (pending[locale][width].system.box.top - pending[locale][width].topology.box.bottom)) <= 1, `${locale} ${width}px frame spacing`)
+        ready[locale][width] = measured
+      }
+    }
+
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the failed Host target")
+    await waitForRequests(() => failedHost !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-request-state"]')?.getAttribute('aria-busy') === 'true'`, "the failed target pending state")
+    const failedPending = {}
+    for (const locale of ["ru", "en"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${locale} Host failure pending copy`)
+      failedPending[locale] = {}
+      for (const width of [800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+        await settleLayout(cdp)
+        const measured = await frameState()
+        assert.equal(measured.overflow, false, `${locale} ${width}px failure pending overflow`)
+        assert.equal(measured.surfaceText.includes(copy[locale].empty), false, `${locale} ${width}px failure pending Host empty copy`)
+        assert.equal(measured.surfaceText.includes(copy[locale].topology), false, `${locale} ${width}px failure pending topology empty copy`)
+        for (const name of ["system", "topology"]) {
+          assert.equal(measured[name].busy, "true", `${locale} ${width}px failure pending busy`)
+          assert.equal(measured[name].live, "polite", `${locale} ${width}px failure pending live region`)
+          assert.equal(measured[name].progress, true, `${locale} ${width}px failure pending progress`)
+          assert.equal(measured[name].role, "status", `${locale} ${width}px failure pending role`)
+          assert.equal(measured[name].text, copy[locale].loading, `${locale} ${width}px failure pending copy`)
+        }
+        failedPending[locale][width] = measured
+      }
+    }
+    const failedResponse = failedHost
+    failedHost = null
+    brokenNdjson(failedResponse)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-request-state"] [role="alert"]') !== null && document.querySelector('[data-testid="storage-topology-request-state"] [role="alert"]') !== null`, "the local Host failure states", 15_000)
+    const failed = {}
+    for (const locale of ["ru", "en"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === "${locale}"`, `${locale} Host failure copy`)
+      failed[locale] = {}
+      for (const width of [800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+        await settleLayout(cdp)
+        const measured = await frameState()
+        assert.equal(measured.overflow, false, `${locale} ${width}px failure overflow`)
+        assert.equal(measured.surfaceText.includes(copy[locale].empty), false, `${locale} ${width}px failure Host empty copy`)
+        assert.equal(measured.surfaceText.includes(copy[locale].topology), false, `${locale} ${width}px failure topology empty copy`)
+        for (const name of ["system", "topology"]) {
+          assert.equal(measured[name].busy, "false", `${locale} ${width}px failure busy`)
+          assert.equal(measured[name].progress, false, `${locale} ${width}px failure progress`)
+          assert.equal(measured[name].role, "alert", `${locale} ${width}px failure role`)
+          assert.equal(measured[name].text, copy[locale].error, `${locale} ${width}px failure copy`)
+          assert.equal(measured[name].same, true, `${locale} ${width}px failure stable node`)
+          for (const edge of ["bottom", "height", "left", "right", "top", "width"]) {
+            assert.ok(Math.abs(measured[name].box[edge] - failedPending[locale][width][name].box[edge]) <= 1, `${locale} ${width}px failure ${name}.${edge}: ${JSON.stringify({ pending: failedPending[locale][width], failed: measured })}`)
+          }
+        }
+        failed[locale][width] = measured
+      }
+    }
+
+    ndjson(heldLanes, timeline.filter((record) => record.record === "lane" || record.record === "lane_context"))
+    heldLanes = null
+
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the Host target with one cgroup failure")
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="use-toggle-cpu"]') !== null`, "the preserved primary Host snapshot", 15_000)
+    assert.equal(failedMemory, true)
+    await cdp.evaluate(`document.querySelector('[data-testid="use-toggle-cpu"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the primary CPU rows")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B1") === true`, "the primary device rows")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_mountinfo"]')?.textContent.includes("/data-B1") === true`, "the primary mount rows")
+    await cdp.evaluate(`document.querySelector('[data-testid="use-toggle-cgroups"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup modes")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_cpu"] .entity-row') !== null`, "the successful cgroup CPU rows")
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[1].click()`)
+    await settleLayout(cdp)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]') === null`), true)
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[2].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_io"] .entity-row') !== null`, "the successful cgroup I/O rows")
+    const primaryState = await cdp.evaluate(`({
+      emptyCopy: document.querySelector('.system-main').textContent.includes("No system metrics in the selected hour"),
+      requestFrame: document.querySelector('[data-testid="system-request-state"]') !== null,
+    })`)
+    assert.deepEqual(primaryState, { emptyCopy: false, requestFrame: false })
+    const failedCgroupRequests = requests.filter(({ path, query }) => {
+      const params = new URLSearchParams(query)
+      return path === `/api/segments/${SEGMENT}/snapshot` && params.get("at") === String(AT)
+        && params.getAll("section").length === 1 && params.get("section") === "os_cgroup_memory"
+    })
+    assert.equal(failedCgroupRequests.length, 1)
+
+    holdAfterMemory = true
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AFTER_AT}"`, "the held later cgroup target")
+    await waitForRequests(() => heldAfterMemory !== null)
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B1") === true`, "the retained device rows while the cgroup batch is pending")
+    assert.equal(await cdp.evaluate(`document.querySelector('.system-main').textContent.includes("device_A")`), false)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the newest Host target")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B2") === true`, "the newest Host snapshot", 15_000)
+    const late = heldAfterMemory
+    const fields = late.url.searchParams.getAll("field")
+    const lateRecords = cgroupSnapshotRecords(late.url).map((record) => record.record === "row"
+      ? { ...record, values: record.values.map((value, index) => fields[index] === "cgroup_path" ? "/stale-target-A" : value) }
+      : record)
+    ndjson(late.response, lateRecords)
+    heldAfterMemory = null
+    await delay(100)
+    await cdp.waitFor(`window.__lateHostAbortSuppressed === 1`, "the delivered late Host response")
+    await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-cgroups"]'); if (toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
+    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"] .entity-row') !== null`, "the newest cgroup memory rows")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]').textContent.includes("stale-target-A")`), false)
+    await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-disk"]'); if (toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B2") === true`, "the newest device rows after the late response")
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
+    assert.equal(late.response.writableEnded, true)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+    process.stdout.write(`${JSON.stringify({ hostRequestFrames: { failed, failedPending, pending, ready }, lateCgroupDelivered: true }, null, 2)}\n`)
+  } finally {
+    failedHost?.destroy()
+    heldLanes?.destroy()
+    heldAfterMemory?.response.destroy()
+    initialHost?.destroy()
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("the Process Inspector plot keeps its DOM while the shared cursor request settles", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }

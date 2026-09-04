@@ -13,7 +13,7 @@ import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
-import type { TableRequestPhase } from "./table-request"
+import { TableRequestPlaceholder, type TableRequestPhase } from "./table-request"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
 import { UseTable, type LedgerKey, type UseResourceKey } from "./use-table"
 
@@ -498,11 +498,12 @@ export function SystemView({
       {modes.length > 0 && <div aria-label={t(`section.${sectionName}`)} className="dock-tabs" data-testid={`host-${sectionName}-modes`} role="group">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => setGroupMode((current) => ({ ...current, [key]: key === "cpu" && current[key] === choice ? null : choice }))} type="button">{t(`host.mode.${choice}`)}</button>)}
       </div>}
-      {sectionName === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={systemEntityRows(data, "os_cpufreq_policy", cursor)} rows={systemEntityRows(data, "os_topology", cursor)} t={t} />}
+      {sectionName === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={systemEntityRows(data, "os_cpufreq_policy", cursor)} requestPhase={requestPhase} rows={systemEntityRows(data, "os_topology", cursor)} t={t} />}
       {sectionName === "storage" && mode === "topology" && <StorageTopologyReference
         devices={systemEntityRows(data, "os_diskstats", cursor)}
         edges={systemEntityRows(data, "os_block_topology", cursor)}
         mounts={systemEntityRows(data, "os_mountinfo", cursor)}
+        requestPhase={requestPhase}
         t={t}
       />}
       {entities.length > 0 && <section className="entity-panels grid grid-cols-1 content-start gap-2">
@@ -544,7 +545,7 @@ export function SystemView({
       {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
       {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
       <UseTable cgroups={cgroupsPresent} cursor={cursor} expanded={expanded} hour={hour} lanePoints={data.lanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} withContent={withContent} />
-      {available.length === 0 && <p className="table-empty">{t("system.no_metrics")}</p>}
+      {available.length === 0 && <TableRequestPlaceholder empty={t("system.no_metrics")} phase={requestPhase} t={t} testId="system-request-state" />}
     </div>
   </>
 }
@@ -640,8 +641,8 @@ function SystemGroupChart({
   </div>
 }
 
-function CpuTopologyReference({ locale, policies, rows, t }: { readonly locale: Locale; readonly policies: readonly DataRow[]; readonly rows: readonly DataRow[]; readonly t: Translate }) {
-  if (rows.length === 0 && policies.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+function CpuTopologyReference({ locale, policies, requestPhase, rows, t }: { readonly locale: Locale; readonly policies: readonly DataRow[]; readonly requestPhase: TableRequestPhase; readonly rows: readonly DataRow[]; readonly t: Translate }) {
+  if (rows.length === 0 && policies.length === 0) return <TableRequestPlaceholder className="mt-2" empty={t("status.no_data")} phase={requestPhase} t={t} testId="cpu-topology-request-state" />
   const policyByCpu = new Map<number, string>()
   for (const policy of policies) {
     const id = rawText(value(policy, "policy_id")) ?? "—"
@@ -726,9 +727,9 @@ export function storageTopologyEntries(devices: readonly DataRow[], edges: reado
   }))
 }
 
-function StorageTopologyReference({ devices, edges, mounts, t }: { readonly devices: readonly DataRow[]; readonly edges: readonly DataRow[]; readonly mounts: readonly DataRow[]; readonly t: Translate }) {
+function StorageTopologyReference({ devices, edges, mounts, requestPhase, t }: { readonly devices: readonly DataRow[]; readonly edges: readonly DataRow[]; readonly mounts: readonly DataRow[]; readonly requestPhase: TableRequestPhase; readonly t: Translate }) {
   const entries = storageTopologyEntries(devices, edges, mounts)
-  if (entries.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+  if (entries.length === 0) return <TableRequestPlaceholder className="mt-2" empty={t("status.no_data")} phase={requestPhase} t={t} testId="storage-topology-request-state" />
   return <section className="panel mt-2" data-testid="storage-topology-reference">
     <h2 className="panel-head">{t("host.mode.topology")}</h2>
     <p className="m-0 border-b border-line px-2 py-1.5 text-sm text-fg3">{t("system.storage.topology_scope")}</p>

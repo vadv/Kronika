@@ -584,7 +584,12 @@ function App({ locale, onLocale, t }: {
         controller.signal,
         undefined,
         { filters },
-      ))))
+      ).catch((reason: unknown) => {
+        if (!stale() && cgroupSnapshotKey.current === planKey) {
+          console.error(`kronika: filtered ${request.section} snapshot failed`, reason)
+        }
+        return EMPTY_DATA
+      }))))
       if (stale() || cgroupSnapshotKey.current !== planKey) return primary
       return exact.reduce((current, incoming) => mergeSnapshotData(current, incoming), primary)
     }
@@ -772,8 +777,6 @@ function App({ locale, onLocale, t }: {
   } else if (!companionPending) {
     ticksPerSecondCache.current = null
   }
-  // A Process page can render before its companion metadata. Bridge only that
-  // request gap; a completed missing companion remains missing.
   const ticksPerSecond = recordedTicksPerSecond
     ?? (companionPending && hour !== null && ticksPerSecondCache.current?.hour === hour ? ticksPerSecondCache.current.value : null)
   const memTotalKb = useMemo(

@@ -73,3 +73,20 @@ export function TableRequestMessage({ request, t }: {
     <span className="min-w-0 overflow-hidden text-ellipsis">{t(key)}</span>
   </span>
 }
+
+export function TableRequestPlaceholder({ className, empty, phase, t, testId }: {
+  readonly className?: string | undefined
+  readonly empty: string
+  readonly phase: TableRequestPhase
+  readonly t: Translate
+  readonly testId?: string | undefined
+}) {
+  const request = tableRequestState(phase, false)
+  return <div
+    aria-busy={request.phase === "pending"}
+    className={`table-empty box-border flex h-[72px] min-w-0 items-center overflow-hidden${className === undefined ? "" : ` ${className}`}`}
+    data-testid={testId}
+  >
+    {request.phase === "ready" ? empty : <TableRequestMessage request={request} t={t} />}
+  </div>
+}
