@@ -871,7 +871,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
         minCellFont: Math.min(...[...table.querySelectorAll('.entity-header-cell, .entity-cell')].map((node) => Number.parseFloat(getComputedStyle(node).fontSize))),
       }
     })()`)
-    assert.deepEqual(ioPresentation, { commonPath: "/", hasPathColumn: false, minCellFont: 12 })
+    assert.deepEqual(ioPresentation, { commonPath: "/collector", hasPathColumn: false, minCellFont: 12 })
     const primaryState = await cdp.evaluate(`({
       emptyCopy: document.querySelector('.system-main').textContent.includes("No system metrics in the selected hour"),
       requestFrame: document.querySelector('[data-testid="system-request-state"]') !== null,
