@@ -48,6 +48,17 @@ test("cgroup I/O hoists one shared path and keeps differing paths on their devic
   assert.equal(activity.cgroupIoSharedPath(split), null)
   assert.deepEqual(activity.cgroupActivityIdentity(split.rows[1], true), { text: "252:0", prefix: "/batch" })
   assert.equal(activity.cgroupIoSharedPath({ ...view, othersCount: 1, entityCount: 3 }), null)
+
+  const mapped = new Map([["252:0", {
+    associations: [], device: "dm-0", id: "252:0", preferredMounts: ["/var/lib/kronika/data"], source: "/dev/mapper/data-docker",
+  }]])
+  const translate = (key) => key === "system.cgroups.io_unmapped" ? "No mount point in this report" : key
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true, mapped, translate), {
+    detail: "252:0", semantic: false, text: "data-docker → /var/lib/kronika/data", title: "data-docker → /var/lib/kronika/data · /dev/mapper/data-docker · dm-0 · 252:0", prefix: "/",
+  })
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true, mapped, translate), {
+    detail: "259:0", semantic: true, text: "No mount point in this report", title: "No mount point in this report", prefix: "/",
+  })
 })
 
 test("a drill moves the cursor only when the drilled row is silent at it", async () => {

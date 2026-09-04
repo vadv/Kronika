@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { collectorCgroupOverview, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { collectorCgroupOverview, cgroupDevicePresentations, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -296,9 +296,14 @@ test("container overview follows the collector's exact v2 paths and keeps I/O de
     os_cgroup_cpu: [row("os_cgroup_cpu", "cpu", { cgroup_path: "/", usage_usec: 2_000_000, user_usec: 1_200_000, system_usec: 700_000, quota_usec: -1, period_usec: 100_000 })],
     os_cgroup_memory: [row("os_cgroup_memory", "memory", { cgroup_path: "/", current: 536_870_912, max: null, anon: 1, file: 1, kernel: 1, slab: 1 })],
     os_cgroup_io: [
-      row("os_cgroup_io", "8:0", { cgroup_path: "/", major: 8, minor: 0, rbytes: 10, wbytes: 20 }),
-      row("os_cgroup_io", "253:0", { cgroup_path: "/", major: 253, minor: 0, rbytes: 30, wbytes: 40 }),
+      row("os_cgroup_io", "252:0", { cgroup_path: "/", major: 252, minor: 0, rbytes: 10, wbytes: 20 }),
+      row("os_cgroup_io", "259:0", { cgroup_path: "/", major: 259, minor: 0, rbytes: 30, wbytes: 40 }),
       row("os_cgroup_io", "other", { cgroup_path: "/other", major: 7, minor: 0, rbytes: 50, wbytes: 60 }),
+    ],
+    os_diskstats: [row("os_diskstats", "dm-0", { major: 252, minor: 0, device: "dm-0", scope: 0 })],
+    os_mountinfo: [
+      row("os_mountinfo", "data", { major: 252, minor: 0, mount_point: "/var/lib/kronika/data", root: "/volumes/data/_data", source: "/dev/mapper/data-docker", is_k8s_infra: false, scope: 0 }),
+      row("os_mountinfo", "hosts", { major: 252, minor: 0, mount_point: "/etc/hosts", root: "/containers/id/hosts", source: "/dev/mapper/data-docker", is_k8s_infra: true, scope: 0 }),
     ],
     os_cgroup_pids: [
       row("os_cgroup_pids", "tasks", { cgroup_path: "/", current: 4, max: 100 }),
@@ -309,8 +314,12 @@ test("container overview follows the collector's exact v2 paths and keeps I/O de
   assert.deepEqual(targets.map(({ mode }) => mode), ["cpu", "memory", "io", "io", "tasks"])
   assert.equal(targets.find(({ mode }) => mode === "cpu").row.values.cgroup_capacity, 2)
   assert.equal(targets.find(({ mode }) => mode === "memory").row.values.effective_memory_max, 1_073_741_824)
-  assert.deepEqual(targets.filter(({ mode }) => mode === "io").map(({ row }) => row.values.device_id), ["8:0", "253:0"])
+  assert.deepEqual(targets.filter(({ mode }) => mode === "io").map(({ row }) => row.values.device_id), ["252:0", "259:0"])
+  assert.equal(targets.find(({ mode }) => mode === "io").row.values.cgroup_device_target, "data-docker → /var/lib/kronika/data")
+  assert.equal(targets.filter(({ mode }) => mode === "io")[1].row.values.cgroup_device_target, null)
   assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.cgroup_path, "/")
+  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_current, 4)
+  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_max, 100)
 
   const split = { ...source, sections: { ...source.sections, os_cgroup_context: [{ ...context, values: { ...context.values, io_path: "/io" } }] } }
   assert.equal(helpers.collectorCgroupOverview(split, 20).some(({ mode }) => mode === "tasks"), false)
@@ -635,6 +644,10 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   assert.match(source, /environment !== "container" \|\| openedContainer\.current[\s\S]*new Set\(\[\.\.\.current, "cgroups"\]\)/)
   assert.match(source, /<ContainerCgroupOverview/)
   assert.match(source, /cgroup-overview:\$\{request\.key\}/)
+  assert.match(source, /key !== "cgroups"/)
+  assert.match(source, /aria-pressed=\{selected\}/)
+  assert.match(source, /grid-cols-1 min-\[520px\]:grid-cols-2 min-\[1100px\]:grid-cols-4/)
+  assert.match(source, /data-testid="cgroup-overview-io"/)
   assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
   // The ledger is the page: expansion is disclosure, the group chart renders
   // inline, and no machinery force-opens an Inspector to fake content.

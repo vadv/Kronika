@@ -176,6 +176,13 @@ exceeded I/O-row bound omits I/O only.
 Valid cgroup I/O counters are recorded independently per device; a missing
 counter does not suppress the other recorded counters in that row.
 
+`os_cgroup_pids.current` is the direct `pids.current` value: the number of
+threads identified by TIDs in that cgroup and its descendants, including each
+process's main thread. It is not a count of process rows. `os_cgroup_pids.max`
+is the local `pids.max` setting for that subtree; an ancestor can impose a
+lower limit. A recorded null limit means unlimited, while an absent field is
+unavailable.
+
 Inside a container, `os_cgroup_context` records cgroup version, the collector's
 exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective
 cpuset CPU count when the exact matching kernel file is usable. It also records
@@ -203,7 +210,7 @@ them as effective hierarchical limits.
 
 Web reads `instance_metadata.environment`. It hides Cgroups and requests no
 cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
-Tasks and loads the complete already-bounded direct-live rows recorded in that
+Threads (TIDs) and loads the complete already-bounded direct-live rows recorded in that
 namespace; the context row decorates only the collector's matching controller
 row. The controller paths remain independent for cgroup v1. A recursive cgroup
 tree is never materialized in `HourData`.
@@ -834,15 +841,34 @@ count. CPU history plots these shares together with used and available core
 equivalents on labelled scales. When `instance_metadata.environment` is
 `container`, the Host ledger starts with an open collector-cgroup overview and retains only the
 namespace Network host row; host CPU, memory, and storage rows and lanes are
-hidden. The overview reads each controller through the same exact entity-history
-identity as its detail table and shows compact CPU, memory, I/O, and Tasks
-history with cursor readings. Its cards use only the mode name because the
-collector-cgroup heading already supplies their context. I/O stays separate
-per `(cgroup_path, major, minor)` and is never summed. When every ranked I/O
-row has one exact cgroup path, the ledger and entity table name that path once
-and label rows by exact `major:minor`;
-with multiple paths, each row retains its path. Tasks uses the exact unified path only for cgroup
-v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
+hidden. The overview contains one control for every cgroup controller present
+in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
+These controls are the sole mode selector and expose their selected state. A
+control click changes the detail mode and clears an entity selection; an exact
+table-row click opens that entity's Inspector and history.
+
+The I/O control reports the exact number of collector-cgroup device rows and
+how many have a non-infrastructure mount association with the same
+`major:minor`. It has no throughput reading, representative stream, combined
+sparkline, or total. The detail table
+keeps every `(cgroup_path, major, minor)` row and its counters separate, even
+when stacked devices have identical series. At the selected time, display
+metadata joins only the exact `major:minor` to `os_mountinfo` and
+`os_diskstats`; it never traverses `os_block_topology`, borrows a partition or
+parent label, or combines rows. A non-infrastructure mount point is preferred,
+ordered by shortest path and then lexical order; further exact mount points
+use `+N`, and all exact associations remain in the Inspector. An exact device
+name is the fallback, followed by localized missing-mount prose. The raw
+`major:minor` always remains visible. The association identifies a
+same-device mount; counters remain device-scoped. Mount points, sources,
+device names, and `major:minor` use the 12 px regular monospace data face;
+localized missing-mount prose uses the sans-serif text face at no less than
+12 px.
+
+The Threads control shows `pids.current` as its primary reading and labels the
+local `pids.max` separately; the latter is not a denominator or an effective
+hierarchy limit. The exact unified path selects this row only for cgroup v2.
+Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither

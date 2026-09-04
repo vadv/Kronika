@@ -820,7 +820,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the Host target with one cgroup failure")
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null
       && document.querySelector('[data-testid="use-toggle-cgroups"]')?.getAttribute("aria-expanded") === "true"
-      && document.querySelectorAll('[data-testid="cgroup-overview-io"]').length === 2
+      && document.querySelectorAll('[data-testid="cgroup-overview-io"]').length === 1
       && document.querySelector('[data-testid="cgroup-overview-tasks"]') !== null`, "the container cgroup overview", 15_000)
     assert.equal(failedMemory, true)
     const containerState = await cdp.evaluate(`(() => {
@@ -829,7 +829,28 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
         cgroupsFirst: table.querySelector(':scope > [data-testid^="use-group-"]')?.dataset.testid === "use-group-cgroups",
         hostResourcesHidden: ["cpu", "memory", "disk"].every((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]') === null),
         network: document.querySelector('[data-testid="use-toggle-network"]') !== null,
-        hostRowsHidden: !document.querySelector('.system-main').textContent.includes("device_B1") && !document.querySelector('.system-main').textContent.includes("/data-B1"),
+        hostRowsHidden: document.querySelector('[data-testid="system-panel-os_diskstats"]') === null
+          && document.querySelector('[data-testid="system-panel-os_mountinfo"]') === null,
+        cgroupTabs: document.querySelector('[data-testid="host-cgroups-modes"]') !== null,
+        io: (() => {
+          const control = document.querySelector('[data-testid="cgroup-overview-io"]')
+          const mapped = control.querySelector('[data-presentation="technical"]')
+          const unmapped = control.querySelector('[data-presentation="fallback"]')
+          const ids = [...control.querySelectorAll('[data-device-id]')]
+          return {
+            associations: control.querySelector('[data-testid="cgroup-io-associations"]').textContent,
+            hasSpark: control.querySelector('svg') !== null,
+            ids: ids.map((node) => node.dataset.deviceId),
+            idStyles: ids.map((node) => ({ font: getComputedStyle(node).fontFamily, size: getComputedStyle(node).fontSize, weight: getComputedStyle(node).fontWeight })),
+            inventory: control.querySelector('[data-testid="cgroup-io-inventory"]').textContent,
+            mappedFont: getComputedStyle(mapped).fontFamily,
+            mappedSize: getComputedStyle(mapped).fontSize,
+            mappedWeight: getComputedStyle(mapped).fontWeight,
+            unmappedFont: getComputedStyle(unmapped).fontFamily,
+            unmappedSize: getComputedStyle(unmapped).fontSize,
+            unmappedWeight: getComputedStyle(unmapped).fontWeight,
+          }
+        })(),
         overview: [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')].map((node) => {
           const label = node.firstElementChild
           const reading = label?.nextElementSibling
@@ -849,19 +870,42 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     assert.equal(containerState.hostResourcesHidden, true, JSON.stringify(containerState))
     assert.equal(containerState.network, true, JSON.stringify(containerState))
     assert.equal(containerState.hostRowsHidden, true, JSON.stringify(containerState))
+    assert.equal(containerState.cgroupTabs, false, JSON.stringify(containerState))
     assert.equal(containerState.recordedCopy, false, JSON.stringify(containerState))
     assert.equal(containerState.overview.every(({ labelFont, labelTruncated, readingFont }) => labelFont >= 12 && readingFont >= 12 && !labelTruncated), true, JSON.stringify(containerState))
     assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-cpu"), true, JSON.stringify(containerState))
-    assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-memory"), false, JSON.stringify(containerState))
-    assert.deepEqual(containerState.overview.filter(({ id }) => id === "cgroup-overview-io").map(({ text }) => text.includes("8:0") ? "8:0" : text.includes("253:0") ? "253:0" : null).sort(), ["253:0", "8:0"], JSON.stringify(containerState))
+    assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-memory"), true, JSON.stringify(containerState))
+    assert.equal(containerState.overview.filter(({ id }) => id === "cgroup-overview-io").length, 1, JSON.stringify(containerState))
+    assert.equal(containerState.io.inventory, "Devices: 2 · With mount point: 1", JSON.stringify(containerState))
+    assert.match(containerState.io.associations, /B1 → \/data-B1.*8:0.*No mount point in this report.*253:0/s)
+    assert.deepEqual(containerState.io.ids, ["8:0", "253:0"])
+    assert.equal(containerState.io.hasSpark, false)
+    assert.match(containerState.io.mappedFont, /JetBrains Mono/)
+    assert.deepEqual([containerState.io.mappedSize, containerState.io.mappedWeight], ["12px", "400"])
+    assert.match(containerState.io.unmappedFont, /IBM Plex Sans/)
+    assert.deepEqual([containerState.io.unmappedSize, containerState.io.unmappedWeight], ["12px", "400"])
+    assert.equal(containerState.io.idStyles.every(({ font, size, weight }) => /JetBrains Mono/.test(font) && size === "12px" && weight === "400"), true, JSON.stringify(containerState.io.idStyles))
     assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-tasks"), true, JSON.stringify(containerState))
-    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup modes")
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[0].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the RU cgroup controls")
+    for (const [width, columns] of [[360, 1], [800, 2], [1280, 4]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+      await settleLayout(cdp)
+      const controls = await cdp.evaluate(`(() => { const nodes = [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')]; return { columns: new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left))).size, inventory: document.querySelector('[data-testid="cgroup-io-inventory"]').textContent, minHeight: Math.min(...nodes.map((node) => node.getBoundingClientRect().height)), selected: nodes.filter((node) => node.getAttribute('aria-pressed') === 'true').length, tasks: document.querySelector('[data-testid="cgroup-overview-tasks"]').textContent } })()`)
+      assert.deepEqual({ columns: controls.columns, selected: controls.selected }, { columns, selected: 1 }, `RU ${width}px controls: ${JSON.stringify(controls)}`)
+      assert.equal(controls.inventory, "Устройства: 2 · с точкой монтирования: 1")
+      assert.match(controls.tasks, /Потоки \(TID\).*локальный pids\.max: 128/s)
+      assert.ok(controls.minHeight >= 44, `RU ${width}px controls: ${JSON.stringify(controls)}`)
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the EN cgroup controls")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 800 })
+    await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_cpu"] .entity-row') !== null`, "the successful cgroup CPU rows")
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[1].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-memory"]').click()`)
     await settleLayout(cdp)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]') === null`), true)
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[2].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-io"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_io"] .entity-row') !== null`, "the successful cgroup I/O rows")
     const ioPresentation = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="system-os_cgroup_io"]')
@@ -904,7 +948,7 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     await delay(100)
     await cdp.waitFor(`window.__lateHostAbortSuppressed === 1`, "the delivered late Host response")
     await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-cgroups"]'); if (toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[1].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-memory"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"] .entity-row') !== null`, "the newest cgroup memory rows")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-panel-os_cgroup_memory"]').textContent.includes("stale-target-A")`), false)
     await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_netdev"]')?.textContent.includes("interface_B2") === true`, "the newest network rows after the late response")
@@ -4834,9 +4878,9 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     await cdp.waitFor(`document.querySelector('[data-testid="use-toggle-cgroups"]') !== null`, "the cgroups row", 15_000)
     await cdp.waitFor(`document.querySelector('[data-testid="use-toggle-cgroups"]') !== null`, "the cgroups ledger row", 15_000)
     await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-cgroups"]'); if (toggle && toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup modes")
-    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
-      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="cgroup-overview-cpu"]') !== null`, "the cgroup mode controls")
+    for (const [panel, mode] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "io"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-${mode}"]').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, `the ${panel} panel`, 15_000)
     }
     await cdp.waitFor(`document.querySelector('[data-testid="use-toggle-cpu"]') !== null`, "the cpu ledger row", 15_000)
@@ -4866,7 +4910,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     }
     await cdp.waitFor(`document.querySelector('[data-testid="use-toggle-cgroups"]') !== null`, "the cgroups ledger row", 15_000)
     await cdp.evaluate(`(() => { const toggle = document.querySelector('[data-testid="use-toggle-cgroups"]'); if (toggle && toggle.getAttribute("aria-expanded") !== "true") toggle.click() })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup cursor workspace")
+    await cdp.waitFor(`document.querySelector('[data-testid="cgroup-overview-cpu"]') !== null`, "the cgroup cursor workspace")
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the changed System cursor")
@@ -4886,8 +4930,8 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     assert.equal(heldCgroups.every(({ url }) => url.searchParams.get("at") === String(BEFORE_AT) && url.searchParams.get("where.scope") === null), true)
     holdCgroups = false
     for (const held of heldCgroups.splice(0)) if (!held.response.destroyed) ndjson(held.response, cgroupSnapshotRecords(held.url))
-    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
-      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
+    for (const [panel, mode] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "io"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-${mode}"]').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, "the replacement collector cgroup rows", 15_000)
     }
     holdCgroups = true
@@ -4905,8 +4949,8 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
       held.response.end("{")
     }
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null`, "the cursor caught up after exact-load failures", 15_000)
-    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
-      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
+    for (const [panel, mode] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "io"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="cgroup-overview-${mode}"]').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"]') === null`, `no stale ${panel} rows after exact-load failures`, 15_000)
     }
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)

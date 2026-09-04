@@ -1,8 +1,8 @@
-//! Type `1_204_001`: cgroup PID counts and limits.
+//! Type `1_204_001`: cgroup thread counts and limits.
 
 use crate::{Section, StrId, Ts};
 
-/// Process count and limit for one cgroup.
+/// Thread count and local limit for one cgroup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
     id = 1_204_001,
@@ -18,10 +18,12 @@ pub struct OsCgroupPids {
     /// Cgroup path as a string dictionary reference.
     #[column(l)]
     pub cgroup_path: StrId,
-    /// Current number of processes in the cgroup.
+    /// Current number of threads identified by TIDs in this cgroup and its
+    /// descendants.
     #[column(g, unit = count)]
     pub current: i64,
-    /// Process limit; `None` means unlimited.
+    /// Local thread limit; `None` means unlimited. An ancestor can impose a
+    /// lower limit.
     #[column(g, unit = count)]
     pub max: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
