@@ -1420,6 +1420,7 @@ dependencies = [
  "kronika-registry",
  "nix",
  "rustix",
+ "tempfile",
  "tokio",
  "tokio-postgres",
 ]

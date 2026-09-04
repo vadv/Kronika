@@ -1,4 +1,4 @@
-Feature: The demo runs bounded commerce and plan-change stories
+Feature: The demo runs bounded commerce, plan-change, and system workloads
 
   Scenario: A sequential-scan regression returns to the indexed baseline
     Given a demo workload with these settings
@@ -6,6 +6,7 @@ Feature: The demo runs bounded commerce and plan-change stories
       | KRONIKA_DEMO_DURATION_S                       | 8     |
       | KRONIKA_INTERVAL_S                            | 1     |
       | KRONIKA_SEGMENT_MAX_BYTES                     | 1     |
+      | KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED          | false |
       | KRONIKA_DEMO_WORKLOAD_SCHEMAS                 | 1     |
       | KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA       | 8     |
       | KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY         | 1     |
@@ -42,3 +43,26 @@ Feature: The demo runs bounded commerce and plan-change stories
       | select (count(*) between 1 and 4)::text from shop.orders o join shop.order_items i on i.order_id = o.id join shop.payments p on p.order_id = o.id join shop.event_log e on e.order_id = o.id where o.id > 30000 | true  |
       | select (count(*) > 0)::text from shop.inventory where reserved > 0 and available < 16                                    | true  |
       | select count(*)::text from shop.order_items i left join shop.orders o on o.id = i.order_id where o.id is null             | 0     |
+
+  Scenario: System activity runs without PostgreSQL and removes its scratch file
+    Given a demo workload with these settings
+      | variable                                      | value |
+      | KRONIKA_DEMO_DURATION_S                       | 2     |
+      | KRONIKA_INTERVAL_S                            | 1     |
+      | KRONIKA_SEGMENT_MAX_BYTES                     | 1     |
+      | KRONIKA_DEMO_COLLECTOR_LOG                    | stderr |
+      | KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED          | true  |
+      | KRONIKA_DEMO_SYSTEM_CPU_PERCENT               | 1     |
+      | KRONIKA_DEMO_SYSTEM_MEMORY_MIB                | 8     |
+      | KRONIKA_DEMO_SYSTEM_FILE_MIB                  | 1     |
+      | KRONIKA_DEMO_SYSTEM_DISK_KIB_PER_S            | 4     |
+      | KRONIKA_DEMO_SYSTEM_NETWORK_KIB_PER_S         | 4     |
+      | KRONIKA_DEMO_SYSTEM_FLUSH_INTERVAL_S          | 1     |
+    When the demo finishes within 20 seconds
+    Then the demo log contains these lines
+      | line                    |
+      | system workload started |
+      | system workload stopped |
+    And the demo data root lacks these paths
+      | path                                             |
+      | system-activity/kronika-demo-system-activity.bin |

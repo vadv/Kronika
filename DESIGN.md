@@ -1553,6 +1553,52 @@ OLTP traffic.
 The demo reports segment size, RSS, and CPU use. It also supplies data for
 segment-size benchmarks.
 
+`kronika-demo` also runs an independent system workload by default. The exact
+`KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED` values are `true` and `false`; the
+Compose entrypoint sets `true` explicitly. This workload has no dependency on
+the optional PostgreSQL workload DSN. Invalid or blank configured values stop
+the demo before its child processes start.
+
+Four named threads in the `kronika-demo` process generate bounded CPU, memory,
+file, and loopback activity. CPU, file, and loopback use one fixed 60-second
+wave with six 10-second phases at 25%, 50%, 75%, 100%, 75%, and 50% of their
+configured peaks. Work is never replayed after delayed scheduling. The CPU
+thread works inside 100 ms frames and always retains sleep time. The memory
+thread owns one fixed anonymous allocation, touches each operating-system page
+at startup and once per second, and never resizes it. Two connected UDP sockets
+use ephemeral `127.0.0.1` ports in the existing network namespace; they expose
+no service and use no external route.
+
+The scratch directory defaults to
+`$KRONIKA_DEMO_DIR/system-activity`, must be separate from
+`KRONIKA_STORAGE_DIR`, and resolves in Compose to the durable demo volume rather
+than a tmpfs or the read-only root. It contains one exact file,
+`kronika-demo-system-activity.bin`. The file length is set once, writes wrap by
+page at the end, and no append path exists. Each configured cadence runs
+file-local `sync_data`, discards only those flushed pages through
+`POSIX_FADV_DONTNEED`, and reads them back. Global filesystem synchronization is
+never used. A stale regular file with that exact name is replaced. A symlink or
+non-file is refused. Clean shutdown joins the workers and removes only the
+owned file; the directory and unrelated entries remain.
+
+The Compose defaults and accepted inclusive ranges are 12% peak CPU of one core
+(1–25), 32 MiB anonymous memory (8–128 MiB), an 8 MiB scratch ring (1–32 MiB),
+32 KiB/s peak disk payload in each direction (1–256 KiB/s), 32 KiB/s peak
+one-way loopback payload (1–256 KiB/s), and a 5-second file flush interval
+(1–10 seconds). Peak disk bytes accumulated during one flush interval must fit
+in the ring. The wave averages five-eighths of peak. Defaults therefore spend
+270 CPU-seconds per hour, write at most 73,728,000 bytes per hour and read the
+same payload, and send 73,728,000 payload bytes per hour that appear in each
+loopback RX and TX counter. The fixed file occupies at most 8 MiB; protocol and
+filesystem metadata add small traffic beyond payload counts.
+
+System workers own their state and do not block the PostgreSQL Tokio runtime.
+Each worker error is logged with the operating-system or I/O error and ends
+only that worker. The collector, optional PostgreSQL workload, and remaining
+system workers continue. Shutdown signals all workers first, wakes their
+bounded waits, joins them, and completes scratch cleanup inside the existing
+demo stop interval.
+
 ## Roadmap
 
 Collector:

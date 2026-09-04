@@ -61,8 +61,10 @@ make demo-stop
 ```
 
 Повторный `make demo-up` снова запустит его. PostgreSQL и PgBouncer хранят
-данные в эфемерных tmpfs и создаются заново при каждом старте контейнера;
-именованный том содержит только историю Kronika. Retention ограничен 512 MiB.
+данные в эфемерных tmpfs и создаются заново при каждом старте контейнера.
+Именованный том содержит историю Kronika, а во время работы демоверсии — ещё
+один ограниченный scratch-файл системной нагрузки. При штатной остановке файл
+удаляется. Retention истории ограничен 512 MiB.
 
 Удалить контейнер, сеть и именованный том демоданных:
 
@@ -79,7 +81,8 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 
 Бинарь запускает `kronika-collector` на ограниченный интервал и сообщает
 размер сегмента и журнала, пиковый RSS и время CPU. В образе он управляет
-коллектором и опциональной нагрузкой PostgreSQL.
+коллектором, включённой по умолчанию системной нагрузкой и опциональной
+нагрузкой PostgreSQL.
 
 | Переменная | По умолчанию | Назначение |
 | --- | ---: | --- |
@@ -90,6 +93,141 @@ pg_store_plans. Для штатной работы сеть не нужна, к�
 | `KRONIKA_COLLECTOR_BIN` | `kronika-collector` рядом с бинарём | Какой бинарь коллектора запускать. |
 
 Остальные переменные коллектора `KRONIKA_*` передаются без изменений.
+
+### Ограниченная системная нагрузка
+
+Эта нагрузка включена по умолчанию и не зависит от
+`KRONIKA_DEMO_WORKLOAD_DSN`. Entrypoint Compose включает её явно, поэтому она
+продолжает работать и при выключенной нагрузке PostgreSQL. Некорректное или
+пустое значение останавливает `kronika-demo` при запуске с указанием имени
+переменной.
+
+| Переменная | По умолчанию | Допустимые значения |
+| --- | ---: | --- |
+| `KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED` | `true` | Только `true` или `false`. |
+| `KRONIKA_DEMO_SYSTEM_WORKLOAD_DIR` | `$KRONIKA_DEMO_DIR/system-activity` | Непустой каталог отдельно от `KRONIKA_STORAGE_DIR`. В Compose используется `/var/lib/kronika/data/system-activity`. |
+| `KRONIKA_DEMO_SYSTEM_CPU_PERCENT` | 12 | Пиковый процент одного ядра CPU, 1–25. |
+| `KRONIKA_DEMO_SYSTEM_MEMORY_MIB` | 32 | Анонимный working set, 8–128 MiB. |
+| `KRONIKA_DEMO_SYSTEM_FILE_MIB` | 8 | Фиксированный размер scratch-файла, 1–32 MiB. |
+| `KRONIKA_DEMO_SYSTEM_DISK_KIB_PER_S` | 32 | Пиковая полезная нагрузка отдельно для чтения и записи, 1–256 KiB/s. |
+| `KRONIKA_DEMO_SYSTEM_NETWORK_KIB_PER_S` | 32 | Пиковая односторонняя loopback-нагрузка, 1–256 KiB/s. |
+| `KRONIKA_DEMO_SYSTEM_FLUSH_INTERVAL_S` | 5 | Интервал flush только этого файла, 1–10 с. Произведение пиковой скорости диска на интервал должно помещаться в scratch-файл. |
+
+Внутри `kronika-demo` работают четыре именованных потока:
+`krn-demo-cpu`, `krn-demo-memory`, `krn-demo-disk` и `krn-demo-loop`. Работа
+CPU ограничена кадрами по 100 мс; поток памяти владеет одним массивом
+фиксированного размера и раз в секунду касается каждой страницы ОС. Loopback-
+поток соединяет два UDP-сокета на эфемерных портах `127.0.0.1`. Он не открывает
+внешний маршрут или сервисный порт.
+
+CPU, диск и сеть следуют фиксированной 60-секундной волне из шести
+10-секундных фаз: 25%, 50%, 75%, 100%, 75% и 50% настроенного пика. При
+значениях по умолчанию CPU проходит уровни 3%, 6%, 9%, 12%, 9% и 6% одного
+ядра, а диск и loopback — 8, 16, 24, 32, 24 и 16 KiB/s. Среднее за час равно
+точно пяти восьмым пика:
+
+- CPU: 270 CPU-секунд в час, в среднем 7,5% одного ядра или 3,75% от двух ядер
+  Compose.
+- Память: 32 MiB затронутой анонимной памяти. Файл размером 8 MiB жёстко
+  ограничивает scratch-данные и их страницы в page cache.
+- Диск: 73 728 000 байт (70,3125 MiB) записи в час и столько же чтения, не
+  более 140,625 MiB суммарно. Метаданные файловой системы могут добавить
+  небольшой объём. Задержка планировщика способна только уменьшить нагрузку.
+- Loopback: 73 728 000 байт (70,3125 MiB) полезной нагрузки в час попадает в
+  каждый namespace-счётчик RX и TX, суммарно 140,625 MiB плюс заголовки UDP/IP.
+
+Дисковый поток владеет ровно одним файлом
+`kronika-demo-system-activity.bin`. Он один раз задаёт длину и перезаписывает
+страницы по кольцу, ничего не дописывая в конец. На каждом интервале поток
+вызывает `sync_data` только для этого файла, просит ядро выгрузить только уже
+записанные страницы и читает их снова, чтобы росли физические счётчики чтения
+и записи. Глобальный `sync` не используется. Оставшийся после аварийного
+завершения обычный файл с точным именем заменяется при старте; symlink и другие
+типы файлов отвергаются. Штатная остановка дожидается всех потоков и удаляет
+только этот файл. Ошибка одного потока записывается в лог и не останавливает
+коллектор, нагрузку PostgreSQL или остальные системные потоки.
+
+#### Системная smoke-проверка за 75 секунд
+
+Проверка изолирует `kronika-demo` от PostgreSQL и внешней сети. Она сравнивает
+два снимка PID демо, loopback-интерфейса и фиксированного scratch-файла, а затем
+проверяет штатное удаление файла.
+
+```bash
+set -eu
+make demo-image
+smoke_dir=$(mktemp -d /var/tmp/kronika-system-smoke.XXXXXX)
+smoke_name="kronika-system-smoke-$$"
+cleanup() { docker rm -f "$smoke_name" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+cid=$(docker run --detach \
+  --name "$smoke_name" \
+  --no-healthcheck \
+  --network none \
+  --read-only \
+  --cpus 2 \
+  --memory 1g \
+  --pids-limit 512 \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+  --mount type=bind,src="$smoke_dir",dst=/data \
+  -e KRONIKA_DEMO_DIR=/data \
+  -e KRONIKA_STORAGE_DIR=/data/segments \
+  -e KRONIKA_DEMO_DURATION_S=0 \
+  -e KRONIKA_DEMO_COLLECTOR_LOG=stderr \
+  -e KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED=true \
+  -e KRONIKA_DEMO_SYSTEM_WORKLOAD_DIR=/data/system-activity \
+  --entrypoint /usr/local/bin/kronika-demo \
+  kronika-demo:local)
+
+sample() {
+  docker exec "$cid" sh -ceu '
+    test "$(cat /proc/1/comm)" = kronika-demo
+    set -- $(cat /proc/1/stat)
+    cpu=$(( ${14} + ${15} ))
+    rss=$(awk "/^VmRSS:/ { print \$2 }" /proc/1/status)
+    anon=$(awk "/^RssAnon:/ { print \$2 }" /proc/1/status)
+    threads=$(awk "/^Threads:/ { print \$2 }" /proc/1/status)
+    rb=$(awk "/^read_bytes:/ { print \$2 }" /proc/1/io)
+    wb=$(awk "/^write_bytes:/ { print \$2 }" /proc/1/io)
+    rx=$(cat /sys/class/net/lo/statistics/rx_bytes)
+    tx=$(cat /sys/class/net/lo/statistics/tx_bytes)
+    size=$(stat -c %s /data/system-activity/kronika-demo-system-activity.bin)
+    printf "%s %s %s %s %s %s %s %s %s\n" \
+      "$cpu" "$rss" "$anon" "$rb" "$wb" "$threads" "$rx" "$tx" "$size"
+  '
+}
+
+sleep 10
+read -r cpu0 rss0 anon0 rb0 wb0 threads0 rx0 tx0 size0 <<EOF
+$(sample)
+EOF
+sleep 65
+read -r cpu1 rss1 anon1 rb1 wb1 threads1 rx1 tx1 size1 <<EOF
+$(sample)
+EOF
+
+test "$cpu1" -gt "$cpu0"
+test "$rss1" -gt 0
+test "$anon1" -ge 30000
+test "$rb1" -gt "$rb0"
+test "$wb1" -gt "$wb0"
+test "$threads1" -gt 1
+test "$rx1" -gt "$rx0"
+test "$tx1" -gt "$tx0"
+test "$size0" -eq 8388608
+test "$size1" -eq "$size0"
+
+docker exec "$cid" sh -c 'for f in /proc/1/task/*/comm; do cat "$f"; done'
+docker exec "$cid" sh -c 'test ! -r /sys/fs/cgroup/io.stat || cat /sys/fs/cgroup/io.stat'
+docker stop --time 50 "$cid" >/dev/null
+test "$(docker inspect --format '{{.State.ExitCode}}' "$cid")" -eq 0
+test ! -e "$smoke_dir/system-activity/kronika-demo-system-activity.bin"
+docker logs "$cid"
+docker rm "$cid" >/dev/null
+trap - EXIT
+printf 'Smoke data retained at %s\n' "$smoke_dir"
+```
 
 ### Опциональная нагрузка PostgreSQL
 

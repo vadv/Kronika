@@ -19,7 +19,7 @@ fn binary() -> Result<PathBuf> {
 
 #[derive(Debug)]
 pub(crate) struct DemoRun {
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     log_path: PathBuf,
     child: Option<Child>,
     process_group: i32,
@@ -32,7 +32,10 @@ impl DemoRun {
         let log_path = root.path().join("demo.log");
         let log = std::fs::File::create(&log_path).context("create demo.log")?;
         let mut command = Command::new(binary()?);
-        command.env("KRONIKA_DEMO_DIR", root.path());
+        command
+            .env("KRONIKA_DEMO_DIR", root.path())
+            .env_remove("KRONIKA_DEMO_WORKLOAD_DSN")
+            .env_remove("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN");
         for (key, value) in env {
             command.env(key, value);
         }
@@ -47,7 +50,7 @@ impl DemoRun {
             .context("spawn the demo")?;
         let process_group = i32::try_from(child.id()).context("demo pid exceeds i32")?;
         Ok(Self {
-            _root: root,
+            root,
             log_path,
             child: Some(child),
             process_group,
@@ -75,6 +78,10 @@ impl DemoRun {
 
     pub(crate) fn log(&self) -> Result<String> {
         std::fs::read_to_string(&self.log_path).context("read demo.log")
+    }
+
+    pub(crate) fn data_path(&self, relative: &str) -> PathBuf {
+        self.root.path().join(relative)
     }
 }
 
