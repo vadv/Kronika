@@ -4,7 +4,7 @@ import { useMemo, useState, type ReactNode } from "react"
 import { copyText } from "./clipboard"
 import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
-import { DetailList, DetailRow } from "./detail-list"
+import { DetailList, DetailRow, type DetailValueRole } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { InspectorChartPortal } from "./inspector"
@@ -134,8 +134,8 @@ export function DetailDock({
         <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(processCommand(process), t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
       <DetailList>
-        <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
-        {processDetailFields(lens, process).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
+        <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} valueRole="machine" />
+        {processDetailFields(lens, process).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} valueRole={processDetailValueRole(field)} />)}
       </DetailList>
       <InspectorChartPortal identity={`process:${identifier(value(process, "pid"))}`}>
       <section aria-label={t(`lens.${lens}`)} className="process-history grid min-w-0 gap-[7px]" data-testid="process-history">
@@ -182,6 +182,10 @@ export function processDetailFields(lens: Lens, process: DataRow): readonly Fiel
   return fields.filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && (field.kind === "user" || value(process, field.field) !== null))
 }
 
+export function processDetailValueRole(field: Pick<Field, "kind">): DetailValueRole {
+  return ["id", "user", "command", "tree_command", "state", "timestamp", "start_time", "tty"].includes(field.kind) ? "machine" : "semantic"
+}
+
 export function processChartPoints(
   series: ProcessHistorySeries,
   ticksPerSecond: number | null,
@@ -214,14 +218,15 @@ function formatProcessChartValue(
   ticksPerSecond: number | null,
 ): string {
   if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return humanCores(reading, locale, t("unit.cores"))
+  if (kind === "cores") return measure(reading, locale)
   if (kind === "ns") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   if (kind === "kib") return humanBytes(reading, locale)
   if (kind === "bytes") return humanBytes(reading, locale, t("unit.per_second"))
   return formatCell(kind, reading, locale, t, ticksPerSecond)
 }
 
-function DetailField({ help, label, t, value: output }: { readonly help: string; readonly label: string; readonly t: Translate; readonly value: ReactNode }) {
-  return <DetailRow term={<LabelHelp helpKey={help} labelKey={label} t={t} />} valueClassName="text-sm">{output}</DetailRow>
+function DetailField({ help, label, t, value: output, valueRole }: { readonly help: string; readonly label: string; readonly t: Translate; readonly value: ReactNode; readonly valueRole: DetailValueRole }) {
+  return <DetailRow term={<LabelHelp helpKey={help} labelKey={label} t={t} />} valueRole={valueRole}>{output}</DetailRow>
 }
 
 function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: number; readonly t: Translate }) {

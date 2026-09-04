@@ -102,12 +102,14 @@ await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !==
 if (reportMode) {
   const beforeReload = await evaluate(`location.href`)
   const reportState = await evaluate(`(() => ({
+    export: document.querySelector('[data-testid="export-trigger"]') !== null,
     login: document.querySelector('[data-testid="login-card"]') !== null,
     mcp: document.querySelector('[data-testid="mcp-trigger"]') !== null,
     refresh: document.querySelector('[data-testid="refresh-action"]') !== null,
     logout: document.querySelector('[data-testid="logout-action"]') !== null,
     pathname: location.pathname,
   }))()`)
+  assert.equal(reportState.export, false)
   assert.equal(reportState.login, false)
   assert.equal(reportState.mcp, false)
   assert.equal(reportState.refresh, false)

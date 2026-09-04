@@ -1,7 +1,5 @@
 //! Bounded accounting for the metadata one scan is allowed to retain.
 
-#![allow(unreachable_pub, reason = "used through the parent module")]
-
 use std::fs::File;
 use std::io;
 use std::sync::Arc;

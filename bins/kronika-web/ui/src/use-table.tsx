@@ -59,6 +59,7 @@ export const USE_COLUMNS = ["utilisation", "saturation", "errors"] as const
 // disclosure, not navigation — several rows open side by side.
 export function UseTable({
   cgroups,
+  cgroupsFirst = false,
   cursor,
   expanded,
   hour,
@@ -66,10 +67,12 @@ export function UseTable({
   locale,
   onToggle,
   renderExpansion,
+  visibleResources,
   withContent,
   t,
 }: {
   readonly cgroups: boolean
+  readonly cgroupsFirst?: boolean | undefined
   readonly cursor: number
   readonly expanded: ReadonlySet<LedgerKey>
   readonly hour: number
@@ -77,6 +80,7 @@ export function UseTable({
   readonly locale: Locale
   readonly onToggle: (key: LedgerKey) => void
   readonly renderExpansion: (key: LedgerKey) => ReactNode
+  readonly visibleResources?: ReadonlySet<UseResourceKey> | undefined
   readonly withContent: ReadonlySet<UseResourceKey>
   readonly t: Translate
 }) {
@@ -84,12 +88,23 @@ export function UseTable({
   // readings, group metrics or entity tables. Cells without a lane stay "—".
   const byLane = useMemo(() => lanePointsByLane(lanePoints), [lanePoints])
   const shown = useMemo(() => USE_RESOURCES.filter((resource) =>
-    withContent.has(resource.key) || USE_COLUMNS.some((column) => {
+    (visibleResources === undefined || visibleResources.has(resource.key))
+    && (withContent.has(resource.key) || USE_COLUMNS.some((column) => {
       const cell = resource[column]
       return cell !== null && seriesHasReading(byLane.get(cell.lane) ?? [])
-    })), [byLane, withContent])
+    }))), [byLane, visibleResources, withContent])
   const end = hour + 3_600_000_000
   if (shown.length === 0 && !cgroups) return null
+  const cgroupRow = cgroups && <div data-testid="use-group-cgroups">
+    <div className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-expanded={expanded.has("cgroups") || undefined} data-testid="use-row-cgroups" onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle("cgroups") }}>
+      <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
+        {expanded.has("cgroups") ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
+        {t("section.cgroups")}
+      </button>
+      <span className="use-cell flex min-w-0 items-center px-2 font-sans text-xs text-fg4">{t("use.cgroups_hint")}</span>
+    </div>
+    {expanded.has("cgroups") && <div className="use-expansion border-b border-line2 bg-s1" data-testid="use-expansion-cgroups">{renderExpansion("cgroups")}</div>}
+  </div>
   return <section aria-label={t("use.title")} className="use-table" data-testid="use-table">
     <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs font-medium text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))] max-[760px]:[&>span]:px-[5px]">
       <span>{t("use.resource")}</span>
@@ -97,6 +112,7 @@ export function UseTable({
         <LabelHelp helpKey={`use.${column}.help`} labelKey={`use.${column}`} t={t} />
       </span>)}
     </header>
+    {cgroupsFirst && cgroupRow}
     {shown.map((resource) => {
       const open = expanded.has(resource.key)
       return <div data-testid={`use-group-${resource.key}`} key={resource.key}>
@@ -127,16 +143,7 @@ export function UseTable({
         {open && <div className="use-expansion border-b border-line2 bg-s1" data-testid={`use-expansion-${resource.key}`}>{renderExpansion(resource.key)}</div>}
       </div>
     })}
-    {cgroups && <div data-testid="use-group-cgroups">
-      <div className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-expanded={expanded.has("cgroups") || undefined} data-testid="use-row-cgroups" onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle("cgroups") }}>
-        <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
-          {expanded.has("cgroups") ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
-          {t("section.cgroups")}
-        </button>
-        <span className="use-cell flex min-w-0 items-center px-2 font-sans text-xs text-fg4">{t("use.cgroups_hint")}</span>
-      </div>
-      {expanded.has("cgroups") && <div className="use-expansion border-b border-line2 bg-s1" data-testid="use-expansion-cgroups">{renderExpansion("cgroups")}</div>}
-    </div>}
+    {!cgroupsFirst && cgroupRow}
   </section>
 }
 

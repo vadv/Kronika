@@ -1,7 +1,5 @@
 //! Reading the raw journal: its header, its frames, and the parts they hold.
 
-#![allow(unreachable_pub, reason = "used through the parent module")]
-
 use std::io;
 use std::path::Path;
 use std::sync::Arc;

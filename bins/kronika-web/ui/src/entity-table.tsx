@@ -12,12 +12,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import type { DetailValueRole } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { parseSearch, rowMatchesSearch, type SearchSurface } from "./search"
 import { IDLE_SEARCH_REQUEST, SearchRequestMessage, type SearchRequestState } from "./search-request"
+import { TableRequestMessage, tableRequestState, type TableRequestPhase } from "./table-request"
 import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
@@ -40,11 +42,16 @@ export interface EntityColumn {
   readonly rate?: boolean
   readonly valueScale?: number | null
   readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
+  readonly detailValueRole?: DetailValueRole
   readonly width?: number
   readonly expandToHeader?: boolean
   readonly sticky?: boolean | string
   readonly sortable?: boolean
   readonly available?: ((row: DataRow) => boolean) | undefined
+}
+
+export function detailValueRoleForColumn(column: Pick<EntityColumn, "detailValueRole" | "kind">): DetailValueRole {
+  return column.detailValueRole ?? (column.kind === "id" || column.kind === "timestamp" ? "machine" : "semantic")
 }
 
 export interface TableOrder {
@@ -62,7 +69,6 @@ export function EntityTable({
   findingField,
   filterRows,
   label,
-  loading = false,
   locale,
   onOrder,
   onPattern,
@@ -75,6 +81,7 @@ export function EntityTable({
   rowKey = defaultKey,
   rowLabel,
   rows,
+  requestPhase = "ready",
   searchGrouped = false,
   searchRequest = IDLE_SEARCH_REQUEST,
   searchSurface,
@@ -92,7 +99,6 @@ export function EntityTable({
   readonly findingField?: string | null | undefined
   readonly filterRows?: ((rows: readonly DataRow[], pattern: string) => readonly DataRow[]) | undefined
   readonly label: string
-  readonly loading?: boolean | undefined
   readonly locale: Locale
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
@@ -105,6 +111,7 @@ export function EntityTable({
   readonly rowKey?: (row: DataRow) => string
   readonly rowLabel?: ((row: DataRow) => string) | undefined
   readonly rows: readonly DataRow[]
+  readonly requestPhase?: TableRequestPhase | undefined
   readonly searchGrouped?: boolean | undefined
   readonly searchRequest?: SearchRequestState | undefined
   readonly searchSurface?: SearchSurface | undefined
@@ -238,16 +245,24 @@ export function EntityTable({
     observer.observe(root)
     return () => observer.disconnect()
   }, [contentSized, rendered.length, width])
-  const contentHeight = contentSized ? (rendered.length === 0 ? (loading ? headHeight + SKELETON_ROWS * ROW_PX : 72) : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
+  const contentHeight = contentSized ? (rendered.length === 0 ? 72 : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
   const virtualHeight = contentSized ? rendered.length * ROW_PX : virtual.getTotalSize()
   const searchPending = searchRequest.phase === "pending"
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
     ? <SearchRequestMessage request={searchRequest} t={t} />
     : null
-  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
-    {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
-    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true && filterRows === undefined ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
-    <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
+  const request = tableRequestState(requestPhase, rendered.length !== 0)
+  const requestMessage = request.phase === "ready" ? null : <TableRequestMessage request={request} t={t} />
+  const activeMessage = searchPending
+    ? searchMessage
+    : request.phase === "pending" ? requestMessage : searchMessage ?? requestMessage
+  const busy = searchPending || request.phase === "pending"
+  const standaloneMessage = activeMessage !== null && status === undefined && onPattern === undefined && contextLabel === undefined
+  return <section aria-busy={searchPending} className={`entity-table relative min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+    {status !== undefined && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{activeMessage ?? status}</div>}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true && filterRows === undefined ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={activeMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
+    {standaloneMessage && <div className="pointer-events-none absolute left-2 right-2 top-[calc(var(--spacing-head)+4px)] z-40 flex min-h-[24px] items-center rounded-[var(--radius-xs)] border border-line2 bg-s1/95 px-2 py-1 text-xs text-fg3 shadow-sm">{activeMessage}</div>}
+    <div aria-busy={busy} aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
@@ -266,20 +281,19 @@ export function EntityTable({
       {rendered.length === 0
         ? searchPending
           ? <p aria-hidden="true" className="table-empty">{t("filter.searching")}</p>
-          : searchRequest.phase === "error"
-            ? <div className="table-empty" role="alert">{searchMessage}</div>
-            : loading
-              ? <div role="status">
-                <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
-                <div aria-hidden="true" data-testid="table-skeleton">
+          : request.phase === "pending"
+            ? <div aria-hidden="true" data-testid="table-skeleton">
                   {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
                     {table.getVisibleLeafColumns().map((column, columnIndex) => <span className="px-[7px]" key={column.id} style={{ width: column.getSize() }}>
                       <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * -90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
                     </span>)}
                   </div>)}
-                </div>
               </div>
-              : <p className="table-empty flex items-center gap-2.5">{pattern === "" ? empty : <>{t("filter.none")}{onPattern !== undefined && <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="table-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button>}</>}</p>
+            : searchRequest.phase === "error"
+              ? <div aria-hidden="true" className="table-empty" />
+              : request.phase === "error"
+                ? <div aria-hidden="true" className="table-empty" />
+                : <p className="table-empty flex items-center gap-2.5">{pattern === "" ? empty : <>{t("filter.none")}{onPattern !== undefined && <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="table-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button>}</>}</p>
         : <div className="relative" data-testid="virtual-body" style={{ height: virtualHeight, width: contentWidth }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]

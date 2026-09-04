@@ -99,8 +99,11 @@ export function calendarMonthLabel(key: string, locale: Locale): string {
 export function calendarMonthDays(key: string): readonly string[] {
   const match = /^(\d{4})-(\d{2})$/.exec(key)
   if (match === null) return []
-  const year = Number(match[1]), month = Number(match[2])
-  const count = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  const first = civilDate(`${key}-01`, 12)
+  if (first === null) return []
+  const next = new Date(first)
+  next.setUTCMonth(next.getUTCMonth() + 1)
+  const count = Math.round((next.getTime() - first.getTime()) / 86_400_000)
   return Array.from({ length: count }, (_, index) => `${match[1]}-${match[2]}-${String(index + 1).padStart(2, "0")}`)
 }
 
@@ -115,5 +118,9 @@ function civilLabel(parts: Readonly<Record<string, string>>, locale?: Locale): s
 function civilDate(key: string, hour: number): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key)
   if (match === null) return null
-  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), hour))
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3])
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(hour, 0, 0, 0)
+  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day ? date : null
 }

@@ -1,10 +1,5 @@
 //! Vocabulary the strict scan produces: what was found and where.
 
-#![allow(
-    unreachable_pub,
-    reason = "these items are re-exported by the parent module"
-)]
-
 use std::ffi::CString;
 use std::fmt;
 

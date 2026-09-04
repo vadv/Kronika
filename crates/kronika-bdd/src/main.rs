@@ -4,10 +4,6 @@
     reason = "cucumber step phrases are literal English, matched as plain text, not real regexes"
 )]
 #![allow(
-    clippy::multiple_crate_versions,
-    reason = "cucumber's dependency tree pulls duplicate transitive versions outside our control"
-)]
-#![allow(
     clippy::needless_pass_by_ref_mut,
     reason = "cucumber passes &mut World to every step by contract, even read-only ones"
 )]

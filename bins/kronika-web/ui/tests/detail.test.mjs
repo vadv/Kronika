@@ -67,7 +67,9 @@ test("chart presentation normalizes process counters to the unit shown on its ax
     { segmentId: "segment-a", timestamp: 20, value: 2.5 },
     { segmentId: "segment-a", timestamp: 30, value: 0 },
   ])
+  assert.equal(detail.processChartPoints(source, null), source.points)
   assert.equal(detail.processChartUnit("cores", () => " cores", 100), "cores")
+  assert.equal(detail.processChartUnit("cores", (key) => key === "unit.per_second" ? "/s" : " cores", null), "ticks/s")
   assert.equal(detail.processChartUnit("bytes", () => "/s", 100), "B/s")
   assert.equal(detail.processChartUnit("rate", () => "/s", 100), "#/s")
 })
@@ -91,6 +93,11 @@ test("process details expose each user identity exactly once in every lens", () 
     assert.equal(ids.filter((id) => id === "effective_user").length, 1, lens)
     assert.equal(new Set(ids).size, ids.length, lens)
   }
+})
+
+test("verbatim process state uses the machine value role", () => {
+  assert.equal(detail.processDetailValueRole({ kind: "state" }), "machine")
+  assert.equal(detail.processDetailValueRole({ kind: "percent" }), "semantic")
 })
 
 test("scheduler references stay in CPU detail while temporal fault metrics stay chartable", async () => {

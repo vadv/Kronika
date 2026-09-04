@@ -589,6 +589,49 @@ file performs no network request. The interface shell, JavaScript bindings and
 compressed WebAssembly are built ahead of the Rust binary and committed as
 reproducible assets, so an ordinary Cargo build needs no Node installation.
 
+`GET /api/export?from=<unix_second>&to=<unix_second>` is the authenticated web
+adapter for the same composition. Its inclusive range of signed whole Unix
+seconds passes directly, in-process, through `kronika_dump::slice_to_zms` and
+then `kronika_report::write_html_from_file_with_segment_id`, preserving the
+slice identity when its context makes catalog `min_ts` differ; the existing
+`write_html_from_file` keeps its catalog-derived identity contract. Each web
+process prepares at most one export at a time and does not queue another
+request. Until the slice and report build finishes, another authenticated
+request immediately receives `503 Service Unavailable` with `export_busy`.
+The blocking build retains its admission permit if the request is abandoned.
+Web creates two auto-deleted filesystem temporary files in the operating
+system's standard temporary directory, following the platform and `TMPDIR`
+selection used by `tempfile`, and reuses the slicer's scratch file for the
+complete HTML. It validates that result before sending headers and streams the
+`.html` attachment without HTTP content coding in bounded chunks; preparation
+and delivery remain bounded in memory. The report build omits this live-only
+control.
+
+The live Export action opens a compact non-modal range panel attached to its
+top-bar control. It does not alter the one-hour timeline, address, view or
+cursor. Two deterministic text editors per endpoint expose `YYYY-MM-DD` and
+`HH:mm:ss`; a shared month calendar edits either endpoint and highlights the
+date span. The exact inclusive duration and a selected-hour reset remain
+visible. The current global Browser/UTC mode controls presentation only. In
+Browser mode the panel names the browser's resolved IANA zone. A local civil
+time skipped by a clock transition is rejected at that endpoint; a repeated
+civil time alone exposes first/second occurrence controls derived from the
+actual candidates, including transitions that are not one hour.
+
+An accepted export keeps immutable signed Unix-second bounds. Until response
+headers arrive, the panel reports preparation with measured elapsed time and
+offers no cancellation or restart. It cannot be dismissed during that work,
+while the rest of the interface and its navigation remain available. After
+headers, the panel reports received bytes and the declared `Content-Length`
+when present while assembling the streamed body. Completion creates one HTML
+download and revokes its object URL. An HTTP error, response-body failure or
+local-download failure returns the same bounded panel to its editable state.
+If the connection ends before any response status, server preparation remains
+unobservable: the panel retains its submitted range, reports that state and
+keeps close and restart unavailable. Browser Back and hour navigation close an
+idle panel; during an active export they leave the panel and its submitted
+range in place.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the
@@ -770,8 +813,18 @@ System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
-equivalents on labelled scales. In a container, cgroups are separate tables: used,
-user, and system core equivalents come from cgroup counter deltas, and capacity
+equivalents on labelled scales. When `instance_metadata.environment` is
+`container`, the Host ledger starts with an open collector-cgroup overview and retains only the
+namespace Network host row; host CPU, memory, and storage rows and lanes are
+hidden. The overview reads each controller through the same exact entity-history
+identity as its detail table and shows compact CPU, memory, I/O, and Tasks
+history with cursor readings. Its cards use only the mode name because the
+collector-cgroup heading already supplies their context. I/O stays separate
+per `(cgroup_path, major, minor)` and is never summed. When every ranked I/O
+row has one exact cgroup path, the ledger and entity table name that path once
+and label rows by exact `major:minor`;
+with multiple paths, each row retains its path. Tasks uses the exact unified path only for cgroup
+v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither
@@ -827,6 +880,11 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Every current-view entity table owns a target-keyed local request state. Until
+the newest target succeeds, pending or failure is shown locally and completed
+empty copy is suppressed; the last successful same-surface rows remain labelled
+as retained. Only a successful zero-row response is empty.
+
 Processes uses the whole viewport row left after the time preview and compact
 controls. Its four summary readings live in the lens bar instead of a separate
 height band. The virtual table is the primary surface. A selected row uses the
@@ -840,6 +898,9 @@ gutter without exposing horizontal overflow.
 CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
+Across same-surface cursor requests, a selected entity's Inspector portal and
+plot DOM remain mounted. Only its cursor marker, readout and cursor-dependent
+values update; the successful replacement remains authoritative.
 
 The compact preview control rail is never a horizontal scroll region. Its Chart
 action owns a fixed edge slot, while lane labels and readings share only the
@@ -908,10 +969,15 @@ Recorded findings and direct thresholds guide attention with shape, weight and
 a marker rail as well as colour. Ordinary workload volume remains neutral, and
 the interface does not add diagnosis, scoring or causal claims.
 
-Two typefaces carry fixed roles: a UI sans for chrome — navigation, labels,
-buttons, prose — and a monospaced face for data — values, identifiers,
-timestamps, queries. Both ship embedded in the single artifact. Labels are
-sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
+Two typefaces carry fixed semantic roles: IBM Plex Sans for chrome —
+navigation, labels, buttons and prose — plus localized display vocabulary and
+ordinary or humanized values. JetBrains Mono is reserved for exact machine
+strings that benefit from fixed glyph widths: PIDs, OIDs, query IDs,
+timestamps, code, raw identifiers, verbatim source enums and tabular numeric
+contexts. Both ship embedded in the single artifact.
+The live and report builds retain the same Detail value classes: ordinary and
+humanized values never fall back to browser-default typography.
+Labels are sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
 a small radius scale and brief 80–120 ms transitions, honoring reduced-motion.
 Chart series identity uses its own palette, validated for colour-vision
 separation and contrast against both theme surfaces, and is never taken from

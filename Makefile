@@ -40,11 +40,15 @@ report-assets: ui-build ## Rebuild the committed report shell and WebAssembly bi
 report-assets-check: ui-check ## Reproduce the committed report shell and WebAssembly bindings.
 	@RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) scripts/report-assets.sh check $(REPORT_ASSET_FLAGS)
 
-fmt: ## Format the workspace.
+fmt: ## Format the product and nested lint workspaces.
 	@cargo +$(RUST_TOOLCHAIN) fmt --all
+	@cargo +$(RUST_TOOLCHAIN) fmt --manifest-path lints/kronika_lints/Cargo.toml --all
+	@cargo +$(RUST_TOOLCHAIN) fmt --manifest-path lints/kronika_lints/fixtures/Cargo.toml --all
 
-fmt-check: ## Verify workspace formatting without changing files.
+fmt-check: ## Verify product and nested lint workspace formatting.
 	@cargo +$(RUST_TOOLCHAIN) fmt --all --check
+	@cargo +$(RUST_TOOLCHAIN) fmt --manifest-path lints/kronika_lints/Cargo.toml --all --check
+	@cargo +$(RUST_TOOLCHAIN) fmt --manifest-path lints/kronika_lints/fixtures/Cargo.toml --all --check
 
 query-boundary: ## Verify the shared query layer remains storage and transport neutral.
 	@scripts/check-query-boundary.sh

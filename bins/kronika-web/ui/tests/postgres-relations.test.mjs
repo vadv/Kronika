@@ -11,6 +11,12 @@ const view = await importModule(
   { plugins: [registryPlugin([])] },
 )
 
+test("equivalent relation rate fields keep Inspector chart inputs stable", async () => {
+  const source = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /const rateFieldsKey = \(data\.rateColumns\[section\] \?\? NO_RATE_FIELDS\)\.join\("\\u0000"\)/)
+  assert.match(source, /const rateFields = useMemo\(\(\) => rateFieldsKey === "" \? NO_RATE_FIELDS : rateFieldsKey\.split\("\\u0000"\), \[rateFieldsKey\]\)/)
+})
+
 test("relation chart controls require exact physical operands and a numeric semantic", () => {
   const physical = ["seq_scan", "seq_tup_read", "idx_tup_fetch", "main_fork_bytes", "last_seq_scan", "indisvalid"]
   assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "seq_scan", kind: "number", rate: true }, physical), true)

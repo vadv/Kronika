@@ -1,10 +1,5 @@
 //! Name grammar and small pure helpers used while scanning.
 
-#![allow(
-    unreachable_pub,
-    reason = "these items are re-exported by the parent module"
-)]
-
 use std::ffi::CStr;
 
 use rustix::fs::FileType;

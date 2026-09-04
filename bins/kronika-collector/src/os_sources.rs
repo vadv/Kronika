@@ -358,13 +358,13 @@ pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool 
 fn intern_str(
     interner: &mut Interner,
     type_id: u32,
-    source: &'static str,
+    origin: &'static str,
     value: &str,
 ) -> Option<StrId> {
     match interner.intern(value.as_bytes()) {
         Ok(id) => Some(StrId(id.get())),
         Err(err) => {
-            log_degraded(type_id, source, &err);
+            log_degraded(type_id, origin, &err);
             None
         }
     }

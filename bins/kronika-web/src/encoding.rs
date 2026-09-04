@@ -88,6 +88,10 @@ impl AcceptedEncodings {
             ContentCoding::Gzip
         }
     }
+
+    pub(crate) const fn accepts_identity(self) -> bool {
+        self.identity > 0
+    }
 }
 
 impl ContentCoding {

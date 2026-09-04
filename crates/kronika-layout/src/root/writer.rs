@@ -1,10 +1,5 @@
 //! Exclusive writer ownership and segment publication.
 
-#![allow(
-    unreachable_pub,
-    reason = "these items are re-exported by the parent module"
-)]
-
 use super::index::prune_empty_calendar;
 use super::*;
 

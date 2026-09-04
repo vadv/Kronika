@@ -56,13 +56,35 @@ assigned yet; values above `3` are rejected.
 With `KRONIKA_WEB_AUTH=required`, protected requests accept either Basic
 credentials or the browser session cookie issued by `POST /auth/session`.
 
+## Export temporary files
+
+Each export creates two automatically deleted files in the operating system's
+standard temporary directory: the sliced ZMS, and a second file used first as
+slice scratch space and then as the complete HTML report. On Linux this is
+usually `/tmp` when `TMPDIR` is unset. The service account needs write access
+to the selected directory and enough free capacity for both files at the same
+time.
+
+For a hardened systemd unit that restricts filesystem writes, create a
+dedicated directory owned by the service account and allow that same path:
+
+```ini
+[Service]
+Environment=TMPDIR=/var/tmp/kronika-web
+ReadWritePaths=/var/tmp/kronika-web
+```
+
 ## Endpoints
 
 - `/` — embedded browser interface; accepts `GET` and `HEAD`.
 - `/auth/session` — checks a browser session with `GET`, creates one from Basic
   credentials with `POST`, and clears it with `DELETE`. Browser sessions use a
   `Secure` cookie automatically over HTTPS.
-- `/api/*` — JSON and NDJSON resources used by the interface; accepts `GET`.
+- `/api/export?from=<unix_second>&to=<unix_second>` — creates an authenticated
+  standalone HTML report for the inclusive range and returns it as an `.html`
+  attachment; accepts `GET`.
+- Other `/api/*` routes — JSON and NDJSON resources used by the interface;
+  accept `GET`.
 - `/mcp` — stateless Streamable HTTP endpoint; accepts `POST`. A query string or
   an `Origin` header is rejected. MCP reads stored Kronika data. See
   [MCP client setup](../../docs/mcp-clients.md).

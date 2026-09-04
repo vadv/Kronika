@@ -430,6 +430,24 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
 })
 
+test("verbatim PostgreSQL tokens use the machine value role in Detail", () => {
+  const role = (columns, field) => columns.find((column) => column.field === field)?.detailValueRole
+  for (const field of ["lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event"]) {
+    assert.equal(role(helpers.LOCK_COLUMNS, field), "machine", field)
+  }
+  for (const field of ["backend_type", "state", "wait_event_type", "wait_event"]) {
+    assert.equal(role(helpers.ACTIVITY_DETAIL_COLUMNS, field), "machine", field)
+  }
+  assert.notEqual(role(helpers.ACTIVITY_DETAIL_COLUMNS, "query_duration_ms"), "machine")
+  assert.equal(role(helpers.planColumns("identity"), "cmd_type"), "machine")
+  const vacuum = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012006", values: {} }
+  const vacuumColumns = helpers.vacuumDetailColumns(vacuum, null)
+  assert.equal(role(vacuumColumns, "phase"), "machine")
+  for (const field of ["is_autovacuum", "heap_blks_scanned", "delay_time"]) {
+    assert.notEqual(role(vacuumColumns, field), "machine", field)
+  }
+})
+
 test("lock accessibility exposes exact parents, extra blocker PIDs, and prepared waits", () => {
   const t = (key, slots = {}) => key === "pg.locks.prepared_transaction" ? "prepared transaction" : `${key}:${Object.values(slots).join(",")}`
   const row = { logicalName: "pg_locks", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1011002", values: {
@@ -592,11 +610,25 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /const stale = \(\) => controller\.signal\.aborted \|\| generation !== snapshotGeneration\.current/)
   assert.match(source, /const requestOrder = visibleSource === "processes"[\s\S]*const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, requestOrder, denseOptions\)/)
   assert.match(source, /const retainsDenseRows = denseRequest !== undefined[\s\S]*currentSnapshot\.cursor === cursor[\s\S]*currentSnapshot\.denseSection === denseRequest\.section/)
-  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| retainsDenseRows \? currentSnapshot\.data : EMPTY_DATA/)
+  assert.match(source, /const retainsCurrentView = snapshotTarget !== null && currentSnapshot\.owner === foregroundKey/)
+  assert.match(source, /snapshotRowsVisible\(currentSnapshot\.target, snapshotTarget, currentSnapshot\.owner, foregroundKey, retainsDenseRows\)/)
+  assert.match(source, /some\(\(row\) => denseRequest\.group === undefined \|\| row\.relation\?\.group === denseRequest\.group\)/)
+  assert.doesNotMatch(source, /clearCgroupSnapshotRows/)
+  const cgroupLoad = source.slice(source.indexOf("const loadOrdinarySnapshot"), source.indexOf("const timer = setTimeout"))
+  assert.match(cgroupLoad, /const exact = await Promise\.all/)
+  assert.match(cgroupLoad, /\.catch\(\(reason: unknown\) => \{[\s\S]*!stale\(\) && cgroupSnapshotKey\.current === planKey/)
+  assert.match(cgroupLoad, /filtered \$\{request\.section\} snapshot failed/)
+  assert.match(cgroupLoad, /return EMPTY_DATA/)
+  assert.match(cgroupLoad, /exact\.reduce\(\(current, incoming\) => mergeSnapshotData\(current, incoming\), primary\)/)
   assert.match(source, /let inFlight = false/)
   assert.match(source, /if \(inFlight \|\| stale\(\)\)/)
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)
   assert.match(source, /current\.target === snapshotTarget \? current\.data : EMPTY_DATA/)
+  assert.match(source, /loaded\(incoming, null, ordinaryGroups\.length !== 0\)/)
+  assert.match(source, /companionPending: false,[\s\S]*companion === EMPTY_DATA \? current\.data : mergeSnapshotData/)
+  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| cursorState === "loading"/)
+  assert.match(source, /else if \(!companionPending\) \{\s*ticksPerSecondCache\.current = null/)
+  assert.match(source, /\?\? \(companionPending && hour !== null/)
   assert.match(source, /action\.failed = pageCursor[\s\S]*setDensePageState\("error"\)/)
   assert.match(source, /return \(\) => \{ clearTimeout\(timer\); controller\.abort\(\) \}/)
   assert.match(source, /\}, \[finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget\]\)/)

@@ -6,7 +6,7 @@ import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { identifier, processCommand, rawText, value, type Locale } from "./model"
-import { processDetailFields } from "./detail"
+import { processDetailFields, processDetailValueRole } from "./detail"
 import { CellValue } from "./process-table"
 
 // The OS process recorded under the selected backend's PID. It is the same
@@ -34,9 +34,9 @@ export function ProcessFacts({ locale, process, processTime, t }: {
       <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(command, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button>
     </section>
     <DetailList>
-      <DetailRow term={<LabelHelp helpKey="detail.pg_snapshot.help" labelKey="detail.pg_snapshot.label" t={t} />} valueClassName="text-sm">{processTime === null ? "—" : time.timestamp(processTime)}</DetailRow>
-      <DetailRow term={<LabelHelp helpKey="col.pid.help" labelKey="col.pid.label" t={t} />} valueClassName="text-sm">{pid}</DetailRow>
-      {processDetailFields("generic", process).map((field) => <DetailRow key={field.id} term={<LabelHelp helpKey={field.help} labelKey={field.label} t={t} />} valueClassName="text-sm">
+      <DetailRow term={<LabelHelp helpKey="detail.pg_snapshot.help" labelKey="detail.pg_snapshot.label" t={t} />} valueRole="machine">{processTime === null ? "—" : time.timestamp(processTime)}</DetailRow>
+      <DetailRow term={<LabelHelp helpKey="col.pid.help" labelKey="col.pid.label" t={t} />} valueRole="machine">{pid}</DetailRow>
+      {processDetailFields("generic", process).map((field) => <DetailRow key={field.id} term={<LabelHelp helpKey={field.help} labelKey={field.label} t={t} />} valueRole={processDetailValueRole(field)}>
         <CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={null} />
       </DetailRow>)}
     </DetailList>

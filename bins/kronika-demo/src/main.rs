@@ -1,10 +1,4 @@
 //! Runs the collector and optional demo workload for a bounded measurement window.
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "the registry's arrow/parquet stack and the workload's rand/tokio-postgres \
-              dependencies pull duplicate transitive versions outside our control"
-)]
-
 mod report;
 mod sample;
 mod sections;

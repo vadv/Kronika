@@ -11,11 +11,6 @@
 //! source is logged and retried on its next interval; bad startup
 //! configuration, journal-open failures, and any persistence failure that
 //! poisons the journal terminate the process.
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "the registry's arrow/parquet stack pulls duplicate transitive versions outside our control"
-)]
-
 #[cfg(target_env = "musl")]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;

@@ -107,7 +107,7 @@ export function PlanStatementPanel({ cursor, locale, onRelated, segments, t, tar
     <DetailList>
       {readings.map(([field, format]) => {
         const cell = asNumber(value(decorated, field))
-        return cell === null ? null : <DetailRow key={field} term={<LabelHelp helpKey={`pg.field.${field}.help`} labelKey={`pg.field.${field}.label`} t={t} />} valueClassName="text-sm">{format(cell)}</DetailRow>
+        return cell === null ? null : <DetailRow key={field} term={<LabelHelp helpKey={`pg.field.${field}.help`} labelKey={`pg.field.${field}.label`} t={t} />}>{format(cell)}</DetailRow>
       })}
     </DetailList>
   </section>

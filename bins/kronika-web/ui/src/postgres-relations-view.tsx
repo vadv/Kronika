@@ -6,7 +6,7 @@ import { copyText } from "./clipboard"
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
-import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
+import { detailValueRoleForColumn, EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
@@ -38,14 +38,18 @@ import { emptyHourStatusKey } from "./refresh"
 import { PostgresSummary, type PostgresSummaryState } from "./postgres-summary"
 import { SeriesChart } from "./series-chart"
 import type { SearchRequestState } from "./search-request"
+import type { TableRequestPhase } from "./table-request"
 import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
+
+const NO_RATE_FIELDS: readonly string[] = []
+const RELATION_MACHINE_TEXT = new Set(["amname", "datname", "indexrelname", "relname", "schemaname", "tablespace"])
 
 export interface PostgresRelationsViewProps {
   readonly blockSize: number | null
   readonly cursor: number
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
-  readonly tablesLoading: boolean
+  readonly requestPhase: TableRequestPhase
   readonly filters: Readonly<Record<string, string>>
   readonly historyRevision: number
   readonly hour: number
@@ -71,10 +75,11 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { blockSize, cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, summary, t } = props
+  const { blockSize, cursor, data, densePageState, requestPhase, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, summary, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
-  const rateFields = data.rateColumns[section] ?? []
+  const rateFieldsKey = (data.rateColumns[section] ?? NO_RATE_FIELDS).join("\u0000")
+  const rateFields = useMemo(() => rateFieldsKey === "" ? NO_RATE_FIELDS : rateFieldsKey.split("\u0000"), [rateFieldsKey])
   const columns = useMemo(() => postgresByteColumns(relationColumns(section, lens, level, rateFields, t), blockSize), [blockSize, lens, level, rateFields, section, t])
   const activeOrder = order !== undefined && columns.some(({ field, sortable }) => field === order.column && sortable === true)
     ? order
@@ -101,7 +106,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
       <EntityTable
         columns={columns}
         contentSized={rows.length < 10 && !hasMore}
-        loading={tablesLoading || rows.length === 0 && densePageState === "loading"}
+        requestPhase={requestPhase}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}
@@ -216,7 +221,7 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     </section></InspectorChartPortal>}
     <DetailList>{columns.map((column) => {
       const label = t(column.label)
-      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>
+      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />} valueRole={detailValueRoleForColumn(column)}>{scanValue(row, column, locale, t)}</DetailRow>
     })}</DetailList>
     {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(definition, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>
@@ -263,7 +268,7 @@ function relationColumn(section: RelationSection, field: string, rateFields: rea
   const width = kind === "timestamp" ? 210 : kind === "text" ? field.includes("relname") ? 190 : 145 : kind === "boolean" || kind === "id" ? 115 : kind === "milliseconds" ? 155 : 140
   const copyField = section === "pg_stat_user_tables" && field === "main_fork_bytes" ? "table_data_bytes" : field
   const help = relationHelpKey(section, field)
-  return { field, label: `pg.field.${copyField}.label`, ...(help === undefined ? {} : { help }), kind, width, rate: rateFields.includes(field) }
+  return { field, label: `pg.field.${copyField}.label`, ...(help === undefined ? {} : { help }), kind, width, rate: rateFields.includes(field), ...(RELATION_MACHINE_TEXT.has(field) ? { detailValueRole: "machine" as const } : {}) }
 }
 
 function rawRelationField(section: RelationSection, lens: RelationLens, field: string): boolean {

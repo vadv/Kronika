@@ -25,6 +25,18 @@ test("locale validation checks key and placeholder parity", () => {
   )
 })
 
+test("transient export admission is concise in both locales", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  assert.equal(english["export.error.export_busy"], "Another report is already being built. Try again shortly.")
+  assert.equal(russian["export.error.export_busy"], "Другой отчёт уже формируется. Повторите попытку позже.")
+})
+
 test("PostgreSQL buffer and block metric labels stay canonical English in RU", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
@@ -190,11 +202,12 @@ test("project dictionaries cover the active UI keys", async () => {
   validateDictionaries(english, russian)
 
   const roots = new Set()
-  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|lens|process|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
+  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|export|lens|process|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
   const sourceFiles = [
     "app.tsx",
     "detail.tsx",
     "events-view.tsx",
+    "export-panel.tsx",
     "help.tsx",
     "hour-picker.tsx",
     "postgres-view.tsx",

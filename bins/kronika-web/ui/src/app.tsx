@@ -1,4 +1,4 @@
-import { Activity, ChartLine, CircleHelp, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
+import { Activity, ChartLine, CircleHelp, Download, LogOut, Moon, Plug, RotateCw, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { ProcessesActivity } from "./activity"
 import { historyAddress } from "./build-mode"
@@ -40,6 +40,7 @@ import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display
 import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
+import { ExportPanel } from "./export-panel"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { McpPanel } from "./mcp-connect"
@@ -82,9 +83,9 @@ import {
   SYSTEM_REQUESTS,
   SystemView,
   cgroupSnapshotPlan,
-  clearCgroupSnapshotRows,
   recordedEnvironment,
 } from "./system-view"
+import { beginSnapshotRequest, READY_SNAPSHOT_REQUEST, settleSnapshotRequest, snapshotRowsVisible, tableRequestPhase, visibleSnapshotRequest, type SnapshotRequestState } from "./table-request"
 import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
 
@@ -96,13 +97,15 @@ const EMPTY_DATA: HourData = {
 }
 
 interface CurrentSnapshot {
+  readonly companionPending: boolean
   readonly cursor: number | null
   readonly data: HourData
   readonly denseSection: string | null
+  readonly owner: string | null
   readonly target: string | null
 }
 
-const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, target: null }
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { companionPending: false, cursor: null, data: EMPTY_DATA, denseSection: null, owner: null, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
@@ -291,6 +294,17 @@ function App({ locale, onLocale, t }: {
   }, [])
   const [helpOpen, setHelpOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const exportTrigger = useRef<HTMLButtonElement>(null)
+  const exportActive = useRef(false)
+  const setExportActive = useCallback((active: boolean) => {
+    exportActive.current = active
+    setExportBusy(active)
+  }, [])
+  const closeExport = useCallback(() => {
+    if (!exportActive.current) setExportOpen(false)
+  }, [])
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -362,7 +376,10 @@ function App({ locale, onLocale, t }: {
   const retainsDenseRows = denseRequest !== undefined
     && currentSnapshot.cursor === cursor
     && currentSnapshot.denseSection === denseRequest.section
-  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows ? currentSnapshot.data : EMPTY_DATA
+  const retainsCurrentView = snapshotTarget !== null && currentSnapshot.owner === foregroundKey
+  const currentData = snapshotRowsVisible(currentSnapshot.target, snapshotTarget, currentSnapshot.owner, foregroundKey, retainsDenseRows)
+    ? currentSnapshot.data
+    : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
   const drawn = useRef<number | null>(null)
@@ -495,8 +512,10 @@ function App({ locale, onLocale, t }: {
     })
     return () => controller.abort()
   }, [finishRefresh, hour, refreshVersion])
-  const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
+  const [snapshotRequest, setSnapshotRequest] = useState<SnapshotRequestState>(READY_SNAPSHOT_REQUEST)
   const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
+  const cursorState = visibleSnapshotRequest(snapshotRequest, snapshotTarget)
+  const currentTableRequest = tableRequestPhase(cursorState, densePageState)
   const snapshotGeneration = useRef(0)
   const cgroupSnapshotKey = useRef<string | null>(null)
   const densePage = useRef<{
@@ -511,43 +530,41 @@ function App({ locale, onLocale, t }: {
       && snapshotTarget !== null
       && (densePattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === denseSurface))
     const retainedSearchRows = denseRequest !== undefined
-      && retainsDenseRows
+      && (retainsDenseRows || retainsCurrentView)
       && (denseRequest.section === "os_process"
         ? currentSnapshot.data.processes.length !== 0
-        : (currentSnapshot.data.sections[denseRequest.section]?.length ?? 0) !== 0)
+        : (currentSnapshot.data.sections[denseRequest.section] ?? [])
+          .some((row) => denseRequest.group === undefined || row.relation?.group === denseRequest.group))
     if (tracksInitialSearch && denseSurface !== null) {
       setSearchRequest(beginSearchRequest(denseSurface, retainedSearchRows))
     } else if (denseSurface === null || !denseSearchValid) {
       setSearchRequest(IDLE_SEARCH_REQUEST)
     }
     cgroupSnapshotKey.current = null
-    setCurrentSnapshot((current) => current.target === snapshotTarget
-      ? { ...current, data: clearCgroupSnapshotRows(current.data) }
-      : current)
     const completesRefresh = refreshAwaitingSnapshot.current
     densePage.current = null
     if (hour === null) {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
-      setCursorState("missing")
+      setSnapshotRequest({ target: snapshotTarget, phase: "missing" })
       setDensePageState("idle")
       if (completesRefresh) finishRefresh(false)
       return
     }
     if (backgroundTimeline === null || backgroundTimeline.hour !== hour) {
-      setCursorState("loading")
+      setSnapshotRequest(beginSnapshotRequest(snapshotTarget))
       setDensePageState("idle")
       return
     }
     if (snapshotTarget === null) {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
-      setCursorState("ready")
+      setSnapshotRequest({ target: snapshotTarget, phase: "ready" })
       setDensePageState("idle")
       foregroundReadyKey.current = foregroundKey
       if (visibleSource !== "events") setBackgroundReadyHour(hour)
       if (completesRefresh) finishRefresh(true)
       return
     }
-    setCursorState("loading")
+    setSnapshotRequest(beginSnapshotRequest(snapshotTarget))
     setDensePageState(denseRequest === undefined ? "idle" : "loading")
     const controller = new AbortController()
     const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
@@ -581,8 +598,8 @@ function App({ locale, onLocale, t }: {
         void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
-          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
-          setCursorState("ready")
+          setCurrentSnapshot({ companionPending: false, cursor, data: incoming, denseSection: null, owner: foregroundKey, target: snapshotTarget })
+          setSnapshotRequest((current) => settleSnapshotRequest(current, snapshotTarget, "ready"))
           foregroundReadyKey.current = foregroundKey
           setBackgroundReadyHour(hour)
           if (visibleSource === "processes") setProcessReadyHour(hour)
@@ -590,7 +607,7 @@ function App({ locale, onLocale, t }: {
         })
         .catch((reason: unknown) => {
           if (stale()) return
-          setCursorState("missing")
+          setSnapshotRequest((current) => settleSnapshotRequest(current, snapshotTarget, "missing"))
           if (completesRefresh) finishRefresh(false)
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -622,18 +639,22 @@ function App({ locale, onLocale, t }: {
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
           }
           const page = loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options)
-          const loaded = (incoming: HourData, companion: HourData | null) => {
+          const loaded = (incoming: HourData, companion: HourData | null, awaitsCompanion = false) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
+              companionPending: pageCursor === undefined
+                ? awaitsCompanion
+                : current.target === snapshotTarget && current.companionPending,
               cursor,
               data: pageCursor === undefined
                 ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
                 : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
               denseSection: pagedRequest.section,
+              owner: foregroundKey,
               target: snapshotTarget,
             }))
             setDensePageState("idle")
-            setCursorState("ready")
+            setSnapshotRequest((current) => settleSnapshotRequest(current, snapshotTarget, "ready"))
             foregroundReadyKey.current = foregroundKey
             setBackgroundReadyHour(hour)
             if (visibleSource === "processes") setProcessReadyHour(hour)
@@ -644,7 +665,7 @@ function App({ locale, onLocale, t }: {
             if (stale()) return
             action.failed = pageCursor
             setDensePageState("error")
-            setCursorState("ready")
+            setSnapshotRequest((current) => settleSnapshotRequest(current, snapshotTarget, "ready"))
             if (tracksPageSearch && denseSurface !== null) {
               setSearchRequest({ phase: "error", retained: pageCursor !== undefined || retainedSearchRows, surface: denseSurface })
             }
@@ -653,15 +674,18 @@ function App({ locale, onLocale, t }: {
           }
           if (pageCursor === undefined && visibleSource === "processes") {
             void page.then((incoming) => {
-              loaded(incoming, null)
+              loaded(incoming, null, ordinaryGroups.length !== 0)
               void base.then((companion) => {
-                if (stale() || companion === EMPTY_DATA) return
+                if (stale()) return
                 setCurrentSnapshot((current) => current.target !== snapshotTarget ? current : {
                   ...current,
-                  data: mergeSnapshotData(current.data, companion),
+                  companionPending: false,
+                  data: companion === EMPTY_DATA ? current.data : mergeSnapshotData(current.data, companion),
                 })
               }).catch((reason: unknown) => {
-                if (!stale()) console.error("kronika: snapshot companion failed", reason)
+                if (stale()) return
+                setCurrentSnapshot((current) => current.target !== snapshotTarget ? current : { ...current, companionPending: false })
+                console.error("kronika: snapshot companion failed", reason)
               })
             }).catch(failed).finally(() => { inFlight = false })
             return
@@ -721,26 +745,40 @@ function App({ locale, onLocale, t }: {
     const shortcuts = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (keyboardTargetOwnsArrows(event.target)) return
-      if (event.key === "?") {
+      if (event.key === "?" && !exportActive.current) {
         setHelpOpen((current) => !current)
         setMcpOpen(false)
+        closeExport()
       }
       if (event.key === "Escape") {
         setHelpOpen(false)
         setMcpOpen(false)
+        closeExport()
       }
     }
     window.addEventListener("keydown", shortcuts)
     return () => window.removeEventListener("keydown", shortcuts)
-  }, [])
+  }, [closeExport])
 
   const contextRow = selectedFinding?.timestamp === cursor ? findingRow : null
   const allProcessRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
   const processRows = useMemo(() => contextualRows(allProcessRows, context?.logicalName === "os_process" ? context : null, contextRow), [allProcessRows, context, contextRow])
-  const ticksPerSecond = useMemo(() => {
+  const recordedTicksPerSecond = useMemo(() => {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
   }, [data.sections])
+  const ticksPerSecondCache = useRef<{ readonly hour: number; readonly value: number } | null>(null)
+  const companionPending = visibleSource === "processes"
+    && currentSnapshot.owner === foregroundKey
+    && currentSnapshot.companionPending
+    && (currentSnapshot.target === snapshotTarget || cursorState === "loading")
+  if (hour !== null && recordedTicksPerSecond !== null) {
+    ticksPerSecondCache.current = { hour, value: recordedTicksPerSecond }
+  } else if (!companionPending) {
+    ticksPerSecondCache.current = null
+  }
+  const ticksPerSecond = recordedTicksPerSecond
+    ?? (companionPending && hour !== null && ticksPerSecondCache.current?.hour === hour ? ticksPerSecondCache.current.value : null)
   const memTotalKb = useMemo(
     () => asNumber(value(snapshot(data.sections.os_meminfo ?? [], cursor)[0] ?? null, "mem_total")),
     [cursor, data.sections.os_meminfo],
@@ -886,6 +924,7 @@ function App({ locale, onLocale, t }: {
       setFind(opening.find)
       setSearchRequest(IDLE_SEARCH_REQUEST)
       clearEntityContext()
+      closeExport()
       if (opening.at !== null) {
         followsLatest.current = false
         wanted.current = opening.at
@@ -895,7 +934,7 @@ function App({ locale, onLocale, t }: {
     }
     window.addEventListener("popstate", back)
     return () => window.removeEventListener("popstate", back)
-  }, [clearEntityContext])
+  }, [clearEntityContext, closeExport])
   const navigateRelation = useCallback((navigation: RelationNavigation) => {
     const nextSection = navigation.section === "pg_stat_user_tables" ? "tables" : "indexes"
     const crossing = nextSection !== pgSection
@@ -940,7 +979,8 @@ function App({ locale, onLocale, t }: {
   const changeHour = useCallback((next: number) => {
     followsLatest.current = true
     setHour(floorHour(next))
-  }, [])
+    closeExport()
+  }, [closeExport])
   const selectProcess = useCallback((row: DataRow) => {
     setSelectedKey(processKey(row))
     setInspectorPanel("detail")
@@ -1053,6 +1093,7 @@ function App({ locale, onLocale, t }: {
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         {!KRONIKA_REPORT && <button aria-label={t("refresh.action")} className="icon-button" data-testid="refresh-action" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={exportOpen} aria-haspopup="dialog" aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0 coarse:h-11 coarse:min-w-11" data-testid="export-trigger" disabled={hour === null} onClick={() => { if (exportOpen) closeExport(); else { setExportOpen(true); setMcpOpen(false); setHelpOpen(false) } }} ref={exportTrigger} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -1060,9 +1101,9 @@ function App({ locale, onLocale, t }: {
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
-        {!KRONIKA_REPORT && <button aria-label={t("auth.logout")} className="icon-button" data-testid="logout-action" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>}
-        {!KRONIKA_REPORT && <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button" data-testid="mcp-trigger" onClick={() => { setMcpOpen((current) => !current); setHelpOpen(false) }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>}
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => { setHelpOpen((current) => !current); setMcpOpen(false) }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
+        {!KRONIKA_REPORT && <button aria-label={t("auth.logout")} className="icon-button disabled:cursor-wait disabled:opacity-45" data-testid="logout-action" disabled={exportBusy} onClick={() => { if (!exportActive.current) void logout() }} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={14} /></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={mcpOpen} aria-label={t("mcp.open")} className="icon-button disabled:cursor-wait disabled:opacity-45" data-testid="mcp-trigger" disabled={exportBusy} onClick={() => { if (!exportActive.current) { setMcpOpen((current) => !current); setHelpOpen(false); closeExport() } }} title={t("mcp.open")} type="button"><Plug aria-hidden="true" size={14} /></button>}
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button disabled:cursor-wait disabled:opacity-45" data-testid="help-trigger" disabled={exportBusy} onClick={() => { if (!exportActive.current) { setHelpOpen((current) => !current); setMcpOpen(false); closeExport() } }} title={t("help.open")} type="button"><CircleHelp aria-hidden="true" size={14} /></button>
       </div>
     </header>
 
@@ -1076,7 +1117,7 @@ function App({ locale, onLocale, t }: {
       {!loading && error === null && hour !== null && <MobileControls filtered={find !== ""} onOpenChart={openChart} onSearch={setMobileSearch} searchOpen={mobileSearch} t={t} />}
       {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onPreview={previewClock} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onPreview={previewClock} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} requestPhase={currentTableRequest} selectedKey={selectedKey} selectedLane={timelineLane} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />
         <div className="lensbar !mt-0 border-t-0">
@@ -1087,10 +1128,10 @@ function App({ locale, onLocale, t }: {
         </div>
         <ProcessesActivity cursor={cursor} hour={hour} locale={locale} onCursor={chooseCursor} onPattern={applyFind} t={t} ticksPerSecond={ticksPerSecond} />
         <div className="process-main grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden">
-          <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
+          <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} requestPhase={currentTableRequest} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} requestPhase={currentTableRequest} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onPreview={previewClock} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
@@ -1118,6 +1159,7 @@ function App({ locale, onLocale, t }: {
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
     {!KRONIKA_REPORT && mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
+    {!KRONIKA_REPORT && exportOpen && hour !== null && <ExportPanel anchor={exportTrigger.current} hour={hour} locale={locale} mode={time.mode} onActiveChange={setExportActive} onClose={closeExport} t={t} />}
   </main></DisplayTimeScope>
 }
 

@@ -1,10 +1,5 @@
 //! The strict traversal state and the snapshot it builds.
 
-#![allow(
-    unreachable_pub,
-    reason = "these items are re-exported by the parent module"
-)]
-
 use std::ffi::CStr;
 
 use crate::error::{LayoutError, LimitKind};

@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { collectorCgroupOverview, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -284,12 +284,47 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
   assert.equal(malformedMemory.values.effective_memory_max, null)
 })
 
+test("container overview follows the collector's exact v2 paths and keeps I/O devices separate", () => {
+  const typeIds = { os_cgroup_context: "1205001", os_cgroup_cpu: "1201001", os_cgroup_memory: "1202002", os_cgroup_io: "1203002", os_cgroup_pids: "1204001" }
+  const row = (logicalName, ordinal, values) => ({ logicalName, ordinal, segmentId: "s", timestamp: 20, typeId: typeIds[logicalName], values: { scope: 3, ...values } })
+  const context = row("os_cgroup_context", "context", {
+    cgroup_version: 2, cpu_path: "/", memory_path: "/", io_path: "/", cpuset_cpus: 2,
+    effective_cpu_quota_usec: 200_000, effective_cpu_period_usec: 100_000, effective_memory_max: 1_073_741_824,
+  })
+  const source = { sections: {
+    os_cgroup_context: [context],
+    os_cgroup_cpu: [row("os_cgroup_cpu", "cpu", { cgroup_path: "/", usage_usec: 2_000_000, user_usec: 1_200_000, system_usec: 700_000, quota_usec: -1, period_usec: 100_000 })],
+    os_cgroup_memory: [row("os_cgroup_memory", "memory", { cgroup_path: "/", current: 536_870_912, max: null, anon: 1, file: 1, kernel: 1, slab: 1 })],
+    os_cgroup_io: [
+      row("os_cgroup_io", "8:0", { cgroup_path: "/", major: 8, minor: 0, rbytes: 10, wbytes: 20 }),
+      row("os_cgroup_io", "253:0", { cgroup_path: "/", major: 253, minor: 0, rbytes: 30, wbytes: 40 }),
+      row("os_cgroup_io", "other", { cgroup_path: "/other", major: 7, minor: 0, rbytes: 50, wbytes: 60 }),
+    ],
+    os_cgroup_pids: [
+      row("os_cgroup_pids", "tasks", { cgroup_path: "/", current: 4, max: 100 }),
+      row("os_cgroup_pids", "other", { cgroup_path: "/other", current: 9, max: 100 }),
+    ],
+  } }
+  const targets = helpers.collectorCgroupOverview(source, 20)
+  assert.deepEqual(targets.map(({ mode }) => mode), ["cpu", "memory", "io", "io", "tasks"])
+  assert.equal(targets.find(({ mode }) => mode === "cpu").row.values.cgroup_capacity, 2)
+  assert.equal(targets.find(({ mode }) => mode === "memory").row.values.effective_memory_max, 1_073_741_824)
+  assert.deepEqual(targets.filter(({ mode }) => mode === "io").map(({ row }) => row.values.device_id), ["8:0", "253:0"])
+  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.cgroup_path, "/")
+
+  const split = { ...source, sections: { ...source.sections, os_cgroup_context: [{ ...context, values: { ...context.values, io_path: "/io" } }] } }
+  assert.equal(helpers.collectorCgroupOverview(split, 20).some(({ mode }) => mode === "tasks"), false)
+})
+
 test("System loads cgroups only for the recorded container environment", () => {
   for (const section of ["os_cgroup_context", "os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"]) {
     assert.equal(helpers.SYSTEM_REQUESTS.some((request) => request.section === section), false)
     const request = helpers.CGROUP_SNAPSHOT_REQUESTS.find((candidate) => candidate.section === section)
     assert.ok(request, section)
   }
+  const tasks = helpers.CGROUP_SNAPSHOT_REQUESTS.find(({ section }) => section === "os_cgroup_pids")
+  assert.equal(tasks.fields.includes("current") && tasks.fields.includes("max"), true)
+  assert.equal(tasks.fields.includes("tasks_current") || tasks.fields.includes("tasks_max"), false)
   assert.equal(helpers.SYSTEM_REQUESTS.some(({ section, fields }) => section === "instance_metadata" && fields.includes("environment")), true)
 
   const metadata = (environment) => ({
@@ -312,26 +347,6 @@ test("System loads cgroups only for the recorded container environment", () => {
     ["os_cgroup_context", {}],
   ])
   assert.equal(helpers.recordedEnvironment({ sections: {} }, 12), null)
-})
-
-test("changing a cgroup snapshot key removes every prior exact entity row", () => {
-  const preserved = [{ logicalName: "os_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1102001", values: {} }]
-  const cleared = helpers.clearCgroupSnapshotRows({
-    sections: {
-      os_cpu: preserved,
-      os_cgroup_context: [{ logicalName: "os_cgroup_context", ordinal: "context", segmentId: "s", timestamp: 1, typeId: "1205001", values: {} }],
-      os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
-      os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
-      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203002", values: {} }],
-      os_cgroup_pids: [{ logicalName: "os_cgroup_pids", ordinal: "pids", segmentId: "s", timestamp: 1, typeId: "1204001", values: {} }],
-    },
-  })
-  assert.equal(cleared.sections.os_cpu, preserved)
-  assert.equal(cleared.sections.os_cgroup_context, undefined)
-  assert.equal(cleared.sections.os_cgroup_cpu, undefined)
-  assert.equal(cleared.sections.os_cgroup_memory, undefined)
-  assert.equal(cleared.sections.os_cgroup_io, undefined)
-  assert.equal(cleared.sections.os_cgroup_pids, undefined)
 })
 
 test("System never depends on process rows loaded by another view", async () => {
@@ -375,6 +390,8 @@ test("hidden mount device IDs remain exact request and history identity", () => 
   assert.ok(request.fields.includes("major"))
   assert.ok(request.fields.includes("minor"))
   assert.equal(mount.columns.some(({ field }) => field === "major" || field === "minor"), false)
+  assert.equal(mount.columns.find(({ field }) => field === "fstype").detailValueRole, "machine")
+  assert.notEqual(mount.columns.find(({ field }) => field === "total_bytes").detailValueRole, "machine")
 
   const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112002", values: { major: 8, minor: 1, mount_point: "/data", free_bytes: 4 } }
   assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {
@@ -576,6 +593,13 @@ test("storage topology exposes only recorded partition parents and mount roots",
   ), [{ associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parent: "259:0" }])
 })
 
+test("a shared cgroup path is displayed once without hiding mixed paths", () => {
+  const row = (path) => ({ logicalName: "os_cgroup_io", ordinal: path, segmentId: "a", timestamp: 1, typeId: "1203002", values: { cgroup_path: path } })
+  assert.equal(helpers.sharedCgroupPath([row("/"), row("/")]), "/")
+  assert.equal(helpers.sharedCgroupPath([row("/"), row("/child")]), null)
+  assert.equal(helpers.sharedCgroupPath([]), null)
+})
+
 test("the committed hour supplies only honest System metrics with complete histories", async () => {
   const encoded = await readFile(new URL("../fixtures/real-hour.json.gz", import.meta.url))
   const fixture = JSON.parse(gunzipSync(encoded).toString("utf8"))
@@ -607,6 +631,10 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   // dedicated, and Disk separates device I/O, filesystems and topology.
   assert.match(source, /disk: \["io", "filesystems", "topology"\]/)
   assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
+  assert.match(source, /namespaceLanePoints = environment === "container"[\s\S]*lane\.startsWith\("net_"\)/)
+  assert.match(source, /environment !== "container" \|\| openedContainer\.current[\s\S]*new Set\(\[\.\.\.current, "cgroups"\]\)/)
+  assert.match(source, /<ContainerCgroupOverview/)
+  assert.match(source, /cgroup-overview:\$\{request\.key\}/)
   assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
   // The ledger is the page: expansion is disclosure, the group chart renders
   // inline, and no machinery force-opens an Inspector to fake content.
@@ -616,7 +644,12 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
-  assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
+  assert.match(source, /rows\.length === 0 && activeContext === null && requestPhase === "ready"/)
+  assert.equal((source.match(/<TableRequestPlaceholder/g) ?? []).length, 3)
+  assert.match(source, /<CpuTopologyReference[^>]*requestPhase=\{requestPhase\}/)
+  assert.match(source, /<StorageTopologyReference[\s\S]*?requestPhase=\{requestPhase\}[\s\S]*?\/>/)
+  assert.match(source, /empty=\{t\("system\.no_metrics"\)\} phase=\{requestPhase\}/)
+  assert.match(source, /empty=\{t\("status\.no_data"\)\} phase=\{requestPhase\}/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

@@ -1,5 +1,5 @@
 import uPlot, { type AlignedData } from "uplot"
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -117,6 +117,28 @@ export function effectiveIsolation(
 
 const NO_DECORATIONS: readonly ChartDecoration[] = []
 
+interface ChartTopologyPartition {
+  readonly key: string
+  readonly scale: ChartScale
+  readonly seriesIndices: readonly number[]
+}
+
+interface ChartTopology {
+  readonly partitions: readonly ChartTopologyPartition[]
+  readonly seriesScaleKeys: readonly string[]
+  readonly signature: string
+}
+
+interface ChartRuntimeState {
+  readonly decorations: readonly ChartDecoration[]
+  readonly frame: ChartFrame
+  readonly locale: Locale
+  readonly navigationTimes: readonly number[]
+  readonly series: readonly RecordedSeries[]
+  readonly threshold: ChartThreshold | undefined
+  readonly time: DisplayTimeFormatter
+}
+
 export function UPlotChart({
   cursor,
   hour,
@@ -187,23 +209,30 @@ export function UPlotChart({
     () => chartNavigationTimestamps(frame, navigationTimestamps, hour, end),
     [end, frame, hour, navigationTimestamps],
   )
+  const compact = variant === "preview"
+  const topologySignature = chartTopology(visibleSeries, compact).signature
+  const topology = useMemo(() => chartTopology(visibleSeries, compact), [compact, topologySignature])
   const [themeRevision, setThemeRevision] = useState(0)
   const exact = hovered === null ? null : exactReadings(frame, drawnSeries, hovered, locale, time)
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
   const keyboardTimestamp = navigationTimes[keyboardIndex] ?? null
+  const runtime = useRef<ChartRuntimeState>({ decorations, frame, locale, navigationTimes, series: visibleSeries, threshold, time })
+  const hoveredRef = useRef(hovered)
   onCursorRef.current = onCursor
   onPreviewRef.current = onPreview
   onPlotWidthRef.current = onPlotWidth
   selectedRef.current = selected
+  hoveredRef.current = hovered
+  runtime.current = { decorations, frame, locale, navigationTimes, series: visibleSeries, threshold, time }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = host.current
-    if (element === null || frame.timestamps.length === 0) return
+    if (element === null || runtime.current.frame.timestamps.length === 0) return
     const initialBounds = element.getBoundingClientRect()
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), variant === "preview", variant !== "default", markerLayer !== undefined, (chart) => {
+    const options = chartOptions(topology, runtime, hour, end, selectedRef, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), compact, variant !== "default", markerLayer !== undefined, (chart) => {
       if (variant !== "default") return
       const index = chart.cursor.idx
-      const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
+      const timestamp = index === null || index === undefined ? null : runtime.current.frame.timestamps[index] ?? null
       setHovered(timestamp)
     }, (chart) => {
       const root = shell.current
@@ -217,13 +246,13 @@ export function UPlotChart({
       root.style.setProperty("--chart-plot-width", `${width}px`)
       onPlotWidthRef.current?.(Math.max(1, width - endReserve))
     })
-    const chart = new uPlot(options, frame.data, element)
+    const chart = new uPlot(options, runtime.current.frame.data, element)
     plot.current = chart
     const canvas = chart.root.querySelector("canvas")
     canvas?.setAttribute("aria-hidden", "true")
     const pointerTimestamp = (clientX: number) => {
       const bounds = chart.over.getBoundingClientRect()
-      return nearestRecordedTimestamp(navigationTimes, chart.posToVal(clientX - bounds.left, "x"))
+      return nearestRecordedTimestamp(runtime.current.navigationTimes, chart.posToVal(clientX - bounds.left, "x"))
     }
     let pointerFrame = 0
     let previewed: number | null = null
@@ -286,7 +315,30 @@ export function UPlotChart({
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, frame, hour, locale, markerLayer !== undefined, navigationTimes, themeRevision, threshold, time, variant, visibleSeries])
+  }, [compact, end, frame.timestamps.length === 0, hour, markerLayer !== undefined, themeRevision, topology, variant])
+
+  useLayoutEffect(() => {
+    const chart = plot.current
+    if (chart === null) return
+    const latest = runtime.current
+    chart.batch(() => {
+      chart.setData(latest.frame.data, false)
+      for (const partition of topology.partitions) {
+        const [min, max] = chartPartitionRange(partition, latest.series, latest.frame)
+        chart.setScale(partition.key, { min, max })
+      }
+      chart.redraw(true, true)
+    })
+    const hoverTimestamp = hoveredRef.current
+    if (hoverTimestamp === null) return
+    if (!latest.frame.timestamps.includes(hoverTimestamp)) {
+      hoveredRef.current = null
+      setHovered(null)
+      return
+    }
+    chart.setCursor({ left: chart.valToPos(hoverTimestamp, "x"), top: chart.cursor.top ?? 0 }, false)
+    setHovered((current) => current === hoverTimestamp ? current : hoverTimestamp)
+  }, [decorations, frame, locale, navigationTimes, threshold, time, topology, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -296,7 +348,7 @@ export function UPlotChart({
 
   useEffect(() => {
     plot.current?.redraw()
-  }, [frame, selected])
+  }, [selected])
 
   useEffect(() => {
     if (selected === null) return
@@ -314,6 +366,7 @@ export function UPlotChart({
   const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
     className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[94px] min-h-[94px] basis-[94px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
+    data-hovered-timestamp={hovered ?? undefined}
     data-testid={testId}
     data-navigation-count={navigationTimes.length}
     data-selected-timestamp={selected ?? undefined}
@@ -497,15 +550,47 @@ export function scalePartitions(series: readonly RecordedSeries[]): readonly Sca
   }))
 }
 
-function chartOptions(
+function chartTopology(series: readonly RecordedSeries[], compact: boolean): ChartTopology {
+  const grouped = new Map<string, number[]>()
+  for (let index = 0; index < series.length; index += 1) {
+    const line = series[index]!
+    const key = scaleKey(line)
+    const indices = grouped.get(key) ?? []
+    indices.push(index)
+    grouped.set(key, indices)
+  }
+  const seriesScaleKeys: string[] = Array(series.length)
+  const partitions = [...grouped.values()].map((seriesIndices, index) => {
+    const key = `y:${index}`
+    for (const seriesIndex of seriesIndices) seriesScaleKeys[seriesIndex] = key
+    return { key, scale: series[seriesIndices[0]!]!.scale, seriesIndices }
+  })
+  const signature = JSON.stringify({
+    axes: partitions.map(({ seriesIndices }) => {
+      const line = series[seriesIndices[0]!]!
+      return [seriesIndices, !compact && line.unit !== "" && line.tickAxis !== "duration"]
+    }),
+    series: series.map(({ color, id, scale, tickAxis }) => [id, color, scale, tickAxis ?? ""]),
+  })
+  return { partitions, seriesScaleKeys, signature }
+}
+
+function chartPartitionRange(
+  partition: ChartTopologyPartition,
   series: readonly RecordedSeries[],
   frame: ChartFrame,
+): readonly [number, number] {
+  const grouped = partition.seriesIndices.flatMap((seriesIndex) =>
+    Array.from(frame.data[seriesIndex + 1] ?? []).filter((value): value is number => typeof value === "number"),
+  )
+  return scaleRange(partition.scale, grouped)
+}
+
+function chartOptions(
+  topology: ChartTopology,
+  runtime: { readonly current: ChartRuntimeState },
   hour: number,
   end: number,
-  locale: Locale,
-  time: Pick<DisplayTimeFormatter, "axis">,
-  decorations: readonly ChartDecoration[],
-  threshold: ChartThreshold | undefined,
   selected: { readonly current: number | null },
   width: number,
   height: number,
@@ -515,24 +600,23 @@ function chartOptions(
   onHover: (chart: uPlot) => void,
   onGeometry: (chart: uPlot) => void,
 ): uPlot.Options {
+  const { frame, series } = runtime.current
   const styles = getComputedStyle(document.documentElement)
   const color = (name: string) => styles.getPropertyValue(name).trim()
   const mono = styles.getPropertyValue("--font-mono").trim() || "ui-monospace, monospace"
   const axisFont = `${compact ? 10 : 11}px ${mono}`
-  const partitions = scalePartitions(series)
-  const scales = Object.fromEntries(partitions.map(({ key, scale: semantic }) => {
-    const grouped = series.flatMap((line, ordinal) => scaleKey(line) === key
-      ? Array.from(frame.data[ordinal + 1] ?? []).filter((value): value is number => typeof value === "number")
-      : [])
-    const [min, max] = scaleRange(semantic, grouped)
+  const scales = Object.fromEntries(topology.partitions.map((partition) => {
+    const [min, max] = chartPartitionRange(partition, series, frame)
+    const { key } = partition
     return [key, { auto: false, range: [min, max] }]
   }))
   const decorate = (chart: uPlot) => {
+    const { decorations, series, threshold } = runtime.current
     const context = chart.ctx
     context.save()
     if (threshold !== undefined) {
       const seriesIndex = series.findIndex(({ id }) => id === threshold.seriesId)
-      const scale = seriesIndex < 0 ? undefined : scaleKey(series[seriesIndex]!)
+      const scale = seriesIndex < 0 ? undefined : topology.seriesScaleKeys[seriesIndex]
       if (scale !== undefined) {
         const boundary = chart.valToPos(threshold.below, scale, true)
         const zero = chart.valToPos(0, scale, true)
@@ -549,6 +633,7 @@ function chartOptions(
     context.restore()
   }
   const drawSelection = (chart: uPlot) => {
+    const { frame, series } = runtime.current
     const context = chart.ctx
     const selectedTimestamp = selected.current
     context.save()
@@ -566,7 +651,7 @@ function chartOptions(
         for (let ordinal = 0; ordinal < series.length; ordinal += 1) {
           const number = frame.data[ordinal + 1]?.[dataIndex]
           if (typeof number !== "number") continue
-          const y = chart.valToPos(number, scaleKey(series[ordinal]!), true)
+          const y = chart.valToPos(number, topology.seriesScaleKeys[ordinal]!, true)
           context.fillStyle = color(chartColor(series[ordinal]!.color))
           context.beginPath()
           context.arc(x, y, 3.5 * uPlot.pxRatio, 0, Math.PI * 2)
@@ -593,13 +678,15 @@ function chartOptions(
     pxAlign: true,
     legend: { show: false },
     ...(markerLane ? { padding: [MARKER_LANE_PX + 2, null, null, null] } : {}),
-    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, compact ? 38 : 52, partitions.length * (compact ? 46 : 70)), time: false }, ...scales },
+    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, compact ? 38 : 52, topology.partitions.length * (compact ? 46 : 70)), time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: compact ? 18 : 30, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, font: axisFont, space: (_chart, _axis, _scale, _increment, space) => Math.max(compact ? 62 : 84, space), stroke: color("--color-fg3"), grid: { show: false }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
-      ...partitions.map(({ key, unit }, axisIndex) => {
-        const grouped = series.filter((line) => scaleKey(line) === key)
-        const line = grouped[0]!
-        return { ...(!compact && unit !== "" && line.tickAxis !== "duration" ? { label: unit } : {}), font: axisFont, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: compact ? 46 : 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+      { scale: "x", side: 2, size: compact ? 18 : 30, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, font: axisFont, space: (_chart, _axis, _scale, _increment, space) => Math.max(compact ? 62 : 84, space), stroke: color("--color-fg3"), grid: { show: false }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, runtime.current.time)) },
+      ...topology.partitions.map(({ key, seriesIndices }, axisIndex) => {
+        const initialLine = series[seriesIndices[0]!]!
+        return { ...(!compact && initialLine.unit !== "" && initialLine.tickAxis !== "duration" ? { label: () => runtime.current.series[seriesIndices[0]!]?.unit ?? "" } : {}), font: axisFont, gap: compact ? 2 : 4, ticks: { size: compact ? 4 : 6, stroke: color("--color-line3") }, scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: compact ? 46 : 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+          const { locale, series: latestSeries } = runtime.current
+          const line = latestSeries[seriesIndices[0]!]!
+          const unit = line.unit
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)
@@ -614,6 +701,7 @@ function chartOptions(
       dataIdx: (_chart, _seriesIndex, closestIndex) => closestIndex,
       drag: { setScale: false, x: false, y: false },
       move: (chart, left, top) => {
+        const { frame } = runtime.current
         if (left < 0 || frame.timestamps.length === 0) return [left, top]
         const timestamp = nearestRecordedTimestamp(frame.timestamps, chart.posToVal(left, "x"))
         return timestamp === null ? [left, top] : [chart.valToPos(timestamp, "x"), top]
@@ -626,11 +714,11 @@ function chartOptions(
       { label: "time" },
       ...series.map((line, index) => ({
         label: line.label,
-        scale: scaleKey(line),
+        scale: topology.seriesScaleKeys[index]!,
         stroke: color(chartColor(line.color)),
         width: compact ? 1.5 : 2,
         ...(singleSeries ? { fill: (chart: uPlot) => areaFill(chart, color(chartColor(line.color))) } : {}),
-        points: { filter: [...(frame.isolated.get(index + 1) ?? [])], show: true, size: 5 },
+        points: { filter: () => [...(runtime.current.frame.isolated.get(index + 1) ?? [])], show: true, size: 5 },
       })),
     ],
   }

@@ -177,7 +177,7 @@ test("first table settlement gates slow hour products without gating Process row
   assert.match(app, /if \(!foregroundAlreadyLoaded\) setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
   assert.match(app, /setBackgroundTimeline\(timeline\)\s+setSnapshotReloadVersion\(\(version\) => version \+ 1\)/)
   const foregroundSnapshotEffect = app.slice(
-    app.indexOf('const [cursorState, setCursorState]'),
+    app.indexOf('const [snapshotRequest, setSnapshotRequest]'),
     app.indexOf('if (backgroundTimeline === null || backgroundTimeline.segments.length === 0'),
   )
   assert.match(foregroundSnapshotEffect, /\}, \[finishRefresh, foregroundKey, hour, snapshotReloadVersion, snapshotTarget\]\)/)
@@ -191,8 +191,9 @@ test("first table settlement gates slow hour products without gating Process row
   assert.doesNotMatch(failedPage, /setBackgroundReadyHour|setProcessReadyHour|foregroundReadyKey/)
 
   const processFastPath = app.match(/if \(pageCursor === undefined && visibleSource === "processes"\) \{([\s\S]*?)\n          \}/)?.[1] ?? ""
-  assert.ok(processFastPath.indexOf("loaded(incoming, null)") >= 0)
-  assert.ok(processFastPath.indexOf("loaded(incoming, null)") < processFastPath.indexOf("void base.then"))
+  assert.ok(processFastPath.indexOf("loaded(incoming, null, ordinaryGroups.length !== 0)") >= 0)
+  assert.ok(processFastPath.indexOf("loaded(incoming, null, ordinaryGroups.length !== 0)") < processFastPath.indexOf("void base.then"))
+  assert.match(processFastPath, /companionPending: false/)
   assert.match(processFastPath, /mergeSnapshotData\(current\.data, companion\)/)
 
   assert.doesNotMatch(app, /fields: \["mem_total"\]/)

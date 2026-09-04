@@ -11,3 +11,17 @@ fn native_routes_take_no_query() {
         );
     }
 }
+
+#[test]
+fn export_route_requires_and_parses_inclusive_seconds() {
+    let Route::Export(range) = parse("/api/export", Some("from=-1&to=0")).expect("export route")
+    else {
+        panic!("expected export route")
+    };
+    assert_eq!(range.from().unix_seconds(), -1);
+    assert_eq!(range.to().unix_seconds(), 0);
+    assert_eq!(
+        parse("/api/export", None),
+        Err(RouteError::BadParameter("from".to_owned()))
+    );
+}

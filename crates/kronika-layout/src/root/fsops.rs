@@ -1,10 +1,5 @@
 //! Descriptor-relative filesystem operations.
 
-#![allow(
-    unreachable_pub,
-    reason = "these items are re-exported by the parent module"
-)]
-
 use super::*;
 
 pub(super) fn stat_no_follow(

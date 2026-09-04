@@ -5,14 +5,40 @@
 Kronika records periodic snapshots of a Linux host and its databases for later
 inspection. The collector reads operating-system and PostgreSQL metrics and
 parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
-through a browser interface and MCP. `kronika-report` turns one finished
-segment into a self-contained HTML file that opens without a server.
+through a browser interface and MCP.
 
 ![Kronika architecture](docs/images/architecture.svg)
 
 The collector writes the current journal to `active.wal` and finished segments
 to `YYYY/MM/DD/N.zms` under `KRONIKA_STORAGE_DIR`. `kronika-web` reads those files
 and creates derived `N.idx` files in the same directory.
+
+## Self-contained HTML export
+
+In the live web interface, **Export** creates one self-contained `.html` report
+for the selected interval. `kronika-report` creates the same report from one
+standalone `.zms` file.
+
+The file embeds the production React interface, the Rust `kronika-query` engine
+compiled to WebAssembly and run single-threaded in a Web Worker, the selected
+ZMS, and its canonical IDX. It opens in an ordinary browser and can be shared
+as one file or served from static hosting. No running Kronika server is needed;
+after the file loads, it makes no network requests and reads no external assets
+or sidecars. The offline interface omits authentication and login, MCP, live
+refresh, and a second Export control.
+
+After building the binaries, generate the report from a standalone ZMS:
+
+```sh
+target/x86_64-unknown-linux-musl/release/kronika-report \
+  /path/to/incident.zms \
+  report.html
+```
+
+`kronika-report` validates the ZMS, builds the canonical IDX, and atomically
+replaces the output file. It needs no storage root or earlier segment. A first
+rate that needs an earlier sample is `null`. See
+[bins/kronika-report/README.md](bins/kronika-report/README.md) for details.
 
 ## Run the demo
 
@@ -59,28 +85,6 @@ row count, section count, and byte length after validating the finished file.
 The package library exposes the same slicer to in-process callers, which supply
 their own disk-backed scratch file and output sink. The CLI places scratch on
 the output filesystem.
-
-## Generate a standalone report
-
-The command accepts one finished ZMS with any `.zms` basename and one `.html`
-output path. It derives the internal segment identity from the validated ZMS
-catalog:
-
-```sh
-target/x86_64-unknown-linux-musl/release/kronika-report \
-  /path/to/incident.zms \
-  report.html
-```
-
-The command builds the isolated canonical IDX and atomically replaces the
-output with one deterministic document. That document contains the production
-interface, its WebAssembly query engine, the ZMS and the IDX. It uses no
-storage root, earlier segment, server, external sidecar, authentication, MCP,
-live refresh or network request. A first rate that needs an earlier sample is
-`null`. See [bins/kronika-report/README.md](bins/kronika-report/README.md).
-The package library also writes this document to a caller-owned sink from ZMS
-bytes and an explicit `SegmentId`; the CLI derives that identity locally from
-the validated input catalog.
 
 Create the PostgreSQL login used below:
 

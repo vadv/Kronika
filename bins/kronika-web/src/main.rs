@@ -10,6 +10,7 @@ mod body;
 mod budget;
 mod config;
 mod encoding;
+mod export;
 mod mcp;
 mod query_adapter;
 mod route;
@@ -91,7 +92,14 @@ async fn answer(
             session_response(&config.account, session).unwrap_or_else(failed)
         }
         RequestTarget::Api { route, accepted } => {
-            if matches!(route, route::Route::McpAccess) {
+            if let route::Route::Export(range) = route {
+                export::response(
+                    config.data_root.clone(),
+                    range,
+                    Arc::clone(&config.export_gate),
+                )
+                .await
+            } else if matches!(route, route::Route::McpAccess) {
                 mcp::with_private_headers(json_response(StatusCode::OK, mcp_access_body(&config)))
             } else if matches!(route, route::Route::InstanceLabel) {
                 match tokio::task::spawn_blocking(move || largest_database(&config)).await {
@@ -213,6 +221,9 @@ fn route_request_with_authentication<B>(
     }
     let accepted = AcceptedEncodings::from_headers(request.headers())
         .ok_or(RequestError::ApiEncodingNotAcceptable)?;
+    if matches!(&route, route::Route::Export(_)) && !accepted.accepts_identity() {
+        return Err(RequestError::ApiEncodingNotAcceptable);
+    }
     Ok(RequestTarget::Api { route, accepted })
 }
 

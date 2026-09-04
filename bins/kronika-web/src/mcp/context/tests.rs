@@ -17,6 +17,7 @@ fn test_config(data_root: std::path::PathBuf) -> Config {
         authentication_required: true,
         sources: crate::config::SOURCE_OS | crate::config::SOURCE_POSTGRESQL,
         synthetic_demo: false,
+        export_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
     }
 }
 

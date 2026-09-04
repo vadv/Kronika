@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 
 import { copyText } from "./clipboard"
 import type { Cell, DataRow } from "./api"
-import { DetailList, DetailRow } from "./detail-list"
+import { DetailList, DetailRow, type DetailValueRole } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
@@ -15,13 +15,13 @@ import { statementsForActivity, type RelatedNavigation } from "./statement-navig
 // rather than as a tail below the process facts.
 
 const ACTIVITY_FIELDS = [
-  ["leader_pid", "pg.leader_pid", "id"], ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
-  ["usename", "pg.usename", "text"],
-  ["application_name", "pg.application_name", "text"], ["client_addr", "pg.client_addr", "text"],
-  ["state", "pg.state", "text"],
-  ["wait_event_type", "pg.wait_event_type", "text"], ["wait_event", "pg.wait_event", "text"],
-  ["query_id", "pg.query_id", "id"], ["backend_xid_age", "pg.backend_xid_age", "number"],
-  ["backend_xmin_age", "pg.backend_xmin_age", "number"],
+  ["leader_pid", "pg.leader_pid", "id", "machine"], ["backend_type", "pg.backend_type", "text", "machine"], ["datname", "pg.datname", "text", "machine"],
+  ["usename", "pg.usename", "text", "machine"],
+  ["application_name", "pg.application_name", "text", "machine"], ["client_addr", "pg.client_addr", "text", "machine"],
+  ["state", "pg.state", "text", "machine"],
+  ["wait_event_type", "pg.wait_event_type", "text", "machine"], ["wait_event", "pg.wait_event", "text", "machine"],
+  ["query_id", "pg.query_id", "id", "machine"], ["backend_xid_age", "pg.backend_xid_age", "number", "semantic"],
+  ["backend_xmin_age", "pg.backend_xmin_age", "number", "semantic"],
 ] as const
 
 const ACTIVITY_DURATIONS = [
@@ -41,24 +41,24 @@ export function ActivityFacts({ activity, activityTime, locale, onRelated, t }: 
   const related = statementsForActivity(activity)
   return <section className="p-3" data-testid="process-activity-panel">
     <DetailList>
-      <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
+      <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} valueRole="machine" />
       {ACTIVITY_DURATIONS.flatMap(([field, duration]) => {
         const elapsed = duration(activity)
-        return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
+        return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} valueRole="semantic" />]
       })}
-      {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && related !== null
+      {ACTIVITY_FIELDS.map(([field, key, kind, valueRole]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && related !== null
         ? <button aria-label={t("pg.related.open_statements", { id: related.queryId ?? "" })} className="cursor-pointer border-0 bg-transparent p-0 text-accent3 underline decoration-dotted underline-offset-2" onClick={() => onRelated(related)} type="button">{identifier(value(activity, field))}</button>
-        : formatActivity(value(activity, field), kind, locale, t)} />)}
+        : formatActivity(value(activity, field), kind, locale, t)} valueRole={valueRole} />)}
     </DetailList>
     <section className="query-block">
       <span className="flex items-center justify-between text-xs font-medium text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
-      <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
+      <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
     </section>
   </section>
 }
 
-function DetailField({ help, label, t, value: output }: { readonly help: string; readonly label: string; readonly t: Translate; readonly value: ReactNode }) {
-  return <DetailRow term={<LabelHelp helpKey={help} labelKey={label} t={t} />} valueClassName="text-sm">{output}</DetailRow>
+function DetailField({ help, label, t, value: output, valueRole }: { readonly help: string; readonly label: string; readonly t: Translate; readonly value: ReactNode; readonly valueRole: DetailValueRole }) {
+  return <DetailRow term={<LabelHelp helpKey={help} labelKey={label} t={t} />} valueRole={valueRole}>{output}</DetailRow>
 }
 
 function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: number; readonly t: Translate }) {

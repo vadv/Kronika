@@ -201,6 +201,27 @@ pub fn write_html_from_file(
     write_source_html(segment_id, &source, Some(min_ts), output)
 }
 
+/// Write one self-contained HTML document from an already-open ZMS file under
+/// the supplied segment identity.
+///
+/// This entry point is for callers that already own the identity associated
+/// with generated ZMS bytes. Unlike [`write_html_from_file`], it does not
+/// derive that identity from the earliest row in the file.
+///
+/// # Errors
+///
+/// Returns a typed input, reader, index, asset, or output-sink failure. The
+/// complete file is validated before the first output byte is written.
+pub fn write_html_from_file_with_segment_id(
+    segment_id: SegmentId,
+    file: File,
+    max_zms_bytes: u64,
+    output: &mut dyn io::Write,
+) -> Result<HtmlReportSummary, HtmlReportError> {
+    let source = EmbeddedSource::from_file(segment_id, file, max_zms_bytes)?;
+    write_source_html(segment_id, &source, None, output)
+}
+
 fn write_source_html(
     segment_id: SegmentId,
     source: &EmbeddedSource,

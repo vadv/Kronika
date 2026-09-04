@@ -30,7 +30,7 @@ fi
         --locked \
         --release \
         --target-dir "$library_target" \
-        --config 'target."cfg(all())".rustflags=["-C","linker=dylint-link"]'
+        --config 'target."cfg(all())".rustflags=["-D","warnings","-C","linker=dylint-link"]'
 )
 test -f "$lint_library"
 
@@ -78,20 +78,16 @@ with open(sys.argv[1], encoding="utf-8") as stream:
         diagnostic = message.get("message", {})
         code = diagnostic.get("code") or {}
         name = code.get("code")
-        if name in {
-            "identity_enum_match",
-            "borrowed_forwarding_closure",
-            "same_match_twice",
-            "reimplemented_helper",
-            "bare_bool_args",
-            "discarded_error",
-        }:
+        if name is not None:
             codes[name] += 1
 
 expected = collections.Counter(
     identity_enum_match=1,
     borrowed_forwarding_closure=1,
     discarded_error=1,
+    same_match_twice=1,
+    reimplemented_helper=1,
+    bare_bool_args=1,
 )
 if codes != expected:
     raise SystemExit(f"unexpected positive fixture diagnostics: {codes!r}")
