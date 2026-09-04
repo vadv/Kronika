@@ -6,7 +6,7 @@ import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRo
 import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { DetailList, DetailRow } from "./detail-list"
-import { cellAriaValue, EntityTable, type EntityColumn } from "./entity-table"
+import { cellAriaValue, detailValueRoleForColumn, EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
@@ -263,7 +263,7 @@ export const SYSTEM_ENTITIES: readonly {
   {
     section: "os_diskstats", label: "system.entities.devices",
     columns: [
-      text("device", 150, true), virtualText("device_id", ["major", "minor"]), rateNumber("reads"), rateNumber("writes"),
+      machineText("device", 150, true), virtualText("device_id", ["major", "minor"]), rateNumber("reads"), rateNumber("writes"),
       derivedRateBytes("read_bytes", ["read_sectors"], (rows) => exactCounterRatePoints(rows, "read_sectors", 512)),
       derivedRateBytes("write_bytes", ["write_sectors"], (rows) => exactCounterRatePoints(rows, "write_sectors", 512)),
       latency("read_latency_ms", "reads", "read_time_ms"), latency("write_latency_ms", "writes", "write_time_ms"),
@@ -275,7 +275,7 @@ export const SYSTEM_ENTITIES: readonly {
   {
     section: "os_cgroup_cpu", label: "system.entities.cgroup_cpu",
     columns: [
-      text("cgroup_path", 240, true),
+      machineText("cgroup_path", 240, true),
       derivedCores("cgroup_used_cores", ["usage_usec"], (rows) => cgroupCpuPoints(rows, "usage_usec")),
       derivedCores("cgroup_user_cores", ["user_usec"], (rows) => cgroupCpuPoints(rows, "user_usec")),
       derivedCores("cgroup_system_cores", ["system_usec"], (rows) => cgroupCpuPoints(rows, "system_usec")),
@@ -286,30 +286,30 @@ export const SYSTEM_ENTITIES: readonly {
   {
     section: "os_cgroup_memory", label: "system.entities.cgroup_memory",
     columns: [
-      text("cgroup_path", 240, true), bytes("current"), nonChartBytes("effective_memory_max", []), bytes("max"), bytes("anon"), bytes("file"), bytes("slab"),
+      machineText("cgroup_path", 240, true), bytes("current"), nonChartBytes("effective_memory_max", []), bytes("max"), bytes("anon"), bytes("file"), bytes("slab"),
       derivedBytes("kernel_other", ["kernel", "slab"], (rows) => differencePoints(rows, "kernel", ["slab"])),
       derivedBytes("memory_unclassified", ["current", "anon", "file", "kernel"], (rows) => differencePoints(rows, "current", ["anon", "file", "kernel"])),
     ],
   },
   {
     section: "os_cgroup_io", label: "system.entities.cgroup_io",
-    columns: [text("cgroup_path", 240, true), virtualText("device_id", ["major", "minor"]), rateBytes("rbytes"), rateBytes("wbytes"), rateNumber("rios"), rateNumber("wios")],
+    columns: [machineText("cgroup_path", 240, true), virtualText("device_id", ["major", "minor"]), rateBytes("rbytes"), rateBytes("wbytes"), rateNumber("rios"), rateNumber("wios")],
   },
   {
     section: "os_cgroup_pids", label: "system.entities.cgroup_tasks",
-    columns: [text("cgroup_path", 240, true), physicalNumber("tasks_current", "current"), physicalNumber("tasks_max", "max")],
+    columns: [machineText("cgroup_path", 240, true), physicalNumber("tasks_current", "current"), physicalNumber("tasks_max", "max")],
   },
   {
     section: "os_mountinfo", label: "system.entities.mounts",
     columns: [
-      text("mount_point", 240, true), text("root", 160), text("source", 180), text("fstype", 120), virtualText("device_id", ["major", "minor"]),
+      machineText("mount_point", 240, true), machineText("root", 160), machineText("source", 180), text("fstype", 120), virtualText("device_id", ["major", "minor"]),
       bytes("free_bytes"), derivedPercent("filesystem_available_percent", ["free_bytes", "total_bytes"], (rows) => gaugePercentPoints(rows, "free_bytes", "total_bytes")), bytes("total_bytes"),
       number("available_inodes"), derivedPercent("inode_available_percent", ["available_inodes", "total_inodes"], (rows) => gaugePercentPoints(rows, "available_inodes", "total_inodes")), number("total_inodes"), boolean("is_k8s_infra"),
     ],
   },
   {
     section: "os_netdev", label: "system.entities.network",
-    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), nonChartNumber("speed_mbit", []), id("duplex")],
+    columns: [machineText("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), nonChartNumber("speed_mbit", []), id("duplex")],
   },
   {
     section: "os_topology", label: "system.entities.topology",
@@ -865,7 +865,7 @@ function SystemEntityPanel({
     />
     </div>
     {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowLabel(selectedRow)}`}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
-      <DetailList>{columns.filter((column) => (column.available?.(selectedRow) ?? true) && value(selectedRow, column.field) !== null).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{column.render === undefined ? cellAriaValue(value(selectedRow, column.field), column, locale, t) : column.render(selectedRow)}</DetailRow>)}</DetailList>
+      <DetailList>{columns.filter((column) => (column.available?.(selectedRow) ?? true) && value(selectedRow, column.field) !== null).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />} valueRole={detailValueRoleForColumn(column)}>{column.render === undefined ? cellAriaValue(value(selectedRow, column.field), column, locale, t) : column.render(selectedRow)}</DetailRow>)}</DetailList>
       <InspectorChartPortal identity={`system:${section}:${entityRowKey(selectedRow)}:history`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start px-[7px] pt-1.5">
         {mountPair
@@ -1684,7 +1684,8 @@ function systemColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, wi
   return { field, label: `system.field.${field}.label`, ...(obvious.has(field) ? {} : { help: `system.field.${field}.help` }), kind, width, sticky }
 }
 function text(field: string, width = 130, sticky = false): SystemEntityColumn { return systemColumn(field, "text", width, sticky) }
-function virtualText(field: string, fields: readonly string[]): SystemEntityColumn { return { ...text(field, 90), chartable: false, historyFields: fields } }
+function machineText(field: string, width = 130, sticky = false): SystemEntityColumn { return { ...text(field, width, sticky), detailValueRole: "machine" } }
+function virtualText(field: string, fields: readonly string[]): SystemEntityColumn { return { ...machineText(field, 90), chartable: false, historyFields: fields } }
 function number(field: string, width = 126): SystemEntityColumn { return systemColumn(field, "number", width) }
 function physicalNumber(field: string, physicalField: string, width = 126): SystemEntityColumn { return { ...number(field, width), physicalField } }
 function id(field: string, width = 110, sticky = false): SystemEntityColumn { return systemColumn(field, "id", width, sticky) }

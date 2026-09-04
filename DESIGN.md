@@ -959,10 +959,12 @@ Recorded findings and direct thresholds guide attention with shape, weight and
 a marker rail as well as colour. Ordinary workload volume remains neutral, and
 the interface does not add diagnosis, scoring or causal claims.
 
-Two typefaces carry fixed roles: a UI sans for chrome — navigation, labels,
-buttons, prose — and a monospaced face for data — values, identifiers,
-timestamps, queries. Both ship embedded in the single artifact. Labels are
-sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
+Two typefaces carry fixed semantic roles: IBM Plex Sans for chrome —
+navigation, labels, buttons and prose — plus enums and ordinary or humanized
+values. JetBrains Mono is reserved for exact machine strings that benefit from
+fixed glyph widths: PIDs, OIDs, query IDs, timestamps, code, raw identifiers
+and tabular numeric contexts. Both ship embedded in the single artifact.
+Labels are sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share
 a small radius scale and brief 80–120 ms transitions, honoring reduced-motion.
 Chart series identity uses its own palette, validated for colour-vision
 separation and contrast against both theme surfaces, and is never taken from

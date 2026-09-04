@@ -29,7 +29,7 @@ test("all detail key/value rows share a readable label track and bounded value t
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)
   assert.match(composition, /className={`detail-dd/)
-  for (const view of ["detail.tsx", "postgres-view.tsx", "postgres-relations-view.tsx"]) {
+  for (const view of ["detail.tsx", "detail-activity.tsx", "detail-plans.tsx", "detail-process.tsx", "postgres-view.tsx", "postgres-relations-view.tsx", "system-view.tsx"]) {
     const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
     assert.match(source, /DetailList/, view)
     assert.match(source, /DetailRow/, view)
@@ -43,6 +43,37 @@ test("all detail key/value rows share a readable label track and bounded value t
 
 test("narrow detail rows stack labels above values", () => {
   assert.match(stylesheet, /@utility detail-row-stacked \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s)
+})
+
+test("detail typography keeps semantic values proportional and opts machine strings into mono", async () => {
+  const label = blockAfter("@utility detail-dt")
+  const value = blockAfter("@utility detail-dd")
+  const machine = blockAfter("@utility detail-dd-machine")
+  assert.match(label, /font-family:\s*var\(--font-sans\)/)
+  assert.match(label, /font-size:\s*var\(--text-sm\)/)
+  assert.match(value, /font-family:\s*var\(--font-sans\)/)
+  assert.match(value, /font-size:\s*var\(--text-md\)/)
+  assert.match(value, /font-variant-numeric:\s*tabular-nums/)
+  assert.match(machine, /font-family:\s*var\(--font-mono\)/)
+  assert.match(machine, /font-size:\s*var\(--text-sm\)/)
+
+  const [composition, entity, process, activity, postgres, system] = await Promise.all([
+    readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/detail-activity.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(composition, /DetailValueRole = "semantic" \| "machine"/)
+  assert.match(composition, /valueRole = "semantic"/)
+  assert.match(composition, /data-value-role={valueRole}/)
+  assert.doesNotMatch(composition, /valueClassName/)
+  assert.match(entity, /column\.kind === "id" \|\| column\.kind === "timestamp" \? "machine" : "semantic"/)
+  assert.match(process, /processDetailValueRole/)
+  assert.match(activity, /"query_id", "pg\.query_id", "id", "machine"/)
+  assert.match(postgres, /extra\("datname", "text"\), detailValueRole: "machine"/)
+  assert.match(system, /machineText\("cgroup_path", 240, true\)/)
 })
 
 test("Process table and dock inherit one remaining viewport row", async () => {
@@ -70,4 +101,3 @@ test("shared shells join the timeline directly to real content", async () => {
   assert.match(host, /className="system-main mt-0 min-w-0"/)
   assert.match(postgres, /className="pg-tabs !mt-0/)
 })
-

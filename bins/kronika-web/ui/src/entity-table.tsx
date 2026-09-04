@@ -12,6 +12,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import type { DetailValueRole } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
@@ -41,11 +42,16 @@ export interface EntityColumn {
   readonly rate?: boolean
   readonly valueScale?: number | null
   readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
+  readonly detailValueRole?: DetailValueRole
   readonly width?: number
   readonly expandToHeader?: boolean
   readonly sticky?: boolean | string
   readonly sortable?: boolean
   readonly available?: ((row: DataRow) => boolean) | undefined
+}
+
+export function detailValueRoleForColumn(column: Pick<EntityColumn, "detailValueRole" | "kind">): DetailValueRole {
+  return column.detailValueRole ?? (column.kind === "id" || column.kind === "timestamp" ? "machine" : "semantic")
 }
 
 export interface TableOrder {

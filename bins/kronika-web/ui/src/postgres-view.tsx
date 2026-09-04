@@ -10,7 +10,7 @@ import { contextMatches, contextualRows, type EntityContext } from "./entity-con
 import { DetailList, DetailRow } from "./detail-list"
 import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
-import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
+import { detailValueRoleForColumn, EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot, segmentBoundAt } from "./api"
 import { buildVacuumEpisodes, delayDelta, phaseRisk, phaseSpanUs, progressSeries, sortVacuumEpisodes, vacuumAtTimestamp, vacuumLayoutHas, vacuumLoadShares, vacuumProcessLoad, type VacuumEpisode, type VacuumProcessLoad } from "./postgres-vacuum"
@@ -46,9 +46,9 @@ const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true, false)
 const ACTIVITY_BACKEND_TYPE = pgText("backend_type", "pg.backend_type", 150, true)
 
 export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
-  ACTIVITY_PID, pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420),
+  ACTIVITY_PID, pgExactText("datname", "pg.datname", 145, false, false), pgExactText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420),
   duration("query_duration_ms", 145), duration("transaction_duration_ms", 155),
-  pgText("application_name", "pg.application_name", 180, false, false), pgText("client_addr", "pg.client_addr", 150),
+  pgExactText("application_name", "pg.application_name", 180, false, false), pgExactText("client_addr", "pg.client_addr", 150),
   pgText("state", "pg.state", 140), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155),
 ]
 
@@ -77,7 +77,7 @@ export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
   rateMilliseconds("local_blk_read_ms_per_second", 160), rateMilliseconds("local_blk_write_ms_per_second", 165),
   rateMilliseconds("temp_blk_read_ms_per_second", 160), rateMilliseconds("temp_blk_write_ms_per_second", 165),
   rateNumber("plans"), rateMilliseconds("planning_ms_per_second", 165),
-  { ...text("datname", 145), help: "pg.field.statement_database.help" }, text("usename", 130), { ...id("queryid", 155), help: "pg.field.statement_queryid.help" },
+  { ...exactText("datname", 145), help: "pg.field.statement_database.help" }, exactText("usename", 130), { ...id("queryid", 155), help: "pg.field.statement_queryid.help" },
   boolean("toplevel", 105), timestamp("stats_since", 210),
 ]
 
@@ -135,7 +135,7 @@ export const PLAN_COLUMNS: readonly EntityColumn[] = [
   rateMilliseconds("local_blk_read_ms_per_second", 160), rateMilliseconds("local_blk_write_ms_per_second", 165),
   rateMilliseconds("temp_blk_read_ms_per_second", 160), rateMilliseconds("temp_blk_write_ms_per_second", 165),
   rateMilliseconds("planning_ms_per_second", 165), rateNumber("slow_log_calls", 145),
-  { ...text("datname", 145), help: "pg.field.plan_database.help" }, text("usename", 130),
+  { ...exactText("datname", 145), help: "pg.field.plan_database.help" }, exactText("usename", 130),
   text("cmd_type", 125), PLAN_LAST_QUERY_ID,
 ]
 
@@ -237,8 +237,8 @@ export function lockRowLabel(row: DataRow, t: Translate): string {
 }
 
 const LOCK_COLUMN_DEFS: readonly EntityColumn[] = [
-  id("pid", 190, true, false), pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
-  text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
+  id("pid", 190, true, false), pgExactText("datname", "pg.datname", 145, false, false), pgExactText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgExactText("application_name", "pg.application_name", 180, false, false),
+  exactText("lock_target", 260), exactText("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
   pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
 export function lockColumns(t: Translate): readonly EntityColumn[] {
@@ -259,7 +259,7 @@ export function lockDetailColumns(t: Translate): readonly EntityColumn[] {
 export const LOCK_COLUMNS: readonly EntityColumn[] = lockColumns((key) => key)
 
 export const DATABASE_COLUMNS: readonly EntityColumn[] = [
-  text("datname", 170, true, false), number("numbackends", 135), number("xact_commit", 145), number("xact_rollback", 145), number("sessions", 125),
+  exactText("datname", 170, true, false), number("numbackends", 135), number("xact_commit", 145), number("xact_rollback", 145), number("sessions", 125),
   number("tup_returned", 145), number("tup_fetched", 145), number("tup_inserted", 145), number("tup_updated", 145), number("tup_deleted", 145),
   number("blks_read", 140), number("blks_hit", 140), milliseconds("blk_read_time", 150), milliseconds("blk_write_time", 155),
   number("temp_files", 125), bytes("temp_bytes", 145), number("conflicts", 125), number("deadlocks", 125), number("frozen_xid_age", 155),
@@ -785,7 +785,7 @@ export function vacuumDetailColumns(row: DataRow, blockSize: number | null): rea
     ({ field, label: `pg.vacuum.${field}.label`, help: `pg.vacuum.${field}.help`, kind, width: 140 })
   return postgresByteColumns([
     pgColumn("pid", "id", 80, false, false),
-    extra("datname", "text"),
+    { ...extra("datname", "text"), detailValueRole: "machine" },
     extra("is_autovacuum", "boolean"), extra("phase", "text"),
     extra("heap_blks_total", "number"), extra("heap_blks_scanned", "number"), extra("heap_blks_vacuumed", "number"),
     extra("index_vacuum_count", "number"),
@@ -906,15 +906,15 @@ function VacuumLoadFacts({ blockSize, episode, load, locale, t, ticksPerSecond }
     {nothingRecorded
       ? <p className="m-0 text-sm text-fg4">{t("pg.vacuum.load.unavailable")}</p>
       : <DetailList>
-        {cpuMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.cpu.help" labelKey="pg.vacuum.load.cpu.label" t={t} />} valueClassName="text-sm">
+        {cpuMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.cpu.help" labelKey="pg.vacuum.load.cpu.label" t={t} />}>
           {humanDuration(cpuMs, locale)}{cpuShare === null ? "" : ` · ${humanPercent(cpuShare, locale)}`}
         </DetailRow>}
-        {readBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.read.help" labelKey="pg.vacuum.load.read.label" t={t} />} valueClassName="text-sm">
+        {readBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.read.help" labelKey="pg.vacuum.load.read.label" t={t} />}>
           {humanBytes(readBytes, locale)}{readShare === null ? "" : ` ${t("pg.vacuum.load.read_share", { share: humanPercent(readShare, locale) })}`}
         </DetailRow>}
-        {writeBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.write.help" labelKey="pg.vacuum.load.write.label" t={t} />} valueClassName="text-sm">{humanBytes(writeBytes, locale)}</DetailRow>}
-        {blockWaitMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.block_wait.help" labelKey="pg.vacuum.load.block_wait.label" t={t} />} valueClassName="text-sm">{humanDuration(blockWaitMs, locale)}</DetailRow>}
-        {majorFaults !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.major_faults.help" labelKey="pg.vacuum.load.major_faults.label" t={t} />} valueClassName="text-sm">{compact(majorFaults, locale)}</DetailRow>}
+        {writeBytes !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.write.help" labelKey="pg.vacuum.load.write.label" t={t} />}>{humanBytes(writeBytes, locale)}</DetailRow>}
+        {blockWaitMs !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.block_wait.help" labelKey="pg.vacuum.load.block_wait.label" t={t} />}>{humanDuration(blockWaitMs, locale)}</DetailRow>}
+        {majorFaults !== null && <DetailRow term={<LabelHelp helpKey="pg.vacuum.load.major_faults.help" labelKey="pg.vacuum.load.major_faults.label" t={t} />}>{compact(majorFaults, locale)}</DetailRow>}
       </DetailList>}
   </section>
 }
@@ -1162,7 +1162,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     {section === "pg_store_plans"
       ? <PlanTextBlocks cursor={cursor} plan={wholeText} revision={historyRevision} row={row} segments={segments} t={t} />
       : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(exactText, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
-    <DetailList>{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{detailValue(column)}</DetailRow>)}</DetailList>
+    <DetailList>{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />} valueRole={detailValueRoleForColumn(column)}>{detailValue(column)}</DetailRow>)}</DetailList>
     {backendPid !== null && <InspectorRelatedPortal id="os_process" identity={`backend:${rowKey(row)}`} label={t("pg.related.process_tab")}>
       <ProcessFacts locale={locale} process={backendProcess} processTime={backendProcess?.timestamp ?? null} t={t} />
     </InspectorRelatedPortal>}
@@ -1569,6 +1569,7 @@ function pgColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width:
   return { field, label: `pg.field.${field}.label`, ...(withHelp ? { help: `pg.field.${field}.help` } : {}), kind, width, sticky }
 }
 function text(field: string, width = 130, sticky = false, withHelp = true): EntityColumn { return pgColumn(field, "text", width, sticky, withHelp) }
+function exactText(field: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { ...text(field, width, sticky, withHelp), detailValueRole: "machine" } }
 function number(field: string, width = 125): EntityColumn { return { ...pgColumn(field, "number", width), sortable: true } }
 function id(field: string, width = 110, sticky = false, withHelp = true): EntityColumn { return { ...pgColumn(field, "id", width, sticky, withHelp), sortable: true } }
 function bytes(field: string, width = 140): EntityColumn { return { ...pgColumn(field, "bytes", width), sortable: true } }
@@ -1581,6 +1582,7 @@ function rateMilliseconds(field: string, width = 145): EntityColumn { return { .
 function timestamp(field: string, width = 210): EntityColumn { return { ...pgColumn(field, "timestamp", width), sortable: true } }
 function boolean(field: string, width = 125): EntityColumn { return pgColumn(field, "boolean", width) }
 function pgText(field: string, key: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "text", width, sticky } }
+function pgExactText(field: string, key: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { ...pgText(field, key, width, sticky, withHelp), detailValueRole: "machine" } }
 function pgNumber(field: string, key: string, width = 125): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "number", width } }
 function pgId(field: string, key: string, width = 110, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "id", width, sticky } }
 function pgTimestamp(field: string, key: string, width = 210): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "timestamp", width } }

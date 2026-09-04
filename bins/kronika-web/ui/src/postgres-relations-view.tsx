@@ -6,7 +6,7 @@ import { copyText } from "./clipboard"
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
-import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
+import { detailValueRoleForColumn, EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
@@ -42,6 +42,7 @@ import type { TableRequestPhase } from "./table-request"
 import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
 
 const NO_RATE_FIELDS: readonly string[] = []
+const RELATION_MACHINE_TEXT = new Set(["amname", "datname", "indexrelname", "relname", "schemaname", "tablespace"])
 
 export interface PostgresRelationsViewProps {
   readonly blockSize: number | null
@@ -220,7 +221,7 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     </section></InspectorChartPortal>}
     <DetailList>{columns.map((column) => {
       const label = t(column.label)
-      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>
+      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />} valueRole={detailValueRoleForColumn(column)}>{scanValue(row, column, locale, t)}</DetailRow>
     })}</DetailList>
     {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void copyText(definition, t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>
@@ -267,7 +268,7 @@ function relationColumn(section: RelationSection, field: string, rateFields: rea
   const width = kind === "timestamp" ? 210 : kind === "text" ? field.includes("relname") ? 190 : 145 : kind === "boolean" || kind === "id" ? 115 : kind === "milliseconds" ? 155 : 140
   const copyField = section === "pg_stat_user_tables" && field === "main_fork_bytes" ? "table_data_bytes" : field
   const help = relationHelpKey(section, field)
-  return { field, label: `pg.field.${copyField}.label`, ...(help === undefined ? {} : { help }), kind, width, rate: rateFields.includes(field) }
+  return { field, label: `pg.field.${copyField}.label`, ...(help === undefined ? {} : { help }), kind, width, rate: rateFields.includes(field), ...(RELATION_MACHINE_TEXT.has(field) ? { detailValueRole: "machine" as const } : {}) }
 }
 
 function rawRelationField(section: RelationSection, lens: RelationLens, field: string): boolean {
