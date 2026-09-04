@@ -19,7 +19,7 @@ fn the_default_round_times_out_only_after_an_earlier_waiter_can_run() {
 fn every_lock_update_sets_a_finite_statement_timeout() {
     assert_eq!(
         lock_update_sql("shop.orders", 7),
-        "set local statement_timeout = '10s'; update shop.orders set id = id where id = 7"
+        "set local statement_timeout = '10s'; update shop.orders set status = case status when 'paid' then 'packed' else 'paid' end where id = 7"
     );
 }
 

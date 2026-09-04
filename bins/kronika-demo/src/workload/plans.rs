@@ -18,7 +18,7 @@ fn setup_sql(rows: u32) -> String {
     format!(
         "set statement_timeout = '60s'; \
          insert into {TABLE} (id, customer_id, status, total_cents, placed_at) \
-         select series, series % 20000, \
+         select series, 1 + (series - 1) % 20000, \
                 (array['paid','packed','shipped','delivered'])[1 + series % 4], \
                 1000 + series % 50000, \
                 clock_timestamp() - ({rows} - series) * interval '1 second' \

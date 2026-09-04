@@ -27,6 +27,7 @@ pub(crate) struct Postgres {
 #[derive(Debug)]
 pub(crate) struct PgBouncer {
     pub(crate) dsn: String,
+    pub(crate) workload_dsn: String,
     psql: String,
 }
 
@@ -182,6 +183,9 @@ impl PgBouncer {
         anyhow::ensure!(answered, "the pooler never answered on its admin console");
         Ok(Self {
             dsn: format!("host=127.0.0.1 port={port} user={PG_USER} dbname=pgbouncer"),
+            workload_dsn: format!(
+                "host=127.0.0.1 port={port} user={PG_USER} dbname={PG_USER} connect_timeout=5"
+            ),
             psql: format!(
                 "{}/psql --host=127.0.0.1 --port={port} --username={PG_USER}",
                 pg_bin()?

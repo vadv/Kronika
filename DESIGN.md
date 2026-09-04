@@ -1536,6 +1536,20 @@ without risking collected data.
 
 The repository demo runs the project against live PostgreSQL and OS containers.
 
+When its PostgreSQL workload is enabled, bounded long-lived clients connect
+through PgBouncer in transaction-pooling mode. The default four clients run at
+most 20 short commerce transactions per second in total. One transaction uses
+indexed customer, product, and inventory lookups and writes a related order,
+item, payment, event, and application session. Client-owned order slots are
+reused above the separate plan and Vacuum fixture ranges, so the default keeps
+at most 10000 live OLTP order graphs. Missed pacing ticks are not replayed.
+
+Configuration validates finite limits for client, setup, lock, and plan
+concurrency and for schema, plan, Vacuum, and OLTP row counts. The commerce
+schema declares its primary keys, foreign keys, checks, and workload indexes.
+The plan-change, lock, Vacuum, and log-event stories run alongside the steady
+OLTP traffic.
+
 The demo reports segment size, RSS, and CPU use. It also supplies data for
 segment-size benchmarks.
 

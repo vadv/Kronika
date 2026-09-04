@@ -9,6 +9,8 @@ const COMMERCE_TABLES: [&str; 8] = [
     "sessions",
 ];
 
+pub(crate) const COMMERCE_TABLE_COUNT: u32 = 8;
+
 #[cfg(test)]
 pub(crate) const fn commerce_table_names() -> [&'static str; 8] {
     COMMERCE_TABLES

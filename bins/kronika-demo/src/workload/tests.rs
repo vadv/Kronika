@@ -1,6 +1,6 @@
 use super::{WorkloadConfig, connection_config, required_direct_dsn};
 
-fn config() -> WorkloadConfig {
+pub(super) fn config() -> WorkloadConfig {
     WorkloadConfig {
         dsn: "host=127.0.0.1 password=private".to_owned(),
         direct_dsn: "host=/var/run/postgresql password=also-private".to_owned(),
@@ -8,6 +8,8 @@ fn config() -> WorkloadConfig {
         tables_per_schema: 40,
         ddl_concurrency: 4,
         sessions: 4,
+        transactions_per_second: 20,
+        max_orders: 10_000,
         lock_chains: 1,
         lock_chain_depth: 4,
         lock_hold_ms: 4_000,
@@ -63,6 +65,8 @@ fn workload_dimensions_and_timers_must_be_positive() {
         |value: &mut WorkloadConfig| value.tables_per_schema = 0,
         |value: &mut WorkloadConfig| value.ddl_concurrency = 0,
         |value: &mut WorkloadConfig| value.sessions = 0,
+        |value: &mut WorkloadConfig| value.transactions_per_second = 0,
+        |value: &mut WorkloadConfig| value.max_orders = 0,
         |value: &mut WorkloadConfig| value.lock_chains = 0,
         |value: &mut WorkloadConfig| value.plan_rows = 0,
         |value: &mut WorkloadConfig| value.plan_workers = 0,
@@ -111,5 +115,38 @@ fn workload_dimensions_and_timers_must_be_positive() {
 
     let mut invalid = config();
     invalid.vacuum_statement_timeout_s = 0;
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn workload_connections_and_data_have_hard_upper_bounds() {
+    for invalidate in [
+        |value: &mut WorkloadConfig| value.schemas = 9,
+        |value: &mut WorkloadConfig| value.tables_per_schema = 65,
+        |value: &mut WorkloadConfig| value.ddl_concurrency = 17,
+        |value: &mut WorkloadConfig| value.sessions = 17,
+        |value: &mut WorkloadConfig| value.transactions_per_second = 65,
+        |value: &mut WorkloadConfig| value.max_orders = 50_001,
+        |value: &mut WorkloadConfig| value.lock_chains = 5,
+        |value: &mut WorkloadConfig| value.lock_chain_depth = 9,
+        |value: &mut WorkloadConfig| value.plan_rows = 500_001,
+        |value: &mut WorkloadConfig| value.plan_workers = 9,
+        |value: &mut WorkloadConfig| value.vacuum_rows = 250_001,
+    ] {
+        let mut invalid = config();
+        invalidate(&mut invalid);
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
+fn commerce_schema_and_order_ring_fit_every_oltp_client() {
+    let mut invalid = config();
+    invalid.tables_per_schema = 7;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = config();
+    invalid.sessions = 5;
+    invalid.max_orders = 4;
     assert!(invalid.validate().is_err());
 }

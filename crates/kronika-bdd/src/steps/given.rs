@@ -114,6 +114,29 @@ fn demo_uses_postgres(world: &mut BddWorld) -> Result<()> {
     Ok(())
 }
 
+#[given("the demo workload reaches PostgreSQL through PgBouncer")]
+fn demo_uses_pgbouncer(world: &mut BddWorld) -> Result<()> {
+    let workload_dsn = world
+        .pgbouncer
+        .as_ref()
+        .context("a PgBouncer was started")?
+        .workload_dsn
+        .clone();
+    let direct_dsn = world
+        .postgres
+        .as_ref()
+        .context("a PostgreSQL was started")?
+        .dsn
+        .clone();
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DSN".to_owned(), workload_dsn));
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN".to_owned(), direct_dsn));
+    Ok(())
+}
+
 #[given("the collector reaches PgBouncer by DSN")]
 fn pgbouncer_by_dsn(world: &mut BddWorld) {
     let dsn = world.pgbouncer.as_ref().expect("a pooler").dsn.clone();

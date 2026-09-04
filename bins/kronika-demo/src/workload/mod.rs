@@ -26,6 +26,8 @@ pub(crate) struct WorkloadConfig {
     pub(crate) tables_per_schema: u32,
     pub(crate) ddl_concurrency: u32,
     pub(crate) sessions: u32,
+    pub(crate) transactions_per_second: u32,
+    pub(crate) max_orders: u32,
     pub(crate) lock_chains: u32,
     pub(crate) lock_chain_depth: u32,
     pub(crate) lock_hold_ms: u64,
@@ -50,6 +52,8 @@ impl fmt::Debug for WorkloadConfig {
             .field("tables_per_schema", &self.tables_per_schema)
             .field("ddl_concurrency", &self.ddl_concurrency)
             .field("sessions", &self.sessions)
+            .field("transactions_per_second", &self.transactions_per_second)
+            .field("max_orders", &self.max_orders)
             .field("lock_chains", &self.lock_chains)
             .field("lock_chain_depth", &self.lock_chain_depth)
             .field("lock_hold_ms", &self.lock_hold_ms)
@@ -115,6 +119,8 @@ impl WorkloadConfig {
             tables_per_schema: env_u32("KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA", 8)?,
             ddl_concurrency: env_u32("KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY", 4)?,
             sessions: env_u32("KRONIKA_DEMO_WORKLOAD_SESSIONS", 4)?,
+            transactions_per_second: env_u32("KRONIKA_DEMO_WORKLOAD_TPS", 20)?,
+            max_orders: env_u32("KRONIKA_DEMO_WORKLOAD_MAX_ORDERS", 10_000)?,
             lock_chains: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", 1)?,
             lock_chain_depth: env_u32("KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH", 4)?,
             lock_hold_ms: env_u64("KRONIKA_DEMO_WORKLOAD_LOCK_HOLD_MS", 4_000)?,
@@ -137,6 +143,10 @@ impl WorkloadConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.dsn.trim().is_empty(),
+            "KRONIKA_DEMO_WORKLOAD_DSN must not be blank"
+        );
         for (key, value) in [
             ("KRONIKA_DEMO_WORKLOAD_SCHEMAS", self.schemas),
             (
@@ -148,6 +158,8 @@ impl WorkloadConfig {
                 self.ddl_concurrency,
             ),
             ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions),
+            ("KRONIKA_DEMO_WORKLOAD_TPS", self.transactions_per_second),
+            ("KRONIKA_DEMO_WORKLOAD_MAX_ORDERS", self.max_orders),
             ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains),
             ("KRONIKA_DEMO_WORKLOAD_PLAN_ROWS", self.plan_rows),
             ("KRONIKA_DEMO_WORKLOAD_PLAN_WORKERS", self.plan_workers),
@@ -155,6 +167,50 @@ impl WorkloadConfig {
         ] {
             anyhow::ensure!(value > 0, "{key} must be greater than zero");
         }
+        for (key, value, maximum) in [
+            ("KRONIKA_DEMO_WORKLOAD_SCHEMAS", self.schemas, 8),
+            (
+                "KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA",
+                self.tables_per_schema,
+                64,
+            ),
+            (
+                "KRONIKA_DEMO_WORKLOAD_DDL_CONCURRENCY",
+                self.ddl_concurrency,
+                16,
+            ),
+            ("KRONIKA_DEMO_WORKLOAD_SESSIONS", self.sessions, 16),
+            (
+                "KRONIKA_DEMO_WORKLOAD_TPS",
+                self.transactions_per_second,
+                64,
+            ),
+            ("KRONIKA_DEMO_WORKLOAD_MAX_ORDERS", self.max_orders, 50_000),
+            ("KRONIKA_DEMO_WORKLOAD_LOCK_CHAINS", self.lock_chains, 4),
+            (
+                "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH",
+                self.lock_chain_depth,
+                8,
+            ),
+            ("KRONIKA_DEMO_WORKLOAD_PLAN_ROWS", self.plan_rows, 500_000),
+            ("KRONIKA_DEMO_WORKLOAD_PLAN_WORKERS", self.plan_workers, 8),
+            (
+                "KRONIKA_DEMO_WORKLOAD_VACUUM_ROWS",
+                self.vacuum_rows,
+                250_000,
+            ),
+        ] {
+            anyhow::ensure!(value <= maximum, "{key} must be at most {maximum}");
+        }
+        anyhow::ensure!(
+            self.tables_per_schema >= naming::COMMERCE_TABLE_COUNT,
+            "KRONIKA_DEMO_WORKLOAD_TABLES_PER_SCHEMA must be at least {}",
+            naming::COMMERCE_TABLE_COUNT
+        );
+        anyhow::ensure!(
+            self.max_orders >= self.sessions,
+            "KRONIKA_DEMO_WORKLOAD_MAX_ORDERS must be at least KRONIKA_DEMO_WORKLOAD_SESSIONS"
+        );
         anyhow::ensure!(
             self.lock_chain_depth > 1,
             "KRONIKA_DEMO_WORKLOAD_LOCK_CHAIN_DEPTH must be at least two"
@@ -252,6 +308,11 @@ impl Workload {
 
 async fn run(config: WorkloadConfig, stop: Arc<AtomicBool>) -> Result<()> {
     schema::create_all(&config).await?;
+
+    println!(
+        "kronika-demo: OLTP workload starting {} clients at up to {} transactions/s with {} reusable orders",
+        config.sessions, config.transactions_per_second, config.max_orders
+    );
 
     let mut tasks = Vec::new();
     for session in 0..config.sessions {

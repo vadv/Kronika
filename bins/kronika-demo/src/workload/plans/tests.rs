@@ -6,6 +6,7 @@ fn setup_seeds_a_selective_orders_workload_and_fast_index() {
     assert!(sql.contains("insert into shop.orders"));
     assert!(sql.contains("generate_series(1, 300000)"));
     assert!(sql.contains("customer_id"));
+    assert!(sql.contains("1 + (series - 1) % 20000"));
     assert!(sql.contains("where not exists (select 1 from shop.orders where id = 300000)"));
     assert!(sql.contains("checkout_orders_customer_placed_idx"));
     assert!(sql.contains("(customer_id, placed_at desc)"));

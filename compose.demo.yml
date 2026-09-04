@@ -10,6 +10,10 @@ services:
         VCS_REF: ${DEMO_VCS_REF:-unknown}
     ports:
       - "${DEMO_BIND_ADDRESS:-127.0.0.1}:${DEMO_PORT:-8080}:8080"
+    environment:
+      KRONIKA_DEMO_WORKLOAD_SESSIONS: "${KRONIKA_DEMO_WORKLOAD_SESSIONS:-4}"
+      KRONIKA_DEMO_WORKLOAD_TPS: "${KRONIKA_DEMO_WORKLOAD_TPS:-20}"
+      KRONIKA_DEMO_WORKLOAD_MAX_ORDERS: "${KRONIKA_DEMO_WORKLOAD_MAX_ORDERS:-10000}"
     volumes:
       - data:/var/lib/kronika/data
     tmpfs:

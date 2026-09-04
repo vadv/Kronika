@@ -1,117 +1,164 @@
-use super::{WorkloadConfig, connect_as, naming};
-use rand::rngs::StdRng;
-use rand::{Rng as _, SeedableRng as _};
+use super::{WorkloadConfig, connect_as, schema, wait_for_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_postgres::Client;
 
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Action {
-    Insert,
-    Update,
-    Select,
-    /// Matches no rows so the demo table stays bounded.
-    Delete,
-    /// A query that deliberately crosses the 5s known-bad boundary.
-    SlowQuery,
-    /// Emits a syntax error.
-    BadStatement,
-    /// Emits `PgBouncer`'s "no such database" event.
-    BadDatabase,
+struct Purchase {
+    order_id: i64,
+    customer_id: i64,
+    product_id: i64,
+    quantity: i32,
+    unit_cents: i64,
+    total_cents: i64,
+    session_id: i64,
 }
 
-pub(crate) const fn next_action(roll: u32) -> Action {
-    match roll % 100 {
-        0..=29 => Action::Insert,
-        30..=54 => Action::Update,
-        55..=89 => Action::Select,
-        _ => Action::Delete,
+pub(crate) fn session_application_name(session: u32) -> String {
+    format!("shop-oltp-{:02}", session + 1)
+}
+
+fn transaction_period(sessions: u32, transactions_per_second: u32) -> Duration {
+    let nanos = NANOS_PER_SECOND * u64::from(sessions);
+    Duration::from_nanos(nanos.div_ceil(u64::from(transactions_per_second)))
+}
+
+fn session_start_offset(period: Duration, session: u32, sessions: u32) -> Duration {
+    let nanos = period.as_nanos() * u128::from(session) / u128::from(sessions);
+    Duration::from_nanos(u64::try_from(nanos).expect("validated workload period must fit in u64"))
+}
+
+fn session_slot(session: u32, sequence: u64, sessions: u32, max_orders: u32) -> u32 {
+    let common = max_orders / sessions;
+    let extra = max_orders % sessions;
+    let length = common + u32::from(session < extra);
+    let start = session * common + session.min(extra);
+    let offset = u32::try_from(sequence % u64::from(length))
+        .expect("the remainder of a u32 slot count must fit in u32");
+    start + offset
+}
+
+fn purchase(session: u32, sequence: u64, config: &WorkloadConfig) -> Purchase {
+    let slot = session_slot(session, sequence, config.sessions, config.max_orders);
+    let row_base = i64::from(config.plan_rows.max(config.vacuum_rows)) + 1;
+    let order_id = row_base + i64::from(slot);
+    let product_id = i64::from(slot % schema::PRODUCT_ROWS + 1);
+    let customer_offset = sequence
+        .wrapping_mul(7_919)
+        .wrapping_add(u64::from(session) * 104_729)
+        % u64::from(schema::CUSTOMER_ROWS);
+    let customer_id =
+        i64::try_from(customer_offset + 1).expect("the bounded customer ID must fit in i64");
+    let quantity_u32 = u32::try_from(
+        sequence.wrapping_add(u64::from(session)) % u64::from(schema::MAX_ORDER_QUANTITY) + 1,
+    )
+    .expect("the bounded quantity must fit in u32");
+    let quantity = i32::try_from(quantity_u32).expect("the bounded quantity must fit in i32");
+    let unit_cents = schema::product_price_cents(product_id);
+    Purchase {
+        order_id,
+        customer_id,
+        product_id,
+        quantity,
+        unit_cents,
+        total_cents: unit_cents * i64::from(quantity),
+        session_id: i64::from(session) + 1,
     }
-}
-
-const JITTER_MS: [u64; 3] = [200, 500, 900];
-const WORKLOAD_SEED: u64 = 0x4b52_4f4e_494b_4100;
-const ROW_KEY_SPACE: u64 = 10_000;
-const SESSION_APPLICATIONS: [&str; 4] = [
-    "checkout-api",
-    "catalog-api",
-    "payments-worker",
-    "fulfillment-worker",
-];
-
-pub(crate) const fn session_application_name(session: u32) -> &'static str {
-    SESSION_APPLICATIONS[session as usize % SESSION_APPLICATIONS.len()]
-}
-
-fn session_rng(session: u32) -> StdRng {
-    StdRng::seed_from_u64(WORKLOAD_SEED ^ u64::from(session))
-}
-
-pub(crate) fn bounded_row_id(random: u64) -> i64 {
-    i64::try_from(random % ROW_KEY_SPACE + 1).expect("bounded row ID must fit in i64")
 }
 
 pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Arc<AtomicBool>) {
-    let Ok(client) = connect_as(&config.dsn, session_application_name(session)).await else {
-        eprintln!("kronika-demo: workload session {session} could not connect");
+    let application_name = session_application_name(session);
+    let Ok(client) = connect_as(&config.dsn, &application_name).await else {
+        eprintln!("kronika-demo: OLTP client {session} could not connect");
         return;
     };
-    let mut rng = session_rng(session);
+    let period = transaction_period(config.sessions, config.transactions_per_second);
+    wait_for_stop(stop, session_start_offset(period, session, config.sessions)).await;
+
+    let mut sequence = 0_u64;
     while !stop.load(Ordering::Relaxed) {
-        let table = naming::table_name(
-            rng.gen_range(0..config.schemas),
-            rng.gen_range(0..config.tables_per_schema),
-        );
-        let action = next_action(rng.gen_range(0..100));
-        let pause_ms = JITTER_MS[rng.gen_range(0..JITTER_MS.len())];
-        let id = bounded_row_id(rng.r#gen());
-        if let Err(error) = perform(&client, config, &table, action, id).await {
-            eprintln!("kronika-demo: session {session} {action:?} on {table} failed: {error:#}");
+        let started = Instant::now();
+        let purchase = purchase(session, sequence, config);
+        if let Err(error) = perform(&client, purchase).await {
+            eprintln!(
+                "kronika-demo: OLTP client {session} order {} failed: {error:#}",
+                purchase.order_id
+            );
+            if let Err(rollback_error) = client.batch_execute("rollback").await {
+                eprintln!(
+                    "kronika-demo: OLTP client {session} rollback failed: {rollback_error:#}"
+                );
+            }
         }
-        tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+        sequence = sequence.wrapping_add(1);
+        wait_for_stop(stop, period.saturating_sub(started.elapsed())).await;
     }
 }
 
-// PgBouncer transaction pooling cannot preserve prepared statements between calls.
-// All inlined values are numbers generated by this module.
-pub(super) async fn perform(
-    client: &Client,
-    config: &WorkloadConfig,
-    table: &str,
-    action: Action,
-    id: i64,
-) -> anyhow::Result<()> {
-    if let Some(sql) = ordinary_sql(table, action, id) {
-        client.batch_execute(&sql).await?;
-        return Ok(());
-    }
-    match action {
-        Action::Insert | Action::Update | Action::Select | Action::Delete => unreachable!(),
-        Action::SlowQuery => {
-            client.batch_execute("select pg_sleep(6)").await?;
-        }
-        Action::BadStatement => {
-            // The failure is the event.
-            drop(client.batch_execute("slect 1").await);
-        }
-        Action::BadDatabase => {
-            drop(connect_as(&format!("{} dbname=nope", config.dsn), "misconfigured-api").await);
-        }
-    }
+// One Simple Query message keeps the transaction on one pooled backend without
+// relying on prepared statements that survive a PgBouncer transaction boundary.
+async fn perform(client: &Client, purchase: Purchase) -> anyhow::Result<()> {
+    client.batch_execute(&transaction_sql(purchase)).await?;
     Ok(())
 }
 
-pub(crate) fn ordinary_sql(table: &str, action: Action, id: i64) -> Option<String> {
-    match action {
-        Action::Insert => Some(format!(
-            "insert into {table} (id) values ({id}) on conflict do nothing"
-        )),
-        Action::Update => Some(format!("update {table} set id = id where id = {id}")),
-        Action::Select => Some(format!("select * from {table} limit 50")),
-        Action::Delete => Some(format!("delete from {table} where false")),
-        Action::SlowQuery | Action::BadStatement | Action::BadDatabase => None,
-    }
+fn transaction_sql(purchase: Purchase) -> String {
+    let Purchase {
+        order_id,
+        customer_id,
+        product_id,
+        quantity,
+        unit_cents,
+        total_cents,
+        session_id,
+    } = purchase;
+    format!(
+        "begin; \
+         set local statement_timeout = '3s'; \
+         set local lock_timeout = '1s'; \
+         select tier, lifetime_value_cents from shop.customers where id = {customer_id}; \
+         select products.price_cents, inventory.available, inventory.reserved \
+         from shop.products as products \
+         join shop.inventory as inventory on inventory.product_id = products.id \
+         where products.id = {product_id} for update of inventory; \
+         update shop.inventory as inventory \
+         set available = inventory.available + old_item.quantity, \
+             reserved = inventory.reserved - old_item.quantity, \
+             updated_at = clock_timestamp() \
+         from shop.order_items as old_item \
+         where old_item.order_id = {order_id} \
+           and old_item.product_id = inventory.product_id; \
+         delete from shop.orders where id = {order_id}; \
+         update shop.inventory \
+         set available = available - {quantity}, \
+             reserved = reserved + {quantity}, \
+             updated_at = clock_timestamp() \
+         where product_id = {product_id} and available >= {quantity}; \
+         update shop.customers \
+         set lifetime_value_cents = lifetime_value_cents + {total_cents} \
+         where id = {customer_id}; \
+         insert into shop.orders (id, customer_id, status, total_cents, placed_at) \
+         values ({order_id}, {customer_id}, 'paid', {total_cents}, clock_timestamp()); \
+         insert into shop.order_items \
+             (id, order_id, product_id, quantity, unit_cents) \
+         values ({order_id}, {order_id}, {product_id}, {quantity}, {unit_cents}); \
+         insert into shop.payments (id, order_id, state, amount_cents, paid_at) \
+         values ({order_id}, {order_id}, 'captured', {total_cents}, clock_timestamp()); \
+         insert into shop.event_log (id, order_id, occurred_at, kind, payload) \
+         values ({order_id}, {order_id}, clock_timestamp(), 'order-paid', \
+                 'payment captured by demo OLTP'); \
+         insert into shop.sessions (id, customer_id, expires_at, metadata) \
+         values ({session_id}, {customer_id}, clock_timestamp() + interval '15 minutes', \
+                 '{{\"source\":\"oltp\"}}'::jsonb) \
+         on conflict (id) do update \
+         set customer_id = excluded.customer_id, \
+             expires_at = excluded.expires_at, \
+             metadata = excluded.metadata; \
+         commit"
+    )
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
+use super::Action;
 use super::episode_actions;
-use crate::workload::dml::Action;
 
 #[test]
 fn an_event_episode_has_one_of_each_showcase_action() {
