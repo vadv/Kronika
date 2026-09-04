@@ -390,6 +390,8 @@ test("hidden mount device IDs remain exact request and history identity", () => 
   assert.ok(request.fields.includes("major"))
   assert.ok(request.fields.includes("minor"))
   assert.equal(mount.columns.some(({ field }) => field === "major" || field === "minor"), false)
+  assert.equal(mount.columns.find(({ field }) => field === "fstype").detailValueRole, "machine")
+  assert.notEqual(mount.columns.find(({ field }) => field === "total_bytes").detailValueRole, "machine")
 
   const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112002", values: { major: 8, minor: 1, mount_point: "/data", free_bytes: 4 } }
   assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {

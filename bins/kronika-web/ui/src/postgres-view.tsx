@@ -43,13 +43,13 @@ export type PostgresSection = "overview" | "activity" | "vacuum" | "statements" 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
 
 const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true, false)
-const ACTIVITY_BACKEND_TYPE = pgText("backend_type", "pg.backend_type", 150, true)
+const ACTIVITY_BACKEND_TYPE = pgExactText("backend_type", "pg.backend_type", 150, true)
 
 export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
   ACTIVITY_PID, pgExactText("datname", "pg.datname", 145, false, false), pgExactText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420),
   duration("query_duration_ms", 145), duration("transaction_duration_ms", 155),
   pgExactText("application_name", "pg.application_name", 180, false, false), pgExactText("client_addr", "pg.client_addr", 150),
-  pgText("state", "pg.state", 140), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155),
+  pgExactText("state", "pg.state", 140), pgExactText("wait_event_type", "pg.wait_event_type", 135), pgExactText("wait_event", "pg.wait_event", 155),
 ]
 
 export const ACTIVITY_DETAIL_COLUMNS: readonly EntityColumn[] = [
@@ -136,7 +136,7 @@ export const PLAN_COLUMNS: readonly EntityColumn[] = [
   rateMilliseconds("temp_blk_read_ms_per_second", 160), rateMilliseconds("temp_blk_write_ms_per_second", 165),
   rateMilliseconds("planning_ms_per_second", 165), rateNumber("slow_log_calls", 145),
   { ...exactText("datname", 145), help: "pg.field.plan_database.help" }, exactText("usename", 130),
-  text("cmd_type", 125), PLAN_LAST_QUERY_ID,
+  exactText("cmd_type", 125), PLAN_LAST_QUERY_ID,
 ]
 
 const PLAN_DERIVED_COLUMNS: readonly EntityColumn[] = [
@@ -238,8 +238,8 @@ export function lockRowLabel(row: DataRow, t: Translate): string {
 
 const LOCK_COLUMN_DEFS: readonly EntityColumn[] = [
   id("pid", 190, true, false), pgExactText("datname", "pg.datname", 145, false, false), pgExactText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgExactText("application_name", "pg.application_name", 180, false, false),
-  exactText("lock_target", 260), exactText("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180),
-  pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
+  exactText("lock_target", 260), exactText("lock_relname", 180), exactText("lock_locktype", 145), exactText("lock_mode", 180),
+  pgExactText("state", "pg.state", 110), pgExactText("wait_event_type", "pg.wait_event_type", 135), pgExactText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
 export function lockColumns(t: Translate): readonly EntityColumn[] {
   return LOCK_COLUMN_DEFS.map((column) => ({
@@ -786,7 +786,7 @@ export function vacuumDetailColumns(row: DataRow, blockSize: number | null): rea
   return postgresByteColumns([
     pgColumn("pid", "id", 80, false, false),
     { ...extra("datname", "text"), detailValueRole: "machine" },
-    extra("is_autovacuum", "boolean"), extra("phase", "text"),
+    extra("is_autovacuum", "boolean"), { ...extra("phase", "text"), detailValueRole: "machine" },
     extra("heap_blks_total", "number"), extra("heap_blks_scanned", "number"), extra("heap_blks_vacuumed", "number"),
     extra("index_vacuum_count", "number"),
     ...row.typeId === "1012004" ? [extra("num_dead_tuples", "number"), extra("max_dead_tuples", "number")] : [

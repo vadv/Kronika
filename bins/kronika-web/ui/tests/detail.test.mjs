@@ -95,6 +95,11 @@ test("process details expose each user identity exactly once in every lens", () 
   }
 })
 
+test("verbatim process state uses the machine value role", () => {
+  assert.equal(detail.processDetailValueRole({ kind: "state" }), "machine")
+  assert.equal(detail.processDetailValueRole({ kind: "percent" }), "semantic")
+})
+
 test("scheduler references stay in CPU detail while temporal fault metrics stay chartable", async () => {
   for (const field of ["nice", "prio", "rtprio"]) assert.equal(detail.PROCESS_HISTORY_FIELDS.includes(field), false, field)
   assert.equal(detail.PROCESS_HISTORY_FIELDS.includes("majflt"), true)

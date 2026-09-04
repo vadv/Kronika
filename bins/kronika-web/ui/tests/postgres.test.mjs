@@ -430,6 +430,24 @@ test("every PostgreSQL dense table and lens has an exact meaning-first order", (
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
 })
 
+test("verbatim PostgreSQL tokens use the machine value role in Detail", () => {
+  const role = (columns, field) => columns.find((column) => column.field === field)?.detailValueRole
+  for (const field of ["lock_target", "lock_relname", "lock_locktype", "lock_mode", "state", "wait_event_type", "wait_event"]) {
+    assert.equal(role(helpers.LOCK_COLUMNS, field), "machine", field)
+  }
+  for (const field of ["backend_type", "state", "wait_event_type", "wait_event"]) {
+    assert.equal(role(helpers.ACTIVITY_DETAIL_COLUMNS, field), "machine", field)
+  }
+  assert.notEqual(role(helpers.ACTIVITY_DETAIL_COLUMNS, "query_duration_ms"), "machine")
+  assert.equal(role(helpers.planColumns("identity"), "cmd_type"), "machine")
+  const vacuum = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012006", values: {} }
+  const vacuumColumns = helpers.vacuumDetailColumns(vacuum, null)
+  assert.equal(role(vacuumColumns, "phase"), "machine")
+  for (const field of ["is_autovacuum", "heap_blks_scanned", "delay_time"]) {
+    assert.notEqual(role(vacuumColumns, field), "machine", field)
+  }
+})
+
 test("lock accessibility exposes exact parents, extra blocker PIDs, and prepared waits", () => {
   const t = (key, slots = {}) => key === "pg.locks.prepared_transaction" ? "prepared transaction" : `${key}:${Object.values(slots).join(",")}`
   const row = { logicalName: "pg_locks", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1011002", values: {

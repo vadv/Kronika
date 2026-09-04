@@ -305,7 +305,7 @@ export const SYSTEM_ENTITIES: readonly {
   {
     section: "os_mountinfo", label: "system.entities.mounts",
     columns: [
-      machineText("mount_point", 240, true), machineText("root", 160), machineText("source", 180), text("fstype", 120), virtualText("device_id", ["major", "minor"]),
+      machineText("mount_point", 240, true), machineText("root", 160), machineText("source", 180), machineText("fstype", 120), virtualText("device_id", ["major", "minor"]),
       bytes("free_bytes"), derivedPercent("filesystem_available_percent", ["free_bytes", "total_bytes"], (rows) => gaugePercentPoints(rows, "free_bytes", "total_bytes")), bytes("total_bytes"),
       number("available_inodes"), derivedPercent("inode_available_percent", ["available_inodes", "total_inodes"], (rows) => gaugePercentPoints(rows, "available_inodes", "total_inodes")), number("total_inodes"), boolean("is_k8s_infra"),
     ],

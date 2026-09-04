@@ -15,11 +15,11 @@ import { statementsForActivity, type RelatedNavigation } from "./statement-navig
 // rather than as a tail below the process facts.
 
 const ACTIVITY_FIELDS = [
-  ["leader_pid", "pg.leader_pid", "id", "machine"], ["backend_type", "pg.backend_type", "text", "semantic"], ["datname", "pg.datname", "text", "machine"],
+  ["leader_pid", "pg.leader_pid", "id", "machine"], ["backend_type", "pg.backend_type", "text", "machine"], ["datname", "pg.datname", "text", "machine"],
   ["usename", "pg.usename", "text", "machine"],
   ["application_name", "pg.application_name", "text", "machine"], ["client_addr", "pg.client_addr", "text", "machine"],
-  ["state", "pg.state", "text", "semantic"],
-  ["wait_event_type", "pg.wait_event_type", "text", "semantic"], ["wait_event", "pg.wait_event", "text", "semantic"],
+  ["state", "pg.state", "text", "machine"],
+  ["wait_event_type", "pg.wait_event_type", "text", "machine"], ["wait_event", "pg.wait_event", "text", "machine"],
   ["query_id", "pg.query_id", "id", "machine"], ["backend_xid_age", "pg.backend_xid_age", "number", "semantic"],
   ["backend_xmin_age", "pg.backend_xmin_age", "number", "semantic"],
 ] as const

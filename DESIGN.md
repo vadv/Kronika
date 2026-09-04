@@ -970,10 +970,11 @@ a marker rail as well as colour. Ordinary workload volume remains neutral, and
 the interface does not add diagnosis, scoring or causal claims.
 
 Two typefaces carry fixed semantic roles: IBM Plex Sans for chrome —
-navigation, labels, buttons and prose — plus enums and ordinary or humanized
-values. JetBrains Mono is reserved for exact machine strings that benefit from
-fixed glyph widths: PIDs, OIDs, query IDs, timestamps, code, raw identifiers
-and tabular numeric contexts. Both ship embedded in the single artifact.
+navigation, labels, buttons and prose — plus localized display vocabulary and
+ordinary or humanized values. JetBrains Mono is reserved for exact machine
+strings that benefit from fixed glyph widths: PIDs, OIDs, query IDs,
+timestamps, code, raw identifiers, verbatim source enums and tabular numeric
+contexts. Both ship embedded in the single artifact.
 The live and report builds retain the same Detail value classes: ordinary and
 humanized values never fall back to browser-default typography.
 Labels are sentence case; the KRONIKA wordmark is the one uppercase voice. Controls share

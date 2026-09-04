@@ -81,10 +81,14 @@ test("detail typography keeps semantic values proportional and opts machine stri
   assert.match(composition, /data-value-role={valueRole}/)
   assert.doesNotMatch(composition, /valueClassName/)
   assert.match(entity, /column\.kind === "id" \|\| column\.kind === "timestamp" \? "machine" : "semantic"/)
-  assert.match(process, /processDetailValueRole/)
-  assert.match(activity, /"query_id", "pg\.query_id", "id", "machine"/)
+  assert.match(process, /"tree_command", "state", "timestamp"/)
+  for (const field of ["backend_type", "state", "wait_event_type", "wait_event"]) {
+    assert.match(activity, new RegExp(`"${field}", "pg\\.[^"]+", "text", "machine"`), field)
+  }
   assert.match(postgres, /extra\("datname", "text"\), detailValueRole: "machine"/)
+  assert.match(postgres, /extra\("phase", "text"\), detailValueRole: "machine"/)
   assert.match(system, /machineText\("cgroup_path", 240, true\)/)
+  assert.match(system, /machineText\("fstype", 120\)/)
 })
 
 test("Process table and dock inherit one remaining viewport row", async () => {

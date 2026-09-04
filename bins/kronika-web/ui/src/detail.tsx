@@ -183,7 +183,7 @@ export function processDetailFields(lens: Lens, process: DataRow): readonly Fiel
 }
 
 export function processDetailValueRole(field: Pick<Field, "kind">): DetailValueRole {
-  return ["id", "user", "command", "tree_command", "timestamp", "start_time", "tty"].includes(field.kind) ? "machine" : "semantic"
+  return ["id", "user", "command", "tree_command", "state", "timestamp", "start_time", "tty"].includes(field.kind) ? "machine" : "semantic"
 }
 
 export function processChartPoints(
