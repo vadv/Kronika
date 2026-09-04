@@ -14,7 +14,7 @@ use crate::api::{ApiError, ResponseMeta};
 use crate::encoding::{AcceptedEncodings, ContentCoding};
 
 const STAGED_PREFIX_BYTES: usize = 8 * 1_024;
-const BODY_CHUNK_BYTES: usize = 8 * 1_024;
+pub(crate) const BODY_CHUNK_BYTES: usize = 8 * 1_024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BodyError;
@@ -271,14 +271,14 @@ fn send_identity(body: &mpsc::Sender<BodyItem>, bytes: &[u8]) -> io::Result<()> 
     Ok(())
 }
 
-struct ChunkWriter {
+pub(crate) struct ChunkWriter {
     body: mpsc::Sender<BodyItem>,
     bytes: Vec<u8>,
     aborted: bool,
 }
 
 impl ChunkWriter {
-    fn new(body: mpsc::Sender<BodyItem>) -> Self {
+    pub(crate) fn new(body: mpsc::Sender<BodyItem>) -> Self {
         Self {
             body,
             bytes: Vec::with_capacity(BODY_CHUNK_BYTES),
@@ -304,7 +304,7 @@ impl ChunkWriter {
             .map_err(|_closed| disconnected())
     }
 
-    fn finish(mut self) -> io::Result<()> {
+    pub(crate) fn finish(mut self) -> io::Result<()> {
         self.send_pending()
     }
 }

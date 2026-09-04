@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use http_body_util::BodyExt as _;
@@ -15,12 +16,11 @@ use kronika_report::{HtmlReportError, write_html_from_file_with_segment_id};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::api::CachePolicy;
-use crate::body::{BodyError, BodyItem, ChannelBody};
+use crate::body::{BodyError, BodyItem, ChannelBody, ChunkWriter};
 use crate::route::{MAX_QUERY_BYTES, RouteError};
 use crate::{WebBody, common_headers, refused};
 
 const FILE_BUFFER_BYTES: usize = 64 * 1_024;
-const BODY_CHUNK_BYTES: usize = 8 * 1_024;
 
 pub(crate) fn parse(query: &str) -> Result<SliceRange, RouteError> {
     if query.len() > MAX_QUERY_BYTES {
@@ -60,6 +60,39 @@ struct PreparedExport {
     filename: String,
 }
 
+#[derive(Clone, Copy)]
+struct ExportPreparation {
+    requested_from: i64,
+    requested_to_exclusive: i64,
+    rows: u64,
+    sections: usize,
+    zms_bytes: u64,
+    html_bytes: u64,
+    open: Duration,
+    slice: Duration,
+    report: Duration,
+    total: Duration,
+}
+
+impl std::fmt::Display for ExportPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "requested_from={} requested_to_exclusive={} rows={} sections={} zms_bytes={} html_bytes={} open_us={} slice_us={} report_us={} total_us={}",
+            self.requested_from,
+            self.requested_to_exclusive,
+            self.rows,
+            self.sections,
+            self.zms_bytes,
+            self.html_bytes,
+            self.open.as_micros(),
+            self.slice.as_micros(),
+            self.report.as_micros(),
+            self.total.as_micros(),
+        )
+    }
+}
+
 #[derive(Debug)]
 enum ExportError {
     Reader(ReaderError),
@@ -85,19 +118,6 @@ impl std::fmt::Display for ExportError {
     }
 }
 
-impl std::error::Error for ExportError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Reader(error) => Some(error),
-            Self::Slice(error) => Some(error),
-            Self::Report(error) => Some(error),
-            Self::Temporary(error) => Some(error),
-            Self::InvalidTime => None,
-            Self::InvalidHeader(error) => Some(error),
-        }
-    }
-}
-
 impl ExportError {
     const fn status_and_code(&self) -> (hyper::StatusCode, &'static str) {
         match self {
@@ -112,24 +132,6 @@ impl ExportError {
             | Self::InvalidTime
             | Self::InvalidHeader(_) => (hyper::StatusCode::INTERNAL_SERVER_ERROR, "export_failed"),
         }
-    }
-}
-
-impl From<ReaderError> for ExportError {
-    fn from(error: ReaderError) -> Self {
-        Self::Reader(error)
-    }
-}
-
-impl From<SliceError> for ExportError {
-    fn from(error: SliceError) -> Self {
-        Self::Slice(error)
-    }
-}
-
-impl From<HtmlReportError> for ExportError {
-    fn from(error: HtmlReportError) -> Self {
-        Self::Report(error)
     }
 }
 
@@ -177,10 +179,23 @@ fn export_failure(error: &ExportError) -> Response<WebBody> {
 }
 
 fn build(data_root: &Path, range: SliceRange) -> Result<PreparedExport, ExportError> {
-    let reader = Reader::open(data_root)?;
+    build_with(data_root, range, log_prepared)
+}
+
+fn build_with(
+    data_root: &Path,
+    range: SliceRange,
+    log: impl FnOnce(ExportPreparation),
+) -> Result<PreparedExport, ExportError> {
+    let total_started = Instant::now();
+    let open_started = Instant::now();
+    let reader = Reader::open(data_root).map_err(ExportError::Reader)?;
+    let open = open_started.elapsed();
+
+    let slice_started = Instant::now();
     let mut html = tempfile::tempfile().map_err(ExportError::Temporary)?;
     let mut zms = tempfile::tempfile().map_err(ExportError::Temporary)?;
-    let summary = slice_to_zms(&reader, range, &mut html, &mut zms)?;
+    let summary = slice_to_zms(&reader, range, &mut html, &mut zms).map_err(ExportError::Slice)?;
     zms.flush().map_err(ExportError::Temporary)?;
     let zms_len = zms.metadata().map_err(ExportError::Temporary)?.len();
     if zms_len != summary.bytes_written {
@@ -188,7 +203,9 @@ fn build(data_root: &Path, range: SliceRange) -> Result<PreparedExport, ExportEr
             "standalone ZMS length changed",
         )));
     }
+    let slice = slice_started.elapsed();
 
+    let report_started = Instant::now();
     html.set_len(0).map_err(ExportError::Temporary)?;
     html.seek(SeekFrom::Start(0))
         .map_err(ExportError::Temporary)?;
@@ -199,17 +216,37 @@ fn build(data_root: &Path, range: SliceRange) -> Result<PreparedExport, ExportEr
             zms,
             summary.bytes_written,
             &mut output,
-        )?;
+        )
+        .map_err(ExportError::Report)?;
         output.flush().map_err(ExportError::Temporary)?;
     }
     let len = html.metadata().map_err(ExportError::Temporary)?.len();
     html.seek(SeekFrom::Start(0))
         .map_err(ExportError::Temporary)?;
-    Ok(PreparedExport {
+    let prepared = PreparedExport {
         file: html,
         len,
         filename: filename(range).ok_or(ExportError::InvalidTime)?,
-    })
+    };
+    let report = report_started.elapsed();
+    let total = total_started.elapsed();
+    log(ExportPreparation {
+        requested_from: summary.requested_from,
+        requested_to_exclusive: summary.requested_to_exclusive,
+        rows: summary.rows_written,
+        sections: summary.sections_written,
+        zms_bytes: summary.bytes_written,
+        html_bytes: len,
+        open,
+        slice,
+        report,
+        total,
+    });
+    Ok(prepared)
+}
+
+fn log_prepared(preparation: ExportPreparation) {
+    eprintln!("kronika-web: export_prepared {preparation}");
 }
 
 fn filename(range: SliceRange) -> Option<String> {
@@ -256,40 +293,26 @@ fn prepared_response(prepared: PreparedExport) -> Result<Response<WebBody>, Expo
 }
 
 fn stream_file(file: &mut File, len: u64, sender: &mpsc::Sender<BodyItem>) {
-    let mut buffer = [0_u8; BODY_CHUNK_BYTES];
-    let mut remaining = len;
-    while remaining > 0 {
-        let chunk_len =
-            usize::try_from(remaining.min(BODY_CHUNK_BYTES as u64)).unwrap_or(BODY_CHUNK_BYTES);
-        let read = match file.read(&mut buffer[..chunk_len]) {
-            Ok(0) => {
-                eprintln!(
-                    "kronika-web: generated export ended {remaining} bytes before declared length"
-                );
-                let _sent = sender.blocking_send(Err(BodyError));
-                return;
-            }
-            Ok(read) => read,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                eprintln!("kronika-web: read generated export: {error}");
-                let _sent = sender.blocking_send(Err(BodyError));
-                return;
-            }
-        };
-        debug_assert!(
-            read <= BODY_CHUNK_BYTES,
-            "one export response frame must fit the bounded buffer"
-        );
-        let Ok(read_len) = u64::try_from(read) else {
-            eprintln!("kronika-web: generated export read length does not fit u64");
-            let _sent = sender.blocking_send(Err(BodyError));
-            return;
-        };
-        remaining -= read_len;
-        if sender.blocking_send(Ok(buffer[..read].to_vec())).is_err() {
-            return;
+    let mut output = ChunkWriter::new(sender.clone());
+    let copied = io::copy(&mut file.take(len), &mut output);
+    let finished = output.finish();
+    let result = copied.and_then(|copied| {
+        let remaining = len.saturating_sub(copied);
+        finished?;
+        if remaining == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("generated export ended {remaining} bytes before declared length"),
+            ))
         }
+    });
+    if let Err(error) = result
+        && !sender.is_closed()
+    {
+        eprintln!("kronika-web: stream generated export: {error}");
+        let _sent = sender.blocking_send(Err(BodyError));
     }
 }
 
