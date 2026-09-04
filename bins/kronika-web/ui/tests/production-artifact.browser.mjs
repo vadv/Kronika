@@ -546,6 +546,9 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
   }, {
     logical_name: "os_mountinfo", physical_name: "os_mountinfo", type_id: "1112002",
     implementation: "linux", source_family: "system", rows: "1", bytes: "256",
+  }, {
+    logical_name: "os_netdev", physical_name: "os_netdev", type_id: "1106001",
+    implementation: "linux", source_family: "system", rows: "1", bytes: "256",
   }]
   const timeline = timelineRecords(HOUR, true)
     .filter((record) => record.record !== "point" || !systemSeries.has(record.series))
@@ -565,6 +568,8 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
       : record),
     layout("1112002", "os_mountinfo", ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"]),
     row("1112002", `mount-${target}`, [String(at), 8, 0, `/data-${target}`, "/", "ext4", `/dev/${target}`, false, 8_388_608, 4_194_304, 8_192, 7_168, 0], at),
+    layout("1106001", "os_netdev", ["ts", "iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "scope"]),
+    row("1106001", `net-${target}`, [String(at), "eth0", 1000, 2000, 10, 20, 0, 0, 0, 0, 0], at),
   ]
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
@@ -813,15 +818,29 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
 
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the Host target with one cgroup failure")
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="use-toggle-cpu"]') !== null`, "the preserved primary Host snapshot", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null
+      && document.querySelector('[data-testid="use-toggle-cgroups"]')?.getAttribute("aria-expanded") === "true"
+      && document.querySelectorAll('[data-testid="cgroup-overview-io"]').length === 2
+      && document.querySelector('[data-testid="cgroup-overview-tasks"]') !== null`, "the container cgroup overview", 15_000)
     assert.equal(failedMemory, true)
-    await cdp.evaluate(`document.querySelector('[data-testid="use-toggle-cpu"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the primary CPU rows")
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[0].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_B1") === true`, "the primary device rows")
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="host-storage-modes"] button')[1].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_mountinfo"]')?.textContent.includes("/data-B1") === true`, "the primary mount rows")
-    await cdp.evaluate(`document.querySelector('[data-testid="use-toggle-cgroups"]').click()`)
+    const containerState = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="use-table"]')
+      return {
+        cgroupsFirst: table.querySelector(':scope > [data-testid^="use-group-"]')?.dataset.testid === "use-group-cgroups",
+        hostResourcesHidden: ["cpu", "memory", "disk"].every((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]') === null),
+        network: document.querySelector('[data-testid="use-toggle-network"]') !== null,
+        hostRowsHidden: !document.querySelector('.system-main').textContent.includes("device_B1") && !document.querySelector('.system-main').textContent.includes("/data-B1"),
+        overview: [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')].map((node) => ({ id: node.dataset.testid, text: node.textContent })),
+      }
+    })()`)
+    assert.equal(containerState.cgroupsFirst, true, JSON.stringify(containerState))
+    assert.equal(containerState.hostResourcesHidden, true, JSON.stringify(containerState))
+    assert.equal(containerState.network, true, JSON.stringify(containerState))
+    assert.equal(containerState.hostRowsHidden, true, JSON.stringify(containerState))
+    assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-cpu"), true, JSON.stringify(containerState))
+    assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-memory"), false, JSON.stringify(containerState))
+    assert.deepEqual(containerState.overview.filter(({ id }) => id === "cgroup-overview-io").map(({ text }) => text.includes("8:0") ? "8:0" : text.includes("253:0") ? "253:0" : null).sort(), ["253:0", "8:0"], JSON.stringify(containerState))
+    assert.equal(containerState.overview.some(({ id }) => id === "cgroup-overview-tasks"), true, JSON.stringify(containerState))
     await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup modes")
     await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[0].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_cgroup_cpu"] .entity-row') !== null`, "the successful cgroup CPU rows")
@@ -1528,6 +1547,15 @@ test("the live Export range panel preserves exact time and reports its uncancell
         const hit = document.elementFromPoint(value.left + value.width / 2, value.top + value.height / 2)
         return hit !== null && (hit === node || node.contains(hit))
       }
+      const hitVisibleAbove = (node, occluder) => {
+        const value = node.getBoundingClientRect()
+        const cover = occluder.getBoundingClientRect()
+        const top = Math.max(0, value.top)
+        const bottom = Math.min(innerHeight, value.bottom, cover.top)
+        if (bottom <= top) return false
+        const hit = document.elementFromPoint(value.left + value.width / 2, top + (bottom - top) / 2)
+        return hit !== null && (hit === node || node.contains(hit))
+      }
       const panel = document.querySelector('[data-testid="export-panel"]')
       const panelRect = panel.getBoundingClientRect()
       const calendar = document.querySelector('[data-testid="export-calendar"]')
@@ -1556,7 +1584,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         durationText: duration.textContent.trim(),
         editorHidden: panel.querySelector("fieldset").hidden,
-        firstRowExposed: hitCenter(firstRow),
+        firstRowExposed: hitVisibleAbove(firstRow, panel),
         fromDate: rect(fromDate),
         fromFont: Number.parseFloat(getComputedStyle(fromDate).fontSize),
         fromTime: rect(fromTime),
@@ -1571,6 +1599,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
         panelScrollHeight: panel.scrollHeight,
         phase: panel.dataset.phase,
         status: status?.textContent.trim() ?? "",
+        statusInFooter: status?.parentElement?.tagName === "FOOTER",
         statusHeight: status === null ? 0 : rect(status).height,
         statusScrollHeight: status?.scrollHeight ?? 0,
         selectedHourDisabled: document.querySelector('[data-testid="export-selected-hour"]')?.disabled ?? null,
@@ -1630,12 +1659,14 @@ test("the live Export range panel preserves exact time and reports its uncancell
             assert.equal(measured.calendarExpanded, "false", `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.coarse, true, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.firstRowExposed, true, `${label}: ${JSON.stringify(measured)}`)
+            assert.equal(measured.statusInFooter, true, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.timelineControlExposed, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.ok(measured.panel.height <= 440, `${label}: ${JSON.stringify(measured)}`)
+            assert.ok(measured.panel.height <= 396, `${label}: ${JSON.stringify(measured)}`)
             assert.ok(measured.visibleTableHeight >= 96, `${label}: ${JSON.stringify(measured)}`)
             assert.ok(measured.trigger.height >= 43.5 && measured.trigger.width >= 43.5, `${label}: ${JSON.stringify(measured.trigger)}`)
             assert.ok(measured.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), `${label}: ${JSON.stringify(measured.targetSizes)}`)
           } else {
+            assert.equal(measured.statusInFooter, false, `${label}: ${JSON.stringify(measured)}`)
             assert.equal(measured.calendarExpanded, null, `${label}: ${JSON.stringify(measured)}`)
             assert.ok(measured.calendar.left >= measured.panel.left && measured.calendar.right <= measured.panel.right, `${label}: ${JSON.stringify(measured)}`)
           }
@@ -7048,6 +7079,9 @@ function timelineRecords(hour = HOUR, cgroups = false) {
       }, {
         logical_name: "os_cgroup_io", physical_name: "os_cgroup_io", type_id: "1203002",
         implementation: "linux", source_family: "system", rows: "4", bytes: "512",
+      }, {
+        logical_name: "os_cgroup_pids", physical_name: "os_cgroup_pids", type_id: "1204001",
+        implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }] : []), {
         logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013005",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
@@ -7143,9 +7177,7 @@ function systemIndexRecords(timestamp) {
 
 function systemSnapshotRecords(cgroupContext = false, at = AT) {
   const cpuColumns = ["ts", "cpu_id", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "scope"]
-  const cgroupPaths = at === BEFORE_AT
-    ? ["/collector/cpu-before", "/collector/memory-before", "/collector/io-before"]
-    : ["/collector/cpu", "/collector/memory", "/collector/io"]
+  const cgroupPath = at === BEFORE_AT ? "/collector-before" : "/collector"
   return [
     { record: "layout", rates: ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"], layout: { type_id: "1102001", logical_name: "os_cpu", columns: cpuColumns.map((name) => ({ name })) } },
     row("1102001", "cpu-all", [String(at), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0], at),
@@ -7172,7 +7204,7 @@ function systemSnapshotRecords(cgroupContext = false, at = AT) {
         "ts", "cgroup_version", "cpu_path", "memory_path", "io_path", "cpuset_cpus",
         "effective_cpu_quota_usec", "effective_cpu_period_usec", "effective_memory_max", "scope",
       ]),
-      row("1205001", "context", [String(at), 1, ...cgroupPaths, 2, -1, 100_000, null, 3], at),
+      row("1205001", "context", [String(at), 2, cgroupPath, cgroupPath, cgroupPath, 2, -1, 100_000, null, 3], at),
     ] : []),
   ]
 }
@@ -7181,7 +7213,7 @@ function cgroupSnapshotRecords(url) {
   const section = url.searchParams.get("section")
   const fields = url.searchParams.getAll("field")
   const at = Number(url.searchParams.get("at") ?? AT)
-  const path = url.searchParams.get("where.cgroup_path")
+  const path = url.searchParams.get("where.cgroup_path") ?? (at === BEFORE_AT ? "/collector-before" : "/collector")
   const definitions = {
     os_cgroup_cpu: {
       typeId: "1201001",
@@ -7195,12 +7227,19 @@ function cgroupSnapshotRecords(url) {
       typeId: "1203002",
       values: { ts: at, cgroup_path: path, major: 8, minor: 0, rbytes: 1024, wbytes: 2048, rios: 2, wios: 3, scope: 3 },
     },
+    os_cgroup_pids: {
+      typeId: "1204001",
+      values: { ts: at, cgroup_path: path, current: 4, max: 128, scope: 3 },
+    },
   }
   const definition = definitions[section]
   if (definition === undefined) return []
+  const values = section === "os_cgroup_io"
+    ? [definition.values, { ...definition.values, major: 253, minor: 0, rbytes: 4096, wbytes: 8192, rios: 5, wios: 7 }]
+    : [definition.values]
   return [
     layout(definition.typeId, section, fields),
-    row(definition.typeId, section, fields.map((field) => definition.values[field] ?? null), at),
+    ...values.map((stored, index) => row(definition.typeId, `${section}-${index}`, fields.map((field) => stored[field] ?? null), at)),
   ]
 }
 

@@ -381,6 +381,12 @@ export function ExportPanel({ anchor, hour, locale, mode, onActiveChange, onClos
         : t("export.downloading_total", { received: humanBytes(job.received, locale), total: humanBytes(job.total, locale) })
       : job.phase === "unknown" ? t("export.error.server_state_unknown")
       : messages.join(" · ")
+  const statusText = compact && status === "" ? t("export.format") : status
+  const statusContent = <>
+    {job.phase === "preparing" && <span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none !mr-2 h-3 w-3 flex-none" />}
+    {job.phase === "downloading" && job.total !== null && <progress aria-label={t("export.download_progress")} className="mr-2 h-1 w-12 flex-none" max={Math.max(job.total, job.received, 1)} value={job.received} />}
+    <span aria-hidden="true">{statusText}{job.phase === "preparing" && <span> · {humanAge(Math.max(0, (elapsedNow - job.startedAt) / 1_000), locale)}</span>}</span>
+  </>
 
   const calendar = <section
     aria-label={t("export.calendar")}
@@ -482,14 +488,12 @@ export function ExportPanel({ anchor, hour, locale, mode, onActiveChange, onClos
         </div>
         {!compact && calendar}
       </div>
-      {(!compact || !calendarOpen) && <div className="export-status mx-2.5 flex h-11 flex-none items-center overflow-auto border-l-2 px-2 font-sans text-sm leading-[1.35]" data-error={messages.length > 0 || job.phase === "unknown" || undefined} data-testid="export-status" id={statusId}>
-        {job.phase === "preparing" && <span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none !mr-2 h-3 w-3 flex-none" />}
-        {job.phase === "downloading" && job.total !== null && <progress aria-label={t("export.download_progress")} className="mr-2 h-1 w-12 flex-none" max={Math.max(job.total, job.received, 1)} value={job.received} />}
-        <span aria-hidden="true">{status}{job.phase === "preparing" && <span> · {humanAge(Math.max(0, (elapsedNow - job.startedAt) / 1_000), locale)}</span>}</span>
-      </div>}
+      {!compact && <div className="export-status mx-2.5 flex h-11 flex-none items-center overflow-auto border-l-2 px-2 font-sans text-sm leading-[1.35]" data-error={messages.length > 0 || job.phase === "unknown" || undefined} data-testid="export-status" id={statusId}>{statusContent}</div>}
       <span aria-atomic="true" aria-live="polite" className="sr-only">{job.phase === "preparing" ? t("export.preparing") : job.phase === "downloading" ? t("export.downloading_phase") : status}</span>
       {(!compact || !calendarOpen) && <footer className="mt-1 flex min-h-10 flex-none items-center justify-between gap-2 border-t border-line2 px-2.5 py-1">
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-sm text-fg4">{t("export.format")}</span>
+        {compact
+          ? <div className="export-status flex h-11 min-w-0 flex-1 items-center overflow-auto border-l-2 px-2 font-sans text-sm leading-[1.35]" data-error={messages.length > 0 || job.phase === "unknown" || undefined} data-testid="export-status" id={statusId}>{statusContent}</div>
+          : <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-sm text-fg4">{t("export.format")}</span>}
         <button className="inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-accent px-3 font-sans text-sm font-semibold text-bg transition-colors hover:bg-accent2 disabled:cursor-wait disabled:opacity-55 coarse:h-11" data-testid="export-submit" disabled={busy} type="submit"><Download aria-hidden="true" size={14} />{t("export.submit")}</button>
       </footer>}
     </form>
