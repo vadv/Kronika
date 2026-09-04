@@ -688,8 +688,9 @@ heap, index, and TOAST counterparts remain the same natural English terms in
 both dictionaries; Russian help explains their semantics in Russian.
 
 The interface covers one selected calendar hour. Host is one USE ledger whose
-column labels are the canonical `Utilization`, `Saturation`, and `Errors` in
-every locale: a row per resource whose cells carry the hour's shape at
+methodology labels are localized as ordinary interface language (`Utilization`,
+`Saturation`, and `Errors` in English; `Использование`, `Насыщение`, and
+`Ошибки` in Russian): a row per resource whose cells carry the hour's shape at
 sparkline size with the cursor reading beside it. Every populated cell is a
 native action that opens its resource and selects that exact recorded metric;
 an unavailable cell remains an inert dash. The cell action owns its complete

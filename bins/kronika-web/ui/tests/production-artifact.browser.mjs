@@ -910,8 +910,20 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     for (const [width, columns] of [[360, 1], [800, 2], [1280, 4]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
       await settleLayout(cdp)
-      const controls = await cdp.evaluate(`(() => { const nodes = [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')]; return { columns: new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left))).size, inventory: document.querySelector('[data-testid="cgroup-io-inventory"]').textContent, minHeight: Math.min(...nodes.map((node) => node.getBoundingClientRect().height)), selected: nodes.filter((node) => node.getAttribute('aria-pressed') === 'true').length, tasks: document.querySelector('[data-testid="cgroup-overview-tasks"]').textContent } })()`)
+      const controls = await cdp.evaluate(`(() => { const nodes = [...document.querySelectorAll('[data-testid^="cgroup-overview-"]')]; return {
+        columns: new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left))).size,
+        headers: [...document.querySelectorAll('[data-testid="use-table"] > header > span')].map((node) => node.textContent.trim()),
+        inventory: document.querySelector('[data-testid="cgroup-io-inventory"]').textContent,
+        minHeight: Math.min(...nodes.map((node) => node.getBoundingClientRect().height)),
+        resources: ['network', 'cpu', 'memory', 'disk'].map((key) => document.querySelector('[data-testid="use-toggle-' + key + '"]').textContent.trim()),
+        scopes: [...document.querySelectorAll('[data-testid^="use-scope-"]')].map((node) => node.textContent.trim()),
+        selected: nodes.filter((node) => node.getAttribute('aria-pressed') === 'true').length,
+        tasks: document.querySelector('[data-testid="cgroup-overview-tasks"]').textContent,
+      } })()`)
       assert.deepEqual({ columns: controls.columns, selected: controls.selected }, { columns, selected: 1 }, `RU ${width}px controls: ${JSON.stringify(controls)}`)
+      assert.deepEqual(controls.headers, ["Ресурс", "Использование", "Насыщение", "Ошибки"])
+      assert.deepEqual(controls.scopes, ["Контейнер", "Сетевое пространство", "Хост"])
+      assert.deepEqual(controls.resources, ["Сеть", "CPU", "Память", "Хранилище"])
       assert.equal(controls.inventory, "Устройства: 2 · с точкой монтирования: 1")
       assert.match(controls.tasks, /Потоки \(TID\).*локальный pids\.max: 128/s)
       assert.ok(controls.minHeight >= 44, `RU ${width}px controls: ${JSON.stringify(controls)}`)

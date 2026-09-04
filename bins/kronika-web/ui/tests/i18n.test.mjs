@@ -100,10 +100,6 @@ test("RU keeps technical labels in English and localizes help", async () => {
     "filter.field.autovacuum_mean.label", "filter.field.xid_age.label", "filter.field.scan_rate.label", "pg.pid.label", "pg.datid.label",
     "pg.vacuum.at_sample", "pg.vacuum.load.read.label", "pg.vacuum.load.write.label", "pg.vacuum.load.block_wait.label",
     "lane.cpu_stall.label", "lane.io_stall.label", "events.source.locks", "events.source.archiver", "events.source.cgroup_memory",
-    // The Host ledger names its resources and lanes in canonical English; ru
-    // drifted to "Disk" where en says "Storage" for the same row.
-    ...["cpu", "memory", "disk", "network"].map((resource) => `use.resource.${resource}`),
-    ...Object.keys(english).filter((key) => key.startsWith("use.lane.") && !key.endsWith(".help")),
     "events.metric.data_corruption", "pg.field.checksum_failures.label", "pg.field.min_mxid_age.label", "pg.field.sessions_fatal.label",
     "pg.field.sessions_killed.label", "pg.field.failed_count.label",
     "pg.lens.label", "pg.lens.load", "pg.lens.per_call", "pg.lens.io", "pg.lens.resources", "pg.lens.stability",
@@ -121,6 +117,26 @@ test("RU keeps technical labels in English and localizes help", async () => {
     ].map((field) => `pg.field.${field}.label`),
   ]
   for (const key of canonical) assert.equal(russian[key], english[key], key)
+  for (const [key, value] of Object.entries({
+    "use.scope.container": "Контейнер",
+    "use.scope.namespace": "Сетевое пространство",
+    "use.scope.host": "Хост",
+    "use.utilisation": "Использование",
+    "use.saturation": "Насыщение",
+    "use.errors": "Ошибки",
+    "use.resource.memory": "Память",
+    "use.resource.disk": "Хранилище",
+    "use.resource.network": "Сеть",
+    "use.resource.namespace_network": "Сеть",
+    "use.lane.cpu_busy": "Занято",
+    "use.lane.memory": "Использовано",
+    "use.lane.mem_swap": "Подкачка",
+    "use.lane.mem_oom": "Убийства OOM",
+    "use.lane.disk_busy": "Занятость устройств",
+    "use.lane.disk_queue": "Глубина очереди",
+    "use.lane.net_drop": "Потери",
+    "use.lane.net_errors": "Ошибки",
+  })) assert.equal(russian[key], value, key)
   for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("pg.vacuum.") && candidate.endsWith(".label"))) {
     assert.equal(russian[key], english[key], key)
   }
