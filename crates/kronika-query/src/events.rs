@@ -130,7 +130,14 @@ impl EventSource {
             Self::SlowQueries => &["pattern", "count", "max_duration_ms", "total_duration_ms"],
             Self::LockWaits => &["kind", "pid", "lock_target", "duration_ms", "holding_pids"],
             Self::Lifecycle => &["kind", "pid", "signal", "shutdown_mode"],
-            Self::Pgbouncer => &["level", "database", "text"],
+            Self::Pgbouncer => &[
+                "source_file",
+                "level",
+                "database",
+                "username",
+                "host",
+                "text",
+            ],
             Self::TempFiles => &[],
         }
     }
@@ -489,10 +496,13 @@ pub(crate) enum EventStat {
         signal: Option<f64>,
         mode: Option<String>,
     },
-    #[serde(rename = "pgbouncer.events")]
+    #[serde(rename = "pgbouncer.events", rename_all = "camelCase")]
     Pgbouncer {
         level: f64,
         database: Option<String>,
+        username: Option<String>,
+        host: Option<String>,
+        source_file: Option<String>,
     },
 }
 

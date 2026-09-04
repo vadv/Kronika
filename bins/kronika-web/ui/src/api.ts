@@ -666,6 +666,9 @@ function eventStat(value: unknown): EventStat {
     kind,
     level: finiteNumber(stat["level"], "PgBouncer level"),
     database: nullableText(stat["database"], "PgBouncer database"),
+    username: nullableText(stat["username"], "PgBouncer username"),
+    host: nullableText(stat["host"], "PgBouncer host"),
+    sourceFile: nullableText(stat["sourceFile"], "PgBouncer source file"),
   }
   throw new Error("event stat kind is invalid")
 }

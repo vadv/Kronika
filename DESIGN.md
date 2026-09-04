@@ -841,8 +841,12 @@ is displayed only after a successful empty result.
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern, and their representative row is the slowest occurrence.
 Autovacuum and autoanalyze group by relation. Checkpoints form one group with
-timed and requested counts. PgBouncer events group by level and message.
-Lifecycle records remain separate.
+timed and requested counts. PgBouncer events group by level and exact message;
+that message is the primary monospace title instead of the repeated source
+name. A shared database, login user, client host, and source file remain compact
+group context. PgBouncer's literal `(nodb)` and `(nouser)` values stay visible
+beside localized explanations; row detail retains the complete recorded
+values. Lifecycle records remain separate.
 
 Lock waits group by recorded `holding_pids`. Acquired rows have no holder list;
 they join waiting rows with the same pid and target, and unmatched rows form a

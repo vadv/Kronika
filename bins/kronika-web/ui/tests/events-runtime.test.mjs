@@ -32,7 +32,7 @@ const compiled = await build({
     typeId: "1005004",
   }])],
   stdin: {
-    contents: 'export { entryOf, eventConsoleStatus, eventGroupSelection, EventsEmptyState, EventsIncompleteNotice, groupMarks, MarkGroupRow } from "../src/events-view.tsx"; export { summarizeFindings } from "../src/finding-presentation.ts"; export { eventDetailTexts, EventEntryRow } from "../src/events-console.tsx"',
+    contents: 'export { entryOf, eventConsoleStatus, eventGroupSelection, EventsEmptyState, EventsIncompleteNotice, groupMarks, MarkGroupRow } from "../src/events-view.tsx"; export { summarizeFindings } from "../src/finding-presentation.ts"; export { entryChips, entrySubtitle, entryTitle, eventDetailTexts, EventEntryRow } from "../src/events-console.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -210,6 +210,59 @@ test("expanded Events group exposes one keyboard action without embedding stored
     sample: { stored_text: "exact stored sample", full_len: "19", truncated: false, sha256: null },
     count: "2",
   }), [{ field: "sample", fullLen: "19", storedText: "exact stored sample", truncated: false }])
+})
+
+test("PgBouncer groups lead with the exact message and explain unresolved connection context", async () => {
+  const entry = {
+    key: "pgbouncer:3:no such database: nope",
+    section: "pgbouncer_events",
+    tier: "routine",
+    label: "no such database: nope",
+    count: 19,
+    firstTs: hour,
+    lastTs: hour + 120_000_000,
+    minutes: Array.from({ length: 60 }, (_, index) => index < 2 ? 1 : 0),
+    stat: {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: "(nodb)",
+      username: "(nouser)",
+      host: "10.0.0.7",
+      sourceFile: "/var/log/pgbouncer.log",
+    },
+    detailRef: "opaque-pgbouncer",
+    representativeTs: hour,
+  }
+  const dictionaries = await Promise.all(["en", "ru"].map(async (locale) => parseDictionary(
+    await readFile(new URL(`../i18n/${locale}.yaml`, import.meta.url), "utf8"),
+    `${locale}.yaml`,
+  )))
+  const expectedSubtitles = [
+    "(nodb) · database not selected · (nouser) · user not resolved · Client 10.0.0.7",
+    "(nodb) · база ещё не выбрана · (nouser) · пользователь ещё не определён · Client 10.0.0.7",
+  ]
+
+  for (const [index, locale] of ["en", "ru"].entries()) {
+    const translate = dictionaryTranslate(dictionaries[index])
+    assert.equal(events.entryTitle(entry, translate, locale), "no such database: nope")
+    assert.equal(events.entrySubtitle(entry, translate, locale), expectedSubtitles[index])
+    assert.deepEqual(events.entryChips(entry, translate), [{ label: "LOG", tone: "neutral" }])
+    const markup = renderToStaticMarkup(createElement(events.EventEntryRow, {
+      entry,
+      expanded: true,
+      hour,
+      locale,
+      onCursor() {},
+      onToggle() {},
+      t: translate,
+    }))
+    assert.match(markup, /data-testid="event-entry-title"[^>]*title="no such database: nope"[^>]*>no such database: nope</)
+    assert.match(markup, /class="[^"]*text-\[12px\][^"]*font-mono[^"]*" data-testid="event-entry-title"/)
+    assert.match(markup, />\(nodb\)</)
+    assert.match(markup, />\(nouser\)</)
+    assert.match(markup, />10\.0\.0\.7</)
+    assert.match(markup, />\/var\/log\/pgbouncer\.log</)
+  }
 })
 
 test("Events keeps the localized incomplete notice beside a filtered zero state", async () => {

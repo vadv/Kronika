@@ -223,6 +223,9 @@ struct LifecycleState {
 struct PgbouncerState {
     summary: Summary,
     database: SharedText,
+    username: SharedText,
+    host: SharedText,
+    source_file: SharedText,
 }
 
 pub(super) struct EventGroups {
@@ -484,15 +487,27 @@ impl EventGroups {
         match self.pgbouncer.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let database = SharedText::new(text(&row, "database"));
+                let username = SharedText::new(text(&row, "username"));
+                let host = SharedText::new(text(&row, "host"));
+                let source_file = SharedText::new(text(&row, "source_file"));
                 entry.insert(PgbouncerState {
                     summary: Summary::new(row, order, self.from, 1.0, 0.0),
                     database,
+                    username,
+                    host,
+                    source_file,
                 });
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let state = entry.get_mut();
                 let database = text(&row, "database");
+                let username = text(&row, "username");
+                let host = text(&row, "host");
+                let source_file = text(&row, "source_file");
                 state.database.observe(database.as_deref());
+                state.username.observe(username.as_deref());
+                state.host.observe(host.as_deref());
+                state.source_file.observe(source_file.as_deref());
                 state.summary.observe_earliest(row, order, self.from, 1.0);
             }
         }
@@ -677,15 +692,19 @@ fn finish_other_groups(
     }
     for (key, state) in pgbouncer {
         let level = number(&state.summary.representative, "level").unwrap_or(3.0);
+        let label = text(&state.summary.representative, "text");
         entries.push(state.summary.finish(
             format!("pgbouncer:{key}"),
             EventSource::Pgbouncer,
             None,
             pgbouncer_tier(level),
-            None,
+            label,
             EventStat::Pgbouncer {
                 level,
                 database: state.database.finish(),
+                username: state.username.finish(),
+                host: state.host.finish(),
+                source_file: state.source_file.finish(),
             },
         ));
     }

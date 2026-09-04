@@ -87,7 +87,7 @@ export function entryTitle(entry: EventEntry, t: Translate, locale: Locale): str
   return entry.label ?? sectionLabel(entry.section, t)
 }
 
-function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string | null {
+export function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string | null {
   const stat = entry.stat
   if (stat.kind === "pg.slow") {
     return t("events.entry.slow.sub", {
@@ -109,7 +109,28 @@ function entrySubtitle(entry: EventEntry, t: Translate, locale: Locale): string 
     })
   }
   if (stat.kind === "pg.locks" && stat.targets.length > 0) return stat.targets.join(" · ")
+  if (stat.kind === "pgbouncer.events") {
+    return [
+      pgbouncerDatabase(stat.database, t),
+      pgbouncerUsername(stat.username, t),
+      stat.host === null ? null : t("events.pgbouncer.context.client", { value: stat.host }),
+    ].filter((value): value is string => value !== null).join(" · ") || null
+  }
   return null
+}
+
+function pgbouncerDatabase(value: string | null, t: Translate): string | null {
+  if (value === null) return null
+  return t(value === "(nodb)"
+    ? "events.pgbouncer.context.database_unset"
+    : "events.pgbouncer.context.database", { value })
+}
+
+function pgbouncerUsername(value: string | null, t: Translate): string | null {
+  if (value === null) return null
+  return t(value === "(nouser)"
+    ? "events.pgbouncer.context.username_unset"
+    : "events.pgbouncer.context.username", { value })
 }
 
 export function entryChips(entry: EventEntry, t: Translate, locale: Locale = "en"): readonly EntryChip[] {
@@ -135,10 +156,7 @@ export function entryChips(entry: EventEntry, t: Translate, locale: Locale = "en
   if (stat.kind === "pg.autovacuum") return [neutral(t(stat.analyze ? "events.autovacuum.analyze" : "events.autovacuum.vacuum"))]
   if (stat.kind === "pgbouncer.events") {
     const level = ["fatal", "error", "warning", "log", "debug", "noise"][stat.level] ?? "log"
-    return [
-      { label: t(`events.pgbouncer.${level}`), tone: level === "fatal" || level === "error" ? "bad" : level === "warning" ? "warn" : "neutral" },
-      ...(stat.database === null ? [] : [neutral(stat.database)]),
-    ]
+    return [{ label: t(`events.pgbouncer.${level}`), tone: level === "fatal" || level === "error" ? "bad" : level === "warning" ? "warn" : "neutral" }]
   }
   return []
 }
@@ -226,11 +244,11 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
         <Icon size={13} />
       </span>
       <span className="min-w-0">
-        <strong className={`block truncate text-xs font-medium text-fg ${recorded ? "font-mono" : ""}`} data-testid="event-entry-title">{title}</strong>
+        <strong className={`block truncate text-[12px] font-medium text-fg ${recorded ? "font-mono" : ""}`} data-testid="event-entry-title" title={title}>{title}</strong>
         <span className="mt-[3px] flex items-baseline gap-1.5">
-          <small className="flex-none text-xs text-fg3">{sectionLabel(entry.section, t)}</small>
-          {chips.map((chip) => <small className={`flex-none rounded-[var(--radius-xs)] px-1 text-xs ${CHIP_TONES[chip.tone]}`} key={chip.label}>{chip.label}</small>)}
-          {subtitle !== null && <small className="truncate text-xs text-fg3">{subtitle}</small>}
+          <small className="flex-none text-[12px] text-fg3">{sectionLabel(entry.section, t)}</small>
+          {chips.map((chip) => <small className={`flex-none rounded-[var(--radius-xs)] px-1 text-[12px] ${CHIP_TONES[chip.tone]}`} key={chip.label}>{chip.label}</small>)}
+          {subtitle !== null && <small className="truncate text-[12px] text-fg3" title={subtitle}>{subtitle}</small>}
         </span>
       </span>
       <span className="whitespace-nowrap text-right font-mono text-[13px] font-semibold tabular-nums text-fg">×{compact(entry.count, locale)}</span>
@@ -242,7 +260,7 @@ export function EventEntryRow({ entry, expanded, hour, locale, onCursor, onToggl
         t={t}
         testId="event-strip"
       /></span>
-      <time className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
+      <time className="whitespace-nowrap text-right font-mono text-[12px] tabular-nums text-fg3 max-[760px]:hidden">{moments}</time>
     </button>
     {expanded && <EventEntryDetail
       detail={detail}
@@ -287,29 +305,39 @@ function EventEntryDetail({ detail, detailStatus, entry, locale, onCursor, onDet
 }) {
   const time = useDisplayTime()
   const note = GROUPED_NOTES[entry.stat.kind]
-  const facts = entryFacts(entry, locale, t)
+  const facts = entry.stat.kind === "pgbouncer.events"
+    ? [
+        [t("events.field.occurrences"), compact(entry.count, locale)] as const,
+        [t("events.field.first_occurrence"), time.timestamp(entry.firstTs)] as const,
+        ...(entry.firstTs === entry.lastTs ? [] : [
+          [t("events.field.last_occurrence"), time.timestamp(entry.lastTs)] as const,
+          [t("events.field.activity_span"), humanDuration((entry.lastTs - entry.firstTs) / 1_000, locale)] as const,
+        ]),
+        ...entryFacts(entry, locale, t),
+      ]
+    : entryFacts(entry, locale, t)
   const actionLabel = detail !== null
     ? t("events.detail.recorded_at")
     : t(detailStatus === "loading" ? "events.detail.loading" : "events.detail.open")
   return <div className="grid gap-2 border-t border-line2 bg-s2 px-[9px] py-[9px]" data-testid="event-entry-detail">
     {facts.length > 0 && <div className="flex flex-wrap gap-1.5" data-testid="event-entry-facts">
       {facts.map(([label, shownValue]) => <span className="flex items-baseline gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s1 px-2 py-1" key={label}>
-        <span className="text-xs text-fg3">{label}</span>
-        <strong className="font-mono text-xs font-medium tabular-nums text-fg">{shownValue}</strong>
+        <span className="text-[12px] text-fg3">{label}</span>
+        <strong className="font-mono text-[12px] font-medium tabular-nums text-fg">{shownValue}</strong>
       </span>)}
     </div>}
     <button
       aria-busy={detailStatus === "loading" || undefined}
       aria-disabled={detail === null && detailStatus !== "idle" || undefined}
-      className="w-fit cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s1 px-2.5 py-1.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3 aria-disabled:cursor-wait aria-disabled:opacity-70"
+      className="w-fit cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s1 px-2.5 py-1.5 text-[12px] font-medium text-accent3 transition-colors hover:bg-s3 aria-disabled:cursor-wait aria-disabled:opacity-70 coarse:min-h-11"
       data-detail-status={detail === null ? detailStatus : "loaded"}
       data-testid="event-representative-detail"
       onClick={detail === null ? onDetail : () => onCursor(detail.at)}
       type="button"
     ><span aria-live="polite" data-testid={detailStatus === "loading" ? "event-detail-loading" : undefined}>{actionLabel}</span> · <time className="font-mono tabular-nums">{time.timestamp(detail?.at ?? entry.representativeTs)}</time></button>
-    {detailStatus === "failed" && <p className="m-0 text-xs text-bad" data-testid="event-detail-error" role="alert">{t("events.detail.error")}</p>}
+    {detailStatus === "failed" && <p className="m-0 text-[12px] text-bad" data-testid="event-detail-error" role="alert">{t("events.detail.error")}</p>}
     {detail !== null && <RepresentativeDetail detail={detail} t={t} />}
-    {note !== undefined && <p className="text-right text-xs text-fg3">{t(note)}</p>}
+    {note !== undefined && <p className="text-right text-[12px] text-fg3">{t(note)}</p>}
   </div>
 }
 
@@ -335,11 +363,11 @@ function RepresentativeDetail({ detail, t }: {
 }) {
   const texts = eventDetailTexts(detail.fields)
   return <section className="grid gap-2 rounded-[var(--radius-sm)] border border-line2 bg-s1 p-2" data-testid="event-representative-occurrence">
-    {texts.length === 0 && <p className="m-0 text-xs text-fg3">{t("events.detail.no_text")}</p>}
+    {texts.length === 0 && <p className="m-0 text-[12px] text-fg3">{t("events.detail.no_text")}</p>}
     {texts.map((text) => <div className="grid gap-1" key={text.field}>
-      <small className="text-xs text-fg3">{t(`events.field.${text.field}`)}</small>
-      <pre aria-label={t(`events.field.${text.field}`)} className="m-0 max-h-[180px] overflow-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-line2 bg-s2 px-2 py-1.5 font-mono text-xs leading-[1.5] text-fg2 [overflow-wrap:anywhere]" tabIndex={0}>{text.storedText}</pre>
-      {text.truncated && <small className="text-xs text-warn">{t("events.detail.text_truncated", { length: text.fullLen })}</small>}
+      <small className="text-[12px] text-fg3">{t(`events.field.${text.field}`)}</small>
+      <pre aria-label={t(`events.field.${text.field}`)} className="m-0 max-h-[180px] overflow-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-line2 bg-s2 px-2 py-1.5 font-mono text-[12px] leading-[1.5] text-fg2 [overflow-wrap:anywhere]" tabIndex={0}>{text.storedText}</pre>
+      {text.truncated && <small className="text-[12px] text-warn">{t("events.detail.text_truncated", { length: text.fullLen })}</small>}
     </div>)}
   </section>
 }
@@ -389,7 +417,12 @@ function entryFacts(entry: EventEntry, locale: Locale, t: Translate): readonly (
       ...(stat.mode === null ? [] : [[field("shutdown_mode"), stat.mode] as const]),
     ]
   }
-  return stat.database === null ? [] : [[field("database"), stat.database]]
+  return [
+    ...(stat.database === null ? [] : [[field("database"), stat.database] as const]),
+    ...(stat.username === null ? [] : [[field("username"), stat.username] as const]),
+    ...(stat.host === null ? [] : [[field("client"), stat.host] as const]),
+    ...(stat.sourceFile === null ? [] : [[field("source_file"), stat.sourceFile] as const]),
+  ]
 }
 
 export function EventTierSection({ entries, expandedKey, filtered, hour, locale, onCursor, onToggle, t, tier }: {

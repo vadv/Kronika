@@ -3691,6 +3691,11 @@ fn events_keep_equivalent_rows_and_honor_stream_stops() {
         .find(|record| record["record"] == "event_group")
         .expect("event group");
     assert_eq!(group["count"], 2.0);
+    assert_eq!(group["label"], "fixture");
+    assert_eq!(group["stat"]["database"], Value::Null);
+    assert_eq!(group["stat"]["username"], Value::Null);
+    assert_eq!(group["stat"]["host"], Value::Null);
+    assert_eq!(group["stat"]["sourceFile"], "fixture");
     assert_eq!(
         event_detail(&duplicate, group)["section"],
         "pgbouncer_events"

@@ -661,6 +661,34 @@ test("event groups use one half-open request and validate the server-owned shape
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
       {
+        record: "event_group", key: "pgbouncer:3:no such database: nope", section: "pgbouncer_events", tier: "routine",
+        label: "no such database: nope", count: 19, firstTs: START, lastTs: START + 1, minutes,
+        stat: {
+          kind: "pgbouncer.events", level: 3, database: "(nodb)", username: "(nouser)",
+          host: "10.0.0.7", sourceFile: "/var/log/pgbouncer.log",
+        },
+        detail_ref: "opaque-pgbouncer", representativeTs: START,
+      },
+    ])
+    const [pgbouncer] = (await api.loadEventGroups(
+      START,
+      START + 2,
+      ["pgbouncer_events"],
+      new AbortController().signal,
+    )).rows
+    assert.equal(pgbouncer?.label, "no such database: nope")
+    assert.deepEqual(pgbouncer?.stat, {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: "(nodb)",
+      username: "(nouser)",
+      host: "10.0.0.7",
+      sourceFile: "/var/log/pgbouncer.log",
+    })
+
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      {
         record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
         count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
         detail_ref: "", representativeTs: START,
