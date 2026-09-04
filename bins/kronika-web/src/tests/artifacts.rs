@@ -3662,13 +3662,8 @@ fn events_keep_equivalent_rows_and_honor_stream_stops() {
     let duplicate_target = format!(
         "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&representation=occurrences&limit=10"
     );
-    let (_meta, bytes) = query_response(
-        &duplicate,
-        &duplicate_target,
-        usize::MAX,
-        usize::MAX,
-    )
-    .expect("stream equivalent events");
+    let (_meta, bytes) = query_response(&duplicate, &duplicate_target, usize::MAX, usize::MAX)
+        .expect("stream equivalent events");
     let records = raw_ndjson_records(&bytes);
     let occurrences = records
         .iter()
