@@ -6,11 +6,12 @@ use kronika_reader::FinishedReader;
 use kronika_store::EmbeddedSource;
 
 use super::{
-    HtmlReportInput, isolated_index, write_html, write_html_from_file,
+    HtmlReportInput, ReportTimeRange, isolated_index, write_html, write_html_from_file,
     write_html_from_file_with_segment_id,
 };
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
+const VISIBLE_TO: i64 = SEGMENT_ID + 1_000_001;
 const ZMS: &[u8] = include_bytes!("../tests/fixtures/standalone.zms");
 const IDX: &[u8] = include_bytes!("../tests/fixtures/standalone.idx");
 
@@ -63,6 +64,8 @@ fn file_and_vec_writers_produce_identical_html() {
             segment_id: SegmentId::new(SEGMENT_ID).expect("fixture segment id"),
             zms: ZMS.to_vec(),
             max_zms_bytes: ZMS.len() as u64,
+            visible_range: ReportTimeRange::new(SEGMENT_ID, VISIBLE_TO)
+                .expect("fixture report range"),
         },
         &mut from_vec,
     )
@@ -89,6 +92,8 @@ fn file_writer_preserves_an_explicit_identity_distinct_from_the_first_row() {
             segment_id,
             zms: ZMS.to_vec(),
             max_zms_bytes: ZMS.len() as u64,
+            visible_range: ReportTimeRange::new(SEGMENT_ID, VISIBLE_TO)
+                .expect("fixture report range"),
         },
         &mut from_vec,
     )
@@ -97,9 +102,14 @@ fn file_writer_preserves_an_explicit_identity_distinct_from_the_first_row() {
     let mut file = tempfile::tempfile().expect("temporary ZMS");
     std::io::Write::write_all(&mut file, ZMS).expect("write fixture ZMS");
     let mut from_file = Vec::new();
-    let summary =
-        write_html_from_file_with_segment_id(segment_id, file, ZMS.len() as u64, &mut from_file)
-            .expect("write report from file with explicit identity");
+    let summary = write_html_from_file_with_segment_id(
+        segment_id,
+        file,
+        ZMS.len() as u64,
+        ReportTimeRange::new(SEGMENT_ID, VISIBLE_TO).expect("fixture report range"),
+        &mut from_file,
+    )
+    .expect("write report from file with explicit identity");
 
     assert_eq!(summary.segment_id, segment_id);
     assert_eq!(from_file, from_vec);
@@ -163,6 +173,8 @@ fn report_is_self_contained_and_deterministic() {
                 segment_id,
                 zms: ZMS.to_vec(),
                 max_zms_bytes: ZMS.len() as u64,
+                visible_range: ReportTimeRange::new(SEGMENT_ID, VISIBLE_TO)
+                    .expect("fixture report range"),
             },
             output,
         )
@@ -203,6 +215,8 @@ fn report_is_self_contained_and_deterministic() {
     assert!(html.contains(&format!(
         "new KronikaReportWasm.ReportSession(\"{SEGMENT_ID}\""
     )));
+    assert!(html.contains(&format!("visibleFrom:\"{SEGMENT_ID}\"")));
+    assert!(html.contains(&format!("visibleToExclusive:\"{VISIBLE_TO}\"")));
     assert!(!html.contains("KronikaReportWasm.initSync"));
     assert!(!html.contains("new WebAssembly.Module"));
     for encoded in [STANDARD.encode(ZMS), STANDARD.encode(IDX)] {

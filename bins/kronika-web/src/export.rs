@@ -12,7 +12,7 @@ use hyper::Response;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, VARY};
 use kronika_dump::{SliceError, SliceRange, UtcSecond, slice_to_zms};
 use kronika_reader::{Reader, ReaderError};
-use kronika_report::{HtmlReportError, write_html_from_file_with_segment_id};
+use kronika_report::{HtmlReportError, ReportTimeRange, write_html_from_file_with_segment_id};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::api::CachePolicy;
@@ -211,10 +211,14 @@ fn build_with(
         .map_err(ExportError::Temporary)?;
     {
         let mut output = BufWriter::with_capacity(FILE_BUFFER_BYTES, &mut html);
+        let visible_range =
+            ReportTimeRange::new(summary.requested_from, summary.requested_to_exclusive)
+                .ok_or(ExportError::InvalidTime)?;
         write_html_from_file_with_segment_id(
             summary.segment_id,
             zms,
             summary.bytes_written,
+            visible_range,
             &mut output,
         )
         .map_err(ExportError::Report)?;

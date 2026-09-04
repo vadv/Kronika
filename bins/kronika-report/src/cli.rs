@@ -5,7 +5,9 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
-use kronika_report::{HtmlReportError, write_html_from_file};
+use kronika_report::{
+    HtmlReportError, ReportTimeRange, write_html_from_file, write_html_from_file_with_range,
+};
 
 const TEMP_PREFIX: &str = ".kronika-report-";
 
@@ -61,7 +63,11 @@ impl From<HtmlReportError> for GenerateError {
 }
 
 /// Generate and atomically replace one standalone report.
-pub(crate) fn generate(input: &Path, output: &Path) -> Result<(), GenerateError> {
+pub(crate) fn generate(
+    input: &Path,
+    output: &Path,
+    visible_range: Option<ReportTimeRange>,
+) -> Result<(), GenerateError> {
     if output.extension() != Some(OsStr::new("html")) {
         return Err(GenerateError::InvalidOutputName(output.to_path_buf()));
     }
@@ -86,8 +92,11 @@ pub(crate) fn generate(input: &Path, output: &Path) -> Result<(), GenerateError>
         .map_err(|source| output_error(output, source))?;
     {
         let mut buffered = BufWriter::new(&mut temporary);
-        write_html_from_file(file, len, &mut buffered)
-            .map_err(|error| document_error(output, error))?;
+        match visible_range {
+            Some(range) => write_html_from_file_with_range(file, len, range, &mut buffered),
+            None => write_html_from_file(file, len, &mut buffered),
+        }
+        .map_err(|error| document_error(output, error))?;
         buffered
             .flush()
             .map_err(|source| output_error(output, source))?;

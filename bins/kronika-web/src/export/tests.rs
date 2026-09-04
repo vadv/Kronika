@@ -358,6 +358,8 @@ fn a_small_recording_becomes_a_standalone_offline_html_with_the_slice_identity()
     assert!(html.starts_with(b"<!doctype html>"));
     let text = std::str::from_utf8(&html).expect("UTF-8 HTML");
     assert!(text.contains("__KRONIKA_REPORT_RUNTIME__"));
+    assert!(text.contains(&format!("visibleFrom:\"{MICROS}\"")));
+    assert!(text.contains(&format!("visibleToExclusive:\"{}\"", MICROS + 1_000_000)));
     assert!(text.contains("WebAssembly.compile"));
     assert!(text.contains(&format!(
         "new KronikaReportWasm.ReportSession(\"{MICROS}\","
