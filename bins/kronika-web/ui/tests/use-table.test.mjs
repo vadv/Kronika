@@ -22,5 +22,7 @@ test("the resource table selects a resource per row and keeps the network pair i
   assert.match(source, /<SparkCell /)
   assert.match(source, /second === undefined \? null : seriesReading/)
   assert.match(source, /lanePointsByLane\(lanePoints\)/)
+  assert.match(source, /visibleResources === undefined \|\| visibleResources\.has\(resource\.key\)/)
+  assert.match(source, /cgroupsFirst && cgroupRow/)
+  assert.match(source, /!cgroupsFirst && cgroupRow/)
 })
-

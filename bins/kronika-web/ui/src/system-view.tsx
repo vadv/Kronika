@@ -12,6 +12,8 @@ import { useHistoryRequest } from "./history-request"
 import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import { SparkCell } from "./spark-cell"
+import { sparkScaleMax } from "./spark"
 import { Timeline } from "./timeline"
 import { TableRequestPlaceholder, type TableRequestPhase } from "./table-request"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -204,6 +206,7 @@ const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
   disk: "storage",
   network: "network",
 }
+const CONTAINER_USE_RESOURCES: ReadonlySet<UseResourceKey> = new Set(["network"])
 
 export type SystemGroup = "cpu" | "memory" | "storage" | "network"
 type HostMode = "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
@@ -334,7 +337,9 @@ function systemRequests(): readonly SectionRequest[] {
     }
   }
   for (const panel of SYSTEM_ENTITIES) need(panel.section, [
-    ...panel.columns.flatMap((column) => column.historyFields ?? [column.field]),
+    ...panel.columns.flatMap((column) => column.historyFields ?? (typeof column.physicalField === "string"
+      ? [column.physicalField]
+      : column.physicalField === undefined ? [column.field] : Object.values(column.physicalField))),
     ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
   ])
   for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"]) need(section, ["cgroup_path", "scope"])
@@ -351,14 +356,8 @@ function systemRequests(): readonly SectionRequest[] {
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
-const CGROUP_PATH_FIELDS = {
-  os_cgroup_cpu: "cpu_path",
-  os_cgroup_memory: "memory_path",
-  os_cgroup_io: "io_path",
-  os_cgroup_pids: "pids_path",
-} as const
 const ALL_SYSTEM_REQUESTS = systemRequests()
-const CGROUP_SECTIONS = new Set(["os_cgroup_context", ...Object.keys(CGROUP_PATH_FIELDS)])
+const CGROUP_SECTIONS = new Set(["os_cgroup_context", "os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"])
 
 export const CGROUP_SNAPSHOT_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => CGROUP_SECTIONS.has(section))
 export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => !CGROUP_SECTIONS.has(section))
@@ -381,6 +380,36 @@ export function recordedEnvironment(data: Pick<HourData, "sections">, cursor: nu
   const row = snapshot(data.sections.instance_metadata ?? [], cursor)[0]
   const environment = asNumber(value(row ?? null, "environment"))
   return environment === 0 ? "machine" : environment === 1 ? "container" : null
+}
+
+export interface CgroupOverviewTarget {
+  readonly mode: "cpu" | "memory" | "io" | "tasks"
+  readonly primaryField: string
+  readonly row: DataRow
+  readonly secondaryField?: string | undefined
+  readonly section: string
+}
+
+// Context identifies only the collector's controller memberships. Cgroup v2
+// has one unified membership, so that exact path also identifies its Tasks
+// row. I/O remains one target per recorded device identity.
+export function collectorCgroupOverview(data: HourData, cursor: number): readonly CgroupOverviewTarget[] {
+  const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
+  if (context === null) return []
+  const scope = rawText(value(context, "scope"))
+  const matching = (section: string, path: string | null) => path === null || scope === null ? [] : systemEntityRows(data, section, cursor)
+    .filter((row) => rawText(value(row, "cgroup_path")) === path && rawText(value(row, "scope")) === scope)
+  const cpuPath = rawText(value(context, "cpu_path"))
+  const memoryPath = rawText(value(context, "memory_path"))
+  const ioPath = rawText(value(context, "io_path"))
+  const paths = [cpuPath, memoryPath, ioPath].filter((path): path is string => path !== null)
+  const unifiedPath = asNumber(value(context, "cgroup_version")) === 2 && paths.length > 0 && new Set(paths).size === 1 ? paths[0]! : null
+  return [
+    ...matching("os_cgroup_cpu", cpuPath).map((row) => ({ mode: "cpu" as const, primaryField: "cgroup_used_cores", row, section: "os_cgroup_cpu" })),
+    ...matching("os_cgroup_memory", memoryPath).map((row) => ({ mode: "memory" as const, primaryField: "current", row, section: "os_cgroup_memory" })),
+    ...matching("os_cgroup_io", ioPath).map((row) => ({ mode: "io" as const, primaryField: "rbytes", row, secondaryField: "wbytes", section: "os_cgroup_io" })),
+    ...matching("os_cgroup_pids", unifiedPath).map((row) => ({ mode: "tasks" as const, primaryField: "tasks_current", row, section: "os_cgroup_pids" })),
+  ]
 }
 
 export function SystemView({
@@ -430,6 +459,7 @@ export function SystemView({
   readonly requestPhase?: TableRequestPhase | undefined
   readonly t: Translate
 }) {
+  const environment = recordedEnvironment(data, cursor)
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points, spec }) => points.some((point) => point.value !== null && Number.isFinite(point.value))
       || (spec.id === "cpu_actual_frequency" && sectionRows(data, "os_cpufreq").some((row) => {
@@ -440,8 +470,14 @@ export function SystemView({
   // The address owns the chosen metric and opens its ledger row.
   const [expanded, setExpanded] = useState<ReadonlySet<LedgerKey>>(() => {
     const key = selectedSpec === undefined ? null : metricResource(selectedSpec)
-    return new Set<LedgerKey>(key === null ? [] : [key])
+    return new Set<LedgerKey>(environment === "container" ? ["cgroups"] : key === null ? [] : [key])
   })
+  const openedContainer = useRef(environment === "container")
+  useEffect(() => {
+    if (environment !== "container" || openedContainer.current) return
+    openedContainer.current = true
+    setExpanded((current) => current.has("cgroups") ? current : new Set([...current, "cgroups"]))
+  }, [environment])
   const [groupMetric, setGroupMetric] = useState<Readonly<Record<string, string>>>({})
   const [groupMode, setGroupMode] = useState<Readonly<Record<string, HostMode | null>>>({})
   const toggleRow = (key: LedgerKey) => setExpanded((current) => {
@@ -479,7 +515,8 @@ export function SystemView({
       onMetric(match.spec.id)
     }
   }, [available, data, focus, onMetric])
-  const cgroupsPresent = data.availableSections.some((name) => CGROUP_SECTIONS.has(name))
+  const cgroupsPresent = environment === "container" && data.availableSections.some((name) => CGROUP_SECTIONS.has(name))
+  const cgroupOverview = useMemo(() => environment === "container" ? collectorCgroupOverview(data, cursor) : [], [cursor, data, environment])
   const withContent = useMemo(() => new Set((Object.keys(RESOURCE_GROUP) as UseResourceKey[]).filter((key) =>
     available.some(({ spec }) => spec.group === RESOURCE_GROUP[key])
       || sectionEntities(LEDGER_SECTION[key], LEDGER_DEFAULT_MODE[key] ?? null).some((name) => data.availableSections.includes(name)))), [available, data.availableSections])
@@ -494,6 +531,19 @@ export function SystemView({
     const entities = sectionEntities(sectionName, mode)
     const chartMetric = chartMetricFor(key)
     return <div className="grid min-w-0 gap-2 px-2 pb-2 pt-2">
+      {key === "cgroups" && <ContainerCgroupOverview
+        cursor={cursor}
+        historyRevision={historyRevision}
+        hour={hour}
+        locale={locale}
+        onSelect={(target) => {
+          setGroupMode((current) => ({ ...current, cgroups: target.mode }))
+          onSelectedKey(entityRowKey(target.row))
+          onMetric(target.primaryField)
+        }}
+        t={t}
+        targets={cgroupOverview}
+      />}
       {chartMetric !== null && <SystemGroupChart available={available} cursor={cursor} data={data} groupKey={key} historyRevision={historyRevision} hour={hour} locale={locale} metricId={chartMetric} onCursor={onCursor} onSelect={(id) => chooseMetric(key, id)} t={t} />}
       {modes.length > 0 && <div aria-label={t(`section.${sectionName}`)} className="dock-tabs" data-testid={`host-${sectionName}-modes`} role="group">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => setGroupMode((current) => ({ ...current, [key]: key === "cpu" && current[key] === choice ? null : choice }))} type="button">{t(`host.mode.${choice}`)}</button>)}
@@ -539,15 +589,107 @@ export function SystemView({
       </section>}
     </div>
   }
+  const namespaceLanePoints = environment === "container"
+    ? data.lanePoints.filter(({ lane }) => lane.startsWith("net_"))
+    : data.lanePoints
+  const primaryTimelineLane = environment === "container" ? "health" : selectedSpec === undefined ? "health" : metricLane(selectedSpec)
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={selectedSpec === undefined ? "health" : metricLane(selectedSpec)} selectedLane={selectedLane} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={namespaceLanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={primaryTimelineLane} selectedLane={selectedLane} t={t} />
     <div className="system-main mt-0 min-w-0">
-      {data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
-      {data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
-      <UseTable cgroups={cgroupsPresent} cursor={cursor} expanded={expanded} hour={hour} lanePoints={data.lanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} withContent={withContent} />
+      <UseTable cgroups={cgroupsPresent} cgroupsFirst={environment === "container"} cursor={cursor} expanded={expanded} hour={hour} lanePoints={namespaceLanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} visibleResources={environment === "container" ? CONTAINER_USE_RESOURCES : undefined} withContent={withContent} />
+      {environment === "container" && data.availableSections.includes("os_cgroup_cpu") && <CgroupActivity cursor={cursor} hour={hour} io={false} locale={locale} onCursor={onCursor} t={t} />}
+      {environment === "container" && data.availableSections.includes("os_cgroup_io") && <CgroupActivity cursor={cursor} hour={hour} io locale={locale} onCursor={onCursor} t={t} />}
       {available.length === 0 && <TableRequestPlaceholder empty={t("system.no_metrics")} phase={requestPhase} t={t} testId="system-request-state" />}
     </div>
   </>
+}
+
+function ContainerCgroupOverview({ cursor, historyRevision, hour, locale, onSelect, t, targets }: {
+  readonly cursor: number
+  readonly historyRevision: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onSelect: (target: CgroupOverviewTarget) => void
+  readonly t: Translate
+  readonly targets: readonly CgroupOverviewTarget[]
+}) {
+  if (targets.length === 0) return null
+  return <section className="panel min-w-0" data-testid="cgroup-overview">
+    <h2 className="panel-head"><span>{t("use.cgroups_overview")}</span></h2>
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(250px,1fr))]">
+      {targets.map((target) => <ContainerCgroupOverviewRow
+        cursor={cursor}
+        historyRevision={historyRevision}
+        hour={hour}
+        key={`${target.section}:${entityRowKey(target.row)}`}
+        locale={locale}
+        onSelect={() => onSelect(target)}
+        t={t}
+        target={target}
+      />)}
+    </div>
+  </section>
+}
+
+function ContainerCgroupOverviewRow({ cursor, historyRevision, hour, locale, onSelect, t, target }: {
+  readonly cursor: number
+  readonly historyRevision: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly onSelect: () => void
+  readonly t: Translate
+  readonly target: CgroupOverviewTarget
+}) {
+  const entity = SYSTEM_ENTITIES.find(({ section }) => section === target.section)
+  const primary = entity?.columns.find(({ field }) => field === target.primaryField)
+  const secondary = target.secondaryField === undefined ? undefined : entity?.columns.find(({ field }) => field === target.secondaryField)
+  const requestColumn = useMemo(() => primary === undefined || secondary === undefined ? primary : {
+    ...primary,
+    historyFields: uniqueStrings([
+      ...(primary.historyFields ?? [physicalField(primary, target.row.typeId)]),
+      ...(secondary.historyFields ?? [physicalField(secondary, target.row.typeId)]),
+    ]),
+  }, [primary, secondary, target.row.typeId])
+  const request = useMemo(() => requestColumn === undefined ? null : entityHistoryRequest(target.row, requestColumn), [requestColumn, target.row])
+  const historyKey = request === null ? null : `${hour}:cgroup-overview:${request.key}`
+  const requestFields = request === null ? "[]" : JSON.stringify(request.fields)
+  const requestWhere = request === null ? "{}" : JSON.stringify(request.where)
+  const requestSection = request?.section ?? ""
+  const requestTypeId = request?.typeId
+  const history = useHistoryRequest(historyKey, historyRevision,
+    historyKey === null || requestSection === "" || requestTypeId === undefined ? null : (signal) => loadSeries(
+      hour,
+      requestSection,
+      JSON.parse(requestWhere) as Readonly<Record<string, string>>,
+      JSON.parse(requestFields) as readonly string[],
+      signal,
+      requestTypeId,
+    ))
+  const rows = history.value?.length ? history.value : [target.row]
+  const primaryPoints = useMemo(() => primary === undefined ? [] : entityMetricPoints(rows, primary), [primary, rows])
+  const secondaryPoints = useMemo(() => secondary === undefined ? undefined : entityMetricPoints(rows, secondary), [rows, secondary])
+  if (entity === undefined || primary === undefined) return null
+  const limitField = target.section === "os_cgroup_cpu" ? "cgroup_capacity"
+    : target.section === "os_cgroup_memory" ? "effective_memory_max"
+      : target.section === "os_cgroup_pids" ? "tasks_max" : null
+  const limitColumn = limitField === null ? undefined : entity.columns.find(({ field }) => field === limitField)
+  const limit = limitColumn === undefined ? null : asNumber(value(target.row, physicalField(limitColumn, target.row.typeId)))
+  const kind = primary.kind === "bytes" || primary.kind === "kib" ? "bytes" : primary.kind === "percent" ? "share" : "count"
+  const max = Math.max(limit !== null && limit > 0 ? limit : 0, sparkScaleMax(kind, [primaryPoints, ...(secondaryPoints === undefined ? [] : [secondaryPoints])]))
+  const metadata = primary.historyFields === undefined ? registryColumn(target.row.typeId, physicalField(primary, target.row.typeId)) : null
+  const secondaryMetadata = secondary === undefined || secondary.historyFields !== undefined ? null : registryColumn(target.row.typeId, physicalField(secondary, target.row.typeId))
+  const current = readingAt(primaryPoints, cursor)
+  const secondCurrent = secondaryPoints === undefined ? null : readingAt(secondaryPoints, cursor)
+  const currentText = current === null ? "—" : entityMetricValue(current, locale, primary, metadata)
+  const secondText = secondary === undefined ? null : secondCurrent === null ? "—" : entityMetricValue(secondCurrent, locale, secondary, secondaryMetadata)
+  const limitText = limit === null || limit <= 0 || limitColumn === undefined ? null : entityMetricValue(limit, locale, limitColumn, null)
+  const identity = target.section === "os_cgroup_io" ? deviceId(target.row) : rawText(value(target.row, "cgroup_path"))
+  return <button className="grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_minmax(92px,0.9fr)] items-center gap-x-3 gap-y-1 border-0 border-b border-r border-line bg-s1 px-2 py-2 text-left hover:bg-s2" data-testid={`cgroup-overview-${target.mode}`} onClick={onSelect} type="button">
+    <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-xs font-medium text-fg2">{t(entity.label)}{identity === null ? "" : ` · ${identity}`}</span>
+    <strong className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right font-mono text-xs font-normal tabular-nums text-fg2" title={[currentText, secondText, limitText].filter((part) => part !== null).join(" · ")}>{currentText}{secondText === null ? "" : ` · ${secondText}`}{limitText === null ? "" : ` / ${limitText}`}</strong>
+    <span className="col-span-2 min-w-0"><SparkCell cursor={cursor} end={hour + 3_600_000_000} hour={hour} limit={limit === null ? undefined : limit} max={max} points={primaryPoints} second={secondaryPoints} /></span>
+    {history.status !== "ready" && <span className={`col-span-2 text-xs ${history.status === "error" ? "text-warn" : "text-fg4"}`} role={history.status === "error" ? "alert" : "status"}>{t(`history.${history.status}`)}</span>}
+  </button>
 }
 
 function SystemGroupChart({

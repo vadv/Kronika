@@ -813,8 +813,14 @@ System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
-equivalents on labelled scales. In a container, cgroups are separate tables: used,
-user, and system core equivalents come from cgroup counter deltas, and capacity
+equivalents on labelled scales. In a recorded container environment, the Host
+ledger starts with an open collector-cgroup overview and retains only the
+namespace Network host row; host CPU, memory, and storage rows and lanes are
+hidden. The overview reads each controller through the same exact entity-history
+identity as its detail table and shows compact CPU, memory, I/O, and Tasks
+history with cursor readings. I/O stays separate per `(cgroup_path, major,
+minor)` and is never summed. Tasks uses the exact unified path only for cgroup
+v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither
