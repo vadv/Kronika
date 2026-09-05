@@ -1,21 +1,6 @@
 use super::{SCRATCH_FILE_NAME, prepare};
-use crate::system_activity::config::SystemActivityConfig;
+use crate::system_activity::tests::config;
 use std::os::unix::fs::{FileExt as _, symlink};
-
-fn config(root: &std::path::Path) -> SystemActivityConfig {
-    let storage_directory = root.join("segments");
-    std::fs::create_dir_all(&storage_directory).unwrap();
-    SystemActivityConfig {
-        directory: root.join("system-activity"),
-        storage_directory,
-        cpu_percent: 1,
-        memory_mib: 8,
-        file_mib: 1,
-        disk_kib_per_s: 4,
-        network_kib_per_s: 4,
-        flush_interval_s: 1,
-    }
-}
 
 #[test]
 fn positional_writes_wrap_without_growing_the_file() {

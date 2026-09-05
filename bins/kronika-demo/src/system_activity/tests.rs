@@ -3,7 +3,7 @@ use crate::system_activity::scratch::SCRATCH_FILE_NAME;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-fn config(root: &std::path::Path) -> SystemActivityConfig {
+pub(super) fn config(root: &std::path::Path) -> SystemActivityConfig {
     let storage_directory = root.join("segments");
     std::fs::create_dir_all(&storage_directory).unwrap();
     SystemActivityConfig {
