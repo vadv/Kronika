@@ -45,10 +45,17 @@ dist/kronika-<cargo-version>-<12-character-commit>-x86_64-unknown-linux-musl.tar
 
 Add `--with-demo` to include `kronika-demo`, as the CI package does. The
 executables remain directly inside one top-level directory alongside `LICENSE`,
-`INSTALL.md`, `INSTALL.ru.md`, binary `SHA256SUMS`, `BUILDINFO`, and the embedded
-font licenses. Installation instructions are self-contained and use relative
-binary paths. No development checkout, workload recording, or machine metadata
-is copied into the archive.
+paired README and INSTALL files, linked guides, documentation images and editable
+diagram sources, `THIRD_PARTY_LICENSES.html`, font licenses, `BUILDINFO`, and
+`SHA256SUMS` covering every packaged file. Documentation assets are taken from
+the packaging commit. Links between bundled guides remain local; references to
+unbundled source files open that commit on GitHub. Installation instructions use
+relative binary paths. Source and build trees, workload recordings, and machine
+metadata are not copied.
+
+Dependency notices accompany the locked Rust and browser dependencies. Packaging
+checks their input hashes in `licenses/dependency-inputs.sha256`; update the
+notices and hashes together when those dependencies change.
 
 To package binaries already built from this checkout:
 
@@ -61,10 +68,11 @@ scripts/package-release.sh \
 `--bin-dir` skips compilation; the caller supplies binaries built from the
 intended source revision. `BUILDINFO` records `build_mode=prebuilt` and the
 packaging checkout's commit, not an inferred binary revision. By default the
-script builds from source and records `build_mode=source`.
+script builds from source and records `build_mode=source`, the Cargo command,
+and compiler version. Prebuilt mode records neither a compiler nor a build command.
 
 Packaging fixes archive order, modes, owner/group, timestamps (the commit's
-Unix time), and gzip metadata. Identical binaries, installation documents,
+Unix time), and gzip metadata. Identical binaries, documentation and assets,
 license files, revision, and build mode yield an identical archive. This does
 not promise that independent compiler builds produce identical binaries.
 Existing archive or checksum paths are refused; use a fresh output directory
@@ -78,8 +86,9 @@ With Node.js 22 and Chromium or Google Chrome available:
 scripts/check-release.sh dist/*.tar.gz
 ```
 
-Pass exactly one archive. The check verifies the archive and binary checksums,
-extracts it into a temporary directory, checks collector configuration failure,
+Pass exactly one archive. The check verifies archive and member checksums,
+static ELF binaries, bundled guides/assets and local links. It extracts the
+package into a temporary directory, checks collector configuration failure,
 and runs dump inspection, a time slice, deterministic report generation, an
 authenticated web catalog, and MCP tool discovery. The existing report browser
 smoke opens the generated HTML directly from disk and checks interactive data

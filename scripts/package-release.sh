@@ -33,6 +33,7 @@ if [[ -n $(git -C "$repo" status --porcelain --untracked-files=normal) ]]; then
   echo 'Commit or set aside checkout changes before packaging.' >&2
   exit 1
 fi
+(cd "$repo" && sha256sum --check licenses/dependency-inputs.sha256)
 revision=$(git -C "$repo" rev-parse HEAD)
 epoch=$(git -C "$repo" show -s --format=%ct HEAD)
 version=$(python3 - "$repo/Cargo.toml" <<'PY'
@@ -49,9 +50,11 @@ if [[ -z "$bin_dir" ]]; then
   build_mode=source
   packages=()
   for binary in "${binaries[@]}"; do packages+=(-p "$binary"); done
+  build_command=(cargo build --release --locked --target "$target" "${packages[@]}")
+  build_compiler=$(cd "$repo" && "${RUSTC:-rustc}" --version)
   (
     cd "$repo"
-    cargo build --release --locked --target "$target" "${packages[@]}"
+    "${build_command[@]}"
   )
   bin_dir="${CARGO_TARGET_DIR:-$repo/target}/$target/release"
   [[ "$bin_dir" = /* ]] || bin_dir="$repo/$bin_dir"
@@ -81,14 +84,72 @@ stage="$package_tmp/$name"
 mkdir -p "$stage/licenses"
 for binary in "${binaries[@]}"; do install -m 0755 "$bin_dir/$binary" "$stage/"; done
 install -m 0644 "$repo/LICENSE" "$repo/INSTALL.md" "$repo/INSTALL.ru.md" "$stage/"
+install -m 0644 "$repo/THIRD_PARTY_LICENSES.html" "$stage/"
+install -m 0644 "$repo/licenses/dependency-inputs.sha256" "$stage/licenses/"
+python3 - "$repo" "$stage" "$revision" <<'PY'
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+from urllib.parse import quote, unquote, urlsplit
+
+repo, stage = map(Path, sys.argv[1:3])
+revision = sys.argv[3]
+files = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z']).decode().split('\0')
+for name in filter(None, files):
+    path = Path(name)
+    documentation = (
+        name in ('README.md', 'README.ru.md')
+        or (path.parts[0] == 'docs' and 'superpowers' not in path.parts
+            and path.suffix in ('.md', '.png', '.svg', '.drawio'))
+        or (len(path.parts) == 3 and path.parts[0] == 'bins'
+            and path.name in ('README.md', 'README.ru.md'))
+        or (len(path.parts) == 3 and path.parts[0] == 'crates'
+            and path.parts[1] in ('kronika-format', 'kronika-writer', 'kronika-layout')
+            and path.name in ('README.md', 'README.ru.md'))
+    )
+    if documentation:
+        target = stage / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(repo / path, target)
+
+# Keep bundled guides local; source references open the packaging revision.
+for document in sorted(stage.rglob('*.md')):
+    def source_link(match):
+        href = match[1]
+        url = urlsplit(href)
+        if url.scheme or url.netloc or not url.path:
+            return match[0]
+        target = (document.parent / unquote(url.path)).resolve()
+        relative = target.relative_to(stage.resolve())
+        source = repo / relative
+        if target.exists() or not source.exists():
+            return match[0]
+        kind = 'tree' if source.is_dir() else 'blob'
+        link = f'https://github.com/vadv/Kronika/{kind}/{revision}/{quote(relative.as_posix())}'
+        if url.fragment:
+            link += '#' + url.fragment
+        return '](' + link + ')'
+    document.write_text(re.sub(r'\]\(([^\s)]+)\)', source_link, document.read_text()))
+PY
 install -m 0644 "$repo/bins/kronika-web/ui/assets/IBMPlexSans-LICENSE.txt" \
   "$repo/bins/kronika-web/ui/assets/JetBrainsMono-LICENSE.txt" "$stage/licenses/"
 printf 'version=%s\npackage_source_revision=%s\ntarget=%s\nsource_date_epoch=%s\nbuild_mode=%s\n' \
   "$version" "$revision" "$target" "$epoch" "$build_mode" > "$stage/BUILDINFO"
+if [[ "$build_mode" == source ]]; then
+  (
+    cd "$repo"
+    printf 'build_command='
+    printf '%q ' "${build_command[@]}"
+    printf '\ncompiler=%s\n' "$build_compiler"
+  ) >> "$stage/BUILDINFO"
+fi
 (
   cd "$stage"
-  sha256sum "${binaries[@]}" > SHA256SUMS
+  find . -type f -print0 | sort -z | xargs -0 sha256sum > "$package_tmp/SHA256SUMS"
 )
+mv -- "$package_tmp/SHA256SUMS" "$stage/"
 tar --sort=name --format=gnu --mtime="@$epoch" --owner=0 --group=0 \
   --numeric-owner --mode='u+rwX,go+rX,go-w' -C "$package_tmp" -cf - "$name" \
   | gzip -n -9 > "$package_tmp/archive.tar.gz"

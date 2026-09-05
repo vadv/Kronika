@@ -13,8 +13,16 @@ trap 'rm -rf -- "$release_tmp"' EXIT
 tar -xzf "$archive" -C "$release_tmp"
 package="$release_tmp/$(basename "$archive" .tar.gz)"
 (cd "$package" && sha256sum --check SHA256SUMS)
-for required in kronika-collector kronika-web kronika-dump kronika-report LICENSE INSTALL.md INSTALL.ru.md BUILDINFO; do
+for required in kronika-collector kronika-web kronika-dump kronika-report LICENSE README.md README.ru.md INSTALL.md INSTALL.ru.md BUILDINFO THIRD_PARTY_LICENSES.html; do
   test -s "$package/$required"
+done
+for binary in "$package"/kronika-*; do
+  test -f "$binary" && test -x "$binary" && test ! -L "$binary"
+  readelf -h "$binary" | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+  if readelf -l "$binary" | grep -q INTERP || readelf -d "$binary" | grep -q NEEDED; then
+    echo "Not a static executable: $binary" >&2
+    exit 1
+  fi
 done
 
 python3 - "$repo" "$package" "$release_tmp" <<'PY'
@@ -22,6 +30,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -29,8 +38,35 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import unquote, urlsplit
 
 repo, package, scratch = map(Path, sys.argv[1:])
+members = {p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+checksummed = {line.split('  ', 1)[1].removeprefix('./')
+               for line in (package / 'SHA256SUMS').read_text().splitlines()}
+assert checksummed == members - {'SHA256SUMS'}, 'checksum manifest omits package files'
+for path in (repo / 'docs').rglob('*'):
+    if path.is_file() and path.suffix in ('.md', '.png', '.svg', '.drawio') and 'superpowers' not in path.parts:
+        assert path.relative_to(repo).as_posix() in members, f'missing documentation: {path}'
+for directory in ('bins/kronika-collector', 'bins/kronika-web', 'bins/kronika-dump',
+                  'bins/kronika-report', 'bins/kronika-demo', 'crates/kronika-format',
+                  'crates/kronika-writer', 'crates/kronika-layout'):
+    for name in ('README.md', 'README.ru.md'):
+        assert f'{directory}/{name}' in members
+for member in members:
+    assert not set(Path(member).parts) & {'src', 'target', 'node_modules', '.git'}, member
+pending_images = {repo / f'docs/images/{name}.png' for name in ('processes', 'statements', 'plans')}
+for document in package.rglob('*.md'):
+    for href in re.findall(r'\]\(([^\s)]+)\)', document.read_text()):
+        url = urlsplit(href)
+        if url.scheme or url.netloc or not url.path:
+            continue
+        target = (document.parent / unquote(url.path)).resolve()
+        if not target.exists():
+            source = repo / target.relative_to(package)
+            assert source in pending_images and not source.exists(), f'broken bundled link: {document}: {href}'
+            print(f'Pending MAIN screenshot: {source.relative_to(repo)}')
+print(f'Archive documentation, static ELF and full checksum manifest passed: {len(members)} files')
 env = {k: v for k, v in os.environ.items() if not k.startswith('KRONIKA_')}
 collector = subprocess.run([package / 'kronika-collector'], env=env,
                            capture_output=True, text=True, timeout=10)
