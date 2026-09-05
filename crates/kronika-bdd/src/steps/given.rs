@@ -8,6 +8,8 @@ use cucumber::given;
 use kronika_format::JOURNAL_MAGIC;
 use std::path::PathBuf;
 
+const FIXTURE_PATH: &str = "{fixture}";
+
 fn fixtures_dir() -> PathBuf {
     std::env::var("KRONIKA_FIXTURES").map_or_else(|_unset| PathBuf::from("fixtures"), PathBuf::from)
 }
@@ -18,12 +20,12 @@ fn collector_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
         let [key, value] = row.as_slice() else {
             anyhow::bail!("a settings row needs a variable and a value, got {row:?}");
         };
-        let value = if value.contains("{fixture}") {
+        let value = if value.contains(FIXTURE_PATH) {
             let fixture = world
                 .fixture
                 .as_ref()
                 .context("a filesystem fixture exists")?;
-            value.replace("{fixture}", &fixture.path().to_string_lossy())
+            value.replace(FIXTURE_PATH, &fixture.path().to_string_lossy())
         } else {
             value.clone()
         };
