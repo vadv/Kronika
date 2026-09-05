@@ -50,10 +50,10 @@ In one measurement with roughly 500 tables and 3,000 indexes,
 43 finished ZMS files totaled 82,687,221 bytes from 00:10 to 10:40 UTC on
 2026-09-01. At the
 current 15-minute segment cadence this is about 1.92 MB per segment, four
-segments per hour, and 184 MB per day (about 0.18 GB). The default 2 GiB budget
-corresponds to about 11.6 days of ZMS at this rate before accounting for
-`active.wal` and `.idx`. This is one workload measurement, not a fixed storage
-rate. Use the measured local rate when choosing a budget.
+segments per hour, and 184 MB per day (about 0.18 GB). This is an extrapolation of finished ZMS growth for one workload, excluding
+`active.wal`, `.idx`, and temporary files that also count toward retention.
+It does not establish how many days the default 2 GiB budget retains. Use the
+measured growth of the whole local storage directory when choosing a budget.
 
 ### Collection intervals
 
@@ -285,8 +285,9 @@ Filesystem capacity is queried only for `ext2`, `ext3`, `ext4`, `xfs`,
 helper process handles the allowlisted mounts under a single one-second
 deadline so a blocked capacity query cannot stop later snapshots.
 The mount snapshot stores the exact mount root and both byte and inode
-total/available pairs. Sysfs topology stores only partitions with an exact
-parent block-device identity; layered device ancestry remains unspecified.
+total/available pairs. Sysfs topology stores exact partition-to-device and
+layered-device-to-slave edges. In a container it keeps only chains under mounted or cgroup-charged
+devices.
 
 ## Run the collector
 

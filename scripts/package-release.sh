@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/package-release.sh [--bin-dir DIR] [--output-dir DIR] [--with-demo]
+
+Build and package static x86-64 Linux binaries; publish nothing.
+--bin-dir DIR     Package existing binaries instead of compiling them.
+--output-dir DIR  Destination for the archive and its checksum (default: dist).
+--with-demo       Also build/package the optional kronika-demo binary.
+USAGE
+}
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+bin_dir=
+output_dir="$repo/dist"
+binaries=(kronika-collector kronika-web kronika-dump kronika-report)
+while (($#)); do
+  case "$1" in
+    --bin-dir|--output-dir)
+      (($# >= 2)) && [[ -n "$2" ]] || { usage >&2; exit 2; }
+      if [[ "$1" == --bin-dir ]]; then bin_dir=$2; else output_dir=$2; fi
+      shift 2 ;;
+    --with-demo) binaries+=(kronika-demo); shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n $(git -C "$repo" status --porcelain --untracked-files=normal) ]]; then
+  echo 'Commit or set aside checkout changes before packaging.' >&2
+  exit 1
+fi
+revision=$(git -C "$repo" rev-parse HEAD)
+epoch=$(git -C "$repo" show -s --format=%ct HEAD)
+version=$(python3 - "$repo/Cargo.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as source:
+    print(tomllib.load(source)['workspace']['package']['version'])
+PY
+)
+[[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo 'Invalid package version' >&2; exit 1; }
+target=x86_64-unknown-linux-musl
+name="kronika-$version-${revision:0:12}-$target"
+build_mode=prebuilt
+if [[ -z "$bin_dir" ]]; then
+  build_mode=source
+  packages=()
+  for binary in "${binaries[@]}"; do packages+=(-p "$binary"); done
+  (
+    cd "$repo"
+    cargo build --release --locked --target "$target" "${packages[@]}"
+  )
+  bin_dir="${CARGO_TARGET_DIR:-$repo/target}/$target/release"
+  [[ "$bin_dir" = /* ]] || bin_dir="$repo/$bin_dir"
+fi
+
+for binary in "${binaries[@]}"; do
+  path="$bin_dir/$binary"
+  [[ -f "$path" && -x "$path" && ! -L "$path" ]] || {
+    echo "Missing regular executable: $path" >&2; exit 1;
+  }
+  readelf -h "$path" | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+  if readelf -l "$path" | grep -q INTERP || readelf -d "$path" | grep -q NEEDED; then
+    echo "Not a static executable: $path" >&2
+    exit 1
+  fi
+done
+
+mkdir -p -- "$output_dir"
+output_dir=$(cd -- "$output_dir" && pwd)
+archive="$output_dir/$name.tar.gz"
+[[ ! -e "$archive" && ! -e "$archive.sha256" ]] || {
+  echo "Output already exists: $archive or its checksum" >&2; exit 1;
+}
+package_tmp=$(mktemp -d "$output_dir/.kronika-package.XXXXXX")
+trap 'rm -rf -- "$package_tmp"' EXIT
+stage="$package_tmp/$name"
+mkdir -p "$stage/licenses"
+for binary in "${binaries[@]}"; do install -m 0755 "$bin_dir/$binary" "$stage/"; done
+install -m 0644 "$repo/LICENSE" "$repo/INSTALL.md" "$repo/INSTALL.ru.md" "$stage/"
+install -m 0644 "$repo/bins/kronika-web/ui/assets/IBMPlexSans-LICENSE.txt" \
+  "$repo/bins/kronika-web/ui/assets/JetBrainsMono-LICENSE.txt" "$stage/licenses/"
+printf 'version=%s\npackage_source_revision=%s\ntarget=%s\nsource_date_epoch=%s\nbuild_mode=%s\n' \
+  "$version" "$revision" "$target" "$epoch" "$build_mode" > "$stage/BUILDINFO"
+(
+  cd "$stage"
+  sha256sum "${binaries[@]}" > SHA256SUMS
+)
+tar --sort=name --format=gnu --mtime="@$epoch" --owner=0 --group=0 \
+  --numeric-owner --mode='u+rwX,go+rX,go-w' -C "$package_tmp" -cf - "$name" \
+  | gzip -n -9 > "$package_tmp/archive.tar.gz"
+mv -- "$package_tmp/archive.tar.gz" "$archive"
+(
+  cd "$output_dir"
+  sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+)
+printf '%s\n' "$archive" "$archive.sha256"
