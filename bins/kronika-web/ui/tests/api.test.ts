@@ -279,7 +279,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
         values: ["42", "10", "20", "vacuum t", 5, "9007199254740995", 7],
       },
       {
-        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "4873", returned: "2",
+        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "4873", excluded: "3", returned: "2",
         has_more: true, truncated: true, next_cursor: "next+/=", page_size: 200,
         order_by: ["wal_bytes", "total_time"], order_direction: "desc",
         from: String(START - 10_000_000), to: String(START),
@@ -295,7 +295,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     assert.equal(hour.sections.pg_stat_statements?.length, 2)
     assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time", "total_exec_time"])
     assert.deepEqual(hour.snapshotRows, [{
-      logicalName: "pg_stat_statements", eligible: 4873, returned: 2,
+      logicalName: "pg_stat_statements", eligible: 4873, excluded: 3, returned: 2,
       hasMore: true, truncated: true, nextCursor: "next+/=", pageSize: 200,
       orderBy: ["wal_bytes", "total_time"], orderDirection: "desc",
       from: START - 10_000_000, to: START,
@@ -642,12 +642,13 @@ test("event groups use one half-open request and validate the server-owned shape
   try {
     const groups = await api.loadEventGroups(
       START,
+      START + 300_000_001,
       ["pg_log_errors", "pg_log_slow_queries"],
       new AbortController().signal,
     )
     assert.equal(request?.pathname, "/api/events")
     assert.equal(request?.searchParams.get("from"), String(START))
-    assert.equal(request?.searchParams.get("to"), String(START + 3_600_000_000))
+    assert.equal(request?.searchParams.get("to"), String(START + 300_000_001))
     assert.equal(request?.searchParams.get("representation"), "groups")
     assert.equal(request?.searchParams.get("limit"), "5000")
     assert.deepEqual(request?.searchParams.getAll("source"), ["pg_log_errors", "pg_log_slow_queries"])
@@ -660,13 +661,82 @@ test("event groups use one half-open request and validate the server-owned shape
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
       {
+        record: "event_group", key: "pgbouncer:3:no such database: nope", section: "pgbouncer_events", tier: "routine",
+        label: "no such database: nope", count: 19, firstTs: START, lastTs: START + 1, minutes,
+        stat: {
+          kind: "pgbouncer.events", level: 3, database: "(nodb)", username: "(nouser)",
+          host: "10.0.0.7", sourceFile: "/var/log/pgbouncer.log",
+        },
+        detail_ref: "opaque-pgbouncer", representativeTs: START,
+      },
+    ])
+    const [pgbouncer] = (await api.loadEventGroups(
+      START,
+      START + 2,
+      ["pgbouncer_events"],
+      new AbortController().signal,
+    )).rows
+    assert.equal(pgbouncer?.label, "no such database: nope")
+    assert.deepEqual(pgbouncer?.stat, {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: "(nodb)",
+      username: "(nouser)",
+      host: "10.0.0.7",
+      sourceFile: "/var/log/pgbouncer.log",
+    })
+
+    const pgbouncerWithoutOptionalContext = {
+      record: "event_group", key: "pgbouncer:3:closing because: client close request", section: "pgbouncer_events", tier: "routine",
+      label: "closing because: client close request", count: 1, firstTs: START, lastTs: START, minutes,
+      stat: { kind: "pgbouncer.events", level: 3 },
+      detail_ref: "opaque-pgbouncer-without-context", representativeTs: START,
+    }
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      pgbouncerWithoutOptionalContext,
+    ])
+    const [withoutOptionalContext] = (await api.loadEventGroups(
+      START,
+      START + 1,
+      ["pgbouncer_events"],
+      new AbortController().signal,
+    )).rows
+    assert.deepEqual(withoutOptionalContext?.stat, {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: null,
+      username: null,
+      host: null,
+      sourceFile: null,
+    })
+
+    for (const [field, label] of [
+      ["database", "database"],
+      ["username", "username"],
+      ["host", "host"],
+      ["sourceFile", "source file"],
+    ] as const) {
+      globalThis.fetch = async () => ndjson([
+        { record: "events", representation: "groups", truncated: false },
+        { ...pgbouncerWithoutOptionalContext, stat: { kind: "pgbouncer.events", level: 3, [field]: 7 } },
+      ])
+      await assert.rejects(
+        api.loadEventGroups(START, START + 1, ["pgbouncer_events"], new AbortController().signal),
+        new RegExp(`PgBouncer ${label} is invalid`),
+      )
+    }
+
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      {
         record: "event_group", key: "broken", section: "pg_log_errors", tier: "notable", label: null,
         count: 1, firstTs: START, lastTs: START, minutes, stat: { kind: "pg.errors", severity: 0, category: null, sqlstate: null, database: null, username: null },
         detail_ref: "", representativeTs: START,
       },
     ])
     await assert.rejects(
-      api.loadEventGroups(START, ["pg_log_errors"], new AbortController().signal),
+      api.loadEventGroups(START, START + 1, ["pg_log_errors"], new AbortController().signal),
       /event detail reference/,
     )
   } finally {
@@ -885,7 +955,7 @@ test("the timeline carries every finding without per-section index requests", as
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(url)
     return ndjson([
-      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+      { record: "hour", from: String(START + 1), to: String(START + 9), available_hours: [String(START)] },
       {
         record: "finished_segment", id: "7", min_ts: String(START), max_ts: String(START + 10),
         sections: [
@@ -903,10 +973,18 @@ test("the timeline carries every finding without per-section index requests", as
     ])
   }
   try {
-    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    const timeline = await api.loadTimeline(
+      START,
+      new AbortController().signal,
+      undefined,
+      { from: START + 1, toExclusive: START + 10 },
+    )
     assert.equal(seen.length, 1)
     assert.equal(seen[0]?.pathname, "/api/hour")
     assert.equal(seen[0]?.searchParams.get("part"), "base")
+    assert.equal(seen[0]?.searchParams.get("from"), String(START + 1))
+    assert.equal(seen[0]?.searchParams.get("to"), String(START + 9))
+    assert.equal(timeline.hour, START)
     assert.deepEqual(timeline.findings.map((item) => [item.segmentId, item.logicalName, item.rowOrdinal]), [
       ["7", "os_process", "1"],
       ["7", "pg_stat_activity", "2"],
@@ -975,10 +1053,16 @@ test("background lanes carry the exact ordered base segments and lossless active
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
     assert.equal(timeline.segments[1]?.activeWalPosition, "18446744073709551615")
-    await api.loadTimelineLanes(timeline, new AbortController().signal)
+    await api.loadTimelineLanes(
+      timeline,
+      new AbortController().signal,
+      { from: START + 1, toExclusive: START + 10 },
+    )
     const background = seen[1]
     assert.equal(background?.searchParams.get("segments"), "41,42")
     assert.equal(background?.searchParams.get("active"), "42,18446744073709551615")
+    assert.equal(background?.searchParams.get("from"), String(START + 1))
+    assert.equal(background?.searchParams.get("to"), String(START + 9))
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1015,7 +1099,7 @@ test("health rows align raw PostgreSQL points to stored nonfuture evaluations", 
   const point = (segmentId: string, series: string, timestamp: number, value: number | null) => ({
     identity: {}, logicalName: "health", segmentId, series, timestamp, typeId: "0", value,
   })
-  const metadata = [{ segmentId: "a", postgresqlIntervalSeconds: 1 }]
+  const metadata = [{ segmentId: "a", postgresqlIntervalSeconds: 1, environment: null }]
   const rows = api.healthRows([
     point("a", "postgres_health", START + 100, 72),
     point("a", "os_health", START + 101, 91),
@@ -1061,7 +1145,7 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
     seen.push(`${url.pathname}?${url.searchParams}`)
     if (url.searchParams.get("part") === "lanes") return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1) },
-      { record: "lane_context", segment_id: "a", postgresql_interval_seconds: "1" },
+      { record: "lane_context", segment_id: "a", postgresql_interval_seconds: "1", environment: 1 },
     ])
     return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
@@ -1180,7 +1264,7 @@ test("heatmaps use compact automatic named labels without a label selector", asy
     assert.equal(url.searchParams.has("label"), false)
     return ndjson([
       {
-        record: "heatmap", class: "cumulative", entity_count: "1", others_count: "0",
+        record: "heatmap", class: "cumulative", summary: "sum", entity_count: "1", others_count: "0",
         labels: ["datname", "usename"],
         intervals: [{ start: String(START), end: String(START + 3_600_000_000 - 1) }],
       },
@@ -1206,6 +1290,60 @@ test("heatmaps use compact automatic named labels without a label selector", asy
       datname: "app",
       usename: "reporter",
     })
+    assert.equal(view.summary, "sum")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("heatmaps preserve summary modes and reject unknown or still-missing modes after one reload", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let summary: string | undefined = "mean"
+  const cacheModes: (RequestCache | undefined)[] = []
+  globalThis.fetch = async (_input, init) => {
+    cacheModes.push(init?.cache)
+    return ndjson([{ record: "heatmap", class: "gauge", summary, intervals: [] }])
+  }
+  const load = () => api.loadHeatmap(START, "os_process", ["rmem_kb"], 1, 25, new AbortController().signal)
+  try {
+    assert.equal((await load()).summary, "mean")
+    summary = "max"
+    assert.equal((await load()).summary, "max")
+    summary = "unknown"
+    await assert.rejects(load(), /heatmap summary is invalid/)
+    assert.deepEqual(cacheModes, ["default", "default", "default"])
+    summary = undefined
+    await assert.rejects(load(), /heatmap summary is invalid/)
+    assert.deepEqual(cacheModes.slice(3), ["default", "reload"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("heatmaps replace a cached legacy response once at the same URL", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const calls: { path: string; cache: RequestCache | undefined }[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ path: String(input), cache: init?.cache })
+    return ndjson([
+      { record: "heatmap", class: "gauge", ...(calls.length === 1 ? {} : { summary: "mean" }), intervals: [] },
+      { record: "heatmap_band", band: "totals", total: calls.length === 1 ? 900 : 300, cells: [] },
+    ])
+  }
+  try {
+    const load = () => api.loadHeatmap(START, "os_process", ["rmem_kb"], 1, 25, new AbortController().signal)
+    const view = await load()
+    assert.equal(view.summary, "mean")
+    assert.equal(view.totals.total, 300)
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0]?.path, calls[1]?.path)
+    assert.deepEqual(calls.map(({ cache }) => cache), ["default", "reload"])
+    await load()
+    assert.deepEqual(calls.map(({ cache }) => cache), ["default", "reload", "default"])
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1638,4 +1776,17 @@ test("tablespace history sends only the cluster-wide OID identity", async () => 
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test("the recorded environment comes from the newest lane context that states it", async () => {
+  const api = await importModule(
+    'export { recordedEnvironmentFromContexts } from "../src/api.ts"',
+    { plugins: [registryPlugin(TEST_REGISTRY)] },
+  )
+  const context = (segmentId, environment) => ({ segmentId, postgresqlIntervalSeconds: null, environment })
+  assert.equal(api.recordedEnvironmentFromContexts([]), null)
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", null)]), null)
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 0)]), "machine")
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 0), context("b", 1), context("c", null)]), "container")
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 7)]), null)
 })

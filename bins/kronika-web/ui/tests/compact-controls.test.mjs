@@ -27,7 +27,21 @@ test("narrow controls stay bounded and coarse-pointer table help is immediately 
   assert.match(help, /coarse:\[\.entity-header-cell>&\]:mr-\[11px\]/)
   assert.match(help, /coarse:\[\.entity-header-cell_&\]:after:-inset-\[11px\]/)
   assert.match(entityTable, /scroll-padding-inline-end:8px/)
+  assert.match(entityTable, /useSyncExternalStore\(subscribeCoarsePointer, coarsePointer/)
+  assert.match(entityTable, /const COARSE_ROW_PX = 44/)
+  assert.match(entityTable, /estimateSize: \(\) => rowHeight/)
+  assert.match(entityTable, /useLayoutEffect\(\(\) => virtual\.measure\(\), \[rowHeight, virtual\]\)/)
+  assert.match(entityTable, /coarse:h-11/)
+  assert.match(styles, /\.lens-tabs > button, \.pg-tabs > button \{ min-height: 44px; \}/)
   assert.doesNotMatch(help, /w-11/)
+})
+
+test("Statements data and scope copy never use the 11px label face", async () => {
+  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  const scope = postgres.match(/function StatementMonitorScope[\s\S]*?\n}\n\nconst ACTIVITY_PID/)?.[0] ?? ""
+  assert.match(scope, /text-\[12px\]/)
+  assert.doesNotMatch(scope, /\btext-xs\b/)
+  assert.match(postgres, /section === "pg_stat_statements" \? "\[&_\.entity-cell\]:text-sm" : undefined/)
 })
 
 test("history placeholders are compact and name loading, error, and empty states", async () => {

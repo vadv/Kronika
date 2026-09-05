@@ -48,7 +48,8 @@ use kronika_source_os::proc::{
 };
 use kronika_source_os::{
     MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set,
-    is_pseudo_filesystem, mount_row, net_scope, parse_dev_pair, parse_mountinfo,
+    is_kernel_tree_mount, is_pseudo_filesystem, mount_row, net_scope, parse_dev_pair,
+    parse_mountinfo,
 };
 use kronika_source_os::{node_id_from_dir, parse_node_meminfo};
 use kronika_writer::{Interner, SectionBuffers};
@@ -230,11 +231,13 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 
 /// Read every procfs OS section synchronously.
 ///
-/// Counter sections (cpu, stat, meminfo, loadavg, vmstat, psi, diskstats,
+/// Counter sections (cpu, stat, meminfo, loadavg, vmstat, pressure, diskstats,
 /// netdev, snmp, netstat) are gated on `due.has(SourceKind::OsCore)` and are
-/// never emitted on an OsMountTopo-only tick. Mountinfo is parsed on every
-/// `OsCore` tick for diskstats attribution and emitted, together with topology,
-/// only when `due.has(SourceKind::OsMountTopo)` is true.
+/// never emitted on an OsMountTopo-only tick. Pressure comes from procfs on a
+/// machine and the collector's exact cgroup v2 path in a container.
+/// Mountinfo is parsed on every `OsCore` tick for diskstats attribution and
+/// emitted, together with topology, only when
+/// `due.has(SourceKind::OsMountTopo)` is true.
 /// On file read or parse failure the affected section is skipped and a
 /// `collection_degraded` event is logged; zeros are never fabricated. `scope`
 /// is the host scope for device-local sections; network sections carry their
@@ -272,22 +275,33 @@ pub(crate) fn collect_os_sources(
 
     let sys = SysFs::from_env();
     if due.has(SourceKind::OsCore) {
-        singletons::collect_singletons(fs, scope, ts, &mut os);
+        singletons::collect_singletons(fs, &sys, scope, ts, in_container, &mut os);
     }
     // OsCore needs mountinfo for the container device filter in diskstats;
     // OsMountTopo needs it to build the attribution section rows.
-    let mounts = if due.has(SourceKind::OsCore) || due.has(SourceKind::OsMountTopo) {
+    let device_tick = due.has(SourceKind::OsCore) || due.has(SourceKind::OsMountTopo);
+    let mounts = if device_tick {
         procfs_sections::mountinfo_entries(fs)
     } else {
         Vec::new()
     };
+    // A container's device sections keep the devices its mounts sit on and the
+    // layers its own cgroup charges I/O to; /proc/diskstats and sysfs describe
+    // the whole node.
+    let kept = (in_container && device_tick).then(|| {
+        let mut devices = container_device_set(&mounts);
+        match cgroup::charged_devices(fs, &sys) {
+            Ok(charged) => devices.extend(charged),
+            Err(err) => log_degraded(1_108_001, "cgroup/io.stat", &err),
+        }
+        devices
+    });
 
     if due.has(SourceKind::OsCore) {
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
         let net_scope_id = net_scope(in_container).as_u8();
-        os.diskstats =
-            procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
+        os.diskstats = procfs_sections::collect_diskstats(fs, interner, scope, ts, kept.as_ref());
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
         procfs_sections::collect_kernel_singletons(
@@ -305,7 +319,7 @@ pub(crate) fn collect_os_sources(
     if due.has(SourceKind::OsMountTopo) {
         os.mountinfo = collect_mountinfo(interner, scope, ts, &mounts);
         os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
-        block_topology::collect_block_topology(&sys, scope, ts, &mut os);
+        block_topology::collect_block_topology(&sys, scope, ts, kept.as_ref(), &mut os);
     }
     cpufreq::collect_cpufreq(&sys, interner, scope, ts, due, &mut os);
 
@@ -351,6 +365,28 @@ const fn os_entity_scope(in_container: bool) -> u8 {
 #[cfg(test)]
 pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool {
     in_container && due.has(SourceKind::OsCgroup)
+}
+
+#[cfg(test)]
+pub(crate) fn collect_diskstats_for_test(
+    fs: &ProcFs,
+    interner: &mut Interner,
+    kept: Option<&std::collections::HashSet<(i32, i32)>>,
+) -> Vec<OsDiskstats> {
+    procfs_sections::collect_diskstats(fs, interner, 0, 0, kept)
+}
+
+#[cfg(test)]
+pub(crate) fn collect_pressure_for_test(
+    fs: &ProcFs,
+    sys: &SysFs,
+    scope: u8,
+    ts: i64,
+    in_container: bool,
+) -> Vec<OsPsi> {
+    let mut os = OsSources::empty();
+    singletons::collect_pressure_rows(fs, sys, scope, ts, in_container, &mut os);
+    os.psi
 }
 
 /// Intern one OS string, logging degradation and returning `None` on failure

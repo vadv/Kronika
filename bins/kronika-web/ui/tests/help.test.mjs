@@ -43,20 +43,18 @@ test("field help uses a fixed top-level portal above every workspace layer", asy
   assert.match(source, /\[\.entity-header-cell:focus-within>&\]:opacity-100/)
 })
 
-test("a ledger row carries no help mark of its own: the lane name is the anchor", async () => {
-  const [source, styles, en, ru] = await Promise.all([
+test("a USE cell is one action while methodology help stays in the column header", async () => {
+  const [source, en, ru] = await Promise.all([
     readFile(new URL("../src/use-table.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
     readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
   ])
-  // The row expands on click. A second visible target inside it competes with
-  // that, so the lane's name carries the help and the sign is invisible until
-  // the keyboard reaches it.
+  // The complete populated cell is the only cell action. Lane text is plain
+  // content, so a help button cannot overlap or nest inside that action.
   assert.doesNotMatch(source, /iconOnly/)
-  assert.match(source, /<LabelHelp helpKey=\{useLaneHelp\(cell\.lane\)\} labelKey=/)
-  assert.match(styles, /\.use-lane > \.label-help > \.help-dot \{[^}]*opacity: 0;/)
-  assert.match(styles, /\.use-lane > \.label-help > \.help-dot:focus-visible \{ opacity: 1; \}/)
+  assert.match(source, /data-testid=\{`use-cell-\$\{resource\.key\}-\$\{column\}`\}/)
+  assert.match(source, /<span>\{laneLabels\.join\(" · "\)\}<\/span>/)
+  assert.doesNotMatch(source, /useLaneHelp/)
   // What the three columns mean is said once, in their names.
   for (const column of ["utilisation", "saturation", "errors"]) {
     assert.match(source, new RegExp(`use\\.\\$\\{column\\}\\.help`))

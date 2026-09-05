@@ -4,7 +4,7 @@ import { registry } from "kronika:registry"
 
 import { copyText } from "./clipboard"
 import { DatabasesActivity, PlansActivity, RelationsActivity, StatementsActivity } from "./activity"
-import type { DataRow, Finding, HourData, SegmentBound, SnapshotRows } from "./api"
+import type { DataRow, Finding, HourData, SegmentBound, SnapshotRows, StatementScope } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { DetailList, DetailRow } from "./detail-list"
@@ -37,10 +37,54 @@ import type { SearchSurface } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { Timeline } from "./timeline"
 import type { TableRequestPhase } from "./table-request"
+import { isKronikaMonitorStatement } from "./statement-scope"
 
 export type PostgresSection = "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
+export { isKronikaMonitorStatement }
+
+function StatementMonitorScope({ checked, count, forced, onChange, t }: {
+  readonly checked: boolean
+  readonly count: number
+  readonly forced: boolean
+  readonly onChange: (checked: boolean) => void
+  readonly t: Translate
+}) {
+  // Kronika's own statements are hidden by default. The count is the server's
+  // exact number of rows the workload scope kept off the page. An explicit
+  // search, entity context or opened collector row includes them and locks the
+  // control, because the reader asked for exactly those rows.
+  const status = forced || checked
+    ? t("pg.statements.monitor_queries.shown")
+    : t("pg.statements.monitor_queries.hidden", { count: String(count) })
+  return <label className={`inline-flex min-h-7 min-w-0 max-w-full items-center gap-x-1.5 rounded-[var(--radius-sm)] px-1.5 text-[12px] leading-normal text-fg2 coarse:min-h-11 ${forced ? "cursor-default" : "cursor-pointer hover:bg-s3"}`} data-forced={forced || undefined} data-testid="statement-monitor-scope" title={forced ? t("pg.statements.monitor_queries.forced") : undefined}>
+    <input aria-label={t("pg.statements.monitor_queries.toggle")} checked={forced || checked} className="flex-none accent-accent" disabled={forced} onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
+    <span className="min-w-0 whitespace-nowrap">{t("pg.statements.monitor_queries.label")}</span>
+    <span aria-live="polite" className="min-w-0 whitespace-nowrap tabular-nums text-fg4" data-testid="statement-monitor-count">{status}</span>
+  </label>
+}
+
+/// The statement scope a view needs: the reader's choice, widened to every
+/// statement when a search, entity context or an opened collector row would
+/// otherwise lose the rows it refers to.
+export function statementScopeFor({ context, focus, pattern, rows, selectedKey, show }: {
+  readonly context: EntityContext | null
+  readonly focus: DataRow | null
+  readonly pattern: string
+  readonly rows: readonly DataRow[]
+  readonly selectedKey: string | null
+  readonly show: boolean
+}): { readonly scope: StatementScope; readonly forced: boolean } {
+  const selectedMonitorQuery = selectedKey !== null
+    && rows.some((row) => rowKey(row) === selectedKey && isKronikaMonitorStatement(row))
+  const exactMonitorQuery = focus?.logicalName === "pg_stat_statements" && isKronikaMonitorStatement(focus)
+  const forced = pattern.trim() !== ""
+    || context?.logicalName === "pg_stat_statements"
+    || exactMonitorQuery
+    || selectedMonitorQuery
+  return { scope: show || forced ? "all" : "workload", forced }
+}
 
 const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true, false)
 const ACTIVITY_BACKEND_TYPE = pgExactText("backend_type", "pg.backend_type", 150, true)
@@ -290,6 +334,7 @@ export function PostgresView({
   order,
   cursor,
   data,
+  environment,
   focus,
   focusFinding,
   historyRevision,
@@ -321,6 +366,9 @@ export function PostgresView({
   selectedKey,
   selectedLane,
   statementLens,
+  monitorQueries,
+  onMonitorQueries,
+  statementScope,
   t,
 }: {
   readonly context: EntityContext | null
@@ -334,6 +382,7 @@ export function PostgresView({
   readonly pattern: string
   readonly cursor: number
   readonly data: HourData
+  readonly environment: "machine" | "container" | null
   readonly focus: DataRow | null
   readonly focusFinding: Finding | null
   readonly historyRevision: number
@@ -356,6 +405,11 @@ export function PostgresView({
   readonly selectedKey: string | null
   readonly selectedLane: string
   readonly statementLens: StatementLens
+  /// The reader's choice to include Kronika's own statements.
+  readonly monitorQueries: boolean
+  readonly onMonitorQueries: (next: boolean) => void
+  /// Scope resolved by the owner of the table request; see `statementScopeFor`.
+  readonly statementScope: { readonly scope: StatementScope; readonly forced: boolean }
   readonly planLens: PlanLens
   readonly segments: readonly SegmentBound[]
   readonly onStatementLens: (lens: StatementLens) => void
@@ -371,7 +425,11 @@ export function PostgresView({
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   const locks = useMemo(() => lockColumns(t), [t])
   const lockDetails = useMemo(() => lockDetailColumns(t), [t])
-  const postgresSummary = usePostgresSummary(hour, historyRevision)
+  const postgresSummary = usePostgresSummary(hour, historyRevision, statementScope.scope)
+  const statementRows = data.sections.pg_stat_statements ?? NO_ROWS
+  // The server keeps the collector's own statements off the page under the
+  // workload scope and reports exactly how many it held back.
+  const excludedMonitorQueries = data.snapshotRows.find((page) => page.logicalName === "pg_stat_statements")?.excluded ?? 0
   const summary = (summarySection: PostgresSummarySection, lens: string) => <PostgresSummary cursor={cursor} lens={lens} locale={locale} section={summarySection} state={postgresSummary} t={t} />
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
@@ -379,7 +437,7 @@ export function PostgresView({
     onSection("overview")
   }, [data.availableSections, onSection, section])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} t={t} />
+    <Timeline cursor={cursor} environment={environment} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
@@ -391,7 +449,7 @@ export function PostgresView({
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} requestPhase={requestPhase} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
     {section === "vacuum" && <VacuumView cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} segments={segments} selectedKey={selectedKey} t={t} />}
-    {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={data.sections.pg_stat_statements ?? NO_ROWS} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" summary={summary("statements", statementLens)} t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
+    {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={statementRows} scope={statementScope.scope} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" summary={summary("statements", statementLens)} t={t} /><PgEntityView accessory={<StatementMonitorScope checked={monitorQueries} count={excludedMonitorQueries} forced={statementScope.forced} onChange={onMonitorQueries} t={t} />} columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" summary={summary("plans", planLens)} t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={data.sections.pg_store_plans ?? NO_ROWS} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
@@ -478,7 +536,7 @@ function ActivityView({ context, cursor, data, finding, focus, historyRevision, 
   </>
 }
 
-function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, summary, t }: { readonly active: L; readonly choices: readonly L[]; readonly onChange: (lens: L) => void; readonly prefix: "statement" | "plan"; readonly summary: ReactNode; readonly t: Translate }) {
+function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, summary, t }: { readonly active: L; readonly choices: readonly L[]; readonly onChange: (lens: L) => void; readonly prefix: "statement" | "plan"; readonly summary?: ReactNode | undefined; readonly t: Translate }) {
   return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div>{summary}<div className="ml-auto flex items-center gap-[5px] text-xs text-fg4 [&_i]:ml-2 [&_i]:inline-block [&_i]:h-1.5 [&_i]:w-1.5 [&_i]:rounded-full" aria-label={t("pg.value.legend")}><i className="bg-ok" />{t("pg.value.good")}<i className="bg-warn" />{t("pg.value.warning")}<i className="bg-bad" />{t("pg.value.critical")}</div></div>
 }
 
@@ -934,6 +992,7 @@ const NO_ROWS: readonly DataRow[] = []
 const NO_RATES: readonly string[] = []
 
 function PgEntityView({
+  accessory,
   context,
   requestPhase,
   onOrder,
@@ -962,8 +1021,10 @@ function PgEntityView({
   onCursor,
   onRetry,
   searchRequest,
+  statusRowCount,
   transformRows,
 }: {
+  readonly accessory?: ReactNode | undefined
   readonly context?: EntityContext | null | undefined
   readonly columns: readonly EntityColumn[]
   readonly detailColumns?: readonly EntityColumn[] | undefined
@@ -992,6 +1053,7 @@ function PgEntityView({
   readonly onCursor: (timestamp: number) => void
   readonly onRetry?: (() => void) | undefined
   readonly searchRequest?: SearchRequestState | undefined
+  readonly statusRowCount?: number | undefined
   readonly transformRows?: ((rows: readonly DataRow[]) => readonly DataRow[]) | undefined
 }) {
   const time = useDisplayTime()
@@ -1049,7 +1111,7 @@ function PgEntityView({
     [dense, pattern, rows, section, visibleColumns],
   )
   const snapshotStatus = dense
-    ? tableState(metadata, displayedRows.length, pattern, activeOrder, locale, t, time, focusPreview)
+    ? tableState(metadata, statusRowCount ?? displayedRows.length, pattern, activeOrder, locale, t, time, focusPreview)
     : undefined
   const contentSized = displayedRows.length < 10 && !canLoadMore
   const paging = dense && (densePageState !== "idle" || canLoadMore)
@@ -1060,7 +1122,7 @@ function PgEntityView({
   const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
   return <div className={`pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]${contentSized ? "" : " pg-entity-fill"}`} data-content-sized={contentSized || undefined} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <div className={`pg-entity-main min-w-0${contentSized ? "" : " pg-stretch"}`}>
-      <EntityTable columns={visibleColumns} contentSized={contentSized} contextLabel={activeContext?.label} empty={t("table.no_rows")} filterRows={section === "pg_locks" ? filterLockForest : undefined} requestPhase={requestPhase} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} rowLabel={section === "pg_locks" ? (row) => lockRowLabel(row, t) : undefined} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
+      <EntityTable accessory={accessory} className={section === "pg_stat_statements" ? "[&_.entity-cell]:text-sm" : undefined} columns={visibleColumns} contentSized={contentSized} contextLabel={activeContext?.label} empty={t("table.no_rows")} filterRows={section === "pg_locks" ? filterLockForest : undefined} requestPhase={requestPhase} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} rowLabel={section === "pg_locks" ? (row) => lockRowLabel(row, t) : undefined} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging">{paging}</div>}
     </div>
     {selected !== null && <InspectorPortal identity={`postgres:${section}:${rowKey(selected)}`} onClose={() => { setSelected(null); onSelectedKey?.(null) }} title={detailTitle(selected, section, t)}><PgDetail allRows={allRows} columns={visibleDetailColumns} cursor={cursor} historyField={selectedHistoryField} historyRevision={historyRevision} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onCursor={onCursor} onRelated={onRelated} row={selected} section={section} segments={segments ?? NO_SEGMENTS} t={t} /></InspectorPortal>}
@@ -1472,16 +1534,6 @@ function TimestampValue({ t, timestamp }: { readonly t: Translate; readonly time
   return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void copyText(String(timestamp), t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
-function groupSections(rows: readonly DataRow[]): readonly [string, readonly DataRow[]][] {
-  const grouped = new Map<string, DataRow[]>()
-  for (const row of rows) {
-    const stored = grouped.get(row.logicalName) ?? []
-    stored.push(row)
-    grouped.set(row.logicalName, stored)
-  }
-  return [...grouped.entries()]
-}
-
 export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   const fields = [...new Set(rows.flatMap((row) => Object.keys(row.values)))].filter((field) => !isInternalField(field))
   return fields.map((field, index) => {
@@ -1502,7 +1554,6 @@ export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   })
 }
 
-const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
 const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
 
 function isInternalField(field: string): boolean {
@@ -1585,4 +1636,3 @@ function pgText(field: string, key: string, width = 130, sticky = false, withHel
 function pgExactText(field: string, key: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { ...pgText(field, key, width, sticky, withHelp), detailValueRole: "machine" } }
 function pgNumber(field: string, key: string, width = 125): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "number", width } }
 function pgId(field: string, key: string, width = 110, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "id", width, sticky } }
-function pgTimestamp(field: string, key: string, width = 210): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "timestamp", width } }

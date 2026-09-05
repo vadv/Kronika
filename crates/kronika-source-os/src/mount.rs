@@ -92,6 +92,16 @@ pub fn is_pseudo_filesystem(fstype: &str) -> bool {
     PSEUDO_FILESYSTEMS.contains(&fstype)
 }
 
+/// Whether a mount point lies inside the kernel's `/proc` or `/sys` trees.
+/// Container runtimes mask paths there with empty tmpfs; nothing mounted
+/// there is a data filesystem.
+#[must_use]
+pub fn is_kernel_tree_mount(path: &str) -> bool {
+    ["/proc", "/sys"]
+        .iter()
+        .any(|tree| path == *tree || path.starts_with(&format!("{tree}/")))
+}
+
 /// Returns `true` if `path` is a Kubernetes infrastructure bind-mount: an exact
 /// match or a prefix match against the known infrastructure paths.
 #[must_use]
@@ -325,6 +335,15 @@ mod tests {
         assert!(!set.contains(&(253, 0))); // only /etc/hosts -> excluded
         let map = device_map(&e);
         assert_eq!(display_path(&map[&(8, 1)]), Some("/data")); // shortest
+    }
+
+    #[test]
+    fn kernel_tree_mounts_are_masks_not_filesystems() {
+        assert!(is_kernel_tree_mount("/proc/kcore"));
+        assert!(is_kernel_tree_mount("/sys/firmware"));
+        assert!(is_kernel_tree_mount("/sys"));
+        assert!(!is_kernel_tree_mount("/sysroot"));
+        assert!(!is_kernel_tree_mount("/var/lib/kronika/data"));
     }
 
     #[test]

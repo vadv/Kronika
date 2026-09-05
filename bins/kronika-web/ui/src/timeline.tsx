@@ -5,10 +5,11 @@ import { buildMetricSamples } from "./chart"
 import { CursorRow } from "./cursor-row"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { useDisplayTime } from "./display-time-context"
-import { findingOrder, findingSummary } from "./finding-presentation"
+import { findingOrder, findingSummary, summarizeFindings } from "./finding-presentation"
+import { useExportSelection } from "./export-context"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
-import { asNumber, compact, humanDuration, humanPercent, type Locale, value } from "./model"
+import { asNumber, compact, humanBytes, humanCores, humanDuration, humanPercent, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
 import { sampleAtOrBefore, uncollectedStart } from "./series-chart"
 import { UPlotChart, type ChartDecoration, type RecordedSeries } from "./uplot-chart"
@@ -43,6 +44,7 @@ export type TimelinePresentation = "preview" | "inspector"
 
 export function Timeline({
   cursor,
+  environment,
   findings,
   health,
   hour,
@@ -60,6 +62,7 @@ export function Timeline({
   t,
 }: {
   readonly cursor: number
+  readonly environment: "machine" | "container" | null
   readonly findings: readonly Finding[]
   readonly health: readonly DataRow[]
   readonly hour: number
@@ -95,19 +98,29 @@ export function Timeline({
       .filter((point) => point.lane === name)
       .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
     const one = (color: TimelineSeries["color"], field: string, points: readonly SeriesPoint[]): readonly [TimelineSeries] => [{ color, field, points }]
+    const recorded = (name: string) => of(name).some((point) => point.value !== null)
+    const lane = (color: TimelineSeries["color"], key: string): TimelineLane => ({ key, series: one(color, key, of(key)) })
+    // Unknown scope cannot substitute host values for the container.
+    const resources = environment === "container"
+      ? [
+        lane("cyan", recorded("cg_cpu_share") ? "cg_cpu_share" : "cg_cpu_cores"),
+        lane("amber", "cg_cpu_psi"),
+        lane("violet", recorded("cg_memory") ? "cg_memory" : "cg_memory_bytes"),
+        lane("cyan", "cg_io_psi"),
+      ]
+      : environment === "machine"
+        ? [lane("cyan", "cpu_busy"), lane("amber", "cpu_stall"), lane("violet", "memory"), lane("cyan", "io_stall")]
+        : []
     return [
       { key: "health", series: healthTrack.series, threshold: healthTrack.threshold },
-      { key: "cpu_busy", series: one("cyan", "cpu_busy", of("cpu_busy")) },
-      { key: "cpu_stall", series: one("amber", "cpu_stall", of("cpu_stall")) },
-      { key: "memory", series: one("violet", "memory", of("memory")) },
-      { key: "io_stall", series: one("cyan", "io_stall", of("io_stall")) },
-      { key: "pg_running", series: one("cyan", "pg_running", of("pg_running")) },
-      { key: "pg_waiting", series: one("amber", "pg_waiting", of("pg_waiting")) },
+      ...resources,
+      lane("cyan", "pg_running"),
+      lane("amber", "pg_waiting"),
       { key: "oldest_xact", series: one("violet", "pg_oldest_xact", of("pg_oldest_xact")) },
-    ].filter((lane) => lane.key === "health"
-      ? lane.series.some((line) => line.points.length !== 0)
-      : lane.series.some((line) => line.points.some((point) => point.value !== null)))
-  }, [healthTrack, lanePoints])
+    ].filter((candidate) => candidate.key === "health"
+      ? candidate.series.some((line) => line.points.length !== 0)
+      : candidate.series.some((line) => line.points.some((point) => point.value !== null)))
+  }, [environment, healthTrack, lanePoints])
   const [localLane, setLocalLane] = useState(primaryLane)
   const selectedLane = controlledLane ?? localLane
   const setSelectedLane = (lane: string) => {
@@ -154,10 +167,11 @@ export function Timeline({
     const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, displayCursor)?.value ?? null
     return `${key === "health" ? `${t(`lane.health.${line.field}`)} ` : ""}${number === null ? "—" : format(number, key, locale)}`
   }).join(" · ")
-  const decorations = useMemo(
-    () => timelineDecorations(lanes, selected?.series ?? [], hour, end),
-    [end, hour, lanes, selected],
-  )
+  const exportSelection = useExportSelection()
+  const decorations = useMemo(() => {
+    const drawn = timelineDecorations(lanes, selected?.series ?? [], hour, end)
+    return exportSelection === null ? drawn : [...drawn, { from: exportSelection.from, to: exportSelection.to, tone: "selection" as const }]
+  }, [exportSelection, end, hour, lanes, selected])
   const threshold = useMemo(() => selected?.threshold === undefined ? undefined : { below: selected.threshold, seriesId: "overall_health" }, [selected])
   const selectedReading = selected === undefined ? "—" : laneReading(selected, displayCursor, locale, t)
   const markerLayer = <>{markers.map((marker, index) => {
@@ -180,7 +194,7 @@ export function Timeline({
       ? <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
       : <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
-  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
+  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-export-from={exportSelection?.from} data-export-to={exportSelection?.to} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2">
       {presentation === "inspector"
         ? <label className="timeline-metric-picker"><span>{t("inspector.timeline")}</span><select aria-label={t("inspector.timeline")} data-testid="timeline-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select></label>
@@ -262,9 +276,18 @@ export function timelineSeriesHelpKey(lane: string, field: string): string {
   return lane === "health" ? `lane.health.${field}.help` : `lane.${lane}.help`
 }
 
+const PERCENT_LANES: ReadonlySet<string> = new Set(["health", "cpu_busy", "cpu_stall", "memory", "io_stall", "cg_cpu_share", "cg_cpu_psi", "cg_memory", "cg_io_psi"])
+
+function laneUnit(key: string, locale: Locale): string {
+  if (PERCENT_LANES.has(key)) return "%"
+  if (key === "oldest_xact" || key === "cg_memory_bytes") return ""
+  if (key === "cg_cpu_cores") return locale === "ru" ? "ядра" : "cores"
+  return locale === "ru" ? "количество" : "count"
+}
+
 function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): readonly RecordedSeries[] {
-  const percent = ["health", "cpu_busy", "cpu_stall", "memory", "io_stall"].includes(lane.key)
-  const unit = percent ? "%" : lane.key === "oldest_xact" ? "" : (locale === "ru" ? "количество" : "count")
+  const percent = PERCENT_LANES.has(lane.key)
+  const unit = laneUnit(lane.key, locale)
   return lane.series.map((line) => ({
     color: line.color,
     helpKey: timelineSeriesHelpKey(lane.key, line.field),
@@ -309,6 +332,8 @@ export function healthEvaluationAtOrBefore(
 function format(number: number, key: string, locale: Locale): string {
   if (key === "oldest_xact") return humanDuration(number * 1_000, locale)
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
+  if (key === "cg_cpu_cores") return humanCores(number, locale)
+  if (key === "cg_memory_bytes") return humanBytes(number, locale)
   return humanPercent(number, locale)
 }
 
@@ -342,14 +367,16 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   const first = marker.findings[0]
   const last = marker.findings.at(-1)
   if (first === undefined || last === undefined) return null
-  const count = marker.findings.length
+  const count = marker.composition.reduce((total, item) => total + item.count, 0)
+  const displayKind = marker.composition[0]?.kind ?? first.kind
   const kindSummary = findingSummary(marker.findings, t)
   const timeSummary = first.timestamp === last.timestamp ? time(first.timestamp) : `${time(first.timestamp)}–${time(last.timestamp)}`
   return <button
-    aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
-    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
+    aria-label={`${kindSummary} · ${timeSummary}`}
+    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${displayKind}` : " marker-aggregate"}`}
     data-marker-composition={marker.composition.map(({ count, kind }) => `${kind}:${count}`).join(" ")}
     data-marker-count={count}
+    data-marker-locator-count={marker.findings.length}
     data-marker-kinds={marker.composition.map(({ kind }) => kind).join(" ")}
     onClick={activate}
     onKeyDown={(event) => {
@@ -361,17 +388,17 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
     type="button"
   >
     {count === 1
-      ? <FindingGlyph kind={first.kind} />
+      ? <FindingGlyph kind={displayKind} />
       : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-4 items-center gap-1 rounded-full border border-line3 bg-s2/95 pl-1.5 pr-1.5 shadow-[0_1px_3px_var(--color-shadow)]">
-        <span className="flex items-center gap-0.5 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ kind }) => <FindingGlyph key={kind} kind={kind} />)}</span>
-        <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(count)}</strong>
+        <span className="flex items-center gap-1 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ count: kindCount, kind }) => <span className="flex items-center gap-0.5" key={kind}>
+          <FindingGlyph kind={kind} />
+          <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(kindCount)}</strong>
+        </span>)}</span>
       </span>}
   </button>
 }
 
-// The badge names the kinds by shape and sizes the cluster by one number; the
-// per-kind split lives in the accessible label and the events console. Counts
-// above 999 stop informing at marker size.
+// Counts above 999 stop informing at marker size.
 function markerCount(count: number): string {
   return count > 999 ? "999+" : String(count)
 }
@@ -393,7 +420,7 @@ export function healthTimelineSeries(rows: readonly DataRow[]): { readonly serie
     { color: "amber", field: "os_health", points: series(rows, "os_health") },
     { color: "violet", field: "postgres_health", points: series(rows, "postgres_health") },
   ]
-  const shown = candidates.filter((candidate) => candidate.points.length !== 0)
+  const shown = candidates.filter((candidate) => candidate.points.some((point) => point.value !== null))
   return { series: shown, ...(shown.some((candidate) => candidate.field === "overall_health") ? { threshold: 50 } : {}) }
 }
 
@@ -417,13 +444,18 @@ export function groupFindings(findings: readonly Finding[], hour: number, end: n
     }
   }
   if (active.length !== 0) stored.push(active)
-  return stored.map((group) => ({
-    composition: FINDING_KINDS.flatMap((kind) => {
-      const count = group.filter((finding) => finding.kind === kind).length
-      return count === 0 ? [] : [{ count, kind }]
-    }),
-    findings: group,
-  }))
+  return stored.map((group) => {
+    const summary = summarizeFindings(group)
+    const counts: Readonly<Record<Finding["kind"], number>> = {
+      event: summary.event,
+      known_bad: summary.knownBad,
+      spike: summary.spike,
+    }
+    return {
+      composition: FINDING_KINDS.flatMap((kind) => counts[kind] === 0 ? [] : [{ count: counts[kind], kind }]),
+      findings: group,
+    }
+  })
 }
 
 const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]

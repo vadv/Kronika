@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use kronika_reader::{Cell, Resolved, Row, Segment};
-use kronika_registry::{ColumnClass, TypeContract, contract};
+use kronika_registry::{ColumnClass, Semantics, TypeContract, contract};
 use serde_json::{Map, Value, json};
 
 use super::projection::chunk_dictionary;
@@ -359,7 +359,9 @@ fn locate_row(
     let mut projection = vec![timestamp];
     projection.extend(row_key::identity_columns(contract));
     let mut resolved = None;
+    let mut hinted = None;
     let mut failure = None;
+    let equivalent_duplicates = contract.semantics == Semantics::EventStream;
     segment.visit_rows(
         locator.type_id,
         &projection,
@@ -373,13 +375,22 @@ fn locate_row(
                 return true;
             }
             match row_key::identity(locator.type_id, &row) {
-                Ok(identity) if identity == locator.identity && resolved.replace(ordinal).is_none() => true,
                 Ok(identity) if identity == locator.identity => {
-                    failure = Some(QueryError::BadLocator(format!(
-                        "detail_locator identity is not unique for segment_id={}, type_id={}, at={}",
-                        locator.segment_id, locator.type_id, locator.at,
-                    )));
-                    false
+                    if ordinal == locator.row_ordinal {
+                        hinted = Some(ordinal);
+                    }
+                    if resolved.is_none() {
+                        resolved = Some(ordinal);
+                        true
+                    } else if equivalent_duplicates {
+                        true
+                    } else {
+                        failure = Some(QueryError::BadLocator(format!(
+                            "detail_locator identity is not unique for segment_id={}, type_id={}, at={}",
+                            locator.segment_id, locator.type_id, locator.at,
+                        )));
+                        false
+                    }
                 }
                 Ok(_) => true,
                 Err(error) => {
@@ -395,7 +406,7 @@ fn locate_row(
     if sink.cancelled() {
         return Err(QueryError::Cancelled);
     }
-    resolved.ok_or_else(|| {
+    hinted.or(resolved).ok_or_else(|| {
         QueryError::BadLocator(format!(
             "no stored row matches detail_locator segment_id={}, type_id={}, at={} and identity",
             locator.segment_id, locator.type_id, locator.at,

@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 
-use super::arguments;
+use super::{Arguments, arguments};
+use kronika_report::ReportTimeRange;
 
 #[test]
 fn command_line_requires_exactly_two_paths() {
@@ -9,8 +10,30 @@ fn command_line_requires_exactly_two_paths() {
         OsString::from("report.html"),
     ])
     .expect("two paths");
-    assert_eq!(parsed.0, std::path::Path::new("incident.zms"));
-    assert_eq!(parsed.1, std::path::Path::new("report.html"));
+    assert_eq!(
+        parsed,
+        Arguments {
+            input: "incident.zms".into(),
+            output: "report.html".into(),
+            visible_range: None,
+        }
+    );
+
+    assert_eq!(
+        arguments([
+            OsString::from("--from"),
+            OsString::from("1000000"),
+            OsString::from("--to-exclusive"),
+            OsString::from("2000000"),
+            OsString::from("incident.zms"),
+            OsString::from("report.html"),
+        ]),
+        Ok(Arguments {
+            input: "incident.zms".into(),
+            output: "report.html".into(),
+            visible_range: ReportTimeRange::new(1_000_000, 2_000_000),
+        })
+    );
 
     assert_eq!(
         arguments(std::iter::empty()),
@@ -27,5 +50,28 @@ fn command_line_requires_exactly_two_paths() {
             OsString::from("extra"),
         ]),
         Err("expected one ZMS input and one HTML output")
+    );
+    assert_eq!(
+        arguments([
+            OsString::from("--from"),
+            OsString::from("2"),
+            OsString::from("--to-exclusive"),
+            OsString::from("1"),
+            OsString::from("incident.zms"),
+            OsString::from("report.html"),
+        ]),
+        Err("report range must use positive JavaScript-safe Unix microseconds")
+    );
+
+    assert_eq!(
+        arguments([
+            OsString::from("--from"),
+            OsString::from("9007199254740992"),
+            OsString::from("--to-exclusive"),
+            OsString::from("9007199254740993"),
+            OsString::from("incident.zms"),
+            OsString::from("report.html"),
+        ]),
+        Err("report range must use positive JavaScript-safe Unix microseconds")
     );
 }

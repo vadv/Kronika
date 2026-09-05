@@ -48,8 +48,8 @@ test("only long PostgreSQL table views own the viewport flex chain", () => {
   assert.match(entityTable, /if \(contentSized && parent\.current !== null\) parent\.current\.scrollTop = 0/)
   assert.match(entityTable, /if \(!contentSized && locatedIndex >= 0\) virtual\.scrollToIndex/)
   assert.match(entityTable, /const contentWidth = width \+ TABLE_END_GUTTER/)
-  assert.match(entityTable, /const virtualHeight = contentSized \? rendered\.length \* ROW_PX : virtual\.getTotalSize\(\)/)
-  assert.match(entityTable, /translateY\(\$\{contentSized \? item\.index \* ROW_PX : item\.start\}px\)/)
+  assert.match(entityTable, /const virtualHeight = virtual\.getTotalSize\(\)/)
+  assert.match(entityTable, /translateY\(\$\{item\.start\}px\)/)
   assert.match(entityTable, /paddingRight: TABLE_END_GUTTER/)
   assert.match(entityTable, /const TABLE_END_GUTTER = 8/)
   assert.match(stylesheet, /\.inspector-body \{[^}]*overflow-x: hidden;[^}]*overflow-y: auto;[^}]*scrollbar-gutter: stable;/s)
@@ -67,7 +67,7 @@ test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.match(entityTable, /const \[horizontalRailHeight, setHorizontalRailHeight\] = useState\(0\)/)
   assert.match(entityTable, /root\.offsetHeight - root\.clientHeight/)
   assert.match(entityTable, /new ResizeObserver\(measureRail\)/)
-  assert.match(entityTable, /contentSized \? \(rendered\.length === 0 \? 72 : Math\.min\(310, headHeight \+ rendered\.length \* ROW_PX\)\) \+ horizontalRailHeight/)
+  assert.match(entityTable, /contentSized \? \(rendered\.length === 0 \? 72 : Math\.min\(310, headHeight \+ rendered\.length \* rowHeight\)\) \+ horizontalRailHeight/)
 })
 
 test("the shared Chart Inspector uses one compact metric selector and one body scroll axis", async () => {

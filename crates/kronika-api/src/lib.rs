@@ -5,7 +5,7 @@ use kronika_query::{
     EventsRepresentation, Filter, HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, HourPart,
     HourRequest, HourSeriesRequest, IndexRequest, MAX_EVENTS_LIMIT, MAX_EVENTS_WINDOW_MICROS,
     NormalizedRanking, Order, QueryError, QueryRequest, RelationGroup, RowsRequest, SegmentRequest,
-    SnapshotRequest, TimeRange, Window,
+    SnapshotRequest, StatementScope, TimeRange, Window,
 };
 
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -62,6 +62,7 @@ pub struct HeatmapRequest {
     top: usize,
     group: Vec<String>,
     type_id: Option<u32>,
+    scope: StatementScope,
 }
 
 impl Route {
@@ -109,6 +110,7 @@ impl HeatmapRequest {
                     group: self.group,
                     type_id: self.type_id,
                 },
+                scope: self.scope,
             }],
         })
     }
@@ -206,6 +208,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut cursor = None;
     let mut search = None;
     let mut first_match = None;
+    let mut scope = None;
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
     let mut type_id = None;
@@ -277,6 +280,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 cursor = Some(value);
             }
             "search" if search.is_none() => search = Some(snapshot_search(raw_value)?),
+            "scope" if scope.is_none() => scope = Some(statement_scope(raw_value)?),
             "first_match" if first_match.is_none() => {
                 if raw_value != "1" {
                     return Err(RouteError::BadParameter("first_match".to_owned()));
@@ -324,6 +328,17 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || !by.is_empty()
         || direction.is_some()
         || group.is_some();
+    let scope = scope.unwrap_or_default();
+    if scope == StatementScope::Workload
+        && (sections.len() != 1
+            || !scope.allows_rows(&sections[0])
+            || !paged
+            || first_match
+            || row_ordinal.is_some()
+            || group.is_some())
+    {
+        return Err(RouteError::BadParameter("scope".to_owned()));
+    }
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
     Ok(SnapshotRequest {
         segment_id,
@@ -341,6 +356,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         filters,
         type_id,
         row_ordinal,
+        scope,
     })
 }
 
@@ -394,6 +410,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
     let mut top = None;
     let mut group: Vec<String> = Vec::new();
     let mut type_id = None;
+    let mut scope = None;
     for (raw_name, raw_value) in pairs(query)? {
         let name = decoded("parameter", raw_name, true)?;
         let value = decoded(&name, raw_value, true)?;
@@ -406,6 +423,7 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
                 }
                 section = Some(value);
             }
+            "scope" if scope.is_none() => scope = Some(statement_scope(&value)?),
             "field" => {
                 if value.is_empty() || fields.contains(&value) || fields.len() >= MAX_HEATMAP_FIELDS
                 {
@@ -444,7 +462,24 @@ fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
         top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
         group,
         type_id,
+        scope: scope.unwrap_or_default(),
     })
+}
+
+/// Only the `postgresql_summary` series folds statements, so only it accepts a scope.
+fn summary_scope(
+    scope: Option<StatementScope>,
+    section: Option<&str>,
+) -> Result<StatementScope, RouteError> {
+    let scope = scope.unwrap_or_default();
+    if !scope.allows_series(section) {
+        return Err(RouteError::BadParameter("scope".to_owned()));
+    }
+    Ok(scope)
+}
+
+fn statement_scope(value: &str) -> Result<StatementScope, RouteError> {
+    StatementScope::parse(value).ok_or_else(|| RouteError::BadParameter("scope".to_owned()))
 }
 
 fn parse_events(query: &str) -> Result<EventsQuery, RouteError> {
@@ -544,8 +579,10 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     let mut segments = None;
     let mut active = None;
     let mut saw_part = false;
+    let mut scope = None;
     for (name, value) in extras {
         match name.as_str() {
+            "scope" if scope.is_none() => scope = Some(statement_scope(&value)?),
             "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
             "to" if window.to.is_none() => window.to = Some(number("to", &value)?),
             "section" if section.is_none() => {
@@ -578,6 +615,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
         }
     }
     let window = valid_window(window)?;
+    let scope = summary_scope(scope, section.as_deref())?;
     let Some(section) = section else {
         if fields.is_empty() && filters.is_empty() && type_id.is_none() && group.is_none() {
             if part == HourPart::Lanes && segments.is_none() {
@@ -626,6 +664,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
             filters,
             type_id,
             group,
+            scope,
         }),
         part,
         segments,

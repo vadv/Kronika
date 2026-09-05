@@ -2,6 +2,7 @@
 //! segments. Raw and unlisted metrics stay only in ZMS/WAL.
 
 mod build;
+mod decode;
 mod detect;
 mod file;
 mod findings;

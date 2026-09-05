@@ -15,6 +15,7 @@ test("intensity uses square-root steps with a distinct zero", () => {
 test("collapsing a view folds the tail rows into the others band", () => {
   const view = {
     cumulative: true,
+    summary: "sum",
     intervals: [{ start: HOUR, end: HOUR + 3_600_000_000 - 1 }],
     rows: [
       { typeId: "1", identity: ["a"], labels: {}, total: 100, cells: [2] },
@@ -33,6 +34,30 @@ test("collapsing a view folds the tail rows into the others band", () => {
   assert.equal(collapsed.others.total, 100)
   assert.deepEqual(collapsed.others.cells, [2])
   assert.equal(collapseHeatmapView(view, 3), view)
+})
+
+test("compact RSS adds the hidden means using their shared snapshot denominator", () => {
+  const view = {
+    cumulative: false,
+    summary: "mean",
+    intervals: [],
+    rows: [
+      { typeId: "1", identity: ["first"], labels: {}, total: 600, cells: [800, 400] },
+      { typeId: "1", identity: ["second"], labels: {}, total: 300, cells: [600, 0] },
+      { typeId: "1", identity: ["third"], labels: {}, total: 100, cells: [0, 200] },
+    ],
+    totals: { total: 1050, cells: [1500, 600] },
+    others: { total: 50, cells: [100, 0] },
+    othersCount: 1,
+    entityCount: 4,
+  }
+  const collapsed = collapseHeatmapView(view, 1)
+  assert.equal(collapsed.others.total, 450)
+  assert.deepEqual(collapsed.others.cells, [700, 200])
+  assert.equal(collapsed.rows[0].total + collapsed.others.total, view.totals.total)
+  assert.equal(collapseHeatmapView({ ...view, summary: "max" }, 1).others.total, 300)
+  assert.equal(collapseHeatmapView({ ...view, rows: view.rows.map((row) => ({ ...row, total: null })), others: { cells: [null, null], total: null } }, 1).others.total, null)
+  assert.equal(collapseHeatmapView({ ...view, rows: view.rows.map((row) => ({ ...row, total: 0 })), others: { cells: [0, 0], total: 0 } }, 1).others.total, 0)
 })
 
 test("cut scales fall back to raw counts without scale metadata", async () => {

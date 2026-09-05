@@ -1,3 +1,4 @@
+use crate::StatementScope;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -107,6 +108,7 @@ fn snapshot_request(section: &str, fields: &[&str]) -> SnapshotRequest {
         filters: Vec::new(),
         type_id: None,
         row_ordinal: None,
+        scope: StatementScope::All,
     }
 }
 
@@ -892,6 +894,7 @@ fn request() -> SnapshotRequest {
         }],
         type_id: Some(1_002_006),
         row_ordinal: None,
+        scope: StatementScope::All,
     }
 }
 
@@ -1384,4 +1387,69 @@ fn lifetime_cpu_time_sums_the_raw_counters_and_withholds_a_missing_half() {
     assert_eq!(scheduled_ticks(&row(Some(1), None)), Value::Null);
     assert_eq!(scheduled_ticks(&row(None, Some(1))), Value::Null);
     assert_eq!(scheduled_ticks(&row(Some(i64::MAX), Some(1))), Value::Null);
+}
+
+#[test]
+fn a_workload_scope_hides_collector_statements_and_counts_them() {
+    const MONITOR: &str = "/* kronika:1.0.0 pg_sources.rs */ select monitor";
+    let payload = fixture_payload(|interner, buffers| {
+        let application = StrId(
+            interner
+                .intern(b"select 42")
+                .expect("intern application text")
+                .get(),
+        );
+        let collector = StrId(
+            interner
+                .intern(MONITOR.as_bytes())
+                .expect("intern collector text")
+                .get(),
+        );
+        for dbid in 1..=3 {
+            buffers
+                .push(statement(dbid, Some(application)))
+                .expect("application row fits");
+        }
+        for dbid in 4..=5 {
+            buffers
+                .push(statement(dbid, Some(collector)))
+                .expect("collector row fits");
+        }
+        buffers.push(statement(6, None)).expect("textless row fits");
+    });
+    let mut request = snapshot_request("pg_stat_statements", &["dbid", "query"]);
+    request.page_size = Some(10);
+    request.scope = StatementScope::Workload;
+    let records = snapshot_records(&payload, request.clone());
+
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        4,
+        "three application rows and the textless row stay"
+    );
+    assert!(rows.iter().all(|row| row["values"][1] != json!(MONITOR)));
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("page trailer");
+    assert_eq!(page["eligible"], json!("4"));
+    assert_eq!(page["excluded"], json!("2"));
+
+    request.scope = StatementScope::All;
+    let records = snapshot_records(&payload, request.clone());
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("page trailer");
+    assert_eq!(page["eligible"], json!("6"));
+    assert_eq!(page["excluded"], json!("0"));
+
+    // A cursor minted under one scope is refused under the other.
+    let all = snapshot_binding(&request, None);
+    request.scope = StatementScope::Workload;
+    assert_ne!(all, snapshot_binding(&request, None));
 }

@@ -185,9 +185,10 @@ fn hour_series_debug_keeps_the_validator_shape_name() {
         filters: Vec::new(),
         type_id: Some(1),
         group: None,
+        scope: crate::StatementScope::All,
     };
     assert_eq!(
         format!("{request:?}"),
-        "SeriesRequest { section: \"os_cpu\", fields: [\"user\"], filters: [], type_id: Some(1), group: None }"
+        "SeriesRequest { section: \"os_cpu\", fields: [\"user\"], filters: [], type_id: Some(1), group: None, scope: All }"
     );
 }

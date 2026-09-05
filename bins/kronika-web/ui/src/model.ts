@@ -221,10 +221,6 @@ export function estimatedRows(cell: Cell, locale: Locale, t: Translate): TimePai
   }
 }
 
-function decimals(value: number, locale: Locale, digits: number): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
-}
-
 function rowPlural(value: bigint, locale: Locale): "one" | "few" | "many" {
   if (locale === "en") return value === 1n ? "one" : "many"
   const last = value % 10n, lastTwo = value % 100n

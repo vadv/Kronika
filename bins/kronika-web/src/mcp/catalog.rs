@@ -131,6 +131,8 @@ struct HeatmapItemResult {
     ranking: NormalizedRanking,
     coverage: HeatmapCoverage,
     class: String,
+    /// Summary reduction: `sum`, `max`, or `mean`.
+    summary: String,
     unit: Option<String>,
     entities: Vec<HeatmapEntity>,
     totals_total: Option<f64>,

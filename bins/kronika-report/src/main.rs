@@ -2,7 +2,7 @@
 
 mod cli;
 
-use kronika_report as _;
+use kronika_report::ReportTimeRange;
 #[cfg(test)]
 use serde_json as _;
 use std::ffi::OsString;
@@ -13,29 +13,54 @@ use {
     kronika_query as _, kronika_reader as _, kronika_store as _, tempfile as _,
 };
 
-const USAGE: &str = "usage: kronika-report <input>.zms <output>.html";
+const USAGE: &str = "usage: kronika-report [--from <unix_microseconds> --to-exclusive <unix_microseconds>] <input>.zms <output>.html";
 
-fn arguments(
-    values: impl IntoIterator<Item = OsString>,
-) -> Result<(PathBuf, PathBuf), &'static str> {
-    let mut values = values.into_iter();
-    let input = values.next().ok_or("missing standalone ZMS input")?;
-    let output = values.next().ok_or("missing HTML output")?;
-    if values.next().is_some() {
-        return Err("expected one ZMS input and one HTML output");
-    }
-    Ok((input.into(), output.into()))
+#[derive(Debug, PartialEq, Eq)]
+struct Arguments {
+    input: PathBuf,
+    output: PathBuf,
+    visible_range: Option<ReportTimeRange>,
+}
+
+fn arguments(values: impl IntoIterator<Item = OsString>) -> Result<Arguments, &'static str> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let (input, output, visible_range) = match values.as_slice() {
+        [input, output] => (input, output, None),
+        [from_flag, from, to_flag, to, input, output]
+            if from_flag == "--from" && to_flag == "--to-exclusive" =>
+        {
+            let from = from
+                .to_str()
+                .and_then(|value| value.parse::<i64>().ok())
+                .ok_or("invalid --from Unix microseconds")?;
+            let to_exclusive = to
+                .to_str()
+                .and_then(|value| value.parse::<i64>().ok())
+                .ok_or("invalid --to-exclusive Unix microseconds")?;
+            let range = ReportTimeRange::new(from, to_exclusive)
+                .ok_or("report range must use positive JavaScript-safe Unix microseconds")?;
+            (input, output, Some(range))
+        }
+        [] => return Err("missing standalone ZMS input"),
+        [_] => return Err("missing HTML output"),
+        _ => return Err("expected one ZMS input and one HTML output"),
+    };
+    Ok(Arguments {
+        input: PathBuf::from(input.as_os_str()),
+        output: PathBuf::from(output.as_os_str()),
+        visible_range,
+    })
 }
 
 fn main() -> ExitCode {
-    let (input, output) = match arguments(std::env::args_os().skip(1)) {
-        Ok(paths) => paths,
+    let arguments = match arguments(std::env::args_os().skip(1)) {
+        Ok(arguments) => arguments,
         Err(error) => {
             eprintln!("kronika-report: {error}\n{USAGE}");
             return ExitCode::FAILURE;
         }
     };
-    match cli::generate(&input, &output) {
+    match cli::generate(&arguments.input, &arguments.output, arguments.visible_range) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("kronika-report: {error}");

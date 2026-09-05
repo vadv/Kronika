@@ -10,8 +10,8 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 use serde_json::{Map, Value, json};
 
 use super::{
-    EventDataRow, EventsQuery, EventsRepresentation, EventsResult, OccurrenceAccumulator,
-    execute_events,
+    EventDataRow, EventSource, EventStat, EventsQuery, EventsRepresentation, EventsResult,
+    OccurrenceAccumulator, execute_events, group::EventGroups,
 };
 use crate::{
     CapturedCatalog, DatasetListing, DatasetSegment, FinishedDataset, QueryContext, QueryDataset,
@@ -119,6 +119,25 @@ fn retained_row(ordinal: u64, timestamp: i64) -> EventDataRow {
     }
 }
 
+fn pgbouncer_row(ordinal: u64, timestamp: i64, host: &str) -> EventDataRow {
+    let values = object(json!({
+        "source_file": "/var/log/pgbouncer.log",
+        "level": 3,
+        "database": "(nodb)",
+        "username": "(nouser)",
+        "host": host,
+        "text": "no such database: nope",
+    }));
+    EventDataRow {
+        segment_id: 7,
+        type_id: 2_100_001,
+        row_ordinal: ordinal,
+        timestamp,
+        identity: values.clone(),
+        values,
+    }
+}
+
 #[derive(Debug)]
 struct EmptyDataset;
 
@@ -201,6 +220,49 @@ fn typed_events_execution_returns_the_result_and_observes_cancellation() {
 }
 
 #[test]
+fn pgbouncer_group_uses_the_message_title_and_shared_connection_context() {
+    let mut groups = EventGroups::new(SEGMENT_ID);
+    groups.observe(
+        EventSource::Pgbouncer,
+        pgbouncer_row(1, SEGMENT_ID + 10, "10.0.0.7"),
+    );
+    groups.observe(
+        EventSource::Pgbouncer,
+        pgbouncer_row(2, SEGMENT_ID + 20, "10.0.0.7"),
+    );
+    let groups = groups.finish(None).expect("PgBouncer groups");
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].label.as_deref(), Some("no such database: nope"));
+    assert_eq!(groups[0].count.to_bits(), 2.0_f64.to_bits());
+    assert_eq!(
+        groups[0].stat,
+        EventStat::Pgbouncer {
+            level: 3.0,
+            database: Some("(nodb)".to_owned()),
+            username: Some("(nouser)".to_owned()),
+            host: Some("10.0.0.7".to_owned()),
+            source_file: Some("/var/log/pgbouncer.log".to_owned()),
+        }
+    );
+
+    let mut mixed = EventGroups::new(SEGMENT_ID);
+    mixed.observe(
+        EventSource::Pgbouncer,
+        pgbouncer_row(1, SEGMENT_ID + 10, "10.0.0.7"),
+    );
+    mixed.observe(
+        EventSource::Pgbouncer,
+        pgbouncer_row(2, SEGMENT_ID + 20, "10.0.0.8"),
+    );
+    let mixed = mixed.finish(None).expect("mixed PgBouncer group");
+    let EventStat::Pgbouncer { host, .. } = &mixed[0].stat else {
+        panic!("PgBouncer stat")
+    };
+    assert_eq!(host, &None);
+}
+
+#[test]
 fn occurrence_retention_is_limit_plus_one_and_keeps_semantic_order() {
     let query = EventsQuery::normalize(
         TimeRange::new(SEGMENT_ID, SEGMENT_ID + 1_000_000).expect("valid event range"),
@@ -243,7 +305,7 @@ fn occurrence_retention_is_limit_plus_one_and_keeps_semantic_order() {
     let EventsResult::Occurrences {
         occurrences,
         truncated,
-    } = accumulator.finish().expect("unique retained locators")
+    } = accumulator.finish()
     else {
         panic!("occurrence result");
     };
@@ -298,7 +360,7 @@ fn typed_execution_orders_timestamp_then_requested_source_and_truncates() {
 }
 
 #[test]
-fn typed_execution_rejects_an_ambiguous_retained_locator() {
+fn typed_execution_keeps_content_equivalent_event_occurrences() {
     let fixture = finished_fixture(
         &[
             (SEGMENT_ID + 10, "duplicate"),
@@ -310,16 +372,42 @@ fn typed_execution_rejects_an_ambiguous_retained_locator() {
         TimeRange::new(SEGMENT_ID, SEGMENT_ID + 100).expect("valid event range"),
         Some(vec!["pg_log_errors".to_owned()]),
         EventsRepresentation::Occurrences,
-        1,
+        2,
     )
     .expect("valid event query");
 
-    assert!(matches!(
-        execute_events(&fixture.context, query, &Control(false)),
-        Err(QueryError::BadLocator(message))
-            if message == format!(
-                "cannot emit detail_ref: pg_log_errors has a non-unique identity at timestamp {} in segment {SEGMENT_ID}",
-                SEGMENT_ID + 10,
-            )
-    ));
+    let EventsResult::Occurrences {
+        occurrences,
+        truncated,
+    } = execute_events(&fixture.context, query, &Control(false)).expect("duplicate events")
+    else {
+        panic!("occurrence result");
+    };
+    assert!(!truncated);
+    assert_eq!(occurrences.len(), 2);
+    assert_ne!(
+        occurrences[0].detail_locator.row_ordinal,
+        occurrences[1].detail_locator.row_ordinal,
+    );
+    assert_eq!(
+        occurrences[0].detail_locator.identity,
+        occurrences[1].detail_locator.identity,
+    );
+
+    let query = EventsQuery::normalize(
+        TimeRange::new(SEGMENT_ID, SEGMENT_ID + 100).expect("valid event range"),
+        Some(vec!["pg_log_errors".to_owned()]),
+        EventsRepresentation::Groups,
+        2,
+    )
+    .expect("valid event query");
+    let EventsResult::Groups { groups, truncated } =
+        execute_events(&fixture.context, query, &Control(false)).expect("duplicate event group")
+    else {
+        panic!("group result");
+    };
+    assert!(!truncated);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].count.to_bits(), 2.0_f64.to_bits());
+    assert_eq!(groups[0].representative_ts, SEGMENT_ID + 10);
 }

@@ -22,7 +22,6 @@ struct Summary {
     representative: EventDataRow,
     representative_order: RowOrder,
     representative_score: f64,
-    duplicate_representative: bool,
     first_ts: i64,
     last_ts: i64,
     minutes: Vec<f64>,
@@ -36,7 +35,6 @@ impl Summary {
             representative: row,
             representative_order: order,
             representative_score: score,
-            duplicate_representative: false,
             first_ts: timestamp,
             last_ts: timestamp,
             minutes: vec![0.0; MINUTE_COLUMNS],
@@ -49,32 +47,21 @@ impl Summary {
 
     fn observe_earliest(&mut self, row: EventDataRow, order: RowOrder, from: i64, weight: f64) {
         self.observe_values(row.timestamp, from, weight);
-        if same_locator(&self.representative, &row) {
-            self.duplicate_representative = true;
-        }
         if order < self.representative_order {
             self.representative = row;
             self.representative_order = order;
-            self.duplicate_representative = false;
         }
     }
 
     fn observe_first(&mut self, row: &EventDataRow, from: i64, weight: f64) {
         self.observe_values(row.timestamp, from, weight);
-        if same_locator(&self.representative, row) {
-            self.duplicate_representative = true;
-        }
     }
 
     fn observe_physical(&mut self, row: EventDataRow, order: RowOrder, from: i64, weight: f64) {
         self.observe_values(row.timestamp, from, weight);
-        if same_locator(&self.representative, &row) {
-            self.duplicate_representative = true;
-        }
         if order.encounter < self.representative_order.encounter {
             self.representative = row;
             self.representative_order = order;
-            self.duplicate_representative = false;
         }
     }
 
@@ -87,15 +74,11 @@ impl Summary {
         score: f64,
     ) {
         self.observe_values(row.timestamp, from, weight);
-        if same_locator(&self.representative, &row) {
-            self.duplicate_representative = true;
-        }
         let score_order = score.total_cmp(&self.representative_score);
         if score_order.is_gt() || (score_order.is_eq() && order < self.representative_order) {
             self.representative = row;
             self.representative_order = order;
             self.representative_score = score;
-            self.duplicate_representative = false;
         }
     }
 
@@ -125,10 +108,7 @@ impl Summary {
         tier: EventTier,
         label: Option<String>,
         stat: EventStat,
-    ) -> Result<EventGroup, QueryError> {
-        if self.duplicate_representative {
-            return Err(non_unique_locator(source, &self.representative));
-        }
+    ) -> EventGroup {
         let representative_ts = self.representative.timestamp;
         let detail_locator = super::row_key::detail_locator(
             source.as_str(),
@@ -138,7 +118,7 @@ impl Summary {
             self.representative.row_ordinal,
             self.representative.identity,
         );
-        Ok(EventGroup {
+        EventGroup {
             key,
             section: source.as_str().to_owned(),
             tier,
@@ -150,24 +130,8 @@ impl Summary {
             minutes: self.minutes,
             stat,
             detail_locator,
-        })
+        }
     }
-}
-
-fn same_locator(left: &EventDataRow, right: &EventDataRow) -> bool {
-    left.segment_id == right.segment_id
-        && left.type_id == right.type_id
-        && left.timestamp == right.timestamp
-        && left.identity == right.identity
-}
-
-fn non_unique_locator(source: EventSource, row: &EventDataRow) -> QueryError {
-    QueryError::BadLocator(format!(
-        "cannot emit detail_ref: {} has a non-unique identity at timestamp {} in segment {}",
-        source.as_str(),
-        row.timestamp,
-        row.segment_id,
-    ))
 }
 
 enum SharedText {
@@ -259,6 +223,9 @@ struct LifecycleState {
 struct PgbouncerState {
     summary: Summary,
     database: SharedText,
+    username: SharedText,
+    host: SharedText,
+    source_file: SharedText,
 }
 
 pub(super) struct EventGroups {
@@ -470,11 +437,6 @@ impl EventGroups {
         }
 
         let join = lock_join(&row);
-        if let Some(state) = &mut self.standalone_acquired
-            && same_locator(&state.summary.representative, &row)
-        {
-            state.summary.duplicate_representative = true;
-        }
         let holders = self
             .latest_waits
             .get(&join)
@@ -525,15 +487,27 @@ impl EventGroups {
         match self.pgbouncer.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let database = SharedText::new(text(&row, "database"));
+                let username = SharedText::new(text(&row, "username"));
+                let host = SharedText::new(text(&row, "host"));
+                let source_file = SharedText::new(text(&row, "source_file"));
                 entry.insert(PgbouncerState {
                     summary: Summary::new(row, order, self.from, 1.0, 0.0),
                     database,
+                    username,
+                    host,
+                    source_file,
                 });
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let state = entry.get_mut();
                 let database = text(&row, "database");
+                let username = text(&row, "username");
+                let host = text(&row, "host");
+                let source_file = text(&row, "source_file");
                 state.database.observe(database.as_deref());
+                state.username.observe(username.as_deref());
+                state.host.observe(host.as_deref());
+                state.source_file.observe(source_file.as_deref());
                 state.summary.observe_earliest(row, order, self.from, 1.0);
             }
         }
@@ -547,7 +521,7 @@ impl EventGroups {
             self.slow,
             self.autovacuum,
             threshold_ms,
-        )?;
+        );
         finish_other_groups(
             &mut entries,
             self.checkpoints,
@@ -556,7 +530,7 @@ impl EventGroups {
             self.standalone_acquired,
             self.lifecycle,
             self.pgbouncer,
-        )?;
+        );
 
         let collator = event_collator()?;
         entries.sort_by(|left, right| {
@@ -600,7 +574,7 @@ fn finish_primary_groups(
     slow: HashMap<String, SlowState>,
     autovacuum: HashMap<String, AutovacuumState>,
     threshold_ms: Option<f64>,
-) -> Result<(), QueryError> {
+) {
     for (key, state) in errors {
         let severity = number(&state.summary.representative, "severity").unwrap_or(0.0);
         let category = number(&state.summary.representative, "category");
@@ -619,7 +593,7 @@ fn finish_primary_groups(
                 database: state.database.finish(),
                 username: state.username.finish(),
             },
-        )?);
+        ));
     }
     for (key, state) in slow {
         let max_ms = number(&state.summary.representative, "max_duration_ms").unwrap_or(0.0);
@@ -634,7 +608,7 @@ fn finish_primary_groups(
                 total_ms: state.total_ms,
                 threshold_ms,
             },
-        )?);
+        ));
     }
     for (key, state) in autovacuum {
         let analyze = number(&state.summary.representative, "kind") == Some(1.0);
@@ -652,9 +626,8 @@ fn finish_primary_groups(
                 tuples_removed: state.tuples_removed,
                 tuples_dead: state.tuples_dead,
             },
-        )?);
+        ));
     }
-    Ok(())
 }
 
 fn finish_other_groups(
@@ -665,7 +638,7 @@ fn finish_other_groups(
     standalone_acquired: Option<LockState>,
     lifecycle: Vec<LifecycleState>,
     pgbouncer: HashMap<String, PgbouncerState>,
-) -> Result<(), QueryError> {
+) {
     if let Some(state) = checkpoints {
         let count = state.starts.max(state.completes);
         entries.push(state.summary.finish(
@@ -681,7 +654,7 @@ fn finish_other_groups(
                 max_sync_ms: state.max_sync_ms,
                 buffers: state.buffers,
             },
-        )?);
+        ));
     }
     if let Some(state) = checkpoint_warnings {
         entries.push(state.summary.finish(
@@ -693,13 +666,13 @@ fn finish_other_groups(
             EventStat::CheckpointWarning {
                 seconds_apart: state.seconds_apart,
             },
-        )?);
+        ));
     }
     for (holders, state) in locks {
-        entries.push(state.finish(holders, false)?);
+        entries.push(state.finish(holders, false));
     }
     if let Some(state) = standalone_acquired {
-        entries.push(state.finish(String::new(), true)?);
+        entries.push(state.finish(String::new(), true));
     }
     for state in lifecycle {
         let row_ordinal = state.summary.representative.row_ordinal;
@@ -715,23 +688,26 @@ fn finish_other_groups(
                 signal: state.signal,
                 mode: state.mode,
             },
-        )?);
+        ));
     }
     for (key, state) in pgbouncer {
         let level = number(&state.summary.representative, "level").unwrap_or(3.0);
+        let label = text(&state.summary.representative, "text");
         entries.push(state.summary.finish(
             format!("pgbouncer:{key}"),
             EventSource::Pgbouncer,
             None,
             pgbouncer_tier(level),
-            None,
+            label,
             EventStat::Pgbouncer {
                 level,
                 database: state.database.finish(),
+                username: state.username.finish(),
+                host: state.host.finish(),
+                source_file: state.source_file.finish(),
             },
-        )?);
+        ));
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -805,7 +781,7 @@ impl LockState {
         }
     }
 
-    fn finish(self, holders: String, acquired: bool) -> Result<EventGroup, QueryError> {
+    fn finish(self, holders: String, acquired: bool) -> EventGroup {
         let mut targets = self.targets.into_iter().collect::<Vec<_>>();
         targets.sort_by_key(|(_target, order)| *order);
         let targets = targets.into_iter().map(|(target, _order)| target).collect();

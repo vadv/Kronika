@@ -11,6 +11,9 @@ use sha2::{Digest as _, Sha256};
 use crate::encoding::etag_matches;
 use crate::route::Route;
 
+#[cfg(test)]
+mod tests;
+
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CachePolicy {

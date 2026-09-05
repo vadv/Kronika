@@ -8,6 +8,8 @@ use cucumber::given;
 use kronika_format::JOURNAL_MAGIC;
 use std::path::PathBuf;
 
+const FIXTURE_PATH: &str = "{fixture}";
+
 fn fixtures_dir() -> PathBuf {
     std::env::var("KRONIKA_FIXTURES").map_or_else(|_unset| PathBuf::from("fixtures"), PathBuf::from)
 }
@@ -18,7 +20,16 @@ fn collector_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
         let [key, value] = row.as_slice() else {
             anyhow::bail!("a settings row needs a variable and a value, got {row:?}");
         };
-        world.env.push((key.clone(), value.clone()));
+        let value = if value.contains(FIXTURE_PATH) {
+            let fixture = world
+                .fixture
+                .as_ref()
+                .context("a filesystem fixture exists")?;
+            value.replace(FIXTURE_PATH, &fixture.path().to_string_lossy())
+        } else {
+            value.clone()
+        };
+        world.env.push((key.clone(), value));
     }
     let root = world
         .prepared_root
@@ -111,6 +122,29 @@ fn demo_uses_postgres(world: &mut BddWorld) -> Result<()> {
     world
         .demo_env
         .push(("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN".to_owned(), dsn));
+    Ok(())
+}
+
+#[given("the demo workload reaches PostgreSQL through PgBouncer")]
+fn demo_uses_pgbouncer(world: &mut BddWorld) -> Result<()> {
+    let workload_dsn = world
+        .pgbouncer
+        .as_ref()
+        .context("a PgBouncer was started")?
+        .workload_dsn
+        .clone();
+    let direct_dsn = world
+        .postgres
+        .as_ref()
+        .context("a PostgreSQL was started")?
+        .dsn
+        .clone();
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DSN".to_owned(), workload_dsn));
+    world
+        .demo_env
+        .push(("KRONIKA_DEMO_WORKLOAD_DIRECT_DSN".to_owned(), direct_dsn));
     Ok(())
 }
 

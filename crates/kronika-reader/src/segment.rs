@@ -13,7 +13,7 @@ use kronika_store::CatalogSummary;
 use kronika_store::{ActiveSnapshot, LocalDir};
 
 use crate::SegmentKind;
-use crate::dictionary::Dictionary;
+use crate::dictionary::{Dictionary, match_prefix};
 use crate::error::ReaderError;
 #[cfg(feature = "posix")]
 use crate::{SegmentRef, SegmentSource};
@@ -527,6 +527,30 @@ impl Segment {
         Ok(dictionary)
     }
 
+    /// Match the stored bytes of strings and blobs without retaining their values.
+    ///
+    /// # Errors
+    /// Returns an error when a dictionary body fails its checksum or codec.
+    pub fn dictionary_ids_with_prefix(&self, prefix: &[u8]) -> Result<HashSet<u64>, ReaderError> {
+        let mut matches = HashSet::new();
+        match &self.source {
+            Source::Finished { bytes, catalog } => {
+                match_dictionary_prefix(catalog, prefix, &mut matches, |entry| {
+                    finished_body(bytes, entry)
+                })?;
+            }
+            #[cfg(feature = "posix")]
+            Source::Active(snapshot) => {
+                for (part_index, part) in snapshot.parts().iter().enumerate() {
+                    match_dictionary_prefix(&part.catalog, prefix, &mut matches, |entry| {
+                        active_body(snapshot, part_index, entry)
+                    })?;
+                }
+            }
+        }
+        Ok(matches)
+    }
+
     /// Decode each dictionary body once while retaining only `ids`.
     ///
     /// This is intended for product queries that have already collected their
@@ -640,6 +664,28 @@ fn decode_selected_dictionary_catalog(
             dictionary
                 .decode_selected(type_id, body(entry)?, ids, u64::from(entry.rows))
                 .map_err(|source| ReaderError::Section { type_id, source })?;
+        }
+    }
+    Ok(())
+}
+
+fn match_dictionary_prefix(
+    catalog: &Catalog,
+    prefix: &[u8],
+    matches: &mut HashSet<u64>,
+    mut body: impl FnMut(&Entry) -> Result<VerifiedSection, ReaderError>,
+) -> Result<(), ReaderError> {
+    for entry in &catalog.entries {
+        if matches!(entry.type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
+            let type_id = entry.type_id;
+            match_prefix(
+                type_id,
+                body(entry)?,
+                u64::from(entry.rows),
+                prefix,
+                matches,
+            )
+            .map_err(|source| ReaderError::Section { type_id, source })?;
         }
     }
     Ok(())

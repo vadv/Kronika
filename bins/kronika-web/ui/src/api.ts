@@ -1,7 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHeatmapRecords, bundledFixtureHour, bundledFixtureRange } from "./fixture"
-import type { HeatmapBand, HeatmapView, HeatmapViewRow } from "./heatmap"
+import type { HeatmapBand, HeatmapSummary, HeatmapView, HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -143,6 +143,8 @@ export interface HourData {
 export interface SnapshotRows {
   readonly logicalName: string
   readonly eligible: number
+  /// Rows the requested statement scope kept off the page.
+  readonly excluded: number
   readonly returned: number
   readonly hasMore: boolean
   readonly truncated: boolean
@@ -210,6 +212,15 @@ export interface LanePoint {
 export interface LaneContext {
   readonly segmentId: string
   readonly postgresqlIntervalSeconds: number | null
+  // instance_metadata.environment of the segment: 0 machine, 1 container.
+  readonly environment: number | null
+}
+
+export type RecordedEnvironment = "machine" | "container"
+
+export function recordedEnvironmentFromContexts(contexts: readonly LaneContext[]): RecordedEnvironment | null {
+  const stated = contexts.filter((context) => context.environment !== null).at(-1)
+  return stated === undefined ? null : stated.environment === 0 ? "machine" : stated.environment === 1 ? "container" : null
 }
 
 export interface TimelineLanes {
@@ -232,6 +243,11 @@ export interface TimelineData {
   readonly syntheticDemo?: boolean
   readonly postgresqlConfigured?: boolean
   readonly postgresqlPresent?: boolean
+}
+
+export interface TimelineRange {
+  readonly from: number
+  readonly toExclusive: number
 }
 
 export interface ResolvedLocator {
@@ -304,7 +320,12 @@ export interface SnapshotRequestGroup {
   readonly requests: readonly SectionRequest[]
 }
 
-export async function loadTimeline(start: number | null, signal: AbortSignal, onBytes?: (received: number) => void): Promise<TimelineData> {
+export async function loadTimeline(
+  start: number | null,
+  signal: AbortSignal,
+  onBytes?: (received: number) => void,
+  visibleRange: TimelineRange | null = null,
+): Promise<TimelineData> {
   const range = bundledFixtureRange()
   const requested = floorHour(start ?? range?.from ?? 0)
   const fixture = bundledFixtureHour(requested)
@@ -321,16 +342,17 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
     }
   }
   const query = new URLSearchParams({ part: "base" })
-  if (start !== null) {
-    query.set("from", String(start))
-    query.set("to", String(start + 3_600_000_000 - 1))
+  if (start !== null || visibleRange !== null) {
+    const window = timelineWindow(requested, visibleRange)
+    query.set("from", String(window.from))
+    query.set("to", String(window.toExclusive - 1))
   }
   const records = await request(`/api/hour?${query}`, signal, onBytes)
   const header = records.find((record) => record.record === "hour")
   const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
     ? floorHour(Date.now() * 1_000)
-    : integer(header.from, "hour start")
+    : floorHour(integer(header.from, "hour start"))
   const end = hour + 3_600_000_000
   const all = catalogSegments(records)
   const segments = all
@@ -411,12 +433,14 @@ export async function loadTimeline(start: number | null, signal: AbortSignal, on
 export async function loadTimelineLanes(
   timeline: Pick<TimelineData, "hour" | "segments">,
   signal: AbortSignal,
+  visibleRange: TimelineRange | null = null,
 ): Promise<TimelineLanes> {
   const fixture = bundledFixtureHour(timeline.hour)
   if (fixture !== null) return { contexts: [], points: fixture.lanePoints }
+  const window = timelineWindow(timeline.hour, visibleRange)
   const query = new URLSearchParams({
-    from: String(timeline.hour),
-    to: String(timeline.hour + 3_600_000_000 - 1),
+    from: String(window.from),
+    to: String(window.toExclusive - 1),
     part: "lanes",
     segments: timeline.segments.map((segment) => segment.id).join(","),
   })
@@ -432,9 +456,11 @@ export async function loadTimelineLanes(
   for (const record of records) {
     if (record.record === "lane_context") {
       const seconds = record.postgresql_interval_seconds
+      const environment = record.environment
       contexts.push({
         segmentId: requiredText(record.segment_id, "lane context segment id"),
         postgresqlIntervalSeconds: seconds === null ? null : integer(seconds, "PostgreSQL interval"),
+        environment: typeof environment === "number" && Number.isSafeInteger(environment) ? environment : null,
       })
     } else if (record.record === "lane") {
       points.push({
@@ -446,6 +472,13 @@ export async function loadTimelineLanes(
     }
   }
   return { contexts, points }
+}
+
+function timelineWindow(hour: number, visibleRange: TimelineRange | null): TimelineRange {
+  const from = Math.max(hour, visibleRange?.from ?? hour)
+  const toExclusive = Math.min(hour + 3_600_000_000, visibleRange?.toExclusive ?? hour + 3_600_000_000)
+  if (from >= toExclusive) throw new Error("timeline hour is outside the visible report range")
+  return { from, toExclusive }
 }
 
 export function withTimelineLanes(base: HourData, lanes: TimelineLanes): HourData {
@@ -473,6 +506,7 @@ export async function loadSeries(
   signal: AbortSignal,
   typeId?: string | undefined,
   group?: RelationGroup | undefined,
+  scope: StatementScope = "all",
 ): Promise<readonly DataRow[]> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
@@ -495,6 +529,7 @@ export async function loadSeries(
     ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
     ...(group === undefined ? [] : [`group=${group}`]),
+    ...(scope === "all" ? [] : [`scope=${scope}`]),
   ].join("&")
   const records = await request(`/api/hour?${query}`, signal)
   const layouts = new Map<string, RowLayout>()
@@ -523,15 +558,15 @@ export async function loadSeries(
 }
 
 export async function loadEventGroups(
-  selectedHour: number,
+  from: number,
+  to: number,
   sources: readonly string[],
   signal: AbortSignal,
 ): Promise<{ readonly rows: readonly EventEntry[]; readonly truncated: boolean }> {
   signal.throwIfAborted()
-  const from = floorHour(selectedHour)
   const query = [
     `from=${from}`,
-    `to=${from + 3_600_000_000}`,
+    `to=${to}`,
     "representation=groups",
     "limit=5000",
     ...sources.map((source) => `source=${encodeURIComponent(source)}`),
@@ -645,7 +680,10 @@ function eventStat(value: unknown): EventStat {
   if (kind === "pgbouncer.events") return {
     kind,
     level: finiteNumber(stat["level"], "PgBouncer level"),
-    database: nullableText(stat["database"], "PgBouncer database"),
+    database: optionalNullableText(stat["database"], "PgBouncer database"),
+    username: optionalNullableText(stat["username"], "PgBouncer username"),
+    host: optionalNullableText(stat["host"], "PgBouncer host"),
+    sourceFile: optionalNullableText(stat["sourceFile"], "PgBouncer source file"),
   }
   throw new Error("event stat kind is invalid")
 }
@@ -659,6 +697,10 @@ function nullableText(value: unknown, name: string): string | null {
   if (value === null) return null
   if (typeof value !== "string") throw new Error(`${name} is invalid`)
   return value
+}
+
+function optionalNullableText(value: unknown, name: string): string | null {
+  return nullableText(value ?? null, name)
 }
 
 function nullableNumber(value: unknown, name: string): number | null {
@@ -695,6 +737,7 @@ export async function loadHeatmap(
   top: number,
   signal: AbortSignal,
   group?: readonly string[],
+  scope: StatementScope = "all",
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
@@ -707,13 +750,18 @@ export async function loadHeatmap(
     `columns=${columns}`,
     `top=${top}`,
     ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
+    ...(scope === "all" ? [] : [`scope=${scope}`]),
   ].join("&")
   const fixtureRange = bundledFixtureRange()
   const fixture = fixtureRange === null
     ? null
-    : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group)
+    : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group, scope)
   if (fixtureRange !== null && fixture === null) throw new Error("bundled fixture has no Rust heatmap result")
-  const records = fixture ?? await request(`/api/heatmap?${query}`, signal)
+  const path = `/api/heatmap?${query}`
+  let records = fixture ?? await request(path, signal)
+  if (fixture === null && records.some((record) => record.record === "heatmap" && record["summary"] === undefined)) {
+    records = await request(path, signal, undefined, "reload")
+  }
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
     ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
     : []
@@ -722,6 +770,7 @@ export async function loadHeatmap(
     ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
     : []
   let cumulative = true
+  let summary: HeatmapSummary | null = null
   let intervals: { start: number; end: number }[] = []
   let labelNames: string[] = []
   let entityCount = 0
@@ -732,6 +781,9 @@ export async function loadHeatmap(
   for (const record of records) {
     if (record.record === "heatmap") {
       cumulative = record["class"] === "cumulative"
+      const mode = record["summary"]
+      if (mode !== "mean" && mode !== "sum" && mode !== "max") throw new Error("heatmap summary is invalid")
+      summary = mode
       entityCount = Number(record["entity_count"] ?? 0)
       othersCount = Number(record["others_count"] ?? 0)
       const names = Array.isArray(record["labels"])
@@ -761,7 +813,8 @@ export async function loadHeatmap(
       else othersBand = band
     }
   }
-  return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
+  if (summary === null) throw new Error("heatmap header is missing")
+  return { cumulative, summary, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
 }
 
 function namedCells(names: readonly string[], stored: unknown): Readonly<Record<string, Cell>> {
@@ -1086,6 +1139,9 @@ const RELATED_STATEMENT_FIELDS_BY_TYPE = Object.fromEntries(PG_STAT_STATEMENTS_T
     : ["query", "calls", "rows", "total_exec_time", "mean_exec_time"],
 ]))
 
+/** Which statements a `pg_stat_statements` result includes; `workload` omits the collector's own. */
+export type StatementScope = "all" | "workload"
+
 export interface SnapshotOptions {
   readonly filters?: Readonly<Record<string, string>>
   readonly typeId?: string
@@ -1094,6 +1150,7 @@ export interface SnapshotOptions {
   readonly cursor?: string
   readonly search?: string
   readonly firstMatch?: boolean
+  readonly scope?: StatementScope
 }
 
 export interface SnapshotOrder {
@@ -1224,6 +1281,7 @@ export async function loadSnapshot(
       snapshotRows.push({
         logicalName,
         eligible: integer(record["eligible"], "eligible row count"),
+        excluded: record["excluded"] === undefined ? 0 : integer(record["excluded"], "excluded row count"),
         returned: integer(record["returned"], "returned row count"),
         hasMore: record.has_more,
         truncated: record["truncated"],
@@ -1385,6 +1443,7 @@ function fixtureSnapshot(
       if ((request.typeId ?? options.typeId ?? rows[0]?.typeId) !== undefined) snapshotRows.push({
         logicalName: request.section,
         eligible,
+        excluded: 0,
         returned: rows.length,
         hasMore: eligible > rows.length,
         truncated: eligible > rows.length,
@@ -1487,6 +1546,7 @@ function snapshotQuery(
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
     ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
     ...(options.firstMatch === true ? ["first_match=1"] : []),
+    ...(options.scope === undefined || options.scope === "all" ? [] : [`scope=${options.scope}`]),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
@@ -1514,7 +1574,7 @@ function snapshotOptions(
 ): SnapshotOptions {
   if (value === undefined) return {}
   if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value
-    || "cursor" in value || "search" in value || "firstMatch" in value) {
+    || "cursor" in value || "search" in value || "firstMatch" in value || "scope" in value) {
     return value as SnapshotOptions
   }
   return { filters: value as Readonly<Record<string, string>> }
@@ -1589,11 +1649,11 @@ function layoutRecord(record: Record<string, unknown>): RowLayout | null {
   }
 }
 
-async function request(path: string, signal: AbortSignal, onBytes?: (received: number) => void): Promise<readonly Record<string, unknown>[]> {
+async function request(path: string, signal: AbortSignal, onBytes?: (received: number) => void, cache: RequestCache = "default"): Promise<readonly Record<string, unknown>[]> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response: Response
     try {
-      response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+      response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal, cache })
     } catch (error) {
       signal.throwIfAborted()
       if (attempt === 0 && error instanceof TypeError) continue

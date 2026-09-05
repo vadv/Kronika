@@ -30,10 +30,13 @@ use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentKind};
 use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
+use crate::StatementScope;
 use crate::dataset::{DatasetSegment, QueryDataset, SegmentBounds, SegmentSelection};
+use crate::exact_product::compare_products;
 use crate::output_fields as shared_fields;
 use crate::projection::{Plan, plans, resolved_dictionary};
 use crate::render::{cell, projected_layout, record, shorten};
+use crate::statement_scope::{CollectorStatements, plan_statement_query_id_columns};
 use crate::{
     DataRequest, Order, Prepared, QueryContext, QueryError, QueryExecution, QueryIdentity,
     QueryMetadata, QuerySink, QueryStability, RelationGroup, SegmentRequest, SnapshotRequest,
@@ -61,6 +64,7 @@ pub(crate) struct PreparedSnapshot {
     first_match_query_id: Option<i64>,
     text: Option<u64>,
     row_ordinal: Option<u64>,
+    scope: StatementScope,
     stability: QueryStability,
     validator_shape: String,
     validator_segments: Vec<DatasetSegment>,
@@ -296,6 +300,7 @@ impl PageContext<'_> {
 
 struct PageMetadata {
     eligible: u64,
+    excluded: u64,
     returned: usize,
     has_more: bool,
     next_cursor: Option<String>,
@@ -708,12 +713,13 @@ impl SnapshotPreparation {
         let (physical_filters, relation_filters) = relation::split_filters(&request)?;
         let mut physical_request = request.clone();
         physical_request.filters = physical_filters;
-        let sections = section_plans(
+        let mut sections = section_plans(
             &segment,
             &physical_request,
             &relation_fields,
             search.as_deref(),
         )?;
+        project_statement_text(&mut sections, request.scope);
         let has_relation = sections
             .iter()
             .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_some());
@@ -771,6 +777,7 @@ impl SnapshotPreparation {
             first_match_query_id,
             text: request.text,
             row_ordinal: request.row_ordinal,
+            scope: request.scope,
             stability,
             validator_shape,
             validator_segments,
@@ -825,6 +832,21 @@ fn prepared_search(
         })
         .transpose()?;
     Ok(parsed.map(Box::new))
+}
+
+/// A scoped statement page reads the statement text so the collector's own
+/// rows can be recognised while the page is ranked.
+fn project_statement_text(sections: &mut [SectionPlans], scope: StatementScope) {
+    for section in sections {
+        if !scope.filters(&section.logical_name) {
+            continue;
+        }
+        for plan in &mut section.plans {
+            if let Some(column) = plan.contract.column("query") {
+                plan.add_projection_columns(&[column.name]);
+            }
+        }
+    }
 }
 
 fn section_plans(
@@ -1667,6 +1689,7 @@ impl PreparedSnapshot {
         let page_size = self.page_size.ok_or(QueryError::BadCursor)?;
         let mut page = PageRows::new(page_size.saturating_add(1));
         let mut eligible = 0_u64;
+        let mut excluded = 0_u64;
         for context in &contexts {
             self.scan_page(
                 context,
@@ -1676,6 +1699,7 @@ impl PreparedSnapshot {
                 anchor.as_ref(),
                 &mut page,
                 &mut eligible,
+                &mut excluded,
                 cancelled,
             )?;
             if cancelled() {
@@ -1705,6 +1729,7 @@ impl PreparedSnapshot {
             &contexts,
             &PageMetadata {
                 eligible,
+                excluded,
                 returned,
                 has_more,
                 next_cursor,
@@ -1804,6 +1829,7 @@ impl PreparedSnapshot {
             .collect::<Result<HashMap<_, _>, _>>()?;
         let mut page = PageRows::new(limit.saturating_add(1));
         let mut eligible = 0_u64;
+        let mut excluded = 0_u64;
         for context in &contexts {
             self.scan_page(
                 context,
@@ -1813,6 +1839,7 @@ impl PreparedSnapshot {
                 None,
                 &mut page,
                 &mut eligible,
+                &mut excluded,
                 cancelled,
             )?;
             if cancelled() {
@@ -2021,6 +2048,7 @@ impl PreparedSnapshot {
             &contexts,
             &PageMetadata {
                 eligible: u64::from(returned != 0),
+                excluded: 0,
                 returned,
                 has_more: false,
                 next_cursor: None,
@@ -2188,6 +2216,7 @@ impl PreparedSnapshot {
             "record": "snapshot_page",
             "logical_name": section.logical_name,
             "eligible": metadata.eligible.to_string(),
+            "excluded": metadata.excluded.to_string(),
             "returned": metadata.returned.to_string(),
             "has_more": metadata.has_more,
             "truncated": metadata.eligible > metadata.returned as u64,
@@ -2819,6 +2848,10 @@ impl PreparedSnapshot {
         .ok_or(QueryError::BadCursor)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one scan keeps page, counters and scope explicit"
+    )]
     fn scan_page(
         &self,
         context: &PageContext<'_>,
@@ -2826,9 +2859,16 @@ impl PreparedSnapshot {
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
+        excluded: &mut u64,
         cancelled: &(impl Fn() -> bool + ?Sized),
     ) -> Result<(), QueryError> {
         let source = self.dataset.open(context.source)?;
+        // The collector's own statements are classified once per layout.
+        let collector = if self.scope.filters(context.logical_name) {
+            Some(CollectorStatements::scan(&source)?)
+        } else {
+            None
+        };
         if !context.plan.needs_selection_dictionary()
             && context.search_columns.is_empty()
             && context
@@ -2852,6 +2892,8 @@ impl PreparedSnapshot {
                         anchor,
                         page,
                         eligible,
+                        excluded,
+                        collector.as_ref(),
                         &dictionary,
                         ordinal,
                         row,
@@ -2882,6 +2924,8 @@ impl PreparedSnapshot {
                         anchor,
                         page,
                         eligible,
+                        excluded,
+                        collector.as_ref(),
                         &mut chunk,
                     )
                 {
@@ -2902,6 +2946,8 @@ impl PreparedSnapshot {
                 anchor,
                 page,
                 eligible,
+                excluded,
+                collector.as_ref(),
                 &mut chunk,
             )?;
         }
@@ -2920,6 +2966,8 @@ impl PreparedSnapshot {
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
+        excluded: &mut u64,
+        collector: Option<&CollectorStatements>,
         chunk: &mut Vec<(u64, Row)>,
     ) -> Result<(), QueryError> {
         let dictionary = page_dictionary(source, context, chunk)?;
@@ -2930,6 +2978,8 @@ impl PreparedSnapshot {
                 anchor,
                 page,
                 eligible,
+                excluded,
+                collector,
                 &dictionary,
                 ordinal,
                 row,
@@ -2949,6 +2999,8 @@ impl PreparedSnapshot {
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
+        excluded: &mut u64,
+        collector: Option<&CollectorStatements>,
         dictionary: &Dictionary,
         ordinal: u64,
         row: Row,
@@ -2957,6 +3009,11 @@ impl PreparedSnapshot {
         else {
             return;
         };
+        // A collector statement that would otherwise be listed is counted, not shown.
+        if collector.is_some_and(|statements| statements.excludes(&candidate.staged.row)) {
+            *excluded = excluded.saturating_add(1);
+            return;
+        }
         *eligible = eligible.saturating_add(1);
         if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
             page.push(candidate);
@@ -4312,120 +4369,6 @@ fn ordered_metric(
     }
 }
 
-fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
-    if let (Some(left), Some(right)) = (fixed_product_limbs(left), fixed_product_limbs(right)) {
-        left.len.cmp(&right.len).then_with(|| {
-            left.digits[..left.len]
-                .iter()
-                .rev()
-                .cmp(right.digits[..right.len].iter().rev())
-        })
-    } else {
-        let left = heap_product_limbs(left);
-        let right = heap_product_limbs(right);
-        left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
-    }
-}
-
-struct FixedProduct {
-    digits: [u32; 16],
-    len: usize,
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each cast selects one base-2^32 limb after shifting"
-)]
-fn fixed_product_limbs(factors: &[u128]) -> Option<FixedProduct> {
-    if factors.len() > 4 {
-        return None;
-    }
-    let mut accumulator = FixedProduct {
-        digits: [0; 16],
-        len: 1,
-    };
-    accumulator.digits[0] = 1;
-    for factor in factors {
-        let factor_digits = [
-            *factor as u32,
-            (*factor >> 32) as u32,
-            (*factor >> 64) as u32,
-            (*factor >> 96) as u32,
-        ];
-        let mut result_digits = [0_u32; 16];
-        for left_index in 0..accumulator.len {
-            let left = accumulator.digits[left_index];
-            let mut carry = 0_u64;
-            for (right_index, right) in factor_digits.iter().copied().enumerate() {
-                let index = left_index + right_index;
-                let slot = result_digits.get_mut(index)?;
-                let value = u64::from(*slot) + u64::from(left) * u64::from(right) + carry;
-                *slot = value as u32;
-                carry = value >> 32;
-            }
-            let mut index = left_index + factor_digits.len();
-            while carry > 0 {
-                let slot = result_digits.get_mut(index)?;
-                let value = u64::from(*slot) + carry;
-                *slot = value as u32;
-                carry = value >> 32;
-                index += 1;
-            }
-        }
-        let mut len = (accumulator.len + factor_digits.len()).min(result_digits.len());
-        while len > 1 && result_digits[len - 1] == 0 {
-            len -= 1;
-        }
-        accumulator = FixedProduct {
-            digits: result_digits,
-            len,
-        };
-    }
-    Some(accumulator)
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each cast selects one base-2^32 limb after shifting"
-)]
-fn heap_product_limbs(factors: &[u128]) -> Vec<u32> {
-    let mut accumulator = vec![1_u32];
-    for factor in factors {
-        let digits = [
-            *factor as u32,
-            (*factor >> 32) as u32,
-            (*factor >> 64) as u32,
-            (*factor >> 96) as u32,
-        ];
-        let mut multiplied = vec![0_u32; accumulator.len() + digits.len()];
-        for (left_index, left) in accumulator.iter().copied().enumerate() {
-            let mut carry = 0_u64;
-            for (right_index, right) in digits.iter().copied().enumerate() {
-                let index = left_index + right_index;
-                let value =
-                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-            }
-            let mut index = left_index + digits.len();
-            while carry > 0 {
-                let value = u64::from(multiplied[index]) + carry;
-                multiplied[index] = value as u32;
-                carry = value >> 32;
-                index += 1;
-                if index == multiplied.len() && carry > 0 {
-                    multiplied.push(0);
-                }
-            }
-        }
-        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
-            multiplied.pop();
-        }
-        accumulator = multiplied;
-    }
-    accumulator.iter().rev().copied().collect()
-}
-
 fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'static str> {
     let Some(field) = search_fields(logical_name)
         .iter()
@@ -4442,13 +4385,6 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
         .iter()
         .filter_map(|name| plan.contract.column(name).map(|column| column.name))
         .collect()
-}
-
-const fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
-    match type_id {
-        1_004_001 => &["queryid_stat_statements"],
-        _ => &["queryid"],
-    }
 }
 
 fn search_clause_matches(
@@ -4611,6 +4547,7 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
         hash_part(&mut hash, b"search", search.canonical().as_bytes());
     }
     hash_part(&mut hash, b"first-match", &[u8::from(request.first_match)]);
+    hash_part(&mut hash, b"scope", request.scope.as_str().as_bytes());
     for by in &request.by {
         hash_part(&mut hash, b"by", by.as_bytes());
     }

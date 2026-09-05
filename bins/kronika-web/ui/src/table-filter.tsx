@@ -7,6 +7,7 @@ import type { Translate } from "./help"
 import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchExpr, type SearchSurface, withoutSearchClause } from "./search"
 
 export function TableFilter({
+  accessory,
   context,
   kept,
   onContextClear,
@@ -18,6 +19,7 @@ export function TableFilter({
   t,
   total,
 }: {
+  readonly accessory?: ReactNode | undefined
   readonly context?: string | undefined
   readonly kept: number
   readonly onContextClear?: (() => void) | undefined
@@ -59,13 +61,13 @@ export function TableFilter({
   }
   return <div className="border-b border-line2 bg-s2 px-[7px] py-1 text-fg3" data-search-surface={surface}>
     <div className="flex min-h-[28px] min-w-0 flex-wrap items-center gap-1.5">
-      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--radius-xs)] bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
+      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--radius-xs)] bg-accent-soft pl-1.5 text-xs text-fg coarse:min-h-11" data-testid="entity-context-filter">
         <strong className="overflow-hidden text-ellipsis font-semibold">{context}</strong>
-        <button className="inline-flex cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
+        <button className="inline-flex min-w-0 cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2 coarse:min-w-11" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
       </span>}
       {context !== undefined && onPattern !== undefined && <span className="text-xs text-fg4">{t("filter.and")}</span>}
       {onPattern !== undefined && <form className="flex min-w-[210px] flex-1 items-center" onSubmit={(event) => { event.preventDefault(); apply() }}>
-        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center rounded-[var(--radius-sm)] border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
+        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center rounded-[var(--radius-sm)] border coarse:min-h-11 ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
           <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
           <input
             aria-describedby={error === null ? undefined : errorId}
@@ -89,13 +91,14 @@ export function TableFilter({
             value={draft}
           />
         </label>
-        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-7 flex-none cursor-pointer items-center rounded-[var(--radius-sm)] border-0 bg-s3 px-2 text-accent3 transition-colors hover:bg-s4" type="submit"><Check aria-hidden="true" size={14} /></button>
+        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-7 flex-none cursor-pointer items-center rounded-[var(--radius-sm)] border-0 bg-s3 px-2 text-accent3 transition-colors hover:bg-s4 coarse:h-11 coarse:min-w-11" type="submit"><Check aria-hidden="true" size={14} /></button>
       </form>}
-      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-[var(--radius-sm)] border-0 bg-transparent text-accent3 transition-colors hover:bg-s3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button"><CircleHelp aria-hidden="true" size={14} /></button>}
+      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-[var(--radius-sm)] border-0 bg-transparent text-accent3 transition-colors hover:bg-s3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent coarse:h-11 coarse:w-11" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button"><CircleHelp aria-hidden="true" size={14} /></button>}
       {pattern !== "" && <>
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
-        <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
+        <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center justify-center border-0 bg-transparent p-0.5 text-accent3 coarse:h-11 coarse:w-11" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
       </>}
+      {accessory}
       {status !== undefined && <span className="ml-auto flex flex-none items-center gap-x-[14px] whitespace-nowrap text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{status}</span>}
     </div>
     {applied?.structured === true && applied.expr !== null && <div aria-label={`${t("filter.tokens")}: ${applied.canonical}`} className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="search-chips">

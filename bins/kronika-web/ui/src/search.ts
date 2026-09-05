@@ -611,7 +611,6 @@ function failure(code: SearchErrorCode, start: number, end: number, token?: stri
 }
 
 function firstNonSpace(input: string, start: number): number { let cursor = start; while (cursor < input.length && /\s/.test(input[cursor]!)) cursor += 1; return cursor }
-function nextSpace(input: string, start: number): number { let cursor = start; while (cursor < input.length && !/\s/.test(input[cursor]!)) cursor += 1; return cursor }
 function gcd(left: bigint, right: bigint): bigint { while (right !== 0n) { const next = left % right; left = right; right = next } return left }
 
 function hasStructuredSyntax(input: string): boolean {

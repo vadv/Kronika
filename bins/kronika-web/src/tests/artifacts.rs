@@ -36,6 +36,8 @@ use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
+mod heatmap_rss;
+
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
 
@@ -3354,6 +3356,7 @@ fn heatmap_preserves_cache_order_and_truncation() {
 
         let records = raw_ndjson_records(&bytes);
         assert_eq!(records[0]["record"], "heatmap");
+        assert_eq!(records[0]["summary"], "sum");
         assert_eq!(records[0]["entity_count"], 3);
         assert_eq!(records[0]["top"], 2);
         assert_eq!(records[0]["others_count"], 1);
@@ -3609,7 +3612,7 @@ fn events_preserve_group_and_occurrence_order_truncation_and_detail_refs() {
 }
 
 #[test]
-fn events_return_stable_errors_and_honor_stream_stops() {
+fn events_keep_equivalent_rows_and_honor_stream_stops() {
     let mut fixture = Fixture::new();
     let from = SEGMENT_ID + 10;
     let to_exclusive = from + 3;
@@ -3656,19 +3659,49 @@ fn events_return_stable_errors_and_honor_stream_stops() {
     }
 
     let mut duplicate = Fixture::new();
-    duplicate.append_log_error(from);
-    duplicate.append_log_error(from);
+    duplicate.append_pgbouncer_event(from);
+    duplicate.append_pgbouncer_event(from);
     duplicate.finish();
-    let error = query_response(&duplicate, &target, usize::MAX, usize::MAX)
-        .expect_err("events reject an ambiguous detail locator");
-    assert_api_error(
-        &error,
-        StatusCode::BAD_REQUEST,
-        "bad_locator",
-        None,
-        &format!(
-            "cannot emit detail_ref: pg_log_errors has a non-unique identity at timestamp {from} in segment {SEGMENT_ID}"
-        ),
+    let duplicate_target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&representation=occurrences&limit=10"
+    );
+    let (_meta, bytes) = query_response(&duplicate, &duplicate_target, usize::MAX, usize::MAX)
+        .expect("stream equivalent events");
+    let records = raw_ndjson_records(&bytes);
+    let occurrences = records
+        .iter()
+        .filter(|record| record["record"] == "event_occurrence")
+        .collect::<Vec<_>>();
+    assert_eq!(occurrences.len(), 2);
+    assert!(occurrences.iter().all(|record| {
+        record["detail_ref"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert_eq!(
+        event_detail(&duplicate, occurrences[0]),
+        event_detail(&duplicate, occurrences[1]),
+    );
+
+    let group_target = format!(
+        "/api/events?from={from}&to={to_exclusive}&source=pgbouncer_events&representation=groups&limit=10"
+    );
+    let (_meta, bytes) = query_response(&duplicate, &group_target, usize::MAX, usize::MAX)
+        .expect("stream equivalent event group");
+    let records = raw_ndjson_records(&bytes);
+    let group = records
+        .iter()
+        .find(|record| record["record"] == "event_group")
+        .expect("event group");
+    assert_eq!(group["count"], 2.0);
+    assert_eq!(group["label"], "fixture");
+    assert_eq!(group["stat"]["database"], Value::Null);
+    assert_eq!(group["stat"]["username"], Value::Null);
+    assert_eq!(group["stat"]["host"], Value::Null);
+    assert_eq!(group["stat"]["sourceFile"], "fixture");
+    assert_eq!(
+        event_detail(&duplicate, group)["section"],
+        "pgbouncer_events"
     );
 }
 

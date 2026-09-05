@@ -1,5 +1,6 @@
 use crate::os_sources::{
-    UserReferences, collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero,
+    UserReferences, collect_diskstats_for_test, collect_mountinfo, collect_os_sources,
+    collect_pressure_for_test, cpu_max_mhz, resolve_major_zero,
 };
 use crate::scheduler::{DueSet, SourceKind};
 use kronika_source_os::proc::process::ProcessIoCredentials;
@@ -19,6 +20,57 @@ fn mount_entry(major: i32, minor: i32, source: &str) -> MountEntry {
         deleted: false,
         is_k8s_infra: false,
     }
+}
+
+const HOST_CPU_PRESSURE: &str = "some avg10=0.10 avg60=0.05 avg300=0.02 total=10000\n";
+const CONTAINER_CPU_PRESSURE: &str = "some avg10=0.20 avg60=0.10 avg300=0.04 total=20000\n";
+
+#[test]
+fn pressure_collection_keeps_machine_procfs_scope_and_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path().join("proc");
+    let sys_root = dir.path().join("sys");
+    std::fs::create_dir_all(proc_root.join("pressure")).expect("mkdir host pressure");
+    std::fs::create_dir_all(sys_root.join("fs/cgroup/workload")).expect("mkdir cgroup pressure");
+    std::fs::write(proc_root.join("pressure/cpu"), HOST_CPU_PRESSURE).expect("write host pressure");
+    std::fs::write(sys_root.join("fs/cgroup/cgroup.controllers"), "cpu\n")
+        .expect("write unified marker");
+    std::fs::write(
+        sys_root.join("fs/cgroup/workload/cpu.pressure"),
+        CONTAINER_CPU_PRESSURE,
+    )
+    .expect("write cgroup pressure");
+    let rows =
+        collect_pressure_for_test(&ProcFs::new(proc_root), &SysFs::new(sys_root), 0, 7, false);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].scope, 0);
+    assert_eq!(rows[0].some_total, 10_000);
+}
+
+#[test]
+fn pressure_collection_replaces_host_values_with_container_scope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path().join("proc");
+    let sys_root = dir.path().join("sys");
+    std::fs::create_dir_all(proc_root.join("self")).expect("mkdir proc self");
+    std::fs::create_dir_all(proc_root.join("pressure")).expect("mkdir host pressure");
+    std::fs::create_dir_all(sys_root.join("fs/cgroup/workload")).expect("mkdir cgroup pressure");
+    std::fs::write(proc_root.join("self/cgroup"), "0::/workload\n").expect("write membership");
+    std::fs::write(proc_root.join("pressure/cpu"), HOST_CPU_PRESSURE).expect("write host pressure");
+    std::fs::write(sys_root.join("fs/cgroup/cgroup.controllers"), "cpu\n")
+        .expect("write unified marker");
+    std::fs::write(
+        sys_root.join("fs/cgroup/workload/cpu.pressure"),
+        CONTAINER_CPU_PRESSURE,
+    )
+    .expect("write cgroup pressure");
+    let rows =
+        collect_pressure_for_test(&ProcFs::new(proc_root), &SysFs::new(sys_root), 0, 8, true);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].scope, 3);
+    assert_eq!(rows[0].some_total, 20_000);
 }
 
 #[test]
@@ -137,6 +189,31 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
         "diskstats must not be emitted on an OsMountTopo-only tick"
     );
     assert!(!os.mountinfo_empty(), "mountinfo rows must still be built");
+}
+
+// A container keeps the devices its mounts sit on and the layers its cgroup
+// charges; every other node device stays out of its diskstats.
+#[test]
+fn container_diskstats_keep_mounted_and_charged_devices_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path();
+    std::fs::write(
+        proc_root.join("diskstats"),
+        "252 0 dm-0 1 0 8 2 3 0 24 4 0 6 6\n\
+         259 0 nvme0n1 1 0 8 2 3 0 24 4 0 6 6\n\
+         8 16 sdb 1 0 8 2 3 0 24 4 0 6 6\n",
+    )
+    .expect("write diskstats");
+    let fs = ProcFs::new(proc_root.to_path_buf());
+    let mut interner = Interner::new(kronika_format::DictLimits::default());
+    let kept = std::collections::HashSet::from([(252, 0), (259, 0)]);
+
+    let rows = collect_diskstats_for_test(&fs, &mut interner, Some(&kept));
+    let devices: Vec<(i32, i32)> = rows.iter().map(|row| (row.major, row.minor)).collect();
+    assert_eq!(devices, [(252, 0), (259, 0)]);
+
+    let machine = collect_diskstats_for_test(&fs, &mut interner, None);
+    assert_eq!(machine.len(), 3, "a machine keeps every node device");
 }
 
 #[test]

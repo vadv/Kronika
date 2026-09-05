@@ -256,7 +256,13 @@ impl PreparedHour {
             if series.section == postgres_summary::SECTION {
                 postgres_summary::validate(&series)?;
                 let segments = postgres_summary::with_previous(&listed, segments);
-                return postgres_summary::stream(dataset.as_ref(), &segments, window, sink);
+                return postgres_summary::stream(
+                    dataset.as_ref(),
+                    &segments,
+                    window,
+                    series.scope,
+                    sink,
+                );
             }
             if series.group.is_some() {
                 return relation::stream_history(dataset.as_ref(), &listed, window, &series, sink);
@@ -482,11 +488,12 @@ fn emit_lanes(
     sink: &mut dyn QuerySink,
 ) -> Result<bool, QueryError> {
     let segment = dataset.open(descriptor)?;
-    let (points, postgresql_interval_seconds) = lanes::collect(&segment, window, state)?;
+    let (points, facts) = lanes::collect(&segment, window, state)?;
     if include_context && !sink.record(record(json!({
         "record": "lane_context",
         "segment_id": descriptor.id().to_string(),
-        "postgresql_interval_seconds": postgresql_interval_seconds.map(|value| value.to_string()),
+        "postgresql_interval_seconds": facts.postgresql_interval_seconds.map(|value| value.to_string()),
+        "environment": facts.environment,
     }))?) {
         return Ok(false);
     }

@@ -118,7 +118,184 @@ fn write_v2_workload_files(dir: &tempfile::TempDir, path: &str, io_stat: &str) {
     std::fs::write(workload.join("memory.current"), "4096\n")
         .expect("write workload memory.current");
     std::fs::write(workload.join("pids.current"), "4\n").expect("write workload pids.current");
+    std::fs::write(workload.join("pids.max"), "max\n").expect("write workload pids.max");
     std::fs::write(workload.join("io.stat"), io_stat).expect("write workload io.stat");
+}
+
+fn write_optional_file(path: &std::path::Path, content: Option<&str>) {
+    if let Some(content) = content {
+        std::fs::write(path, content).expect("write optional cgroup fixture");
+    }
+}
+
+const CPU_PRESSURE: &str = "some avg10=0.10 avg60=0.05 avg300=0.02 total=10000\n";
+const MEMORY_PRESSURE: &str = "some avg10=1.50 avg60=0.80 avg300=0.30 total=500000\n\
+full avg10=0.20 avg60=0.10 avg300=0.05 total=100000\n";
+const IO_PRESSURE: &str = "some avg10=0.50 avg60=0.25 avg300=0.10 total=200000\n\
+full avg10=0.05 avg60=0.02 avg300=0.01 total=20000\n";
+
+fn prepare_v2_pressure(dir: &tempfile::TempDir, path: &str) -> std::path::PathBuf {
+    std::fs::write(dir.path().join("proc/self/cgroup"), format!("0::{path}\n"))
+        .expect("write unified membership");
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    let cgroup = fixture_cgroup_path(dir, "", path);
+    std::fs::create_dir_all(&cgroup).expect("mkdir pressure cgroup");
+    cgroup
+}
+
+#[test]
+fn pressure_reads_only_the_exact_unified_v2_membership() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/team/workload");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(cgroup.join("memory.pressure"), MEMORY_PRESSURE).expect("write memory pressure");
+    std::fs::write(cgroup.join("io.pressure"), IO_PRESSURE).expect("write I/O pressure");
+    let other = fixture_cgroup_path(&dir, "", "/team/other");
+    std::fs::create_dir_all(&other).expect("mkdir other cgroup");
+    std::fs::write(
+        other.join("cpu.pressure"),
+        "some avg10=9.00 avg60=9.00 avg300=9.00 total=90000\n",
+    )
+    .expect("write other pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 77).expect("collect cgroup pressure");
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.resource, row.ts, row.some_total))
+            .collect::<Vec<_>>(),
+        [(0, 77, 10_000), (1, 77, 500_000), (2, 77, 200_000)]
+    );
+}
+
+#[test]
+fn pressure_accepts_the_unified_root_membership() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write root pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 88).expect("collect root pressure");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].some_total, 10_000);
+}
+
+#[test]
+fn pressure_rejects_a_membership_path_that_leaves_its_root() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    std::fs::write(
+        dir.path().join("proc/self/cgroup"),
+        "0::/workload/../outside\n",
+    )
+    .expect("write unsafe membership");
+    let outside = fixture_cgroup_path(&dir, "", "/outside");
+    std::fs::create_dir_all(&outside).expect("mkdir outside cgroup");
+    std::fs::write(outside.join("cpu.pressure"), CPU_PRESSURE).expect("write outside pressure");
+
+    let error = collect_pressure(&procfs, &sys, 99).expect_err("reject unsafe membership");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
+fn pressure_rejects_ambiguous_unified_memberships() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    std::fs::write(
+        dir.path().join("proc/self/cgroup"),
+        "0::/first\n0::/second\n",
+    )
+    .expect("write ambiguous membership");
+
+    let error = collect_pressure(&procfs, &sys, 100).expect_err("reject ambiguous membership");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
+fn pressure_rejects_a_nonzero_unified_hierarchy_id() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    let cgroup = fixture_cgroup_path(&dir, "", "/workload");
+    std::fs::create_dir_all(&cgroup).expect("mkdir pressure cgroup");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(dir.path().join("proc/self/cgroup"), "7::/workload\n")
+        .expect("write invalid unified membership");
+
+    let error = collect_pressure(&procfs, &sys, 101).expect_err("reject hierarchy ID");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
+fn pressure_omits_a_missing_resource_and_rejects_a_malformed_one() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/workload");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(cgroup.join("io.pressure"), IO_PRESSURE).expect("write I/O pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 100).expect("collect partial pressure");
+    assert_eq!(
+        rows.iter().map(|row| row.resource).collect::<Vec<_>>(),
+        [0, 2]
+    );
+
+    std::fs::write(cgroup.join("io.pressure"), "some total=invalid\n")
+        .expect("write malformed pressure");
+    assert!(collect_pressure(&procfs, &sys, 101).is_err());
+}
+
+#[test]
+fn pressure_omits_cgroup_v1_without_reading_host_pressure() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(dir.path().join("proc/self/cgroup"), "2:cpu:/workload\n")
+        .expect("write v1 membership");
+    std::fs::create_dir_all(dir.path().join("proc/pressure")).expect("mkdir host pressure");
+    std::fs::write(dir.path().join("proc/pressure/cpu"), CPU_PRESSURE)
+        .expect("write host pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 102).expect("collect unsupported cgroup pressure");
+
+    assert!(rows.is_empty());
+}
+
+fn collect_v2_pids_fixture(current: Option<&str>, max: Option<&str>) -> CgroupCollection {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("fs/cgroup");
+    let workload = root.join("workload");
+    std::fs::create_dir_all(&workload).expect("mkdir v2 pids fixture");
+    std::fs::write(root.join("cgroup.controllers"), "pids\n").expect("write v2 controllers");
+    write_optional_file(&workload.join("pids.current"), current);
+    write_optional_file(&workload.join("pids.max"), max);
+
+    collect(&SysFs::new(dir.path().to_path_buf()), 7, 100)
+}
+
+fn collect_v1_pids_fixture(current: Option<&str>, max: Option<&str>) -> CgroupCollection {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workload = dir.path().join("fs/cgroup/pids/workload");
+    std::fs::create_dir_all(&workload).expect("mkdir v1 pids fixture");
+    write_optional_file(&workload.join("pids.current"), current);
+    write_optional_file(&workload.join("pids.max"), max);
+
+    collect(&SysFs::new(dir.path().to_path_buf()), 7, 100)
 }
 
 #[test]
@@ -245,6 +422,7 @@ fn workload_v1_keeps_controller_memberships_separate() {
     std::fs::write(cpu.join("cpuacct.stat"), "user 6\nsystem 4\n").expect("write cpu stat");
     std::fs::write(memory.join("memory.usage_in_bytes"), "4096\n").expect("write memory usage");
     std::fs::write(pids.join("pids.current"), "9\n").expect("write pids current");
+    std::fs::write(pids.join("pids.max"), "max\n").expect("write pids max");
     std::fs::write(
         io.join("blkio.throttle.io_service_bytes"),
         "8:0 Read 1\n8:0 Write 2\n",
@@ -262,6 +440,39 @@ fn workload_v1_keeps_controller_memberships_separate() {
     assert_eq!(rows.memory[0].cgroup_path, "/service/memory");
     assert_eq!(rows.io[0].cgroup_path, "/service/io");
     assert_eq!(rows.pids[0].cgroup_path, "/service/tasks");
+    assert_eq!(rows.pids[0].max, None);
+}
+
+#[test]
+fn v2_pids_omits_rows_without_a_valid_current_value() {
+    for current in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v2_pids_fixture(current, Some("128\n"));
+        assert!(rows.pids.is_empty(), "current={current:?}");
+    }
+}
+
+#[test]
+fn v2_pids_omits_rows_without_a_valid_max_value() {
+    for max in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v2_pids_fixture(Some("9\n"), max);
+        assert!(rows.pids.is_empty(), "max={max:?}");
+    }
+}
+
+#[test]
+fn v1_pids_omits_rows_without_a_valid_current_value() {
+    for current in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v1_pids_fixture(current, Some("128\n"));
+        assert!(rows.pids.is_empty(), "current={current:?}");
+    }
+}
+
+#[test]
+fn v1_pids_omits_rows_without_a_valid_max_value() {
+    for max in [None, Some("invalid\n"), Some("-1\n")] {
+        let rows = collect_v1_pids_fixture(Some("9\n"), max);
+        assert!(rows.pids.is_empty(), "max={max:?}");
+    }
 }
 
 #[test]
@@ -1016,4 +1227,70 @@ fn section_conversions_preserve_metric_fields() {
     let pids_section = to_pids_section(&pids, 2, cgroup_path);
     assert_eq!(pids_section.current, 9);
     assert_eq!(pids_section.max, Some(128));
+}
+
+#[test]
+fn charged_devices_lists_the_io_stat_devices_of_the_own_v2_cgroup() {
+    let (dir, procfs, sys) = fixture_roots();
+    prepare_v2_context(&dir, "/workload");
+    std::fs::write(
+        fixture_cgroup_path(&dir, "", "/workload").join("io.stat"),
+        "252:0 rbytes=1 wbytes=2 rios=3 wios=4\n259:0 rbytes=1 wbytes=2 rios=3 wios=4\n",
+    )
+    .expect("write layered io stat");
+
+    assert_eq!(
+        charged_devices(&procfs, &sys).expect("read charged devices"),
+        [(252, 0), (259, 0)]
+    );
+}
+
+#[test]
+fn charged_devices_reports_missing_v2_io_stat_but_omits_v1() {
+    let (dir, procfs, sys) = fixture_roots();
+    assert!(
+        charged_devices(&procfs, &sys)
+            .expect("no v2 hierarchy")
+            .is_empty()
+    );
+
+    prepare_v2_context(&dir, "/workload");
+    std::fs::remove_file(fixture_cgroup_path(&dir, "", "/workload").join("io.stat"))
+        .expect("remove io stat");
+    let error = charged_devices(&procfs, &sys).expect_err("missing io.stat");
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(error.to_string().contains("workload/io.stat"));
+}
+
+#[test]
+fn all_cgroup_collectors_reject_invalid_unified_memberships() {
+    for membership in [
+        "7::/workload\n",
+        "0::/workload\n0::/workload\n",
+        "0::/workload\n0::/other\n0::/workload\n",
+        "0::/workload/../outside\n0::/workload\n",
+    ] {
+        let (dir, procfs, sys) = fixture_roots();
+        prepare_v2_context(&dir, "/workload");
+        std::fs::write(dir.path().join("proc/self/cgroup"), membership).expect("write membership");
+        assert!(collect_pressure(&procfs, &sys, 1).is_err(), "{membership}");
+        assert_eq!(
+            charged_devices(&procfs, &sys)
+                .expect_err("invalid membership")
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "{membership}",
+        );
+        let context = collect_context(&procfs, &sys, 1).expect("collect context");
+        assert_eq!(context.cpu_path, None, "{membership}");
+        assert_eq!(context.memory_path, None, "{membership}");
+        assert_eq!(context.io_path, None, "{membership}");
+        let mut memberships = WorkloadMemberships::new(&sys);
+        memberships.observe(membership);
+        let workload = memberships.collect(&sys, 1, 100).expect("collect workload");
+        assert!(workload.cpu.is_empty(), "{membership}");
+        assert!(workload.memory.is_empty(), "{membership}");
+        assert!(workload.io.is_empty(), "{membership}");
+        assert!(workload.pids.is_empty(), "{membership}");
+    }
 }

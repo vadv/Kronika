@@ -12,7 +12,7 @@ use hyper::Response;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, VARY};
 use kronika_dump::{SliceError, SliceRange, UtcSecond, slice_to_zms};
 use kronika_reader::{Reader, ReaderError};
-use kronika_report::{HtmlReportError, write_html_from_file_with_segment_id};
+use kronika_report::{HtmlReportError, ReportTimeRange, write_html_from_file_with_segment_id};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::api::CachePolicy;
@@ -43,7 +43,10 @@ pub(crate) fn parse(query: &str) -> Result<SliceRange, RouteError> {
     }
     let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
     let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
-    SliceRange::new(from, to).map_err(|_error| RouteError::BadParameter("from".to_owned()))
+    let range =
+        SliceRange::new(from, to).map_err(|_error| RouteError::BadParameter("from".to_owned()))?;
+    validate_report_range(&range)?;
+    Ok(range)
 }
 
 fn second(name: &str, value: &str) -> Result<UtcSecond, RouteError> {
@@ -51,6 +54,24 @@ fn second(name: &str, value: &str) -> Result<UtcSecond, RouteError> {
         .parse::<i64>()
         .map_err(|_error| RouteError::BadParameter(name.to_owned()))?;
     UtcSecond::from_unix_seconds(value).map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn validate_report_range(range: &SliceRange) -> Result<(), RouteError> {
+    let from = range
+        .from()
+        .unix_seconds()
+        .checked_mul(1_000_000)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
+    let to_exclusive = range
+        .to()
+        .unix_seconds()
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(1_000_000))
+        .ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    ReportTimeRange::new(from, to_exclusive)
+        .ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -211,10 +232,14 @@ fn build_with(
         .map_err(ExportError::Temporary)?;
     {
         let mut output = BufWriter::with_capacity(FILE_BUFFER_BYTES, &mut html);
+        let visible_range =
+            ReportTimeRange::new(summary.requested_from, summary.requested_to_exclusive)
+                .ok_or(ExportError::InvalidTime)?;
         write_html_from_file_with_segment_id(
             summary.segment_id,
             zms,
             summary.bytes_written,
+            visible_range,
             &mut output,
         )
         .map_err(ExportError::Report)?;

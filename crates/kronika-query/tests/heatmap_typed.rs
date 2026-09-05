@@ -10,24 +10,25 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use base64 as _;
 use icu_collator as _;
 use icu_locale_core as _;
-use kronika_format::ReadAt;
+use kronika_format::{DictLimits, ReadAt};
 use kronika_index as _;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Segment, SegmentKind};
-use kronika_registry::Ts;
 use kronika_registry::os_cpu::OsCpu;
+use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::{StrId, Ts};
 use kronika_store::{
     EmbeddedResource, EmbeddedSource, ImmutableSegmentSource, ResourceCatalog, ResourceError,
     ResourceListing, SegmentResource, SharedSegmentBytes,
 };
-use kronika_writer::{Journal, JournalConfig, SectionBuffers, write_segment};
+use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde as _;
 use serde_json as _;
 
 use kronika_query::{
     CapturedCatalog, DatasetListing, DatasetSegment, FinishedDataset, HeatmapBatchQuery,
     HeatmapItemQuery, HeatmapView, NormalizedRanking, OpaqueCapture, QueryContext, QueryDataset,
-    QueryError, QuerySink, SegmentSelection, TimeRange, execute_heatmap_batch,
+    QueryError, QuerySink, SegmentSelection, StatementScope, TimeRange, execute_heatmap_batch,
 };
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
@@ -287,6 +288,7 @@ fn ranking(top: usize) -> HeatmapItemQuery {
             top,
         },
         view: HeatmapView::RankingOnly,
+        scope: StatementScope::All,
     }
 }
 
@@ -476,6 +478,7 @@ fn validation_reports_the_expanded_index_and_ordered_options_without_opening_dat
             top: 1,
         },
         view: HeatmapView::RankingOnly,
+        scope: StatementScope::All,
     };
     let error = execute_heatmap_batch(&context, batch(vec![ranking(1), missing]), &NeverCancelled)
         .expect_err("the second ranking has an unknown field");
@@ -495,5 +498,177 @@ fn validation_reports_the_expanded_index_and_ordered_options_without_opening_dat
         dataset.opens.load(Ordering::Relaxed),
         0,
         "validation fails before catalog or segment I/O"
+    );
+}
+
+const APPLICATION_QUERY_ID: i64 = 1;
+const COLLECTOR_QUERY_ID: i64 = 2;
+
+const fn statement(
+    ts: i64,
+    queryid: i64,
+    total_exec_time: f64,
+    query: StrId,
+) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(ts),
+        queryid: Some(queryid),
+        userid: 10,
+        dbid: 5,
+        datname: None,
+        usename: None,
+        query: Some(query),
+        calls: 1,
+        rows: 0,
+        plans: 0,
+        total_exec_time,
+        total_plan_time: 0.0,
+        min_exec_time: 0.0,
+        max_exec_time: 0.0,
+        mean_exec_time: 0.0,
+        stddev_exec_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+        stddev_plan_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
+    }
+}
+
+/// One application statement and one collector statement, the collector's far heavier.
+fn statements_payload() -> Arc<[u8]> {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let data_root = DataRoot::open(root.path()).expect("data root");
+    let owner = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let application = StrId(
+        interner
+            .intern(b"select 42")
+            .expect("intern application text")
+            .get(),
+    );
+    let collector = StrId(
+        interner
+            .intern(b"/* kronika:1.0.0 pg_sources.rs */ select monitor")
+            .expect("intern collector text")
+            .get(),
+    );
+    let mut buffers = SectionBuffers::new();
+    for (timestamp, application_time, collector_time) in
+        [(FIRST_TS, 0.0, 0.0), (LAST_TS, 10.0, 1_000.0)]
+    {
+        buffers
+            .push(statement(
+                timestamp,
+                APPLICATION_QUERY_ID,
+                application_time,
+                application,
+            ))
+            .expect("application row fits");
+        buffers
+            .push(statement(
+                timestamp,
+                COLLECTOR_QUERY_ID,
+                collector_time,
+                collector,
+            ))
+            .expect("collector row fits");
+    }
+    let dictionary = dict::encode(interner.window()).expect("statement dictionary");
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode statement rows")
+        .expect("nonempty statement rows");
+    let segment_id = SegmentId::new(SEGMENT_ID).expect("segment id");
+    journal
+        .append(segment_id, &part)
+        .expect("append statement rows");
+    let address = SegmentAddress::new(segment_id).expect("segment address");
+    write_segment(&journal, &owner, address).expect("finish statement segment");
+    journal.reset().expect("reset journal");
+    drop(journal);
+    drop(owner);
+
+    let path = root
+        .path()
+        .join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name());
+    std::fs::read(path).expect("read statement segment").into()
+}
+
+fn statements_ranking(scope: StatementScope) -> HeatmapItemQuery {
+    HeatmapItemQuery {
+        ranking: NormalizedRanking {
+            section: "pg_stat_statements".to_owned(),
+            fields: vec!["total_exec_time".to_owned()],
+            top: 1,
+        },
+        view: HeatmapView::RankingOnly,
+        scope,
+    }
+}
+
+#[test]
+fn a_workload_scope_ranks_statements_without_the_collectors_own() {
+    let payload = statements_payload();
+    let (context, _dataset, _resources) = context(&payload);
+    let result = execute_heatmap_batch(
+        &context,
+        batch(vec![
+            statements_ranking(StatementScope::All),
+            statements_ranking(StatementScope::Workload),
+        ]),
+        &NeverCancelled,
+    )
+    .expect("statement rankings");
+
+    let unscoped = &result.results[0].entities;
+    assert_eq!(unscoped.len(), 1);
+    assert_eq!(
+        unscoped[0].identity["query_id"].as_str(),
+        Some(COLLECTOR_QUERY_ID.to_string().as_str())
+    );
+    assert_eq!(unscoped[0].total, Some(1_000.0));
+    let workload = &result.results[1].entities;
+    assert_eq!(workload.len(), 1);
+    assert_eq!(
+        workload[0].identity["query_id"].as_str(),
+        Some(APPLICATION_QUERY_ID.to_string().as_str())
+    );
+    assert_eq!(workload[0].total, Some(10.0));
+}
+
+#[test]
+fn a_workload_scope_is_refused_outside_statements() {
+    let payload = cpu_payload(10, 20);
+    let (context, _dataset, _resources) = context(&payload);
+    let mut scoped = ranking(1);
+    scoped.scope = StatementScope::Workload;
+    let error = execute_heatmap_batch(&context, batch(vec![scoped]), &NeverCancelled)
+        .expect_err("a CPU ranking has no statement scope");
+
+    assert_eq!(error.ranking_index(), 0);
+    assert_eq!(
+        error.to_string(),
+        "rankings[0]: scope=workload applies only to pg_stat_statements"
     );
 }

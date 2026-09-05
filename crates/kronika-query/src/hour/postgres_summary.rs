@@ -1,11 +1,14 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use kronika_reader::{Row, Segment};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Value, json};
 
 use crate::render::record;
-use crate::{DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, Window};
+use crate::statement_scope::{CollectorStatements, plan_statement_query_id_columns, statement_key};
+use crate::{
+    DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, StatementScope, Window,
+};
 
 mod facts;
 #[cfg(test)]
@@ -75,6 +78,7 @@ pub(super) fn stream(
     dataset: &dyn QueryDataset,
     segments: &[DatasetSegment],
     window: Window,
+    scope: StatementScope,
     sink: &mut dyn QuerySink,
 ) -> Result<(), QueryError> {
     let mut opened = Vec::with_capacity(segments.len());
@@ -82,25 +86,33 @@ pub(super) fn stream(
         if sink.cancelled() {
             return Ok(());
         }
-        opened.push(dataset.open(segment)?);
+        let segment = dataset.open(segment)?;
+        let collector = if scope == StatementScope::Workload {
+            Some(CollectorStatements::scan(&segment)?)
+        } else {
+            None
+        };
+        opened.push((segment, collector));
     }
     let mut points = Vec::new();
+    let mut collector_keys = HashSet::new();
     for surface in 1..=5 {
-        points.extend(surface_points(&opened, surface, sink)?);
+        points.extend(surface_points(&opened, surface, &mut collector_keys, sink)?);
     }
     points.sort_by_key(|point| (point.1, point.2));
     emit_points(&points, window, sink)
 }
 
 fn surface_points(
-    segments: &[Segment],
+    segments: &[(Segment, Option<CollectorStatements>)],
     surface: u8,
+    collector_keys: &mut HashSet<[i64; 3]>,
     sink: &dyn QuerySink,
 ) -> Result<Vec<Point>, QueryError> {
     let source = SOURCES[usize::from(surface - 1)];
     let mut previous = HashMap::<Vec<i128>, (i64, Previous)>::new();
     let mut moments = BTreeMap::<(i64, i128), (i64, Summary)>::new();
-    for segment in segments {
+    for (segment, collector) in segments {
         for (type_id, _) in segment.sections() {
             if logical_section_name(type_id) != Some(source) {
                 continue;
@@ -115,11 +127,34 @@ fn surface_points(
                     .filter_map(|name| layout.column(name).map(|column| column.name)),
             );
             columns.push("ts");
+            if collector.is_some() {
+                match surface {
+                    1 => columns.extend(layout.column("query").map(|column| column.name)),
+                    2 => columns.extend(plan_statement_query_id_columns(type_id)),
+                    _ => {}
+                }
+            }
             columns.sort_unstable();
             columns.dedup();
             segment.visit_rows(type_id, &columns, 0, usize::MAX, |_ordinal, row| {
                 if sink.cancelled() {
                     return false;
+                }
+                if surface == 1
+                    && collector
+                        .as_ref()
+                        .is_some_and(|statements| statements.excludes(&row))
+                {
+                    if let Some(key) = statement_key(&row) {
+                        collector_keys.insert(key);
+                    }
+                    return true;
+                }
+                if surface == 2
+                    && !collector_keys.is_empty()
+                    && statement_key(&row).is_some_and(|key| collector_keys.contains(&key))
+                {
+                    return true;
                 }
                 let Some(timestamp) = integer(row.get("ts")).and_then(|ts| i64::try_from(ts).ok())
                 else {

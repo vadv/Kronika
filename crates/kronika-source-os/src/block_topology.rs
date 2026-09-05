@@ -1,17 +1,28 @@
-//! Exact partition-parent relationships from Linux sysfs.
+//! Exact block-device edges from Linux sysfs.
+//!
+//! Sysfs names two kinds of edge and both are recorded: a partition sits on its
+//! whole device (`<device>/partition` marker, parent `dev` one directory up),
+//! and a layered device such as dm/LVM/MD lists the devices beneath it in
+//! `<device>/slaves/`. Nothing is inferred: an edge exists only where sysfs
+//! names both ends.
 
+use std::collections::HashSet;
 use std::fmt;
+use std::path::Path;
 
 use crate::{SysFs, parse_dev_pair};
 
+#[cfg(test)]
+mod tests;
+
 const MAX_BLOCK_DEVICES: usize = 4096;
 
-/// One exact partition to parent-block-device edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartitionParent {
-    /// Partition device identity.
+/// One exact edge from a block device to the device directly beneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockEdge {
+    /// Upper device identity: a partition or a layered device.
     pub child: (i32, i32),
-    /// Parent whole-device identity.
+    /// The device directly beneath it.
     pub parent: (i32, i32),
 }
 
@@ -33,13 +44,14 @@ impl fmt::Display for BlockTopologyError {
 
 impl std::error::Error for BlockTopologyError {}
 
-/// Read only exact sysfs partition markers and parent `dev` identities.
+/// Read every exact sysfs edge: partition markers with their parent `dev`, and
+/// the `slaves/` of layered devices.
 ///
-/// Missing, unresolved, layered, and non-partition devices emit no edge.
+/// Missing, unresolved and plain whole devices emit no edge.
 ///
 /// # Errors
 /// Returns an error instead of a prefix when the device ceiling is exceeded.
-pub fn collect(sys: &SysFs) -> Result<Vec<PartitionParent>, BlockTopologyError> {
+pub fn collect(sys: &SysFs) -> Result<Vec<BlockEdge>, BlockTopologyError> {
     let Ok(entries) = sys.read_dir("dev/block") else {
         return Ok(Vec::new());
     };
@@ -56,78 +68,63 @@ pub fn collect(sys: &SysFs) -> Result<Vec<PartitionParent>, BlockTopologyError> 
         let Ok(target) = sys.canonical_path(&format!("dev/block/{}", entry.name)) else {
             continue;
         };
-        if !target.join("partition").is_file() {
-            continue;
+        if target.join("partition").is_file()
+            && let Some(parent) = target
+                .parent()
+                .and_then(|whole| read_dev(&whole.join("dev")))
+        {
+            edges.push(BlockEdge { child, parent });
         }
-        let Some(parent_dir) = target.parent() else {
-            continue;
-        };
-        let Ok(parent_dev) = std::fs::read_to_string(parent_dir.join("dev")) else {
-            continue;
-        };
-        let Some(parent) = parse_dev_pair(&parent_dev) else {
-            continue;
-        };
-        edges.push(PartitionParent { child, parent });
+        for parent in slaves(&target) {
+            edges.push(BlockEdge { child, parent });
+        }
     }
-    edges.sort_unstable_by_key(|edge| edge.child);
+    edges.sort_unstable();
+    edges.dedup();
     Ok(edges)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::os::unix::fs::symlink;
+fn read_dev(path: &Path) -> Option<(i32, i32)> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| parse_dev_pair(&content))
+}
 
-    use tempfile::tempdir;
+/// The devices a layered device lists beneath itself.
+fn slaves(target: &Path) -> Vec<(i32, i32)> {
+    let Ok(entries) = std::fs::read_dir(target.join("slaves")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| read_dev(&entry.path().join("dev")))
+        .collect()
+}
 
-    use super::{PartitionParent, collect};
-    use crate::SysFs;
-
-    #[test]
-    fn emits_only_an_exact_partition_marker_and_parent_dev() {
-        let directory = tempdir().expect("create sysfs fixture");
-        let root = directory.path();
-        let whole = root.join("devices/pci/block/nvme0n1");
-        let partition = whole.join("nvme0n1p1");
-        std::fs::create_dir_all(root.join("dev/block")).expect("create dev block");
-        std::fs::create_dir_all(&partition).expect("create partition");
-        std::fs::write(whole.join("dev"), "259:0\n").expect("write parent dev");
-        std::fs::write(partition.join("partition"), "1\n").expect("write partition marker");
-        symlink(
-            "../../devices/pci/block/nvme0n1/nvme0n1p1",
-            root.join("dev/block/259:1"),
-        )
-        .expect("link partition");
-
-        assert_eq!(
-            collect(&SysFs::new(root.to_path_buf())).expect("collect topology"),
-            [PartitionParent {
-                child: (259, 1),
-                parent: (259, 0)
-            }]
-        );
+/// Keep only the edges on the exact chains under `roots`.
+///
+/// An edge stays when its child is a root or the parent of a kept edge. Inside
+/// a container this leaves the layers the pod's devices sit on and drops the
+/// rest of the node.
+#[must_use]
+pub fn chains_under(
+    edges: &[BlockEdge],
+    roots: impl IntoIterator<Item = (i32, i32)>,
+) -> Vec<BlockEdge> {
+    let mut wanted: HashSet<(i32, i32)> = roots.into_iter().collect();
+    let mut kept: HashSet<BlockEdge> = HashSet::new();
+    loop {
+        let before = kept.len();
+        for edge in edges {
+            if wanted.contains(&edge.child) && kept.insert(*edge) {
+                wanted.insert(edge.parent);
+            }
+        }
+        if kept.len() == before {
+            break;
+        }
     }
-
-    #[test]
-    fn leaves_whole_layered_and_unresolved_devices_opaque() {
-        let directory = tempdir().expect("create sysfs fixture");
-        let root = directory.path();
-        let dm = root.join("devices/virtual/block/dm-0");
-        std::fs::create_dir_all(root.join("dev/block")).expect("create dev block");
-        std::fs::create_dir_all(&dm).expect("create dm device");
-        std::fs::write(dm.join("dev"), "253:0\n").expect("write dm dev");
-        symlink(
-            "../../devices/virtual/block/dm-0",
-            root.join("dev/block/253:0"),
-        )
-        .expect("link dm");
-        symlink("../../devices/missing", root.join("dev/block/8:1"))
-            .expect("link unresolved device");
-
-        assert!(
-            collect(&SysFs::new(root.to_path_buf()))
-                .expect("collect topology")
-                .is_empty()
-        );
-    }
+    let mut chains: Vec<BlockEdge> = kept.into_iter().collect();
+    chains.sort_unstable();
+    chains
 }

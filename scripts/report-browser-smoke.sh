@@ -29,7 +29,9 @@ if [[ -z $browser ]]; then
 	exit 1
 fi
 
-profile=$(mktemp -d /tmp/kronika-report-browser.XXXXXX)
+# Chromium creates local sockets below the profile; keep the leaf short when
+# TMPDIR is a task-local path.
+profile=$(mktemp -d "${TMPDIR:-/tmp}/krb.XXXXXX")
 diagnostics=$profile/chromium.log
 browser_pid=
 browser_pgid=

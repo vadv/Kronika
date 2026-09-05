@@ -47,7 +47,7 @@ export interface ScalePartition {
 export interface ChartDecoration {
   readonly from: number
   readonly to: number
-  readonly tone: "future" | "unavailable"
+  readonly tone: "future" | "selection" | "unavailable"
 }
 
 export interface ChartThreshold {
@@ -627,8 +627,15 @@ function chartOptions(
     for (const decoration of decorations) {
       const from = chart.valToPos(Math.max(hour, decoration.from), "x", true)
       const to = chart.valToPos(Math.min(end, decoration.to), "x", true)
-      context.fillStyle = color(decoration.tone === "future" ? "--color-chart-future" : "--color-chart-unavailable")
+      context.fillStyle = color(decoration.tone === "future" ? "--color-chart-future" : decoration.tone === "selection" ? "--color-chart-selection" : "--color-chart-unavailable")
       context.fillRect(Math.min(from, to), chart.bbox.top, Math.abs(to - from), chart.bbox.height)
+      if (decoration.tone === "selection") {
+        // The exported interval is a selection on the plot: its edges are drawn
+        // so a short range stays visible beside the cursor.
+        context.fillStyle = color("--color-accent")
+        context.fillRect(Math.min(from, to), chart.bbox.top, uPlot.pxRatio, chart.bbox.height)
+        context.fillRect(Math.max(from, to) - uPlot.pxRatio, chart.bbox.top, uPlot.pxRatio, chart.bbox.height)
+      }
     }
     context.restore()
   }

@@ -12,3 +12,6 @@ __pycache__/
 
 # Local coding-agent plans
 /docs/superpowers/
+
+# Prepared release archives
+/dist/

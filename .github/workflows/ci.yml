@@ -134,6 +134,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Validate the demo Compose model
+        run: docker compose --file compose.demo.yml config --quiet
       - name: Build and start the documented demo
         run: make demo-up
       - name: Verify the live synthetic catalog

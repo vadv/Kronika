@@ -29,6 +29,8 @@ pub struct HeatmapItemResult {
     /// Registry quantity class shared by the selected fields.
     #[serde(serialize_with = "serialize_class")]
     pub class: ColumnClass,
+    /// Reduction used for ranked row and band summaries.
+    pub summary: HeatmapSummary,
     /// Registry unit shared by the selected fields, when declared.
     #[serde(serialize_with = "serialize_optional_unit")]
     pub unit: Option<Unit>,
@@ -57,6 +59,18 @@ pub enum CoverageState {
     Data,
     /// No eligible rows were observed.
     NoData,
+}
+
+/// Meaning of a heatmap's ranked row and band summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeatmapSummary {
+    /// Additive changes over the requested window.
+    Sum,
+    /// Maximum recorded values.
+    Max,
+    /// Average contribution across recorded process snapshots.
+    Mean,
 }
 
 /// Coverage facts for one ranking.

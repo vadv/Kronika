@@ -32,7 +32,7 @@ const compiled = await build({
     typeId: "1005004",
   }])],
   stdin: {
-    contents: 'export { entryInScope, entryOf, EventsEmptyState, EventsIncompleteNotice, groupMarks, MarkGroupRow } from "../src/events-view.tsx"; export { eventDetailTexts, EventEntryRow } from "../src/events-console.tsx"',
+    contents: 'export { entryOf, eventConsoleStatus, eventGroupSelection, EventsEmptyState, EventsIncompleteNotice, groupMarks, MarkGroupRow } from "../src/events-view.tsx"; export { summarizeFindings } from "../src/finding-presentation.ts"; export { entryChips, entrySubtitle, entryTitle, eventDetailTexts, EventEntryRow } from "../src/events-console.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -105,7 +105,7 @@ test("Events groups repeated crossings before rendering metric metadata", () => 
   assert.equal(group.metric.boundary, "any increase from the previous value")
 })
 
-test("Events scopes compact groups by source without treating one locator as a member list", () => {
+test("Events uses the selected log marks as an exact query interval without double-counting log severity", () => {
   const entry = {
     section: "pg_log_errors",
     detailRef: "opaque-a",
@@ -121,16 +121,51 @@ test("Events scopes compact groups by source without treating one locator as a m
     timestamp: hour,
     typeId: "2001001",
   }
-  const otherMember = { ...representative, rowOrdinal: "2", timestamp: hour + 1 }
+  const pairedSeverity = { ...representative, kind: "known_bad" }
+  const otherMember = { ...representative, rowOrdinal: "2", timestamp: hour + 7 }
   const otherSource = { ...otherMember, logicalName: "pg_log_checkpoints", typeId: "2002001" }
-  const sameSourceThreshold = { ...otherMember, kind: "known_bad" }
-  const threshold = { ...sameSourceThreshold, logicalName: "os_cpu", typeId: "1102001" }
+  const threshold = { ...otherMember, kind: "known_bad", logicalName: "os_cpu", typeId: "1102001" }
+  const spike = { ...threshold, kind: "spike", rowOrdinal: "3", timestamp: hour + 9 }
+  const scope = [spike, pairedSeverity, otherSource, representative, threshold]
 
-  assert.equal(events.entryInScope(entry, [otherMember]), true)
-  assert.equal(events.entryInScope(entry, [sameSourceThreshold, otherSource, threshold]), false)
+  assert.deepEqual(events.summarizeFindings(scope), {
+    event: 2,
+    from: hour,
+    knownBad: 1,
+    spike: 1,
+    to: hour + 9,
+  })
+  assert.deepEqual(events.eventGroupSelection(
+    ["pg_log_checkpoints", "pg_log_errors", "pgbouncer_events"],
+    hour,
+    scope,
+  ), {
+    from: hour,
+    sources: ["pg_log_errors", "pg_log_checkpoints"],
+    to: hour + 8,
+  })
+  assert.deepEqual(events.eventGroupSelection(["pg_log_errors", "pgbouncer_events"], hour, null), {
+    from: hour,
+    sources: ["pg_log_errors", "pgbouncer_events"],
+    to: hour + 3_600_000_000,
+  })
   assert.equal(events.entryOf([entry], representative), entry)
   assert.equal(events.entryOf([entry], otherMember), null)
   assert.equal(events.entryOf([entry, { ...entry, detailRef: "opaque-b" }], representative), null)
+})
+
+test("Events never presents pending or failed log reads as zero", () => {
+  const retained = [{ count: 7 }, { count: 8 }]
+  assert.deepEqual(events.eventConsoleStatus(null, true, false), { key: "events.console.loading" })
+  assert.deepEqual(events.eventConsoleStatus(null, false, true), { key: "events.console.unavailable" })
+  assert.deepEqual(events.eventConsoleStatus([], false, false), {
+    key: "events.console.count",
+    slots: { groups: 0, count: 0 },
+  })
+  assert.deepEqual(events.eventConsoleStatus(retained, false, true), {
+    key: "events.console.update_failed",
+    slots: { groups: 2, count: 15 },
+  })
 })
 
 test("expanded Events group exposes one keyboard action without embedding stored text", () => {
@@ -177,6 +212,59 @@ test("expanded Events group exposes one keyboard action without embedding stored
   }), [{ field: "sample", fullLen: "19", storedText: "exact stored sample", truncated: false }])
 })
 
+test("PgBouncer groups lead with the exact message and explain unresolved connection context", async () => {
+  const entry = {
+    key: "pgbouncer:3:no such database: nope",
+    section: "pgbouncer_events",
+    tier: "routine",
+    label: "no such database: nope",
+    count: 19,
+    firstTs: hour,
+    lastTs: hour + 120_000_000,
+    minutes: Array.from({ length: 60 }, (_, index) => index < 2 ? 1 : 0),
+    stat: {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: "(nodb)",
+      username: "(nouser)",
+      host: "10.0.0.7",
+      sourceFile: "/var/log/pgbouncer.log",
+    },
+    detailRef: "opaque-pgbouncer",
+    representativeTs: hour,
+  }
+  const dictionaries = await Promise.all(["en", "ru"].map(async (locale) => parseDictionary(
+    await readFile(new URL(`../i18n/${locale}.yaml`, import.meta.url), "utf8"),
+    `${locale}.yaml`,
+  )))
+  const expectedSubtitles = [
+    "(nodb) · database not selected · (nouser) · user not resolved · Client 10.0.0.7",
+    "(nodb) · база ещё не выбрана · (nouser) · пользователь ещё не определён · Client 10.0.0.7",
+  ]
+
+  for (const [index, locale] of ["en", "ru"].entries()) {
+    const translate = dictionaryTranslate(dictionaries[index])
+    assert.equal(events.entryTitle(entry, translate, locale), "no such database: nope")
+    assert.equal(events.entrySubtitle(entry, translate, locale), expectedSubtitles[index])
+    assert.deepEqual(events.entryChips(entry, translate), [{ label: "LOG", tone: "neutral" }])
+    const markup = renderToStaticMarkup(createElement(events.EventEntryRow, {
+      entry,
+      expanded: true,
+      hour,
+      locale,
+      onCursor() {},
+      onToggle() {},
+      t: translate,
+    }))
+    assert.match(markup, /data-testid="event-entry-title"[^>]*title="no such database: nope"[^>]*>no such database: nope</)
+    assert.match(markup, /class="[^"]*text-\[12px\][^"]*font-mono[^"]*" data-testid="event-entry-title"/)
+    assert.match(markup, />\(nodb\)</)
+    assert.match(markup, />\(nouser\)</)
+    assert.match(markup, />10\.0\.0\.7</)
+    assert.match(markup, />\/var\/log\/pgbouncer\.log</)
+  }
+})
+
 test("Events keeps the localized incomplete notice beside a filtered zero state", async () => {
   const dictionaries = await Promise.all(["en", "ru"].map(async (locale) => parseDictionary(
     await readFile(new URL(`../i18n/${locale}.yaml`, import.meta.url), "utf8"),
@@ -204,5 +292,14 @@ test("Events keeps the localized incomplete notice beside a filtered zero state"
       truncated: true,
     }))
     assert.ok(unfiltered.includes(dictionaries[index]["events.console.truncated_none"]))
+
+    const selected = renderToStaticMarkup(createElement(events.EventsEmptyState, {
+      filtered: false,
+      onClear() {},
+      selected: true,
+      t: translate,
+      truncated: false,
+    }))
+    assert.ok(selected.includes(dictionaries[index]["events.console.empty_selection"]))
   }
 })

@@ -192,7 +192,7 @@ async function compileStylesheet(temporary, reportMode) {
     const tailwindStylesheet = join(uiDirectory, "node_modules/tailwindcss/index.css").replaceAll("\\", "/")
     const reportSource = (source.slice(0, start) + source.slice(end + exportEnd.length))
       .replace('@import "tailwindcss";', `@import "${tailwindStylesheet}" source(none);`)
-      .replace('@source "./*.tsx";', `@source "${sourceDirectory}/*.tsx";\n@source not "${sourceDirectory}/export-panel.tsx";`)
+      .replace('@source "./*.tsx";', `@source "${sourceDirectory}/*.tsx";\n@source not "${sourceDirectory}/export-dialog.tsx";`)
       .replace('@source "./clipboard.ts";', `@source "${sourceDirectory}/clipboard.ts";`)
     input = join(temporary, "kronika-report.css")
     await writeFile(input, reportSource)
@@ -234,7 +234,7 @@ function validateHtml(html, reportMode) {
       "sendBeacon",
       "X-Kronika-UI",
       "export.",
-      "export-panel",
+      "export-dialog",
       "export-trigger",
       "mcp-trigger",
       "refresh-action",

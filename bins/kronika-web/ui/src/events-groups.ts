@@ -11,7 +11,14 @@ export type EventStat =
   | { readonly kind: "pg.checkpoint_warning"; readonly secondsApart: number | null }
   | { readonly kind: "pg.locks"; readonly holders: string | null; readonly acquired: boolean; readonly waiters: number; readonly maxMs: number | null; readonly targets: readonly string[] }
   | { readonly kind: "pg.lifecycle"; readonly lifecycle: number; readonly pid: number | null; readonly signal: number | null; readonly mode: string | null }
-  | { readonly kind: "pgbouncer.events"; readonly level: number; readonly database: string | null }
+  | {
+    readonly kind: "pgbouncer.events"
+    readonly level: number
+    readonly database: string | null
+    readonly username: string | null
+    readonly host: string | null
+    readonly sourceFile: string | null
+  }
 
 export interface EventEntry {
   readonly key: string

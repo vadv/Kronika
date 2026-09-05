@@ -38,7 +38,7 @@ test("a row's peak is its first strictly positive maximum, and a silent row has 
 test("cgroup I/O hoists one shared path and keeps differing paths on their device rows", () => {
   const row = (path, major, minor) => ({ typeId: "1203002", identity: [path, major, minor], labels: {}, members: null, total: 1, cells: [1] })
   const rows = [row("/", "259", "0"), row("/", "252", "0")]
-  const view = { cumulative: true, intervals: [], rows, totals: { cells: [2], total: 2 }, others: { cells: [0], total: 0 }, othersCount: 0, entityCount: 2 }
+  const view = { cumulative: true, summary: "sum", intervals: [], rows, totals: { cells: [2], total: 2 }, others: { cells: [0], total: 0 }, othersCount: 0, entityCount: 2 }
   assert.equal(activity.cgroupIoSharedPath(view), "/")
   assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true), { text: "259:0", prefix: "/" })
   assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true), { text: "252:0", prefix: "/" })
@@ -48,6 +48,21 @@ test("cgroup I/O hoists one shared path and keeps differing paths on their devic
   assert.equal(activity.cgroupIoSharedPath(split), null)
   assert.deepEqual(activity.cgroupActivityIdentity(split.rows[1], true), { text: "252:0", prefix: "/batch" })
   assert.equal(activity.cgroupIoSharedPath({ ...view, othersCount: 1, entityCount: 3 }), null)
+
+  const mapped = new Map([
+    [JSON.stringify(["/", "252:0"]), {
+      associations: [], chain: [{ id: "252:0", name: "dm-0" }, { id: "259:4", name: null }, { id: "259:0", name: "nvme0n1" }], device: "dm-0", foldedInto: null, id: "252:0", preferredMounts: ["/var/lib/kronika/data"], source: "/dev/mapper/data-docker",
+    }],
+    [JSON.stringify(["/", "259:0"]), { associations: [], chain: [{ id: "259:0", name: null }], device: null, foldedInto: "252:0", id: "259:0", preferredMounts: [], source: null }],
+  ])
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true, mapped), {
+    detail: "252:0", text: "/var/lib/kronika/data", title: "/var/lib/kronika/data · data-docker · dm-0 → nvme0n1 · 252:0", prefix: "/",
+  })
+  assert.deepEqual(activity.cgroupActivityIdentity(split.rows[1], true, mapped), { text: "252:0", prefix: "/batch" })
+  // An unnamed device is its bare identity, never prose about the recording.
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true, mapped), {
+    detail: "259:0", text: "259:0", title: "259:0", prefix: "/",
+  })
 })
 
 test("a drill moves the cursor only when the drilled row is silent at it", async () => {
@@ -87,6 +102,24 @@ test("ranked statement and plan previews use the first nonempty loaded table tex
   assert.match(source, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
   assert.match(source, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
   assert.doesNotMatch(source, /labelText\(row, "(?:query|plan)"\)|loadRelatedStatementTextRow|first_match/)
-  assert.match(view, /<StatementsActivity[^>]+rows=\{data\.sections\.pg_stat_statements \?\? NO_ROWS\}/)
+  // The heatmap and the summary always render; the scope travels to the server.
+  assert.match(view, /<StatementsActivity[^>]+rows=\{statementRows\} scope=\{statementScope\.scope\}/)
+  assert.doesNotMatch(view, /showMonitorQueries && <StatementsActivity|monitorQueriesVisible && <StatementsActivity/)
+  assert.match(view, /summary=\{summary\("statements", statementLens\)\}/)
+  assert.match(view, /usePostgresSummary\(hour, historyRevision, statementScope\.scope\)/)
   assert.match(view, /<PlansActivity[^>]+rows=\{data\.sections\.pg_store_plans \?\? NO_ROWS\}/)
+})
+
+test("Statements scope widens to every statement only for explicit navigation", async () => {
+  const [view, app] = await Promise.all([
+    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(view, /const forced = pattern\.trim\(\) !== ""\s*\|\| context\?\.logicalName === "pg_stat_statements"\s*\|\| exactMonitorQuery\s*\|\| selectedMonitorQuery/)
+  assert.match(view, /return \{ scope: show \|\| forced \? "all" : "workload", forced \}/)
+  assert.match(view, /forced=\{statementScope\.forced\}/)
+  assert.match(view, /count=\{excludedMonitorQueries\}/)
+  // The table no longer filters rows on the client: the exact count comes from the page trailer.
+  assert.doesNotMatch(view, /transformRows=\{statementTransform\}|statusRowCount=\{monitorQueriesVisible/)
+  assert.match(app, /denseRequest\.section === "pg_stat_statements" \? statementScope\.scope : undefined/)
 })

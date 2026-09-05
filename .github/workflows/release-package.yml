@@ -1,0 +1,63 @@
+name: Release package
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Static Linux archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools shellcheck
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-musl
+      - name: Check packaging scripts
+        run: |
+          bash -n scripts/package-release.sh scripts/check-release.sh
+          shellcheck scripts/package-release.sh scripts/check-release.sh
+      - name: Build archive including demo
+        run: scripts/package-release.sh --with-demo
+      - name: Verify archive and extracted programs
+        run: scripts/check-release.sh dist/*.tar.gz
+      - name: Verify deterministic packaging
+        run: |
+          scripts/package-release.sh --with-demo \
+            --bin-dir target/x86_64-unknown-linux-musl/release \
+            --output-dir "$RUNNER_TEMP/package-one"
+          scripts/package-release.sh --with-demo \
+            --bin-dir target/x86_64-unknown-linux-musl/release \
+            --output-dir "$RUNNER_TEMP/package-two"
+          cmp "$RUNNER_TEMP"/package-one/*.tar.gz "$RUNNER_TEMP"/package-two/*.tar.gz
+      - name: Upload review archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: kronika-${{ github.sha }}-x86_64-unknown-linux-musl
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14

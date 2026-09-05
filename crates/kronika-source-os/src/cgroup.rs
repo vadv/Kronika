@@ -3,6 +3,8 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::io;
 
+use crate::proc::pressure::{PsiRow, parse_pressure_at};
+use crate::proc::stat::ParseError;
 use crate::{ProcFs, SysFs};
 
 mod model;
@@ -190,6 +192,88 @@ impl WorkloadMemberships {
     }
 }
 
+/// Read PSI from the collector process's exact unified cgroup v2 membership.
+///
+/// Cgroup v1 and systems without a unified hierarchy return no rows. Missing
+/// resource files omit only those resources. Host pressure is never read here.
+///
+/// # Errors
+/// Returns an error when cgroup v2 is present but the exact membership cannot
+/// be read, is invalid or ambiguous, a present pressure file cannot be read,
+/// or a present pressure value cannot be parsed.
+pub fn collect_pressure(procfs: &ProcFs, sys: &SysFs, ts: i64) -> Result<Vec<PsiRow>, ParseError> {
+    if !is_v2(sys) {
+        return Ok(Vec::new());
+    }
+
+    let membership = procfs
+        .read_raw("self/cgroup")
+        .map_err(|err| ParseError(format!("self/cgroup: {err}")))?;
+    let path = parse_self_cgroup(&membership).unified.ok_or_else(|| {
+        ParseError("self/cgroup: no single valid unified cgroup membership".to_owned())
+    })?;
+    let cpu = read_optional_pressure(sys, path, "cpu.pressure")?;
+    let memory = read_optional_pressure(sys, path, "memory.pressure")?;
+    let io = read_optional_pressure(sys, path, "io.pressure")?;
+
+    parse_pressure_at(
+        cpu.as_deref(),
+        memory.as_deref(),
+        io.as_deref(),
+        ts,
+        path,
+        ["cpu.pressure", "memory.pressure", "io.pressure"],
+    )
+    .map_err(|err| ParseError(format!("cgroup v2: {err}")))
+}
+
+/// Block devices charged by the collector's own cgroup v2 `io.stat`.
+///
+/// Cgroup v1 returns no devices.
+///
+/// # Errors
+/// Returns the membership or `io.stat` read error, or an invalid membership.
+pub fn charged_devices(procfs: &ProcFs, sys: &SysFs) -> io::Result<Vec<(i32, i32)>> {
+    if !is_v2(sys) {
+        return Ok(Vec::new());
+    }
+    let membership = procfs
+        .read_raw("self/cgroup")
+        .map_err(|err| io::Error::new(err.kind(), format!("self/cgroup: {err}")))?;
+    let path = parse_self_cgroup(&membership).unified.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "self/cgroup: no single valid unified cgroup membership",
+        )
+    })?;
+    let relative = rel(path, "io.stat");
+    let content = sys
+        .read(&relative)
+        .map_err(|err| io::Error::new(err.kind(), format!("{relative}: {err}")))?;
+    Ok(parse_io_stat(&content, 0, path)
+        .iter()
+        .filter_map(|row| {
+            Some((
+                i32::try_from(row.major).ok()?,
+                i32::try_from(row.minor).ok()?,
+            ))
+        })
+        .collect())
+}
+
+fn read_optional_pressure(
+    sys: &SysFs,
+    path: &str,
+    file: &str,
+) -> Result<Option<String>, ParseError> {
+    let relative = rel(path, file);
+    match sys.read(&relative) {
+        Ok(content) => Ok(Some(content)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(ParseError(format!("{relative}: {err}"))),
+    }
+}
+
 /// Collect the process's exact cgroup paths, effective cpuset, and capacity.
 ///
 /// Cpuset comes only from the exact effective file. Hierarchical capacity stays
@@ -363,20 +447,28 @@ fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
 
 fn parse_self_cgroup(content: &str) -> SelfCgroupPaths<'_> {
     let mut paths = SelfCgroupPaths::default();
+    let mut unified_seen = false;
     for line in content.lines() {
         let mut fields = line.splitn(3, ':');
-        let (Some(_hierarchy), Some(controllers), Some(path)) =
+        let (Some(hierarchy), Some(controllers), Some(path)) =
             (fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
+        if controllers.is_empty() {
+            if hierarchy == "0" {
+                paths.unified = if unified_seen {
+                    None
+                } else {
+                    normalize_self_cgroup_path(path)
+                };
+                unified_seen = true;
+            }
+            continue;
+        }
         let Some(path) = normalize_self_cgroup_path(path) else {
             continue;
         };
-        if controllers.is_empty() {
-            set_exact_path(&mut paths.unified, path);
-            continue;
-        }
         for controller in controllers.split(',') {
             match controller {
                 "cpu" => set_exact_path(&mut paths.cpu, path),
@@ -965,27 +1057,37 @@ pub fn read_memory_path(
 }
 
 fn read_pids_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupPidsRow> {
-    let current = parse_i64(&sys.read(&rel(path, "pids.current")).ok()?).unwrap_or(0);
+    let current = sys.read(&rel(path, "pids.current")).ok()?;
+    let max = sys.read(&rel(path, "pids.max")).ok()?;
+    let (current, max) = parse_pids_values(&current, &max)?;
     Some(CgroupPidsRow {
         ts,
         cgroup_path: path.to_owned(),
         current,
-        max: sys
-            .read(&rel(path, "pids.max"))
-            .ok()
-            .and_then(|content| parse_optional_max(&content)),
+        max,
     })
 }
 
 fn read_pids_v1(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupPidsRow> {
-    let current = parse_i64(&read_first_v1(sys, PIDS_V1_DIRS, path, "pids.current")?).unwrap_or(0);
+    let current = read_first_v1(sys, PIDS_V1_DIRS, path, "pids.current")?;
+    let max = read_first_v1(sys, PIDS_V1_DIRS, path, "pids.max")?;
+    let (current, max) = parse_pids_values(&current, &max)?;
     Some(CgroupPidsRow {
         ts,
         cgroup_path: path.to_owned(),
         current,
-        max: read_first_v1(sys, PIDS_V1_DIRS, path, "pids.max")
-            .and_then(|content| parse_optional_max(&content)),
+        max,
     })
+}
+
+fn parse_pids_values(current: &str, max: &str) -> Option<(i64, Option<i64>)> {
+    let current = parse_i64(current).filter(|value| *value >= 0)?;
+    let max = if max == "max" {
+        None
+    } else {
+        Some(parse_i64(max).filter(|value| *value >= 0)?)
+    };
+    Some((current, max))
 }
 
 fn discover_v2_paths(sys: &SysFs) -> Vec<String> {

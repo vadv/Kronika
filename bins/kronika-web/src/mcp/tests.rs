@@ -524,6 +524,7 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let ranking = &structured["results"][0];
+    assert_eq!(ranking["summary"], "max");
     let entities = ranking["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);
@@ -636,7 +637,7 @@ fn mount_detail_refs_survive_active_segment_finalization_and_reordering() {
 }
 
 #[test]
-fn overview_refuses_a_ref_for_an_interleaved_duplicate_event_identity() {
+fn overview_resolves_an_interleaved_equivalent_event_identity() {
     let mut fixture = Fixture::new();
     fixture.append_log_error_count(100, 1);
     fixture.append_log_error_count(100, 2);
@@ -644,17 +645,15 @@ fn overview_refuses_a_ref_for_an_interleaved_duplicate_event_identity() {
     let config = test_config(fixture.root().to_path_buf());
     let arguments = overview_arguments("pg_log_errors", &["count"], 0, 101, 1);
 
-    let result = crate::mcp::overview::call(&config, arguments, &|| false);
+    let overview = crate::mcp::overview::call(&config, arguments, &|| false);
 
-    assert_eq!(result.is_error, Some(true));
-    let message = &result.content[0].as_text().expect("error").text;
-    assert_eq!(message, "could not produce detail_ref");
-    if let Some(body) = &result.structured_content {
-        assert_no_detail_ref_property(body);
-    }
-    for forbidden in FORBIDDEN_COORDINATE_KEYS {
-        assert!(!message.contains(forbidden), "error exposed {forbidden}");
-    }
+    assert_eq!(overview.is_error, Some(false));
+    let overview = overview.structured_content.expect("Overview");
+    let entity = &overview["results"][0]["entities"][0];
+    assert_detail_ref(entity, "pg_log_errors", &[]);
+    let detail = crate::mcp::row_detail::call(&config, detail_arguments(entity), &|| false);
+    assert_eq!(detail.is_error, Some(false));
+    assert_eq!(detail.structured_content.expect("detail")["count"], 1);
 }
 
 #[test]
@@ -2756,7 +2755,7 @@ fn get_row_detail_chains_directly_from_a_find_events_ref() {
 }
 
 #[test]
-fn find_events_refuses_to_emit_a_ref_for_a_non_unique_identity() {
+fn find_events_emits_refs_for_content_equivalent_occurrences() {
     let mut fixture = Fixture::new();
     fixture.append_log_error(100);
     fixture.append_log_error(100);
@@ -2775,19 +2774,25 @@ fn find_events_refuses_to_emit_a_ref_for_a_non_unique_identity() {
     .clone();
     let result = crate::mcp::events::call(&config, arguments, &|| false);
 
-    assert_eq!(result.is_error, Some(true));
-    let message = &result.content[0].as_text().expect("error").text;
-    assert_eq!(message, "could not produce detail_ref");
-    if let Some(body) = &result.structured_content {
-        assert_no_detail_ref_property(body);
+    assert_eq!(result.is_error, Some(false));
+    let occurrences = result.structured_content.expect("finder result")["occurrences"]
+        .as_array()
+        .expect("occurrences")
+        .clone();
+    assert_eq!(occurrences.len(), 2);
+    for occurrence in &occurrences {
+        assert_detail_ref(occurrence, "pg_log_errors", &["sample"]);
     }
-    for forbidden in FORBIDDEN_COORDINATE_KEYS {
-        assert!(!message.contains(forbidden), "error exposed {forbidden}");
-    }
+    let first = crate::mcp::row_detail::call(&config, detail_arguments(&occurrences[0]), &|| false);
+    let second =
+        crate::mcp::row_detail::call(&config, detail_arguments(&occurrences[1]), &|| false);
+    assert_eq!(first.is_error, Some(false));
+    assert_eq!(second.is_error, Some(false));
+    assert_eq!(first.structured_content, second.structured_content);
 }
 
 #[test]
-fn find_events_rejects_a_retained_identity_duplicated_after_the_limit() {
+fn find_events_truncates_after_an_equivalent_retained_identity() {
     let mut fixture = Fixture::new();
     fixture.append_log_error_count(100, 1);
     fixture.append_log_error_count(100, 2);
@@ -2806,15 +2811,12 @@ fn find_events_rejects_a_retained_identity_duplicated_after_the_limit() {
 
     let result = crate::mcp::events::call(&config, arguments, &|| false);
 
-    assert_eq!(result.is_error, Some(true));
-    let message = &result.content[0].as_text().expect("error").text;
-    assert_eq!(message, "could not produce detail_ref");
-    if let Some(body) = &result.structured_content {
-        assert_no_detail_ref_property(body);
-    }
-    for forbidden in FORBIDDEN_COORDINATE_KEYS {
-        assert!(!message.contains(forbidden), "error exposed {forbidden}");
-    }
+    assert_eq!(result.is_error, Some(false));
+    let body = result.structured_content.expect("finder result");
+    assert_eq!(body["truncated"], true);
+    let occurrences = body["occurrences"].as_array().expect("occurrences");
+    assert_eq!(occurrences.len(), 1);
+    assert_detail_ref(&occurrences[0], "pg_log_errors", &["sample"]);
 }
 
 #[test]

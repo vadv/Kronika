@@ -102,10 +102,22 @@ async fn assert_busy(gate: Arc<tokio::sync::Semaphore>) {
 }
 
 #[test]
-fn signed_whole_seconds_and_order_are_strict() {
-    let parsed = parse("from=-1&to=0").expect("signed seconds");
-    assert_eq!(parsed.from().unix_seconds(), -1);
-    assert_eq!(parsed.to().unix_seconds(), 0);
+fn positive_report_safe_whole_seconds_and_order_are_strict() {
+    let parsed = parse("from=1&to=9007199253").expect("report-safe seconds");
+    assert_eq!(parsed.from().unix_seconds(), 1);
+    assert_eq!(parsed.to().unix_seconds(), 9_007_199_253);
+    assert!(matches!(
+        parse("from=-1&to=0"),
+        Err(crate::route::RouteError::BadParameter(name)) if name == "from"
+    ));
+    assert!(matches!(
+        parse("from=0&to=1"),
+        Err(crate::route::RouteError::BadParameter(name)) if name == "from"
+    ));
+    assert!(matches!(
+        parse("from=1&to=9007199254"),
+        Err(crate::route::RouteError::BadParameter(name)) if name == "to"
+    ));
     assert!(matches!(
         parse("from=1.5&to=2"),
         Err(crate::route::RouteError::BadParameter(name)) if name == "from"
@@ -358,6 +370,8 @@ fn a_small_recording_becomes_a_standalone_offline_html_with_the_slice_identity()
     assert!(html.starts_with(b"<!doctype html>"));
     let text = std::str::from_utf8(&html).expect("UTF-8 HTML");
     assert!(text.contains("__KRONIKA_REPORT_RUNTIME__"));
+    assert!(text.contains(&format!("visibleFrom:\"{MICROS}\"")));
+    assert!(text.contains(&format!("visibleToExclusive:\"{}\"", MICROS + 1_000_000)));
     assert!(text.contains("WebAssembly.compile"));
     assert!(text.contains(&format!(
         "new KronikaReportWasm.ReportSession(\"{MICROS}\","

@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, lockDetailColumns, lockRowLabel, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isKronikaMonitorStatement, isSystemActivity, isTimestampField, lockDetailColumns, lockRowLabel, LOCK_COLUMNS, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, vacuumColumns, vacuumDetailColumns, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -57,6 +57,23 @@ test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("stats_reset"), true)
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
+})
+
+test("Kronika's own statements are recognised only by the exact monitor prefix", () => {
+  const workload = row("1002003", { query: "select * from shop.orders" })
+  const monitor = { ...row("1002003", { query: "/* kronika:1.0.0 statements */ select 1" }), ordinal: "1" }
+  const differentCase = { ...row("1002003", { query: "/* Kronika:1.0.0 statements */ select 1" }), ordinal: "2" }
+  const leadingSpace = { ...row("1002003", { query: " /* kronika:1.0.0 statements */ select 1" }), ordinal: "3" }
+  const missing = { ...row("1002003", { query: null }), ordinal: "4" }
+  const rows = [monitor, workload, differentCase, leadingSpace, missing]
+
+  assert.equal(helpers.isKronikaMonitorStatement(monitor), true)
+  assert.equal(helpers.isKronikaMonitorStatement(workload), false)
+  assert.equal(helpers.isKronikaMonitorStatement(differentCase), false)
+  assert.equal(helpers.isKronikaMonitorStatement(leadingSpace), false)
+  assert.equal(helpers.isKronikaMonitorStatement(missing), false)
+  // The page itself is scoped by the server; the client only recognises rows it already holds.
+  assert.deepEqual(rows.filter(helpers.isKronikaMonitorStatement), [monitor])
 })
 
 test("PostgreSQL chart actions accept only numeric values and declare semantic units", () => {

@@ -28,8 +28,10 @@ import {
   type Finding,
   type HourData,
   type SnapshotOptions,
+  type StatementScope,
   type SnapshotRequestGroup,
   type TimelineData,
+  recordedEnvironmentFromContexts,
 } from "./api"
 import type { TableOrder } from "./entity-table"
 import { pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type InspectorPanel, type PgLens, type Source } from "./address"
@@ -40,7 +42,9 @@ import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display
 import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView } from "./events-view"
-import { ExportPanel } from "./export-panel"
+import { ExportProvider } from "./export-context"
+import { hourRange, rangeOnHour, type ExportRange } from "./export-range"
+import { ExportDialog } from "./export-dialog"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { McpPanel } from "./mcp-connect"
@@ -68,12 +72,13 @@ import {
   type Lens,
   type Locale,
 } from "./model"
-import { PostgresView, type PostgresSection } from "./postgres-view"
+import { PostgresView, statementScopeFor, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { buildProcessForest } from "./process-tree"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
+import { reportLatestHour, reportVisibleAt, reportVisibleCursor, reportVisibleRange } from "./report-transport"
 import type { ChartPoint } from "./series-chart"
 import { apiFetch, bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
@@ -212,6 +217,9 @@ function App({ locale, onLocale, t }: {
 }) {
   const time = useDisplayTime()
   const opened = useRef(readAddress(window.location.search))
+  const [reportRange] = useState(() => KRONIKA_REPORT ? reportVisibleRange() : null)
+  const initialAt = reportVisibleAt(opened.current.at, reportRange)
+  const replaceReportAddress = useRef(KRONIKA_REPORT)
   const [cursor, setCursor] = useState(0)
   const cursorClock = useRef<HTMLSpanElement>(null)
   const cursorClockPreview = useRef<number | null>(null)
@@ -235,11 +243,11 @@ function App({ locale, onLocale, t }: {
     }
   }, [database])
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
-  const wanted = useRef(opened.current.at)
+  const [hour, setHour] = useState<number | null>(initialAt === null ? null : floorHour(initialAt))
+  const wanted = useRef(initialAt)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   useEffect(() => previewClock(cursorClockPreview.current), [cursor, previewClock, time])
-  const followsLatest = useRef(opened.current.at === null)
+  const followsLatest = useRef(initialAt === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
   const [backgroundTimeline, setBackgroundTimeline] = useState<TimelineData | null>(null)
   const backgroundTimelineRef = useRef(backgroundTimeline)
@@ -259,6 +267,8 @@ function App({ locale, onLocale, t }: {
   const visibleSource = source
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
   const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
+  // Kronika's own statements stay hidden until the reader includes them.
+  const [monitorQueries, setMonitorQueries] = useState(false)
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
   const [relationLens, setRelationLens] = useState<RelationLens>(relationLensOf(pgSectionOf(opened.current.view), opened.current.pgLens))
   const [relationLevel, setRelationLevel] = useState<RelationGroup>(opened.current.pgLevel)
@@ -296,6 +306,7 @@ function App({ locale, onLocale, t }: {
   const [mcpOpen, setMcpOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
+  const [exportRange, setExportRange] = useState<ExportRange | null>(null)
   const exportTrigger = useRef<HTMLButtonElement>(null)
   const exportActive = useRef(false)
   const setExportActive = useCallback((active: boolean) => {
@@ -303,8 +314,17 @@ function App({ locale, onLocale, t }: {
     setExportBusy(active)
   }, [])
   const closeExport = useCallback(() => {
-    if (!exportActive.current) setExportOpen(false)
+    if (exportActive.current) return
+    setExportOpen(false)
+    setExportRange(null)
   }, [])
+  // Closing the dialog returns focus to the control that opened it;
+  // navigation closes silently.
+  const dismissExport = useCallback(() => {
+    if (exportActive.current) return
+    closeExport()
+    requestAnimationFrame(() => exportTrigger.current?.focus({ preventScroll: true }))
+  }, [closeExport])
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -363,9 +383,17 @@ function App({ locale, onLocale, t }: {
     }))
     .filter((group) => group.requests.length !== 0)
   const pageContext = denseRequest !== undefined && context?.logicalName === denseRequest.section ? context : null
+  const statementScope = statementScopeFor({
+    context,
+    focus: selectedFinding !== null && selectedFinding.logicalName === "pg_stat_statements" && selectedFinding.timestamp === cursor ? findingRow : null,
+    pattern: find,
+    rows: currentSnapshot.data.sections.pg_stat_statements ?? [],
+    selectedKey,
+    show: monitorQueries,
+  })
   const denseOptions = denseRequest === undefined
     ? undefined
-    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
+    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters, denseRequest.section === "pg_stat_statements" ? statementScope.scope : undefined)
   const requestOrder = visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
   const cgroupTargetGroups = visibleSource === "host" && timelineData.availableSections.some((name) => name.startsWith("os_cgroup"))
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
@@ -381,7 +409,7 @@ function App({ locale, onLocale, t }: {
     ? currentSnapshot.data
     : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
-  const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
+  const environment = useMemo(() => recordedEnvironmentFromContexts(timelineData.laneContexts) ?? recordedEnvironment(data, cursor), [cursor, data, timelineData.laneContexts])
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
   selectedHour.current = hour
@@ -430,8 +458,8 @@ function App({ locale, onLocale, t }: {
   const requestRefresh = beginRefresh
   const chooseCursor = useCallback((next: number) => {
     followsLatest.current = false
-    setCursor(next)
-  }, [])
+    setCursor(reportVisibleCursor(next, reportRange))
+  }, [reportRange])
   const previousView = useRef(baseViewKey)
   useEffect(() => {
     if (previousView.current === baseViewKey) return
@@ -447,6 +475,7 @@ function App({ locale, onLocale, t }: {
     if (!refresh) finishRefresh(false)
     if (hour !== null && drawn.current === hour && !refresh) return
     const controller = new AbortController()
+    const requestedHour = hour ?? reportLatestHour(reportRange)
     setRefreshFailed(false)
     if (!refresh) {
       setBackgroundTimeline(null)
@@ -457,15 +486,15 @@ function App({ locale, onLocale, t }: {
       setLoadProgress({ received: 0, startedAt: Date.now() * 1_000, lastSeconds: readLastLoadSeconds() })
     }
     const loadStartedAt = Date.now() * 1_000
-    void loadTimeline(hour, controller.signal, refresh ? undefined : (received) => {
+    void loadTimeline(requestedHour, controller.signal, refresh ? undefined : (received) => {
       const now = Date.now()
       if (now - loadThrottle.current < 250) return
       loadThrottle.current = now
       setLoadProgress((current) => current === undefined ? current : { ...current, received })
-    }).then((timeline) => {
+    }, reportRange).then((timeline) => {
       const asked = wanted.current
       wanted.current = null
-      const latest = latestTimelineTimestamp(timeline)
+      const latest = reportVisibleCursor(latestTimelineTimestamp(timeline), reportRange)
       if (refresh) {
         pendingRefresh.current = { timeline, previousCursor: cursor, previousSegments: segmentsRef.current }
         const next = refreshedCursor(cursor, followsLatest.current, timeline)
@@ -498,7 +527,7 @@ function App({ locale, onLocale, t }: {
         finishRefresh(false)
         return
       }
-      const fallback = hour ?? floorHour(Date.now() * 1_000)
+      const fallback = requestedHour ?? floorHour(Date.now() * 1_000)
       drawn.current = fallback
       setHour(fallback)
       setSegments([])
@@ -506,12 +535,12 @@ function App({ locale, onLocale, t }: {
       setBackgroundTimeline(null)
       setBackgroundReadyHour(null)
       setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
-      setCursor(fallback)
+      setCursor(reportVisibleCursor(fallback, reportRange))
       setError(reason instanceof Error ? reason.message : String(reason))
       setLoading(false)
     })
     return () => controller.abort()
-  }, [finishRefresh, hour, refreshVersion])
+  }, [finishRefresh, hour, refreshVersion, reportRange])
   const [snapshotRequest, setSnapshotRequest] = useState<SnapshotRequestState>(READY_SNAPSHOT_REQUEST)
   const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
   const cursorState = visibleSnapshotRequest(snapshotRequest, snapshotTarget)
@@ -707,14 +736,14 @@ function App({ locale, onLocale, t }: {
       || backgroundReadyHour !== backgroundTimeline.hour
       || hour !== backgroundTimeline.hour) return
     const controller = new AbortController()
-    void loadTimelineLanes(backgroundTimeline, controller.signal).then((lanes) => {
+    void loadTimelineLanes(backgroundTimeline, controller.signal, reportRange).then((lanes) => {
       if (controller.signal.aborted || backgroundTimelineRef.current !== backgroundTimeline) return
       setTimelineData((current) => withTimelineLanes(current, lanes))
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) console.error("kronika: timeline lanes failed", reason)
     })
     return () => controller.abort()
-  }, [backgroundReadyHour, backgroundTimeline, hour])
+  }, [backgroundReadyHour, backgroundTimeline, hour, reportRange])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
   useEffect(() => {
     if (KRONIKA_REPORT || instanceLabelRequest.current !== null || hour === null || !refreshReady
@@ -898,15 +927,19 @@ function App({ locale, onLocale, t }: {
   }), [activeRelation, activeRelationLens, cursor, find, inspectorPanel, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
+    if (KRONIKA_REPORT && loading) return
     const destination = historyAddress(address, window.location.pathname)
+    const replace = replaceReportAddress.current
+    replaceReportAddress.current = false
     if (window.location.pathname + window.location.search === destination) return
     const dragging = steps.current !== null && stepOf(steps.current) === stepOf(destination)
     steps.current = destination
-    window["history"][dragging ? "replaceState" : "pushState"]({}, "", destination)
-  }, [address])
+    window["history"][replace || dragging ? "replaceState" : "pushState"]({}, "", destination)
+  }, [address, loading])
   useEffect(() => {
     const back = () => {
       const opening = readAddress(window.location.search)
+      const openingAt = reportVisibleAt(opening.at, reportRange)
       setSource(sourceOf(opening.view))
       setSystemMetric(opening.metric)
       setPgSection(pgSectionOf(opening.view))
@@ -925,16 +958,23 @@ function App({ locale, onLocale, t }: {
       setSearchRequest(IDLE_SEARCH_REQUEST)
       clearEntityContext()
       closeExport()
-      if (opening.at !== null) {
+      if (openingAt !== null) {
         followsLatest.current = false
-        wanted.current = opening.at
-        setCursor(opening.at)
-        setHour(floorHour(opening.at))
+        wanted.current = openingAt
+        setCursor(openingAt)
+        setHour(floorHour(openingAt))
+      } else if (KRONIKA_REPORT) {
+        replaceReportAddress.current = true
+        followsLatest.current = true
+        wanted.current = null
+        setLoading(true)
+        setCursor(0)
+        setHour(null)
       }
     }
     window.addEventListener("popstate", back)
     return () => window.removeEventListener("popstate", back)
-  }, [clearEntityContext, closeExport])
+  }, [clearEntityContext, closeExport, reportRange])
   const navigateRelation = useCallback((navigation: RelationNavigation) => {
     const nextSection = navigation.section === "pg_stat_user_tables" ? "tables" : "indexes"
     const crossing = nextSection !== pgSection
@@ -987,7 +1027,7 @@ function App({ locale, onLocale, t }: {
   }, [])
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
     followsLatest.current = false
-    setCursor(finding.timestamp)
+    setCursor(reportVisibleCursor(finding.timestamp, reportRange))
     setFindingRow(null)
     if (grouped.length > 1) {
       setSelectedFinding(null)
@@ -1035,7 +1075,7 @@ function App({ locale, onLocale, t }: {
     navigateSearchSurface("events")
     setSource("events")
     setInspectorPanel("detail")
-  }, [data, navigateSearchSurface])
+  }, [data, navigateSearchSurface, reportRange])
   const eventsPresent = data.findings.length !== 0
   const helpItems = visibleSource === "postgresql"
     ? HELP_POSTGRESQL
@@ -1069,6 +1109,7 @@ function App({ locale, onLocale, t }: {
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
     : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" || pgSection === "vacuum" ? "pg_waiting" : "health"
       : "health"
+  const exportSelection = !KRONIKA_REPORT && exportOpen && hour !== null && exportRange !== null ? rangeOnHour(exportRange, hour) : null
   return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}${mobileSearch ? " mobile-search-open" : ""}`}>
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
     <header className="topbar [.pg-table-shell>&]:flex-none">
@@ -1082,7 +1123,7 @@ function App({ locale, onLocale, t }: {
         <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { navigateSearchSurface("events"); setEventScope(null); setSelectedFinding(null); setInspectorPanel(null); setSource("events") }} title={eventsPresent ? undefined : t("nav.no_data")} type="button">{t("nav.events")}</button>
       </nav>
 
-      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
+      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} visibleRange={reportRange} />
       <div className="cursor-time max-[760px]:order-9">
         <span data-testid="cursor-time" ref={cursorClock}>{cursor === 0 ? "—" : time.clock(cursor)}</span>
         {cursorState === "loading" && <span className="ml-2.5 flex flex-none items-center gap-1.5 font-sans text-xs text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
@@ -1093,7 +1134,7 @@ function App({ locale, onLocale, t }: {
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         {!KRONIKA_REPORT && <button aria-label={t("refresh.action")} className="icon-button" data-testid="refresh-action" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>}
-        {!KRONIKA_REPORT && <button aria-expanded={exportOpen} aria-haspopup="dialog" aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0 coarse:h-11 coarse:min-w-11" data-testid="export-trigger" disabled={hour === null} onClick={() => { if (exportOpen) closeExport(); else { setExportOpen(true); setMcpOpen(false); setHelpOpen(false) } }} ref={exportTrigger} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={exportOpen} aria-haspopup="dialog" aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0 coarse:h-11 coarse:min-w-11" data-testid="export-trigger" disabled={hour === null} onClick={() => { if (exportOpen) closeExport(); else { setExportRange((current) => current ?? (hour === null ? null : hourRange(hour))); setExportOpen(true); setMcpOpen(false); setHelpOpen(false) } }} ref={exportTrigger} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -1107,6 +1148,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
+    <ExportProvider selection={exportSelection}>
     <InspectorPortalProvider chartTarget={inspectorChartRoot} dismissRef={inspectorDismiss} onChartAvailable={setEntityChartAvailable} onOpen={openPortalDetail} onTitle={setInspectorDetailTitle} target={inspectorDetailRoot}>
     <div className="workspace-frame flex min-h-0 min-w-0 flex-1 overflow-hidden">
     <section className={`workspace min-h-0 min-w-0 flex-1 px-2.5 pb-2 pt-2 max-[760px]:px-2${stretchPostgres ? " pg-table-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : " overflow-auto"}${visibleSource === "processes" ? " process-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none" : ""}`}>
@@ -1117,9 +1159,9 @@ function App({ locale, onLocale, t }: {
       {!loading && error === null && hour !== null && <MobileControls filtered={find !== ""} onOpenChart={openChart} onSearch={setMobileSearch} searchOpen={mobileSearch} t={t} />}
       {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onPreview={previewClock} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} requestPhase={currentTableRequest} selectedKey={selectedKey} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView environment={environment} context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onPreview={previewClock} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} requestPhase={currentTableRequest} selectedKey={selectedKey} selectedLane={timelineLane} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />
+        <Timeline cursor={cursor} environment={environment} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />
         <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["tree", "cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
@@ -1131,12 +1173,12 @@ function App({ locale, onLocale, t }: {
           <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} requestPhase={currentTableRequest} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} requestPhase={currentTableRequest} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onPreview={previewClock} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView environment={environment} context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} requestPhase={currentTableRequest} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} monitorQueries={monitorQueries} onMonitorQueries={setMonitorQueries} statementScope={statementScope} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView environment={environment} cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onPreview={previewClock} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
     {inspectorOpen && hour !== null && <Inspector
-      chart={<Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onPreview={previewClock} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />}
+      chart={<Timeline cursor={cursor} environment={environment} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onPreview={previewClock} onSelectedLane={setTimelineLane} presentation="inspector" primaryLane={timelinePrimary} selectedLane={timelineLane} t={t} />}
       detail={selectedProcess === null
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
         : <>
@@ -1156,10 +1198,11 @@ function App({ locale, onLocale, t }: {
     />}
     </div>
     </InspectorPortalProvider>
+    </ExportProvider>
+    {!KRONIKA_REPORT && exportOpen && hour !== null && exportRange !== null && <ExportDialog availableHours={availableHours} cursor={cursor} hour={hour} locale={locale} onActiveChange={setExportActive} onClose={dismissExport} onRange={setExportRange} range={exportRange} t={t} />}
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
     {!KRONIKA_REPORT && mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}
-    {!KRONIKA_REPORT && exportOpen && hour !== null && <ExportPanel anchor={exportTrigger.current} hour={hour} locale={locale} mode={time.mode} onActiveChange={setExportActive} onClose={closeExport} t={t} />}
   </main></DisplayTimeScope>
 }
 
@@ -1195,6 +1238,7 @@ function initialPageOptions(
   context: EntityContext | null,
   pattern: string,
   relationFilters: Readonly<Record<string, string>>,
+  scope?: StatementScope,
 ): SnapshotOptions {
   const filters = request.group === undefined
       ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
@@ -1205,6 +1249,7 @@ function initialPageOptions(
     ...(filters === undefined ? {} : { filters }),
     ...(request.group === undefined && context !== null ? { typeId: context.typeId } : {}),
     ...(pattern === "" ? {} : { search: pattern }),
+    ...(scope === undefined || scope === "all" ? {} : { scope }),
   }
 }
 

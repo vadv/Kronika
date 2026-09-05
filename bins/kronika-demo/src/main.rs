@@ -3,6 +3,7 @@ mod report;
 mod sample;
 mod sections;
 mod shutdown;
+mod system_activity;
 mod workload;
 
 use anyhow::{Context, Result};
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use system_activity::{SystemActivity, SystemActivityConfig};
 use workload::{Workload, WorkloadConfig};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -114,6 +116,9 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&storage_dir).context("create the demo storage directory")?;
 
     let stop = shutdown::watch().context("watch for shutdown signals")?;
+    let system_activity = SystemActivityConfig::from_env(&root, &storage_dir)
+        .context("read the system workload configuration")?
+        .map(|config| SystemActivity::start(&config, std::sync::Arc::clone(&stop)));
     let workload = WorkloadConfig::from_env()
         .context("read the workload configuration")?
         .map(Workload::start)
@@ -156,6 +161,9 @@ fn main() -> Result<()> {
 
     if let Some(workload) = workload {
         workload.stop();
+    }
+    if let Some(system_activity) = system_activity {
+        system_activity.stop();
     }
 
     // Use SIGTERM so the collector flushes its open segment before measurement.

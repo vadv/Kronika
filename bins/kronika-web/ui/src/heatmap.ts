@@ -30,8 +30,11 @@ export interface HeatmapViewRow {
   readonly cells: readonly (number | null)[]
 }
 
+export type HeatmapSummary = "mean" | "sum" | "max"
+
 export interface HeatmapView {
   readonly cumulative: boolean
+  readonly summary: HeatmapSummary
   readonly intervals: readonly HeatmapInterval[]
   readonly rows: readonly HeatmapViewRow[]
   readonly totals: HeatmapBand
@@ -52,7 +55,7 @@ export function collapseHeatmapView(view: HeatmapView, top: number): HeatmapView
   const totals = [view.others.total, ...folded.map((row) => row.total)].filter((stored): stored is number => stored !== null)
   const total = totals.length === 0
     ? null
-    : view.cumulative ? totals.reduce((sum, stored) => sum + stored, 0) : Math.max(...totals)
+    : view.summary === "max" ? Math.max(...totals) : totals.reduce((sum, stored) => sum + stored, 0)
   return {
     ...view,
     rows: kept,

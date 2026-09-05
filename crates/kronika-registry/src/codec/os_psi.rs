@@ -1,8 +1,8 @@
-//! Type `1_107_001`: pressure stall information from `/proc/pressure/{cpu,memory,io}`.
+//! Type `1_107_001`: pressure stall information for one recorded OS scope.
 
 use crate::{Section, Ts};
 
-/// One resource's PSI counters from a single `/proc/pressure/<resource>` snapshot.
+/// One resource's PSI counters from one host or cgroup pressure snapshot.
 ///
 /// `full_*` fields are `None` for the `cpu` resource, which has no `full` line.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
@@ -44,7 +44,7 @@ pub struct OsPsi {
     /// Cumulative stall time (full), microseconds. `None` for cpu.
     #[column(c, unit = microseconds)]
     pub full_total: Option<i64>,
-    /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
+    /// Source scope (`0=host`, `3=container`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
 }

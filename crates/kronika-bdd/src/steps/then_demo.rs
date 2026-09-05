@@ -19,6 +19,19 @@ fn demo_log_contains(world: &mut BddWorld, step: &Step) -> Result<()> {
     Ok(())
 }
 
+#[then("the demo data root lacks these paths")]
+fn demo_paths_are_absent(world: &mut BddWorld, step: &Step) -> Result<()> {
+    let demo = world.demo.as_ref().context("the demo was started")?;
+    for row in table_rows(step, &["path"])? {
+        let [relative] = row.as_slice() else {
+            anyhow::bail!("a demo path row needs one path, got {row:?}");
+        };
+        let path = demo.data_path(relative);
+        anyhow::ensure!(!path.exists(), "{} still exists", path.display());
+    }
+    Ok(())
+}
+
 #[then("PostgreSQL returns these scalar values")]
 fn postgres_scalars(world: &mut BddWorld, step: &Step) -> Result<()> {
     let postgres = world

@@ -16,6 +16,7 @@ interface FixtureHeatmap {
   readonly from: number
   readonly group: readonly string[]
   readonly records: readonly Readonly<Record<string, unknown>>[]
+  readonly scope?: string
   readonly section: string
   readonly top: number
 }
@@ -76,6 +77,7 @@ export function bundledFixtureHeatmapRecords(
   columns: number,
   top: number,
   group: readonly string[] = [],
+  scope = "all",
 ): readonly Readonly<Record<string, unknown>>[] | null {
   const heatmaps = rawFixture()?.heatmaps
   if (!Array.isArray(heatmaps)) return null
@@ -88,6 +90,7 @@ export function bundledFixtureHeatmapRecords(
         || !candidate.records.every((record: unknown) => record !== null && typeof record === "object" && !Array.isArray(record))) continue
     if (candidate.from === from && candidate.section === section
         && candidate.columns === columns && candidate.top === top
+        && (candidate.scope ?? "all") === scope
         && sameNames(candidate.fields, fields) && sameNames(candidate.group, group)) return candidate.records
   }
   return null

@@ -32,7 +32,8 @@ async fn ensure_keys(dsn: &str, table: &str, chains: u32) -> anyhow::Result<()> 
     for key in 0..chains {
         client
             .batch_execute(&format!(
-                "insert into {table} (id) values ({key}) on conflict do nothing"
+                "insert into {table} (id, customer_id, status, total_cents, placed_at) \
+                 values ({key}, 1, 'paid', 1000, clock_timestamp()) on conflict do nothing"
             ))
             .await?;
     }
@@ -112,7 +113,9 @@ const fn link_application_name(link: u32) -> &'static str {
 fn lock_update_sql(table: &str, key: i64) -> String {
     format!(
         "set local statement_timeout = '{LOCK_STATEMENT_TIMEOUT_S}s'; \
-         update {table} set id = id where id = {key}"
+         update {table} \
+         set status = case status when 'paid' then 'packed' else 'paid' end \
+         where id = {key}"
     )
 }
 

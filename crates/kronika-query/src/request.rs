@@ -1,5 +1,7 @@
 //! Typed inputs accepted by query execution.
 
+use crate::StatementScope;
+
 /// Optional inclusive timestamp bounds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Window {
@@ -100,6 +102,8 @@ pub struct HourSeriesRequest {
     pub type_id: Option<u32>,
     /// Optional relation aggregation level.
     pub group: Option<RelationGroup>,
+    /// Which statements the `postgresql_summary` series folds.
+    pub scope: StatementScope,
 }
 
 impl std::fmt::Debug for HourSeriesRequest {
@@ -110,6 +114,7 @@ impl std::fmt::Debug for HourSeriesRequest {
             .field("filters", &self.filters)
             .field("type_id", &self.type_id)
             .field("group", &self.group)
+            .field("scope", &self.scope)
             .finish()
     }
 }
@@ -173,6 +178,8 @@ pub struct SnapshotRequest {
     pub type_id: Option<u32>,
     /// Requires `type_id` and addresses a finished source row.
     pub row_ordinal: Option<u64>,
+    /// Which statements a paged `pg_stat_statements` snapshot lists.
+    pub scope: StatementScope,
 }
 
 /// Projection and predicates shared by history and row pages.

@@ -737,6 +737,11 @@ fn differing_metadata_rows_remain_and_the_report_path_accepts_the_slice() {
             segment_id: summary.segment_id,
             max_zms_bytes: output.len() as u64,
             zms: output,
+            visible_range: kronika_report::ReportTimeRange::new(
+                summary.requested_from,
+                summary.requested_to_exclusive,
+            )
+            .expect("slice report range"),
         },
         &mut html,
     )

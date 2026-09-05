@@ -1,5 +1,6 @@
 //! Sample selection shared by the nine current-state finders.
 
+use crate::StatementScope;
 use std::sync::Arc;
 
 use kronika_reader::Cell;
@@ -350,6 +351,7 @@ fn prepare_current(
         filters: Vec::new(),
         type_id: None,
         row_ordinal: None,
+        scope: StatementScope::All,
     };
     drop(catalog);
     super::prepare_selected_state(dataset, anchor, segments, clean, request, true, None)?
@@ -426,6 +428,7 @@ fn prepare(
         filters: Vec::new(),
         type_id: None,
         row_ordinal: None,
+        scope: StatementScope::All,
     };
     drop(catalog);
     let prepared = super::prepare_selected(

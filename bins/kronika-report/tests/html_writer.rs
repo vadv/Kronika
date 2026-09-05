@@ -4,7 +4,7 @@
 
 use kronika_layout::SegmentId;
 use kronika_query::{SOURCE_OS, SOURCE_POSTGRESQL};
-use kronika_report::{HtmlReportInput, write_html};
+use kronika_report::{HtmlReportInput, ReportTimeRange, write_html};
 use std::process::Command;
 use {
     base64 as _, flate2 as _, kronika_format as _, kronika_index as _, kronika_reader as _,
@@ -23,6 +23,8 @@ fn public_writer_builds_one_self_contained_document() {
             segment_id: SegmentId::new(SEGMENT_ID).expect("fixture segment id"),
             zms: ZMS.to_vec(),
             max_zms_bytes: u64::try_from(ZMS.len()).expect("fixture length fits u64"),
+            visible_range: ReportTimeRange::new(SEGMENT_ID, SEGMENT_ID + 1_000_001)
+                .expect("fixture report range"),
         },
         &mut html,
     )

@@ -176,6 +176,15 @@ exceeded I/O-row bound omits I/O only.
 Valid cgroup I/O counters are recorded independently per device; a missing
 counter does not suppress the other recorded counters in that row.
 
+`os_cgroup_pids.current` is the direct `pids.current` value: the number of
+threads identified by TIDs in that cgroup and its descendants, including each
+process's main thread. It is not a count of process rows. `os_cgroup_pids.max`
+is the local `pids.max` setting for that subtree; an ancestor can impose a
+lower limit. Both controller files must be readable: `pids.current` must contain
+a nonnegative integer, and `pids.max` must contain a nonnegative integer or the
+literal `max`. Only that literal is recorded as a null unlimited limit; any
+other missing or invalid value omits the row.
+
 Inside a container, `os_cgroup_context` records cgroup version, the collector's
 exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective
 cpuset CPU count when the exact matching kernel file is usable. It also records
@@ -203,18 +212,23 @@ them as effective hierarchical limits.
 
 Web reads `instance_metadata.environment`. It hides Cgroups and requests no
 cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
-Tasks and loads the complete already-bounded direct-live rows recorded in that
+Threads (TIDs) and loads the complete already-bounded direct-live rows recorded in that
 namespace; the context row decorates only the collector's matching controller
-row. The controller paths remain independent for cgroup v1. A recursive cgroup
+row. The query layer derives the container lanes, `cg_cpu_share`, `cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`, `cg_memory`, `cg_memory_bytes`, `cg_mem_psi`, `cg_oom`, `cg_io_read`, `cg_io_write`, `cg_io_psi`, `cg_pids_share` and `cg_pids`, from the controller rows the context selects by exact path and scope and from container-scoped pressure; host-scoped pressure feeds only the host lanes, and a share lane exists only while a capacity or limit is recorded. The controller paths remain independent for cgroup v1. A recursive cgroup
 tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
-container. Every `os_psi` row records that scope. The current procfs collector
-produces host-scoped rows; when it runs in a container, their timestamps remain
-visible but health is null. Node pressure must not stand in for container
-pressure. Future rows from the container's own cgroup can be used without
-changing the formula.
+container. Every `os_psi` row records that scope. On a machine the core tick
+reads `/proc/pressure/{cpu,memory,io}` and records host scope. In a container
+with cgroup v2 it resolves one exact unified membership from
+`/proc/self/cgroup`, reads only `cpu.pressure`, `memory.pressure`, and
+`io.pressure` at that path under the configured cgroup root, and records
+container scope. It does not walk parents or children and never substitutes
+host pressure. A missing resource file omits that resource. An unreadable or
+malformed present file, an invalid or ambiguous membership, cgroup v1, or an
+unsupported hierarchy produces no replacement value; health remains `null`
+without all three resources.
 
 ## Health
 
@@ -222,7 +236,9 @@ Health is up to three ordinary nullable point series from 0 to 100: OS,
 PostgreSQL, and their combined value. A component penalty is `100 - health`.
 Disabled PostgreSQL contributes no penalty. Enabled PostgreSQL with no usable
 snapshot is `null`, and makes combined health `null` rather than silently
-healthy.
+healthy. The timeline omits a component whose selected range contains only
+`null` values and keeps every component with a numeric value visible. The
+combined threshold is drawn only when combined health itself is visible.
 
 OS health is the share of the interval in which nothing was waiting for the
 most contended resource:
@@ -568,6 +584,23 @@ It accepts neither a storage root nor an earlier segment. It builds the
 canonical IDX from that ZMS alone, so a first rate that needs an earlier sample
 remains `null`.
 
+Each generated document embeds one exact half-open visible range. Web export
+uses the user's requested bounds; the CLI accepts optional `--from` and
+`--to-exclusive` Unix-microsecond bounds and otherwise uses the physical ZMS
+range. Explicit and derived bounds must be positive JavaScript-safe integers,
+so the browser preserves every microsecond exactly. Rows retained immediately
+outside an exported interval remain available to interval calculations but do
+not create hours in the report picker. Report startup and browser-history
+navigation accept an `at` value only inside the visible range; an outside value
+returns to the document's default recorded instant and is replaced in the file
+URL instead of creating an empty hour.
+
+Every report-mode Events request intersects its half-open range with the
+embedded visible range. History-series and heatmap requests do the same before
+converting the exclusive report end to their inclusive `to` parameter. Rows
+retained outside the visible range remain calculation input only and are not
+eligible for these range-bearing responses.
+
 The command writes a temporary in the output directory, synchronizes it and
 atomically replaces the output. The resulting deterministic HTML contains the
 report build of the production React interface, the pinned JavaScript and
@@ -590,8 +623,9 @@ compressed WebAssembly are built ahead of the Rust binary and committed as
 reproducible assets, so an ordinary Cargo build needs no Node installation.
 
 `GET /api/export?from=<unix_second>&to=<unix_second>` is the authenticated web
-adapter for the same composition. Its inclusive range of signed whole Unix
-seconds passes directly, in-process, through `kronika_dump::slice_to_zms` and
+adapter for the same composition. The inclusive range consists of positive
+whole Unix seconds, and its half-open microsecond bounds must be JavaScript-safe.
+It passes directly, in-process, through `kronika_dump::slice_to_zms` and
 then `kronika_report::write_html_from_file_with_segment_id`, preserving the
 slice identity when its context makes catalog `min_ts` differ; the existing
 `write_html_from_file` keeps its catalog-derived identity contract. Each web
@@ -607,29 +641,34 @@ complete HTML. It validates that result before sending headers and streams the
 and delivery remain bounded in memory. The report build omits this live-only
 control.
 
-The live Export action opens a compact non-modal range panel attached to its
-top-bar control. It does not alter the one-hour timeline, address, view or
-cursor. Two deterministic text editors per endpoint expose `YYYY-MM-DD` and
-`HH:mm:ss`; a shared month calendar edits either endpoint and highlights the
-date span. The exact inclusive duration and a selected-hour reset remain
-visible. The current global Browser/UTC mode controls presentation only. In
-Browser mode the panel names the browser's resolved IANA zone. A local civil
-time skipped by a clock transition is rejected at that endpoint; a repeated
-civil time alone exposes first/second occurrence controls derived from the
-actual candidates, including transitions that are not one hour.
+The live Export action opens a modal dialog over the page; the interval it
+will export is drawn on the hour timeline behind it as a selection, and the
+address, view and cursor do not change. The range comes from context first:
+the selected hour, a window of five, fifteen or thirty minutes around the
+cursor, or the same range moved an hour earlier or later. Each endpoint is a
+labelled line with a day button and an editable clock in the current
+Browser/UTC mode; the day button offers only days that hold recordings. Before
+anything is requested the dialog shows the selected duration and the exact
+filename, derived from the same UTC seconds as the server. A local civil time
+skipped by a clock transition is rejected at that
+endpoint; a repeated civil time exposes first/second occurrence choices
+derived from the actual candidates, including transitions that are not one
+hour. On a phone the dialog is a sheet at the bottom of the viewport.
 
-An accepted export keeps immutable signed Unix-second bounds. Until response
-headers arrive, the panel reports preparation with measured elapsed time and
-offers no cancellation or restart. It cannot be dismissed during that work,
-while the rest of the interface and its navigation remain available. After
-headers, the panel reports received bytes and the declared `Content-Length`
+An accepted export keeps immutable positive Unix-second bounds. Until response
+headers arrive, the dialog reports preparation as elapsed seconds beside the
+seconds the previous export needed, kept in the browser, and offers no
+cancellation or restart. It cannot be dismissed during that work, and the page behind the scrim waits
+with it. After
+headers, the dialog reports received bytes and the declared `Content-Length`
 when present while assembling the streamed body. Completion creates one HTML
-download and revokes its object URL. An HTTP error, response-body failure or
-local-download failure returns the same bounded panel to its editable state.
+download, revokes its object URL, reports the saved name, size and seconds,
+and offers another export. An HTTP error, response-body failure or
+local-download failure returns the dialog to its editable state.
 If the connection ends before any response status, server preparation remains
-unobservable: the panel retains its submitted range, reports that state and
+unobservable: the dialog retains its submitted range, reports that state and
 keeps close and restart unavailable. Browser Back and hour navigation close an
-idle panel; during an active export they leave the panel and its submitted
+idle dialog; during an active export they leave the dialog and its submitted
 range in place.
 
 English and Russian source dictionaries are flat YAML files. The interface
@@ -658,10 +697,17 @@ buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
 both dictionaries; Russian help explains their semantics in Russian.
 
-The interface covers one selected calendar hour. Host is one
-utilisation/saturation/errors ledger: a row per resource whose cells carry the
-hour's shape at sparkline size with the cursor reading beside it, expanding in
-place — several rows at once — into the group's metric chips, its inline
+The interface covers one selected calendar hour. Host is one USE ledger whose
+methodology labels are localized as ordinary interface language (`Utilization`,
+`Saturation`, and `Errors` in English; `Использование`, `Насыщение`, and
+`Ошибки` in Russian): a row per resource whose cells carry the hour's shape at
+sparkline size with the cursor reading beside it. Every populated cell is a
+native action that opens its resource and selects that exact recorded metric;
+an unavailable cell remains an inert dash. The cell action owns its complete
+label, reading, keyboard focus, and coarse-pointer target; lane text is not a
+second nested help action. Column-header help defines USE methodology, while
+the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to, since shares are comparable and byte rates are not; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events, where zero is the point. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
+several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
 from the ledger itself; a metric link opens its row. Processes keeps its
@@ -713,7 +759,27 @@ section-specific metric. Metrics may sum counters or scale them with recorded
 block-size or clock-rate metadata; missing metadata leaves raw counts.
 The ledger makes no request until opened, and its open state persists locally.
 
-Each entity row shows interval cells, its hour total, and its value at the
+Every statement the collector runs carries the exact, case-sensitive
+`/* kronika:` prefix. The query layer matches it against stored dictionary
+bytes in each segment and retains only matching string IDs. The
+`scope=workload` parameter applies that classification to Statements rankings,
+paged rows and the PostgreSQL summary. The summary also excludes plans whose
+`dbid`, `userid` and nonzero statement query ID match a collector statement.
+The vadv layout uses `queryid_stat_statements`; other plan layouts use
+`queryid`. Plans without a matching statement ID remain in the summary.
+The paged response reports the exact number of collector rows the scope kept
+off the page. The interface hides collector statements by default, always shows
+the heatmap and the summary under the same scope, and offers one short control,
+`Kronika queries`, with that exact count. An explicit Statements search, an
+entity context, or an exact opened collector row widens the scope to every
+statement and locks the control, so related navigation and focus remain intact.
+Statement query text uses the 12 px regular monospace data face and the scope
+copy uses the interface face at no less than 12 px. With a coarse pointer,
+Statement lens and search actions, table headers, and selectable rows each own
+at least a 44 px target; the virtual row stride changes with that target so
+rows never overlap.
+
+Each entity row shows interval cells, its window summary, and its value at the
 cursor. The pinned Total row includes all entities; Other includes entities
 outside the displayed ranking. Global color scaling is the default; per-row
 scaling is optional. Null cells are blank and zero uses the lightest fill. A
@@ -727,7 +793,9 @@ entities in the heatmap response. Query text, plans, command lines, log or
 sample text, statements, context, hints, detail payloads, and similar stored
 data do not; the complete row remains on its owning point/detail path. Tables
 and indexes use twelve cells for their five-minute cadence.
-Gauge metrics rank by the window maximum and display values rather than rates.
+Gauge metrics display values rather than rates. RSS heatmaps rank by average
+memory across recorded process snapshots in the window; other gauges rank by
+the window maximum. RSS labels the summary column Average.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -780,16 +848,27 @@ truncation only when the global limit excludes matching entries and have no
 continuation cursor. The browser keeps that incomplete-result notice visible
 while local filters narrow the returned groups.
 
-A timeline cluster narrows the grouped console by the event sources it
-represents. A group's representative timestamp is used for auto-expansion only
+A selected timeline cluster narrows the grouped console to the exact half-open
+interval from its first event locator through one microsecond after its last
+event locator, and to only the event sources represented there. Clearing the
+selection restores the whole-hour query. The selection reports log rows,
+threshold crossings, and sharp rises as separate typed counts; it never labels
+their raw locator sum as one event total. An independent threshold locator on a
+log row is retained for selection and severity but is not counted as a second
+log row. A group's representative timestamp is used for auto-expansion only
 when it identifies one returned group for that source; it is not a list of the
-group's member rows.
+group's member rows. Pending and failed log reads have no numeric result; zero
+is displayed only after a successful empty result.
 
 Errors group by `(severity, category, pattern)`. Slow queries group by their
 normalized pattern, and their representative row is the slowest occurrence.
 Autovacuum and autoanalyze group by relation. Checkpoints form one group with
-timed and requested counts. PgBouncer events group by level and message.
-Lifecycle records remain separate.
+timed and requested counts. PgBouncer events group by level and exact message;
+that message is the primary monospace title instead of the repeated source
+name. A shared database, login user, client host, and source file remain compact
+group context. PgBouncer's literal `(nodb)` and `(nouser)` values stay visible
+beside localized explanations; row detail retains the complete recorded
+values. Lifecycle records remain separate.
 
 Lock waits group by recorded `holding_pids`. Acquired rows have no holder list;
 they join waiting rows with the same pid and target, and unmatched rows form a
@@ -814,17 +893,48 @@ interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
 equivalents on labelled scales. When `instance_metadata.environment` is
-`container`, the Host ledger starts with an open collector-cgroup overview and retains only the
-namespace Network host row; host CPU, memory, and storage rows and lanes are
-hidden. The overview reads each controller through the same exact entity-history
-identity as its detail table and shows compact CPU, memory, I/O, and Tasks
-history with cursor readings. Its cards use only the mode name because the
-collector-cgroup heading already supplies their context. I/O stays separate
-per `(cgroup_path, major, minor)` and is never summed. When every ranked I/O
-row has one exact cgroup path, the ledger and entity table name that path once
-and label rows by exact `major:minor`;
-with multiple paths, each row retains its path. Tasks uses the exact unified path only for cgroup
-v2. Used, user, and system core equivalents come from cgroup counter deltas, and capacity
+`container`, the ledger keeps three recorded scopes in order. Container comes
+first with the open collector-cgroup overview and both cgroup activity ledgers.
+Network namespace follows and owns the one Network row; it is never labelled
+as Host. Host follows separately with the recorded host CPU, memory, and
+storage rows. These readings remain distinct from cgroup use and limits, and
+Network is not duplicated into Host. The compact timeline and its rail in a
+container carry Health, the collector cgroup's own lanes (CPU as a share of
+its limit, or used cores without one; CPU PSI; memory as a share of its
+limit, or bytes without one; I/O PSI) and the PostgreSQL activity lanes; host
+CPU, memory and storage lanes are not drawn there and stay in the Host rows of
+the ledger. Every view and the timeline Inspector use the same recorded
+environment; until it arrives, resource lanes are absent. The overview contains one control for
+every cgroup controller present
+in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
+These controls are the sole mode selector and expose their selected state. A
+control click changes the detail mode and clears an entity selection; an exact
+table-row click opens that entity's Inspector and history.
+
+The I/O table shows one row per I/O stream of the collector cgroup. Folding is
+local to one cgroup path; the same device in another path keeps its own row. cgroup v2
+`io.stat` charges one request to every block layer it passes, so a volume on
+dm/LVM and the disk beneath it carry the same bytes twice; the table keeps the
+top-most charged device of each chain of exact `os_block_topology` edges as the
+row and lists the charged layers beneath it in that row's Inspector as the same
+I/O, with their own counters, never summed. Rows are never combined by
+similarity: only an exact recorded edge folds a lower layer. The Device cell
+is two lines: the mount point on top, then the mount source, the device name
+and the physical device at the bottom of the chain, all from exact
+`major:minor` joins to `os_mountinfo` and `os_diskstats` and exact sysfs edges.
+A non-infrastructure mount point is preferred, ordered by shortest path and
+then lexical order; a whole disk charged for a partition's I/O takes the mount
+points of the partitions above it; further mount points use `+N`, and every
+association and the full chain remain in the Inspector. Without a mount the
+device name stands alone, and without a name the raw `major:minor` is the
+label; the interface never describes what the recording lacks. The raw
+`major:minor` always remains visible. Mount points, sources, device names and
+`major:minor` use the 12 px regular monospace data face.
+
+The Threads control shows `pids.current` as its primary reading and labels the
+local `pids.max` separately; the latter is not a denominator or an effective
+hierarchy limit. The exact unified path selects this row only for cgroup v2.
+Used, user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither
@@ -861,9 +971,16 @@ I/O PSI stays explicitly host-wide and is not presented as device latency;
 cgroup I/O throughput and operations remain separate from host diskstats.
 The filesystem table records mount point and root plus exact total/available
 byte and inode pairs. It does not derive used space from availability. Storage
-topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
-whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
-opens its one-hour history.
+topology records only exact sysfs edges: a partition to its whole device and a
+layered dm/LVM/MD device to each device under `slaves/`; plain whole devices,
+unresolved links and bind ancestry stay opaque. Inside a container, diskstats
+keep the devices with a non-infrastructure mount and the devices the
+collector's own cgroup `io.stat` charges, so the physical layers below a
+mounted volume stay named, and the topology keeps only the chains under those
+devices: the rest of the node's disks and volumes are not the container's and
+are not recorded. Mount points inside `/proc` and `/sys` are never recorded:
+container runtimes mask paths there with empty tmpfs, and nothing mounted
+there is a data filesystem. Selecting a metric opens its one-hour history.
 
 A large chart never occupies the primary workspace. Every main surface instead
 keeps the shared 124 px time preview visible above its table or list. The preview
@@ -925,9 +1042,9 @@ Shared charts reserve room at the end for the last time label after accounting
 for every visible side axis. The compact timeline shell is exactly 124 px; its
 94 px figure keeps a dedicated marker lane above the plot — finding markers
 never occlude the drawn lines — and the x-axis, cursor and labels inside the
-instrument before the following navigation. A marker cluster names the kinds
-present by shape and sizes the cluster with one count; the per-kind split
-lives in the accessible name and the events console. The Inspector's Chart
+instrument before the following navigation. A marker cluster pairs each kind
+shape with its own count and exposes the same typed split in its accessible
+name and the Events selection. It has no untyped aggregate count. The Inspector's Chart
 panel belongs to the selection: a selected row shows its own metric history
 there, with a wrapped metric-button selector instead of a hidden horizontal
 scrollbar, while the Detail panel keeps the facts. Only without such a history
@@ -1284,9 +1401,20 @@ logical section share one section-owned identity index, compact identity cells,
 and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
 needed to rank them. A counter ranks by its whole-window delta and a gauge by
-its whole-window maximum. A band total uses the sum for counters and the maximum
-for gauges. The response also carries a totals band containing the per-column
+its whole-window maximum, except for the RSS grid described below. A band total
+uses the sum for counters and the maximum for other gauges. The response also carries a totals band containing the per-column
 sum of every entity and an others band equal to totals minus the ranked rows.
+
+For a Grid request selecting only `os_process.rmem_kb`, each summary is the sum
+of its recorded RSS values divided by the number of distinct process snapshot
+timestamps in the requested window. Groups, individual PIDs, Total, and Other
+share that denominator: a PID absent at a recorded timestamp contributes
+nothing, and times without any recorded process values do not enter the mean.
+Ranking and label selection use the same mean, independently of grid columns.
+The response identifies its summary as `mean`, `sum`, or `max`; compact UI rows
+combine hidden means by addition. Cells retain their interval gauge readings.
+RankingOnly requests, including MCP Overview, retain gauge maxima.
+
 Coverage contains only `state` (`data` or `no_data`) and decimal
 `window_rows`; it does not claim segment, field, or completeness coverage. The
 redundant `os_cpu` aggregate identity whose `cpu_id` is exactly `-1` is excluded
@@ -1310,8 +1438,12 @@ reference and are the browser and MCP transitions to the complete stored row.
 The server privately binds the stateless, versioned reference to the complete
 stable logical identity and treats its ordering information only as a hint. If
 finishing active data reorders rows, row detail resolves the exact same logical
-identity and returns the same row. A missing, altered or non-unique identity is
-an error, never another row. Each
+identity and returns the same row. For `event_stream`, timestamp plus every
+stored non-timestamp field is the complete row content: multiple physical rows
+with that identical identity retain their full occurrence multiplicity, and a
+reference may resolve to any content-equivalent match. Other non-unique
+identities, and every missing or altered identity, are errors and never resolve
+to another row. Each
 potentially large text field in that response has one stable object shape:
 `stored_text`, decimal `full_len`, `truncated`, and `sha256`. These fields
 preserve collector-side truncation facts; a short untruncated value uses
@@ -1441,8 +1573,68 @@ without risking collected data.
 
 The repository demo runs the project against live PostgreSQL and OS containers.
 
+When its PostgreSQL workload is enabled, bounded long-lived clients connect
+through PgBouncer in transaction-pooling mode. The default four clients run at
+most 20 short commerce transactions per second in total. One transaction uses
+indexed customer, product, and inventory lookups and writes a related order,
+item, payment, event, and application session. Client-owned order slots are
+reused above the separate plan and Vacuum fixture ranges, so the default keeps
+at most 10000 live OLTP order graphs. Missed pacing ticks are not replayed.
+
+Configuration validates finite limits for client, setup, lock, and plan
+concurrency and for schema, plan, Vacuum, and OLTP row counts. The commerce
+schema declares its primary keys, foreign keys, checks, and workload indexes.
+The plan-change, lock, Vacuum, and log-event stories run alongside the steady
+OLTP traffic.
+
 The demo reports segment size, RSS, and CPU use. It also supplies data for
 segment-size benchmarks.
+
+`kronika-demo` also runs an independent system workload by default. The exact
+`KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED` values are `true` and `false`; the
+Compose entrypoint sets `true` explicitly. This workload has no dependency on
+the optional PostgreSQL workload DSN. Invalid or blank configured values stop
+the demo before its child processes start.
+
+Four named threads in the `kronika-demo` process generate bounded CPU, memory,
+file, and loopback activity. CPU, file, and loopback use one fixed 60-second
+wave with six 10-second phases at 25%, 50%, 75%, 100%, 75%, and 50% of their
+configured peaks. Work is never replayed after delayed scheduling. The CPU
+thread works inside 100 ms frames and always retains sleep time. The memory
+thread owns one fixed anonymous allocation, touches each operating-system page
+at startup and once per second, and never resizes it. Two connected UDP sockets
+use ephemeral `127.0.0.1` ports in the existing network namespace; they expose
+no service and use no external route.
+
+The scratch directory defaults to
+`$KRONIKA_DEMO_DIR/system-activity`, must be separate from
+`KRONIKA_STORAGE_DIR`, and resolves in Compose to the durable demo volume rather
+than a tmpfs or the read-only root. It contains one exact file,
+`kronika-demo-system-activity.bin`. The file length is set once, writes wrap by
+page at the end, and no append path exists. Each configured cadence runs
+file-local `sync_data`, discards only those flushed pages through
+`POSIX_FADV_DONTNEED`, and reads them back. Global filesystem synchronization is
+never used. A stale regular file with that exact name is replaced. A symlink or
+non-file is refused. Clean shutdown joins the workers and removes only the
+owned file; the directory and unrelated entries remain.
+
+The Compose defaults and accepted inclusive ranges are 12% peak CPU of one core
+(1–25), 32 MiB anonymous memory (8–128 MiB), an 8 MiB scratch ring (1–32 MiB),
+32 KiB/s peak disk payload in each direction (1–256 KiB/s), 32 KiB/s peak
+one-way loopback payload (1–256 KiB/s), and a 5-second file flush interval
+(1–10 seconds). Peak disk bytes accumulated during one flush interval must fit
+in the ring. The wave averages five-eighths of peak. Defaults therefore spend
+270 CPU-seconds per hour, write at most 73,728,000 bytes per hour and read the
+same payload, and send 73,728,000 payload bytes per hour that appear in each
+loopback RX and TX counter. The fixed file occupies at most 8 MiB; protocol and
+filesystem metadata add small traffic beyond payload counts.
+
+System workers own their state and do not block the PostgreSQL Tokio runtime.
+Each worker error is logged with the operating-system or I/O error and ends
+only that worker. The collector, optional PostgreSQL workload, and remaining
+system workers continue. Shutdown signals all workers first, wakes their
+bounded waits, joins them, and completes scratch cleanup inside the existing
+demo stop interval.
 
 ## Roadmap
 

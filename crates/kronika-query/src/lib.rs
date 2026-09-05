@@ -7,6 +7,7 @@ mod catalog;
 mod dataset;
 mod error;
 mod events;
+mod exact_product;
 mod finished_dataset;
 mod heatmap;
 mod history;
@@ -21,6 +22,7 @@ mod row_key;
 mod rows;
 mod selection;
 pub mod snapshot;
+mod statement_scope;
 mod time;
 
 pub use catalog::{CatalogFacts, CatalogField, CatalogSection, catalog_facts};
@@ -37,8 +39,9 @@ pub use finished_dataset::FinishedDataset;
 pub use heatmap::{
     CoverageState, DEFAULT_TOP, HeatmapBand, HeatmapBatchQuery, HeatmapBatchResult,
     HeatmapCoverage, HeatmapEntity, HeatmapError, HeatmapGrid, HeatmapGroup, HeatmapInterval,
-    HeatmapItemQuery, HeatmapItemResult, HeatmapView, MAX_FIELDS, MAX_TOP, NamedValues,
-    NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch, validate_heatmap_request,
+    HeatmapItemQuery, HeatmapItemResult, HeatmapSummary, HeatmapView, MAX_FIELDS, MAX_TOP,
+    NamedValues, NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch,
+    validate_heatmap_request,
 };
 pub use hour::{
     GroupKey, Metric, RelationAggregate, RelationField, RelationKind, RelationSource,
@@ -59,6 +62,7 @@ pub use row_key::{
     DETAIL_REF_MAX_ENCODED_BYTES, DetailLocator, RowIdentity, detail_locator, identity,
     identity_columns, is_detail_text, validate,
 };
+pub use statement_scope::{COLLECTOR_STATEMENT_PREFIX, STATEMENTS_SECTION, StatementScope};
 pub use time::TimeRange;
 
 use catalog::PreparedCatalog;

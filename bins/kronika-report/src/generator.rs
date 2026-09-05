@@ -23,7 +23,9 @@ const WASM_GLUE: &[u8] = include_bytes!("../assets/kronika-report-wasm.js");
 )]
 const WASM_GZIP: &[u8] = include_bytes!("../assets/kronika-report-wasm.wasm.gz");
 const RUNTIME_MARKER: &[u8] = b"/*KRONIKA_REPORT_RUNTIME*/";
-const RUNTIME_START: &[u8] = br#";(()=>{const b=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));globalThis.__KRONIKA_REPORT_RUNTIME__={ready:(async()=>{const z=b(""#;
+const RUNTIME_START: &[u8] = br#";(()=>{const b=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));globalThis.__KRONIKA_REPORT_RUNTIME__={visibleFrom:""#;
+const RUNTIME_TO: &[u8] = br#"",visibleToExclusive:""#;
+const RUNTIME_READY: &[u8] = br#"",ready:(async()=>{const z=b(""#;
 const RUNTIME_INDEX: &[u8] = br#""),i=b(""#;
 const RUNTIME_WASM: &[u8] = br#""),g=b(""#;
 const RUNTIME_ID: &[u8] = br#"");const r=new Uint8Array(await new Response(new Blob([g]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()),m=await WebAssembly.compile(r);await KronikaReportWasm.initEmbedded(m);return new KronikaReportWasm.ReportSession(""#;
@@ -31,6 +33,7 @@ const RUNTIME_SOURCES: &[u8] = br#"",z,i,"#;
 const RUNTIME_LENGTH: &[u8] = br#",BigInt(""#;
 const RUNTIME_END: &[u8] = br#""));})()};})();"#;
 const BASE64_INPUT_BYTES: usize = 12 * 1024;
+const MAX_JAVASCRIPT_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 /// Owned input for one self-contained HTML document.
 #[derive(Debug)]
@@ -41,6 +44,39 @@ pub struct HtmlReportInput {
     pub zms: Vec<u8>,
     /// Maximum accepted logical ZMS length in bytes.
     pub max_zms_bytes: u64,
+    /// Exact half-open time range exposed by the report interface.
+    pub visible_range: ReportTimeRange,
+}
+
+/// Exact half-open time range exposed by one report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportTimeRange {
+    from: i64,
+    to_exclusive: i64,
+}
+
+impl ReportTimeRange {
+    /// Build a positive, JavaScript-safe, non-empty half-open time range.
+    #[must_use]
+    pub const fn new(from: i64, to_exclusive: i64) -> Option<Self> {
+        if from > 0 && from < to_exclusive && to_exclusive <= MAX_JAVASCRIPT_SAFE_INTEGER {
+            Some(Self { from, to_exclusive })
+        } else {
+            None
+        }
+    }
+
+    /// Inclusive lower bound in Unix microseconds.
+    #[must_use]
+    pub const fn from(self) -> i64 {
+        self.from
+    }
+
+    /// Exclusive upper bound in Unix microseconds.
+    #[must_use]
+    pub const fn to_exclusive(self) -> i64 {
+        self.to_exclusive
+    }
 }
 
 /// Facts about one successfully written HTML document.
@@ -62,6 +98,8 @@ pub struct HtmlReportSummary {
 pub enum HtmlReportError {
     /// An in-memory artifact length cannot be represented by the report ABI.
     InputTooLarge(usize),
+    /// The report-visible time range is empty or cannot be represented.
+    InvalidTimeRange,
     /// The validated catalog timestamp is outside the segment-id domain.
     Layout(LayoutError),
     /// Invalid or over-limit finished ZMS bytes.
@@ -90,6 +128,9 @@ impl std::fmt::Display for HtmlReportError {
             Self::InputTooLarge(bytes) => {
                 write!(f, "a {bytes}-byte ZMS is too large for the report ABI")
             }
+            Self::InvalidTimeRange => f.write_str(
+                "report-visible bounds must be positive JavaScript-safe Unix microseconds",
+            ),
             Self::Layout(source) => source.fmt(f),
             Self::Resource(source) => source.fmt(f),
             Self::Reader(source) => source.fmt(f),
@@ -117,7 +158,10 @@ impl std::error::Error for HtmlReportError {
             Self::Build(source) => Some(source),
             Self::Index(source) => Some(source),
             Self::Asset(source) | Self::Write(source) | Self::Read(source) => Some(source),
-            Self::InputTooLarge(_) | Self::InvalidAsset(_) | Self::InvalidResourceCount(_) => None,
+            Self::InputTooLarge(_)
+            | Self::InvalidTimeRange
+            | Self::InvalidAsset(_)
+            | Self::InvalidResourceCount(_) => None,
         }
     }
 }
@@ -170,9 +214,10 @@ pub fn write_html(
         segment_id,
         zms,
         max_zms_bytes,
+        visible_range,
     } = input;
     let source = EmbeddedSource::from_owned(segment_id, zms, max_zms_bytes)?;
-    write_source_html(segment_id, &source, None, output)
+    write_source_html(segment_id, &source, None, Some(visible_range), output)
 }
 
 /// Write one self-contained HTML document from an already-open ZMS file.
@@ -187,6 +232,31 @@ pub fn write_html_from_file(
     max_zms_bytes: u64,
     output: &mut dyn io::Write,
 ) -> Result<HtmlReportSummary, HtmlReportError> {
+    write_file_html(file, max_zms_bytes, None, output)
+}
+
+/// Write one self-contained HTML document with an explicit visible range.
+///
+/// The segment identity is still derived from the validated ZMS catalog.
+///
+/// # Errors
+///
+/// Returns a typed input, reader, index, asset, or output-sink failure.
+pub fn write_html_from_file_with_range(
+    file: File,
+    max_zms_bytes: u64,
+    visible_range: ReportTimeRange,
+    output: &mut dyn io::Write,
+) -> Result<HtmlReportSummary, HtmlReportError> {
+    write_file_html(file, max_zms_bytes, Some(visible_range), output)
+}
+
+fn write_file_html(
+    file: File,
+    max_zms_bytes: u64,
+    visible_range: Option<ReportTimeRange>,
+    output: &mut dyn io::Write,
+) -> Result<HtmlReportSummary, HtmlReportError> {
     let len = file.byte_len().map_err(HtmlReportError::Read)?;
     if len > max_zms_bytes {
         return Err(ResourceError::TooLarge {
@@ -198,7 +268,7 @@ pub fn write_html_from_file(
     let min_ts = read_resource_catalog(&file)?.min_ts;
     let segment_id = SegmentId::new(min_ts)?;
     let source = EmbeddedSource::from_file(segment_id, file, max_zms_bytes)?;
-    write_source_html(segment_id, &source, Some(min_ts), output)
+    write_source_html(segment_id, &source, Some(min_ts), visible_range, output)
 }
 
 /// Write one self-contained HTML document from an already-open ZMS file under
@@ -216,16 +286,18 @@ pub fn write_html_from_file_with_segment_id(
     segment_id: SegmentId,
     file: File,
     max_zms_bytes: u64,
+    visible_range: ReportTimeRange,
     output: &mut dyn io::Write,
 ) -> Result<HtmlReportSummary, HtmlReportError> {
     let source = EmbeddedSource::from_file(segment_id, file, max_zms_bytes)?;
-    write_source_html(segment_id, &source, None, output)
+    write_source_html(segment_id, &source, None, Some(visible_range), output)
 }
 
 fn write_source_html(
     segment_id: SegmentId,
     source: &EmbeddedSource,
     expected_min_ts: Option<i64>,
+    visible_range: Option<ReportTimeRange>,
     output: &mut dyn io::Write,
 ) -> Result<HtmlReportSummary, HtmlReportError> {
     let reader = FinishedReader::new(source.clone());
@@ -238,6 +310,18 @@ fn write_source_html(
     if expected_min_ts.is_some_and(|min_ts| min_ts != resource.summary().min_ts) {
         return Err(ResourceError::Changed.into());
     }
+    let visible_range = match visible_range {
+        Some(range) => range,
+        None => ReportTimeRange::new(
+            resource.summary().min_ts,
+            resource
+                .summary()
+                .max_ts
+                .checked_add(1)
+                .ok_or(HtmlReportError::InvalidTimeRange)?,
+        )
+        .ok_or(HtmlReportError::InvalidTimeRange)?,
+    };
     let zms_len = resource.captured_bytes();
     let bytes = source.open_resource(resource)?;
 
@@ -249,6 +333,10 @@ fn write_source_html(
     write_output(output, &shell[..marker])?;
     write_output(output, WASM_GLUE)?;
     write_output(output, RUNTIME_START)?;
+    write!(output, "{}", visible_range.from()).map_err(HtmlReportError::Write)?;
+    write_output(output, RUNTIME_TO)?;
+    write!(output, "{}", visible_range.to_exclusive()).map_err(HtmlReportError::Write)?;
+    write_output(output, RUNTIME_READY)?;
     write_base64_reader(output, &bytes, zms_len)?;
     write_output(output, RUNTIME_INDEX)?;
 

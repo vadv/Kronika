@@ -100,6 +100,11 @@ if (await evaluate(`document.querySelector('[data-testid="login-card"]') !== nul
 }
 await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "application")
 if (reportMode) {
+  await waitFor(`(() => {
+    const at = Number(new URL(location.href).searchParams.get("at"))
+    return Number.isSafeInteger(at) && at > 0
+      && document.querySelectorAll(".process-table .entity-row").length > 0
+  })()`, "canonical report address", 30_000)
   const beforeReload = await evaluate(`location.href`)
   const reportState = await evaluate(`(() => ({
     export: document.querySelector('[data-testid="export-trigger"]') !== null,
@@ -120,6 +125,70 @@ if (reportMode) {
   await waitFor(`location.href === ${JSON.stringify(beforeReload)}`, "reloaded report address", 30_000)
   assert.equal(await evaluate(`location.href`), beforeReload)
   assert.equal(await evaluate(`location.pathname`), requestedUrl.pathname)
+
+  const visibleRange = await evaluate(`(() => {
+    const runtime = globalThis.__KRONIKA_REPORT_RUNTIME__
+    const from = Number(runtime?.visibleFrom)
+    const toExclusive = Number(runtime?.visibleToExclusive)
+    return Number.isSafeInteger(from) && Number.isSafeInteger(toExclusive) && from < toExclusive
+      ? { from, toExclusive }
+      : null
+  })()`)
+  if (visibleRange !== null) {
+    const invalidAt = visibleRange.toExclusive + 3_600_000_000
+    const previousTimeOrigin = await evaluate(`performance.timeOrigin`)
+    const invalidUrl = await evaluate(`(() => {
+      const url = new URL(location.href)
+      url.searchParams.set("at", ${JSON.stringify(String(invalidAt))})
+      return url.href
+    })()`)
+    await send("Page.navigate", { url: invalidUrl })
+    await waitFor(`performance.timeOrigin !== ${previousTimeOrigin} && document.readyState === "complete"`, "out-of-range report reload", 30_000)
+    await waitFor(`(() => {
+      const at = Number(new URL(location.href).searchParams.get("at"))
+      return at >= ${visibleRange.from} && at < ${visibleRange.toExclusive}
+        && document.querySelectorAll(".process-table .entity-row").length > 0
+    })()`, "out-of-range initial report address recovery", 30_000)
+    assert.notEqual(await evaluate(`new URL(location.href).searchParams.get("at")`), String(invalidAt))
+
+    await evaluate(`(() => {
+      const url = new URL(location.href)
+      url.searchParams.set("at", ${JSON.stringify(String(invalidAt))})
+      history.pushState({}, "", url)
+      dispatchEvent(new PopStateEvent("popstate"))
+    })()`)
+    await waitFor(`(() => {
+      const at = Number(new URL(location.href).searchParams.get("at"))
+      return at >= ${visibleRange.from} && at < ${visibleRange.toExclusive}
+        && document.querySelectorAll(".process-table .entity-row").length > 0
+    })()`, "out-of-range report address recovery", 30_000)
+    assert.notEqual(await evaluate(`new URL(location.href).searchParams.get("at")`), String(invalidAt))
+
+    await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "bounded report hour picker")
+    const pickerHours = await evaluate(`[...document.querySelectorAll('[data-testid="hour-cell"]')].map((node) => Number(node.dataset.instant))`)
+    assert.ok(pickerHours.length > 0)
+    assert.equal(pickerHours.includes(invalidAt), false)
+    assert.equal(pickerHours.every((hour) => hour < visibleRange.toExclusive && hour + 3_600_000_000 > visibleRange.from), true)
+    await evaluate(`dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`)
+  }
+
+  await evaluate(`document.querySelectorAll('.source-tabs button')[3].click()`)
+  await waitFor(`document.querySelector('[data-testid="events-console"]') !== null`, "report Events console", 30_000)
+  await waitFor(`(() => {
+    const console = document.querySelector('[data-testid="events-console"]')
+    return console !== null && console.querySelector('[data-loading="true"]') === null
+      && console.querySelector(':scope > header [role]') !== null
+  })()`, "settled report Events", 30_000)
+  const eventState = await evaluate(`(() => {
+    const console = document.querySelector('[data-testid="events-console"]')
+    return {
+      failed: console.querySelector(':scope > header [role="alert"]') !== null,
+      groups: console.querySelectorAll('[data-testid="event-entry"]').length,
+      status: console.querySelector(':scope > header [role]')?.textContent ?? "",
+    }
+  })()`)
+  assert.equal(eventState.failed, false, JSON.stringify(eventState))
 }
 await evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
 await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows", reportMode ? 30_000 : 10_000)

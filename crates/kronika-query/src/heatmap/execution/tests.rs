@@ -6,6 +6,21 @@ use super::super::HeatmapError;
 use crate::QueryError;
 
 #[test]
+fn rss_mean_uses_one_recorded_snapshot_denominator_for_every_entity() {
+    let mut mean = super::RssMean::default();
+    assert_eq!(mean.mean(super::EntityId(0)), None);
+
+    mean.observe(super::EntityId(0), 100, 90.0);
+    mean.observe(super::EntityId(1), 100, 120.0);
+    mean.observe(super::EntityId(0), 200, 90.0);
+    mean.observe(super::EntityId(7), 900, 0.0);
+
+    assert_eq!(mean.mean(super::EntityId(0)), Some(60.0));
+    assert_eq!(mean.mean(super::EntityId(1)), Some(40.0));
+    assert_eq!(mean.mean(super::EntityId(7)), Some(0.0));
+}
+
+#[test]
 fn storage_error_keeps_its_source_chain() {
     let reader = HeatmapError::storage(
         0,

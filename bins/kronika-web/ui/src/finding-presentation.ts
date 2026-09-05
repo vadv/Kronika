@@ -52,10 +52,6 @@ export function findingOrder(left: Finding, right: Finding): number {
     || textOrder(left.logicalName, right.logicalName)
 }
 
-export function findingCategory(finding: Finding, t: Translate): string {
-  return t(`locator.${finding.kind}`)
-}
-
 export function findingSource(finding: Finding, t: Translate): string {
   const log = LOG_TYPES[finding.logicalName]
   if (log !== undefined) {
@@ -73,12 +69,47 @@ export function findingLogCategory(category: number | null, t: Translate): strin
 }
 
 export function findingSummary(findings: readonly Finding[], t: Translate): string {
-  const counts = new Map<string, number>()
-  for (const finding of findings) {
-    const label = finding.kind === "event" ? findingSource(finding, t) : findingCategory(finding, t)
-    counts.set(label, (counts.get(label) ?? 0) + 1)
+  const summary = summarizeFindings(findings)
+  return [
+    summary.event === 0 ? null : t("events.scope.event", { count: summary.event }),
+    summary.knownBad === 0 ? null : t("events.scope.known_bad", { count: summary.knownBad }),
+    summary.spike === 0 ? null : t("events.scope.spike", { count: summary.spike }),
+  ].filter((part): part is string => part !== null).join(" · ")
+}
+
+export interface FindingSummary {
+  readonly event: number
+  readonly from: number
+  readonly knownBad: number
+  readonly spike: number
+  readonly to: number
+}
+
+export function summarizeFindings(findings: readonly Finding[]): FindingSummary {
+  const ordered = findings.slice().sort(findingOrder)
+  const logRows = new Set<string>()
+  let knownBad = 0
+  let spike = 0
+  for (const finding of ordered) {
+    if (finding.kind === "event" || isEventFindingSource(finding.logicalName)) {
+      logRows.add(`${finding.segmentId}:${finding.typeId}:${finding.rowOrdinal}:${finding.timestamp}`)
+    } else if (finding.kind === "known_bad") {
+      knownBad += 1
+    } else {
+      spike += 1
+    }
   }
-  return [...counts].map(([label, count]) => `${label} ×${count}`).join(" · ")
+  return {
+    event: logRows.size,
+    from: ordered[0]?.timestamp ?? 0,
+    knownBad,
+    spike,
+    to: ordered.at(-1)?.timestamp ?? 0,
+  }
+}
+
+export function isEventFindingSource(logicalName: string): boolean {
+  return logicalName.startsWith("pg_log_") || logicalName === "pgbouncer_events"
 }
 
 export function findingProjection(finding: Finding): readonly string[] {
