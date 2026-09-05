@@ -1228,3 +1228,27 @@ fn section_conversions_preserve_metric_fields() {
     assert_eq!(pids_section.current, 9);
     assert_eq!(pids_section.max, Some(128));
 }
+
+#[test]
+fn charged_devices_lists_the_io_stat_devices_of_the_own_v2_cgroup() {
+    let (dir, procfs, sys) = fixture_roots();
+    prepare_v2_context(&dir, "/workload");
+    std::fs::write(
+        fixture_cgroup_path(&dir, "", "/workload").join("io.stat"),
+        "252:0 rbytes=1 wbytes=2 rios=3 wios=4\n259:0 rbytes=1 wbytes=2 rios=3 wios=4\n",
+    )
+    .expect("write layered io stat");
+
+    assert_eq!(charged_devices(&procfs, &sys), [(252, 0), (259, 0)]);
+}
+
+#[test]
+fn charged_devices_is_empty_without_a_readable_v2_io_stat() {
+    let (dir, procfs, sys) = fixture_roots();
+    assert!(charged_devices(&procfs, &sys).is_empty());
+
+    prepare_v2_context(&dir, "/workload");
+    std::fs::remove_file(fixture_cgroup_path(&dir, "", "/workload").join("io.stat"))
+        .expect("remove io stat");
+    assert!(charged_devices(&procfs, &sys).is_empty());
+}

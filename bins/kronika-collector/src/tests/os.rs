@@ -1,6 +1,6 @@
 use crate::os_sources::{
-    UserReferences, collect_mountinfo, collect_os_sources, collect_pressure_for_test, cpu_max_mhz,
-    resolve_major_zero,
+    UserReferences, collect_diskstats_for_test, collect_mountinfo, collect_os_sources,
+    collect_pressure_for_test, cpu_max_mhz, resolve_major_zero,
 };
 use crate::scheduler::{DueSet, SourceKind};
 use kronika_source_os::proc::process::ProcessIoCredentials;
@@ -189,6 +189,31 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
         "diskstats must not be emitted on an OsMountTopo-only tick"
     );
     assert!(!os.mountinfo_empty(), "mountinfo rows must still be built");
+}
+
+// A container keeps the devices its mounts sit on and the layers its cgroup
+// charges; every other node device stays out of its diskstats.
+#[test]
+fn container_diskstats_keep_mounted_and_charged_devices_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path();
+    std::fs::write(
+        proc_root.join("diskstats"),
+        "252 0 dm-0 1 0 8 2 3 0 24 4 0 6 6\n\
+         259 0 nvme0n1 1 0 8 2 3 0 24 4 0 6 6\n\
+         8 16 sdb 1 0 8 2 3 0 24 4 0 6 6\n",
+    )
+    .expect("write diskstats");
+    let fs = ProcFs::new(proc_root.to_path_buf());
+    let mut interner = Interner::new(kronika_format::DictLimits::default());
+    let kept = std::collections::HashSet::from([(252, 0), (259, 0)]);
+
+    let rows = collect_diskstats_for_test(&fs, &mut interner, Some(&kept));
+    let devices: Vec<(i32, i32)> = rows.iter().map(|row| (row.major, row.minor)).collect();
+    assert_eq!(devices, [(252, 0), (259, 0)]);
+
+    let machine = collect_diskstats_for_test(&fs, &mut interner, None);
+    assert_eq!(machine.len(), 3, "a machine keeps every node device");
 }
 
 #[test]

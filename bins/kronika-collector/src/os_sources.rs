@@ -288,8 +288,14 @@ pub(crate) fn collect_os_sources(
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
         let net_scope_id = net_scope(in_container).as_u8();
-        os.diskstats =
-            procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
+        // A container's diskstats keep the devices its mounts sit on and the
+        // layers its own cgroup charges I/O to; the file itself lists the node.
+        let kept = in_container.then(|| {
+            let mut devices = container_device_set(&mounts);
+            devices.extend(cgroup::charged_devices(fs, &sys));
+            devices
+        });
+        os.diskstats = procfs_sections::collect_diskstats(fs, interner, scope, ts, kept.as_ref());
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
         procfs_sections::collect_kernel_singletons(
@@ -353,6 +359,15 @@ const fn os_entity_scope(in_container: bool) -> u8 {
 #[cfg(test)]
 pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool {
     in_container && due.has(SourceKind::OsCgroup)
+}
+
+#[cfg(test)]
+pub(crate) fn collect_diskstats_for_test(
+    fs: &ProcFs,
+    interner: &mut Interner,
+    kept: Option<&std::collections::HashSet<(i32, i32)>>,
+) -> Vec<OsDiskstats> {
+    procfs_sections::collect_diskstats(fs, interner, 0, 0, kept)
 }
 
 #[cfg(test)]

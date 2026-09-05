@@ -227,6 +227,37 @@ pub fn collect_pressure(procfs: &ProcFs, sys: &SysFs, ts: i64) -> Result<Vec<Psi
     .map_err(|err| ParseError(format!("cgroup v2: {err}")))
 }
 
+/// The block devices the collector's own cgroup v2 `io.stat` charges, as
+/// `(major, minor)` pairs.
+///
+/// Inside a container these are the layers the kernel accounts the pod's I/O
+/// to, including the physical devices below any volume the pod mounts. Cgroup
+/// v1, an unreadable membership and a missing `io.stat` yield no devices.
+#[must_use]
+pub fn charged_devices(procfs: &ProcFs, sys: &SysFs) -> Vec<(i32, i32)> {
+    if !is_v2(sys) {
+        return Vec::new();
+    }
+    let Ok(membership) = procfs.read_raw("self/cgroup") else {
+        return Vec::new();
+    };
+    let Some(path) = exact_unified_path(&membership) else {
+        return Vec::new();
+    };
+    let Ok(content) = sys.read(&rel(path, "io.stat")) else {
+        return Vec::new();
+    };
+    parse_io_stat(&content, 0, path)
+        .iter()
+        .filter_map(|row| {
+            Some((
+                i32::try_from(row.major).ok()?,
+                i32::try_from(row.minor).ok()?,
+            ))
+        })
+        .collect()
+}
+
 fn exact_unified_path(content: &str) -> Option<&str> {
     let mut unified = None;
     for line in content.lines() {

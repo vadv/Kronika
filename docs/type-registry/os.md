@@ -52,7 +52,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
 | `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
 | `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
-| `1_123_001` | exact sysfs partition-to-parent block-device edges | `on_change` | `(major, minor, ts)` |
+| `1_123_001` | exact sysfs block-device edges: partition to whole device, layered dm/LVM/MD device to each slave | `on_change` | `(major, minor, parent_major, parent_minor, ts)` |
 | `1_124_002` | observed process UID-to-username references from `/etc/passwd` | `on_change` | `(scope, uid, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
@@ -241,9 +241,13 @@ retained.
 `(major, minor, mount_point)`, so two mount points exposing the same filesystem
 remain distinct. `root` is mountinfo field 4. Byte availability is `f_bavail`
 and inode availability is `f_favail`; neither is renamed to free or used space.
-`1_123_001` emits only an exact sysfs partition marker and its immediate parent
-device identity. Whole devices, dm/LVM/MD layers, unresolved sysfs links, and
-bind-mount ancestry emit no inferred edge.
+`1_123_001` emits one row per exact sysfs edge: a partition marker with its
+immediate parent `dev`, and a layered dm/LVM/MD device with each device it
+lists under `slaves/`. Plain whole devices, unresolved sysfs links, and
+bind-mount ancestry emit no inferred edge. Inside a container `1_108_001`
+keeps the devices with a non-infrastructure mount and the devices the
+collector's own cgroup `io.stat` charges, so the physical layers below a
+mounted volume stay named.
 
 ### Network
 

@@ -907,23 +907,24 @@ These controls are the sole mode selector and expose their selected state. A
 control click changes the detail mode and clears an entity selection; an exact
 table-row click opens that entity's Inspector and history.
 
-The I/O control reports the exact number of collector-cgroup device rows and
-how many have a non-infrastructure mount association with the same
-`major:minor`. It has no throughput reading, representative stream, combined
-sparkline, or total. The detail table
-keeps every `(cgroup_path, major, minor)` row and its counters separate, even
-when stacked devices have identical series. At the selected time, display
-metadata joins only the exact `major:minor` to `os_mountinfo` and
-`os_diskstats`; it never traverses `os_block_topology`, borrows a partition or
-parent label, or combines rows. A non-infrastructure mount point is preferred,
-ordered by shortest path and then lexical order; further exact mount points
-use `+N`, and all exact associations remain in the Inspector. An exact device
-name is the fallback, followed by localized missing-mount prose. The raw
-`major:minor` always remains visible. The association identifies a
-same-device mount; counters remain device-scoped. Mount points, sources,
-device names, and `major:minor` use the 12 px regular monospace data face;
-localized missing-mount prose uses the sans-serif text face at no less than
-12 px.
+The I/O table shows one row per I/O stream of the collector cgroup. cgroup v2
+`io.stat` charges one request to every block layer it passes, so a volume on
+dm/LVM and the disk beneath it carry the same bytes twice; the table keeps the
+top-most charged device of each chain of exact `os_block_topology` edges as the
+row and lists the charged layers beneath it in that row's Inspector as the same
+I/O, with their own counters, never summed. Rows are never combined by
+similarity: only an exact recorded edge folds a lower layer. The Device cell
+is two lines: the mount point on top, then the mount source, the device name
+and the physical device at the bottom of the chain, all from exact
+`major:minor` joins to `os_mountinfo` and `os_diskstats` and exact sysfs edges.
+A non-infrastructure mount point is preferred, ordered by shortest path and
+then lexical order; a whole disk charged for a partition's I/O takes the mount
+points of the partitions above it; further mount points use `+N`, and every
+association and the full chain remain in the Inspector. Without a mount the
+device name stands alone, and without a name the raw `major:minor` is the
+label; the interface never describes what the recording lacks. The raw
+`major:minor` always remains visible. Mount points, sources, device names and
+`major:minor` use the 12 px regular monospace data face.
 
 The Threads control shows `pids.current` as its primary reading and labels the
 local `pids.max` separately; the latter is not a denominator or an effective
@@ -965,9 +966,12 @@ I/O PSI stays explicitly host-wide and is not presented as device latency;
 cgroup I/O throughput and operations remain separate from host diskstats.
 The filesystem table records mount point and root plus exact total/available
 byte and inode pairs. It does not derive used space from availability. Storage
-topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
-whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
-opens its one-hour history.
+topology records only exact sysfs edges: a partition to its whole device and a
+layered dm/LVM/MD device to each device under `slaves/`; plain whole devices,
+unresolved links and bind ancestry stay opaque. Inside a container, diskstats
+keep the devices with a non-infrastructure mount and the devices the
+collector's own cgroup `io.stat` charges, so the physical layers below a
+mounted volume stay named. Selecting a metric opens its one-hour history.
 
 A large chart never occupies the primary workspace. Every main surface instead
 keeps the shared 124 px time preview visible above its table or list. The preview
