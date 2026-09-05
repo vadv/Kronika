@@ -172,7 +172,7 @@ Tables/Indexes Activity follows the current object/schema/database/tablespace
 grouping. **The public 5 September recording has a known Plans Activity error
 from duplicate recorded plan identities.** Its Plans table and selected-plan
 Inspector still work. The error is a limitation of this example, not a normal
-empty Activity view or a reason to change its filters.
+empty Activity view.
 
 ## Processes: which Linux task was doing the work?
 
