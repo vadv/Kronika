@@ -141,7 +141,7 @@ into Other. Full screen offers Top 10/25/50/100, with 25 as the initial limit.
 | Global | One intensity scale across ranked and Other rows. This allows magnitude comparison. |
 | Per row | Each row uses its own maximum. This reveals timing within a quiet row; equal colour across rows does not mean equal work. |
 | Click a cell | Move the cursor to the final microsecond of that cell. The table then resolves its stored samples at or before that time. |
-| Click a row | Filter the owning table to that entity or group. If it has no reading at the cursor, also move to its busiest recorded interval. |
+| Click a row, where enabled | Filter the owning table to that entity or group. If it has no reading at the cursor, also move to its busiest recorded interval. Cgroup Activity labels do not filter a table; their time cells still move the cursor. |
 
 Process rows group all recorded PIDs with the same command, including exited
 processes. CPU time adds user and system time: one CPU-second per wall-clock

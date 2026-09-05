@@ -78,8 +78,8 @@ what contributed across the entire hour. Start with **Global** colouring to
 compare magnitudes; switch to **Per row** to compare timing within each row.
 Return to Global before judging which row did more work.
 
-Click a busy cell to place the cursor at its end, then a row to filter the
-owning table. The table resolves recorded samples at or before that time. A command can combine many PIDs, including processes that have
+In Processes Activity, click a busy cell to place the cursor at its end, then
+a row to filter the owning table. The table resolves recorded samples at or before that time. A command can combine many PIDs, including processes that have
 already exited. Select one PID for its own Inspector; use Tree to understand
 its parent context. Total includes unshown rows; Other is the remainder of
 that total, not an extra workload.
