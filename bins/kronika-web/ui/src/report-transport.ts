@@ -23,6 +23,7 @@ export interface ReportVisibleRange {
 }
 
 const HOUR_MICROS = 3_600_000_000
+const REPORT_REQUEST_BASE = "https://kronika-report.invalid/"
 
 type ReportRangeConvention = "exclusive" | "inclusive"
 
@@ -91,7 +92,7 @@ export async function reportFetch(input: RequestInfo | URL, init: RequestInit = 
   signal?.throwIfAborted()
   const method = init.method ?? (input instanceof Request ? input.method : "GET")
   if (method !== "GET") return new Response(null, { status: 405 })
-  const url = new URL(input instanceof Request ? input.url : input, globalThis.location.href)
+  const url = new URL(input instanceof Request ? input.url : input, REPORT_REQUEST_BASE)
   clampReportRequestRange(url)
   const session = await runtime().ready
   signal?.throwIfAborted()

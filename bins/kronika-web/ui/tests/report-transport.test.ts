@@ -22,12 +22,17 @@ type Session = {
   request(path: string, query: string): Result
 }
 
-function installRuntime(session: Session, visibleFrom?: string, visibleToExclusive?: string): () => void {
+function installRuntime(
+  session: Session,
+  visibleFrom?: string,
+  visibleToExclusive?: string,
+  locationHref = "file:///tmp/kronika-report.html",
+): () => void {
   const location = Object.getOwnPropertyDescriptor(globalThis, "location")
   const runtime = Object.getOwnPropertyDescriptor(globalThis, "__KRONIKA_REPORT_RUNTIME__")
   Object.defineProperty(globalThis, "location", {
     configurable: true,
-    value: { href: "file:///tmp/kronika-report.html" },
+    value: { href: locationHref },
   })
   Object.defineProperty(globalThis, "__KRONIKA_REPORT_RUNTIME__", {
     configurable: true,
@@ -99,6 +104,31 @@ test("report transport returns unchanged NDJSON and releases the response", asyn
     assert.equal(response.headers.get("Content-Type"), "application/x-ndjson")
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), expected)
     assert.equal(freed, 1)
+  } finally {
+    restore()
+  }
+})
+
+test("report transport keeps the API root under a Windows file URL", async () => {
+  const seen: string[] = []
+  const restore = installRuntime({
+    request(path, query) {
+      seen.push(`${path}?${query}`)
+      return {
+        status: 200,
+        code: undefined,
+        parameter: undefined,
+        message: undefined,
+        takeBody: () => new Uint8Array(),
+        free() {},
+      }
+    },
+  }, undefined, undefined, "file:///C:/Users/vadvm/Downloads/Telegram%20Desktop/kronika-report.html")
+
+  try {
+    const response = await reportFetch("/api/hour?part=base&segments=42")
+    assert.equal(response.status, 200)
+    assert.deepEqual(seen, ["/api/hour?part=base&segments=42"])
   } finally {
     restore()
   }
