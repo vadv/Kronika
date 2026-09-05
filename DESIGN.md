@@ -740,8 +740,8 @@ A selected row's Process panel joins straight on `pid` to the recorded
 `os_process` history for that process, no episode-style identity caution: an
 autovacuum worker gets a fresh PID every run, and a manual `VACUUM`'s backend
 PID is exactly the PID `pg_stat_activity` already records for that session.
-The panel takes the two `os_process` samples nearest the episode's own first
-and last recorded moment and reports their delta — CPU time, bytes read and
+The panel takes the latest `os_process` sample at or before each of the
+episode's own first and last recorded moments and reports their delta — CPU time, bytes read and
 written, block-I/O wait, major page faults — as what the process did in that
 span, next to a comparison against what PG itself reports scanning. This is a
 hint about cost, not proof the vacuum alone produced it: a manual `VACUUM`'s
@@ -1500,9 +1500,12 @@ the active form for that `SegmentId` instead of appending another copy, so the
 transition cannot duplicate rows. It then follows the new active `SegmentId`
 from the catalog.
 
-A request refreshes the tail; a timer must not. A front end that polls on an
-interval keeps web awake for nobody, which is the one thing standby exists to
-prevent.
+The visible current-hour page requests a refresh every 15 seconds after the
+previous load completes. A hidden page cancels its timer and requests a refresh
+when visible again. Historical hours do not poll. Refresh preserves a pinned
+cursor; a cursor following the latest observation advances with the recording.
+The selected hour does not roll forward automatically. Web keeps no background
+refresh timer of its own.
 
 Browser caching is only an optimization. If the browser evicts a response or
 ignores cache headers, web performs a normal reread; correctness does not
