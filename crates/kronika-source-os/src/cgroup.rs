@@ -209,7 +209,7 @@ pub fn collect_pressure(procfs: &ProcFs, sys: &SysFs, ts: i64) -> Result<Vec<Psi
     let membership = procfs
         .read_raw("self/cgroup")
         .map_err(|err| ParseError(format!("self/cgroup: {err}")))?;
-    let path = exact_unified_path(&membership).ok_or_else(|| {
+    let path = parse_self_cgroup(&membership).unified.ok_or_else(|| {
         ParseError("self/cgroup: no single valid unified cgroup membership".to_owned())
     })?;
     let cpu = read_optional_pressure(sys, path, "cpu.pressure")?;
@@ -227,27 +227,30 @@ pub fn collect_pressure(procfs: &ProcFs, sys: &SysFs, ts: i64) -> Result<Vec<Psi
     .map_err(|err| ParseError(format!("cgroup v2: {err}")))
 }
 
-/// The block devices the collector's own cgroup v2 `io.stat` charges, as
-/// `(major, minor)` pairs.
+/// Block devices charged by the collector's own cgroup v2 `io.stat`.
 ///
-/// Inside a container these are the layers the kernel accounts the pod's I/O
-/// to, including the physical devices below any volume the pod mounts. Cgroup
-/// v1, an unreadable membership and a missing `io.stat` yield no devices.
-#[must_use]
-pub fn charged_devices(procfs: &ProcFs, sys: &SysFs) -> Vec<(i32, i32)> {
+/// Cgroup v1 returns no devices.
+///
+/// # Errors
+/// Returns the membership or `io.stat` read error, or an invalid membership.
+pub fn charged_devices(procfs: &ProcFs, sys: &SysFs) -> io::Result<Vec<(i32, i32)>> {
     if !is_v2(sys) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Ok(membership) = procfs.read_raw("self/cgroup") else {
-        return Vec::new();
-    };
-    let Some(path) = exact_unified_path(&membership) else {
-        return Vec::new();
-    };
-    let Ok(content) = sys.read(&rel(path, "io.stat")) else {
-        return Vec::new();
-    };
-    parse_io_stat(&content, 0, path)
+    let membership = procfs
+        .read_raw("self/cgroup")
+        .map_err(|err| io::Error::new(err.kind(), format!("self/cgroup: {err}")))?;
+    let path = parse_self_cgroup(&membership).unified.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "self/cgroup: no single valid unified cgroup membership",
+        )
+    })?;
+    let relative = rel(path, "io.stat");
+    let content = sys
+        .read(&relative)
+        .map_err(|err| io::Error::new(err.kind(), format!("{relative}: {err}")))?;
+    Ok(parse_io_stat(&content, 0, path)
         .iter()
         .filter_map(|row| {
             Some((
@@ -255,27 +258,7 @@ pub fn charged_devices(procfs: &ProcFs, sys: &SysFs) -> Vec<(i32, i32)> {
                 i32::try_from(row.minor).ok()?,
             ))
         })
-        .collect()
-}
-
-fn exact_unified_path(content: &str) -> Option<&str> {
-    let mut unified = None;
-    for line in content.lines() {
-        let mut fields = line.splitn(3, ':');
-        let (Some(hierarchy), Some(controllers), Some(path)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if hierarchy != "0" || !controllers.is_empty() {
-            continue;
-        }
-        let path = normalize_self_cgroup_path(path)?;
-        if unified.replace(path).is_some() {
-            return None;
-        }
-    }
-    unified
+        .collect())
 }
 
 fn read_optional_pressure(
@@ -464,20 +447,28 @@ fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
 
 fn parse_self_cgroup(content: &str) -> SelfCgroupPaths<'_> {
     let mut paths = SelfCgroupPaths::default();
+    let mut unified_seen = false;
     for line in content.lines() {
         let mut fields = line.splitn(3, ':');
-        let (Some(_hierarchy), Some(controllers), Some(path)) =
+        let (Some(hierarchy), Some(controllers), Some(path)) =
             (fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
+        if controllers.is_empty() {
+            if hierarchy == "0" {
+                paths.unified = if unified_seen {
+                    None
+                } else {
+                    normalize_self_cgroup_path(path)
+                };
+                unified_seen = true;
+            }
+            continue;
+        }
         let Some(path) = normalize_self_cgroup_path(path) else {
             continue;
         };
-        if controllers.is_empty() {
-            set_exact_path(&mut paths.unified, path);
-            continue;
-        }
         for controller in controllers.split(',') {
             match controller {
                 "cpu" => set_exact_path(&mut paths.cpu, path),

@@ -290,7 +290,10 @@ pub(crate) fn collect_os_sources(
     // the whole node.
     let kept = (in_container && device_tick).then(|| {
         let mut devices = container_device_set(&mounts);
-        devices.extend(cgroup::charged_devices(fs, &sys));
+        match cgroup::charged_devices(fs, &sys) {
+            Ok(charged) => devices.extend(charged),
+            Err(err) => log_degraded(1_108_001, "cgroup/io.stat", &err),
+        }
         devices
     });
 

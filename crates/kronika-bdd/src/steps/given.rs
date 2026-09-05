@@ -18,7 +18,16 @@ fn collector_with_settings(world: &mut BddWorld, step: &Step) -> Result<()> {
         let [key, value] = row.as_slice() else {
             anyhow::bail!("a settings row needs a variable and a value, got {row:?}");
         };
-        world.env.push((key.clone(), value.clone()));
+        let value = if value.contains("{fixture}") {
+            let fixture = world
+                .fixture
+                .as_ref()
+                .context("a filesystem fixture exists")?;
+            value.replace("{fixture}", &fixture.path().to_string_lossy())
+        } else {
+            value.clone()
+        };
+        world.env.push((key.clone(), value));
     }
     let root = world
         .prepared_root

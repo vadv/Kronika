@@ -80,7 +80,7 @@ fn sections(world: &BddWorld) -> Result<Vec<Line>> {
 }
 
 /// The rows of one section across every published segment.
-fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<Line>> {
+pub(super) fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<Line>> {
     let printed = dump(
         world,
         &["--json", "--limit", "0", "--section", &type_id.to_string()],

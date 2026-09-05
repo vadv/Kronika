@@ -1,8 +1,10 @@
 mod dump;
+mod fixture;
 mod given;
 mod then_demo;
 mod then_dump;
 mod then_log;
+mod then_rows;
 mod then_segment;
 mod when;
 

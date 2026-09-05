@@ -90,19 +90,14 @@ fn read_dev(path: &Path) -> Option<(i32, i32)> {
         .and_then(|content| parse_dev_pair(&content))
 }
 
-/// The devices a layered device lists beneath itself, in name order.
+/// The devices a layered device lists beneath itself.
 fn slaves(target: &Path) -> Vec<(i32, i32)> {
     let Ok(entries) = std::fs::read_dir(target.join("slaves")) else {
         return Vec::new();
     };
-    let mut paths: Vec<_> = entries
+    entries
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .collect();
-    paths.sort();
-    paths
-        .iter()
-        .filter_map(|slave| read_dev(&slave.join("dev")))
+        .filter_map(|entry| read_dev(&entry.path().join("dev")))
         .collect()
 }
 

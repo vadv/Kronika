@@ -1239,16 +1239,58 @@ fn charged_devices_lists_the_io_stat_devices_of_the_own_v2_cgroup() {
     )
     .expect("write layered io stat");
 
-    assert_eq!(charged_devices(&procfs, &sys), [(252, 0), (259, 0)]);
+    assert_eq!(
+        charged_devices(&procfs, &sys).expect("read charged devices"),
+        [(252, 0), (259, 0)]
+    );
 }
 
 #[test]
-fn charged_devices_is_empty_without_a_readable_v2_io_stat() {
+fn charged_devices_reports_missing_v2_io_stat_but_omits_v1() {
     let (dir, procfs, sys) = fixture_roots();
-    assert!(charged_devices(&procfs, &sys).is_empty());
+    assert!(
+        charged_devices(&procfs, &sys)
+            .expect("no v2 hierarchy")
+            .is_empty()
+    );
 
     prepare_v2_context(&dir, "/workload");
     std::fs::remove_file(fixture_cgroup_path(&dir, "", "/workload").join("io.stat"))
         .expect("remove io stat");
-    assert!(charged_devices(&procfs, &sys).is_empty());
+    let error = charged_devices(&procfs, &sys).expect_err("missing io.stat");
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(error.to_string().contains("workload/io.stat"));
+}
+
+#[test]
+fn all_cgroup_collectors_reject_invalid_unified_memberships() {
+    for membership in [
+        "7::/workload\n",
+        "0::/workload\n0::/workload\n",
+        "0::/workload\n0::/other\n0::/workload\n",
+        "0::/workload/../outside\n0::/workload\n",
+    ] {
+        let (dir, procfs, sys) = fixture_roots();
+        prepare_v2_context(&dir, "/workload");
+        std::fs::write(dir.path().join("proc/self/cgroup"), membership).expect("write membership");
+        assert!(collect_pressure(&procfs, &sys, 1).is_err(), "{membership}");
+        assert_eq!(
+            charged_devices(&procfs, &sys)
+                .expect_err("invalid membership")
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "{membership}",
+        );
+        let context = collect_context(&procfs, &sys, 1).expect("collect context");
+        assert_eq!(context.cpu_path, None, "{membership}");
+        assert_eq!(context.memory_path, None, "{membership}");
+        assert_eq!(context.io_path, None, "{membership}");
+        let mut memberships = WorkloadMemberships::new(&sys);
+        memberships.observe(membership);
+        let workload = memberships.collect(&sys, 1, 100).expect("collect workload");
+        assert!(workload.cpu.is_empty(), "{membership}");
+        assert!(workload.memory.is_empty(), "{membership}");
+        assert!(workload.io.is_empty(), "{membership}");
+        assert!(workload.pids.is_empty(), "{membership}");
+    }
 }
