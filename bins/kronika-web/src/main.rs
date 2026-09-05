@@ -45,8 +45,16 @@ use route::RouteError;
 
 type WebBody = UnsyncBoxBody<Bytes, BodyError>;
 
+fn main() -> Result<()> {
+    if std::env::args_os().skip(1).eq(["--version"]) {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    run_web()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run_web() -> Result<()> {
     let config = Arc::new(Config::from_env()?);
     let listener = TcpListener::bind(config.listen)
         .await

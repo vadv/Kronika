@@ -141,6 +141,10 @@ fn initialize_collector(config: &Config) -> Result<(WriterOwner, Journal, LogSou
 }
 
 fn main() -> Result<()> {
+    if std::env::args_os().skip(1).eq(["--version"]) {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if capacity::is_helper_invocation() {
         return capacity::run_helper();
     }

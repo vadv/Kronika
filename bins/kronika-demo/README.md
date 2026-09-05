@@ -7,6 +7,10 @@ synthetic workload, and the Kronika web UI in one Docker Compose service. It
 uses the real collection and storage paths and needs no external database or
 private environment.
 
+`kronika-demo --version` prints `kronika-demo 1.0.0` and exits
+without reading configuration, accessing storage, or starting services.
+It needs no root access; pass `--version` as the only argument.
+
 ## Start and inspect
 
 Requirements: Docker with Compose v2 on an amd64 or arm64 Linux host.

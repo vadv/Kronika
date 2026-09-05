@@ -7,6 +7,10 @@ HTTP API, and MCP. It reads `active.wal` and finished `.zms` segments through
 `kronika-reader`, and creates derived `.idx` files in the data directory. The
 server is configured only through environment variables.
 
+`kronika-web --version` prints `kronika-web 1.0.0` and exits
+without reading configuration, accessing storage, or starting services.
+It needs no root access; pass `--version` as the only argument.
+
 ## Configuration
 
 Missing required variables and invalid values stop startup before the listener

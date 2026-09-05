@@ -105,6 +105,10 @@ fn measure_segments(root: &Path) -> Result<(usize, u64)> {
 }
 
 fn main() -> Result<()> {
+    if std::env::args_os().skip(1).eq(["--version"]) {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let root = PathBuf::from(env_or("KRONIKA_DEMO_DIR", "demo-data"));
     let storage_dir = resolve_storage_dir(
         &root,

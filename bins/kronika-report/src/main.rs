@@ -53,6 +53,10 @@ fn arguments(values: impl IntoIterator<Item = OsString>) -> Result<Arguments, &'
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().skip(1).eq(["--version"]) {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let arguments = match arguments(std::env::args_os().skip(1)) {
         Ok(arguments) => arguments,
         Err(error) => {
