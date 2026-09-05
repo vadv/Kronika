@@ -231,12 +231,12 @@ fn exact_unified_path(content: &str) -> Option<&str> {
     let mut unified = None;
     for line in content.lines() {
         let mut fields = line.splitn(3, ':');
-        let (Some(_hierarchy), Some(controllers), Some(path)) =
+        let (Some(hierarchy), Some(controllers), Some(path)) =
             (fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
-        if !controllers.is_empty() {
+        if hierarchy != "0" || !controllers.is_empty() {
             continue;
         }
         let path = normalize_self_cgroup_path(path)?;

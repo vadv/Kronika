@@ -226,6 +226,25 @@ fn pressure_rejects_ambiguous_unified_memberships() {
 }
 
 #[test]
+fn pressure_rejects_a_nonzero_unified_hierarchy_id() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    let cgroup = fixture_cgroup_path(&dir, "", "/workload");
+    std::fs::create_dir_all(&cgroup).expect("mkdir pressure cgroup");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(dir.path().join("proc/self/cgroup"), "7::/workload\n")
+        .expect("write invalid unified membership");
+
+    let error = collect_pressure(&procfs, &sys, 101).expect_err("reject hierarchy ID");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
 fn pressure_omits_a_missing_resource_and_rejects_a_malformed_one() {
     let (dir, procfs, sys) = fixture_roots();
     let cgroup = prepare_v2_pressure(&dir, "/workload");
