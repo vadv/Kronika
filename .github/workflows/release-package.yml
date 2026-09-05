@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-package-${{ github.ref }}
   cancel-in-progress: true
@@ -153,7 +157,7 @@ jobs:
                   apt-get update
                   apt-get install -y --no-install-recommends bash binutils python3 coreutils findutils tar gzip ;;
                 dnf)
-                  dnf install -y --setopt=install_weak_deps=False bash binutils python3 coreutils findutils tar gzip ;;
+                  dnf install -y --allowerasing --setopt=install_weak_deps=False bash binutils python3 coreutils findutils tar gzip ;;
                 apk)
                   apk add --no-cache bash binutils python3 coreutils findutils tar gzip ;;
                 zypper)
