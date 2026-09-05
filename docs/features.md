@@ -28,6 +28,7 @@ asking an MCP tool does not run a query on the monitored database.
 | Expand chart / restore | Give the Inspector chart more space. A metric selector chooses one history measure; multi-series charts have labelled series and an All choice. |
 | Inspector divider | Resize on desktop. With the divider focused, arrows resize it and Home/End select its width limits. |
 | `?`, field help and Esc | `?` opens the help panel; a field's help mark opens its definition. Esc closes an open panel or selection. |
+| Sign out | End the browser session on a live web instance. The next visit requires sign-in again. |
 | Language and theme | Switch EN/RU and light/dark immediately; preferences are saved in this browser. |
 | Copy exact value | Copy the underlying value rather than its rounded display. If automatic copying is unavailable, the exact text is selected for manual copying. |
 
@@ -49,6 +50,32 @@ selector becomes a native select. The Inspector is a bottom sheet on phone and
 an overlay on tablet, with its own scrolling. Wide tables remain scrollable.
 This is a smaller workspace for the same recordings, not a separate mobile
 metric set.
+
+### Health, load and marks
+
+The Health lane shows Overall, OS and PostgreSQL separately when available.
+OS Health subtracts the largest observed CPU/memory/I/O stall-time share from
+100; it uses adjacent PSI `some_total` counters in the recorded scope, not
+CPU utilization or the kernel's rolling `avg10`. An OOM event or throttled-time
+counter remains a separate reading. Without usable pressure inputs, Health is
+unavailable; a cgroup v1 recording cannot borrow host PSI for its container.
+
+PostgreSQL Health compares active backends, including those waiting, with
+`2 × KRONIKA_POSTGRES_EFFECTIVE_CPUS`. It is 100 at or below that capacity;
+above it, the penalty is `round(100 × (active − capacity) / active)`. The
+configured capacity belongs to the monitored database, which can be remote;
+`max_connections` and the collector host's CPU count are not substitutes.
+Overall subtracts both component penalties and clamps to 0–100. Disabled
+PostgreSQL contributes no penalty; enabled PostgreSQL without a usable
+component leaves Overall unavailable. Health 100 describes these inputs,
+not every possible failure on the machine.
+
+Timeline **circles** mark log events, **diamonds** fixed threshold crossings,
+and **triangles** sharp rises. The selected metric's help names its exact
+boundary; these marks are separate from the Health calculation and from the
+colours of table values. [The complete boundary list](../DESIGN.md#known-bad-boundaries)
+includes CPU/memory/filesystem shares, load per online CPU, blocked sessions,
+long log statements, transaction ages and increases in explicit error counters.
 
 ## Find a row, change a lens, read history
 
@@ -188,7 +215,8 @@ switches and CPU PSI. PSI describes time that work waited for a resource;
 utilization describes work being done, so a busy CPU and a stalled workload
 are different readings.
 
-CPU Topology is a reference for recorded logical CPUs and CPUFreq policies.
+CPU Topology lists logical CPU, socket/core and NUMA IDs, model and maximum
+frequency, alongside recorded CPUFreq policies.
 Actual frequency is policy-scoped; scaling frequency is a separate reported or
 requested operating point. The rollup uses online-CPU weighting only with
 compatible recorded actual-frequency sources. Static maximum frequency is not
@@ -211,7 +239,7 @@ own units and history.
 
 Devices retain `major:minor`. Selecting one opens its exact row and metric
 history. Network exposes per-interface RX/TX bytes, packets, errors and drops,
-with histories. Traffic belongs to the collector's network namespace; a
+with histories, plus recorded link speed and duplex. Traffic belongs to the collector's network namespace; a
 loopback byte can appear in both RX and TX.
 
 ### When the collector is in a container
@@ -284,7 +312,7 @@ over the hour; selecting a row provides field histories.
 
 Activity shows PID, database/role, SQL, query and transaction duration,
 application, client, state and wait type/event. **System** includes system
-backends; **Idle** includes idle sessions. The Inspector adds backend type,
+backends; **Idle** includes idle sessions. Both are off initially. The Inspector adds backend type,
 leader PID, Query ID, backend and state age, and transaction xmin/xid ages.
 Idle state duration is not active query execution time. State transitions and
 missing measurements do not turn into an uninterrupted running-query line.
