@@ -177,7 +177,7 @@ export function UseTable({
               title={accessibleName}
               type="button"
             />
-            <span className="use-lane pointer-events-none relative z-[1] flex items-baseline justify-start gap-[7px] max-[760px]:flex-wrap max-[760px]:gap-x-[5px] max-[760px]:gap-y-0.5 max-[760px]:[&>span]:flex-none [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-sm [&>span]:text-fg3 [&_strong]:ml-auto [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-sm [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2 max-[760px]:[&_strong]:ml-0 max-[760px]:[&_strong]:w-full max-[760px]:[&_strong]:whitespace-normal max-[760px]:[&_strong]:leading-tight">
+            <span className={`use-lane pointer-events-none relative z-[1] flex items-baseline justify-start gap-[7px] max-[760px]:flex-wrap max-[760px]:gap-x-[5px] max-[760px]:gap-y-0.5 max-[760px]:[&>span]:flex-none [&>span]:min-w-0 [&>span]:font-sans [&>span]:text-sm [&>span]:text-fg3 [&_strong]:ml-auto [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-sm [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2 max-[760px]:[&_strong]:ml-0 max-[760px]:[&_strong]:w-full max-[760px]:[&_strong]:whitespace-normal max-[760px]:[&_strong]:leading-tight${second === undefined ? "" : " max-[900px]:flex-wrap max-[900px]:gap-y-0.5 max-[900px]:[&>span]:flex-none max-[900px]:[&_strong]:ml-0 max-[900px]:[&_strong]:w-full"}`}>
               <span>{laneLabels.join(" · ")}</span>
               <strong>{readings.join(" · ")}</strong>
             </span>
