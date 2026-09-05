@@ -33,9 +33,11 @@ if [[ ${#requested[@]} -ne 2 ]]; then
 fi
 from_seconds=$(date --date="${requested[0]}" +%s)
 to_seconds=$(date --date="${requested[1]}" +%s)
-duration_us=$(((to_seconds + 1 - from_seconds) * 1000000))
-if ((duration_us != 3600000000)); then
-	echo "Pages slice is not one hour: ${duration_us}us" >&2
+from_us=$((from_seconds * 1000000))
+to_exclusive_us=$(((to_seconds + 1) * 1000000))
+duration_us=$((to_exclusive_us - from_us))
+if ((duration_us <= 0)); then
+	echo "Pages slice must end after it starts" >&2
 	exit 1
 fi
 
@@ -44,9 +46,19 @@ fi
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/kronika-pages-report.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 
-"$report_bin" "$fixture" "$output"
-"$report_bin" "$fixture" "$temporary/index.html"
+"$report_bin" --from "$from_us" --to-exclusive "$to_exclusive_us" "$fixture" "$output"
+"$report_bin" --from "$from_us" --to-exclusive "$to_exclusive_us" "$fixture" "$temporary/index.html"
 cmp "$output" "$temporary/index.html"
+
+"${NODE_BIN:-node}" --input-type=module - "$output" "$from_us" "$to_exclusive_us" <<'NODE'
+import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+
+const [output, from, toExclusive] = process.argv.slice(2)
+const html = readFileSync(output, "utf8")
+const range = /__KRONIKA_REPORT_RUNTIME__=\{visibleFrom:"([^"]+)",visibleToExclusive:"([^"]+)"/.exec(html)
+assert.deepEqual(range?.slice(1), [from, toExclusive], "Pages report must use the requested slice bounds")
+NODE
 
 scripts/report-browser-smoke.sh "$output"
 
