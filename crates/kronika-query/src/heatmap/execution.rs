@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::query::{HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, MAX_FIELDS, MAX_TOP};
 use super::result::{
     CoverageState, HeatmapBand, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapGrid,
-    HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
+    HeatmapGroup, HeatmapInterval, HeatmapItemResult, HeatmapSummary, NamedValues,
 };
 use crate::STATEMENTS_SECTION;
 use crate::render::{cell, record};
@@ -276,7 +276,7 @@ fn prepare_batch(
         segment.max_ts() >= query.range.from && segment.min_ts() < query.range.to_exclusive
     });
     segments.sort_by_key(DatasetSegment::min_ts);
-    let validator_shape = format!("{query:?}");
+    let validator_shape = format!("summary-v1:{query:?}");
     Ok(PreparedHeatmapBatch {
         dataset,
         segments,
@@ -1139,6 +1139,7 @@ struct Accumulator {
     range: crate::TimeRange,
     columns: usize,
     cumulative: bool,
+    rss_mean: Option<RssMean>,
     grid: bool,
     grouped: bool,
     top: usize,
@@ -1149,6 +1150,36 @@ struct Accumulator {
     group_index: HashMap<String, usize>,
     out_of_order: u64,
     scan: ScanStats,
+}
+
+#[derive(Default)]
+struct RssMean {
+    timestamps: HashSet<i64>,
+    sums: Vec<f64>,
+}
+
+impl RssMean {
+    fn observe(&mut self, entity: EntityId, timestamp: i64, value: f64) {
+        self.timestamps.insert(timestamp);
+        let index = entity.index();
+        if self.sums.len() <= index {
+            self.sums.resize(index + 1, 0.0);
+        }
+        self.sums[index] += value;
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a query cannot retain 2^53 recorded snapshot timestamps"
+    )]
+    fn mean(&self, entity: EntityId) -> Option<f64> {
+        if self.timestamps.is_empty() {
+            return None;
+        }
+        self.sums
+            .get(entity.index())
+            .map(|sum| sum / self.timestamps.len() as f64)
+    }
 }
 
 const NO_FOLD: u32 = u32::MAX;
@@ -1224,6 +1255,10 @@ impl Accumulator {
             range,
             columns,
             cumulative: spec.class == ColumnClass::Cumulative,
+            rss_mean: (grid
+                && spec.query.ranking.section == "os_process"
+                && spec.query.ranking.fields == ["rmem_kb"])
+            .then(RssMean::default),
             grid,
             grouped,
             top: spec.query.ranking.top,
@@ -1262,6 +1297,9 @@ impl Accumulator {
         let Some(value) = summed(row, &binding.metrics) else {
             return Ok(());
         };
+        if let Some(mean) = &mut self.rss_mean {
+            mean.observe(entity, timestamp, value);
+        }
         if !self.grid {
             self.rank_fold(entity)?.window.observe(timestamp, value);
             return Ok(());
@@ -1477,7 +1515,7 @@ impl Accumulator {
                 self.first_index,
             );
             if label_cutoff
-                .is_some_and(|cutoff| ranking_reaches_cutoff(window.total(self.cumulative), cutoff))
+                .is_some_and(|cutoff| ranking_reaches_cutoff(self.score(entity, window), cutoff))
             {
                 for slot in &self.label_slots {
                     if let Some(label) = &state.labels[*slot] {
@@ -1497,7 +1535,9 @@ impl Accumulator {
     fn group_totals(&self, section: &IndexedSection<'_>) -> Vec<Option<f64>> {
         let mut totals = vec![None; self.groups.len()];
         for state in self.ordered_grid_folds(section) {
-            if let (Some(group), Some(total)) = (state.group, state.window.total(self.cumulative)) {
+            if let (Some(group), Some(total)) =
+                (state.group, self.score(state.entity, &state.window))
+            {
                 totals[group] = Some(totals[group].unwrap_or(0.0) + total);
             }
         }
@@ -1511,8 +1551,8 @@ impl Accumulator {
         let mut states = folds.iter().collect::<Vec<_>>();
         states.sort_unstable_by(|left, right| {
             compare_totals(
-                left.window.total(self.cumulative).as_ref(),
-                right.window.total(self.cumulative).as_ref(),
+                self.score(left.entity, &left.window).as_ref(),
+                self.score(right.entity, &right.window).as_ref(),
             )
             .then_with(|| {
                 section.raw_keys[left.entity.index()].cmp(section.raw_keys[right.entity.index()])
@@ -1548,12 +1588,32 @@ impl Accumulator {
             return None;
         }
         let mut totals = Vec::with_capacity(self.fold_count());
-        self.for_each_fold(|_entity, window| totals.push(window.total(self.cumulative)));
+        self.for_each_fold(|entity, window| totals.push(self.score(entity, window)));
         totals.sort_by(|left, right| compare_totals(left.as_ref(), right.as_ref()));
         totals
             .get(self.top.min(totals.len()).saturating_sub(1))
             .copied()
             .map(|total| total.map_or(LabelCutoff::Null, LabelCutoff::Value))
+    }
+
+    fn score(&self, entity: EntityId, window: &Obs) -> Option<f64> {
+        self.rss_mean
+            .as_ref()
+            .map_or_else(|| window.total(self.cumulative), |mean| mean.mean(entity))
+    }
+
+    const fn summary(&self) -> HeatmapSummary {
+        if self.rss_mean.is_some() {
+            HeatmapSummary::Mean
+        } else if self.cumulative {
+            HeatmapSummary::Sum
+        } else {
+            HeatmapSummary::Max
+        }
+    }
+
+    const fn additive_summary(&self) -> bool {
+        self.cumulative || self.rss_mean.is_some()
     }
 
     fn finish(
@@ -1612,7 +1672,7 @@ impl Accumulator {
             ranked.push(RankedState {
                 key,
                 entity,
-                total: window.total(self.cumulative),
+                total: self.score(entity, &window),
                 identity_values,
                 grid,
             });
@@ -1622,8 +1682,10 @@ impl Accumulator {
                 .then_with(|| left.key.cmp(&right.key))
         });
         let physical_entity_count = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
-        let totals_total =
-            summary_total(ranked.iter().filter_map(|row| row.total), self.cumulative);
+        let totals_total = summary_total(
+            ranked.iter().filter_map(|row| row.total),
+            self.additive_summary(),
+        );
         self.finish_ungrouped(
             spec,
             ranked,
@@ -1652,9 +1714,11 @@ impl Accumulator {
         section: &IndexedSection<'_>,
     ) -> Result<HeatmapItemResult, HeatmapError> {
         let top = spec.query.ranking.top;
+        let summary = self.summary();
+        let additive_summary = self.additive_summary();
         let others_total = summary_total(
             ranked.iter().skip(top).filter_map(|row| row.total),
-            self.cumulative,
+            additive_summary,
         );
         let totals = self.totals;
         ranked.truncate(top);
@@ -1711,7 +1775,7 @@ impl Accumulator {
                     intervals: intervals(self.range, self.columns),
                     groups: Vec::new(),
                     totals: HeatmapBand {
-                        total: if self.cumulative {
+                        total: if additive_summary {
                             totals_total
                         } else {
                             band_peak(&totals)
@@ -1719,7 +1783,7 @@ impl Accumulator {
                         cells: totals.iter().map(CellSum::value).collect(),
                     },
                     others: HeatmapBand {
-                        total: if self.cumulative {
+                        total: if additive_summary {
                             others_total
                         } else {
                             peak_values(&other_cells)
@@ -1733,6 +1797,7 @@ impl Accumulator {
             ranking,
             coverage,
             class: spec.class,
+            summary,
             unit: spec.unit,
             entities,
             totals_total,
@@ -1762,7 +1827,7 @@ impl Accumulator {
             let Some(group) = state.group else {
                 continue;
             };
-            if let Some(total) = state.window.total(self.cumulative) {
+            if let Some(total) = self.score(state.entity, &state.window) {
                 group_totals[group] = Some(group_totals[group].unwrap_or(0.0) + total);
             }
             for (sum, observed) in group_cells[group].iter_mut().zip(&state.cells) {
@@ -1797,12 +1862,12 @@ impl Accumulator {
                 cells: group_cells[*group].iter().map(CellSum::value).collect(),
             });
         }
-        let totals_total = if self.cumulative {
+        let totals_total = if self.additive_summary() {
             summary_total(group_totals.iter().flatten().copied(), true)
         } else {
             band_peak(&totals)
         };
-        let others_total = if self.cumulative {
+        let others_total = if self.additive_summary() {
             summary_total(
                 order
                     .iter()
@@ -1831,6 +1896,7 @@ impl Accumulator {
             ranking,
             coverage,
             class: spec.class,
+            summary: self.summary(),
             unit: spec.unit,
             entities: Vec::new(),
             totals_total,
@@ -1878,10 +1944,10 @@ fn ranking_reaches_cutoff(total: Option<f64>, cutoff: LabelCutoff) -> bool {
     }
 }
 
-fn summary_total(values: impl Iterator<Item = f64>, cumulative: bool) -> Option<f64> {
+fn summary_total(values: impl Iterator<Item = f64>, additive: bool) -> Option<f64> {
     values.fold(None, |current, value| {
         Some(match current {
-            Some(current) if !cumulative => current.max(value),
+            Some(current) if !additive => current.max(value),
             Some(current) => current + value,
             None => value,
         })
@@ -2252,6 +2318,7 @@ fn stream_grid(
         "section": item.ranking.section,
         "fields": item.ranking.fields,
         "class": item.class.code(),
+        "summary": item.summary,
         "labels": grid.label_names,
         "top": if grouped { grid.groups.len() } else { item.entities.len() },
         "entity_count": item.entity_count,

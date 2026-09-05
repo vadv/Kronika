@@ -1,7 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHeatmapRecords, bundledFixtureHour, bundledFixtureRange } from "./fixture"
-import type { HeatmapBand, HeatmapView, HeatmapViewRow } from "./heatmap"
+import type { HeatmapBand, HeatmapSummary, HeatmapView, HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -757,7 +757,11 @@ export async function loadHeatmap(
     ? null
     : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group, scope)
   if (fixtureRange !== null && fixture === null) throw new Error("bundled fixture has no Rust heatmap result")
-  const records = fixture ?? await request(`/api/heatmap?${query}`, signal)
+  const path = `/api/heatmap?${query}`
+  let records = fixture ?? await request(path, signal)
+  if (fixture === null && records.some((record) => record.record === "heatmap" && record["summary"] === undefined)) {
+    records = await request(path, signal, undefined, "reload")
+  }
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
     ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
     : []
@@ -766,6 +770,7 @@ export async function loadHeatmap(
     ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
     : []
   let cumulative = true
+  let summary: HeatmapSummary | null = null
   let intervals: { start: number; end: number }[] = []
   let labelNames: string[] = []
   let entityCount = 0
@@ -776,6 +781,9 @@ export async function loadHeatmap(
   for (const record of records) {
     if (record.record === "heatmap") {
       cumulative = record["class"] === "cumulative"
+      const mode = record["summary"]
+      if (mode !== "mean" && mode !== "sum" && mode !== "max") throw new Error("heatmap summary is invalid")
+      summary = mode
       entityCount = Number(record["entity_count"] ?? 0)
       othersCount = Number(record["others_count"] ?? 0)
       const names = Array.isArray(record["labels"])
@@ -805,7 +813,8 @@ export async function loadHeatmap(
       else othersBand = band
     }
   }
-  return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
+  if (summary === null) throw new Error("heatmap header is missing")
+  return { cumulative, summary, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
 }
 
 function namedCells(names: readonly string[], stored: unknown): Readonly<Record<string, Cell>> {
@@ -1640,11 +1649,11 @@ function layoutRecord(record: Record<string, unknown>): RowLayout | null {
   }
 }
 
-async function request(path: string, signal: AbortSignal, onBytes?: (received: number) => void): Promise<readonly Record<string, unknown>[]> {
+async function request(path: string, signal: AbortSignal, onBytes?: (received: number) => void, cache: RequestCache = "default"): Promise<readonly Record<string, unknown>[]> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response: Response
     try {
-      response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+      response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal, cache })
     } catch (error) {
       signal.throwIfAborted()
       if (attempt === 0 && error instanceof TypeError) continue

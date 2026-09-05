@@ -1264,7 +1264,7 @@ test("heatmaps use compact automatic named labels without a label selector", asy
     assert.equal(url.searchParams.has("label"), false)
     return ndjson([
       {
-        record: "heatmap", class: "cumulative", entity_count: "1", others_count: "0",
+        record: "heatmap", class: "cumulative", summary: "sum", entity_count: "1", others_count: "0",
         labels: ["datname", "usename"],
         intervals: [{ start: String(START), end: String(START + 3_600_000_000 - 1) }],
       },
@@ -1290,6 +1290,60 @@ test("heatmaps use compact automatic named labels without a label selector", asy
       datname: "app",
       usename: "reporter",
     })
+    assert.equal(view.summary, "sum")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("heatmaps preserve summary modes and reject unknown or still-missing modes after one reload", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let summary: string | undefined = "mean"
+  const cacheModes: (RequestCache | undefined)[] = []
+  globalThis.fetch = async (_input, init) => {
+    cacheModes.push(init?.cache)
+    return ndjson([{ record: "heatmap", class: "gauge", summary, intervals: [] }])
+  }
+  const load = () => api.loadHeatmap(START, "os_process", ["rmem_kb"], 1, 25, new AbortController().signal)
+  try {
+    assert.equal((await load()).summary, "mean")
+    summary = "max"
+    assert.equal((await load()).summary, "max")
+    summary = "unknown"
+    await assert.rejects(load(), /heatmap summary is invalid/)
+    assert.deepEqual(cacheModes, ["default", "default", "default"])
+    summary = undefined
+    await assert.rejects(load(), /heatmap summary is invalid/)
+    assert.deepEqual(cacheModes.slice(3), ["default", "reload"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("heatmaps replace a cached legacy response once at the same URL", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const calls: { path: string; cache: RequestCache | undefined }[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ path: String(input), cache: init?.cache })
+    return ndjson([
+      { record: "heatmap", class: "gauge", ...(calls.length === 1 ? {} : { summary: "mean" }), intervals: [] },
+      { record: "heatmap_band", band: "totals", total: calls.length === 1 ? 900 : 300, cells: [] },
+    ])
+  }
+  try {
+    const load = () => api.loadHeatmap(START, "os_process", ["rmem_kb"], 1, 25, new AbortController().signal)
+    const view = await load()
+    assert.equal(view.summary, "mean")
+    assert.equal(view.totals.total, 300)
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0]?.path, calls[1]?.path)
+    assert.deepEqual(calls.map(({ cache }) => cache), ["default", "reload"])
+    await load()
+    assert.deepEqual(calls.map(({ cache }) => cache), ["default", "reload", "default"])
   } finally {
     globalThis.fetch = originalFetch
   }

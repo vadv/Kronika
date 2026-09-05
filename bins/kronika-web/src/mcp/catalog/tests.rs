@@ -90,7 +90,7 @@ fn mass_tool_schemas_match_stable_goldens() {
         (
             OVERVIEW_TOOL,
             "f8a4fc079c35b2ec5d95e4a2a6875cd2444144153e6da8ffd6438bef0f403ac9",
-            "3d3b4283c384abf8821ccf0ab68c8014f42ab10c3d624296e24ae23c4fcfc867",
+            "581adc479906f5e17a2e0a1730f80585d1a93745c61b535694a7906bad40c455",
         ),
         (
             FIND_EVENTS_TOOL,

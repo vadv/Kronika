@@ -39,8 +39,9 @@ pub use finished_dataset::FinishedDataset;
 pub use heatmap::{
     CoverageState, DEFAULT_TOP, HeatmapBand, HeatmapBatchQuery, HeatmapBatchResult,
     HeatmapCoverage, HeatmapEntity, HeatmapError, HeatmapGrid, HeatmapGroup, HeatmapInterval,
-    HeatmapItemQuery, HeatmapItemResult, HeatmapView, MAX_FIELDS, MAX_TOP, NamedValues,
-    NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch, validate_heatmap_request,
+    HeatmapItemQuery, HeatmapItemResult, HeatmapSummary, HeatmapView, MAX_FIELDS, MAX_TOP,
+    NamedValues, NormalizedRanking, ValidatedHeatmapQuery, execute_heatmap_batch,
+    validate_heatmap_request,
 };
 pub use hour::{
     GroupKey, Metric, RelationAggregate, RelationField, RelationKind, RelationSource,

@@ -147,7 +147,9 @@ test("RU keeps technical labels in English and localizes help", async () => {
     assert.equal(russian[key], english[key], key)
   }
 
-  const localizedActivity = new Set(["activity.loading", "activity.error", "activity.empty"])
+  const localizedActivity = new Set(["activity.loading", "activity.error", "activity.empty", "activity.average", "activity.at_cursor"])
+  assert.equal(russian["activity.average"], "Среднее")
+  assert.equal(russian["activity.at_cursor"], "На курсоре")
   for (const key of Object.keys(english).filter((candidate) => candidate.startsWith("activity.") && !candidate.endsWith(".help") && !localizedActivity.has(candidate))) {
     assert.equal(russian[key], english[key], key)
   }

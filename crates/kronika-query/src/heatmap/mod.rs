@@ -12,7 +12,7 @@ pub use query::{
 };
 pub use result::{
     CoverageState, HeatmapBand, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapGrid,
-    HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
+    HeatmapGroup, HeatmapInterval, HeatmapItemResult, HeatmapSummary, NamedValues,
 };
 
 /// Validate one heatmap request without opening its recorded-data source.

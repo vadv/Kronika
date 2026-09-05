@@ -7838,7 +7838,7 @@ function answerHeatmap(url, response) {
   return ndjson(response, [
     {
       record: "heatmap", from: String(from), to: String(to), section,
-      fields: url.searchParams.getAll("field"), class: "cumulative", labels,
+      fields: url.searchParams.getAll("field"), class: "cumulative", summary: "sum", labels,
       top: ranked.length, entity_count: ranked.length + 1, others_count: 1, out_of_order: "0", intervals,
     },
     ...ranked.map(({ identity, total, typeId }) => ({ record: "heatmap_row", type_id: typeId, identity, labels: labelValues, total, cells })),

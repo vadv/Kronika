@@ -524,6 +524,7 @@ fn overview_ranks_the_top_entities_and_reports_the_others_total() {
     assert_eq!(result.is_error, Some(false));
     let structured = result.structured_content.expect("structured content");
     let ranking = &structured["results"][0];
+    assert_eq!(ranking["summary"], "max");
     let entities = ranking["entities"].as_array().expect("entities array");
     assert_eq!(entities.len(), 2);
     assert_eq!(entities[0]["total"], 50.0);

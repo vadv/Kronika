@@ -36,6 +36,8 @@ use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
+mod heatmap_rss;
+
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
 
@@ -3354,6 +3356,7 @@ fn heatmap_preserves_cache_order_and_truncation() {
 
         let records = raw_ndjson_records(&bytes);
         assert_eq!(records[0]["record"], "heatmap");
+        assert_eq!(records[0]["summary"], "sum");
         assert_eq!(records[0]["entity_count"], 3);
         assert_eq!(records[0]["top"], 2);
         assert_eq!(records[0]["others_count"], 1);

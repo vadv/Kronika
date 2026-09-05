@@ -38,7 +38,7 @@ test("a row's peak is its first strictly positive maximum, and a silent row has 
 test("cgroup I/O hoists one shared path and keeps differing paths on their device rows", () => {
   const row = (path, major, minor) => ({ typeId: "1203002", identity: [path, major, minor], labels: {}, members: null, total: 1, cells: [1] })
   const rows = [row("/", "259", "0"), row("/", "252", "0")]
-  const view = { cumulative: true, intervals: [], rows, totals: { cells: [2], total: 2 }, others: { cells: [0], total: 0 }, othersCount: 0, entityCount: 2 }
+  const view = { cumulative: true, summary: "sum", intervals: [], rows, totals: { cells: [2], total: 2 }, others: { cells: [0], total: 0 }, othersCount: 0, entityCount: 2 }
   assert.equal(activity.cgroupIoSharedPath(view), "/")
   assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true), { text: "259:0", prefix: "/" })
   assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true), { text: "252:0", prefix: "/" })

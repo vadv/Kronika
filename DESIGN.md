@@ -779,7 +779,7 @@ Statement lens and search actions, table headers, and selectable rows each own
 at least a 44 px target; the virtual row stride changes with that target so
 rows never overlap.
 
-Each entity row shows interval cells, its hour total, and its value at the
+Each entity row shows interval cells, its window summary, and its value at the
 cursor. The pinned Total row includes all entities; Other includes entities
 outside the displayed ranking. Global color scaling is the default; per-row
 scaling is optional. Null cells are blank and zero uses the lightest fill. A
@@ -793,7 +793,9 @@ entities in the heatmap response. Query text, plans, command lines, log or
 sample text, statements, context, hints, detail payloads, and similar stored
 data do not; the complete row remains on its owning point/detail path. Tables
 and indexes use twelve cells for their five-minute cadence.
-Gauge metrics rank by the window maximum and display values rather than rates.
+Gauge metrics display values rather than rates. RSS heatmaps rank by average
+memory across recorded process snapshots in the window; other gauges rank by
+the window maximum. RSS labels the summary column Average.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -1399,9 +1401,20 @@ logical section share one section-owned identity index, compact identity cells,
 and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
 needed to rank them. A counter ranks by its whole-window delta and a gauge by
-its whole-window maximum. A band total uses the sum for counters and the maximum
-for gauges. The response also carries a totals band containing the per-column
+its whole-window maximum, except for the RSS grid described below. A band total
+uses the sum for counters and the maximum for other gauges. The response also carries a totals band containing the per-column
 sum of every entity and an others band equal to totals minus the ranked rows.
+
+For a Grid request selecting only `os_process.rmem_kb`, each summary is the sum
+of its recorded RSS values divided by the number of distinct process snapshot
+timestamps in the requested window. Groups, individual PIDs, Total, and Other
+share that denominator: a PID absent at a recorded timestamp contributes
+nothing, and times without any recorded process values do not enter the mean.
+Ranking and label selection use the same mean, independently of grid columns.
+The response identifies its summary as `mean`, `sum`, or `max`; compact UI rows
+combine hidden means by addition. Cells retain their interval gauge readings.
+RankingOnly requests, including MCP Overview, retain gauge maxima.
+
 Coverage contains only `state` (`data` or `no_data`) and decimal
 `window_rows`; it does not claim segment, field, or completeness coverage. The
 redundant `os_cpu` aggregate identity whose `cpu_id` is exactly `-1` is excluded
