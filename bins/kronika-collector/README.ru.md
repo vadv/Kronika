@@ -306,7 +306,7 @@ cgroup начисляет I/O.
 ## Запуск коллектора
 
 ```sh
-KRONIKA_STORAGE_DIR=/var/lib/kronika kronika-collector
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika /usr/local/bin/kronika-collector
 ```
 
 `SIGTERM` и `SIGINT` останавливают цикл и оставляют журнал на месте, чтобы после

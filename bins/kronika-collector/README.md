@@ -296,7 +296,7 @@ devices.
 ## Run the collector
 
 ```sh
-KRONIKA_STORAGE_DIR=/var/lib/kronika kronika-collector
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika /usr/local/bin/kronika-collector
 ```
 
 `SIGTERM` and `SIGINT` stop the loop and leave the journal in place, so a

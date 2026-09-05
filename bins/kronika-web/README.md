@@ -28,17 +28,16 @@ binds.
 
 ## Run
 
-Install `rustup` and `musl-gcc`, then run from the repository root:
+Install the [portable archive](../../INSTALL.md), then run:
 
 ```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p kronika-web
-
+/usr/local/bin/kronika-web --version
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-KRONIKA_WEB_SOURCES=1 \
-KRONIKA_WEB_USER=kronika \
-KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-target/x86_64-unknown-linux-musl/release/kronika-web
+  KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
+  KRONIKA_WEB_SOURCES=1 \
+  KRONIKA_WEB_USER=kronika \
+  KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+  /usr/local/bin/kronika-web
 ```
 
 The data directory must already exist. On success, the process prints
