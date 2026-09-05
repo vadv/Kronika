@@ -108,7 +108,14 @@ with (scratch / 'collector.log').open('w+') as log:
     assert collector.returncode == 0, 'collector did not stop cleanly'
 captured = subprocess.run([package / 'kronika-dump', capture, '--json'], env=env,
                           capture_output=True, text=True, check=True, timeout=30)
-assert 'os_cpu' in captured.stdout and 'os_process' in captured.stdout, captured.stdout
+sections = [json.loads(line) for line in captured.stdout.splitlines()]
+for name in ('os_cpu', 'os_process'):
+    section = next(row for row in sections if row.get('section') == name and row['rows'] > 0)
+    decoded = subprocess.run([package / 'kronika-dump', capture, '--json',
+                              '--section', str(section['type_id']), '--limit', '1'],
+                             env=env, capture_output=True, text=True, check=True, timeout=30)
+    rows = [json.loads(line) for line in decoded.stdout.splitlines()]
+    assert any(row.get('kind') == 'row' and row['row'] for row in rows), decoded.stdout
 store = scratch / 'data'
 segment_dir = store / '2024/02/29'
 segment_dir.mkdir(parents=True)
