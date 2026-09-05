@@ -665,10 +665,10 @@ function eventStat(value: unknown): EventStat {
   if (kind === "pgbouncer.events") return {
     kind,
     level: finiteNumber(stat["level"], "PgBouncer level"),
-    database: nullableText(stat["database"], "PgBouncer database"),
-    username: nullableText(stat["username"], "PgBouncer username"),
-    host: nullableText(stat["host"], "PgBouncer host"),
-    sourceFile: nullableText(stat["sourceFile"], "PgBouncer source file"),
+    database: optionalNullableText(stat["database"], "PgBouncer database"),
+    username: optionalNullableText(stat["username"], "PgBouncer username"),
+    host: optionalNullableText(stat["host"], "PgBouncer host"),
+    sourceFile: optionalNullableText(stat["sourceFile"], "PgBouncer source file"),
   }
   throw new Error("event stat kind is invalid")
 }
@@ -682,6 +682,10 @@ function nullableText(value: unknown, name: string): string | null {
   if (value === null) return null
   if (typeof value !== "string") throw new Error(`${name} is invalid`)
   return value
+}
+
+function optionalNullableText(value: unknown, name: string): string | null {
+  return nullableText(value ?? null, name)
 }
 
 function nullableNumber(value: unknown, name: string): number | null {

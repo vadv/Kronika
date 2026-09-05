@@ -686,6 +686,47 @@ test("event groups use one half-open request and validate the server-owned shape
       sourceFile: "/var/log/pgbouncer.log",
     })
 
+    const pgbouncerWithoutOptionalContext = {
+      record: "event_group", key: "pgbouncer:3:closing because: client close request", section: "pgbouncer_events", tier: "routine",
+      label: "closing because: client close request", count: 1, firstTs: START, lastTs: START, minutes,
+      stat: { kind: "pgbouncer.events", level: 3 },
+      detail_ref: "opaque-pgbouncer-without-context", representativeTs: START,
+    }
+    globalThis.fetch = async () => ndjson([
+      { record: "events", representation: "groups", truncated: false },
+      pgbouncerWithoutOptionalContext,
+    ])
+    const [withoutOptionalContext] = (await api.loadEventGroups(
+      START,
+      START + 1,
+      ["pgbouncer_events"],
+      new AbortController().signal,
+    )).rows
+    assert.deepEqual(withoutOptionalContext?.stat, {
+      kind: "pgbouncer.events",
+      level: 3,
+      database: null,
+      username: null,
+      host: null,
+      sourceFile: null,
+    })
+
+    for (const [field, label] of [
+      ["database", "database"],
+      ["username", "username"],
+      ["host", "host"],
+      ["sourceFile", "source file"],
+    ] as const) {
+      globalThis.fetch = async () => ndjson([
+        { record: "events", representation: "groups", truncated: false },
+        { ...pgbouncerWithoutOptionalContext, stat: { kind: "pgbouncer.events", level: 3, [field]: 7 } },
+      ])
+      await assert.rejects(
+        api.loadEventGroups(START, START + 1, ["pgbouncer_events"], new AbortController().signal),
+        new RegExp(`PgBouncer ${label} is invalid`),
+      )
+    }
+
     globalThis.fetch = async () => ndjson([
       { record: "events", representation: "groups", truncated: false },
       {

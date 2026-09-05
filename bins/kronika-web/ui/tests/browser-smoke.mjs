@@ -172,6 +172,23 @@ if (reportMode) {
     assert.equal(pickerHours.every((hour) => hour < visibleRange.toExclusive && hour + 3_600_000_000 > visibleRange.from), true)
     await evaluate(`dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`)
   }
+
+  await evaluate(`document.querySelectorAll('.source-tabs button')[3].click()`)
+  await waitFor(`document.querySelector('[data-testid="events-console"]') !== null`, "report Events console", 30_000)
+  await waitFor(`(() => {
+    const console = document.querySelector('[data-testid="events-console"]')
+    return console !== null && console.querySelector('[data-loading="true"]') === null
+      && console.querySelector(':scope > header [role]') !== null
+  })()`, "settled report Events", 30_000)
+  const eventState = await evaluate(`(() => {
+    const console = document.querySelector('[data-testid="events-console"]')
+    return {
+      failed: console.querySelector(':scope > header [role="alert"]') !== null,
+      groups: console.querySelectorAll('[data-testid="event-entry"]').length,
+      status: console.querySelector(':scope > header [role]')?.textContent ?? "",
+    }
+  })()`)
+  assert.equal(eventState.failed, false, JSON.stringify(eventState))
 }
 await evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
 await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows", reportMode ? 30_000 : 10_000)
