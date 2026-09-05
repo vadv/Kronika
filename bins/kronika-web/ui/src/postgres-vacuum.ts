@@ -219,15 +219,8 @@ export interface VacuumProcessLoad {
   readonly majorFaults: bigint | null
 }
 
-// The vacuuming process's own recorded work across the episode's own window:
-// the latest usable `os_process` sample at or before the episode's first
-// recorded moment stands as the baseline, the latest at or before its last
-// recorded moment as the reading. A backend that also did other work outside
-// this window is not filtered out — every recorded process, autovacuum
-// worker or plain backend running a manual VACUUM, keeps whatever else it
-// did in the same span. The delta is exactly what the process accumulated
-// between two real recorded moments: a hint at the vacuum's cost, not proof
-// the vacuum alone produced it.
+// Use this PID's latest samples at or before the episode's first and last
+// recorded moments. Counters include all work by that PID within the span.
 export function vacuumProcessLoad(processRows: readonly DataRow[], episode: VacuumEpisode): VacuumProcessLoad | null {
   const start = episode.rows[0]?.timestamp
   if (start === undefined) return null

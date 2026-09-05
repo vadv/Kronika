@@ -1,11 +1,7 @@
-import type { SegmentBound } from "./api"
-
 const MICROS = 1_000_000
 const HOUR_SECONDS = 3_600
 
-// An export range is two inclusive whole Unix seconds, the same contract the
-// server accepts. Everything here is arithmetic on those seconds so the strip
-// never has to parse what it shows.
+// Inclusive whole Unix seconds, matching the export endpoint.
 export interface ExportRange {
   readonly from: number
   readonly to: number
@@ -53,8 +49,7 @@ export function validRange(range: ExportRange): boolean {
   return Number.isSafeInteger(range.from) && Number.isSafeInteger(range.to) && range.from > 0 && range.from <= range.to
 }
 
-// The server names the file from both inclusive UTC seconds; naming it here
-// lets the strip show the name before anything is requested.
+// Match the server filename before requesting the export.
 export function exportFilename(range: ExportRange): string {
   return `kronika-${utcStamp(range.from)}-${utcStamp(range.to)}-utc.html`
 }
@@ -63,35 +58,6 @@ function utcStamp(second: number): string {
   const date = new Date(second * 1_000)
   const two = (value: number) => String(value).padStart(2, "0")
   return `${date.getUTCFullYear()}-${two(date.getUTCMonth() + 1)}-${two(date.getUTCDate())}-${two(date.getUTCHours())}${two(date.getUTCMinutes())}${two(date.getUTCSeconds())}`
-}
-
-export interface RangeCoverage {
-  // Recorded seconds inside the range, clamped to it; null when nothing was recorded there.
-  readonly recorded: ExportRange | null
-  // Gaps longer than the tolerance between recorded segments inside the range, in seconds.
-  readonly gaps: readonly ExportRange[]
-}
-
-// What the export will actually contain, from the segment bounds the hour
-// already loaded. Segments are recorded intervals; the space between two of
-// them counts as a gap only when it exceeds the collector's ordinary pause.
-export function rangeCoverage(range: ExportRange, segments: readonly SegmentBound[], gapToleranceSeconds = 60): RangeCoverage {
-  const intervals = segments
-    .map((segment) => ({ from: Math.floor(segment.minTs / MICROS), to: Math.floor(segment.maxTs / MICROS) }))
-    .filter((interval) => interval.to >= range.from && interval.from <= range.to)
-    .map((interval) => ({ from: Math.max(interval.from, range.from), to: Math.min(interval.to, range.to) }))
-    .sort((left, right) => left.from - right.from)
-  if (intervals.length === 0) return { recorded: null, gaps: [] }
-  const gaps: ExportRange[] = []
-  let recordedTo = intervals[0]?.to ?? range.from
-  for (const interval of intervals.slice(1)) {
-    if (interval.from - recordedTo > gapToleranceSeconds) gaps.push({ from: recordedTo + 1, to: interval.from - 1 })
-    recordedTo = Math.max(recordedTo, interval.to)
-  }
-  return {
-    recorded: { from: intervals[0]?.from ?? range.from, to: recordedTo },
-    gaps,
-  }
 }
 
 // The part of the range the current hour's timeline can show, in microseconds.

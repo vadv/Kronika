@@ -234,7 +234,7 @@ function validateHtml(html, reportMode) {
       "sendBeacon",
       "X-Kronika-UI",
       "export.",
-      "export-panel",
+      "export-dialog",
       "export-trigger",
       "mcp-trigger",
       "refresh-action",

@@ -27,6 +27,7 @@ const EVENT_SOURCES = [
 export function EventsView({
   cursor,
   data,
+  environment,
   hour,
   loading = false,
   locale,
@@ -48,6 +49,7 @@ export function EventsView({
 }: {
   readonly cursor: number
   readonly data: HourData
+  readonly environment: "machine" | "container" | null
   readonly hour: number
   readonly loading?: boolean | undefined
   readonly locale: Locale
@@ -128,7 +130,7 @@ export function EventsView({
   const consoleStatus = eventConsoleStatus(visible, busy, events.failed)
   const consoleCount = t(consoleStatus.key, consoleStatus.slots)
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} t={t} />
+    <Timeline cursor={cursor} environment={environment} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} t={t} />
     {scopeSummary !== null && <section
       aria-describedby="events-scope-help"
       aria-label={t("events.scope")}

@@ -1,13 +1,8 @@
 import type { Cell, DataRow } from "./api"
 import { rawText, value } from "./model"
 
-// cgroup v2 io.stat charges one request to every block layer it passes, so a
-// volume on dm/LVM and the disk beneath it carry the same bytes twice. The
-// presentation names each charged device from exact recorded facts only:
-// mountinfo and diskstats joined on the exact major:minor, and the exact
-// sysfs edges of os_block_topology (partition → whole device, layered device →
-// slave). A lower layer charged for the same I/O folds under the top-most
-// charged device of its chain; nothing is joined by similarity.
+// io.stat charges every traversed block layer; only recorded topology edges
+// allow a lower layer to fold into another device in the same cgroup.
 
 export interface CgroupMountAssociation {
   readonly infrastructure: boolean | null
@@ -95,7 +90,6 @@ export function cgroupDevicePresentation(
   }
 }
 
-// The mount point, else the device name, else the bare major:minor.
 export function cgroupDevicePrimary(presentation: CgroupDevicePresentation): string {
   return presentation.preferredMounts[0] ?? presentation.device ?? presentation.id
 }
@@ -115,9 +109,12 @@ export function cgroupDeviceSecondary(presentation: CgroupDevicePresentation): s
   return text === "" || text === cgroupDevicePrimary(presentation) ? null : text
 }
 
-// Every layer with its exact identity, for the Inspector.
 export function cgroupDeviceChain(presentation: CgroupDevicePresentation): string {
   return presentation.chain.map((layer) => layer.name === null ? layer.id : `${layer.name} ${layer.id}`).join(" → ")
+}
+
+export function cgroupDeviceKey(path: string | null, device: string): string {
+  return JSON.stringify([path, device])
 }
 
 export function exactDeviceId(row: DataRow): string | null {

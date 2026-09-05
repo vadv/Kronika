@@ -605,6 +605,17 @@ test("a charged lower layer leaves the cgroup I/O table and rides in the top row
   assert.equal(top.values.cgroup_device_secondary, "data-docker · dm-0 → nvme0n1")
   assert.equal(top.values.cgroup_device_chain, "dm-0 252:0 → 259:4 → nvme0n1 259:0")
   assert.deepEqual(top.values.cgroup_lower_layers, { layers: [{ id: "259:0", name: "nvme0n1", rbytes: 100, wbytes: 190, rios: 3, wios: 4 }] })
+  const otherDisk = row("os_cgroup_io", "other-disk", { cgroup_path: "/other", major: 259, minor: 0, rbytes: 700, wbytes: 900, rios: 7, wios: 9, scope: 3 })
+  for (const ioRows of [[...source.sections.os_cgroup_io, otherDisk], [otherDisk, ...source.sections.os_cgroup_io]]) {
+    const mixed = helpers.systemEntityRows({ ...source, sections: { ...source.sections, os_cgroup_io: ioRows } }, "os_cgroup_io", 10)
+    assert.equal(mixed.length, 2, "a lower device charged by another cgroup keeps its own row")
+    const own = mixed.find(({ values }) => values.cgroup_path === "/")
+    const other = mixed.find(({ values }) => values.cgroup_path === "/other")
+    assert.deepEqual(own.values.cgroup_lower_layers, top.values.cgroup_lower_layers, "the Inspector receives only its cgroup's lower counters")
+    assert.equal(other.values.rbytes, 700)
+    assert.equal(other.values.cgroup_lower_layers, undefined)
+    assert.equal(other.values.cgroup_device, "/var/lib/kronika/data", "the other cgroup can borrow the uncharged mounted layer")
+  }
   // The physical row still exists as data: the same hour without edges shows both.
   const flat = helpers.systemEntityRows({ ...source, sections: { ...source.sections, os_block_topology: [] } }, "os_cgroup_io", 10)
   assert.deepEqual(flat.map(({ values }) => [values.device_id, values.cgroup_device, values.cgroup_device_secondary]), [["252:0", "/var/lib/kronika/data", "data-docker · dm-0"], ["259:0", "nvme0n1", null]])

@@ -212,6 +212,15 @@ export interface LanePoint {
 export interface LaneContext {
   readonly segmentId: string
   readonly postgresqlIntervalSeconds: number | null
+  // instance_metadata.environment of the segment: 0 machine, 1 container.
+  readonly environment: number | null
+}
+
+export type RecordedEnvironment = "machine" | "container"
+
+export function recordedEnvironmentFromContexts(contexts: readonly LaneContext[]): RecordedEnvironment | null {
+  const stated = contexts.filter((context) => context.environment !== null).at(-1)
+  return stated === undefined ? null : stated.environment === 0 ? "machine" : stated.environment === 1 ? "container" : null
 }
 
 export interface TimelineLanes {
@@ -447,9 +456,11 @@ export async function loadTimelineLanes(
   for (const record of records) {
     if (record.record === "lane_context") {
       const seconds = record.postgresql_interval_seconds
+      const environment = record.environment
       contexts.push({
         segmentId: requiredText(record.segment_id, "lane context segment id"),
         postgresqlIntervalSeconds: seconds === null ? null : integer(seconds, "PostgreSQL interval"),
+        environment: typeof environment === "number" && Number.isSafeInteger(environment) ? environment : null,
       })
     } else if (record.record === "lane") {
       points.push({

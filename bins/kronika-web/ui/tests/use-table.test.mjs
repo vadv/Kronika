@@ -54,7 +54,7 @@ test("the header verdicts are read from the rows: peak share at the cursor, non-
   // Host memory at 62.5% beats CPU at 30%; the container's bytes do not compete with shares.
   assert.deepEqual(verdicts.utilisation, { key: "memory", text: "62.5% · label(memory)" })
   // Only the container memory pressure was non-zero in the hour; its peak is named, zero pressures are not listed.
-  assert.deepEqual(verdicts.saturation, { key: "cgroup_memory", text: "use.lane.cg_mem_psi 3.5%" })
+  assert.deepEqual(verdicts.saturation, { key: "cgroup_memory", text: "use.scope.container · use.lane.cg_mem_psi 3.5%" })
   // Two OOM kills per second for five seconds are ten kills over the hour.
   assert.equal(integrateRate([point("mem_oom", 5_000_000, null), point("mem_oom", 10_000_000, 2), point("mem_oom", 15_000_000, 0)]), 10)
   assert.deepEqual(verdicts.errors, { key: "memory", text: "use.verdict.events:10" })
@@ -63,4 +63,17 @@ test("the header verdicts are read from the rows: peak share at the cursor, non-
   assert.deepEqual(quiet.errors, { key: null, text: "use.verdict.quiet" })
   const nothing = ledgerVerdicts(rows, lanePointsByLane([]), 10_000_000, "en", t, (key) => key)
   assert.deepEqual(nothing, { utilisation: { key: null, text: "—" }, saturation: { key: null, text: "—" }, errors: { key: null, text: "—" } })
+})
+
+
+test("saturation names host and container pressure separately", () => {
+  const points = lanePointsByLane([
+    { lane: "cpu_stall", segmentId: "s", timestamp: 10, value: 8 },
+    { lane: "cg_cpu_psi", segmentId: "s", timestamp: 10, value: 3 },
+    { lane: "cg_cpu_throttle", segmentId: "s", timestamp: 10, value: 0 },
+  ])
+  const t = (key) => ({ "use.scope.host": "Host", "use.scope.container": "Container", "use.lane.cpu_stall": "CPU PSI", "use.lane.cg_cpu_psi": "CPU PSI" })[key] ?? key
+  const verdict = ledgerVerdicts(USE_RESOURCES, points, 10, "en", t, (key) => key, true).saturation
+  assert.equal(verdict.key, "cpu")
+  assert.equal(verdict.text, "Container · CPU PSI 3% · Host · CPU PSI 8%")
 })

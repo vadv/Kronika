@@ -101,11 +101,6 @@ export function isContainerResource(key: UseResourceKey): boolean {
   return CONTAINER_RESOURCES.has(key)
 }
 
-// The ledger IS the Host page: a row is one resource, its cells carry the
-// hour's shape with the reading at the cursor, and expanding a row discloses
-// the group's chart, metric chips and entity tables in place. Expansion is
-// disclosure, not navigation — several rows open side by side. The header
-// row is the hour's verdict read from the rows below it, not a slogan.
 export function UseTable({
   containerScopes = false,
   cursor,
@@ -145,7 +140,7 @@ export function UseTable({
     && (visibleResources === undefined || visibleResources.has(resource.key))
     && (withContent.has(resource.key) || USE_COLUMNS.some((column) => resolveCell(resource, column, byLane) !== null))), [byLane, containerScopes, visibleResources, withContent])
   const resourceLabel = (key: UseResourceKey) => t(containerScopes && key === "network" ? "use.resource.namespace_network" : `use.resource.${key}`)
-  const verdicts = useMemo(() => ledgerVerdicts(shown, byLane, cursor, locale, t, resourceLabel), [byLane, cursor, locale, shown, t, resourceLabel])
+  const verdicts = useMemo(() => ledgerVerdicts(shown, byLane, cursor, locale, t, resourceLabel, containerScopes), [byLane, containerScopes, cursor, locale, shown, t, resourceLabel])
   const end = hour + 3_600_000_000
   if (shown.length === 0) return null
   const resourceRow = (resource: UseResource) => {
@@ -204,7 +199,7 @@ export function UseTable({
             ? <span className={verdictClass} data-testid={`use-verdict-${column}`} title={verdict.text}>{verdict.text}</span>
             : <button
               aria-label={t("use.verdict.open", { resource: resourceLabel(verdict.key), verdict: verdict.text })}
-              className={`${verdictClass} cursor-pointer border-0 bg-transparent hover:text-fg focus-visible:outline-2 focus-visible:outline-accent`}
+              className={`${verdictClass} cursor-pointer border-0 bg-transparent hover:text-fg focus-visible:outline-2 focus-visible:outline-accent coarse:min-h-11 coarse:min-w-11`}
               data-testid={`use-verdict-${column}`}
               onClick={() => onOpenRow(verdict.key as UseResourceKey)}
               title={verdict.text}
@@ -227,7 +222,6 @@ export interface ResolvedCell {
   readonly second: readonly ChartPoint[] | undefined
 }
 
-// The cell that has readings: the declared lane, else its fallback, else none.
 export function resolveCell(resource: UseResource, column: UseColumn, byLane: ReadonlyMap<string, readonly ChartPoint[]>): ResolvedCell | null {
   let cell: UseCell | undefined = resource[column] ?? undefined
   while (cell !== undefined) {
@@ -246,12 +240,6 @@ export interface LedgerVerdict {
   readonly text: string
 }
 
-// The header row is computed from the rows below it. Utilization is the
-// largest share at the cursor and whose it is: shares are comparable, byte
-// rates are not. Saturation names every resource whose pressure was not zero
-// in the hour with its own peak; different quantities are never summed.
-// Errors are the hour's summed events; zero there is the point. No thresholds
-// and no colour: facts only.
 export function ledgerVerdicts(
   rows: readonly UseResource[],
   byLane: ReadonlyMap<string, readonly ChartPoint[]>,
@@ -259,6 +247,7 @@ export function ledgerVerdicts(
   locale: Locale,
   t: Translate,
   resourceLabel: (key: UseResourceKey) => string,
+  containerScopes = false,
 ): Readonly<Record<UseColumn, LedgerVerdict>> {
   const perSecond = t("unit.per_second")
   let utilisation: LedgerVerdict = { key: null, text: "—" }
@@ -284,10 +273,11 @@ export function ledgerVerdicts(
     for (const [lane, points] of lanes) {
       const max = seriesMax(points)
       if (max === null || max <= 0) continue
+      const scope = isContainerResource(resource.key) ? "container" : containerScopes && resource.key === "network" ? "namespace" : "host"
       pressures.push({
         key: resource.key,
         share: resolved.cell.kind === "share" ? max : -1,
-        text: `${t(`use.lane.${lane}`)} ${reading(max, locale, resolved.cell.kind, perSecond)}`,
+        text: `${t(`use.scope.${scope}`)} · ${t(`use.lane.${lane}`)} ${reading(max, locale, resolved.cell.kind, perSecond)}`,
       })
     }
   }
@@ -340,15 +330,6 @@ export function integrateRate(points: readonly ChartPoint[]): number {
   return total
 }
 
-export function shownUseResources(lanePoints: readonly LanePoint[]): readonly UseResource[] {
-  const byLane = lanePointsByLane(lanePoints)
-  return USE_RESOURCES.filter((resource) => USE_COLUMNS.some((column) => resolveCell(resource, column, byLane) !== null))
-}
-
-export function laneHasReading(lanePoints: readonly LanePoint[], lane: string): boolean {
-  return lanePoints.some((point) => point.lane === lane && point.value !== null && Number.isFinite(point.value))
-}
-
 export function lanePointsByLane(lanePoints: readonly LanePoint[]): ReadonlyMap<string, readonly ChartPoint[]> {
   const map = new Map<string, ChartPoint[]>()
   for (const point of lanePoints) {
@@ -372,24 +353,6 @@ export function seriesReading(
   perSecond: string,
 ): string {
   const stored = readingAt(points, cursor)
-  return stored === null ? "—" : reading(stored, locale, kind, perSecond)
-}
-
-export function laneSeriesPoints(lanePoints: readonly LanePoint[], lane: string): readonly ChartPoint[] {
-  return lanePoints
-    .filter((point) => point.lane === lane)
-    .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
-}
-
-export function currentLaneReading(
-  lanePoints: readonly LanePoint[],
-  lane: string,
-  cursor: number,
-  locale: Locale,
-  kind: UseCell["kind"],
-  perSecond: string,
-): string {
-  const stored = readingAt(laneSeriesPoints(lanePoints, lane), cursor)
   return stored === null ? "—" : reading(stored, locale, kind, perSecond)
 }
 

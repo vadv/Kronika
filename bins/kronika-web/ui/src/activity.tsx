@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 
 import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { type StatementScope, loadHeatmap, type DataRow } from "./api"
-import { cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation } from "./cgroup-device"
+import { cgroupDeviceKey, cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation } from "./cgroup-device"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
@@ -427,7 +427,7 @@ const EMPTY_CGROUP_DEVICES: ReadonlyMap<string, CgroupDevicePresentation> = new 
 export function cgroupActivityIdentity(row: HeatmapViewRow, io: boolean, devices: ReadonlyMap<string, CgroupDevicePresentation> = EMPTY_CGROUP_DEVICES): RowLabel {
   if (!io) return { text: row.identity[0] ?? "—", prefix: null }
   const id = row.identity[1] == null ? null : `${row.identity[1]}:${row.identity[2] ?? ""}`
-  const presentation = id === null ? undefined : devices.get(id)
+  const presentation = id === null ? undefined : devices.get(cgroupDeviceKey(row.identity[0] ?? null, id))
   if (presentation === undefined) return { text: id ?? "—", prefix: row.identity[0] ?? "—" }
   const primary = cgroupDevicePrimary(presentation)
   return {

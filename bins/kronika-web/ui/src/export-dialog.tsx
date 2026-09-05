@@ -2,7 +2,6 @@ import { CalendarDays, ChevronLeft, ChevronRight, Download, X } from "lucide-rea
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
-import type { SegmentBound } from "./api"
 import { calendarDateLabel, calendarMonthDays, calendarMonthLabel } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { ExportResponseError, ExportServerStateUnknownError, fetchExportArtifact, triggerHtmlDownload } from "./export-download"
@@ -12,7 +11,6 @@ import {
   exportFilename,
   hourRange,
   presetRange,
-  rangeCoverage,
   rangeSeconds,
   readLastExportSeconds,
   sameRange,
@@ -43,17 +41,9 @@ interface EndpointDraft {
 
 const SERVER_ERROR_KEYS = new Set(["bad_parameter", "export_busy", "export_empty", "export_failed"])
 const MICROS = 1_000_000
-const HOUR_MICROS = 3_600 * MICROS
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])'
 
-// One modal dialog for one question: which recorded interval becomes a file.
-// The range comes from context first (the hour, a window around the cursor,
-// an hour's shift) and is drawn on the timeline behind the dialog; the exact
-// seconds are two labelled lines, the day picker offers only days that hold
-// recordings, and the dialog says what the file will contain and how it will
-// be named before anything is requested. States are facts: seconds spent,
-// bytes received, the saved name. No progress bars.
-export function ExportDialog({ availableHours, cursor, hour, locale, onActiveChange, onClose, onRange, range, segments, t }: {
+export function ExportDialog({ availableHours, cursor, hour, locale, onActiveChange, onClose, onRange, range, t }: {
   readonly availableHours: readonly number[]
   readonly cursor: number
   readonly hour: number
@@ -62,7 +52,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
   readonly onClose: () => void
   readonly onRange: (range: ExportRange) => void
   readonly range: ExportRange
-  readonly segments: readonly SegmentBound[]
   readonly t: Translate
 }) {
   const time = useDisplayTime()
@@ -84,7 +73,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
   const busy = job.phase === "preparing" || job.phase === "downloading" || job.phase === "unknown"
   const preset = activePreset(range, hour, cursor)
   const duration = validRange(range) ? formatExportDuration(rangeSeconds(range), locale) : "—"
-  const coverage = useMemo(() => rangeCoverage(range, segments), [range, segments])
   const filename = exportFilename(range)
   const orderError = range.from > range.to
 
@@ -233,10 +221,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
     }
   }
 
-  const clockOf = (second: number) => time.clock(second * MICROS)
-  const dayOf = (second: number) => time.dayKey(second * MICROS)
-  const hourDay = time.dayKey(hour)
-  const withDay = (second: number) => dayOf(second) === hourDay ? clockOf(second) : `${time.date(second * MICROS)} · ${clockOf(second)}`
   const elapsed = job.phase === "preparing" ? Math.max(0, Math.round((now - job.startedAt) / 1_000)) : 0
   const status = job.phase === "preparing"
     ? lastSeconds === null
@@ -253,26 +237,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
           : message ?? drafts.from.error ?? drafts.to.error ?? (orderError ? t("export.error.order") : null)
   const closeLabel = job.phase === "unknown" ? t("export.close_unknown") : busy ? t("export.close_busy") : t("export.close")
   const problem = message !== null || job.phase === "unknown" || orderError || drafts.from.error !== null || drafts.to.error !== null
-
-  const coverageText = coverage.recorded === null
-    ? t("export.coverage.none")
-    : [
-      t("export.coverage.recorded", { from: withDay(coverage.recorded.from), to: withDay(coverage.recorded.to) }),
-      coverage.gaps.length === 0
-        ? t("export.coverage.no_gaps")
-        : coverage.gaps.length === 1 && coverage.gaps[0] !== undefined
-          ? t("export.coverage.gap", { from: clockOf(coverage.gaps[0].from), to: clockOf(coverage.gaps[0].to) })
-          : t("export.coverage.gaps", { count: String(coverage.gaps.length) }),
-    ].join(" · ")
-  const unrecordedHours = useMemo(() => {
-    const first = Math.floor(range.from * MICROS / HOUR_MICROS) * HOUR_MICROS
-    const last = Math.floor(range.to * MICROS / HOUR_MICROS) * HOUR_MICROS
-    let missing = 0
-    for (let candidate = first; candidate <= last; candidate += HOUR_MICROS) {
-      if (candidate !== hour && !availableHours.includes(candidate)) missing += 1
-    }
-    return missing
-  }, [availableHours, hour, range.from, range.to])
 
   const endpointRow = (endpoint: Endpoint) => {
     const draft = drafts[endpoint]
@@ -311,7 +275,7 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
       </span>
       {dayPicker === endpoint && <DayPicker
         availableHours={availableHours}
-        dayKey={dayOf(second)}
+        dayKey={time.dayKey(second * MICROS)}
         label={t(`export.${endpoint}_day`)}
         locale={locale}
         onChoose={(day) => chooseDay(endpoint, day)}
@@ -365,10 +329,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
         </fieldset>
         <section aria-label={t("export.section.file")} className="grid gap-1 border-b border-line2 px-3 py-2.5 font-sans text-sm text-fg3">
           <h3 className="m-0 font-sans text-sm font-semibold text-fg2">{t("export.section.file")}</h3>
-          <span data-testid="export-coverage">
-            {coverageText}
-            {unrecordedHours > 0 && <> · {t("export.coverage.outside", { hours: String(unrecordedHours) })}</>}
-          </span>
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm text-fg2" data-testid="export-filename" title={filename}>{filename}</span>
           <span className="text-fg4">{t("export.offline")}</span>
         </section>
@@ -385,8 +345,6 @@ export function ExportDialog({ availableHours, cursor, hour, locale, onActiveCha
   return createPortal(content, document.body)
 }
 
-// Only days that hold recordings can be chosen: the picker is a fact about the
-// store, not a month of guesses.
 function DayPicker({ availableHours, dayKey, label, locale, onChoose, onClose, t }: {
   readonly availableHours: readonly number[]
   readonly dayKey: string

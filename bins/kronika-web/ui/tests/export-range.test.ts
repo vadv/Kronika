@@ -7,7 +7,6 @@ import {
   exportFilename,
   hourRange,
   presetRange,
-  rangeCoverage,
   rangeOnHour,
   rangeSeconds,
   readLastExportSeconds,
@@ -34,16 +33,6 @@ test("presets come from the hour and the cursor as inclusive whole seconds", () 
 
 test("the file is named the way the server names it, from both UTC seconds", () => {
   assert.equal(exportFilename({ from: Date.UTC(2024, 1, 29) / 1_000, to: Date.UTC(2024, 1, 29) / 1_000 + 3_599 }), "kronika-2024-02-29-000000-2024-02-29-005959-utc.html")
-})
-
-test("coverage is clamped to the range, and only pauses longer than the tolerance are gaps", () => {
-  const segment = (id: string, from: number, to: number) => ({ id, minTs: from * 1_000_000, maxTs: to * 1_000_000, sections: [] })
-  const range = { from: 1_000, to: 1_999 }
-  const coverage = rangeCoverage(range, [segment("a", 500, 1_200), segment("b", 1_230, 1_500), segment("c", 1_700, 2_500), segment("d", 5_000, 6_000)])
-  assert.deepEqual(coverage.recorded, { from: 1_000, to: 1_999 })
-  assert.deepEqual(coverage.gaps, [{ from: 1_501, to: 1_699 }], "a thirty-second pause between segments is not a gap")
-  assert.deepEqual(rangeCoverage(range, [segment("d", 5_000, 6_000)]), { recorded: null, gaps: [] })
-  assert.deepEqual(rangeCoverage(range, [segment("a", 1_100, 1_300)]).recorded, { from: 1_100, to: 1_300 })
 })
 
 test("the timeline shows only the part of the range that lies in its hour", () => {

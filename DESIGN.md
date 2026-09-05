@@ -648,11 +648,9 @@ the selected hour, a window of five, fifteen or thirty minutes around the
 cursor, or the same range moved an hour earlier or later. Each endpoint is a
 labelled line with a day button and an editable clock in the current
 Browser/UTC mode; the day button offers only days that hold recordings. Before
-anything is requested the dialog states what the file will contain, the
-recorded span inside the range from the hour's segments, pauses longer than a
-minute between them and hours outside the current one without recordings, and
-its exact name, which the client derives from the same UTC seconds as the
-server. A local civil time skipped by a clock transition is rejected at that
+anything is requested the dialog shows the selected duration and the exact
+filename, derived from the same UTC seconds as the server. A local civil time
+skipped by a clock transition is rejected at that
 endpoint; a repeated civil time exposes first/second occurrence choices
 derived from the actual candidates, including transitions that are not one
 hour. On a phone the dialog is a sheet at the bottom of the viewport.
@@ -761,13 +759,14 @@ section-specific metric. Metrics may sum counters or scale them with recorded
 block-size or clock-rate metadata; missing metadata leaves raw counts.
 The ledger makes no request until opened, and its open state persists locally.
 
-Kronika's own collector statements are a presentation scope, not attribution
-to an application. Every statement the collector runs carries the exact,
-case-sensitive `/* kronika:` prefix, and the query layer classifies statement
-text by that prefix once per physical layout, resolving the layout's texts
-through the segment dictionary. The `scope=workload` parameter applies that one
-classification to the Statements ranking behind the hourly activity heatmap,
-to the paged Statements rows and to the PostgreSQL summary, so all three agree.
+Every statement the collector runs carries the exact, case-sensitive
+`/* kronika:` prefix. The query layer matches it against stored dictionary
+bytes in each segment and retains only matching string IDs. The
+`scope=workload` parameter applies that classification to Statements rankings,
+paged rows and the PostgreSQL summary. The summary also excludes plans whose
+`dbid`, `userid` and nonzero statement query ID match a collector statement.
+The vadv layout uses `queryid_stat_statements`; other plan layouts use
+`queryid`. Plans without a matching statement ID remain in the summary.
 The paged response reports the exact number of collector rows the scope kept
 off the page. The interface hides collector statements by default, always shows
 the heatmap and the summary under the same scope, and offers one short control,
@@ -902,14 +901,16 @@ container carry Health, the collector cgroup's own lanes (CPU as a share of
 its limit, or used cores without one; CPU PSI; memory as a share of its
 limit, or bytes without one; I/O PSI) and the PostgreSQL activity lanes; host
 CPU, memory and storage lanes are not drawn there and stay in the Host rows of
-the ledger. The overview contains one control for
+the ledger. Every view and the timeline Inspector use the same recorded
+environment; until it arrives, resource lanes are absent. The overview contains one control for
 every cgroup controller present
 in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
 These controls are the sole mode selector and expose their selected state. A
 control click changes the detail mode and clears an entity selection; an exact
 table-row click opens that entity's Inspector and history.
 
-The I/O table shows one row per I/O stream of the collector cgroup. cgroup v2
+The I/O table shows one row per I/O stream of the collector cgroup. Folding is
+local to one cgroup path; the same device in another path keeps its own row. cgroup v2
 `io.stat` charges one request to every block layer it passes, so a volume on
 dm/LVM and the disk beneath it carry the same bytes twice; the table keeps the
 top-most charged device of each chain of exact `os_block_topology` edges as the

@@ -334,6 +334,7 @@ export function PostgresView({
   order,
   cursor,
   data,
+  environment,
   focus,
   focusFinding,
   historyRevision,
@@ -381,6 +382,7 @@ export function PostgresView({
   readonly pattern: string
   readonly cursor: number
   readonly data: HourData
+  readonly environment: "machine" | "container" | null
   readonly focus: DataRow | null
   readonly focusFinding: Finding | null
   readonly historyRevision: number
@@ -435,7 +437,7 @@ export function PostgresView({
     onSection("overview")
   }, [data.availableSections, onSection, section])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} t={t} />
+    <Timeline cursor={cursor} environment={environment} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onPreview={onPreview} onSelectedLane={onSelectedLane} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} selectedLane={selectedLane} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto bg-s1">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "vacuum" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
@@ -1532,16 +1534,6 @@ function TimestampValue({ t, timestamp }: { readonly t: Translate; readonly time
   return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void copyText(String(timestamp), t("clipboard.manual"))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
-function groupSections(rows: readonly DataRow[]): readonly [string, readonly DataRow[]][] {
-  const grouped = new Map<string, DataRow[]>()
-  for (const row of rows) {
-    const stored = grouped.get(row.logicalName) ?? []
-    stored.push(row)
-    grouped.set(row.logicalName, stored)
-  }
-  return [...grouped.entries()]
-}
-
 export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   const fields = [...new Set(rows.flatMap((row) => Object.keys(row.values)))].filter((field) => !isInternalField(field))
   return fields.map((field, index) => {
@@ -1562,7 +1554,6 @@ export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   })
 }
 
-const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
 const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
 
 function isInternalField(field: string): boolean {
@@ -1645,4 +1636,3 @@ function pgText(field: string, key: string, width = 130, sticky = false, withHel
 function pgExactText(field: string, key: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { ...pgText(field, key, width, sticky, withHelp), detailValueRole: "machine" } }
 function pgNumber(field: string, key: string, width = 125): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "number", width } }
 function pgId(field: string, key: string, width = 110, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "id", width, sticky } }
-function pgTimestamp(field: string, key: string, width = 210): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "timestamp", width } }

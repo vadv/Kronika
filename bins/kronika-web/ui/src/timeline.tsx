@@ -44,7 +44,7 @@ export type TimelinePresentation = "preview" | "inspector"
 
 export function Timeline({
   cursor,
-  environment = null,
+  environment,
   findings,
   health,
   hour,
@@ -62,7 +62,7 @@ export function Timeline({
   t,
 }: {
   readonly cursor: number
-  readonly environment?: "machine" | "container" | null | undefined
+  readonly environment: "machine" | "container" | null
   readonly findings: readonly Finding[]
   readonly health: readonly DataRow[]
   readonly hour: number
@@ -100,10 +100,7 @@ export function Timeline({
     const one = (color: TimelineSeries["color"], field: string, points: readonly SeriesPoint[]): readonly [TimelineSeries] => [{ color, field, points }]
     const recorded = (name: string) => of(name).some((point) => point.value !== null)
     const lane = (color: TimelineSeries["color"], key: string): TimelineLane => ({ key, series: one(color, key, of(key)) })
-    // A container recording is led by the collector cgroup's own lanes: the
-    // share of its recorded limit, or the plain measurement without a limit.
-    // Host CPU, memory and storage stay in the Host rows of the ledger; the
-    // rail never draws node-wide /proc values as the container's signal.
+    // Unknown scope cannot substitute host values for the container.
     const resources = environment === "container"
       ? [
         lane("cyan", recorded("cg_cpu_share") ? "cg_cpu_share" : "cg_cpu_cores"),
@@ -111,7 +108,9 @@ export function Timeline({
         lane("violet", recorded("cg_memory") ? "cg_memory" : "cg_memory_bytes"),
         lane("cyan", "cg_io_psi"),
       ]
-      : [lane("cyan", "cpu_busy"), lane("amber", "cpu_stall"), lane("violet", "memory"), lane("cyan", "io_stall")]
+      : environment === "machine"
+        ? [lane("cyan", "cpu_busy"), lane("amber", "cpu_stall"), lane("violet", "memory"), lane("cyan", "io_stall")]
+        : []
     return [
       { key: "health", series: healthTrack.series, threshold: healthTrack.threshold },
       ...resources,

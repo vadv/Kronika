@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
-import { blockParents, cgroupDeviceChain, cgroupDevicePresentation, cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation, type CgroupMountAssociation } from "./cgroup-device"
+import { blockParents, cgroupDeviceChain, cgroupDeviceKey, cgroupDevicePresentation, cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation, type CgroupMountAssociation } from "./cgroup-device"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { DetailList, DetailRow } from "./detail-list"
 import { cellAriaValue, detailValueRoleForColumn, EntityTable, type EntityColumn } from "./entity-table"
@@ -392,6 +392,7 @@ export function SystemView({
   contextRow,
   cursor,
   data,
+  environment,
   focus,
   historyRevision,
   hour,
@@ -415,6 +416,7 @@ export function SystemView({
   readonly contextRow: DataRow | null
   readonly cursor: number
   readonly data: HourData
+  readonly environment: "machine" | "container" | null
   readonly focus: Finding | null
   readonly historyRevision: number
   readonly hour: number
@@ -434,7 +436,6 @@ export function SystemView({
   readonly requestPhase?: TableRequestPhase | undefined
   readonly t: Translate
 }) {
-  const environment = recordedEnvironment(data, cursor)
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points, spec }) => points.some((point) => point.value !== null && Number.isFinite(point.value))
       || (spec.id === "cpu_actual_frequency" && sectionRows(data, "os_cpufreq").some((row) => {
@@ -1599,7 +1600,6 @@ export function metricValue(value: Cell, locale: Locale, unit: string): string {
 export function metricChartValue(value: number, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
   if (unit === " cores") return humanCores(value, locale)
-  // Convert KiB to bytes before charting.
   if (unit === " KiB") return humanBytes(value * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)
@@ -1625,7 +1625,7 @@ export function systemEntityRows(data: HourData, section: string, cursor: number
       ? context
       : null
     const id = deviceId(row)
-    return decorateSystemRow(row, collectorContext, id === null ? null : devices?.get(id) ?? null)
+    return decorateSystemRow(row, collectorContext, id === null ? null : devices?.get(cgroupDeviceKey(rawText(value(row, "cgroup_path")), id)) ?? null)
   })
   return devices === null ? decorated : foldCgroupIoRows(decorated, devices)
 }
@@ -1640,7 +1640,7 @@ export function cgroupDevicePresentations(data: HourData, cursor: number): Reado
     const path = rawText(value(row, "cgroup_path"))
     const charged = rows.filter((candidate) => rawText(value(candidate, "cgroup_path")) === path).map(deviceId).filter((id): id is string => id !== null)
     const presentation = cgroupDevicePresentation(row, mounts, devices, parents, charged)
-    if (presentation !== null && !presentations.has(presentation.id)) presentations.set(presentation.id, presentation)
+    if (presentation !== null) presentations.set(cgroupDeviceKey(path, presentation.id), presentation)
   }
   return presentations
 }
@@ -1659,7 +1659,7 @@ export interface CgroupLowerLayer {
 function foldCgroupIoRows(rows: readonly DataRow[], devices: ReadonlyMap<string, CgroupDevicePresentation>): readonly DataRow[] {
   const owner = (row: DataRow): string | null => {
     const id = deviceId(row)
-    return id === null ? null : devices.get(id)?.foldedInto ?? null
+    return id === null ? null : devices.get(cgroupDeviceKey(rawText(value(row, "cgroup_path")), id))?.foldedInto ?? null
   }
   return rows.filter((row) => owner(row) === null).map((row) => {
     const id = deviceId(row)
@@ -1668,7 +1668,7 @@ function foldCgroupIoRows(rows: readonly DataRow[], devices: ReadonlyMap<string,
       .filter((candidate) => owner(candidate) === id && rawText(value(candidate, "cgroup_path")) === path)
       .map((layer) => ({
         id: deviceId(layer) ?? "—",
-        name: devices.get(deviceId(layer) ?? "")?.device ?? null,
+        name: devices.get(cgroupDeviceKey(path, deviceId(layer) ?? ""))?.device ?? null,
         rbytes: value(layer, "rbytes"),
         wbytes: value(layer, "wbytes"),
         rios: value(layer, "rios"),
@@ -1730,7 +1730,6 @@ function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: 
   return { ...row, values }
 }
 
-// The mount point alone; source and root belong to the Filesystems table.
 function cgroupMountAssociationText(association: CgroupMountAssociation, t: Translate): string {
   return association.infrastructure === true ? `${association.mountPoint} · ${t("system.cgroups.infrastructure_mount")}` : association.mountPoint
 }
@@ -1739,7 +1738,6 @@ const LOWER_LAYER_FIELDS = ["rbytes", "wbytes", "rios", "wios"] as const
 
 function localizedSystemColumns(columns: readonly SystemEntityColumn[], section: string, locale: Locale, t: Translate): readonly SystemEntityColumn[] {
   if (section === "os_cgroup_io") return columns.map((column) => {
-    // Two lines: where the I/O lands, then the exact chain down to the disk.
     if (column.field === "cgroup_device") return {
       ...column,
       render: (row: DataRow) => {

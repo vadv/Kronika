@@ -1099,7 +1099,7 @@ test("health rows align raw PostgreSQL points to stored nonfuture evaluations", 
   const point = (segmentId: string, series: string, timestamp: number, value: number | null) => ({
     identity: {}, logicalName: "health", segmentId, series, timestamp, typeId: "0", value,
   })
-  const metadata = [{ segmentId: "a", postgresqlIntervalSeconds: 1 }]
+  const metadata = [{ segmentId: "a", postgresqlIntervalSeconds: 1, environment: null }]
   const rows = api.healthRows([
     point("a", "postgres_health", START + 100, 72),
     point("a", "os_health", START + 101, 91),
@@ -1145,7 +1145,7 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
     seen.push(`${url.pathname}?${url.searchParams}`)
     if (url.searchParams.get("part") === "lanes") return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1) },
-      { record: "lane_context", segment_id: "a", postgresql_interval_seconds: "1" },
+      { record: "lane_context", segment_id: "a", postgresql_interval_seconds: "1", environment: 1 },
     ])
     return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
@@ -1722,4 +1722,17 @@ test("tablespace history sends only the cluster-wide OID identity", async () => 
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test("the recorded environment comes from the newest lane context that states it", async () => {
+  const api = await importModule(
+    'export { recordedEnvironmentFromContexts } from "../src/api.ts"',
+    { plugins: [registryPlugin(TEST_REGISTRY)] },
+  )
+  const context = (segmentId, environment) => ({ segmentId, postgresqlIntervalSeconds: null, environment })
+  assert.equal(api.recordedEnvironmentFromContexts([]), null)
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", null)]), null)
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 0)]), "machine")
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 0), context("b", 1), context("c", null)]), "container")
+  assert.equal(api.recordedEnvironmentFromContexts([context("a", 7)]), null)
 })

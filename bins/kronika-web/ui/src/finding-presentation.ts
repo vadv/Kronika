@@ -52,10 +52,6 @@ export function findingOrder(left: Finding, right: Finding): number {
     || textOrder(left.logicalName, right.logicalName)
 }
 
-export function findingCategory(finding: Finding, t: Translate): string {
-  return t(`locator.${finding.kind}`)
-}
-
 export function findingSource(finding: Finding, t: Translate): string {
   const log = LOG_TYPES[finding.logicalName]
   if (log !== undefined) {

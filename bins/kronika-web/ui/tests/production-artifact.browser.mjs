@@ -267,7 +267,7 @@ test("the first Process table does not wait for lanes, summary, or enrichment", 
     ndjson(held.companion, snapshotRecords())
     held.companion = null
     ndjson(held.lanes, [
-      { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: "30" },
+      { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: "30", environment: 0 },
       { record: "lane", segment_id: SEGMENT, lane: "io_stall", ts: String(AT), value: 12 },
     ])
     held.lanes = null
@@ -978,6 +978,11 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_netdev"]')?.textContent.includes("interface_B2") === true`, "the newest network rows after the late response")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     assert.equal(late.response.writableEnded, true)
+    // Every view of a container recording keeps the container rail: the recorded
+    // environment travels with the timeline request, not only with the Host batch.
+    await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "events" && document.querySelectorAll('.timeline-lane-name').length >= 5`, "the Events rail of the container recording", 15_000)
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('.timeline-lane-name')].map((node) => node.textContent)`), ["Health", "CPU", "CPU PSI", "Memory", "I/O PSI"])
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
     process.stdout.write(`${JSON.stringify({ hostRequestFrames: { failed, failedPending, pending, ready }, lateCgroupDelivered: true }, null, 2)}\n`)
@@ -1572,12 +1577,12 @@ test("the Export dialog selects a range on the timeline and reports its transfer
       await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`, `${selector} value`)
     }
     const dialogState = () => cdp.evaluate(`(() => {
-      const strip = document.querySelector('[data-testid="export-dialog"]')
+      const dialog = document.querySelector('[data-testid="export-dialog"]')
       const shell = document.querySelector('.timeline-shell')
       return {
-        from: strip?.dataset.rangeFrom ?? null,
-        to: strip?.dataset.rangeTo ?? null,
-        phase: strip?.dataset.phase ?? null,
+        from: dialog?.dataset.rangeFrom ?? null,
+        to: dialog?.dataset.rangeTo ?? null,
+        phase: dialog?.dataset.phase ?? null,
         preset: [...document.querySelectorAll('[data-testid^="export-preset-"]')].find((node) => node.getAttribute("aria-pressed") === "true")?.dataset.testid ?? null,
         shown: { from: shell?.dataset.exportFrom ?? null, to: shell?.dataset.exportTo ?? null },
         duration: document.querySelector('[data-testid="export-duration"]')?.textContent ?? null,
@@ -1603,7 +1608,7 @@ test("the Export dialog selects a range on the timeline and reports its transfer
       coverage: undefined, duration: undefined,
     }, JSON.stringify(opened))
     assert.equal(opened.duration, "1\u00a0h", JSON.stringify(opened))
-    assert.match(opened.coverage, /^recorded /, JSON.stringify(opened))
+    assert.equal(opened.coverage, null, "export shows the selected duration and filename without a collection-quality tally")
     const placement = await cdp.evaluate(`(() => {
       const node = document.querySelector('[data-testid="export-dialog"]')
       const rect = node.getBoundingClientRect()
@@ -1663,7 +1668,6 @@ test("the Export dialog selects a range on the timeline and reports its transfer
     await cdp.waitFor(`document.querySelector('[data-testid="export-day-grid"]') === null`, "the day picker closed")
     assert.equal((await dialogState()).from, String(HOUR_SECOND))
 
-    // A busy server is said plainly and the strip stays editable.
     exportPlans.push("busy")
     const requestsBeforeBusy = exportRequests.length
     await clickCenter(cdp, '[data-testid="export-submit"]')
@@ -1753,7 +1757,6 @@ test("the Export dialog selects a range on the timeline and reports its transfer
     await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null && document.querySelector('[data-testid="export-dialog"]') === null`, "the reloaded page", 15_000)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null`, "the reloaded timeline", 15_000)
 
-    // Idle, the strip closes on Escape, on Back and on hour navigation.
     await openDialog()
     await closeIdleDialog()
     const idleBaseUrl = await cdp.evaluate("location.href")
@@ -1769,7 +1772,6 @@ test("the Export dialog selects a range on the timeline and reports its transfer
     await cdp.evaluate("history.back()")
     await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored selected hour", 15_000)
 
-    // Widths and locales: no overflow anywhere; a phone gets a sheet with 44px targets, wider screens keep the strip in flow.
     for (const width of [1280, 800, 360]) {
       await setViewport(width)
       for (const locale of ["ru", "en"]) {
@@ -5659,6 +5661,105 @@ test("structured search pending state and snapshot targets preserve exact newest
   }
 })
 
+test("recorded environment owns every rail and Inspector across cold routes and Back", { timeout: 120_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  let container = true
+  let heldLanes = null
+  let holdLanes = true
+  const hostKeys = ["cpu_busy", "cpu_stall", "memory", "io_stall"]
+  const containerKeys = ["cg_cpu_share", "cg_cpu_psi", "cg_memory", "cg_io_psi"]
+  const lanes = () => [
+    ...timelineRecords(HOUR, container),
+    ...[["cpu_busy", 88], ["cpu_stall", 12], ["memory", 77], ["io_stall", 9], ["pg_running", 3], ["pg_waiting", 1]].map(([lane, value]) => ({ record: "lane", segment_id: SEGMENT, lane, ts: String(AT), value })),
+  ]
+  const page = { errors: [], external: [], responses: [] }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") { response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); response.end(html); return }
+    if (url.pathname === "/auth/session") return answerSession(request, response, { valid: true })
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/events") return ndjson(response, slowQueryEventRecords())
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.has("section")) return ndjson(response, [])
+      if (url.searchParams.get("part") === "lanes" && holdLanes) { heldLanes = response; return }
+      return ndjson(response, lanes())
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = new Set(url.searchParams.getAll("section"))
+      const all = [...snapshotRecords(), ...systemSnapshotRecords(container)]
+      const types = new Set(all.filter((record) => record.record === "layout" && sections.has(record.layout.logical_name)).map((record) => record.layout.type_id))
+      return ndjson(response, all.filter((record) => record.record === "layout" ? types.has(record.layout.type_id) : record.record === "row" && types.has(record.type_id)))
+    }
+    response.writeHead(404); response.end()
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const origin = `http://127.0.0.1:${server.address().port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    socket = await pageSocket(await browserDebugPort(profile, browser))
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 1280 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    const previewKeys = `[...document.querySelectorAll('[data-testid="timeline-preview-metric-select"] option')].map((option) => option.value)`
+    const inspectorKeys = `[...document.querySelectorAll('[data-testid="timeline-metric-select"] option')].map((option) => option.value)`
+    const verify = async (inspector = true) => {
+      const expected = container ? containerKeys : hostKeys
+      const excluded = container ? hostKeys : containerKeys
+      await cdp.waitFor(`${JSON.stringify(expected)}.every((key) => (${previewKeys}).includes(key))`, "the recorded scope in the preview", 15_000)
+      assert.deepEqual((await cdp.evaluate(previewKeys)).filter((key) => excluded.includes(key)), [])
+      const cpu = container ? "25%" : "88%"
+      const memory = container ? "40%" : "77%"
+      const readings = await cdp.evaluate(`[...document.querySelectorAll('.timeline-lane-name')].map((name) => [name.textContent, name.closest('.lane-label').querySelector('[data-testid="lane-reading"]').textContent])`)
+      assert.equal(readings.find(([name]) => name === "CPU")?.[1], cpu)
+      assert.equal(readings.find(([name]) => name === "Memory")?.[1], memory)
+      if (!inspector) return
+      await cdp.evaluate(`document.querySelector('.timeline-open-chart').click()`)
+      await cdp.waitFor(`${JSON.stringify(expected)}.every((key) => (${inspectorKeys}).includes(key))`, "the recorded scope in the Inspector", 15_000)
+      assert.deepEqual((await cdp.evaluate(inspectorKeys)).filter((key) => excluded.includes(key)), [])
+      await cdp.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+    }
+    for (const environment of [true, false]) {
+      container = environment
+      for (const route of ["events", "postgresql.activity"]) {
+        holdLanes = true
+        await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=${route}` })
+        await waitForRequests(() => heldLanes !== null)
+        assert.deepEqual((await cdp.evaluate(previewKeys)).filter((key) => [...hostKeys, ...containerKeys].includes(key)), [], "unknown scope draws no resource substitute")
+        holdLanes = false
+        ndjson(heldLanes, lanes()); heldLanes = null
+        await verify()
+      }
+      for (const [index, label] of ["Host", "Processes", "Events", "PostgreSQL", "Processes"].entries()) {
+        await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent === ${JSON.stringify(label)})).click()`)
+        await verify(index < 4)
+        if (label === "Host") {
+          await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 })
+          const targets = await cdp.evaluate(`[...document.querySelectorAll('button.use-verdict')].map((button) => { const rect = button.getBoundingClientRect(); return [rect.width, rect.height] })`)
+          assert.ok(targets.length > 0)
+          assert.ok(targets.every(([width, height]) => width >= 44 && height >= 44), JSON.stringify(targets))
+        }
+      }
+      await cdp.evaluate(`history.back()`)
+      await cdp.waitFor(`document.querySelector('.source-tabs button[aria-current="page"]')?.textContent === "PostgreSQL"`, "Back restores PostgreSQL")
+      await verify()
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    if (heldLanes !== null) { heldLanes.end(); heldLanes = null }
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("production health keeps staggered components on one stored evaluation", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
@@ -6548,6 +6649,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     }),
+    { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: null, environment: 0 },
     { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 54 },
     { record: "lane", segment_id: SEGMENT, lane: "pg_running", ts: String(AT), value: 3 },
     { record: "lane", segment_id: SEGMENT, lane: "pg_waiting", ts: String(AT), value: 1 },
@@ -7096,6 +7198,7 @@ function timelineRecords(hour = HOUR, cgroups = false) {
   const shifted = (timestamp) => String(timestamp + shift)
   return [
     { record: "hour", from: String(hour), to: String(hour + HOUR_US - 1), available_hours: AVAILABLE_HOURS.map(String) },
+    { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: null, environment: cgroups ? 1 : 0 },
     {
       record: "catalog", from: String(hour), to: String(hour + HOUR_US - 1),
       source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }],
@@ -8077,6 +8180,7 @@ test("mixed-cadence shared cursor uses one recorded domain for pointer and both 
     { record: "point", type_id: "0", series: "os_health", ts: String(base), identity: {}, value: 80 },
     { record: "point", type_id: "0", series: "overall_health", ts: String(base), identity: {}, value: 75 },
     ...[-30_000_000, 0, 30_000_000].map((offset, index) => ({ record: "lane", segment_id: SEGMENT, lane: "pg_waiting", ts: String(base + offset), value: index + 1 })),
+    { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: null, environment: 0 },
     ...[0, 5_000_000, 10_000_000, 15_000_000].map((offset, index) => ({ record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(base + offset), value: 20 + index })),
   ]
   const server = createServer((request, response) => {
@@ -8231,6 +8335,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
       if (url.searchParams.has("section") && historyFailure) return ndjson(response, [{ record: "error", error: "history unavailable" }])
       return ndjson(response, url.searchParams.has("section") ? [] : [
         ...timelineRecords(HOUR),
+        { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: null, environment: 0 },
         { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 42 },
       ])
     }
@@ -8462,6 +8567,7 @@ test("phone width keeps narrow rules winning and nothing reserving height", { ti
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.has("section") ? [] : [
         ...timelineRecords(HOUR),
+        { record: "lane_context", segment_id: SEGMENT, postgresql_interval_seconds: null, environment: 0 },
         { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 42 },
       ])
     }

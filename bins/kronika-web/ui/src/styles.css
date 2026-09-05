@@ -405,7 +405,10 @@
 /* The dialog opens below the top bar and the timeline, whose plot keeps drawing
    the chosen interval through the scrim. */
 .export-scrim { padding: clamp(84px, 16vh, 168px) 10px 10px; }
-@media (min-width: 641px) and (hover: none), (min-width: 641px) and (pointer: coarse) {
+@media (max-width: 520px) {
+  .export-scrim { align-items: flex-end; padding: 0; }
+  .export-dialog { border-radius: var(--radius-md) var(--radius-md) 0 0; max-height: min(85dvh, 640px); padding-bottom: env(safe-area-inset-bottom); width: 100%; }
+  .export-dialog .export-primary { flex-basis: 100%; justify-content: center; }
 }
 /* KRONIKA_EXPORT_STYLES_END */
 @media (hover: none), (pointer: coarse) {
@@ -813,7 +816,6 @@
      its value. */
   .use-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .use-row > .use-resource { grid-column: 1 / -1; padding-block: 5px; }
-  .use-row[data-testid="use-row-cgroups"] { grid-template-columns: minmax(0, 1fr); }
   .use-table > header > span:first-child { display: none; }
   .use-table > header { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   /* Names on one line, values on the next: a cell here is about 110px, and a
@@ -824,10 +826,6 @@
   /* Wrapped, these four facts cost four lines of the table. One scrolling row
      keeps every one of them and returns the height to rows. */
   .process-workspace > .lensbar > .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }
-  /* On a phone the dialog is a sheet at the bottom of the viewport. */
-  .export-scrim { align-items: flex-end; padding: 0; }
-  .export-dialog { border-radius: var(--radius-md) var(--radius-md) 0 0; max-height: min(85dvh, 640px); padding-bottom: env(safe-area-inset-bottom); width: 100%; }
-  .export-dialog .export-primary { flex-basis: 100%; justify-content: center; }
   .inspector-scrim { top: 68px; }
   .inspector {
     border-left: 0;
