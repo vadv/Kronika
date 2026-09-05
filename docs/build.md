@@ -29,10 +29,23 @@ step. An ordinary `cargo build` defaults to the x86-64 musl target in
 `.cargo/config.toml`. No build uses `target-cpu=native`; keep the target's
 baseline instruction set when distributing the result to other machines.
 
-For a native arm64 Linux builder, select `aarch64-unknown-linux-musl` and use
-the host's musl compiler as the target linker. The [release workflow](../.github/workflows/release-package.yml)
-contains the native build and runtime validation used for that candidate.
-A successful cross-compilation alone does not establish that an archive runs.
+On a **native arm64 Linux builder** with its native musl toolchain:
+
+```sh
+rustup target add aarch64-unknown-linux-musl
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+CC_aarch64_unknown_linux_musl=musl-gcc \
+CFLAGS_aarch64_unknown_linux_musl=-mno-outline-atomics \
+cargo build --release --locked --target aarch64-unknown-linux-musl \
+  -p kronika-collector -p kronika-web -p kronika-dump \
+  -p kronika-report -p kronika-demo
+```
+
+The C flag keeps atomic operations in the baseline ARMv8 instruction set,
+without GCC outline-atomic helper dependencies from a glibc toolchain.
+The [release workflow](../.github/workflows/release-package.yml) uses the same
+native build and validates actual ARM64 execution. A successful
+cross-compilation alone does not establish that an archive runs.
 
 To work with the host GNU toolchain instead of making a portable archive:
 

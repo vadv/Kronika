@@ -143,7 +143,7 @@ dist/kronika-<cargo-version>-<12-character-commit>-<target>.tar.gz.sha256
 ```
 
 `BUILDINFO` records the package source commit, workspace version, target, source
-commit time, build command, compiler, and Rust flags. Dependency notices are
+commit time, build command, compiler, Rust flags, and C compiler flags. Dependency notices are
 checked against `licenses/dependency-inputs.sha256`; update notices and their
 input hashes together when locked dependencies change.
 

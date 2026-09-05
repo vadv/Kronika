@@ -28,10 +28,23 @@ cargo build --release --locked --target x86_64-unknown-linux-musl \
 `.cargo/config.toml`. Сборки не задают `target-cpu=native`; сохраняйте базовый
 набор инструкций target при передаче результата на другие машины.
 
-На нативной машине Linux arm64 выберите `aarch64-unknown-linux-musl` и задайте
-локальный компилятор musl как linker target. [Release workflow](../.github/workflows/release-package.yml)
-содержит нативную сборку и проверку запуска этого кандидата. Успешная
-кросс-компиляция сама по себе не подтверждает работу архива.
+На **нативной машине Linux arm64** с её нативным musl toolchain:
+
+```sh
+rustup target add aarch64-unknown-linux-musl
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+CC_aarch64_unknown_linux_musl=musl-gcc \
+CFLAGS_aarch64_unknown_linux_musl=-mno-outline-atomics \
+cargo build --release --locked --target aarch64-unknown-linux-musl \
+  -p kronika-collector -p kronika-web -p kronika-dump \
+  -p kronika-report -p kronika-demo
+```
+
+Флаг C оставляет атомарные операции в базовом наборе ARMv8, без зависимости
+от outline-atomic helpers GCC из glibc toolchain.
+[Release workflow](../.github/workflows/release-package.yml) использует ту же
+нативную сборку и проверяет настоящий запуск ARM64. Успешная кросс-компиляция
+сама по себе не подтверждает работу архива.
 
 Для разработки с GNU toolchain хоста, без переносимого архива:
 
