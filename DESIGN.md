@@ -897,10 +897,12 @@ first with the open collector-cgroup overview and both cgroup activity ledgers.
 Network namespace follows and owns the one Network row; it is never labelled
 as Host. Host follows separately with the recorded host CPU, memory, and
 storage rows. These readings remain distinct from cgroup use and limits, and
-Network is not duplicated into Host. The compact timeline in a container does
-not relabel host CPU, memory, or storage lanes as container signals; it keeps
-Health and PostgreSQL activity lanes, while exact scope-specific charts live
-in their ledger rows. The overview contains one control for
+Network is not duplicated into Host. The compact timeline and its rail in a
+container carry Health, the collector cgroup's own lanes (CPU as a share of
+its limit, or used cores without one; CPU PSI; memory as a share of its
+limit, or bytes without one; I/O PSI) and the PostgreSQL activity lanes; host
+CPU, memory and storage lanes are not drawn there and stay in the Host rows of
+the ledger. The overview contains one control for
 every cgroup controller present
 in the catalog: CPU, Memory, one grouped I/O inventory, and Threads (TIDs).
 These controls are the sole mode selector and expose their selected state. A

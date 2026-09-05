@@ -647,7 +647,9 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   // One operator question at a time inside a row: cgroup accounting stays
   // dedicated, and Disk separates device I/O, filesystems and topology.
   assert.match(source, /disk: \["io", "filesystems", "topology"\]/)
-  assert.match(source, /timelineLanePoints = environment === "container"[\s\S]*lane\.startsWith\("pg_"\)/)
+  // The container rail is the collector cgroup's own lanes, never a filter that leaves host lanes behind.
+  assert.match(source, /<Timeline cursor=\{cursor\} environment=\{environment\}/)
+  assert.doesNotMatch(source, /lane\.startsWith\("pg_"\)/)
   assert.match(source, /EXACT_TIMELINE_METRIC_LANES[^\n]+\["cpu_busy", "cpu_stall", "memory"\]/)
   assert.doesNotMatch(source, /function groupLane/)
   assert.doesNotMatch(source, /function timelineLane/)

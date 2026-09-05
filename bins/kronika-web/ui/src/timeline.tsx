@@ -9,7 +9,7 @@ import { findingOrder, findingSummary, summarizeFindings } from "./finding-prese
 import { useExportSelection } from "./export-context"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
-import { asNumber, compact, humanDuration, humanPercent, type Locale, value } from "./model"
+import { asNumber, compact, humanBytes, humanCores, humanDuration, humanPercent, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
 import { sampleAtOrBefore, uncollectedStart } from "./series-chart"
 import { UPlotChart, type ChartDecoration, type RecordedSeries } from "./uplot-chart"
@@ -44,6 +44,7 @@ export type TimelinePresentation = "preview" | "inspector"
 
 export function Timeline({
   cursor,
+  environment = null,
   findings,
   health,
   hour,
@@ -61,6 +62,7 @@ export function Timeline({
   t,
 }: {
   readonly cursor: number
+  readonly environment?: "machine" | "container" | null | undefined
   readonly findings: readonly Finding[]
   readonly health: readonly DataRow[]
   readonly hour: number
@@ -96,19 +98,30 @@ export function Timeline({
       .filter((point) => point.lane === name)
       .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
     const one = (color: TimelineSeries["color"], field: string, points: readonly SeriesPoint[]): readonly [TimelineSeries] => [{ color, field, points }]
+    const recorded = (name: string) => of(name).some((point) => point.value !== null)
+    const lane = (color: TimelineSeries["color"], key: string): TimelineLane => ({ key, series: one(color, key, of(key)) })
+    // A container recording is led by the collector cgroup's own lanes: the
+    // share of its recorded limit, or the plain measurement without a limit.
+    // Host CPU, memory and storage stay in the Host rows of the ledger; the
+    // rail never draws node-wide /proc values as the container's signal.
+    const resources = environment === "container"
+      ? [
+        lane("cyan", recorded("cg_cpu_share") ? "cg_cpu_share" : "cg_cpu_cores"),
+        lane("amber", "cg_cpu_psi"),
+        lane("violet", recorded("cg_memory") ? "cg_memory" : "cg_memory_bytes"),
+        lane("cyan", "cg_io_psi"),
+      ]
+      : [lane("cyan", "cpu_busy"), lane("amber", "cpu_stall"), lane("violet", "memory"), lane("cyan", "io_stall")]
     return [
       { key: "health", series: healthTrack.series, threshold: healthTrack.threshold },
-      { key: "cpu_busy", series: one("cyan", "cpu_busy", of("cpu_busy")) },
-      { key: "cpu_stall", series: one("amber", "cpu_stall", of("cpu_stall")) },
-      { key: "memory", series: one("violet", "memory", of("memory")) },
-      { key: "io_stall", series: one("cyan", "io_stall", of("io_stall")) },
-      { key: "pg_running", series: one("cyan", "pg_running", of("pg_running")) },
-      { key: "pg_waiting", series: one("amber", "pg_waiting", of("pg_waiting")) },
+      ...resources,
+      lane("cyan", "pg_running"),
+      lane("amber", "pg_waiting"),
       { key: "oldest_xact", series: one("violet", "pg_oldest_xact", of("pg_oldest_xact")) },
-    ].filter((lane) => lane.key === "health"
-      ? lane.series.some((line) => line.points.length !== 0)
-      : lane.series.some((line) => line.points.some((point) => point.value !== null)))
-  }, [healthTrack, lanePoints])
+    ].filter((candidate) => candidate.key === "health"
+      ? candidate.series.some((line) => line.points.length !== 0)
+      : candidate.series.some((line) => line.points.some((point) => point.value !== null)))
+  }, [environment, healthTrack, lanePoints])
   const [localLane, setLocalLane] = useState(primaryLane)
   const selectedLane = controlledLane ?? localLane
   const setSelectedLane = (lane: string) => {
@@ -264,9 +277,18 @@ export function timelineSeriesHelpKey(lane: string, field: string): string {
   return lane === "health" ? `lane.health.${field}.help` : `lane.${lane}.help`
 }
 
+const PERCENT_LANES: ReadonlySet<string> = new Set(["health", "cpu_busy", "cpu_stall", "memory", "io_stall", "cg_cpu_share", "cg_cpu_psi", "cg_memory", "cg_io_psi"])
+
+function laneUnit(key: string, locale: Locale): string {
+  if (PERCENT_LANES.has(key)) return "%"
+  if (key === "oldest_xact" || key === "cg_memory_bytes") return ""
+  if (key === "cg_cpu_cores") return locale === "ru" ? "ядра" : "cores"
+  return locale === "ru" ? "количество" : "count"
+}
+
 function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): readonly RecordedSeries[] {
-  const percent = ["health", "cpu_busy", "cpu_stall", "memory", "io_stall"].includes(lane.key)
-  const unit = percent ? "%" : lane.key === "oldest_xact" ? "" : (locale === "ru" ? "количество" : "count")
+  const percent = PERCENT_LANES.has(lane.key)
+  const unit = laneUnit(lane.key, locale)
   return lane.series.map((line) => ({
     color: line.color,
     helpKey: timelineSeriesHelpKey(lane.key, line.field),
@@ -311,6 +333,8 @@ export function healthEvaluationAtOrBefore(
 function format(number: number, key: string, locale: Locale): string {
   if (key === "oldest_xact") return humanDuration(number * 1_000, locale)
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
+  if (key === "cg_cpu_cores") return humanCores(number, locale)
+  if (key === "cg_memory_bytes") return humanBytes(number, locale)
   return humanPercent(number, locale)
 }
 

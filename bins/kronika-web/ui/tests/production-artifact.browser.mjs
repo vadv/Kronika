@@ -850,7 +850,8 @@ test("held first Host snapshot reserves local request frames and filtered cgroup
     ], JSON.stringify(containerState))
     assert.equal(containerState.hostResourcesPresent, true, JSON.stringify(containerState))
     assert.equal(containerState.network, true, JSON.stringify(containerState))
-    assert.deepEqual(containerState.timeline, ["Health"], JSON.stringify(containerState))
+    // The rail is the container's own signal: cgroup shares and pressure, never node-wide /proc lanes.
+    assert.deepEqual(containerState.timeline, ["Health", "CPU", "CPU PSI", "Memory", "I/O PSI"], JSON.stringify(containerState))
     assert.equal(containerState.cgroupTabs, false, JSON.stringify(containerState))
     assert.equal(containerState.recordedCopy, false, JSON.stringify(containerState))
     // The container rows are real USE rows read from the collector's own cgroup lanes; none is force-opened
