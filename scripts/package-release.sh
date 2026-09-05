@@ -20,7 +20,7 @@ binaries=(kronika-collector kronika-web kronika-dump kronika-report)
 while (($#)); do
   case "$1" in
     --bin-dir|--output-dir)
-      (($# >= 2)) && [[ -n "$2" ]] || { usage >&2; exit 2; }
+      if (($# < 2)) || [[ -z "$2" ]]; then usage >&2; exit 2; fi
       if [[ "$1" == --bin-dir ]]; then bin_dir=$2; else output_dir=$2; fi
       shift 2 ;;
     --with-demo) binaries+=(kronika-demo); shift ;;
