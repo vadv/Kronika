@@ -1,5 +1,6 @@
 //! The small presentation series allowed in an IDX.
 
+use crate::decode::{i64_at, u32_at, u64_at};
 use crate::detect::finding_layout;
 use crate::file::IndexError;
 use crate::findings::FindingBlock;
@@ -331,33 +332,6 @@ fn count_and_body(bytes: &[u8], point_len: usize) -> Result<(usize, &[u8]), Inde
         return Err(IndexError::BadLayout);
     }
     Ok((count, &bytes[4..]))
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> Result<u32, IndexError> {
-    let raw: [u8; 4] = bytes
-        .get(at..at.checked_add(4).ok_or(IndexError::Truncated)?)
-        .ok_or(IndexError::Truncated)?
-        .try_into()
-        .map_err(|_error| IndexError::Truncated)?;
-    Ok(u32::from_le_bytes(raw))
-}
-
-fn u64_at(bytes: &[u8], at: usize) -> Result<u64, IndexError> {
-    let raw: [u8; 8] = bytes
-        .get(at..at.checked_add(8).ok_or(IndexError::Truncated)?)
-        .ok_or(IndexError::Truncated)?
-        .try_into()
-        .map_err(|_error| IndexError::Truncated)?;
-    Ok(u64::from_le_bytes(raw))
-}
-
-fn i64_at(bytes: &[u8], at: usize) -> Result<i64, IndexError> {
-    let raw: [u8; 8] = bytes
-        .get(at..at.checked_add(8).ok_or(IndexError::Truncated)?)
-        .ok_or(IndexError::Truncated)?
-        .try_into()
-        .map_err(|_error| IndexError::Truncated)?;
-    Ok(i64::from_le_bytes(raw))
 }
 
 #[cfg(test)]

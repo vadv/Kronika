@@ -2,7 +2,6 @@ use super::{WorkloadConfig, connect_as, schema, wait_for_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tokio_postgres::Client;
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -82,7 +81,8 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
         let purchase = purchase(session, sequence, config);
-        if let Err(error) = perform(&client, purchase).await {
+        if let Err(error) = client.batch_execute(&transaction_sql(purchase)).await {
+            let error = anyhow::Error::new(error);
             eprintln!(
                 "kronika-demo: OLTP client {session} order {} failed: {error:#}",
                 purchase.order_id
@@ -100,11 +100,6 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
 
 // One Simple Query message keeps the transaction on one pooled backend without
 // relying on prepared statements that survive a PgBouncer transaction boundary.
-async fn perform(client: &Client, purchase: Purchase) -> anyhow::Result<()> {
-    client.batch_execute(&transaction_sql(purchase)).await?;
-    Ok(())
-}
-
 fn transaction_sql(purchase: Purchase) -> String {
     let Purchase {
         order_id,

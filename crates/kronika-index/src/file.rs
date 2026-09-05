@@ -5,6 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use kronika_format::Crc32c;
 
+use crate::decode::u32_at;
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 /// Magic for the derived-index format shipped in Kronika 1.0.0.
@@ -315,15 +316,6 @@ fn validate_checksum(
     } else {
         Err(IndexError::BadChecksum)
     }
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> Result<u32, IndexError> {
-    let raw: [u8; 4] = bytes
-        .get(at..at.checked_add(4).ok_or(IndexError::Truncated)?)
-        .ok_or(IndexError::Truncated)?
-        .try_into()
-        .map_err(|_error| IndexError::Truncated)?;
-    Ok(u32::from_le_bytes(raw))
 }
 
 fn put_u32_at(bytes: &mut [u8], at: usize, value: u32) -> Result<(), IndexError> {
