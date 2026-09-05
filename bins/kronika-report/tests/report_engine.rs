@@ -12,8 +12,8 @@ use kronika_query::{
     HeatmapBatchQuery, HeatmapItemQuery, HeatmapView, HourPart, HourRequest, IndexRequest,
     MemoryIndexProvider, NormalizedRanking, Order, QueryContext, QueryDataset, QueryError,
     QueryRequest, QuerySink, RowsRequest, SOURCE_OS, SOURCE_POSTGRESQL, SegmentRequest,
-    SnapshotRequest, TimeRange, Window, detail_locator, execute, validate_heatmap_request,
-    validate_row_detail_ref,
+    SnapshotRequest, StatementScope, TimeRange, Window, detail_locator, execute,
+    validate_heatmap_request, validate_row_detail_ref,
 };
 use kronika_report::{ReportEngine, ReportError, ReportInput};
 use kronika_store::{EmbeddedSource, ResourceError};
@@ -102,6 +102,7 @@ fn snapshot_request(segment_id: SegmentId) -> QueryRequest {
         filters: Vec::new(),
         type_id: None,
         row_ordinal: None,
+        scope: StatementScope::All,
     })
 }
 
@@ -129,6 +130,7 @@ fn request_families(segment_id: SegmentId) -> Vec<(&'static str, &'static str, Q
                 group: Vec::new(),
                 type_id: None,
             },
+            scope: StatementScope::All,
         }],
     })
     .expect("fixture heatmap request");

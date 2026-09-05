@@ -4,7 +4,7 @@ use super::{
 };
 use kronika_query::{
     ActiveCursor, CatalogRequest, DataRequest, EventsRepresentation, Filter, HourPart,
-    IndexRequest, Order, SegmentRequest, Window,
+    IndexRequest, Order, SegmentRequest, StatementScope, Window,
 };
 
 #[test]
@@ -711,6 +711,7 @@ fn a_heatmap_request_needs_a_window_a_section_and_one_field() {
             top: 25,
             group: Vec::new(),
             type_id: None,
+            scope: StatementScope::All,
         }))
     );
     assert_eq!(
@@ -766,4 +767,85 @@ fn row_detail_accepts_one_bounded_opaque_reference() {
         parse("/api/row-detail", Some(&oversized)),
         Err(RouteError::BadParameter("detail_ref".to_owned()))
     );
+}
+
+#[test]
+fn statement_scope_is_accepted_only_where_statements_can_be_scoped() {
+    let Route::Heatmap(scoped) = parse(
+        "/api/heatmap",
+        Some("from=1&to=2&section=pg_stat_statements&field=total_exec_time&scope=workload"),
+    )
+    .expect("scoped statement ranking") else {
+        panic!("heatmap route");
+    };
+    assert_eq!(scoped.scope, StatementScope::Workload);
+    let Route::Heatmap(unscoped) = parse(
+        "/api/heatmap",
+        Some("from=1&to=2&section=pg_stat_statements&field=total_exec_time"),
+    )
+    .expect("default statement ranking") else {
+        panic!("heatmap route");
+    };
+    assert_eq!(unscoped.scope, StatementScope::All);
+    assert_eq!(
+        parse(
+            "/api/heatmap",
+            Some("from=1&to=2&section=os_cpu&field=user&scope=bogus"),
+        ),
+        Err(RouteError::BadParameter("scope".to_owned())),
+    );
+    // A CPU ranking cannot hide collector statements; the query layer refuses it.
+    let Route::Heatmap(cpu) = parse(
+        "/api/heatmap",
+        Some("from=1&to=2&section=os_cpu&field=user&scope=workload"),
+    )
+    .expect("scope parses before the section check") else {
+        panic!("heatmap route");
+    };
+    assert!(Route::Heatmap(cpu).into_query().is_err());
+
+    let path = "/api/segments/7/snapshot";
+    let Route::Snapshot(page) = parse(
+        path,
+        Some("at=9&section=pg_stat_statements&field=query&page_size=50&scope=workload"),
+    )
+    .expect("scoped statement page") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(page.scope, StatementScope::Workload);
+    for query in [
+        "at=9&section=pg_stat_statements&field=query&scope=workload",
+        "at=9&section=os_process&field=pid&page_size=50&scope=workload",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=1&scope=workload",
+        "at=9&section=pg_stat_statements&field=query&page_size=50&scope=all&scope=workload",
+        "at=9&section=pg_stat_statements&field=query&page_size=50&scope=Workload",
+    ] {
+        assert_eq!(
+            parse(path, Some(query)),
+            Err(RouteError::BadParameter("scope".to_owned())),
+            "{query}",
+        );
+    }
+
+    let Route::Hour(summary) = parse(
+        "/api/hour",
+        Some("from=1&to=2&section=postgresql_summary&scope=workload"),
+    )
+    .expect("scoped summary") else {
+        panic!("hour route");
+    };
+    assert_eq!(
+        summary.series.expect("summary series").scope,
+        StatementScope::Workload
+    );
+    for query in [
+        "from=1&to=2&section=os_cpu&field=user&scope=workload",
+        "from=1&to=2&scope=workload",
+    ] {
+        assert_eq!(
+            parse("/api/hour", Some(query)),
+            Err(RouteError::BadParameter("scope".to_owned())),
+            "{query}",
+        );
+    }
 }

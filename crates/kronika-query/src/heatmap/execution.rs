@@ -15,10 +15,12 @@ use super::result::{
 };
 use crate::render::{cell, record};
 use crate::row_key;
+use crate::statement_scope::CollectorStatements;
 use crate::{
     DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability, SegmentBounds,
     SegmentSelection,
 };
+use crate::{STATEMENTS_SECTION, StatementScope};
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
 type RenderedIds = HashMap<(usize, u64), Value>;
 
@@ -597,6 +599,13 @@ fn validate_item(
             "top",
         ));
     }
+    if item.scope == StatementScope::Workload && ranking.section != STATEMENTS_SECTION {
+        return Err(HeatmapError::invalid_parameter(
+            index,
+            format!("scope=workload applies only to {STATEMENTS_SECTION}"),
+            "scope",
+        ));
+    }
 
     let wanted_type = item.view.type_id();
     let contracts: Vec<_> = registry()
@@ -732,12 +741,16 @@ struct PhysicalPlan {
     labels: Vec<Option<&'static str>>,
     bindings: Vec<Binding>,
     first_index: usize,
+    /// Whether any binding hides the collector's own statements.
+    scoped: bool,
 }
 
 struct Binding {
     accumulator: usize,
     metrics: Vec<&'static str>,
     groups: Vec<Option<&'static str>>,
+    /// This ranking excludes the collector's own statements.
+    workload: bool,
 }
 
 fn physical_plans(
@@ -799,10 +812,18 @@ fn physical_plans(
                     .collect::<Vec<_>>();
                 projection.extend(metrics.iter().copied());
                 projection.extend(groups.iter().flatten().copied());
+                let scope_column = spec
+                    .query
+                    .scope
+                    .filters(&shared.name)
+                    .then(|| contract.column("query").map(|column| column.name))
+                    .flatten();
+                projection.extend(scope_column);
                 bindings.push(Binding {
                     accumulator,
                     metrics,
                     groups,
+                    workload: scope_column.is_some(),
                 });
                 first_index = first_index.min(spec.first_index);
             }
@@ -811,6 +832,7 @@ fn physical_plans(
             }
             projection.sort_unstable();
             projection.dedup();
+            let scoped = bindings.iter().any(|binding| binding.workload);
             plans.push(PhysicalPlan {
                 section,
                 type_id,
@@ -821,6 +843,7 @@ fn physical_plans(
                 labels,
                 bindings,
                 first_index,
+                scoped,
             });
         }
     }
@@ -838,6 +861,15 @@ fn scan_plan(
 ) -> Result<(), HeatmapError> {
     let take = usize::try_from(plan.rows).unwrap_or(usize::MAX);
     let segment_id = segment.id();
+    // Collector statements are classified once per layout, before the scan.
+    let collector = if plan.scoped {
+        Some(
+            CollectorStatements::scan(segment, plan.type_id)
+                .map_err(|error| HeatmapError::storage(plan.first_index, error))?,
+        )
+    } else {
+        None
+    };
     let mut visited = 0_usize;
     let mut failure = None;
     segment
@@ -854,7 +886,15 @@ fn scan_plan(
             if redundant_cpu_aggregate(plan, &row) {
                 return true;
             }
+            let collector_row = collector
+                .as_ref()
+                .is_some_and(|statements| statements.excludes(&row));
+            let mut admitted = false;
             for binding in &plan.bindings {
+                if collector_row && binding.workload {
+                    continue;
+                }
+                admitted = true;
                 let accumulator = &mut accumulators[binding.accumulator];
                 if timestamp < range.from {
                     continue;
@@ -864,7 +904,7 @@ fn scan_plan(
                 }
                 accumulator.scan.window_rows = accumulator.scan.window_rows.saturating_add(1);
             }
-            if timestamp < range.from || timestamp >= range.to_exclusive {
+            if !admitted || timestamp < range.from || timestamp >= range.to_exclusive {
                 return true;
             }
             let entity = match sections[plan.section].observe(
@@ -884,6 +924,9 @@ fn scan_plan(
                 }
             };
             for binding in &plan.bindings {
+                if collector_row && binding.workload {
+                    continue;
+                }
                 let accumulator = &mut accumulators[binding.accumulator];
                 if let Err(error) =
                     accumulator.observe(segment_slot, &row, timestamp, entity, binding)

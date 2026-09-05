@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use kronika_query::{
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapError, HeatmapItemQuery, HeatmapView, MAX_FIELDS,
-    NormalizedRanking, QueryContext, execute_heatmap_batch,
+    NormalizedRanking, QueryContext, StatementScope, execute_heatmap_batch,
 };
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value};
@@ -81,6 +81,7 @@ pub(crate) fn call(
                     top,
                 },
                 view: HeatmapView::RankingOnly,
+                scope: StatementScope::All,
             });
             source_indices.push(index);
         }

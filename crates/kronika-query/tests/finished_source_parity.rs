@@ -22,7 +22,7 @@ use kronika_query::{
     HeatmapBatchQuery, HeatmapBatchResult, HeatmapItemQuery, HeatmapView, HourPart, HourRequest,
     HourSeriesRequest, IndexProvider, IndexRequest, MemoryIndexProvider, NormalizedRanking,
     QueryContext, QueryDataset, QueryRequest, QuerySink, RelationGroup, RelationKind,
-    RowDetailResult, TimeRange, Window, detail_locator, execute, execute_events,
+    RowDetailResult, StatementScope, TimeRange, Window, detail_locator, execute, execute_events,
     execute_heatmap_batch, execute_row_detail, validate_row_detail_ref,
 };
 use kronika_reader::Reader;
@@ -88,6 +88,7 @@ fn heatmap_query(top: usize) -> HeatmapBatchQuery {
                 group: Vec::new(),
                 type_id: None,
             },
+            scope: StatementScope::All,
         }],
     }
 }
@@ -141,6 +142,7 @@ fn series_hour_request(
             filters,
             type_id: None,
             group,
+            scope: StatementScope::All,
         }),
         part: HourPart::Combined,
         segments: None,
@@ -164,6 +166,7 @@ fn ranking_only_query() -> HeatmapBatchQuery {
             top: 1,
         },
         view: HeatmapView::RankingOnly,
+        scope: StatementScope::All,
     };
     let mut top_two = top_one.clone();
     top_two.ranking.top = 2;

@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::TimeRange;
+use crate::{StatementScope, TimeRange};
 
 /// Default number of retained ranked entities.
 pub const DEFAULT_TOP: usize = 25;
@@ -27,6 +27,8 @@ pub struct HeatmapItemQuery {
     pub ranking: NormalizedRanking,
     /// Ranking-only or bucketed-grid output.
     pub view: HeatmapView,
+    /// Which statements a `pg_stat_statements` ranking includes.
+    pub scope: StatementScope,
 }
 
 /// Stable ranking selection exposed in typed results.

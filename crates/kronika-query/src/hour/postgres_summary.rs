@@ -5,7 +5,10 @@ use kronika_registry::{contract, logical_section_name};
 use serde_json::{Value, json};
 
 use crate::render::record;
-use crate::{DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, Window};
+use crate::statement_scope::CollectorStatements;
+use crate::{
+    DatasetSegment, HourSeriesRequest, QueryDataset, QueryError, QuerySink, StatementScope, Window,
+};
 
 mod facts;
 #[cfg(test)]
@@ -75,6 +78,7 @@ pub(super) fn stream(
     dataset: &dyn QueryDataset,
     segments: &[DatasetSegment],
     window: Window,
+    scope: StatementScope,
     sink: &mut dyn QuerySink,
 ) -> Result<(), QueryError> {
     let mut opened = Vec::with_capacity(segments.len());
@@ -86,7 +90,7 @@ pub(super) fn stream(
     }
     let mut points = Vec::new();
     for surface in 1..=5 {
-        points.extend(surface_points(&opened, surface, sink)?);
+        points.extend(surface_points(&opened, surface, scope, sink)?);
     }
     points.sort_by_key(|point| (point.1, point.2));
     emit_points(&points, window, sink)
@@ -95,9 +99,11 @@ pub(super) fn stream(
 fn surface_points(
     segments: &[Segment],
     surface: u8,
+    scope: StatementScope,
     sink: &dyn QuerySink,
 ) -> Result<Vec<Point>, QueryError> {
     let source = SOURCES[usize::from(surface - 1)];
+    let scoped = scope.filters(source);
     let mut previous = HashMap::<Vec<i128>, (i64, Previous)>::new();
     let mut moments = BTreeMap::<(i64, i128), (i64, Summary)>::new();
     for segment in segments {
@@ -115,11 +121,24 @@ fn surface_points(
                     .filter_map(|name| layout.column(name).map(|column| column.name)),
             );
             columns.push("ts");
+            // The collector's own statements are classified once per layout.
+            let collector = if scoped {
+                columns.extend(layout.column("query").map(|column| column.name));
+                Some(CollectorStatements::scan(segment, type_id)?)
+            } else {
+                None
+            };
             columns.sort_unstable();
             columns.dedup();
             segment.visit_rows(type_id, &columns, 0, usize::MAX, |_ordinal, row| {
                 if sink.cancelled() {
                     return false;
+                }
+                if collector
+                    .as_ref()
+                    .is_some_and(|statements| statements.excludes(&row))
+                {
+                    return true;
                 }
                 let Some(timestamp) = integer(row.get("ts")).and_then(|ts| i64::try_from(ts).ok())
                 else {

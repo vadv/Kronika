@@ -256,7 +256,13 @@ impl PreparedHour {
             if series.section == postgres_summary::SECTION {
                 postgres_summary::validate(&series)?;
                 let segments = postgres_summary::with_previous(&listed, segments);
-                return postgres_summary::stream(dataset.as_ref(), &segments, window, sink);
+                return postgres_summary::stream(
+                    dataset.as_ref(),
+                    &segments,
+                    window,
+                    series.scope,
+                    sink,
+                );
             }
             if series.group.is_some() {
                 return relation::stream_history(dataset.as_ref(), &listed, window, &series, sink);
