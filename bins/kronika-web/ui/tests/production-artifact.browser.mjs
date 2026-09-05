@@ -8231,6 +8231,10 @@ function launchBrowser(profile, arguments_ = []) {
   const executable = browserExecutable()
   const browser = spawn(executable, [
     "--headless",
+    // Headless Chromium without input devices reports `pointer: none` and
+    // `hover: none`, which the interface reads as a coarse pointer. Start from
+    // desktop semantics; touch emulation still switches to coarse where a test asks.
+    "--blink-settings=primaryPointerType=4,primaryHoverType=2,availablePointerTypes=4,availableHoverTypes=2",
     "--disable-background-networking",
     "--disable-component-update",
     "--disable-default-apps",
