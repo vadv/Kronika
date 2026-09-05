@@ -81,7 +81,7 @@ ones belong to the same problem.
 | Which process was using the machine? | **Processes**: Tree, CPU, memory, disk I/O, and general lenses; process search, hourly activity, and recorded command/context. |
 | Which resource was busy or stalled? | **Host**: CPU, memory, PSI, devices, mount capacity, storage topology, and network. In containers, the collector's own cgroup CPU, memory, I/O, and thread limits appear first. |
 | What was PostgreSQL doing then? | **Overview**, **Activity**, and **Databases**: active sessions, waits, transaction ages, database traffic, WAL, maintenance, and recorded settings. |
-| Who was blocking whom? | **Locks**: holder/waiter trees, exact blocking PIDs, lock targets, query text, and links to backends and relations. |
+| Who was blocking whom? | **Locks**: holder/waiter trees, exact blocking PIDs, lock targets, query text, and recorded backend context. |
 | Which SQL consumed the interval? | **Statements**: execution, calls, buffers, rows, planning, and WAL lenses; full SQL and links to recorded plans. |
 | How did that query run? | **Plans**: plan-by-plan metrics and recorded text from `pg_store_plans`, linked by Query ID to Statements. |
 | Was maintenance involved? | **Vacuum**: episodes, phases, progress, and joined process cost. **Tables / Indexes**: activity, changes, maintenance, size, buffers, and grouping by database, schema, or tablespace. |
