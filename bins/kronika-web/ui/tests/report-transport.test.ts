@@ -109,28 +109,34 @@ test("report transport returns unchanged NDJSON and releases the response", asyn
   }
 })
 
-test("report transport keeps the API root under a Windows file URL", async () => {
-  const seen: string[] = []
-  const restore = installRuntime({
-    request(path, query) {
-      seen.push(`${path}?${query}`)
-      return {
-        status: 200,
-        code: undefined,
-        parameter: undefined,
-        message: undefined,
-        takeBody: () => new Uint8Array(),
-        free() {},
-      }
-    },
-  }, undefined, undefined, "file:///C:/Users/vadvm/Downloads/Telegram%20Desktop/kronika-report.html")
+test("report transport keeps the API root across file and hosted report URLs", async () => {
+  for (const locationHref of [
+    "file:///tmp/kronika-report.html",
+    "file:///C:/Users/vadvm/Downloads/Telegram%20Desktop/kronika-report.html",
+    "https://vadv.github.io/Kronika/",
+  ]) {
+    const seen: string[] = []
+    const restore = installRuntime({
+      request(path, query) {
+        seen.push(`${path}?${query}`)
+        return {
+          status: 200,
+          code: undefined,
+          parameter: undefined,
+          message: undefined,
+          takeBody: () => new Uint8Array(),
+          free() {},
+        }
+      },
+    }, undefined, undefined, locationHref)
 
-  try {
-    const response = await reportFetch("/api/hour?part=base&segments=42")
-    assert.equal(response.status, 200)
-    assert.deepEqual(seen, ["/api/hour?part=base&segments=42"])
-  } finally {
-    restore()
+    try {
+      const response = await reportFetch("/api/hour?part=base&segments=42")
+      assert.equal(response.status, 200)
+      assert.deepEqual(seen, ["/api/hour?part=base&segments=42"])
+    } finally {
+      restore()
+    }
   }
 })
 
