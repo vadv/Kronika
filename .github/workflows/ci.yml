@@ -58,6 +58,13 @@ jobs:
       - name: Verify pinned Rust toolchain
         run: rustc --version | grep -F "rustc 1.96.0 "
       - uses: Swatinem/rust-cache@v2
+      - name: Check installed CLI version behavior before service startup
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes strace
+          make build
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python3 scripts/check-cli-versions.py target/x86_64-unknown-linux-gnu/debug --version "$version" --strace
       - run: make test
 
   wasm-query:
