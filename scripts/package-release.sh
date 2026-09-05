@@ -62,9 +62,13 @@ if [[ -z "$bin_dir" ]]; then
   }
   # Use the target's baseline ISA even on newer CI processors.
   export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=$cpu"
+  build_cflags=${CFLAGS_x86_64_unknown_linux_musl:-}
   if [[ "$target" == aarch64-unknown-linux-musl ]]; then
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
     export CC_aarch64_unknown_linux_musl=musl-gcc
+    # Avoid native libgcc outline helpers that depend on glibc symbols.
+    export CFLAGS_aarch64_unknown_linux_musl="${CFLAGS_aarch64_unknown_linux_musl:-} -mno-outline-atomics"
+    build_cflags=$CFLAGS_aarch64_unknown_linux_musl
   fi
   packages=()
   for binary in "${binaries[@]}"; do packages+=(-p "$binary"); done
@@ -160,7 +164,8 @@ if [[ "$build_mode" == source ]]; then
     cd "$repo"
     printf 'build_command='
     printf '%q ' "${build_command[@]}"
-    printf '\ncompiler=%s\nrustflags=%s\n' "$build_compiler" "$RUSTFLAGS"
+    printf '\ncompiler=%s\nrustflags=%s\ncflags=%s\ntarget_cflags=%s\narch_cflags=%s\n' \
+      "$build_compiler" "$RUSTFLAGS" "${CFLAGS:-}" "${TARGET_CFLAGS:-}" "$build_cflags"
   ) >> "$stage/BUILDINFO"
 fi
 (
