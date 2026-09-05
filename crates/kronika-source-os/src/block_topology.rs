@@ -6,6 +6,7 @@
 //! `<device>/slaves/`. Nothing is inferred: an edge exists only where sysfs
 //! names both ends.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
@@ -17,7 +18,7 @@ mod tests;
 const MAX_BLOCK_DEVICES: usize = 4096;
 
 /// One exact edge from a block device to the device directly beneath it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockEdge {
     /// Upper device identity: a partition or a layered device.
     pub child: (i32, i32),
@@ -103,4 +104,32 @@ fn slaves(target: &Path) -> Vec<(i32, i32)> {
         .iter()
         .filter_map(|slave| read_dev(&slave.join("dev")))
         .collect()
+}
+
+/// Keep only the edges on the exact chains under `roots`.
+///
+/// An edge stays when its child is a root or the parent of a kept edge. Inside
+/// a container this leaves the layers the pod's devices sit on and drops the
+/// rest of the node.
+#[must_use]
+pub fn chains_under(
+    edges: &[BlockEdge],
+    roots: impl IntoIterator<Item = (i32, i32)>,
+) -> Vec<BlockEdge> {
+    let mut wanted: HashSet<(i32, i32)> = roots.into_iter().collect();
+    let mut kept: HashSet<BlockEdge> = HashSet::new();
+    loop {
+        let before = kept.len();
+        for edge in edges {
+            if wanted.contains(&edge.child) && kept.insert(*edge) {
+                wanted.insert(edge.parent);
+            }
+        }
+        if kept.len() == before {
+            break;
+        }
+    }
+    let mut chains: Vec<BlockEdge> = kept.into_iter().collect();
+    chains.sort_unstable();
+    chains
 }

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use super::{BlockEdge, collect};
+use super::{BlockEdge, chains_under, collect};
 use crate::SysFs;
 
 fn device(root: &Path, dir: &str, dev: &str) {
@@ -90,4 +90,25 @@ fn leaves_plain_whole_and_unresolved_devices_without_edges() {
             .expect("collect topology")
             .is_empty()
     );
+}
+
+// The node carries many volumes on the same partition; a container keeps only
+// the chain from its own volume down to the disk.
+#[test]
+fn chains_under_keeps_the_layers_beneath_the_roots_only() {
+    let edge = |child: (i32, i32), parent: (i32, i32)| BlockEdge { child, parent };
+    let node = [
+        edge((252, 0), (259, 4)),
+        edge((252, 1), (259, 4)),
+        edge((252, 11), (8, 0)),
+        edge((259, 1), (259, 0)),
+        edge((259, 4), (259, 0)),
+    ];
+
+    assert_eq!(
+        chains_under(&node, [(252, 0)]),
+        [edge((252, 0), (259, 4)), edge((259, 4), (259, 0))]
+    );
+    assert_eq!(chains_under(&node, [(259, 0), (8, 0)]), []);
+    assert!(chains_under(&node, []).is_empty());
 }

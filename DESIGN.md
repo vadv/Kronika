@@ -973,7 +973,11 @@ layered dm/LVM/MD device to each device under `slaves/`; plain whole devices,
 unresolved links and bind ancestry stay opaque. Inside a container, diskstats
 keep the devices with a non-infrastructure mount and the devices the
 collector's own cgroup `io.stat` charges, so the physical layers below a
-mounted volume stay named. Selecting a metric opens its one-hour history.
+mounted volume stay named, and the topology keeps only the chains under those
+devices: the rest of the node's disks and volumes are not the container's and
+are not recorded. Mount points inside `/proc` and `/sys` are never recorded:
+container runtimes mask paths there with empty tmpfs, and nothing mounted
+there is a data filesystem. Selecting a metric opens its one-hour history.
 
 A large chart never occupies the primary workspace. Every main surface instead
 keeps the shared 124 px time preview visible above its table or list. The preview

@@ -247,7 +247,9 @@ lists under `slaves/`. Plain whole devices, unresolved sysfs links, and
 bind-mount ancestry emit no inferred edge. Inside a container `1_108_001`
 keeps the devices with a non-infrastructure mount and the devices the
 collector's own cgroup `io.stat` charges, so the physical layers below a
-mounted volume stay named.
+mounted volume stay named, and `1_123_001` keeps only the edges on the chains
+under those devices. `1_112_002` never records mount points inside `/proc` or
+`/sys`: container runtimes mask paths there with empty tmpfs.
 
 ### Network
 

@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use super::{
     Instant, Interner, MountEntry, MountStringIds, OsDiskstats, OsInterrupts, OsKernelLimits,
     OsMountinfo, OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts, cpuinfo,
-    diskstats, intern_str, interrupts, is_pseudo_filesystem, kernel_limits, log_collection_finish,
-    log_degraded, mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs, node_id_from_dir,
-    parse_dev_pair, parse_mountinfo, parse_node_meminfo, read_optional_os_file,
+    diskstats, intern_str, interrupts, is_kernel_tree_mount, is_pseudo_filesystem, kernel_limits,
+    log_collection_finish, log_degraded, mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs,
+    node_id_from_dir, parse_dev_pair, parse_mountinfo, parse_node_meminfo, read_optional_os_file,
 };
 
 /// Read and parse `/proc/diskstats`, interning device names into rows.
@@ -288,7 +288,9 @@ pub(super) fn mountinfo_entries(fs: &ProcFs) -> Vec<MountEntry> {
         return Vec::new();
     };
     let mut entries = parse_mountinfo(&content);
-    entries.retain(|entry| !is_pseudo_filesystem(&entry.fstype));
+    entries.retain(|entry| {
+        !is_pseudo_filesystem(&entry.fstype) && !is_kernel_tree_mount(&entry.mount_point)
+    });
     resolve_major_zero(&SysFs::from_env(), &mut entries);
     entries
 }

@@ -48,7 +48,8 @@ use kronika_source_os::proc::{
 };
 use kronika_source_os::{
     MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set,
-    is_pseudo_filesystem, mount_row, net_scope, parse_dev_pair, parse_mountinfo,
+    is_kernel_tree_mount, is_pseudo_filesystem, mount_row, net_scope, parse_dev_pair,
+    parse_mountinfo,
 };
 use kronika_source_os::{node_id_from_dir, parse_node_meminfo};
 use kronika_writer::{Interner, SectionBuffers};
@@ -278,23 +279,25 @@ pub(crate) fn collect_os_sources(
     }
     // OsCore needs mountinfo for the container device filter in diskstats;
     // OsMountTopo needs it to build the attribution section rows.
-    let mounts = if due.has(SourceKind::OsCore) || due.has(SourceKind::OsMountTopo) {
+    let device_tick = due.has(SourceKind::OsCore) || due.has(SourceKind::OsMountTopo);
+    let mounts = if device_tick {
         procfs_sections::mountinfo_entries(fs)
     } else {
         Vec::new()
     };
+    // A container's device sections keep the devices its mounts sit on and the
+    // layers its own cgroup charges I/O to; /proc/diskstats and sysfs describe
+    // the whole node.
+    let kept = (in_container && device_tick).then(|| {
+        let mut devices = container_device_set(&mounts);
+        devices.extend(cgroup::charged_devices(fs, &sys));
+        devices
+    });
 
     if due.has(SourceKind::OsCore) {
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
         let net_scope_id = net_scope(in_container).as_u8();
-        // A container's diskstats keep the devices its mounts sit on and the
-        // layers its own cgroup charges I/O to; the file itself lists the node.
-        let kept = in_container.then(|| {
-            let mut devices = container_device_set(&mounts);
-            devices.extend(cgroup::charged_devices(fs, &sys));
-            devices
-        });
         os.diskstats = procfs_sections::collect_diskstats(fs, interner, scope, ts, kept.as_ref());
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
@@ -313,7 +316,7 @@ pub(crate) fn collect_os_sources(
     if due.has(SourceKind::OsMountTopo) {
         os.mountinfo = collect_mountinfo(interner, scope, ts, &mounts);
         os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
-        block_topology::collect_block_topology(&sys, scope, ts, &mut os);
+        block_topology::collect_block_topology(&sys, scope, ts, kept.as_ref(), &mut os);
     }
     cpufreq::collect_cpufreq(&sys, interner, scope, ts, due, &mut os);
 
