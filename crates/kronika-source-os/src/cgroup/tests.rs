@@ -216,7 +216,7 @@ fn pressure_rejects_ambiguous_unified_memberships() {
     .expect("write unified marker");
     std::fs::write(
         dir.path().join("proc/self/cgroup"),
-        "0::/first\n1::/second\n",
+        "0::/first\n0::/second\n",
     )
     .expect("write ambiguous membership");
 
