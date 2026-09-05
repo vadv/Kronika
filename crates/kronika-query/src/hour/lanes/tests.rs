@@ -7,6 +7,7 @@ use super::{
     ActivitySample, Counters, activity_sample, counter_sum, cpu_busy_ticks, current_points, points,
     rate, record_activity_sample,
 };
+use super::{Membership, cgroup_cpu_capacity, member_row, membership, pressure_lane};
 use crate::Window;
 
 #[test]
@@ -278,5 +279,177 @@ fn a_shared_boundary_row_is_not_emitted_again_by_the_next_segment() {
         second
             .iter()
             .any(|point| point.key == "cpu_busy" && point.ts == 300 && point.value.is_some())
+    );
+}
+
+#[test]
+fn container_cpu_lanes_measure_the_collector_cgroup_against_its_capacity() {
+    let counters = Counters {
+        cg_cpu_usage: BTreeMap::from([(1_000_000, 0), (2_000_000, 500_000)]),
+        cg_cpu_throttled: BTreeMap::from([(1_000_000, 0), (2_000_000, 250_000)]),
+        cg_cpu_capacity: BTreeMap::from([(1_000_000, 2.0)]),
+        ..Counters::default()
+    };
+    let out = points(&counters, 100, 4);
+    let at_two = |key: &str| {
+        out.iter()
+            .find(|point| point.key == key && point.ts == 2_000_000)
+            .and_then(|point| point.value)
+    };
+    assert_eq!(at_two("cg_cpu_cores"), Some(0.5));
+    assert_eq!(at_two("cg_cpu_share"), Some(25.0));
+    assert_eq!(at_two("cg_cpu_throttle"), Some(25.0));
+    // Without a recorded capacity there is no share lane: four host cores never substitute.
+    let unlimited = Counters {
+        cg_cpu_usage: counters.cg_cpu_usage,
+        ..Counters::default()
+    };
+    let out = points(&unlimited, 100, 4);
+    assert!(out.iter().all(|point| point.key != "cg_cpu_share"));
+    assert!(out.iter().any(|point| point.key == "cg_cpu_cores"));
+}
+
+#[test]
+fn container_gauges_events_and_io_have_their_own_lanes() {
+    let counters = Counters {
+        cg_memory_share: BTreeMap::from([(1_000_000, 40.0)]),
+        cg_memory_bytes: BTreeMap::from([(1_000_000, 1024.0)]),
+        cg_pids: BTreeMap::from([(1_000_000, 4.0)]),
+        cg_pids_share: BTreeMap::from([(1_000_000, 3.125)]),
+        cg_oom: BTreeMap::from([
+            (1_000_000, Some(1)),
+            (2_000_000, Some(3)),
+            (3_000_000, None),
+        ]),
+        cg_io_read: BTreeMap::from([(1_000_000, 0), (2_000_000, 4096)]),
+        cg_io_write: BTreeMap::from([(1_000_000, 0), (2_000_000, 8192)]),
+        cg_stall_memory: BTreeMap::from([(1_000_000, 0), (2_000_000, 100_000)]),
+        ..Counters::default()
+    };
+    let out = points(&counters, 100, 1);
+    let value = |key: &str, ts: i64| {
+        out.iter()
+            .find(|point| point.key == key && point.ts == ts)
+            .map(|point| point.value)
+    };
+    assert_eq!(value("cg_memory", 1_000_000), Some(Some(40.0)));
+    assert_eq!(value("cg_memory_bytes", 1_000_000), Some(Some(1024.0)));
+    assert_eq!(value("cg_pids", 1_000_000), Some(Some(4.0)));
+    assert_eq!(value("cg_pids_share", 1_000_000), Some(Some(3.125)));
+    assert_eq!(value("cg_oom", 2_000_000), Some(Some(2.0)));
+    assert_eq!(
+        value("cg_oom", 3_000_000),
+        Some(None),
+        "a null sample breaks the OOM rate"
+    );
+    assert_eq!(value("cg_io_read", 2_000_000), Some(Some(4096.0)));
+    assert_eq!(value("cg_io_write", 2_000_000), Some(Some(8192.0)));
+    assert_eq!(value("cg_mem_psi", 2_000_000), Some(Some(10.0)));
+}
+
+#[test]
+fn container_pressure_stays_apart_from_host_pressure() {
+    let mut counters = Counters::default();
+    pressure_lane(&mut counters, 0, 0)
+        .expect("host cpu pressure")
+        .insert(1, 10);
+    pressure_lane(&mut counters, 3, 0)
+        .expect("container cpu pressure")
+        .insert(1, 20);
+    pressure_lane(&mut counters, 3, 1)
+        .expect("container memory pressure")
+        .insert(1, 30);
+    pressure_lane(&mut counters, 3, 2)
+        .expect("container io pressure")
+        .insert(1, 40);
+    assert!(
+        pressure_lane(&mut counters, 0, 1).is_none(),
+        "host memory pressure has no lane"
+    );
+    assert!(
+        pressure_lane(&mut counters, 1, 0).is_none(),
+        "a pod scope is not a lane"
+    );
+    assert_eq!(counters.stall_cpu, BTreeMap::from([(1, 10)]));
+    assert_eq!(counters.stall_io, BTreeMap::new());
+    assert_eq!(counters.cg_stall_cpu, BTreeMap::from([(1, 20)]));
+    assert_eq!(counters.cg_stall_memory, BTreeMap::from([(1, 30)]));
+    assert_eq!(counters.cg_stall_io, BTreeMap::from([(1, 40)]));
+}
+
+#[test]
+fn the_membership_selects_rows_by_exact_path_and_scope() {
+    let context = row(
+        1_205_001,
+        &[
+            ("cgroup_version", Cell::U32(2)),
+            ("cpu_path", Cell::StrId(7)),
+            ("memory_path", Cell::StrId(7)),
+            ("io_path", Cell::StrId(7)),
+            ("cpuset_cpus", Cell::I64(4)),
+            ("effective_cpu_quota_usec", Cell::I64(150_000)),
+            ("effective_cpu_period_usec", Cell::I64(100_000)),
+            ("scope", Cell::U32(3)),
+        ],
+    );
+    let unified = membership(&context);
+    assert_eq!(
+        unified,
+        Membership {
+            scope: Some(3),
+            cpu: Some(7),
+            memory: Some(7),
+            io: Some(7),
+            pids: Some(7),
+        }
+    );
+    assert_eq!(cgroup_cpu_capacity(&context), Some(1.5));
+    let unlimited = row(
+        1_205_001,
+        &[
+            ("cgroup_version", Cell::U32(1)),
+            ("cpu_path", Cell::StrId(7)),
+            ("memory_path", Cell::StrId(8)),
+            ("io_path", Cell::StrId(7)),
+            ("cpuset_cpus", Cell::I64(2)),
+            ("effective_cpu_quota_usec", Cell::I64(-1)),
+            ("effective_cpu_period_usec", Cell::I64(100_000)),
+        ],
+    );
+    assert_eq!(
+        membership(&unlimited).pids,
+        None,
+        "v1 controllers have no unified TID row"
+    );
+    assert_eq!(
+        cgroup_cpu_capacity(&unlimited),
+        Some(2.0),
+        "an unlimited quota leaves the cpuset"
+    );
+    let unknown = row(1_205_001, &[("cgroup_version", Cell::U32(2))]);
+    assert_eq!(
+        cgroup_cpu_capacity(&unknown),
+        None,
+        "no quota and no cpuset is unknown, not host cores"
+    );
+
+    let mine = row(
+        1_201_001,
+        &[("cgroup_path", Cell::StrId(7)), ("scope", Cell::U32(3))],
+    );
+    let other_path = row(
+        1_201_001,
+        &[("cgroup_path", Cell::StrId(9)), ("scope", Cell::U32(3))],
+    );
+    let other_scope = row(
+        1_201_001,
+        &[("cgroup_path", Cell::StrId(7)), ("scope", Cell::U32(4))],
+    );
+    assert!(member_row(&mine, Some(&unified), unified.cpu));
+    assert!(!member_row(&other_path, Some(&unified), unified.cpu));
+    assert!(!member_row(&other_scope, Some(&unified), unified.cpu));
+    assert!(
+        !member_row(&mine, None, unified.cpu),
+        "no context selects nothing"
     );
 }
