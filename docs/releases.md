@@ -7,8 +7,9 @@
 [v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0) is a static
 x86-64 Linux musl archive. It contains `kronika-collector`, `kronika-web`,
 `kronika-dump`, and `kronika-demo` directly inside its top-level directory.
-**It predates `kronika-report` and HTML export.** To use the current features,
-follow the [source build](../README.md#build-the-current-binaries).
+**It predates `kronika-dump slice`, `kronika-report`, and HTML export.** To
+use the current features, follow the
+[source build](../README.md#build-the-current-binaries).
 
 These URLs download that existing release, not a future package:
 

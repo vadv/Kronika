@@ -23,8 +23,9 @@ sha256sum --check SHA256SUMS
 ```
 
 The commit-qualified filename identifies a prepared artifact, not a published
-version tag. The original published v1.0.0 archive predates `kronika-report`
-and HTML export; these instructions describe the current package.
+version tag. The original published v1.0.0 archive predates
+`kronika-dump slice`, `kronika-report`, and HTML export; these instructions
+describe the current package.
 
 ## Record Linux and PostgreSQL
 

@@ -108,9 +108,9 @@ cargo build --release --locked --target x86_64-unknown-linux-musl \
 для отчётов уже подготовлены: обычная Cargo-сборка не требует Node.js.
 
 Опубликованный [архив v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
-содержит collector, web, dump и demo; **в нём нет `kronika-report` и текущей
-реализации HTML-экспорта**. До публикации обновлённого архива используйте сборку
-из исходного кода выше для возможностей, описанных на этой странице. Готового
+содержит collector, web, dump и demo; **в нём ещё нет `kronika-dump slice`,
+`kronika-report` и HTML-экспорта**. До публикации обновлённого архива используйте
+сборку из исходного кода выше для возможностей, описанных на этой странице. Готового
 архива для arm64 нет. [Упаковка и команды скачивания с проверкой](docs/releases.ru.md)
 описаны отдельно для существующего релиза и подготовленных артефактов.
 
@@ -246,6 +246,6 @@ IDX и распознанные временные файлы. Число сох
   [метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md),
   [события из логов PostgreSQL](docs/type-registry/postgresql.md),
   [события из логов PgBouncer](docs/type-registry/pgbouncer.md)
-- [Дизайн](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md)
+- [Формат сегмента](crates/kronika-format/README.ru.md)
 
 Kronika — open source под [лицензией MIT](LICENSE).

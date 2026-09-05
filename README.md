@@ -108,8 +108,8 @@ The repository pins Rust 1.96.0. The browser interface and report WebAssembly
 are already bundled: a normal Cargo build needs no Node.js installation.
 
 The published [v1.0.0 archive](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
-contains collector, web, dump, and demo; **it does not contain `kronika-report`
-or the current HTML export work**. Use the source build above for the features
+contains collector, web, dump, and demo; **it predates `kronika-dump slice`,
+`kronika-report`, and HTML export**. Use the source build above for the features
 on this page until an updated archive is published. There is no prebuilt arm64
 archive. [Packaging and verified download commands](docs/releases.md) describe
 both the existing release and the prepared artifacts.
@@ -246,6 +246,6 @@ not a universal memory guarantee for every process count or PostgreSQL workload.
   [PostgreSQL metrics](docs/type-registry/postgresql-metrics.md),
   [PostgreSQL log events](docs/type-registry/postgresql.md),
   [PgBouncer log events](docs/type-registry/pgbouncer.md)
-- [Design](DESIGN.md) · [Segment format](crates/kronika-format/README.md)
+- [Segment format](crates/kronika-format/README.md)
 
 Kronika is open source under the [MIT License](LICENSE).
