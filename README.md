@@ -12,9 +12,10 @@ interface, choose an interval and click **Export**. Send the downloaded `.html` 
 colleague: they open it in a browser, with no Kronika installation, server,
 or internet connection. Tables, heatmaps, search, and charts remain interactive.
 
-**[Open the interactive demo →](https://vadv.github.io/kronika-reports/reports/kronika-container-demo-20min-77c422e.html)**
-Try that same HTML experience with a 20-minute recording of synthetic Linux
-and PostgreSQL workloads. No installation or login; save the file to use it offline.
+**[Open the interactive demo →](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html)**
+Try that same HTML experience with a full-hour recording of synthetic Linux
+and PostgreSQL workloads: 5 September 2026, 19:00–20:00 UTC.
+No installation or login; save the file to use it offline.
 
 ![Processes: CPU activity heatmap above the process table](docs/images/processes.png)
 
@@ -23,11 +24,11 @@ select a process to inspect its CPU, memory, and I/O history.*
 
 ## Try it locally
 
-For a live demo, use Docker with Compose v2 on Linux amd64 or arm64. From a
-checkout of this repository:
+For a live demo, use Docker with Compose v2 on Linux amd64 or arm64.
+These commands select the current review branch with the features shown here:
 
 ```sh
-git clone https://github.com/vadv/Kronika.git kronika
+git clone --branch fix/events-count-scope https://github.com/vadv/Kronika.git kronika
 cd kronika
 docker compose --file compose.demo.yml up --build --wait
 ```
@@ -61,6 +62,10 @@ Statements and Plans use the history collected from `pg_stat_statements` and
 `pg_store_plans` when those extensions are installed.
 
 ![Plans: recorded execution plan and related SQL in the synthetic demo](docs/images/plans.png)
+
+*The selected plan and SQL are from this same hour. In this recording,
+Plans Activity is unavailable because one recorded plan has duplicate
+identifiers; the table and Inspector remain usable.*
 
 For the same time period, inspect **backend waits and blocking processes**,
 **Vacuum progress**, **table and index activity**, and **PostgreSQL log events**.

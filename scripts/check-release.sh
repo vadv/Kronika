@@ -55,17 +55,13 @@ for directory in ('bins/kronika-collector', 'bins/kronika-web', 'bins/kronika-du
         assert f'{directory}/{name}' in members
 for member in members:
     assert not set(Path(member).parts) & {'src', 'target', 'node_modules', '.git'}, member
-pending_images = {repo / f'docs/images/{name}.png' for name in ('processes', 'statements', 'plans')}
 for document in package.rglob('*.md'):
     for href in re.findall(r'\]\(([^\s)]+)\)', document.read_text()):
         url = urlsplit(href)
         if url.scheme or url.netloc or not url.path:
             continue
         target = (document.parent / unquote(url.path)).resolve()
-        if not target.exists():
-            source = repo / target.relative_to(package)
-            assert source in pending_images and not source.exists(), f'broken bundled link: {document}: {href}'
-            print(f'Pending MAIN screenshot: {source.relative_to(repo)}')
+        assert target.exists(), f'broken bundled link: {document}: {href}'
 print(f'Archive documentation, static ELF and full checksum manifest passed: {len(members)} files')
 env = {k: v for k, v in os.environ.items() if not k.startswith('KRONIKA_')}
 collector = subprocess.run([package / 'kronika-collector'], env=env,

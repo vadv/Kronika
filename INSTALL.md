@@ -5,7 +5,7 @@
 This package contains static x86-64 Linux executables: `kronika-collector`,
 `kronika-web`, `kronika-dump`, and `kronika-report`. Some packages also include
 `kronika-demo`, the workload and collection runner. `BUILDINFO` identifies the
-packaging source revision and build mode. `SHA256SUMS` checks the binaries.
+packaging source revision and build mode. `SHA256SUMS` checks every packaged file.
 The executables sit directly in the extracted directory; run the commands
 below there. No Node.js or database is required for Kronika's own storage.
 
