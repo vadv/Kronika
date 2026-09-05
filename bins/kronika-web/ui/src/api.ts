@@ -143,6 +143,8 @@ export interface HourData {
 export interface SnapshotRows {
   readonly logicalName: string
   readonly eligible: number
+  /// Rows the requested statement scope kept off the page.
+  readonly excluded: number
   readonly returned: number
   readonly hasMore: boolean
   readonly truncated: boolean
@@ -493,6 +495,7 @@ export async function loadSeries(
   signal: AbortSignal,
   typeId?: string | undefined,
   group?: RelationGroup | undefined,
+  scope: StatementScope = "all",
 ): Promise<readonly DataRow[]> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
@@ -515,6 +518,7 @@ export async function loadSeries(
     ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
     ...(group === undefined ? [] : [`group=${group}`]),
+    ...(scope === "all" ? [] : [`scope=${scope}`]),
   ].join("&")
   const records = await request(`/api/hour?${query}`, signal)
   const layouts = new Map<string, RowLayout>()
@@ -722,6 +726,7 @@ export async function loadHeatmap(
   top: number,
   signal: AbortSignal,
   group?: readonly string[],
+  scope: StatementScope = "all",
 ): Promise<HeatmapView> {
   signal.throwIfAborted()
   const from = floorHour(selectedHour)
@@ -734,11 +739,12 @@ export async function loadHeatmap(
     `columns=${columns}`,
     `top=${top}`,
     ...(group ?? []).map((name) => `group=${encodeURIComponent(name)}`),
+    ...(scope === "all" ? [] : [`scope=${scope}`]),
   ].join("&")
   const fixtureRange = bundledFixtureRange()
   const fixture = fixtureRange === null
     ? null
-    : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group)
+    : bundledFixtureHeatmapRecords(from, section, fields, columns, top, group, scope)
   if (fixtureRange !== null && fixture === null) throw new Error("bundled fixture has no Rust heatmap result")
   const records = fixture ?? await request(`/api/heatmap?${query}`, signal)
   const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
@@ -1113,6 +1119,9 @@ const RELATED_STATEMENT_FIELDS_BY_TYPE = Object.fromEntries(PG_STAT_STATEMENTS_T
     : ["query", "calls", "rows", "total_exec_time", "mean_exec_time"],
 ]))
 
+/** Which statements a `pg_stat_statements` result includes; `workload` omits the collector's own. */
+export type StatementScope = "all" | "workload"
+
 export interface SnapshotOptions {
   readonly filters?: Readonly<Record<string, string>>
   readonly typeId?: string
@@ -1121,6 +1130,7 @@ export interface SnapshotOptions {
   readonly cursor?: string
   readonly search?: string
   readonly firstMatch?: boolean
+  readonly scope?: StatementScope
 }
 
 export interface SnapshotOrder {
@@ -1251,6 +1261,7 @@ export async function loadSnapshot(
       snapshotRows.push({
         logicalName,
         eligible: integer(record["eligible"], "eligible row count"),
+        excluded: record["excluded"] === undefined ? 0 : integer(record["excluded"], "excluded row count"),
         returned: integer(record["returned"], "returned row count"),
         hasMore: record.has_more,
         truncated: record["truncated"],
@@ -1412,6 +1423,7 @@ function fixtureSnapshot(
       if ((request.typeId ?? options.typeId ?? rows[0]?.typeId) !== undefined) snapshotRows.push({
         logicalName: request.section,
         eligible,
+        excluded: 0,
         returned: rows.length,
         hasMore: eligible > rows.length,
         truncated: eligible > rows.length,
@@ -1514,6 +1526,7 @@ function snapshotQuery(
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
     ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
     ...(options.firstMatch === true ? ["first_match=1"] : []),
+    ...(options.scope === undefined || options.scope === "all" ? [] : [`scope=${options.scope}`]),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
@@ -1541,7 +1554,7 @@ function snapshotOptions(
 ): SnapshotOptions {
   if (value === undefined) return {}
   if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value
-    || "cursor" in value || "search" in value || "firstMatch" in value) {
+    || "cursor" in value || "search" in value || "firstMatch" in value || "scope" in value) {
     return value as SnapshotOptions
   }
   return { filters: value as Readonly<Record<string, string>> }

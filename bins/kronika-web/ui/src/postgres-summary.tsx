@@ -1,4 +1,4 @@
-import { loadSeries, type Cell, type DataRow } from "./api"
+import { loadSeries, type Cell, type DataRow, type StatementScope } from "./api"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest, type HistoryState } from "./history-request"
 import { asNumber, humanBytes, humanDuration, humanPercent, measure, value, type Locale } from "./model"
@@ -19,9 +19,9 @@ const SURFACES: Readonly<Record<PostgresSummarySection, number>> = {
   indexes: 5,
 }
 
-export function usePostgresSummary(hour: number, historyRevision: number): PostgresSummaryState {
-  return useHistoryRequest(String(hour), historyRevision,
-    (signal) => loadSeries(hour, "postgresql_summary", {}, [], signal))
+export function usePostgresSummary(hour: number, historyRevision: number, scope: StatementScope = "all"): PostgresSummaryState {
+  return useHistoryRequest(`${hour}:${scope}`, historyRevision,
+    (signal) => loadSeries(hour, "postgresql_summary", {}, [], signal, undefined, undefined, scope))
 }
 
 export function postgresSummaryRow(rows: readonly DataRow[], section: PostgresSummarySection, cursor: number): DataRow | null {

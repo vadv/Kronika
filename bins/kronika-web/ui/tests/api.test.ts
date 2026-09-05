@@ -279,7 +279,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
         values: ["42", "10", "20", "vacuum t", 5, "9007199254740995", 7],
       },
       {
-        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "4873", returned: "2",
+        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "4873", excluded: "3", returned: "2",
         has_more: true, truncated: true, next_cursor: "next+/=", page_size: 200,
         order_by: ["wal_bytes", "total_time"], order_direction: "desc",
         from: String(START - 10_000_000), to: String(START),
@@ -295,7 +295,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     assert.equal(hour.sections.pg_stat_statements?.length, 2)
     assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time", "total_exec_time"])
     assert.deepEqual(hour.snapshotRows, [{
-      logicalName: "pg_stat_statements", eligible: 4873, returned: 2,
+      logicalName: "pg_stat_statements", eligible: 4873, excluded: 3, returned: 2,
       hasMore: true, truncated: true, nextCursor: "next+/=", pageSize: 200,
       orderBy: ["wal_bytes", "total_time"], orderDirection: "desc",
       from: START - 10_000_000, to: START,

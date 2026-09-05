@@ -28,6 +28,7 @@ import {
   type Finding,
   type HourData,
   type SnapshotOptions,
+  type StatementScope,
   type SnapshotRequestGroup,
   type TimelineData,
 } from "./api"
@@ -68,7 +69,7 @@ import {
   type Lens,
   type Locale,
 } from "./model"
-import { PostgresView, type PostgresSection } from "./postgres-view"
+import { PostgresView, statementScopeFor, type PostgresSection } from "./postgres-view"
 import { planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
@@ -263,6 +264,8 @@ function App({ locale, onLocale, t }: {
   const visibleSource = source
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
   const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
+  // Kronika's own statements stay hidden until the reader includes them.
+  const [monitorQueries, setMonitorQueries] = useState(false)
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
   const [relationLens, setRelationLens] = useState<RelationLens>(relationLensOf(pgSectionOf(opened.current.view), opened.current.pgLens))
   const [relationLevel, setRelationLevel] = useState<RelationGroup>(opened.current.pgLevel)
@@ -367,9 +370,17 @@ function App({ locale, onLocale, t }: {
     }))
     .filter((group) => group.requests.length !== 0)
   const pageContext = denseRequest !== undefined && context?.logicalName === denseRequest.section ? context : null
+  const statementScope = statementScopeFor({
+    context,
+    focus: selectedFinding !== null && selectedFinding.logicalName === "pg_stat_statements" && selectedFinding.timestamp === cursor ? findingRow : null,
+    pattern: find,
+    rows: currentSnapshot.data.sections.pg_stat_statements ?? [],
+    selectedKey,
+    show: monitorQueries,
+  })
   const denseOptions = denseRequest === undefined
     ? undefined
-    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
+    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters, denseRequest.section === "pg_stat_statements" ? statementScope.scope : undefined)
   const requestOrder = visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
   const cgroupTargetGroups = visibleSource === "host" && timelineData.availableSections.some((name) => name.startsWith("os_cgroup"))
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
@@ -1147,7 +1158,7 @@ function App({ locale, onLocale, t }: {
           <ProcessTable contextLabel={lens !== "tree" && context?.logicalName === "os_process" ? context.label : undefined} densePageState={lens === "tree" ? "idle" : densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={lens === "tree" ? undefined : denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} requestPhase={currentTableRequest} rows={processTableRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} requestPhase={currentTableRequest} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} requestPhase={currentTableRequest} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={selectDetailKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPreview={previewClock} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={selectRelationDetail} onSection={choosePgSection} onSelectedLane={setTimelineLane} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} selectedLane={timelineLane} statementLens={statementLens} monitorQueries={monitorQueries} onMonitorQueries={setMonitorQueries} statementScope={statementScope} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onPattern={applyFind} onPreview={previewClock} onReady={eventsReady} onSelectedLane={setTimelineLane} onShowAll={() => { setEventScope(null); setSelectedFinding(null); setInspectorPanel(null) }} pattern={find} revision={refreshVersion} scope={eventScope} selected={selectedFinding} selectedLane={timelineLane} t={t} />}
     </section>
 
@@ -1211,6 +1222,7 @@ function initialPageOptions(
   context: EntityContext | null,
   pattern: string,
   relationFilters: Readonly<Record<string, string>>,
+  scope?: StatementScope,
 ): SnapshotOptions {
   const filters = request.group === undefined
       ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
@@ -1221,6 +1233,7 @@ function initialPageOptions(
     ...(filters === undefined ? {} : { filters }),
     ...(request.group === undefined && context !== null ? { typeId: context.typeId } : {}),
     ...(pattern === "" ? {} : { search: pattern }),
+    ...(scope === undefined || scope === "all" ? {} : { scope }),
   }
 }
 

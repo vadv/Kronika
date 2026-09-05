@@ -754,19 +754,19 @@ section-specific metric. Metrics may sum counters or scale them with recorded
 block-size or clock-rate metadata; missing metadata leaves raw counts.
 The ledger makes no request until opened, and its open state persists locally.
 
-The Statements table initially omits only rows whose Query text starts with
-the exact, case-sensitive `/* kronika:` prefix. This is a presentation scope
-for Kronika's own collector statements, not attribution to an application. A
-visible checkbox includes those rows and reports how many matches are hidden
-among the rows already loaded. The scope does not change the server request,
-sort, eligible count, continuation cursor, or page button; while further pages
-exist, the hidden count remains explicitly a count of loaded rows. An explicit
-Statements search or entity context, and an exact opened collector row,
-include matching rows so related navigation and focus remain intact. The
-hourly Statements activity and inclusive summary stay absent in the default
-scope because the heatmap intentionally carries no Query text and therefore
-cannot apply the same exact classification. They appear only when the reader
-explicitly includes collector queries.
+Kronika's own collector statements are a presentation scope, not attribution
+to an application. Every statement the collector runs carries the exact,
+case-sensitive `/* kronika:` prefix, and the query layer classifies statement
+text by that prefix once per physical layout, resolving the layout's texts
+through the segment dictionary. The `scope=workload` parameter applies that one
+classification to the Statements ranking behind the hourly activity heatmap,
+to the paged Statements rows and to the PostgreSQL summary, so all three agree.
+The paged response reports the exact number of collector rows the scope kept
+off the page. The interface hides collector statements by default, always shows
+the heatmap and the summary under the same scope, and offers one short control,
+`Kronika queries`, with that exact count. An explicit Statements search, an
+entity context, or an exact opened collector row widens the scope to every
+statement and locks the control, so related navigation and focus remain intact.
 Statement query text uses the 12 px regular monospace data face and the scope
 copy uses the interface face at no less than 12 px. With a coarse pointer,
 Statement lens and search actions, table headers, and selectable rows each own

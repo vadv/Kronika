@@ -2261,6 +2261,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
       if (url.searchParams.get("section") === "postgresql_summary") {
+        // A scope change re-requests the summary; the superseded request was aborted by the page.
         heldPostgresSummary = { hour, response }
         postgresSummaryRequested()
         return
@@ -2274,13 +2275,18 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       const sections = url.searchParams.getAll("section")
       if (sections.includes("pg_store_plans")) return ndjson(response, planRecords())
       const statements = sections.includes("pg_stat_statements")
+      // Like the server, the workload scope keeps the collector's own statement
+      // off the page and reports it in the page trailer.
+      const workload = url.searchParams.get("scope") === "workload"
       return ndjson(response, statements
-        ? statementRecords(true, 2, false, 2).map((record) => record.record !== "row" ? record : {
-            ...record,
-            values: record.values.map((stored, index) => index === 1
-              ? record.ordinal === "91" ? "101" : "102"
-              : index === 7 && record.ordinal !== "91" ? "/* kronika:1.0.0 statements */ select monitor" : stored),
-          })
+        ? statementRecords(true, workload ? 1 : 2, false, workload ? 1 : 2).map((record) => record.record === "snapshot_page"
+            ? { ...record, excluded: workload ? "1" : "0" }
+            : record.record !== "row" ? record : {
+              ...record,
+              values: record.values.map((stored, index) => index === 1
+                ? record.ordinal === "91" ? "101" : "102"
+                : index === 7 && record.ordinal !== "91" ? "/* kronika:1.0.0 statements */ select monitor" : stored),
+            })
         : snapshotRecords())
     }
     response.writeHead(404)
@@ -2322,8 +2328,9 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent,
       summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
     }))()`)
-    assert.deepEqual({ ...defaultScope, status: undefined }, { activity: false, checked: false, count: "1 loaded hidden", rows: 1, status: undefined, summary: false })
-    assert.match(defaultScope.status, /Loaded 2 of 2/)
+    assert.deepEqual({ ...defaultScope, status: undefined }, { activity: true, checked: false, count: "hidden: 1", rows: 1, status: undefined, summary: false })
+    assert.match(defaultScope.status, /Loaded 1 of 1/)
+    assert.equal(requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).get("scope") === "workload").length, 1, JSON.stringify(requests.map(({ path, query }) => path + query)))
 
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian statement scope")
@@ -2348,7 +2355,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       return {
         bounds: { left: bounds.left, right: bounds.right },
         coarse: matchMedia('(pointer: coarse)').matches,
-        countBelowLabel: count.top >= label.bottom - 1,
+        sameLine: count.top < label.bottom && count.left >= label.right,
         documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         heights,
         human: style(scope.querySelector('span:not([data-testid])')),
@@ -2358,7 +2365,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     })()`)
     assert.equal(narrowScope.coarse, true, JSON.stringify(narrowScope))
     assert.equal(narrowScope.documentOverflow, false, JSON.stringify(narrowScope))
-    assert.equal(narrowScope.countBelowLabel, true, JSON.stringify(narrowScope))
+    assert.equal(narrowScope.sameLine, true, JSON.stringify(narrowScope))
     assert.equal(narrowScope.query.size, 12, JSON.stringify(narrowScope))
     assert.match(narrowScope.query.family, /JetBrains Mono/)
     assert.equal(narrowScope.query.weight, "400")
@@ -2372,14 +2379,17 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await settleLayout(cdp)
     await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-scope"] input').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 2 && document.querySelector('[data-testid="activity-pg_stat_statements"] [data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the Statements collector-query scope")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-count"]')?.textContent`), "shown")
 
     const postgresSummaryRequests = () => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "postgresql_summary")
     await postgresSummaryRequest
+    // The summary follows the same scope as the table: first the workload, then every statement.
+    await waitForRequests(() => postgresSummaryRequests().length === 2)
+    assert.deepEqual(postgresSummaryRequests().map(({ query }) => new URLSearchParams(query).get("scope")), ["workload", null])
     assert.notEqual(heldPostgresSummary, null)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`), true)
     ndjson(heldPostgresSummary.response, postgresSummaryRecords(heldPostgresSummary.hour))
     heldPostgresSummary = null
-    await waitForRequests(() => postgresSummaryRequests().length === 1)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="active_statements"] strong')?.textContent === "3 · 60%"`, "the PostgreSQL statement context")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 720, mobile: false, width: 320 })
     await settleLayout(cdp)
@@ -2398,32 +2408,32 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await settleLayout(cdp)
     await cdp.evaluate(`document.querySelector('[data-testid="statement-lens-per_call"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="execution_per_call"]') !== null`, "the local statement lens context")
-    assert.equal(postgresSummaryRequests().length, 1)
+    assert.equal(postgresSummaryRequests().length, 2)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="scan_methods"]') !== null`, "the table context")
-    assert.equal(postgresSummaryRequests().length, 1)
+    assert.equal(postgresSummaryRequests().length, 2)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Databases")).click()`)
     await cdp.waitFor(`document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "20%"`, "the database context")
-    assert.equal(postgresSummaryRequests().length, 1)
+    assert.equal(postgresSummaryRequests().length, 2)
     await cdp.evaluate(`(() => {
       const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "2")
       navigator.dispatchEvent(new Event("input", { bubbles: true }))
     })()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}" && document.querySelector('[data-summary-fact="rollbacks"] strong')?.textContent === "10%"`, "the local PostgreSQL cursor context")
-    assert.equal(postgresSummaryRequests().length, 1)
+    assert.equal(postgresSummaryRequests().length, 2)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the restored PostgreSQL cursor")
     await cdp.waitFor(`document.querySelector('button[title="Refresh"]')?.disabled === false`, "the refresh action")
     await cdp.evaluate(`document.querySelector('button[title="Refresh"]').click()`)
-    await waitForRequests(() => postgresSummaryRequests().length === 2)
-    assert.equal(postgresSummaryRequests().length, 2)
+    await waitForRequests(() => postgresSummaryRequests().length === 3)
+    assert.equal(postgresSummaryRequests().length, 3)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Statements")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the restored Statements path")
 
     await cdp.waitFor(`document.querySelector('[data-testid="activity-toggle"]')?.getAttribute("aria-expanded") === "false"`, "the collapsed activity ledger")
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length, 0)
-    const statementSnapshotsBeforeActivity = requests.filter(({ path }) => path.includes("/snapshot")).length
+    let statementSnapshotsBeforeActivity = requests.filter(({ path }) => path.includes("/snapshot")).length
     await cdp.evaluate(`document.querySelector('[data-testid="activity-toggle"]').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/heatmap")).length >= 1)
@@ -2447,6 +2457,18 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title"))`), ["select artifact_exact_context", "/* kronika:1.0.0 statements */ select monitor"])
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "en"`, "the English Activity previews")
+    // The ledger follows the same scope as the table: hiding Kronika's queries reranks without them.
+    const heatmapScopes = () => requests.filter(({ path }) => path.startsWith("/api/heatmap")).map(({ query }) => new URLSearchParams(query).get("scope"))
+    assert.ok(heatmapScopes().every((scope) => scope === null), JSON.stringify(heatmapScopes()))
+    await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-scope"] input').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 1 && document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 1`, "the workload-only ledger", 15_000)
+    assert.equal(heatmapScopes().at(-1), "workload")
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"] > span[title]')].map((row) => row.getAttribute("title"))`), ["select artifact_exact_context"])
+    await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-scope"] input').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2 && document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 2`, "the restored full ledger", 15_000)
+    // Each scope change reloaded the page once; the ledger itself never asks for rows.
+    assert.equal(requests.filter(({ path }) => path.includes("/snapshot")).length, statementSnapshotsBeforeActivity + 2)
+    statementSnapshotsBeforeActivity += 2
     await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="activity-pg_stat_statements"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
@@ -2770,6 +2792,113 @@ test.skip("legacy fullscreen uPlot is replaced by the shared Inspector", { timeo
   }
 })
 
+test("Statements scope widens for an explicit search and returns to the workload", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      const hour = Number(url.searchParams.get("from") ?? HOUR)
+      if (url.searchParams.get("section") === "postgresql_summary") return ndjson(response, postgresSummaryRecords(hour))
+      return ndjson(response, timelineRecords(hour))
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      if (!url.searchParams.getAll("section").includes("pg_stat_statements")) return ndjson(response, snapshotRecords())
+      // The server answers the scope it was asked for: the workload page hides the collector's row and counts it.
+      const workload = url.searchParams.get("scope") === "workload"
+      return ndjson(response, statementRecords(true, workload ? 1 : 2, false, workload ? 1 : 2).map((record) => record.record === "snapshot_page"
+        ? { ...record, excluded: workload ? "1" : "0" }
+        : record.record !== "row" || record.ordinal === "91" ? record : {
+          ...record,
+          values: record.values.map((stored, index) => index === 7 ? "/* kronika:1.0.0 statements */ select monitor" : stored),
+        }))
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("statement scope server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 1`, "the workload Statements page", 15_000)
+    const scopeState = () => cdp.evaluate(`(() => ({
+      checked: document.querySelector('[data-testid="statement-monitor-scope"] input')?.checked,
+      locked: document.querySelector('[data-testid="statement-monitor-scope"] input')?.disabled,
+      forced: document.querySelector('[data-testid="statement-monitor-scope"]')?.dataset.forced ?? null,
+      count: document.querySelector('[data-testid="statement-monitor-count"]')?.textContent,
+      rows: document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length,
+      ledger: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
+    }))()`)
+    const statementScopes = () => requests
+      .filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && query.includes("pg_stat_statements"))
+      .map(({ query }) => new URLSearchParams(query).get("scope"))
+    assert.deepEqual(await scopeState(), { checked: false, locked: false, forced: null, count: "hidden: 1", rows: 1, ledger: true })
+    assert.deepEqual(statementScopes(), ["workload"])
+
+    // An explicit search must be able to reach the collector's own statements, so it widens the scope and locks the control.
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "monitor")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "monitor", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "monitor" && document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 2`, "the widened search page", 15_000)
+    assert.deepEqual(await scopeState(), { checked: true, locked: true, forced: "true", count: "shown", rows: 2, ledger: true })
+    assert.equal(statementScopes().at(-1), null)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="statement-monitor-scope"]')?.getAttribute("title")`), "Shown: the filter or the opened row needs them")
+
+    // Clearing the search returns the reader's own choice: the workload scope with its exact hidden count.
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null && document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length === 1`, "the restored workload page", 15_000)
+    assert.deepEqual(await scopeState(), { checked: false, locked: false, forced: null, count: "hidden: 1", rows: 1, ledger: true })
+    assert.equal(statementScopes().at(-1), "workload")
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("the production artifact preserves wire keys and exact finding page state", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -2846,11 +2975,15 @@ test("the production artifact preserves wire keys and exact finding page state",
           heldContextPage = response
           contextPageRequested()
         } else {
+          // The workload scope lists only application statements and counts the collector's own in the trailer.
+          const workload = url.searchParams.get("scope") === "workload"
           const records = filtered ? statementRecords(true) : statementRecords(true, 4_807, true, 50)
-          ndjson(response, filtered ? records : records.map((record) => record.record !== "row" || record.ordinal !== "91" ? record : {
-            ...record,
-            values: record.values.map((stored, index) => index === 7 ? "/* kronika:1.0.0 statements */ select monitor" : stored),
-          }))
+          ndjson(response, filtered ? records : records.map((record) => record.record === "snapshot_page"
+            ? { ...record, excluded: workload ? "1" : "0" }
+            : workload || record.record !== "row" || record.ordinal !== "91" ? record : {
+              ...record,
+              values: record.values.map((stored, index) => index === 7 ? "/* kronika:1.0.0 statements */ select monitor" : stored),
+            }))
         }
       } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
         ndjson(response, relationRecords(url, relationMode))
@@ -3490,27 +3623,28 @@ test("the production artifact preserves wire keys and exact finding page state",
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
       activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
-      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input') !== null,
+      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input')?.checked,
       chip: document.querySelector('[data-testid="entity-context-filter"]')?.textContent ?? "",
       detail: document.querySelector(".pg-detail") !== null,
       row: document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent ?? "",
       search: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-label") ?? "",
-      scopeRole: document.querySelector('[data-testid="statement-monitor-scope"]')?.getAttribute("role"),
+      locked: document.querySelector('[data-testid="statement-monitor-scope"] input')?.disabled,
+      forced: document.querySelector('[data-testid="statement-monitor-scope"]')?.dataset.forced,
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
-      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
     }))()`)
-    assert.equal(preview.activity, false)
-    assert.equal(preview.checkbox, false)
+    // An entity context widens the scope to every statement: the control is checked and locked, the ledger stays.
+    assert.equal(preview.activity, true)
+    assert.equal(preview.checkbox, true)
+    assert.equal(preview.locked, true)
+    assert.equal(preview.forced, "true")
     assert.match(preview.chip, /Query ID 9007199254740991 · operators · reporterShow all/)
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
     assert.match(preview.search, /Search rows/)
-    assert.equal(preview.scopeRole, "status")
     assert.match(preview.status, /Loading rows/)
     assert.match(preview.status, /Previous rows remain visible/)
     assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
     assert.equal(preview.detail, false)
-    assert.equal(preview.summary, false)
 
     ndjson(heldContextPage, statementRecords(true))
     heldContextPage = null
@@ -3543,12 +3677,12 @@ test("the production artifact preserves wire keys and exact finding page state",
       count: document.querySelector('[data-testid="statement-monitor-count"]')?.textContent,
       paging: document.querySelector('[data-testid="table-paging"] button')?.disabled,
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
-      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
       virtualHeight: document.querySelector('[data-testid="pg-statements-table"] [data-testid="virtual-body"]')?.style.height,
     }))()`)
+    // Without a context the default workload scope returns; the page holds 50 application rows and reports one hidden.
     assert.deepEqual(pagedScope, {
-      activity: false, checked: false, count: "1 loaded hidden", paging: false,
-      status: pagedScope.status, summary: false, virtualHeight: "1176px",
+      activity: true, checked: false, count: "hidden: 1", paging: false,
+      status: pagedScope.status, virtualHeight: "1200px",
     })
     assert.match(pagedScope.status, /Loaded 50 of 4,807/)
 
@@ -3582,10 +3716,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor('new URL(location.href).searchParams.get("find") === "exec_time_rate>500ms/s AND call_rate>1/s" && document.querySelectorAll("[data-testid=search-chips] button").length === 2', "quantitative statement chips")
     assert.deepEqual(await cdp.evaluate(`(() => ({
       activity: document.querySelector('[data-testid="activity-pg_stat_statements"]') !== null,
-      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input') !== null,
-      forced: document.querySelector('[data-testid="statement-monitor-scope"]')?.getAttribute("role"),
-      summary: document.querySelector('[data-summary-fact="active_statements"]') !== null,
-    }))()`), { activity: false, checkbox: false, forced: "status", summary: false })
+      checkbox: document.querySelector('[data-testid="statement-monitor-scope"] input')?.checked,
+      forced: document.querySelector('[data-testid="statement-monitor-scope"]')?.dataset.forced,
+    }))()`), { activity: true, checkbox: true, forced: "true" })
     const quantitativeState = await cdp.evaluate('(() => ({ aria: document.querySelector("[data-testid=search-chips]")?.getAttribute("aria-label") ?? "", fields: [...document.querySelectorAll("[data-testid=search-chips] strong")].map((field) => field.textContent), text: document.querySelector("[data-testid=search-chips]")?.textContent ?? "" }))()')
     assert.deepEqual(quantitativeState.fields, ["Execution time/s", "Calls/s"])
     assert.match(quantitativeState.text, /> 500 ms\/sANDCalls\/s · > 1 \/s/)
@@ -7915,13 +8048,17 @@ function answerHeatmap(url, response) {
         { identity: ["101", "10", "5", "true"], total: 120, typeId: "1002006" },
         { identity: ["102", "10", "5", "true"], total: 60, typeId: "1002006" },
       ]
+  // Only Statements rankings may be scoped; the workload scope drops the collector's own query id 102.
+  const scope = url.searchParams.get("scope")
+  assert.ok(scope === null || (scope === "workload" && section === "pg_stat_statements"), `${section} ${scope}`)
+  const ranked = scope === "workload" ? identities.filter(({ identity }) => identity[0] !== "102") : identities
   return ndjson(response, [
     {
       record: "heatmap", from: String(from), to: String(to), section,
       fields: url.searchParams.getAll("field"), class: "cumulative", labels,
-      top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
+      top: ranked.length, entity_count: ranked.length + 1, others_count: 1, out_of_order: "0", intervals,
     },
-    ...identities.map(({ identity, total, typeId }) => ({ record: "heatmap_row", type_id: typeId, identity, labels: labelValues, total, cells })),
+    ...ranked.map(({ identity, total, typeId }) => ({ record: "heatmap_row", type_id: typeId, identity, labels: labelValues, total, cells })),
     { record: "heatmap_band", band: "totals", total: 200, cells },
     { record: "heatmap_band", band: "others", total: 20, cells },
   ])

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
 
 import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
-import { loadHeatmap, type DataRow } from "./api"
+import { type StatementScope, loadHeatmap, type DataRow } from "./api"
 import { cgroupDevicePrimary, type CgroupDevicePresentation } from "./cgroup-device"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
@@ -39,13 +39,14 @@ function useHeatmapView(
   top: number,
   revision: number,
   enabled: boolean,
+  scope: StatementScope,
 ): HeatmapState {
   const [state, setState] = useState<HeatmapState>({ loading: true, error: false, view: null, viewCut: null })
   useEffect(() => {
     if (!enabled) return
     const controller = new AbortController()
     setState((current) => ({ loading: true, error: false, view: current.view, viewCut: current.viewCut }))
-    loadHeatmap(hour, section, cut.fields, columns, top, controller.signal, group)
+    loadHeatmap(hour, section, cut.fields, columns, top, controller.signal, group, scope)
       .then((view) => { if (!controller.signal.aborted) setState({ loading: false, error: false, view, viewCut: cut }) })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -53,7 +54,7 @@ function useHeatmapView(
         }
       })
     return () => controller.abort()
-  }, [columns, cut, enabled, group, hour, revision, section, top])
+  }, [columns, cut, enabled, group, hour, revision, scope, section, top])
   return state
 }
 
@@ -79,7 +80,7 @@ interface RowLabel {
   readonly prefix: string | null
 }
 
-function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, headingContext, hour, keys, label, locale, onCursor, scales, section, storageKey, t }: {
+function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, headingContext, hour, keys, label, locale, onCursor, scales, scope = "all", section, storageKey, t }: {
   readonly columns: number
   readonly cursor: number
   readonly cuts: readonly ActivityCut[]
@@ -93,6 +94,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, headi
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly scales: ActivityScales
+  readonly scope?: StatementScope | undefined
   readonly section: string
   readonly storageKey: string
   readonly t: Translate
@@ -105,7 +107,7 @@ function ActivityLedger({ columns, cursor, cuts, defaultCut, drill, group, headi
   const [chosen, setChosen] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const cut = cuts.find((candidate) => candidate.id === cutId) ?? cuts[0] as ActivityCut
-  const state = useHeatmapView(section, columns, group, hour, cut, top, revision, open)
+  const state = useHeatmapView(section, columns, group, hour, cut, top, revision, open, scope)
   const view = useMemo(() => {
     if (state.view === null) return null
     return maximized ? state.view : collapseHeatmapView(state.view, TOP_BLOCK)
@@ -246,7 +248,7 @@ const PLAN_KEYS: LedgerKeys = { title: "activity.plans", bands: "activity.plans"
 const TABLE_KEYS: LedgerKeys = { title: "activity.tables", bands: "activity.tables" }
 const INDEX_KEYS: LedgerKeys = { title: "activity.indexes", bands: "activity.indexes" }
 
-export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, rows, t }: {
+export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, rows, scope, t }: {
   readonly blockSize: number | null
   readonly cursor: number
   readonly hour: number
@@ -254,6 +256,7 @@ export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, 
   readonly onCursor: (timestamp: number) => void
   readonly onRelated: (target: RelatedNavigation) => void
   readonly rows: readonly DataRow[]
+  readonly scope: StatementScope
   readonly t: Translate
 }) {
   const texts = useMemo(() => statementTextsByQueryId(rows), [rows])
@@ -281,7 +284,7 @@ export function StatementsActivity({ blockSize, cursor, hour, locale, onCursor, 
     }
   }
 
-  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
+  return <ActivityLedger columns={60} cursor={cursor} cuts={STATEMENT_CUTS} defaultCut="exec_time" drill={drill} hour={hour} keys={STATEMENT_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize, clockTicks: null }} scope={scope} section="pg_stat_statements" storageKey="kronika.activity-open" t={t} />
 }
 
 export function PlansActivity({ blockSize, cursor, hour, locale, onCursor, onRelated, rows, t }: {

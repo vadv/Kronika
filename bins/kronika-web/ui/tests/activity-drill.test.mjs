@@ -98,17 +98,24 @@ test("ranked statement and plan previews use the first nonempty loaded table tex
   assert.match(source, /t\("pg\.detail\.query", \{ id: queryId \?\? "—" \}\)/)
   assert.match(source, /t\("pg\.detail\.plan", \{ id: planId \?\? "—" \}\)/)
   assert.doesNotMatch(source, /labelText\(row, "(?:query|plan)"\)|loadRelatedStatementTextRow|first_match/)
-  assert.match(view, /showMonitorQueries && <StatementsActivity[^>]+rows=\{statementRows\}/)
-  assert.match(view, /summary=\{showMonitorQueries \? summary\("statements", statementLens\) : undefined\}/)
-  assert.doesNotMatch(view, /monitorQueriesVisible && <StatementsActivity|summary=\{monitorQueriesVisible/)
+  // The heatmap and the summary always render; the scope travels to the server.
+  assert.match(view, /<StatementsActivity[^>]+rows=\{statementRows\} scope=\{statementScope\.scope\}/)
+  assert.doesNotMatch(view, /showMonitorQueries && <StatementsActivity|monitorQueriesVisible && <StatementsActivity/)
+  assert.match(view, /summary=\{summary\("statements", statementLens\)\}/)
+  assert.match(view, /usePostgresSummary\(hour, historyRevision, statementScope\.scope\)/)
   assert.match(view, /<PlansActivity[^>]+rows=\{data\.sections\.pg_store_plans \?\? NO_ROWS\}/)
 })
 
-test("Statements scope overrides only the table for explicit navigation", async () => {
-  const view = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(view, /const statementScopeOverride = pattern\.trim\(\) !== ""\s*\|\| context\?\.logicalName === "pg_stat_statements"\s*\|\| exactMonitorQuery\s*\|\| selectedMonitorQuery/)
-  assert.match(view, /const monitorQueriesVisible = showMonitorQueries \|\| statementScopeOverride/)
-  assert.match(view, /forced=\{statementScopeOverride\}/)
-  assert.match(view, /statusRowCount=\{monitorQueriesVisible \? undefined : statementRows\.length\}/)
-  assert.match(view, /visibleStatementRows\(rows, monitorQueriesVisible\)/)
+test("Statements scope widens to every statement only for explicit navigation", async () => {
+  const [view, app] = await Promise.all([
+    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(view, /const forced = pattern\.trim\(\) !== ""\s*\|\| context\?\.logicalName === "pg_stat_statements"\s*\|\| exactMonitorQuery\s*\|\| selectedMonitorQuery/)
+  assert.match(view, /return \{ scope: show \|\| forced \? "all" : "workload", forced \}/)
+  assert.match(view, /forced=\{statementScope\.forced\}/)
+  assert.match(view, /count=\{excludedMonitorQueries\}/)
+  // The table no longer filters rows on the client: the exact count comes from the page trailer.
+  assert.doesNotMatch(view, /transformRows=\{statementTransform\}|statusRowCount=\{monitorQueriesVisible/)
+  assert.match(app, /denseRequest\.section === "pg_stat_statements" \? statementScope\.scope : undefined/)
 })

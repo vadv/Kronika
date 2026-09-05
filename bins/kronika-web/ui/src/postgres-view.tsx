@@ -4,7 +4,7 @@ import { registry } from "kronika:registry"
 
 import { copyText } from "./clipboard"
 import { DatabasesActivity, PlansActivity, RelationsActivity, StatementsActivity } from "./activity"
-import type { DataRow, Finding, HourData, SegmentBound, SnapshotRows } from "./api"
+import type { DataRow, Finding, HourData, SegmentBound, SnapshotRows, StatementScope } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { DetailList, DetailRow } from "./detail-list"
@@ -37,12 +37,12 @@ import type { SearchSurface } from "./search"
 import type { SearchRequestState } from "./search-request"
 import { Timeline } from "./timeline"
 import type { TableRequestPhase } from "./table-request"
-import { isKronikaMonitorStatement, visibleStatementRows } from "./statement-scope"
+import { isKronikaMonitorStatement } from "./statement-scope"
 
 export type PostgresSection = "overview" | "activity" | "vacuum" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
-export { isKronikaMonitorStatement, visibleStatementRows }
+export { isKronikaMonitorStatement }
 
 function StatementMonitorScope({ checked, count, forced, onChange, t }: {
   readonly checked: boolean
@@ -51,15 +51,39 @@ function StatementMonitorScope({ checked, count, forced, onChange, t }: {
   readonly onChange: (checked: boolean) => void
   readonly t: Translate
 }) {
-  if (forced) return <span className="inline-flex min-h-7 min-w-0 basis-full items-center whitespace-normal px-1.5 text-[12px] leading-normal text-fg3 coarse:min-h-11" data-testid="statement-monitor-scope" role="status">{t("pg.statements.monitor_queries.forced")}</span>
-  const status = checked
+  // Kronika's own statements are hidden by default. The count is the server's
+  // exact number of rows the workload scope kept off the page. An explicit
+  // search, entity context or opened collector row includes them and locks the
+  // control, because the reader asked for exactly those rows.
+  const status = forced || checked
     ? t("pg.statements.monitor_queries.shown")
     : t("pg.statements.monitor_queries.hidden", { count: String(count) })
-  return <label className="inline-flex min-h-7 min-w-0 max-w-full flex-1 cursor-pointer flex-wrap items-center gap-x-1.5 rounded-[var(--radius-sm)] px-1.5 text-[12px] leading-normal text-fg2 hover:bg-s3 coarse:min-h-11 max-[519px]:basis-full" data-testid="statement-monitor-scope">
-    <input aria-label={t("pg.statements.monitor_queries.toggle")} checked={checked} className="flex-none accent-accent" onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
-    <span className="min-w-0">{t("pg.statements.monitor_queries.label")}</span>
-    <span aria-live="polite" className="ml-auto min-w-0 tabular-nums text-fg4 max-[519px]:w-full max-[519px]:pl-5" data-testid="statement-monitor-count">{status}</span>
+  return <label className={`inline-flex min-h-7 min-w-0 max-w-full items-center gap-x-1.5 rounded-[var(--radius-sm)] px-1.5 text-[12px] leading-normal text-fg2 coarse:min-h-11 ${forced ? "cursor-default" : "cursor-pointer hover:bg-s3"}`} data-forced={forced || undefined} data-testid="statement-monitor-scope" title={forced ? t("pg.statements.monitor_queries.forced") : undefined}>
+    <input aria-label={t("pg.statements.monitor_queries.toggle")} checked={forced || checked} className="flex-none accent-accent" disabled={forced} onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
+    <span className="min-w-0 whitespace-nowrap">{t("pg.statements.monitor_queries.label")}</span>
+    <span aria-live="polite" className="min-w-0 whitespace-nowrap tabular-nums text-fg4" data-testid="statement-monitor-count">{status}</span>
   </label>
+}
+
+/// The statement scope a view needs: the reader's choice, widened to every
+/// statement when a search, entity context or an opened collector row would
+/// otherwise lose the rows it refers to.
+export function statementScopeFor({ context, focus, pattern, rows, selectedKey, show }: {
+  readonly context: EntityContext | null
+  readonly focus: DataRow | null
+  readonly pattern: string
+  readonly rows: readonly DataRow[]
+  readonly selectedKey: string | null
+  readonly show: boolean
+}): { readonly scope: StatementScope; readonly forced: boolean } {
+  const selectedMonitorQuery = selectedKey !== null
+    && rows.some((row) => rowKey(row) === selectedKey && isKronikaMonitorStatement(row))
+  const exactMonitorQuery = focus?.logicalName === "pg_stat_statements" && isKronikaMonitorStatement(focus)
+  const forced = pattern.trim() !== ""
+    || context?.logicalName === "pg_stat_statements"
+    || exactMonitorQuery
+    || selectedMonitorQuery
+  return { scope: show || forced ? "all" : "workload", forced }
 }
 
 const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true, false)
@@ -341,6 +365,9 @@ export function PostgresView({
   selectedKey,
   selectedLane,
   statementLens,
+  monitorQueries,
+  onMonitorQueries,
+  statementScope,
   t,
 }: {
   readonly context: EntityContext | null
@@ -376,6 +403,11 @@ export function PostgresView({
   readonly selectedKey: string | null
   readonly selectedLane: string
   readonly statementLens: StatementLens
+  /// The reader's choice to include Kronika's own statements.
+  readonly monitorQueries: boolean
+  readonly onMonitorQueries: (next: boolean) => void
+  /// Scope resolved by the owner of the table request; see `statementScopeFor`.
+  readonly statementScope: { readonly scope: StatementScope; readonly forced: boolean }
   readonly planLens: PlanLens
   readonly segments: readonly SegmentBound[]
   readonly onStatementLens: (lens: StatementLens) => void
@@ -391,25 +423,11 @@ export function PostgresView({
   const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   const locks = useMemo(() => lockColumns(t), [t])
   const lockDetails = useMemo(() => lockDetailColumns(t), [t])
-  const postgresSummary = usePostgresSummary(hour, historyRevision)
-  const [showMonitorQueries, setShowMonitorQueries] = useState(false)
+  const postgresSummary = usePostgresSummary(hour, historyRevision, statementScope.scope)
   const statementRows = data.sections.pg_stat_statements ?? NO_ROWS
-  const loadedMonitorQueries = useMemo(
-    () => statementRows.filter(isKronikaMonitorStatement).length,
-    [statementRows],
-  )
-  const selectedMonitorQuery = selectedKey !== null
-    && statementRows.some((row) => rowKey(row) === selectedKey && isKronikaMonitorStatement(row))
-  const exactMonitorQuery = focus?.logicalName === "pg_stat_statements" && isKronikaMonitorStatement(focus)
-  const statementScopeOverride = pattern.trim() !== ""
-    || context?.logicalName === "pg_stat_statements"
-    || exactMonitorQuery
-    || selectedMonitorQuery
-  const monitorQueriesVisible = showMonitorQueries || statementScopeOverride
-  const statementTransform = useCallback(
-    (rows: readonly DataRow[]) => visibleStatementRows(rows, monitorQueriesVisible),
-    [monitorQueriesVisible],
-  )
+  // The server keeps the collector's own statements off the page under the
+  // workload scope and reports exactly how many it held back.
+  const excludedMonitorQueries = data.snapshotRows.find((page) => page.logicalName === "pg_stat_statements")?.excluded ?? 0
   const summary = (summarySection: PostgresSummarySection, lens: string) => <PostgresSummary cursor={cursor} lens={lens} locale={locale} section={summarySection} state={postgresSummary} t={t} />
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
@@ -429,7 +447,7 @@ export function PostgresView({
     {section === "overview" && <PostgresOverview cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} requestPhase={requestPhase} onContextClear={onContextClear} onCursor={onCursor} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
     {section === "vacuum" && <VacuumView cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} order={order} pattern={pattern} searchRequest={searchRequest} segments={segments} selectedKey={selectedKey} t={t} />}
-    {section === "statements" && <>{showMonitorQueries && <StatementsActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={statementRows} t={t} />}<PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" summary={showMonitorQueries ? summary("statements", statementLens) : undefined} t={t} /><PgEntityView accessory={<StatementMonitorScope checked={showMonitorQueries} count={loadedMonitorQueries} forced={statementScopeOverride} onChange={setShowMonitorQueries} t={t} />} columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} statusRowCount={monitorQueriesVisible ? undefined : statementRows.length} t={t} transformRows={statementTransform} /></>}
+    {section === "statements" && <><StatementsActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={statementRows} scope={statementScope.scope} t={t} /><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" summary={summary("statements", statementLens)} t={t} /><PgEntityView accessory={<StatementMonitorScope checked={monitorQueries} count={excludedMonitorQueries} forced={statementScope.forced} onChange={onMonitorQueries} t={t} />} columns={statementColumns(statementLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onRelated={onRelated} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_stat_statements" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" summary={summary("plans", planLens)} t={t} />}
     {section === "plans" && available("pg_store_plans") && <><PlansActivity blockSize={blockSize} cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} onRelated={onRelated} rows={data.sections.pg_store_plans ?? NO_ROWS} t={t} /><PgEntityView columns={planColumns(planLens, blockSize, onRelated, t)} context={context} requestPhase={requestPhase} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onRelated={onRelated} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} searchRequest={searchRequest} section="pg_store_plans" segments={segments} selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border-y border-line2 bg-s1 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
