@@ -336,7 +336,7 @@ test("System entity tables keep exact meaning-first orders and rate presentation
   assert.deepEqual(fields.os_diskstats, ["device", "device_id", "reads", "writes", "read_bytes", "write_bytes", "read_latency_ms", "write_latency_ms", "device_busy", "average_queue", "io_in_progress"])
   assert.deepEqual(fields.os_cgroup_cpu, ["cgroup_path", "cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota", "cpuset_cpus"])
   assert.deepEqual(fields.os_cgroup_memory, ["cgroup_path", "current", "effective_memory_max", "max", "anon", "file", "slab", "kernel_other", "memory_unclassified"])
-  assert.deepEqual(fields.os_cgroup_io, ["cgroup_path", "cgroup_device_target", "cgroup_device_detail", "device_id", "rbytes", "wbytes", "rios", "wios", "cgroup_mount_associations"])
+  assert.deepEqual(fields.os_cgroup_io, ["cgroup_path", "cgroup_device", "device_id", "rbytes", "wbytes", "rios", "wios", "cgroup_device_chain", "cgroup_mount_associations", "cgroup_lower_layers"])
   assert.deepEqual(fields.os_mountinfo, ["mount_point", "root", "source", "fstype", "device_id", "free_bytes", "filesystem_available_percent", "total_bytes", "available_inodes", "inode_available_percent", "total_inodes", "is_k8s_infra"])
   assert.deepEqual(fields.os_netdev, ["iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "speed_mbit", "duplex"])
   assert.deepEqual(fields.os_topology, ["cpu_id", "socket_id", "core_id", "numa_node", "model_name", "mhz_max"])
@@ -559,13 +559,55 @@ test("a mount inode history charts exact available against total", () => {
   assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
 })
 
-test("storage topology exposes only recorded partition parents and mount roots", () => {
+test("storage topology exposes only recorded exact edges and mount roots", () => {
   const row = (logicalName, values) => ({ logicalName, ordinal: "0", segmentId: "a", timestamp: 1, typeId: "0", values })
   assert.deepEqual(helpers.storageTopologyEntries(
     [],
-    [row("os_block_topology", { major: 259, minor: 1, parent_major: 259, parent_minor: 0 })],
+    [
+      row("os_block_topology", { major: 259, minor: 1, parent_major: 259, parent_minor: 0 }),
+      row("os_block_topology", { major: 252, minor: 0, parent_major: 259, parent_minor: 1 }),
+      row("os_block_topology", { major: 252, minor: 0, parent_major: 8, parent_minor: 16 }),
+    ],
     [row("os_mountinfo", { major: 259, minor: 1, mount_point: "/data", root: "/subvol", source: "/dev/nvme0n1p1" })],
-  ), [{ associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parent: "259:0" }])
+  ), [
+    { associations: [], id: "252:0", name: "252:0", parents: ["259:1", "8:16"] },
+    { associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parents: ["259:0"] },
+  ])
+})
+
+// io.stat charges dm-0 and the disk under it for the same bytes: the table
+// keeps the mounted volume and carries the disk's counters in its Inspector.
+test("a charged lower layer leaves the cgroup I/O table and rides in the top row", () => {
+  const row = (logicalName, ordinal, values) => ({ logicalName, ordinal, segmentId: "a", timestamp: 10, typeId: logicalName === "os_cgroup_io" ? "1203002" : logicalName, values })
+  const source = {
+    ...helpers.bundledFixtureHour(),
+    sections: {
+      os_cgroup_io: [
+        row("os_cgroup_io", "dm", { cgroup_path: "/", major: 252, minor: 0, rbytes: 100, wbytes: 200, rios: 3, wios: 4, scope: 3 }),
+        row("os_cgroup_io", "disk", { cgroup_path: "/", major: 259, minor: 0, rbytes: 100, wbytes: 190, rios: 3, wios: 4, scope: 3 }),
+      ],
+      os_block_topology: [
+        row("os_block_topology", "dm", { major: 252, minor: 0, parent_major: 259, parent_minor: 4, scope: 0 }),
+        row("os_block_topology", "p4", { major: 259, minor: 4, parent_major: 259, parent_minor: 0, scope: 0 }),
+      ],
+      os_diskstats: [
+        row("os_diskstats", "dm-0", { major: 252, minor: 0, device: "dm-0", scope: 0 }),
+        row("os_diskstats", "nvme0n1", { major: 259, minor: 0, device: "nvme0n1", scope: 0 }),
+      ],
+      os_mountinfo: [row("os_mountinfo", "data", { major: 252, minor: 0, mount_point: "/var/lib/kronika/data", root: "/volumes/x", source: "/dev/mapper/data-docker", is_k8s_infra: false, scope: 0 })],
+    },
+  }
+  const rows = helpers.systemEntityRows(source, "os_cgroup_io", 10)
+  assert.equal(rows.length, 1)
+  const [top] = rows
+  assert.equal(top.values.device_id, "252:0")
+  assert.equal(top.values.cgroup_device, "/var/lib/kronika/data")
+  assert.equal(top.values.cgroup_device_secondary, "data-docker · dm-0 → nvme0n1")
+  assert.equal(top.values.cgroup_device_chain, "dm-0 252:0 → 259:4 → nvme0n1 259:0")
+  assert.deepEqual(top.values.cgroup_lower_layers, { layers: [{ id: "259:0", name: "nvme0n1", rbytes: 100, wbytes: 190, rios: 3, wios: 4 }] })
+  // The physical row still exists as data: the same hour without edges shows both.
+  const flat = helpers.systemEntityRows({ ...source, sections: { ...source.sections, os_block_topology: [] } }, "os_cgroup_io", 10)
+  assert.deepEqual(flat.map(({ values }) => [values.device_id, values.cgroup_device, values.cgroup_device_secondary]), [["252:0", "/var/lib/kronika/data", "data-docker · dm-0"], ["259:0", "nvme0n1", null]])
 })
 
 test("a shared cgroup path is displayed once without hiding mixed paths", () => {

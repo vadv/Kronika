@@ -49,15 +49,18 @@ test("cgroup I/O hoists one shared path and keeps differing paths on their devic
   assert.deepEqual(activity.cgroupActivityIdentity(split.rows[1], true), { text: "252:0", prefix: "/batch" })
   assert.equal(activity.cgroupIoSharedPath({ ...view, othersCount: 1, entityCount: 3 }), null)
 
-  const mapped = new Map([["252:0", {
-    associations: [], device: "dm-0", id: "252:0", preferredMounts: ["/var/lib/kronika/data"], source: "/dev/mapper/data-docker",
-  }]])
-  const translate = (key) => key === "system.cgroups.io_unmapped" ? "No mount point in this report" : key
-  assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true, mapped, translate), {
-    detail: "252:0", semantic: false, text: "data-docker → /var/lib/kronika/data", title: "data-docker → /var/lib/kronika/data · /dev/mapper/data-docker · dm-0 · 252:0", prefix: "/",
+  const mapped = new Map([
+    ["252:0", {
+      associations: [], chain: [{ id: "252:0", name: "dm-0" }, { id: "259:4", name: null }, { id: "259:0", name: "nvme0n1" }], device: "dm-0", foldedInto: null, id: "252:0", preferredMounts: ["/var/lib/kronika/data"], source: "/dev/mapper/data-docker",
+    }],
+    ["259:0", { associations: [], chain: [{ id: "259:0", name: null }], device: null, foldedInto: "252:0", id: "259:0", preferredMounts: [], source: null }],
+  ])
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[1], true, mapped), {
+    detail: "252:0", text: "/var/lib/kronika/data", title: "/var/lib/kronika/data · data-docker · dm-0 → nvme0n1 · 252:0", prefix: "/",
   })
-  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true, mapped, translate), {
-    detail: "259:0", semantic: true, text: "No mount point in this report", title: "No mount point in this report", prefix: "/",
+  // An unnamed device is its bare identity, never prose about the recording.
+  assert.deepEqual(activity.cgroupActivityIdentity(rows[0], true, mapped), {
+    detail: "259:0", text: "259:0", title: "259:0", prefix: "/",
   })
 })
 

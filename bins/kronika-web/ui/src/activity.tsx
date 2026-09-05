@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 
 import { CGROUP_CPU_CUTS, CGROUP_IO_CUTS, DATABASE_CUTS, INDEX_CUTS, PLAN_CUTS, PROCESS_CUTS, STATEMENT_CUTS, TABLE_CUTS, activityPreview, cutScale, type ActivityCut, type ActivityScales } from "./activity-cuts"
 import { type StatementScope, loadHeatmap, type DataRow } from "./api"
-import { cgroupDevicePrimary, type CgroupDevicePresentation } from "./cgroup-device"
+import { cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation } from "./cgroup-device"
 import { HOUR_MICROS, collapseHeatmapView, heatmapIntensity, heatmapViewMax, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanDuration, measure, rawText, value, type Locale } from "./model"
@@ -415,28 +415,25 @@ export function CgroupActivity({ cursor, devices = EMPTY_CGROUP_DEVICES, hour, i
   readonly onCursor: (timestamp: number) => void
   readonly t: Translate
 }) {
-  const label = (row: HeatmapViewRow): RowLabel => cgroupActivityIdentity(row, io, devices, t)
+  const label = (row: HeatmapViewRow): RowLabel => cgroupActivityIdentity(row, io, devices)
   return <ActivityLedger columns={60} cursor={cursor} cuts={io ? CGROUP_IO_CUTS : CGROUP_CPU_CUTS} defaultCut={io ? "cg_read" : "cg_cpu"} headingContext={io ? cgroupIoSharedPath : undefined} hour={hour} keys={io ? CGROUP_IO_KEYS : CGROUP_CPU_KEYS} label={label} locale={locale} onCursor={onCursor} scales={{ blockSize: null, clockTicks: null }} section={io ? "os_cgroup_io" : "os_cgroup_cpu"} storageKey={`kronika.activity-open.${io ? "cgroup-io" : "cgroup-cpu"}`} t={t} />
 }
 
 const EMPTY_CGROUP_DEVICES: ReadonlyMap<string, CgroupDevicePresentation> = new Map()
 
-export function cgroupActivityIdentity(row: HeatmapViewRow, io: boolean, devices: ReadonlyMap<string, CgroupDevicePresentation> = EMPTY_CGROUP_DEVICES, t?: Translate): RowLabel {
+// A device row is labelled by where its I/O lands: the mount point, else the
+// exact device name, else the bare major:minor. The chain down to the disk
+// stays in the title.
+export function cgroupActivityIdentity(row: HeatmapViewRow, io: boolean, devices: ReadonlyMap<string, CgroupDevicePresentation> = EMPTY_CGROUP_DEVICES): RowLabel {
   if (!io) return { text: row.identity[0] ?? "—", prefix: null }
   const id = row.identity[1] == null ? null : `${row.identity[1]}:${row.identity[2] ?? ""}`
   const presentation = id === null ? undefined : devices.get(id)
-  if (presentation === undefined && t === undefined) return { text: id ?? "—", prefix: row.identity[0] ?? "—" }
-  const primary = presentation === undefined
-    ? t === undefined ? id ?? "—" : t("system.cgroups.io_unmapped")
-    : cgroupDevicePrimary(presentation) ?? (t === undefined ? id ?? "—" : t("system.cgroups.io_unmapped"))
-  const technical = presentation === undefined
-    ? []
-    : [...new Set([presentation.source, presentation.device, presentation.id].filter((part): part is string => part !== null))]
+  if (presentation === undefined) return { text: id ?? "—", prefix: row.identity[0] ?? "—" }
+  const primary = cgroupDevicePrimary(presentation)
   return {
     detail: id,
-    semantic: presentation === undefined || cgroupDevicePrimary(presentation) === null,
-    text: presentation === undefined ? primary : `${primary}${presentation.preferredMounts.length > 1 ? ` +${presentation.preferredMounts.length - 1}` : ""}`,
-    title: [primary, ...technical].filter((part, index, all) => all.indexOf(part) === index).join(" · "),
+    text: `${primary}${presentation.preferredMounts.length > 1 ? ` +${presentation.preferredMounts.length - 1}` : ""}`,
+    title: [primary, cgroupDeviceSecondary(presentation), presentation.id].filter((part, index, all): part is string => part !== null && all.indexOf(part) === index).join(" · "),
     prefix: row.identity[0] ?? "—",
   }
 }

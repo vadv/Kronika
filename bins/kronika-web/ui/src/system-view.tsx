@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
-import { cgroupDevicePresentation, cgroupDevicePrimary, type CgroupDevicePresentation, type CgroupMountAssociation } from "./cgroup-device"
+import { blockParents, cgroupDeviceChain, cgroupDevicePresentation, cgroupDevicePrimary, cgroupDeviceSecondary, type CgroupDevicePresentation, type CgroupMountAssociation } from "./cgroup-device"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { DetailList, DetailRow } from "./detail-list"
 import { cellAriaValue, detailValueRoleForColumn, EntityTable, type EntityColumn } from "./entity-table"
@@ -295,11 +295,12 @@ export const SYSTEM_ENTITIES: readonly {
     section: "os_cgroup_io", label: "system.entities.cgroup_io",
     columns: [
       machineText("cgroup_path", 240, true),
-      { ...machineText("cgroup_device_target", 220, true), chartable: false, historyFields: ["major", "minor"] },
-      { ...machineText("cgroup_device_detail", 230), chartable: false, historyFields: ["major", "minor"] },
+      { ...machineText("cgroup_device", 250, true), chartable: false, historyFields: ["major", "minor"] },
       virtualText("device_id", ["major", "minor"]),
-      rateBytes("rbytes"), rateBytes("wbytes"), rateNumber("rios"), rateNumber("wios"),
+      rateBytes("rbytes", 120), rateBytes("wbytes", 120), rateNumber("rios", 110), rateNumber("wios", 110),
+      { ...machineText("cgroup_device_chain", 280), chartable: false, detailOnly: true, historyFields: ["major", "minor"] },
       { ...machineText("cgroup_mount_associations", 280), chartable: false, detailOnly: true, historyFields: ["major", "minor"] },
+      { ...machineText("cgroup_lower_layers", 280), chartable: false, detailOnly: true, historyFields: ["major", "minor"] },
     ],
   },
   {
@@ -745,19 +746,14 @@ export function storageTopologyEntries(devices: readonly DataRow[], edges: reado
   readonly associations: readonly string[]
   readonly id: string
   readonly name: string
-  readonly parent: string | null
+  readonly parents: readonly string[]
 }[] {
   const names = new Map(devices.flatMap((row) => {
     const id = deviceId(row)
     return id === null ? [] : [[id, rawText(value(row, "device")) ?? id] as const]
   }))
   const mappings = new Map<string, DataRow[]>()
-  const parents = new Map(edges.flatMap((row) => {
-    const child = deviceId(row)
-    const parentMajor = rawText(value(row, "parent_major"))
-    const parentMinor = rawText(value(row, "parent_minor"))
-    return child === null || parentMajor === null || parentMinor === null ? [] : [[child, `${parentMajor}:${parentMinor}`] as const]
-  }))
+  const parents = blockParents(edges)
   for (const row of mounts) {
     const id = deviceId(row) ?? "—"
     const stored = mappings.get(id) ?? []
@@ -768,7 +764,7 @@ export function storageTopologyEntries(devices: readonly DataRow[], edges: reado
     associations: (mappings.get(id) ?? []).map((row) => `${rawText(value(row, "source")) ?? "—"} ${rawText(value(row, "root")) ?? "—"} → ${rawText(value(row, "mount_point")) ?? "—"}`),
     id,
     name: names.get(id) ?? id,
-    parent: parents.get(id) ?? null,
+    parents: parents.get(id) ?? [],
   }))
 }
 
@@ -779,7 +775,7 @@ function StorageTopologyReference({ devices, edges, mounts, requestPhase, t }: {
     <h2 className="panel-head">{t("host.mode.topology")}</h2>
     <p className="m-0 border-b border-line px-2 py-1.5 text-sm text-fg3">{t("system.storage.topology_scope")}</p>
     {entries.map((entry) => <div className="grid min-h-[34px] grid-cols-[minmax(110px,180px)_minmax(0,1fr)] items-start border-b border-line px-2 py-1.5 text-sm last:border-b-0 [&>*+*]:ml-2 max-[520px]:grid-cols-1 max-[520px]:[&>*+*]:ml-0 max-[520px]:[&>*+*]:mt-2" key={entry.id}>
-      <strong className="font-medium tabular-nums text-fg2">{entry.name} · {entry.id}{entry.parent === null ? "" : ` → ${entry.parent}`}</strong>
+      <strong className="font-medium tabular-nums text-fg2">{entry.name} · {entry.id}{entry.parents.length === 0 ? "" : ` → ${entry.parents.join(", ")}`}</strong>
       <span className="min-w-0 text-fg3">{entry.associations.join(" · ") || t("system.storage.topology_opaque")}</span>
     </div>)}
   </section>
@@ -843,7 +839,7 @@ function SystemEntityPanel({
   readonly selectedKey: string | null
   readonly t: Translate
 }) {
-  const presentedColumns = useMemo(() => localizedSystemColumns(columns, section, t), [columns, section, t])
+  const presentedColumns = useMemo(() => localizedSystemColumns(columns, section, locale, t), [columns, locale, section, t])
   const commonPath = section.startsWith("os_cgroup_") ? sharedCgroupPath(rows) : null
   const tableColumns = presentedColumns.filter(({ detailOnly, field }) => !detailOnly && (commonPath === null || field !== "cgroup_path"))
   const metricColumns = useMemo(() => chartableEntityColumns(presentedColumns), [presentedColumns])
@@ -907,13 +903,14 @@ function SystemEntityPanel({
         }
       } })}
       rowKey={entityRowKey}
+      rowPx={section === "os_cgroup_io" ? 40 : undefined}
       rows={rows}
       selectedKey={selectedKey}
       t={t}
       testId={`system-${section}`}
     />
     </div>
-    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={systemEntityInspectorTitle(section, selectedRow, label, t)}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={systemEntityInspectorTitle(section, selectedRow, label)}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
       <DetailList>{presentedColumns.filter((column) => (column.available?.(selectedRow) ?? true) && (value(selectedRow, column.field) !== null || column.renderNull !== undefined)).map((column) => {
         const stored = value(selectedRow, column.field)
         const rendered = stored === null && column.renderNull !== undefined ? column.renderNull(selectedRow) : column.render === undefined ? cellAriaValue(stored, column, locale, t) : column.render(selectedRow)
@@ -1615,11 +1612,11 @@ export function fallbackMetric(logicalName: string): string | null {
 }
 
 export function systemEntityRows(data: HourData, section: string, cursor: number): readonly DataRow[] {
-  let rows = snapshot(sectionRows(data, section), cursor)
+  const rows = snapshot(sectionRows(data, section), cursor)
   const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
   const devices = section === "os_cgroup_io" ? cgroupDevicePresentations(data, cursor) : null
   const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
-  return rows.map((row) => {
+  const decorated = rows.map((row) => {
     const collectorContext = context !== null && pathField !== null
       && rawText(value(row, "cgroup_path")) === rawText(value(context, pathField))
       && rawText(value(row, "scope")) === rawText(value(context, "scope"))
@@ -1628,17 +1625,55 @@ export function systemEntityRows(data: HourData, section: string, cursor: number
     const id = deviceId(row)
     return decorateSystemRow(row, collectorContext, id === null ? null : devices?.get(id) ?? null)
   })
+  return devices === null ? decorated : foldCgroupIoRows(decorated, devices)
 }
 
 export function cgroupDevicePresentations(data: HourData, cursor: number): ReadonlyMap<string, CgroupDevicePresentation> {
   const presentations = new Map<string, CgroupDevicePresentation>()
   const mounts = snapshot(sectionRows(data, "os_mountinfo"), cursor)
   const devices = snapshot(sectionRows(data, "os_diskstats"), cursor)
-  for (const row of snapshot(sectionRows(data, "os_cgroup_io"), cursor)) {
-    const presentation = cgroupDevicePresentation(row, mounts, devices)
-    if (presentation !== null) presentations.set(presentation.id, presentation)
+  const parents = blockParents(snapshot(sectionRows(data, "os_block_topology"), cursor))
+  const rows = snapshot(sectionRows(data, "os_cgroup_io"), cursor)
+  for (const row of rows) {
+    const path = rawText(value(row, "cgroup_path"))
+    const charged = rows.filter((candidate) => rawText(value(candidate, "cgroup_path")) === path).map(deviceId).filter((id): id is string => id !== null)
+    const presentation = cgroupDevicePresentation(row, mounts, devices, parents, charged)
+    if (presentation !== null && !presentations.has(presentation.id)) presentations.set(presentation.id, presentation)
   }
   return presentations
+}
+
+export interface CgroupLowerLayer {
+  readonly id: string
+  readonly name: string | null
+  readonly rbytes: Cell
+  readonly wbytes: Cell
+  readonly rios: Cell
+  readonly wios: Cell
+}
+
+// A lower layer charged for the same I/O leaves the table and rides along in
+// the Inspector of the top-most charged device of its chain, counters intact.
+function foldCgroupIoRows(rows: readonly DataRow[], devices: ReadonlyMap<string, CgroupDevicePresentation>): readonly DataRow[] {
+  const owner = (row: DataRow): string | null => {
+    const id = deviceId(row)
+    return id === null ? null : devices.get(id)?.foldedInto ?? null
+  }
+  return rows.filter((row) => owner(row) === null).map((row) => {
+    const id = deviceId(row)
+    const path = rawText(value(row, "cgroup_path"))
+    const layers: CgroupLowerLayer[] = rows
+      .filter((candidate) => owner(candidate) === id && rawText(value(candidate, "cgroup_path")) === path)
+      .map((layer) => ({
+        id: deviceId(layer) ?? "—",
+        name: devices.get(deviceId(layer) ?? "")?.device ?? null,
+        rbytes: value(layer, "rbytes"),
+        wbytes: value(layer, "wbytes"),
+        rios: value(layer, "rios"),
+        wios: value(layer, "wios"),
+      }))
+    return layers.length === 0 ? row : { ...row, values: { ...row.values, cgroup_lower_layers: { layers } } }
+  })
 }
 
 function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: CgroupDevicePresentation | null = null): DataRow {
@@ -1682,8 +1717,9 @@ function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: 
     values.kernel_other = difference(row, "kernel", ["slab"]) ?? null
     values.memory_unclassified = difference(row, "current", ["anon", "file", "kernel"]) ?? null
   } else if (row.logicalName === "os_cgroup_io") {
-    values.cgroup_device_target = presentation === null ? null : cgroupDevicePrimary(presentation)
-    values.cgroup_device_detail = presentation === null ? null : uniqueStrings([presentation.source, presentation.device].filter((part): part is string => part !== null)).join(" · ") || null
+    values.cgroup_device = presentation === null ? null : cgroupDevicePrimary(presentation)
+    values.cgroup_device_secondary = presentation === null ? null : cgroupDeviceSecondary(presentation)
+    values.cgroup_device_chain = presentation === null || presentation.chain.length < 2 ? null : cgroupDeviceChain(presentation)
     values.cgroup_mount_associations = presentation === null || presentation.associations.length === 0 ? null : { associations: presentation.associations }
   } else if (row.logicalName === "os_cgroup_pids") {
     if (Object.hasOwn(row.values, "current")) values.tasks_current = value(row, "current")
@@ -1692,37 +1728,44 @@ function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: 
   return { ...row, values }
 }
 
-function cgroupDeviceTitle(presentation: CgroupDevicePresentation, t: Translate): string {
-  const associations = presentation.associations.map((association) => cgroupMountAssociationText(association, t))
-  return [cgroupDevicePrimary(presentation) ?? t("system.cgroups.io_unmapped"), presentation.source, presentation.device, presentation.id, ...associations]
-    .filter((part, index, all): part is string => part !== null && all.indexOf(part) === index)
-    .join(" · ")
-}
-
 function cgroupMountAssociationText(association: CgroupMountAssociation, t: Translate): string {
   const technical = [association.source, association.root === null ? null : t("system.cgroups.mount_root", { root: association.root }), association.infrastructure === true ? t("system.cgroups.infrastructure_mount") : null]
     .filter((part): part is string => part !== null)
   return technical.length === 0 ? association.mountPoint : `${association.mountPoint} (${technical.join(" · ")})`
 }
 
-function localizedSystemColumns(columns: readonly SystemEntityColumn[], section: string, t: Translate): readonly SystemEntityColumn[] {
+const LOWER_LAYER_FIELDS = ["rbytes", "wbytes", "rios", "wios"] as const
+
+function localizedSystemColumns(columns: readonly SystemEntityColumn[], section: string, locale: Locale, t: Translate): readonly SystemEntityColumn[] {
   if (section === "os_cgroup_io") return columns.map((column) => {
-    if (column.field === "cgroup_device_target") return {
+    // Two lines: where the I/O lands, then the exact chain down to the disk.
+    if (column.field === "cgroup_device") return {
       ...column,
       render: (row: DataRow) => {
-        const target = rawText(value(row, column.field)) ?? t("system.cgroups.io_unmapped")
+        const primary = rawText(value(row, "cgroup_device")) ?? deviceId(row) ?? "—"
+        const secondary = rawText(value(row, "cgroup_device_secondary"))
         const associations = cgroupAssociations(row)
         const preferred = [...new Set(associations.filter(({ infrastructure }) => infrastructure !== true).map(({ mountPoint }) => mountPoint))]
-        return <span title={associations.map((association) => cgroupMountAssociationText(association, t)).join("\n") || target}>{target}{preferred.length > 1 ? ` +${preferred.length - 1}` : ""}</span>
+        const title = [primary, secondary, deviceId(row), ...associations.map((association) => cgroupMountAssociationText(association, t))]
+          .filter((part, index, all): part is string => part !== null && all.indexOf(part) === index)
+          .join(" · ")
+        return <span className="grid w-full min-w-0 leading-[15px]" data-testid="cgroup-device-cell" title={title}>
+          <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-fg">{primary}{preferred.length > 1 ? ` +${preferred.length - 1}` : ""}</span>
+          {secondary !== null && <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-fg3">{secondary}</span>}
+        </span>
       },
-      renderNull: () => <span className="font-sans">{t("system.cgroups.io_unmapped")}</span>,
+      renderNull: (row: DataRow) => <span>{deviceId(row) ?? "—"}</span>,
     }
     if (column.field === "cgroup_mount_associations") return {
       ...column,
-      render: (row: DataRow) => {
-        const associations = cgroupAssociations(row)
-        return associations.length === 0 ? <span className="font-sans">{t("system.cgroups.no_mount_associations")}</span> : associations.map((association) => cgroupMountAssociationText(association, t)).join("; ")
-      },
+      render: (row: DataRow) => cgroupAssociations(row).map((association) => cgroupMountAssociationText(association, t)).join("; "),
+    }
+    if (column.field === "cgroup_lower_layers") return {
+      ...column,
+      render: (row: DataRow) => <span className="grid gap-0.5">{cgroupLowerLayers(row).map((layer) => <span key={layer.id}>{[
+        layer.name === null ? layer.id : `${layer.name} ${layer.id}`,
+        ...LOWER_LAYER_FIELDS.map((field) => `${t(`system.field.${field}.label`)} ${cellAriaValue(layer[field], { field, kind: field === "rbytes" || field === "wbytes" ? "bytes" : "number", rate: true }, locale, t)}`),
+      ].join(" · ")}</span>)}</span>,
     }
     return column
   })
@@ -1733,11 +1776,10 @@ function localizedSystemColumns(columns: readonly SystemEntityColumn[], section:
   return columns
 }
 
-function systemEntityInspectorTitle(section: string, row: DataRow, label: string, t: Translate): string {
+function systemEntityInspectorTitle(section: string, row: DataRow, label: string): string {
   if (section !== "os_cgroup_io") return `${label} · ${entityRowLabel(row)}`
-  const target = rawText(value(row, "cgroup_device_target")) ?? t("system.cgroups.io_unmapped")
   const id = deviceId(row)
-  return [label, target, id].filter((part): part is string => part !== null).join(" · ")
+  return [label, rawText(value(row, "cgroup_device")) ?? id, id].filter((part, index, all): part is string => part !== null && all.indexOf(part) === index).join(" · ")
 }
 
 function cgroupAssociations(row: DataRow): readonly CgroupMountAssociation[] {
@@ -1749,6 +1791,13 @@ function cgroupAssociations(row: DataRow): readonly CgroupMountAssociation[] {
 
 function isCgroupMountAssociation(candidate: unknown): candidate is CgroupMountAssociation {
   return candidate !== null && typeof candidate === "object" && typeof (candidate as { readonly mountPoint?: unknown }).mountPoint === "string"
+}
+
+function cgroupLowerLayers(row: DataRow): readonly CgroupLowerLayer[] {
+  const stored = value(row, "cgroup_lower_layers")
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return []
+  const layers = (stored as { readonly layers?: unknown }).layers
+  return Array.isArray(layers) ? layers.filter((layer): layer is CgroupLowerLayer => layer !== null && typeof layer === "object" && typeof (layer as { readonly id?: unknown }).id === "string") : []
 }
 
 function deviceId(row: DataRow): string | null {

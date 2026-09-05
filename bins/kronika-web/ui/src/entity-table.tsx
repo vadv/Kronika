@@ -98,6 +98,7 @@ export function EntityTable({
   serverSorted,
   rowKey = defaultKey,
   rowLabel,
+  rowPx,
   rows,
   requestPhase = "ready",
   searchGrouped = false,
@@ -129,6 +130,9 @@ export function EntityTable({
   readonly serverSorted?: boolean | undefined
   readonly rowKey?: (row: DataRow) => string
   readonly rowLabel?: ((row: DataRow) => string) | undefined
+  // A table whose cells stack two lines asks for taller rows; coarse pointers
+  // never get less than their own minimum.
+  readonly rowPx?: number | undefined
   readonly rows: readonly DataRow[]
   readonly requestPhase?: TableRequestPhase | undefined
   readonly searchGrouped?: boolean | undefined
@@ -140,7 +144,7 @@ export function EntityTable({
   readonly t: Translate
 }) {
   const [sizing, setSizing] = useState<ColumnSizingState>({})
-  const rowHeight = entityRowHeight(useSyncExternalStore(subscribeCoarsePointer, coarsePointer, () => false))
+  const rowHeight = Math.max(rowPx ?? 0, entityRowHeight(useSyncExternalStore(subscribeCoarsePointer, coarsePointer, () => false)))
   const ordering = useMemo<SortingState>(() => order === undefined
     ? []
     : [{ id: order.column, desc: order.descending }], [order])
@@ -473,7 +477,7 @@ export function sticky(meta: unknown, head: boolean): string {
     box,
     head
       ? `entity-header-cell flex items-center font-sans text-xs font-medium text-fg3${pinned ? " bg-s2 z-40" : " relative"}`
-      : "entity-cell flex h-row items-center font-mono text-xs tabular-nums text-fg2 [.process-table_&]:text-sm",
+      : "entity-cell flex h-full items-center font-mono text-xs tabular-nums text-fg2 [.process-table_&]:text-sm",
     cell?.numeric === true ? "align-right" : "",
     pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit" : "",
     name,
