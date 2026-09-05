@@ -7,6 +7,10 @@ inspection. The collector reads operating-system and PostgreSQL metrics and
 parses PostgreSQL and PgBouncer logs. `kronika-web` serves the stored data
 through a browser interface and MCP.
 
+Open the [one-hour synthetic demo report](https://vadv.github.io/Kronika/).
+The Pages workflow builds the full production report as one self-contained
+HTML file with no external assets.
+
 ![Kronika architecture](docs/images/architecture.svg)
 
 The collector writes the current journal to `active.wal` and finished segments
