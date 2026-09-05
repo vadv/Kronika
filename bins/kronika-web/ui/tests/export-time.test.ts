@@ -2,13 +2,11 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  exportCalendarCells,
   exportDurationSeconds,
   exportRangeDefaults,
   formatExportDuration,
   formatExportEndpoint,
   resolveExportEndpoint,
-  shiftExportMonth,
 } from "../src/export-time.ts"
 
 const noPreference = { occurrence: null, preferred: null } as const
@@ -103,18 +101,6 @@ test("duration text is exact, inclusive, and readable across days", () => {
   assert.equal(formatExportDuration(3_600, "ru"), "1\u00a0ч")
   assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "ru"), "2\u00a0д 4\u00a0ч 30\u00a0мин 1\u00a0с")
   assert.equal(formatExportDuration(2 * 86_400 + 4 * 3_600 + 30 * 60 + 1, "en"), "2\u00a0d 4\u00a0h 30\u00a0min 1\u00a0s")
-})
-
-test("the calendar is a stable Monday-first six-week grid", () => {
-  const february = exportCalendarCells("2026-02")
-  assert.equal(february.length, 42)
-  assert.deepEqual(february.slice(0, 8), [null, null, null, null, null, null, "2026-02-01", "2026-02-02"])
-  assert.equal(february.filter(Boolean).length, 28)
-  assert.equal(exportCalendarCells("9999-12").filter(Boolean).length, 31)
-  assert.equal(shiftExportMonth("2026-01", -1), "2025-12")
-  assert.equal(shiftExportMonth("2026-12", 1), "2027-01")
-  assert.equal(shiftExportMonth("0000-01", -1), null)
-  assert.equal(shiftExportMonth("9999-12", 1), null)
 })
 
 function withZone(zone: string, run: () => void): void {

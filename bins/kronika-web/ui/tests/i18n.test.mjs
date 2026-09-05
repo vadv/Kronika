@@ -33,8 +33,8 @@ test("transient export admission is concise in both locales", async () => {
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
-  assert.equal(english["export.error.export_busy"], "Another report is already being built. Try again shortly.")
-  assert.equal(russian["export.error.export_busy"], "Другой отчёт уже формируется. Повторите попытку позже.")
+  assert.equal(english["export.error.export_busy"], "The server is already preparing another export, try again shortly")
+  assert.equal(russian["export.error.export_busy"], "Сервер уже готовит другой экспорт, повторите чуть позже")
 })
 
 test("PostgreSQL buffer and block metric labels stay canonical English in RU", async () => {
@@ -223,7 +223,7 @@ test("project dictionaries cover the active UI keys", async () => {
     "app.tsx",
     "detail.tsx",
     "events-view.tsx",
-    "export-panel.tsx",
+    "export-strip.tsx",
     "help.tsx",
     "hour-picker.tsx",
     "postgres-view.tsx",

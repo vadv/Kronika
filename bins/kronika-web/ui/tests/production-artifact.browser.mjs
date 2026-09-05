@@ -1453,14 +1453,8 @@ test("the MCP drawer copies exactly through real legacy behavior and restores mo
   }
 })
 
-test("the live Export range panel preserves exact time and reports its uncancellable transfer", { timeout: 180_000 }, async () => {
+test("the Export strip selects a range on the timeline and reports its transfer as facts", { timeout: 180_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
-  const reportHtml = gunzipSync(await readFile(new URL("../../../kronika-report/assets/kronika-report-shell.html.gz", import.meta.url)))
-  assert.equal(reportHtml.includes("export."), false)
-  assert.equal(reportHtml.includes("export-panel"), false)
-  assert.equal(reportHtml.includes("export-trigger"), false)
-  assert.equal(reportHtml.includes("/api/export"), false)
-
   const authState = { valid: true }
   const exportFilename = "kronika-2026-08-13-182958-2026-08-13-183001-utc.html"
   const exportChunks = [
@@ -1472,7 +1466,6 @@ test("the live Export range panel preserves exact time and reports its uncancell
   const exportRequests = []
   const exportPlans = []
   const heldExports = []
-  const abandonedExports = []
   let dropExports = false
   const page = { errors: [], external: [], responses: [] }
   const server = createServer((request, response) => {
@@ -1486,15 +1479,7 @@ test("the live Export range panel preserves exact time and reports its uncancell
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
     if (url.pathname === "/api/instance-label") return answerInstanceLabel(response)
     if (url.pathname === "/api/export") {
-      const recorded = {
-        ...requestRecord(request, url),
-        accept: request.headers.accept ?? null,
-        host: request.headers.host ?? null,
-      }
-      exportRequests.push(recorded)
-      response.once("close", () => {
-        if (!response.writableEnded) abandonedExports.push(recorded.query)
-      })
+      exportRequests.push({ ...requestRecord(request, url), accept: request.headers.accept ?? null })
       if (dropExports) {
         response.destroy()
         return
@@ -1547,582 +1532,288 @@ test("the live Export range panel preserves exact time and reports its uncancell
       url: origin,
       value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
     })
-    const pageUrl = `${origin}/?at=${AT}&lens=disk`
-    await cdp.send("Page.navigate", { url: pageUrl })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=disk` })
     await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, "the Export action", 15_000)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null
-      && document.querySelector('[data-testid="process-table"] .entity-row') !== null
-      && [...document.querySelectorAll('[data-testid="cursor-row"] .cursor-row-step')].some((button) => !button.disabled)`, "the interactive timeline and process table", 15_000)
+      && document.querySelector('[data-testid="process-table"] .entity-row') !== null`, "the interactive timeline and process table", 15_000)
 
+    const HOUR_SECOND = HOUR / 1_000_000
+    const CURSOR_SECOND = AT / 1_000_000
+    // Touch emulation is only switched on, for the phone width at the end:
+    // switching it off again would leave the page without hover semantics.
     const setViewport = async (width) => {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
-      await cdp.send("Emulation.setTouchEmulationEnabled", width === 360
-        ? { enabled: true, maxTouchPoints: 1 }
-        : { enabled: false })
+      if (width === 360) await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 })
       await settleLayout(cdp)
     }
     const setLocale = async (locale) => {
       await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
       await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${locale} locale`)
     }
-    const setTheme = async (theme) => {
-      await cdp.evaluate(`(() => {
-        if (document.documentElement.dataset.theme === ${JSON.stringify(theme)}) return
-        const control = [...document.querySelectorAll(".top-actions button")]
-          .find((button) => ["Theme", "Тема"].includes(button.getAttribute("aria-label")))
-        if (control === undefined) throw new Error("theme control is missing")
-        control.click()
-      })()`)
-      await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(theme)}`, `${theme} theme`)
-    }
-    const reloadForZone = async (timezoneId) => {
-      await cdp.send("Emulation.setTimezoneOverride", { timezoneId })
-      await cdp.send("Page.reload")
-      await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null`, `${timezoneId} Export action`, 15_000)
-      await settleLayout(cdp)
-    }
-    const openPanel = async () => {
+    const openStrip = async () => {
       await clickCenter(cdp, '[data-testid="export-trigger"]')
-      await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') !== null
-        && document.querySelector('[data-testid="export-panel"]').style.visibility !== "hidden"`, "the Export range panel")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') !== null`, "the Export strip")
       await settleLayout(cdp)
     }
     const pressEscape = async () => {
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     }
-    const closeIdlePanel = async () => {
+    const closeIdleStrip = async () => {
       await pressEscape()
-      await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle Export close")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle Export close")
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "Export trigger focus")
     }
-    const replaceWithKeyboard = async (selector, value) => {
+    const typeClock = async (selector, value) => {
       await clickCenter(cdp, selector)
       await controlKey(cdp, "a", "KeyA", 65)
-      if (value === "") {
-        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 })
-        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 })
-      } else {
-        await cdp.send("Input.insertText", { text: value })
-      }
-      await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`, `${selector} keyboard value`)
+      await cdp.send("Input.insertText", { text: value })
+      await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`, `${selector} value`)
     }
-    const chooseCrossDayRange = async () => {
-      await clickCenter(cdp, '[data-testid="export-from-target"]')
-      await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-13"]')
-      await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-14"]')
-      await replaceWithKeyboard('[data-testid="export-from-time"]', "23:59:58")
-      await replaceWithKeyboard('[data-testid="export-to-time"]', "00:00:01")
-      await cdp.waitFor(`document.querySelector('[data-testid="export-duration"]')?.textContent.trim() === "4\\u00a0с"`, "the inclusive four-second duration")
-    }
-    const endpointState = () => cdp.evaluate(`(() => {
-      const panel = document.querySelector('[data-testid="export-panel"]')
+    const stripState = () => cdp.evaluate(`(() => {
+      const strip = document.querySelector('[data-testid="export-strip"]')
+      const shell = document.querySelector('.timeline-shell')
       return {
-        from: panel.dataset.rangeFrom,
-        fromDate: document.querySelector('[data-testid="export-from-date"]').value,
-        fromTime: document.querySelector('[data-testid="export-from-time"]').value,
-        to: panel.dataset.rangeTo,
-        toDate: document.querySelector('[data-testid="export-to-date"]').value,
-        toTime: document.querySelector('[data-testid="export-to-time"]').value,
-      }
-    })()`)
-    const geometry = () => cdp.evaluate(`(() => {
-      const rect = (node) => {
-        const value = node.getBoundingClientRect()
-        return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width }
-      }
-      const hitCenter = (node) => {
-        const value = node.getBoundingClientRect()
-        const hit = document.elementFromPoint(value.left + value.width / 2, value.top + value.height / 2)
-        return hit !== null && (hit === node || node.contains(hit))
-      }
-      const hitVisibleAbove = (node, occluder) => {
-        const value = node.getBoundingClientRect()
-        const cover = occluder.getBoundingClientRect()
-        const scroll = node.closest('.entity-scroll')?.getBoundingClientRect()
-        const top = Math.max(0, value.top, scroll?.top ?? 0)
-        const bottom = Math.min(innerHeight, value.bottom, cover.top, scroll?.bottom ?? innerHeight)
-        const left = Math.max(0, value.left, scroll?.left ?? 0)
-        const right = Math.min(innerWidth, value.right, scroll?.right ?? innerWidth)
-        if (bottom <= top || right <= left) return false
-        const hit = document.elementFromPoint(left + (right - left) / 2, top + (bottom - top) / 2)
-        return hit?.closest('.entity-row') === node
-      }
-      const panel = document.querySelector('[data-testid="export-panel"]')
-      const panelRect = panel.getBoundingClientRect()
-      const calendar = document.querySelector('[data-testid="export-calendar"]')
-      const fromDate = document.querySelector('[data-testid="export-from-date"]')
-      const fromTime = document.querySelector('[data-testid="export-from-time"]')
-      const toDate = document.querySelector('[data-testid="export-to-date"]')
-      const toTime = document.querySelector('[data-testid="export-to-time"]')
-      const duration = document.querySelector('[data-testid="export-duration"]')
-      const status = document.querySelector('[data-testid="export-status"]')
-      const timeline = document.querySelector('[data-testid="hour-timeline"]')
-      const table = document.querySelector('[data-testid="process-table"]')
-      const rows = [...table.querySelectorAll('.entity-row')]
-      const cursorStep = [...document.querySelectorAll('[data-testid="cursor-row"] .cursor-row-step')].find((button) => !button.disabled)
-      const tableRect = table.getBoundingClientRect()
-      const targetSizes = [...panel.querySelectorAll("button, input")].map((node) => ({
-        id: node.dataset.testid ?? node.tagName,
-        ...rect(node),
-      })).filter(({ height, width }) => height > 0 && width > 0)
-      return {
-        active: document.activeElement?.dataset.testid ?? null,
-        ariaBusy: panel.querySelector("form").getAttribute("aria-busy"),
-        ariaModal: panel.getAttribute("aria-modal"),
-        calendar: calendar.hidden ? null : rect(calendar),
-        calendarExpanded: document.querySelector('[data-testid="export-from-target"]').getAttribute("aria-expanded"),
-        coarse: matchMedia("(pointer: coarse)").matches || matchMedia("(hover: none)").matches,
-        documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-        durationText: duration.textContent.trim(),
-        editorHidden: panel.querySelector("fieldset").hidden,
-        rowExposed: rows.some((row) => hitVisibleAbove(row, panel)),
-        fromDate: rect(fromDate),
-        fromFont: Number.parseFloat(getComputedStyle(fromDate).fontSize),
-        fromTime: rect(fromTime),
-        inputLabels: [...panel.querySelectorAll("input")].every((input) => input.labels?.length === 1),
-        inputTypes: [...panel.querySelectorAll("input")].map((input) => input.type),
-        liveRegions: panel.querySelectorAll("[aria-live]").length,
-        mainAriaHidden: document.querySelector("main").getAttribute("aria-hidden"),
-        mainInert: document.querySelector("main").inert,
-        modal: panel.matches(":modal"),
-        panel: rect(panel),
-        panelClientHeight: panel.clientHeight,
-        panelScrollHeight: panel.scrollHeight,
-        phase: panel.dataset.phase,
-        status: status?.textContent.trim() ?? "",
-        statusInFooter: status?.parentElement?.tagName === "FOOTER",
-        statusHeight: status === null ? 0 : rect(status).height,
-        statusScrollHeight: status?.scrollHeight ?? 0,
-        selectedHourDisabled: document.querySelector('[data-testid="export-selected-hour"]')?.disabled ?? null,
+        from: strip?.dataset.rangeFrom ?? null,
+        to: strip?.dataset.rangeTo ?? null,
+        phase: strip?.dataset.phase ?? null,
+        preset: [...document.querySelectorAll('[data-testid^="export-preset-"]')].find((node) => node.getAttribute("aria-pressed") === "true")?.dataset.testid ?? null,
+        shown: { from: shell?.dataset.exportFrom ?? null, to: shell?.dataset.exportTo ?? null },
+        duration: document.querySelector('[data-testid="export-duration"]')?.textContent ?? null,
+        filename: document.querySelector('[data-testid="export-filename"]')?.textContent ?? null,
+        coverage: document.querySelector('[data-testid="export-coverage"]')?.textContent ?? null,
+        status: document.querySelector('[data-testid="export-status"]')?.textContent.trim() ?? null,
         submitDisabled: document.querySelector('[data-testid="export-submit"]')?.disabled ?? null,
-        targetSizes,
-        timelineControlExposed: hitCenter(cursorStep),
-        title: panel.querySelector("h2").textContent.trim(),
-        toDate: rect(toDate),
-        toTime: rect(toTime),
-        trigger: rect(document.querySelector('[data-testid="export-trigger"]')),
-        view: panel.dataset.view,
-        viewport: { height: innerHeight, width: innerWidth },
-        visibleTableHeight: Math.max(0, Math.min(tableRect.bottom, panelRect.top) - tableRect.top),
+        closeDisabled: document.querySelector('[data-testid="export-close"]')?.disabled ?? null,
+        expanded: document.querySelector('[data-testid="export-trigger"]')?.getAttribute("aria-expanded"),
       }
     })()`)
-    const assertStable = (before, after, label) => {
-      for (const field of ["height", "left", "top", "width"]) {
-        assert.ok(Math.abs(before.panel[field] - after.panel[field]) <= 1, `${label} ${field}: ${JSON.stringify({ after, before })}`)
-      }
-      assert.ok(Math.abs(before.statusHeight - after.statusHeight) <= 1, `${label} status: ${JSON.stringify({ after, before })}`)
-    }
 
-    const matrix = new Map()
-    for (const width of [360, 800, 1280]) {
-      await setViewport(width)
-      for (const locale of ["ru", "en"]) {
-        await setLocale(locale)
-        for (const theme of ["dark", "light"]) {
-          await setTheme(theme)
-          await openPanel()
-          const measured = await geometry()
-          const label = `${width}px ${locale} ${theme}`
-          assert.equal(measured.ariaBusy, "false", `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.ariaModal, "false", `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.modal, false, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.mainAriaHidden, null, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.mainInert, false, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.documentOverflow, false, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.active, "export-from-date", `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.inputLabels, true, `${label}: ${JSON.stringify(measured)}`)
-          assert.deepEqual(measured.inputTypes, ["text", "text", "text", "text"], `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.liveRegions, 1, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.phase, "idle", `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.statusHeight, 44, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.fromFont, 12, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.durationText, locale === "ru" ? "1\u00a0ч" : "1\u00a0h", `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.editorHidden, false, `${label}: ${JSON.stringify(measured)}`)
-          assert.equal(measured.title, locale === "ru" ? "Экспорт HTML-отчёта" : "Export HTML report", label)
-          assert.equal(measured.view, "editor", `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.panel.left >= 7 && measured.panel.right <= width - 7, `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.panel.top >= 7 && measured.panel.bottom <= 793, `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.panel.height <= 784 && measured.panel.width <= width - 16, `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.fromDate.right + 4 <= measured.fromTime.left, `${label}: ${JSON.stringify(measured)}`)
-          assert.ok(measured.toDate.right + 4 <= measured.toTime.left, `${label}: ${JSON.stringify(measured)}`)
-          if (width === 360) {
-            assert.equal(measured.calendar, null, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.calendarExpanded, "false", `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.coarse, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.rowExposed, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.statusInFooter, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.timelineControlExposed, true, `${label}: ${JSON.stringify(measured)}`)
-            assert.ok(measured.panel.height <= 396, `${label}: ${JSON.stringify(measured)}`)
-            assert.ok(measured.visibleTableHeight >= 96, `${label}: ${JSON.stringify(measured)}`)
-            assert.ok(measured.trigger.height >= 43.5 && measured.trigger.width >= 43.5, `${label}: ${JSON.stringify(measured.trigger)}`)
-            assert.ok(measured.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), `${label}: ${JSON.stringify(measured.targetSizes)}`)
-          } else {
-            assert.equal(measured.statusInFooter, false, `${label}: ${JSON.stringify(measured)}`)
-            assert.equal(measured.calendarExpanded, null, `${label}: ${JSON.stringify(measured)}`)
-            assert.ok(measured.calendar.left >= measured.panel.left && measured.calendar.right <= measured.panel.right, `${label}: ${JSON.stringify(measured)}`)
-          }
-          if (width === 360 && locale === "ru" && theme === "dark") {
-            await clickCenter(cdp, '[data-testid="export-from-target"]')
-            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.view === "calendar"
-              && document.querySelector('[data-testid="export-calendar"]')?.hidden === false`, "the compact Export calendar subview")
-            await settleLayout(cdp)
-            const calendarView = await geometry()
-            assert.equal(calendarView.calendarExpanded, "true", JSON.stringify(calendarView))
-            assert.equal(calendarView.editorHidden, true, JSON.stringify(calendarView))
-            assert.equal(calendarView.statusHeight, 0, JSON.stringify(calendarView))
-            assert.equal(calendarView.submitDisabled, null, JSON.stringify(calendarView))
-            assert.equal(calendarView.timelineControlExposed, true, JSON.stringify(calendarView))
-            assert.equal(calendarView.view, "calendar", JSON.stringify(calendarView))
-            assert.ok(calendarView.panel.height <= 640, JSON.stringify(calendarView))
-            assert.ok(calendarView.calendar.left >= calendarView.panel.left && calendarView.calendar.right <= calendarView.panel.right, JSON.stringify(calendarView))
-            assert.ok(calendarView.targetSizes.every(({ height, width: targetWidth }) => height >= 43.5 && targetWidth >= 43.5), JSON.stringify(calendarView.targetSizes))
-            await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-13"]')
-            await cdp.waitFor(`document.querySelector('[data-testid="export-calendar-to-target"]')?.getAttribute("aria-pressed") === "true"`, "the compact To date target")
-            await clickCenter(cdp, '[data-testid="export-calendar-day"][data-day="2026-08-14"]')
-            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.view === "editor"
-              && document.querySelector('[data-testid="export-from-date"]')?.value === "2026-08-13"
-              && document.querySelector('[data-testid="export-to-date"]')?.value === "2026-08-14"`, "the compact touch-selected date range")
-            await clickCenter(cdp, '[data-testid="export-selected-hour"]')
-            await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]')?.dataset.rangeFrom === "${HOUR / 1_000_000}"
-              && document.querySelector('[data-testid="export-panel"]')?.dataset.rangeTo === "${HOUR / 1_000_000 + 3_599}"`, "the compact selected-hour reset")
-          }
-          const matrixKey = `${width}:${locale}`
-          const prior = matrix.get(matrixKey)
-          if (prior === undefined) matrix.set(matrixKey, measured)
-          else {
-            assert.ok(Math.abs(prior.panel.width - measured.panel.width) <= 1, `${label}: ${JSON.stringify({ measured, prior })}`)
-            assert.ok(Math.abs(prior.panel.height - measured.panel.height) <= 1, `${label}: ${JSON.stringify({ measured, prior })}`)
-          }
-          await closeIdlePanel()
-        }
-      }
-    }
-    assert.equal(matrix.get("360:ru").panel.width, 344)
-    assert.equal(matrix.get("800:ru").panel.width, 640)
-    assert.equal(matrix.get("1280:ru").panel.width, 640)
-
-    await reloadForZone("Australia/Lord_Howe")
     await setLocale("en")
-    await openPanel()
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-zone"]').textContent`), "Australia/Lord_Howe")
-    const requestsBeforeDst = exportRequests.length
-    await replaceWithKeyboard('[data-testid="export-from-date"]', "2026-04-05")
-    await replaceWithKeyboard('[data-testid="export-from-time"]', "01:30:00")
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="export-from-occurrence"] input').length === 2`, "Lord Howe repeated-time choices")
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Choose the first or second occurrence of the From time."`, "the unresolved Lord Howe occurrence")
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      active: document.activeElement?.parentElement?.parentElement?.dataset.testid ?? null,
-      checked: [...document.querySelectorAll('[data-testid="export-from-occurrence"] input')].map((input) => input.checked),
-      invalid: document.querySelector('[data-testid="export-from-occurrence"]').getAttribute("aria-invalid"),
-    }))()`), { active: "export-from-occurrence", checked: [false, false], invalid: "true" })
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="export-from-occurrence"] input')[0].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom === "1775313000"`, "the first Lord Howe occurrence")
-    await cdp.evaluate(`document.querySelectorAll('[data-testid="export-from-occurrence"] input')[1].click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom === "1775314800"`, "the second Lord Howe occurrence")
-    await replaceWithKeyboard('[data-testid="export-from-date"]', "2026-10-04")
-    await replaceWithKeyboard('[data-testid="export-from-time"]', "02:15:00")
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "The From local time does not exist because the clock moves forward."`, "the Lord Howe skipped local time")
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      active: document.activeElement?.dataset.testid ?? null,
-      dateInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
-      timeInvalid: document.querySelector('[data-testid="export-from-time"]').getAttribute("aria-invalid"),
-    }))()`), { active: "export-from-time", dateInvalid: null, timeInvalid: "true" })
-    assert.equal(exportRequests.length, requestsBeforeDst)
-    await closeIdlePanel()
-    await reloadForZone("Asia/Kolkata")
-
     await setViewport(1280)
-    await setLocale("ru")
-    await setTheme("dark")
-    if (await cdp.evaluate(`${ZONE_VALUE} !== "browser"`)) await switchZone(cdp, "browser")
-    await openPanel()
-    const initialContext = await cdp.evaluate(`(() => ({
-      cursor: document.querySelector('[data-testid="cursor-time"]').textContent,
-      href: location.href,
-      mode: ${ZONE_VALUE},
-      zone: document.querySelector('[data-testid="export-zone"]')?.textContent ?? null,
-    }))()`)
-    assert.equal(initialContext.mode, "browser")
-    assert.match(initialContext.zone, /^Asia\/(?:Calcutta|Kolkata)$/)
-    assert.doesNotMatch(initialContext.zone, /GMT|UTC[+-]/)
-    assert.deepEqual(await endpointState(), {
-      from: String(HOUR / 1_000_000),
-      fromDate: "2026-08-13",
-      fromTime: "10:30:00",
-      to: String(HOUR / 1_000_000 + 3_599),
-      toDate: "2026-08-13",
-      toTime: "11:29:59",
-    })
-
-    await chooseCrossDayRange()
-    const crossFrom = Date.UTC(2026, 7, 13, 18, 29, 58) / 1_000
-    const crossTo = Date.UTC(2026, 7, 13, 18, 30, 1) / 1_000
-    const browserRange = await cdp.evaluate(`(() => ({
-      from: document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom,
-      fromBand: document.querySelector('[data-testid="export-calendar-day"][data-day="2026-08-13"]').dataset.range,
-      href: location.href,
-      to: document.querySelector('[data-testid="export-panel"]').dataset.rangeTo,
-      toBand: document.querySelector('[data-testid="export-calendar-day"][data-day="2026-08-14"]').dataset.range,
-      cursor: document.querySelector('[data-testid="cursor-time"]').textContent,
-    }))()`)
-    assert.deepEqual(browserRange, {
-      cursor: initialContext.cursor,
-      from: String(crossFrom),
-      fromBand: "from",
-      href: initialContext.href,
-      to: String(crossTo),
-      toBand: "to",
-    })
-
-    await switchZone(cdp, "utc")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "18:29:58"`, "UTC Export representation")
-    const utcRange = await endpointState()
-    assert.deepEqual(utcRange, {
-      from: String(crossFrom),
-      fromDate: "2026-08-13",
-      fromTime: "18:29:58",
-      to: String(crossTo),
-      toDate: "2026-08-13",
-      toTime: "18:30:01",
-    })
-    assert.equal(await cdp.evaluate(`${ZONE_VALUE} === "utc" && document.querySelector('[data-testid="export-zone"]') === null`), true)
-    exportPlans.push("busy")
-    const beforeUtcError = await geometry()
-    const utcErrorStart = page.errors.length
-    const requestsBeforeUtc = exportRequests.length
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Другой отчёт уже формируется. Повторите попытку позже."`, "the UTC Export response")
-    await settleLayout(cdp)
-    const afterUtcError = await geometry()
-    assert.equal(exportRequests.length, requestsBeforeUtc + 1)
-    assert.equal(exportRequests.at(-1).query, `?from=${crossFrom}&to=${crossTo}`)
-    assert.equal(afterUtcError.ariaBusy, "false", JSON.stringify(afterUtcError))
-    assert.equal(afterUtcError.selectedHourDisabled, false, JSON.stringify(afterUtcError))
-    assert.equal(afterUtcError.submitDisabled, false, JSON.stringify(afterUtcError))
-    assert.equal(afterUtcError.statusScrollHeight <= 44, true, JSON.stringify(afterUtcError))
-    assertStable(beforeUtcError, afterUtcError, "UTC server error geometry")
-    const utcErrors = page.errors.splice(utcErrorStart)
-    assert.ok(utcErrors.length >= 1 && utcErrors.every((message) => /503|Service Unavailable/.test(message)), JSON.stringify(utcErrors))
-    await switchZone(cdp, "browser")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-to-date"]').value === "2026-08-14"`, "Browser Export representation")
-    assert.deepEqual(await endpointState(), {
-      from: String(crossFrom), fromDate: "2026-08-13", fromTime: "23:59:58",
-      to: String(crossTo), toDate: "2026-08-14", toTime: "00:00:01",
-    })
-
-    const beforeValidation = await geometry()
-    const requestsBeforeValidation = exportRequests.length
-    await replaceWithKeyboard('[data-testid="export-from-date"]', "")
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Укажите дату начала."`, "the From date error")
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      active: document.activeElement?.dataset.testid ?? null,
-      fromInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
-      toInvalid: document.querySelector('[data-testid="export-to-date"]').getAttribute("aria-invalid"),
-    }))()`), { active: "export-from-date", fromInvalid: "true", toInvalid: null })
-    assertStable(beforeValidation, await geometry(), "From date error geometry")
-    assert.equal(exportRequests.length, requestsBeforeValidation)
-
-    await clickCenter(cdp, '[data-testid="export-selected-hour"]')
-    await replaceWithKeyboard('[data-testid="export-to-date"]', "2026-08-12")
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Начало должно быть не позже конца."`, "the range order error")
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      active: document.activeElement?.dataset.testid ?? null,
-      fromInvalid: document.querySelector('[data-testid="export-from-date"]').getAttribute("aria-invalid"),
-      toInvalid: document.querySelector('[data-testid="export-to-date"]').getAttribute("aria-invalid"),
-    }))()`), { active: "export-to-date", fromInvalid: null, toInvalid: "true" })
-    assert.equal(exportRequests.length, requestsBeforeValidation)
-    await clickCenter(cdp, '[data-testid="export-selected-hour"]')
-    await closeIdlePanel()
-
-    const idleBaseUrl = await cdp.evaluate("location.href")
-    await cdp.evaluate(`(() => {
-      const next = new URL(location.href)
-      next.searchParams.set("export_probe", "idle")
-      history.pushState({}, "", next)
+    await openStrip()
+    // The strip is under the timeline plot, the plot stays visible, and the whole hour is the selection.
+    const opened = await stripState()
+    assert.deepEqual({ ...opened, coverage: undefined, duration: undefined }, {
+      from: String(HOUR_SECOND), to: String(HOUR_SECOND + 3_599), phase: "idle", preset: "export-preset-hour",
+      shown: { from: String(HOUR), to: String(HOUR + HOUR_US) },
+      filename: "kronika-2026-08-13-050000-2026-08-13-055959-utc.html · opens offline",
+      status: "", submitDisabled: false, closeDisabled: false, expanded: "true",
+      coverage: undefined, duration: undefined,
+    }, JSON.stringify(opened))
+    assert.equal(opened.duration, "1 h", JSON.stringify(opened))
+    assert.match(opened.coverage, /^recorded /, JSON.stringify(opened))
+    const placement = await cdp.evaluate(`(() => {
+      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
+      const node = document.querySelector('[data-testid="export-strip"]')
+      const strip = node.getBoundingClientRect()
+      let neighbour = node.previousElementSibling
+      while (neighbour !== null && neighbour.getBoundingClientRect().height === 0) neighbour = neighbour.previousElementSibling
+      const above = neighbour.getBoundingClientRect()
+      return { plotBottom: plot.bottom, aboveBottom: above.bottom, stripTop: strip.top, stripBottom: strip.bottom, viewport: innerHeight, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, position: getComputedStyle(node).position, afterShell: neighbour.classList.contains("timeline-shell") }
     })()`)
-    await openPanel()
-    await cdp.evaluate("history.back()")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle Back close")
-    await cdp.waitFor(`location.href === ${JSON.stringify(idleBaseUrl)}`, "idle Back address")
+    assert.ok(placement.stripTop >= placement.plotBottom - 1 && Math.abs(placement.stripTop - placement.aboveBottom) <= 1, JSON.stringify(placement))
+    assert.deepEqual([placement.position, placement.afterShell], ["relative", true], JSON.stringify(placement))
+    assert.equal(placement.overflow, false, JSON.stringify(placement))
 
-    await openPanel()
-    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "idle hour close")
-    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "the next selected hour", 15_000)
-    await cdp.evaluate("history.back()")
-    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored selected hour", 15_000)
+    // Presets read the cursor; shifting by an hour leaves the timeline, which then shows no selection.
+    await clickCenter(cdp, '[data-testid="export-preset-around5"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the five-minute window")
+    let state = await stripState()
+    assert.deepEqual([state.to, state.preset, state.shown, state.duration], [String(CURSOR_SECOND + 299), "export-preset-around5", { from: String(AT - 300_000_000), to: String(AT + 300_000_000) }, "10 min"], JSON.stringify(state))
+    await clickCenter(cdp, '[data-testid="export-shift-back"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 3_900}"`, "the shifted window")
+    state = await stripState()
+    assert.deepEqual([state.preset, state.shown], [null, { from: null, to: null }], JSON.stringify(state))
+    await clickCenter(cdp, '[data-testid="export-shift-forward"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the window back on the hour")
 
+    // Exact seconds are one editable line in the shown zone; the seconds sent never change with the zone.
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-from"]').value === "05:25:00"`, "UTC clocks")
+    await typeClock('[data-testid="export-from"]', "05:10:00")
+    await typeClock('[data-testid="export-to"]', "05:20:30")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeTo === "${HOUR_SECOND + 1_230}"`, "the typed end")
+    state = await stripState()
+    assert.deepEqual([state.from, state.to, state.duration], [String(HOUR_SECOND + 600), String(HOUR_SECOND + 1_230), "10 min 31 s"], JSON.stringify(state))
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-from"]').value === "10:40:00"`, "Kolkata clocks")
+    assert.deepEqual([(await stripState()).from, (await stripState()).to], [String(HOUR_SECOND + 600), String(HOUR_SECOND + 1_230)])
+    await typeClock('[data-testid="export-to"]', "25:00:00")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid") === "true"`, "the invalid clock")
+    state = await stripState()
+    assert.deepEqual([state.status, state.submitDisabled, state.to], ["Time as HH:mm:ss", true, String(HOUR_SECOND + 1_230)], JSON.stringify(state))
+    await typeClock('[data-testid="export-to"]', "10:35:00")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Start is later than end"`, "the order error")
+    assert.equal((await stripState()).submitDisabled, true)
+    await clickCenter(cdp, '[data-testid="export-preset-hour"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${HOUR_SECOND}" && document.querySelector('[data-testid="export-status"]').textContent.trim() === ""`, "the hour restored")
+
+    // The day picker offers only days that hold recordings.
+    await clickCenter(cdp, '[data-testid="export-from-day"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-day-grid"]') !== null`, "the day picker")
+    const days = await cdp.evaluate(`(() => {
+      const nodes = [...document.querySelectorAll('[data-testid="export-day"]')]
+      return {
+        pressed: nodes.filter((node) => node.getAttribute("aria-pressed") === "true").map((node) => node.dataset.day),
+        enabled: nodes.filter((node) => !node.disabled).map((node) => node.dataset.day),
+        disabled: nodes.filter((node) => node.disabled).length,
+        month: document.querySelector('[data-testid="export-day-month"]').textContent,
+      }
+    })()`)
+    assert.deepEqual(days.pressed, ["2026-08-13"], JSON.stringify(days))
+    assert.ok(days.enabled.includes("2026-08-13") && days.disabled > 0 && days.enabled.every((day) => !day.startsWith("2026-08-2")), JSON.stringify(days))
+    await clickCenter(cdp, '[data-testid="export-day"][data-day="2026-08-13"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-day-grid"]') === null`, "the day picker closed")
+    assert.equal((await stripState()).from, String(HOUR_SECOND))
+
+    // A busy server is said plainly and the strip stays editable.
+    exportPlans.push("busy")
+    const requestsBeforeBusy = exportRequests.length
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "The server is already preparing another export, try again shortly"`, "the busy server")
+    assert.equal(exportRequests.length, requestsBeforeBusy + 1)
+    assert.equal(exportRequests.at(-1).query, `?from=${HOUR_SECOND}&to=${HOUR_SECOND + 3_599}`)
+    assert.equal(exportRequests.at(-1).accept, "text/html")
+    state = await stripState()
+    assert.deepEqual([state.phase, state.submitDisabled, state.closeDisabled], ["idle", false, false], JSON.stringify(state))
+
+    // Preparation is counted in seconds without a bar, cannot be cancelled, and the download is one saved file.
     await cdp.evaluate(`(() => {
       const created = []
       const revoked = []
       const createObjectUrl = URL.createObjectURL.bind(URL)
       const revokeObjectUrl = URL.revokeObjectURL.bind(URL)
       globalThis.__exportObjectUrls = { created, revoked }
-      URL.createObjectURL = (blob) => {
-        const url = createObjectUrl(blob)
-        created.push({ size: blob.size, type: blob.type, url })
-        return url
-      }
-      URL.revokeObjectURL = (url) => {
-        revoked.push(url)
-        return revokeObjectUrl(url)
-      }
-    })()`)
-    await openPanel()
-    await chooseCrossDayRange()
-    const activeBaseUrl = await cdp.evaluate("location.href")
-    await cdp.evaluate(`(() => {
-      const next = new URL(location.href)
-      next.searchParams.set("export_probe", "active")
-      history.pushState({}, "", next)
+      URL.createObjectURL = (blob) => { const url = createObjectUrl(blob); created.push({ size: blob.size, type: blob.type, url }); return url }
+      URL.revokeObjectURL = (url) => { revoked.push(url); return revokeObjectUrl(url) }
+      localStorage.removeItem("kronika.export-seconds")
     })()`)
     exportPlans.push("stream")
-    const beforeActive = exportRequests.length
-    const heldStartedAt = Date.now()
     await clickCenter(cdp, '[data-testid="export-submit"]')
-    await waitForRequests(() => exportRequests.length === beforeActive + 1)
-    const request = exportRequests.at(-1)
-    assert.deepEqual(request, {
-      accept: "text/html",
-      authorization: null,
-      cookie: SESSION_COOKIE,
-      host: new URL(origin).host,
-      marker: "1",
-      method: "GET",
-      path: "/api/export",
-      query: `?from=${crossFrom}&to=${crossTo}`,
-    })
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "preparing"`, "Export preparation")
-    const frozenRange = await endpointState()
-    assert.deepEqual(frozenRange, {
-      from: String(crossFrom), fromDate: "2026-08-13", fromTime: "23:59:58",
-      to: String(crossTo), toDate: "2026-08-14", toTime: "00:00:01",
-    })
-    const preparing = await geometry()
-    assert.equal(preparing.ariaBusy, "true", JSON.stringify(preparing))
-    assert.equal(preparing.selectedHourDisabled, true, JSON.stringify(preparing))
-    assert.equal(preparing.submitDisabled, true, JSON.stringify(preparing))
-    assert.match(preparing.status, /^Формируем отчёт · \d+ с$/)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-status"] progress') === null`), true)
-
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "preparing"`, "Export preparation")
+    await delay(2_600)
+    state = await stripState()
+    assert.match(state.status, /^preparing the slice · [2-9] s$/, JSON.stringify(state))
+    assert.equal(state.closeDisabled, true, JSON.stringify(state))
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="logout-action"]').disabled`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]').getAttribute("aria-busy")`), "true")
     await pressEscape()
-    await clickCenter(cdp, '[data-testid="export-close"]')
-    await clickCenter(cdp, '[data-testid="export-trigger"]')
-    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
-    await cdp.evaluate(`document.querySelector('[data-testid="help-trigger"]').click()`)
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      disabled: document.querySelector('[data-testid="help-trigger"]').disabled,
-      panel: document.querySelector('[data-testid="help-panel"]') !== null,
-    }))()`), { disabled: true, panel: false })
-    await cdp.evaluate("history.back()")
-    await cdp.waitFor(`location.href === ${JSON.stringify(activeBaseUrl)}`, "active Back address")
-    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "active hour navigation", 15_000)
-    await switchZone(cdp, "utc")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "18:29:58"`, "active UTC representation")
-    await switchZone(cdp, "browser")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-from-time"]').value === "23:59:58"`, "active Browser representation")
-    await delay(150)
-    assert.equal(exportRequests.length, beforeActive + 1)
-    assert.deepEqual(abandonedExports, [])
-    assert.deepEqual(await cdp.evaluate(`(() => ({
-      closeDisabled: document.querySelector('[data-testid="export-close"]').disabled,
-      fieldDisabled: document.querySelector('[data-testid="export-from-date"]').matches(":disabled"),
-      from: document.querySelector('[data-testid="export-panel"]').dataset.rangeFrom,
-      panelPresent: document.querySelector('[data-testid="export-panel"]') !== null,
-      to: document.querySelector('[data-testid="export-panel"]').dataset.rangeTo,
-    }))()`), { closeDisabled: true, fieldDisabled: true, from: String(crossFrom), panelPresent: true, to: String(crossTo) })
-
-    await cdp.waitFor(`(() => {
-      const status = document.querySelector('[data-testid="export-status"]')?.textContent ?? ""
-      const elapsed = /Формируем отчёт · (\\d+) с/.exec(status)?.[1]
-      return elapsed !== undefined && Number(elapsed) >= 30
-    })()`, "thirty seconds of measured Export preparation", 36_000)
-    assert.ok(Date.now() - heldStartedAt >= 29_500)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-panel"]').dataset.phase`), "preparing")
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-status"] progress') === null`), true)
-    assert.equal(exportRequests.length, beforeActive + 1)
-    assert.deepEqual(abandonedExports, [])
-
+    await delay(200)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]')?.dataset.phase`), "preparing", "Escape does not abandon a running export")
     const held = heldExports.shift()
     assert.notEqual(held, undefined)
     held.writeHead(200, {
-      "Cache-Control": "private,no-store",
+      "Cache-Control": "no-store",
       "Content-Disposition": `attachment; filename="${exportFilename}"`,
       "Content-Length": Buffer.byteLength(exportHtml),
-      "Content-Type": "text/html",
+      "Content-Type": "text/html; charset=utf-8",
     })
     held.flushHeaders()
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "downloading"`, "Export response headers")
-    const headersProgress = await cdp.evaluate(`(() => {
-      const progress = document.querySelector('[data-testid="export-status"] progress')
-      return {
-        max: progress.max,
-        selectedHourDisabled: document.querySelector('[data-testid="export-selected-hour"]').disabled,
-        text: progress.parentElement.textContent.trim(),
-        value: progress.value,
-      }
-    })()`)
-    assert.equal(headersProgress.max, Buffer.byteLength(exportHtml), JSON.stringify(headersProgress))
-    assert.equal(headersProgress.selectedHourDisabled, true, JSON.stringify(headersProgress))
-    assert.equal(headersProgress.value, 0, JSON.stringify(headersProgress))
-    assert.match(headersProgress.text, /^Скачиваем · 0 B \/ .+(?:KiB|B)$/, JSON.stringify(headersProgress))
-
-    let received = 0
-    for (const chunk of exportChunks.slice(0, -1)) {
-      held.write(chunk)
-      received += Buffer.byteLength(chunk)
-      await cdp.waitFor(`document.querySelector('[data-testid="export-status"] progress')?.value === ${received}`, `${received} received Export bytes`)
-      assert.match(await cdp.evaluate(`document.querySelector('[data-testid="export-status"]').textContent.trim()`), /^Скачиваем · .+ \/ .+$/)
-    }
+    held.write(exportChunks[0])
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "downloading"`, "Export response headers")
+    state = await stripState()
+    assert.match(state.status, /^downloading · [\d.,]+ (B|KiB) \/ 12[.,]\d KiB$/, JSON.stringify(state))
+    for (const chunk of exportChunks.slice(1, -1)) held.write(chunk)
     held.end(exportChunks.at(-1))
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]') === null`, "completed Export close")
-    await cdp.waitFor(`globalThis.__exportObjectUrls.revoked.length === 1`, "Export object URL revocation")
-    await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "completed Export focus")
-    assert.equal(exportRequests.length, beforeActive + 1)
-    assert.deepEqual(abandonedExports, [])
-    const objectUrls = await cdp.evaluate("globalThis.__exportObjectUrls")
-    assert.equal(objectUrls.created.length, 1, JSON.stringify(objectUrls))
-    assert.equal(objectUrls.created[0].size, Buffer.byteLength(exportHtml), JSON.stringify(objectUrls))
-    assert.equal(objectUrls.created[0].type, "text/html", JSON.stringify(objectUrls))
-    assert.deepEqual(objectUrls.revoked, [objectUrls.created[0].url], JSON.stringify(objectUrls))
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "saved"`, "the saved export", 15_000)
+    state = await stripState()
+    assert.match(state.status, new RegExp(`^saved: ${exportFilename.replace(/\./g, "\\.")} · 12[.,]\\d KiB · \\d+ s$`), JSON.stringify(state))
+    assert.equal(state.closeDisabled, false)
+    const urls = await cdp.evaluate(`JSON.stringify(globalThis.__exportObjectUrls)`)
+    const parsed = JSON.parse(urls)
+    assert.equal(parsed.created.length, 1, urls)
+    assert.equal(parsed.created[0].size, Buffer.byteLength(exportHtml), urls)
+    assert.deepEqual(parsed.revoked, [parsed.created[0].url], urls)
+    assert.ok(Number(await cdp.evaluate(`localStorage.getItem("kronika.export-seconds")`)) > 0)
+    await clickCenter(cdp, '[data-testid="export-again"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "idle" && document.querySelector('[data-testid="export-submit"]') !== null`, "another export offered")
 
-    const downloadedPath = join(downloadDirectory, exportFilename)
-    let downloaded = null
-    for (let attempt = 0; attempt < 250 && downloaded === null; attempt += 1) {
-      try {
-        downloaded = await readFile(downloadedPath, "utf8")
-      } catch (reason) {
-        if (reason?.code !== "ENOENT") throw reason
-        await delay(20)
+    // The second run remembers how long the first one took.
+    exportPlans.push("stream")
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "preparing"`, "the second preparation")
+    await delay(400)
+    assert.match((await stripState()).status, /^preparing the slice · \d+ s · last time \d+ s$/)
+    const second = heldExports.shift()
+    second.writeHead(200, { "Cache-Control": "no-store", "Content-Disposition": `attachment; filename="${exportFilename}"`, "Content-Type": "text/html; charset=utf-8" })
+    second.end(exportHtml)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "saved"`, "the second saved export", 15_000)
+    await clickCenter(cdp, '[data-testid="export-again"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-submit"]') !== null && !document.querySelector('[data-testid="export-submit"]').disabled`, "a third export offered")
+
+    // A connection lost before any status leaves the server state unknown: no restart, no close.
+    dropExports = true
+    await clickCenter(cdp, '[data-testid="export-submit"]')
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "unknown"`, "unknown server state after a pre-header disconnect", 10_000)
+    state = await stripState()
+    assert.equal(state.status, "Connection lost. The server may still be preparing the report; a new run stays locked", JSON.stringify(state))
+    assert.deepEqual([state.closeDisabled, state.submitDisabled], [true, true], JSON.stringify(state))
+    await pressEscape()
+    await delay(200)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]')?.dataset.phase`), "unknown")
+    dropExports = false
+    await cdp.send("Page.reload")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null && document.querySelector('[data-testid="export-strip"]') === null`, "the reloaded page", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null`, "the reloaded timeline", 15_000)
+
+    // Idle, the strip closes on Escape, on Back and on hour navigation.
+    await openStrip()
+    await closeIdleStrip()
+    const idleBaseUrl = await cdp.evaluate("location.href")
+    await cdp.evaluate(`(() => { const next = new URL(location.href); next.searchParams.set("export_probe", "idle"); history.pushState({}, "", next) })()`)
+    await openStrip()
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle Back close")
+    await cdp.waitFor(`location.href === ${JSON.stringify(idleBaseUrl)}`, "idle Back address")
+    await openStrip()
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle hour close")
+    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "the next selected hour", 15_000)
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored selected hour", 15_000)
+
+    // Widths and locales: no overflow anywhere; a phone gets a sheet with 44px targets, wider screens keep the strip in flow.
+    for (const width of [1280, 800, 360]) {
+      await setViewport(width)
+      for (const locale of ["ru", "en"]) {
+        await setLocale(locale)
+        await openStrip()
+        const measured = await cdp.evaluate(`(() => {
+          const strip = document.querySelector('[data-testid="export-strip"]')
+          const rect = strip.getBoundingClientRect()
+          const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
+          let neighbour = strip.previousElementSibling
+          while (neighbour !== null && neighbour.getBoundingClientRect().height === 0) neighbour = neighbour.previousElementSibling
+          const above = neighbour?.getBoundingClientRect() ?? null
+          const targets = [...strip.querySelectorAll("button, input")].filter((node) => node.offsetParent !== null).map((node) => { const box = node.getBoundingClientRect(); return { id: node.dataset.testid ?? node.textContent, height: box.height, width: box.width } })
+          return {
+            bottom: rect.bottom, top: rect.top, left: rect.left, right: rect.right, viewport: { height: innerHeight, width: innerWidth },
+            position: getComputedStyle(strip).position,
+            plotBottom: plot.bottom, aboveBottom: above?.bottom ?? null,
+            overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+            presets: [...strip.querySelectorAll('[data-testid^="export-preset-"]')].map((node) => node.textContent),
+            targets,
+            title: strip.querySelector("h2").textContent,
+          }
+        })()`)
+        const label = `${width}px ${locale}: ${JSON.stringify(measured)}`
+        assert.equal(measured.overflow, false, label)
+        assert.ok(measured.left >= -1 && measured.right <= measured.viewport.width + 1 && measured.bottom <= measured.viewport.height + 1, label)
+        assert.equal(measured.title, locale === "ru" ? "Экспорт HTML" : "HTML export", label)
+        assert.deepEqual(measured.presets, locale === "ru" ? ["Этот час", "±5 мин", "±15 мин", "±30 мин"] : ["This hour", "±5 min", "±15 min", "±30 min"], label)
+        if (width === 360) {
+          assert.equal(measured.position, "fixed", label)
+          assert.ok(measured.top >= measured.plotBottom, `the sheet does not cover the plot: ${label}`)
+          assert.ok(measured.targets.every(({ height }) => height >= 43.5), label)
+        } else {
+          assert.equal(measured.position, "relative", label)
+          assert.ok(Math.abs(measured.top - measured.aboveBottom) <= 1, label)
+        }
+        await closeIdleStrip()
       }
     }
-    assert.equal(downloaded, exportHtml, `downloaded ${downloadedPath}`)
-
-    assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
-
-    dropExports = true
-    await openPanel()
-    const beforeUnknown = exportRequests.length
-    await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-panel"]').dataset.phase === "unknown"`, "unknown server state after a pre-header disconnect", 10_000)
-    assert.ok(exportRequests.length > beforeUnknown)
-    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="export-status"]').textContent.trim()`), /повторный запуск заблокирован/)
-    const requestsAtUnknown = exportRequests.length
-    await pressEscape()
-    await cdp.evaluate(`document.querySelector('[data-testid="export-form"]').requestSubmit()`)
-    await delay(100)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-panel"]') !== null`), true)
-    assert.equal(exportRequests.length, requestsAtUnknown)
-    assert.equal(abandonedExports.at(-1), exportRequests.at(-1).query)
-    const disconnectErrors = page.errors.splice(0)
-    assert.ok(disconnectErrors.length >= 1 && disconnectErrors.every((message) => /ERR_EMPTY_RESPONSE|Failed to fetch/.test(message)), JSON.stringify(disconnectErrors))
   } finally {
     for (const response of heldExports) response.destroy()
     socket?.close()

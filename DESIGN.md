@@ -641,29 +641,38 @@ complete HTML. It validates that result before sending headers and streams the
 and delivery remain bounded in memory. The report build omits this live-only
 control.
 
-The live Export action opens a compact non-modal range panel attached to its
-top-bar control. It does not alter the one-hour timeline, address, view or
-cursor. Two deterministic text editors per endpoint expose `YYYY-MM-DD` and
-`HH:mm:ss`; a shared month calendar edits either endpoint and highlights the
-date span. The exact inclusive duration and a selected-hour reset remain
-visible. The current global Browser/UTC mode controls presentation only. In
-Browser mode the panel names the browser's resolved IANA zone. A local civil
-time skipped by a clock transition is rejected at that endpoint; a repeated
-civil time alone exposes first/second occurrence controls derived from the
-actual candidates, including transitions that are not one hour.
+The live Export action opens a non-modal strip directly under the hour
+timeline; the interval it will export is drawn on the plot as a selection, so
+the timeline stays the instrument that chooses the range and the address, view
+and cursor do not change. The range comes from context first: the selected
+hour, a window of five, fifteen or thirty minutes around the cursor, or the
+same range moved an hour earlier or later. The exact inclusive seconds are one
+editable line in the current Browser/UTC mode, with a date only when an
+endpoint leaves the hour's civil day; a day picker offers only days that hold
+recordings. Before anything is requested the strip states what the file will
+contain, the recorded span inside the range from the hour's segments, pauses
+longer than a minute between them and hours outside the current one without
+recordings, and its exact name, which the client derives from the same UTC
+seconds as the server. A local civil time skipped by a clock transition is
+rejected at that endpoint; a repeated civil time exposes first/second
+occurrence choices derived from the actual candidates, including transitions
+that are not one hour. On a phone the strip is a sheet at the bottom of the
+viewport that leaves the plot visible.
 
 An accepted export keeps immutable positive Unix-second bounds. Until response
-headers arrive, the panel reports preparation with measured elapsed time and
-offers no cancellation or restart. It cannot be dismissed during that work,
+headers arrive, the strip reports preparation as elapsed seconds beside the
+seconds the previous export needed, kept in the browser, and offers no
+cancellation or restart. It cannot be dismissed during that work,
 while the rest of the interface and its navigation remain available. After
-headers, the panel reports received bytes and the declared `Content-Length`
+headers, the strip reports received bytes and the declared `Content-Length`
 when present while assembling the streamed body. Completion creates one HTML
-download and revokes its object URL. An HTTP error, response-body failure or
-local-download failure returns the same bounded panel to its editable state.
+download, revokes its object URL, reports the saved name, size and seconds,
+and offers another export. An HTTP error, response-body failure or
+local-download failure returns the strip to its editable state.
 If the connection ends before any response status, server preparation remains
-unobservable: the panel retains its submitted range, reports that state and
+unobservable: the strip retains its submitted range, reports that state and
 keeps close and restart unavailable. Browser Back and hour navigation close an
-idle panel; during an active export they leave the panel and its submitted
+idle strip; during an active export they leave the strip and its submitted
 range in place.
 
 English and Russian source dictionaries are flat YAML files. The interface

@@ -119,30 +119,6 @@ export function formatExportDuration(seconds: number, locale: Locale): string {
   return parts.length === 0 ? `0\u00a0${units[3]}` : parts.join(" ")
 }
 
-export function exportCalendarCells(month: string): readonly (string | null)[] {
-  const match = /^(\d{4})-(\d{2})$/.exec(month)
-  if (match === null) return []
-  const year = Number(match[1]), monthNumber = Number(match[2])
-  if (monthNumber < 1 || monthNumber > 12) return []
-  const first = utcDate(year, monthNumber, 1)
-  if (first === null) return []
-  const days = gregorianMonthDays(year, monthNumber)
-  const leading = (first.getUTCDay() + 6) % 7
-  return Array.from({ length: 42 }, (_, index) => {
-    const day = index - leading + 1
-    return day < 1 || day > days ? null : `${match[1]}-${match[2]}-${two(day)}`
-  })
-}
-
-export function shiftExportMonth(month: string, delta: number): string | null {
-  const match = /^(\d{4})-(\d{2})$/.exec(month)
-  if (match === null || !Number.isInteger(delta)) return null
-  const start = Number(match[1]) * 12 + Number(match[2]) - 1
-  const shifted = start + delta
-  if (Number(match[2]) < 1 || Number(match[2]) > 12 || shifted < 0 || shifted >= 10_000 * 12) return null
-  return `${String(Math.floor(shifted / 12)).padStart(4, "0")}-${two(shifted % 12 + 1)}`
-}
-
 function unresolved(error: ExportEndpointError): ExportEndpointResolution {
   return { candidates: [], error, occurrence: null, second: null }
 }
@@ -194,19 +170,6 @@ function utcSecond(values: CivilSecond): number | null {
   date.setUTCHours(hour, minute, second, 0)
   const parsed = date.getTime() / 1_000
   return Number.isSafeInteger(parsed) ? parsed : null
-}
-
-function utcDate(year: number, month: number, day: number): Date | null {
-  if (year < 0 || year > 9_999) return null
-  const date = new Date(0)
-  date.setUTCFullYear(year, month - 1, day)
-  date.setUTCHours(0, 0, 0, 0)
-  return Number.isFinite(date.getTime()) ? date : null
-}
-
-function gregorianMonthDays(year: number, month: number): number {
-  if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28
-  return [4, 6, 9, 11].includes(month) ? 30 : 31
 }
 
 function matchesCivilSecond(date: Date, values: CivilSecond, utc: boolean): boolean {
