@@ -53,6 +53,7 @@ kronika-<cargo-version>-<12-character-commit>-<target>/
   kronika-collector   kronika-web   kronika-dump   kronika-report   kronika-demo
   BUILDINFO          SHA256SUMS    LICENSE       THIRD_PARTY_LICENSES.html
   README.md          README.ru.md  INSTALL.md    INSTALL.ru.md
+  DESIGN.md          DESIGN.ru.md
   docs/              bins/        crates/       licenses/
 ```
 

@@ -122,7 +122,7 @@ files = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z']).decode().
 for name in filter(None, files):
     path = Path(name)
     documentation = (
-        name in ('README.md', 'README.ru.md')
+        name in ('README.md', 'README.ru.md', 'DESIGN.md', 'DESIGN.ru.md')
         or (path.parts[0] == 'docs' and 'superpowers' not in path.parts
             and path.suffix in ('.md', '.png', '.svg', '.drawio'))
         or (len(path.parts) == 3 and path.parts[0] == 'bins'
