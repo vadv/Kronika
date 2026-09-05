@@ -25,6 +25,28 @@ Docker, сервер PostgreSQL или отдельный каталог web-р�
 требует доступа к GitHub; это артефакты для проверки, не постоянные ссылки
 на публичный релиз.
 
+### Скачать кандидата из Actions
+
+Войдите через [GitHub CLI](https://cli.github.com/manual/gh_run_download), выведите
+успешные запуски упаковки и выберите запуск для проверяемого изменения:
+
+```sh
+gh run list --repo vadv/Kronika --workflow release-package.yml --status success --limit 10
+run_id=REPLACE_WITH_RUN_ID
+gh run view "$run_id" --repo vadv/Kronika
+source_revision=$(gh run view "$run_id" --repo vadv/Kronika --json headSha --jq .headSha)
+target=x86_64-unknown-linux-musl
+gh run download "$run_id" --repo vadv/Kronika \
+  --name "kronika-$source_revision-$target" --dir kronika-download
+cd kronika-download
+```
+
+Для ARM64 задайте `target=aarch64-unknown-linux-musl`. Выберите запуск, в котором
+прошли **оба задания сборки и все строки переносимости**, а не только задание
+загрузки архива. На странице запуска также можно скачать ZIP соответствующего
+артефакта через браузер; распакуйте ZIP, чтобы получить `.tar.gz` и
+`.tar.gz.sha256`. Продолжите проверку и установку по [INSTALL](../INSTALL.ru.md).
+
 В каждом архиве один верхний каталог:
 
 ```text

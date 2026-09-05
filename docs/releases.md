@@ -24,6 +24,28 @@ the full source commit and target. [INSTALL](../INSTALL.md) gives the download,
 checksum, extraction, and launch commands. Actions downloads require GitHub
 access; they are review artifacts, not permanent public release links.
 
+### Download an Actions candidate
+
+With the [GitHub CLI](https://cli.github.com/manual/gh_run_download) authenticated,
+list successful packaging runs and choose the run for the change being reviewed:
+
+```sh
+gh run list --repo vadv/Kronika --workflow release-package.yml --status success --limit 10
+run_id=REPLACE_WITH_RUN_ID
+gh run view "$run_id" --repo vadv/Kronika
+source_revision=$(gh run view "$run_id" --repo vadv/Kronika --json headSha --jq .headSha)
+target=x86_64-unknown-linux-musl
+gh run download "$run_id" --repo vadv/Kronika \
+  --name "kronika-$source_revision-$target" --dir kronika-download
+cd kronika-download
+```
+
+Use `target=aarch64-unknown-linux-musl` for ARM64. Select a run that passed
+**both build jobs and every portability row**, not a job that only uploaded an
+archive. The run page also permits downloading the matching artifact ZIP in
+the browser; unpack that ZIP to get the `.tar.gz` and `.tar.gz.sha256`. Continue
+with the checks and installation in [INSTALL](../INSTALL.md).
+
 Each archive has one top-level directory:
 
 ```text
