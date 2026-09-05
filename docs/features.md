@@ -128,18 +128,19 @@ and cursor. They select a matching set, not an arbitrary first matching row.
 Open the collapsed Activity heading above a supported table. The selected
 metric ranks the entire hour, including entities no longer present at the
 cursor. Opening the ledger starts its data request; it is not preloaded while
-collapsed. Full screen exposes a larger ranked-row limit.
+collapsed. The compact view shows up to eight ranked rows, folding the rest
+into Other. Full screen offers Top 10/25/50/100, with 25 as the initial limit.
 
 | Reading/control | Meaning |
 | --- | --- |
 | Time cells | Counter rate over the cell's recorded intervals; gauges use interval readings. Blank is unavailable; the lightest fill is a real zero. |
 | Hour summary | Accumulated counter change; a gauge maximum except for process RSS, whose column is **Average**. |
 | At cursor | The cell value at the current cursor. It can differ from a table's point-in-time rate. |
-| Total | Includes all entities, including those outside the displayed ranking. |
+| Total | Includes all entities, including those outside the displayed ranking. Its muted band always uses its own maximum, independently of Global/Per row. |
 | Other | Total minus the displayed ranked entities. It is not an extra process or statement. |
 | Global | One intensity scale across ranked and Other rows. This allows magnitude comparison. |
 | Per row | Each row uses its own maximum. This reveals timing within a quiet row; equal colour across rows does not mean equal work. |
-| Click a cell | Move the cursor to that interval's recorded instant. |
+| Click a cell | Move the cursor to the final microsecond of that cell. The table then resolves its stored samples at or before that time. |
 | Click a row | Filter the owning table to that entity or group. If it has no reading at the cursor, also move to its busiest recorded interval. |
 
 Process rows group all recorded PIDs with the same command, including exited
