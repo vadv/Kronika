@@ -148,7 +148,7 @@ dist/kronika-<cargo-version>-<12-character-commit>-<target>.tar.gz.sha256
 ```
 
 `BUILDINFO` содержит commit исходного кода упаковки, версию workspace, target,
-время commit, команду сборки, компилятор и Rust flags. Уведомления о зависимостях
+время commit, команду сборки, компилятор, флаги Rust и C. Уведомления о зависимостях
 сверяются с `licenses/dependency-inputs.sha256`; при изменении закреплённых
 зависимостей обновляйте уведомления вместе с хешами их входных файлов.
 
