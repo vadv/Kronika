@@ -739,8 +739,13 @@ function parseCpuList(text: string | null): readonly number[] {
   return [...cpus]
 }
 
+export interface StorageTopologyMount {
+  readonly infrastructure: boolean
+  readonly mountPoint: string
+}
+
 export function storageTopologyEntries(devices: readonly DataRow[], edges: readonly DataRow[], mounts: readonly DataRow[]): readonly {
-  readonly associations: readonly string[]
+  readonly associations: readonly StorageTopologyMount[]
   readonly id: string
   readonly name: string
   readonly parents: readonly string[]
@@ -758,7 +763,7 @@ export function storageTopologyEntries(devices: readonly DataRow[], edges: reado
     mappings.set(id, stored)
   }
   return [...new Set([...names.keys(), ...mappings.keys(), ...parents.keys()])].sort().map((id) => ({
-    associations: (mappings.get(id) ?? []).map((row) => `${rawText(value(row, "source")) ?? "—"} ${rawText(value(row, "root")) ?? "—"} → ${rawText(value(row, "mount_point")) ?? "—"}`),
+    associations: (mappings.get(id) ?? []).map((row) => ({ infrastructure: ["true", "1"].includes(rawText(value(row, "is_k8s_infra")) ?? ""), mountPoint: rawText(value(row, "mount_point")) ?? "—" })),
     id,
     name: names.get(id) ?? id,
     parents: parents.get(id) ?? [],
@@ -773,7 +778,7 @@ function StorageTopologyReference({ devices, edges, mounts, requestPhase, t }: {
     <p className="m-0 border-b border-line px-2 py-1.5 text-sm text-fg3">{t("system.storage.topology_scope")}</p>
     {entries.map((entry) => <div className="grid min-h-[34px] grid-cols-[minmax(110px,180px)_minmax(0,1fr)] items-start border-b border-line px-2 py-1.5 text-sm last:border-b-0 [&>*+*]:ml-2 max-[520px]:grid-cols-1 max-[520px]:[&>*+*]:ml-0 max-[520px]:[&>*+*]:mt-2" key={entry.id}>
       <strong className="font-medium tabular-nums text-fg2">{entry.name} · {entry.id}{entry.parents.length === 0 ? "" : ` → ${entry.parents.join(", ")}`}</strong>
-      <span className="min-w-0 text-fg3">{entry.associations.join(" · ") || t("system.storage.topology_opaque")}</span>
+      <span className="min-w-0 text-fg3">{entry.associations.length === 0 ? "—" : entry.associations.map((mount) => mount.infrastructure ? `${mount.mountPoint} · ${t("system.cgroups.infrastructure_mount")}` : mount.mountPoint).join(" · ")}</span>
     </div>)}
   </section>
 }
@@ -1725,10 +1730,9 @@ function decorateSystemRow(row: DataRow, context: DataRow | null, presentation: 
   return { ...row, values }
 }
 
+// The mount point alone; source and root belong to the Filesystems table.
 function cgroupMountAssociationText(association: CgroupMountAssociation, t: Translate): string {
-  const technical = [association.source, association.root === null ? null : t("system.cgroups.mount_root", { root: association.root }), association.infrastructure === true ? t("system.cgroups.infrastructure_mount") : null]
-    .filter((part): part is string => part !== null)
-  return technical.length === 0 ? association.mountPoint : `${association.mountPoint} (${technical.join(" · ")})`
+  return association.infrastructure === true ? `${association.mountPoint} · ${t("system.cgroups.infrastructure_mount")}` : association.mountPoint
 }
 
 const LOWER_LAYER_FIELDS = ["rbytes", "wbytes", "rios", "wios"] as const

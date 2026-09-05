@@ -571,7 +571,7 @@ test("storage topology exposes only recorded exact edges and mount roots", () =>
     [row("os_mountinfo", { major: 259, minor: 1, mount_point: "/data", root: "/subvol", source: "/dev/nvme0n1p1" })],
   ), [
     { associations: [], id: "252:0", name: "252:0", parents: ["259:1", "8:16"] },
-    { associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parents: ["259:0"] },
+    { associations: [{ infrastructure: false, mountPoint: "/data" }], id: "259:1", name: "259:1", parents: ["259:0"] },
   ])
 })
 
