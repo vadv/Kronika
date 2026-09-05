@@ -109,11 +109,18 @@ impl Default for State {
     }
 }
 
+/// What one segment says about itself next to its lanes.
+pub(super) struct SegmentFacts {
+    pub(super) postgresql_interval_seconds: Option<u64>,
+    /// `instance_metadata.environment`: 0 machine, 1 container.
+    pub(super) environment: Option<u32>,
+}
+
 pub(super) fn collect(
     segment: &Segment,
     window: Window,
     state: &mut State,
-) -> Result<(Vec<LanePoint>, Option<u64>), QueryError> {
+) -> Result<(Vec<LanePoint>, SegmentFacts), QueryError> {
     let mut facts = Facts::default();
     // Clock facts and the collector's cgroup membership come first: the
     // container rows below are selected by those exact paths and scope.
@@ -159,7 +166,13 @@ pub(super) fn collect(
     );
     state.counters.retain_latest();
     state.emitted_before = state.emitted_before.max(segment.max_ts());
-    Ok((current, facts.postgresql_interval_seconds))
+    Ok((
+        current,
+        SegmentFacts {
+            postgresql_interval_seconds: facts.postgresql_interval_seconds,
+            environment: facts.environment,
+        },
+    ))
 }
 
 #[derive(Default)]
@@ -167,6 +180,7 @@ struct Facts {
     ticks_per_second: i64,
     cores: BTreeSet<i64>,
     postgresql_interval_seconds: Option<u64>,
+    environment: Option<u32>,
     membership: Option<Membership>,
     memory_limits: BTreeMap<i64, f64>,
 }
@@ -225,14 +239,15 @@ fn membership(row: &Row) -> Membership {
     let cpu = string_id(row, "cpu_path");
     let memory = string_id(row, "memory_path");
     let io = string_id(row, "io_path");
-    let unified =
-        integer(row, "cgroup_version") == Some(2) && cpu.is_some() && cpu == memory && memory == io;
+    let pids = (integer(row, "cgroup_version") == Some(2))
+        .then_some(cpu.or(memory).or(io))
+        .flatten();
     Membership {
         scope: integer(row, "scope"),
         cpu,
         memory,
         io,
-        pids: if unified { cpu } else { None },
+        pids,
     }
 }
 
@@ -260,8 +275,7 @@ fn member_row(row: &Row, membership: Option<&Membership>, path: Option<u64>) -> 
     let (Some(membership), Some(path)) = (membership, path) else {
         return false;
     };
-    string_id(row, "cgroup_path") == Some(path)
-        && (membership.scope.is_none() || integer(row, "scope") == membership.scope)
+    string_id(row, "cgroup_path") == Some(path) && integer(row, "scope") == membership.scope
 }
 
 fn read_cgroup_cpu(
@@ -417,7 +431,7 @@ fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(
     let names = with_columns(
         type_id,
         &["clock_ticks_per_sec"],
-        &["postgresql_interval_seconds"],
+        &["postgresql_interval_seconds", "environment"],
     );
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         if let Some(ticks) = number(&row, "clock_ticks_per_sec") {
@@ -428,6 +442,9 @@ fn read_metadata(segment: &Segment, type_id: u32, facts: &mut Facts) -> Result<(
         }
         if let Some(Cell::U64(seconds)) = row.get("postgresql_interval_seconds") {
             facts.postgresql_interval_seconds = Some(*seconds);
+        }
+        if let Some(Cell::U32(environment)) = row.get("environment") {
+            facts.environment = Some(*environment);
         }
         true
     })?;

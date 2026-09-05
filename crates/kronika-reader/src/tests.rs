@@ -1085,3 +1085,5 @@ fn range_discovery_checks_bodies_only_after_selection() {
         vec![first_address.id.get(), second_address.id.get()]
     );
 }
+
+mod dictionary_prefix;

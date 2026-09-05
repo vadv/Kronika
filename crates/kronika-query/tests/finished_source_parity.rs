@@ -1469,3 +1469,6 @@ fn all_snapshot_finders_are_typed_identical_for_posix_and_embedded_finished_zms(
     assert_eq!(relation["rows"][0]["key"]["relname"], "parity_table");
     assert_eq!(relation["rows"][0]["metrics"]["seq_scan"], 10.0);
 }
+
+#[path = "finished_source_parity/statement_scope.rs"]
+mod statement_scope;

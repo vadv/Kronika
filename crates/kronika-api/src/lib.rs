@@ -330,7 +330,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || group.is_some();
     let scope = scope.unwrap_or_default();
     if scope == StatementScope::Workload
-        && (sections.as_slice() != [kronika_query::STATEMENTS_SECTION]
+        && (sections.len() != 1
+            || !scope.allows_rows(&sections[0])
             || !paged
             || first_match
             || row_ordinal.is_some()
@@ -471,7 +472,7 @@ fn summary_scope(
     section: Option<&str>,
 ) -> Result<StatementScope, RouteError> {
     let scope = scope.unwrap_or_default();
-    if scope == StatementScope::Workload && section != Some("postgresql_summary") {
+    if !scope.allows_series(section) {
         return Err(RouteError::BadParameter("scope".to_owned()));
     }
     Ok(scope)

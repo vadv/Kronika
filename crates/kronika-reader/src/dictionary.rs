@@ -202,6 +202,35 @@ impl Dictionary {
     }
 }
 
+pub(crate) fn match_prefix(
+    type_id: u32,
+    section: VerifiedSection,
+    expected_rows: u64,
+    prefix: &[u8],
+    matches: &mut HashSet<u64>,
+) -> Result<(), CodecError> {
+    let (builder, _metadata) = dictionary_builder(section.into_bytes(), type_id, expected_rows)?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), [0, 1]);
+    let reader = builder.with_projection(projection).build()?;
+    let value_column = match type_id {
+        DICT_STRINGS_TYPE_ID => "bytes",
+        DICT_BLOBS_TYPE_ID => "stored_bytes",
+        _ => return Err(CodecError::UnknownType { type_id }),
+    };
+    for batch in reader {
+        let batch = batch?;
+        let ids = required_array::<UInt64Array>(&batch, "str_id")?;
+        let values = required_array::<BinaryArray>(&batch, value_column)?;
+        for row in 0..batch.num_rows() {
+            let id = StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+            if values.value(row).starts_with(prefix) {
+                matches.insert(id.get());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn dictionary_builder(
     bytes: Bytes,
     type_id: u32,

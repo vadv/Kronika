@@ -13,6 +13,7 @@ use super::result::{
     CoverageState, HeatmapBand, HeatmapBatchResult, HeatmapCoverage, HeatmapEntity, HeatmapGrid,
     HeatmapGroup, HeatmapInterval, HeatmapItemResult, NamedValues,
 };
+use crate::STATEMENTS_SECTION;
 use crate::render::{cell, record};
 use crate::row_key;
 use crate::statement_scope::CollectorStatements;
@@ -20,7 +21,6 @@ use crate::{
     DatasetSegment, QueryDataset, QueryError, QuerySink, QueryStability, SegmentBounds,
     SegmentSelection,
 };
-use crate::{STATEMENTS_SECTION, StatementScope};
 const IDENTITY_ALIASES: [(&str, &str); 2] = [("queryid", "query_id"), ("planid", "plan_id")];
 type RenderedIds = HashMap<(usize, u64), Value>;
 
@@ -599,7 +599,7 @@ fn validate_item(
             "top",
         ));
     }
-    if item.scope == StatementScope::Workload && ranking.section != STATEMENTS_SECTION {
+    if !item.scope.allows_rows(&ranking.section) {
         return Err(HeatmapError::invalid_parameter(
             index,
             format!("scope=workload applies only to {STATEMENTS_SECTION}"),
@@ -741,8 +741,6 @@ struct PhysicalPlan {
     labels: Vec<Option<&'static str>>,
     bindings: Vec<Binding>,
     first_index: usize,
-    /// Whether any binding hides the collector's own statements.
-    scoped: bool,
 }
 
 struct Binding {
@@ -832,7 +830,6 @@ fn physical_plans(
             }
             projection.sort_unstable();
             projection.dedup();
-            let scoped = bindings.iter().any(|binding| binding.workload);
             plans.push(PhysicalPlan {
                 section,
                 type_id,
@@ -843,7 +840,6 @@ fn physical_plans(
                 labels,
                 bindings,
                 first_index,
-                scoped,
             });
         }
     }
@@ -862,9 +858,9 @@ fn scan_plan(
     let take = usize::try_from(plan.rows).unwrap_or(usize::MAX);
     let segment_id = segment.id();
     // Collector statements are classified once per layout, before the scan.
-    let collector = if plan.scoped {
+    let collector = if plan.bindings.iter().any(|binding| binding.workload) {
         Some(
-            CollectorStatements::scan(segment, plan.type_id)
+            CollectorStatements::scan(segment)
                 .map_err(|error| HeatmapError::storage(plan.first_index, error))?,
         )
     } else {

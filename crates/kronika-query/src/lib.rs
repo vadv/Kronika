@@ -7,6 +7,7 @@ mod catalog;
 mod dataset;
 mod error;
 mod events;
+mod exact_product;
 mod finished_dataset;
 mod heatmap;
 mod history;

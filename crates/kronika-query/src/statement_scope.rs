@@ -1,17 +1,12 @@
-//! Presentation scope for the statements Kronika's own collector runs.
-//!
-//! The collector prefixes every statement it issues with the exact comment
-//! `/* kronika:`. A workload scope hides those rows from statement rankings,
-//! summaries and pages so a reader sees only the application's statements. The
-//! classification runs once per physical layout: the statement texts of the
-//! layout are resolved through the segment dictionary and the ids of texts that
-//! carry the prefix are kept. Rows are then filtered by dictionary id, so no
-//! text is compared per row.
+//! Statements issued by the collector start with `/* kronika:`.
 
 use std::collections::HashSet;
 
 use kronika_reader::{ReaderError, Row, Segment};
-use kronika_registry::Cell;
+use kronika_registry::{Cell, logical_section_name};
+
+#[cfg(test)]
+mod tests;
 
 /// Exact byte prefix in front of every statement the collector runs itself.
 pub const COLLECTOR_STATEMENT_PREFIX: &[u8] = b"/* kronika:";
@@ -51,6 +46,18 @@ impl StatementScope {
         }
     }
 
+    /// Whether the row-bearing section supports this scope.
+    #[must_use]
+    pub fn allows_rows(self, section: &str) -> bool {
+        self == Self::All || section == STATEMENTS_SECTION
+    }
+
+    /// Whether the composed series supports this scope.
+    #[must_use]
+    pub fn allows_series(self, section: Option<&str>) -> bool {
+        self == Self::All || section == Some("postgresql_summary")
+    }
+
     /// Whether rows of `logical_name` are filtered under this scope.
     #[must_use]
     pub fn filters(self, logical_name: &str) -> bool {
@@ -58,46 +65,20 @@ impl StatementScope {
     }
 }
 
-/// Dictionary ids of one layout's statement texts that begin with the collector prefix.
+/// Segment dictionary IDs whose stored bytes begin with the collector prefix.
 #[derive(Debug, Default)]
 pub(crate) struct CollectorStatements {
     ids: HashSet<u64>,
 }
 
 impl CollectorStatements {
-    /// Classify every statement text stored in `type_id` rows of `segment`.
-    ///
-    /// A layout without a statement text column yields no exclusions.
-    ///
-    /// # Errors
-    /// Returns the reader error when the rows or the dictionary cannot be read.
-    pub(crate) fn scan(segment: &Segment, type_id: u32) -> Result<Self, ReaderError> {
-        let Some(column) = kronika_registry::contract(type_id)
-            .and_then(|contract| contract.column(QUERY_COLUMN))
-            .map(|column| column.name)
-        else {
-            return Ok(Self::default());
-        };
-        let mut seen = HashSet::new();
-        segment.visit_rows(type_id, &[column], 0, usize::MAX, |_ordinal, row| {
-            if let Some(Cell::StrId(id)) = row.get(column) {
-                seen.insert(*id);
-            }
-            true
-        })?;
-        if seen.is_empty() {
+    pub(crate) fn scan(segment: &Segment) -> Result<Self, ReaderError> {
+        if segment.layouts(STATEMENTS_SECTION).next().is_none() {
             return Ok(Self::default());
         }
-        let dictionary = segment.dictionary_for(&seen)?;
-        let ids = seen
-            .into_iter()
-            .filter(|id| {
-                dictionary.resolve(*id).is_some_and(|value| {
-                    value.stored_bytes().starts_with(COLLECTOR_STATEMENT_PREFIX)
-                })
-            })
-            .collect();
-        Ok(Self { ids })
+        Ok(Self {
+            ids: segment.dictionary_ids_with_prefix(COLLECTOR_STATEMENT_PREFIX)?,
+        })
     }
 
     /// Whether `row` is one of the collector's own statements.
@@ -106,27 +87,25 @@ impl CollectorStatements {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::StatementScope;
+pub(crate) fn statement_key(row: &Row) -> Option<[i64; 3]> {
+    let query_column =
+        if logical_section_name(row.contract().type_id.get()) == Some("pg_store_plans") {
+            plan_statement_query_id_columns(row.contract().type_id.get())[0]
+        } else {
+            "queryid"
+        };
+    let Cell::I64(queryid) = row.get(query_column)? else {
+        return None;
+    };
+    let (Cell::U32(dbid), Cell::U32(userid)) = (row.get("dbid")?, row.get("userid")?) else {
+        return None;
+    };
+    (*queryid != 0).then_some([i64::from(*dbid), i64::from(*userid), *queryid])
+}
 
-    #[test]
-    fn scope_parses_only_its_two_public_values() {
-        assert_eq!(StatementScope::parse("all"), Some(StatementScope::All));
-        assert_eq!(
-            StatementScope::parse("workload"),
-            Some(StatementScope::Workload)
-        );
-        assert_eq!(StatementScope::parse("Workload"), None);
-        assert_eq!(StatementScope::parse(""), None);
-        assert_eq!(StatementScope::All.as_str(), "all");
-        assert_eq!(StatementScope::Workload.as_str(), "workload");
-    }
-
-    #[test]
-    fn only_the_workload_scope_filters_statements() {
-        assert!(StatementScope::Workload.filters("pg_stat_statements"));
-        assert!(!StatementScope::Workload.filters("pg_store_plans"));
-        assert!(!StatementScope::All.filters("pg_stat_statements"));
+pub(crate) const fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
+    match type_id {
+        1_004_001 => &["queryid_stat_statements"],
+        _ => &["queryid"],
     }
 }

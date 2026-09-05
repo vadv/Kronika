@@ -453,3 +453,26 @@ fn the_membership_selects_rows_by_exact_path_and_scope() {
         "no context selects nothing"
     );
 }
+
+#[test]
+fn a_v2_membership_keeps_threads_when_a_controller_is_unavailable() {
+    for available in ["cpu_path", "memory_path", "io_path"] {
+        let context = row(
+            1_205_001,
+            &[
+                ("cgroup_version", Cell::U32(2)),
+                (available, Cell::StrId(7)),
+                ("scope", Cell::U32(3)),
+            ],
+        );
+        let own = membership(&context);
+        assert_eq!(own.pids, Some(7), "{available}");
+        let threads = row(
+            1_204_001,
+            &[("cgroup_path", Cell::StrId(7)), ("scope", Cell::U32(3))],
+        );
+        assert!(member_row(&threads, Some(&own), own.pids));
+    }
+    let no_controller = row(1_205_001, &[("cgroup_version", Cell::U32(2))]);
+    assert_eq!(membership(&no_controller).pids, None);
+}
