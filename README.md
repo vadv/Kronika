@@ -2,67 +2,24 @@
 
 [Русская версия](README.ru.md)
 
-**Inspect what happened on Linux and PostgreSQL, at the same recorded moment.**
-Kronika keeps process and resource history alongside database activity, queries,
-execution plans, locks, and log events. Pick an hour, find the busy interval in
-an activity heatmap, then follow a process into its PostgreSQL backend, related
-statements, and plans without losing your place in time.
+**Go back to a slowdown in Linux and PostgreSQL.** Kronika records processes,
+resource usage, database activity, SQL queries, execution plans, and log events.
+Find when CPU, I/O, or query load changed, then select a process, query, or plan
+to inspect what it was doing at that time.
 
-**[Open the interactive browser demo →](https://vadv.github.io/kronika-reports/reports/kronika-container-demo-20min-77c422e.html)**
-No installation or login. Explore a recording of synthetic PostgreSQL and Linux
-workloads in the real Kronika interface, or save the HTML and open it offline.
+**Export your own data as one interactive HTML file.** In Kronika's web
+interface, choose an interval and click **Export**. Send the downloaded `.html` to a
+colleague: they open it in a browser, with no Kronika installation, server,
+or internet connection. Tables, heatmaps, search, and charts remain interactive.
 
-**Processes — see who used CPU, memory, and I/O, and when.** Activity heatmaps
-put the hour's distribution above the process table; select a row or cell to
-inspect its history and recorded PostgreSQL activity.
+**[Open the interactive demo →](https://vadv.github.io/kronika-reports/reports/kronika-container-demo-20min-77c422e.html)**
+Try that same HTML experience with a 20-minute recording of synthetic Linux
+and PostgreSQL workloads. No installation or login; save the file to use it offline.
 
-![Process activity heatmap and recorded process details](docs/images/processes.png)
+![Processes: CPU activity heatmap above the process table](docs/images/processes.png)
 
-**Statements — go from a busy interval to the SQL behind it.** Compare execution
-time, calls, buffer activity, and WAL, with query text and history beside the
-selected row.
-
-![PostgreSQL statements with activity heatmap and query details](docs/images/statements.png)
-
-**Plans — inspect the plans that were actually recorded.** Follow a Query ID
-from Statements to Plans and compare execution metrics alongside the stored
-plan text.
-
-![Recorded PostgreSQL execution plans and their metrics](docs/images/plans.png)
-
-## A machine's history, ready to inspect
-
-Kronika is built for the moment after a slowdown, when the processes have moved
-on and the database's current views no longer show what you needed to see.
-The collector records continuously; the browser and MCP read that history.
-
-- **One time cursor across Linux and PostgreSQL.** Resource pressure, process
-  CPU and I/O, running and waiting backends, locks, and events remain in the
-  same hour as you move between views.
-- **Heatmaps make dense history readable.** Rank processes, statements, plans,
-  tables, and indexes by the metric you are investigating. Select an interval
-  to inspect its rows; open one entity's chart for the detail.
-- **Useful depth without a separate metrics stack.** The collector writes local
-  files. Web serves those files with its interface embedded in the binary and
-  releases request data when idle. No external database is needed for Kronika's
-  own storage.
-- **An investigation can travel as one file.** Export the selected interval as
-  a self-contained HTML report with the production interface and query engine.
-  The recipient needs only a browser.
-
-| Recorded area | What you can inspect |
-| --- | --- |
-| Linux processes | CPU, RSS, swap, disk and logical I/O, scheduler delays, page faults, context switches, users, command lines |
-| Linux resources | Per-CPU activity, memory, PSI, disk throughput and latency, mounts and capacity, network interfaces and TCP counters, CPU frequency and topology |
-| Containers | Cgroup CPU and throttling, memory and limits, I/O by device and mount, threads; container, network namespace, and host readings retain their own scope |
-| PostgreSQL activity | Backend state and waits, transactions, blocker chains, Vacuum progress, databases and settings |
-| Statements and plans | `pg_stat_statements` and `pg_store_plans` history: calls, execution and planning time, rows, buffer activity, WAL, query and plan text where the installed layout supplies them |
-| Tables and indexes | Size, scans, buffer activity, row changes, Vacuum and Analyze statistics, transaction age; inspect by object, schema, database, or tablespace |
-| Log events | PostgreSQL errors, slow queries, checkpoints, Autovacuum, lock waits and lifecycle events; PgBouncer log events |
-
-Available fields depend on the kernel, PostgreSQL version, installed extensions,
-and permissions. The [metric references](#documentation) list the actual
-sections and layouts. Missing readings stay missing.
+*Processes in the synthetic demo. Find a busy interval in the heatmap, then
+select a process to inspect its CPU, memory, and I/O history.*
 
 ## Try it locally
 
@@ -90,7 +47,36 @@ Stopping preserves the recorded history. See the
 [demo guide](bins/kronika-demo/README.md) for another port, workload controls,
 and removing the demo's data.
 
+## Find the queries and plans from that interval
+
+**Statements: find the SQL that was busy.** Rank queries by execution load,
+calls, buffer activity, or WAL. Select a row to read the SQL text and see
+how its activity changed during the interval.
+
+![Statements: query activity heatmap, SQL text, and history in the synthetic demo](docs/images/statements.png)
+
+**Plans: inspect how a query ran.** Open the recorded plans for a Query ID,
+compare their execution metrics, and read the selected plan alongside its SQL.
+Statements and Plans use the history collected from `pg_stat_statements` and
+`pg_store_plans` when those extensions are installed.
+
+![Plans: recorded execution plan and related SQL in the synthetic demo](docs/images/plans.png)
+
+For the same time period, inspect **backend waits and blocking processes**,
+**Vacuum progress**, **table and index activity**, and **PostgreSQL log events**.
+On Linux, follow **disk, network, memory, and CPU history**; in containers,
+inspect **cgroup usage, limits, and throttling**.
+
 ## Record your own host
+
+Run the collector on your Linux host and point web at its recording directory.
+Kronika stores the history in local files; web serves the browser interface
+and MCP from the same recording.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="Linux and PostgreSQL feed the collector; web reads its recording for the browser and MCP clients" src="docs/images/architecture.svg">
+</picture>
 
 ### Build the current binaries
 
@@ -112,7 +98,7 @@ contains collector, web, dump, and demo; **it predates `kronika-dump slice`,
 `kronika-report`, and HTML export**. Use the source build above for the features
 on this page until an updated archive is published. There is no prebuilt arm64
 archive. [Packaging and verified download commands](docs/releases.md) describe
-both the existing release and the prepared artifacts.
+the existing release and building an archive from source.
 
 ### Start the collector
 
@@ -137,10 +123,9 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 ```
 
 `KRONIKA_PG_DSNS` enables PostgreSQL collection on its own. Omit it for a Linux-only
-recording. The first DSN supplies metrics across its connectable databases;
-installed extensions are discovered automatically. Log files must be readable
-locally. Optional log paths, extension permissions, intervals, and PostgreSQL
-health capacity are in the [collector guide](bins/kronika-collector/README.md).
+recording. Installed extensions are discovered automatically; log files must
+be readable locally. See the [collector guide](bins/kronika-collector/README.md) for database
+access, extensions, log paths, and collection intervals.
 
 ### Open web and MCP
 
@@ -179,14 +164,16 @@ For Claude Code, Codex CLI, and Cursor, use the web interface's MCP panel or the
 query the monitored PostgreSQL server or current host state. Static HTML
 reports have no MCP endpoint.
 
-## Keep and share an interval
+## Export an interval from the command line
 
-Use **Export** in web to download one `.html` for a selected interval. The
-report embeds the production React interface, the Rust `kronika-query` engine
-compiled to WebAssembly and running single-threaded in a Web Worker, the
-selected ZMS data, and its canonical IDX. Open it directly in a browser: it
-needs no running server, network connection, external assets, or sidecar files.
-It retains interactive tables, heatmaps, search, and charts.
+The **Export** button is the quickest way to share your own recording.
+For a saved recording or a scripted export, use `kronika-dump slice` and
+`kronika-report` to create the HTML file.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-dark.svg">
+  <img alt="Export an interval from web or a saved recording into one HTML file to open offline or share" src="docs/images/report-export.svg">
+</picture>
 
 The command-line utilities work with the same recording. Inspect section sizes:
 
@@ -209,32 +196,26 @@ sudo chown "$(id -u):$(id -g)" incident.zms
   incident.zms incident.html
 ```
 
-The dump storage root must be a real directory, not a standalone file or a
-symlink. Slice endpoints are inclusive whole seconds in RFC 3339; the new ZMS
-may retain up to 30 seconds of nearby samples for interval calculations. The
-report bounds above are Unix microseconds for exactly **19:00–20:00 UTC** and
-keep that context out of navigation. Without those options, report shows the
-entire input's time range. Slice refuses an existing output; report atomically
-replaces its HTML output. See [dump](bins/kronika-dump/README.md) and
-[report](bins/kronika-report/README.md) for details.
+Slice uses inclusive RFC 3339 seconds. The report options use Unix microseconds
+for **19:00–20:00 UTC**, excluding nearby samples retained for calculations.
+Omit the report bounds to show the input file's full time range. See the
+[dump](bins/kronika-dump/README.md) and [report](bins/kronika-report/README.md)
+guides for formats and output options.
 
-## Collection cost
+## Storage and implementation
 
-An observed workload with **roughly 500 tables and 3,000 indexes** produced
-about **184 MB/day of compressed ZMS**, extrapolated from 43 finished segments
-averaging 1.92 MB at a 15-minute cadence. This measures the finished recording,
-not the whole storage directory or every workload.
+One measured workload with **roughly 500 tables and 3,000 indexes** produced
+about **184 MB/day of compressed recordings**, extrapolated from 43 finished
+segments averaging 1.92 MB at a 15-minute cadence. The default retention target
+is **2 GiB** for recorded data, including journals and indexes.
+See [storage configuration](bins/kronika-collector/README.md#storage) for the
+measurement and retention settings.
 
-The default retention target is **2 GiB**, shared by finished ZMS, `active.wal`,
-IDX, and recognized temporary files. The number of retained days depends on
-those costs and your workload. Set `KRONIKA_RETENTION` to a byte budget or an
-automatic filesystem target; details and the measurement are in
-[storage configuration](bins/kronika-collector/README.md#storage).
-
-The collector's design bound is **under 25 MiB peak RSS on an ordinary host**;
-a [container collection scenario](crates/kronika-bdd/features/container.feature)
-checks that threshold. Each segment write logs peak RSS as `rss_kib`. This is
-not a universal memory guarantee for every process count or PostgreSQL workload.
+The collector targets **under 25 MiB peak RSS on an ordinary host** and logs
+its peak memory use on each segment write. The collector and query engine are
+written in Rust; the browser interface uses React. HTML reports embed the data,
+interface, and WebAssembly query engine, which runs on the browser's main thread.
+See the [HTML report guide](bins/kronika-report/README.md).
 
 ## Documentation
 
