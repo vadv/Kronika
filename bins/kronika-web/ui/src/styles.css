@@ -65,6 +65,7 @@
   --color-chart-future: #111820c7;
   --color-chart-unavailable: #18212ba8;
   --color-chart-selection: #7ea2c42e;
+  --color-scrim: #02060cb3;
   --color-chart-threshold: #f43f5e1c;
   --color-shadow: #030609;
   --color-shadow-a: #00000099;
@@ -363,6 +364,7 @@
   --color-chart-future: #e5e7ebc7;
   --color-chart-unavailable: #dce1e8a8;
   --color-chart-selection: #25638f24;
+  --color-scrim: #1e293b66;
   --color-chart-threshold: #b4231818;
   --color-shadow: #94a3b8;
   --color-shadow-a: #64748b3d;
@@ -395,11 +397,14 @@
 }
 
 /* KRONIKA_EXPORT_STYLES_BEGIN */
-.export-strip input[aria-invalid="true"] { border-color: var(--color-warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warn) 45%, transparent); }
-.export-strip :is(button, input):disabled { cursor: not-allowed; opacity: .5; }
-.export-strip[data-phase="preparing"] .export-status,
-.export-strip[data-phase="downloading"] .export-status { color: var(--color-accent3); }
-.export-strip[data-phase="saved"] .export-status { color: var(--color-fg); }
+.export-dialog input[aria-invalid="true"] { border-color: var(--color-warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warn) 45%, transparent); }
+.export-dialog :is(button, input):disabled { cursor: not-allowed; opacity: .5; }
+.export-dialog[data-phase="preparing"] .export-status,
+.export-dialog[data-phase="downloading"] .export-status { color: var(--color-accent3); }
+.export-dialog[data-phase="saved"] .export-status { color: var(--color-fg); }
+/* The dialog opens below the top bar and the timeline, whose plot keeps drawing
+   the chosen interval through the scrim. */
+.export-scrim { padding: clamp(84px, 16vh, 168px) 10px 10px; }
 @media (min-width: 641px) and (hover: none), (min-width: 641px) and (pointer: coarse) {
 }
 /* KRONIKA_EXPORT_STYLES_END */
@@ -819,22 +824,10 @@
   /* Wrapped, these four facts cost four lines of the table. One scrolling row
      keeps every one of them and returns the height to rows. */
   .process-workspace > .lensbar > .process-summary-inline { flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; }
-  /* On a phone the strip is a sheet at the bottom: presets first, the exact
-     line and the facts below, the timeline stays visible above it. */
-  .export-strip {
-    border-top: 1px solid var(--color-line3);
-    bottom: 0;
-    box-shadow: 0 -12px 28px var(--color-shadow-a);
-    left: 0;
-    max-height: min(60dvh, 420px);
-    overflow: auto;
-    padding-bottom: env(safe-area-inset-bottom);
-    position: fixed;
-    right: 0;
-    z-index: 1090;
-  }
-  .export-strip .export-exact, .export-strip .export-presets { flex-basis: 100%; }
-  .export-strip .export-primary { flex-basis: 100%; justify-content: center; margin-left: 0; }
+  /* On a phone the dialog is a sheet at the bottom of the viewport. */
+  .export-scrim { align-items: flex-end; padding: 0; }
+  .export-dialog { border-radius: var(--radius-md) var(--radius-md) 0 0; max-height: min(85dvh, 640px); padding-bottom: env(safe-area-inset-bottom); width: 100%; }
+  .export-dialog .export-primary { flex-basis: 100%; justify-content: center; }
   .inspector-scrim { top: 68px; }
   .inspector {
     border-left: 0;

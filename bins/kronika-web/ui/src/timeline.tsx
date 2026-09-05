@@ -6,7 +6,7 @@ import { CursorRow } from "./cursor-row"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { useDisplayTime } from "./display-time-context"
 import { findingOrder, findingSummary, summarizeFindings } from "./finding-presentation"
-import { useExportSlot } from "./export-context"
+import { useExportSelection } from "./export-context"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
 import { asNumber, compact, humanDuration, humanPercent, type Locale, value } from "./model"
@@ -155,12 +155,11 @@ export function Timeline({
     const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, displayCursor)?.value ?? null
     return `${key === "health" ? `${t(`lane.health.${line.field}`)} ` : ""}${number === null ? "—" : format(number, key, locale)}`
   }).join(" · ")
-  const exportSlot = useExportSlot()
+  const exportSelection = useExportSelection()
   const decorations = useMemo(() => {
     const drawn = timelineDecorations(lanes, selected?.series ?? [], hour, end)
-    const selection = exportSlot.selection
-    return selection === null ? drawn : [...drawn, { from: selection.from, to: selection.to, tone: "selection" as const }]
-  }, [exportSlot.selection, end, hour, lanes, selected])
+    return exportSelection === null ? drawn : [...drawn, { from: exportSelection.from, to: exportSelection.to, tone: "selection" as const }]
+  }, [exportSelection, end, hour, lanes, selected])
   const threshold = useMemo(() => selected?.threshold === undefined ? undefined : { below: selected.threshold, seriesId: "overall_health" }, [selected])
   const selectedReading = selected === undefined ? "—" : laneReading(selected, displayCursor, locale, t)
   const markerLayer = <>{markers.map((marker, index) => {
@@ -183,7 +182,7 @@ export function Timeline({
       ? <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
       : <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
-  return <><section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-export-from={exportSlot.selection?.from} data-export-to={exportSlot.selection?.to} data-presentation={presentation}>
+  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-export-from={exportSelection?.from} data-export-to={exportSelection?.to} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2">
       {presentation === "inspector"
         ? <label className="timeline-metric-picker"><span>{t("inspector.timeline")}</span><select aria-label={t("inspector.timeline")} data-testid="timeline-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select></label>
@@ -224,7 +223,7 @@ export function Timeline({
       variant={presentation}
     />
     {presentation === "preview" && <CursorRow cursor={displayCursor} cursorTimes={cursorTimes} onCursor={onCursor} reading={selectedReading} t={t} />}
-  </section>{presentation === "preview" && exportSlot.strip}</>
+  </section>
 }
 
 export function timelineRecordedTimes(series: readonly { readonly points: readonly { readonly timestamp: number }[] }[]): readonly number[] {

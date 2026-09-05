@@ -43,7 +43,7 @@ import { mergeObservationTimestamps, observationTimestamps } from "./cursor-time
 import { EventsView } from "./events-view"
 import { ExportProvider } from "./export-context"
 import { hourRange, rangeOnHour, type ExportRange } from "./export-range"
-import { ExportStrip } from "./export-strip"
+import { ExportDialog } from "./export-dialog"
 import { findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { McpPanel } from "./mcp-connect"
@@ -1108,10 +1108,7 @@ function App({ locale, onLocale, t }: {
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
     : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" || pgSection === "vacuum" ? "pg_waiting" : "health"
       : "health"
-  const exportStrip = !KRONIKA_REPORT && exportOpen && hour !== null && exportRange !== null
-    ? <ExportStrip availableHours={availableHours} cursor={cursor} hour={hour} locale={locale} onActiveChange={setExportActive} onClose={dismissExport} onRange={setExportRange} range={exportRange} segments={segments} t={t} />
-    : null
-  const exportSelection = exportStrip === null || hour === null || exportRange === null ? null : rangeOnHour(exportRange, hour)
+  const exportSelection = !KRONIKA_REPORT && exportOpen && hour !== null && exportRange !== null ? rangeOnHour(exportRange, hour) : null
   return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}${mobileSearch ? " mobile-search-open" : ""}`}>
     {data.syntheticDemo === true && <p className="pointer-events-none fixed bottom-2 left-2 z-[70] m-0 rounded border border-line3 bg-s1/95 px-2 py-1 font-sans text-[11px] font-medium tracking-[0.04em] text-fg3 shadow-sm" data-testid="demo-notice">{t("demo.synthetic")}</p>}
     <header className="topbar [.pg-table-shell>&]:flex-none">
@@ -1136,7 +1133,7 @@ function App({ locale, onLocale, t }: {
       <div className="top-actions">
         <button aria-label={t("inspector.open_chart")} aria-pressed={inspectorPanel === "chart"} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={openChart} title={t("inspector.open_chart")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         {!KRONIKA_REPORT && <button aria-label={t("refresh.action")} className="icon-button" data-testid="refresh-action" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button"><RotateCw aria-hidden="true" size={14} /></button>}
-        {!KRONIKA_REPORT && <button aria-controls="export-strip" aria-expanded={exportOpen} aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0 coarse:h-11 coarse:min-w-11" data-testid="export-trigger" disabled={hour === null} onClick={() => { if (exportOpen) closeExport(); else { setExportRange((current) => current ?? (hour === null ? null : hourRange(hour))); setExportOpen(true); setMcpOpen(false); setHelpOpen(false) } }} ref={exportTrigger} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
+        {!KRONIKA_REPORT && <button aria-expanded={exportOpen} aria-haspopup="dialog" aria-label={t("export.open")} className="inline-flex h-7 flex-none cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-transparent px-2 font-sans text-sm font-medium text-fg3 transition-colors hover:bg-s3 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45 max-[1180px]:w-7 max-[1180px]:px-0 coarse:h-11 coarse:min-w-11" data-testid="export-trigger" disabled={hour === null} onClick={() => { if (exportOpen) closeExport(); else { setExportRange((current) => current ?? (hour === null ? null : hourRange(hour))); setExportOpen(true); setMcpOpen(false); setHelpOpen(false) } }} ref={exportTrigger} title={t("export.open")} type="button"><Download aria-hidden="true" size={14} /><span className="max-[1180px]:hidden">{t("export.open")}</span></button>}
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
@@ -1150,7 +1147,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <ExportProvider selection={exportSelection} strip={exportStrip}>
+    <ExportProvider selection={exportSelection}>
     <InspectorPortalProvider chartTarget={inspectorChartRoot} dismissRef={inspectorDismiss} onChartAvailable={setEntityChartAvailable} onOpen={openPortalDetail} onTitle={setInspectorDetailTitle} target={inspectorDetailRoot}>
     <div className="workspace-frame flex min-h-0 min-w-0 flex-1 overflow-hidden">
     <section className={`workspace min-h-0 min-w-0 flex-1 px-2.5 pb-2 pt-2 max-[760px]:px-2${stretchPostgres ? " pg-table-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : " overflow-auto"}${visibleSource === "processes" ? " process-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none" : ""}`}>
@@ -1201,6 +1198,7 @@ function App({ locale, onLocale, t }: {
     </div>
     </InspectorPortalProvider>
     </ExportProvider>
+    {!KRONIKA_REPORT && exportOpen && hour !== null && exportRange !== null && <ExportDialog availableHours={availableHours} cursor={cursor} hour={hour} locale={locale} onActiveChange={setExportActive} onClose={dismissExport} onRange={setExportRange} range={exportRange} segments={segments} t={t} />}
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
     {!KRONIKA_REPORT && mcpOpen && <McpPanel database={database} onClose={() => setMcpOpen(false)} t={t} />}

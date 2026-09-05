@@ -1453,7 +1453,7 @@ test("the MCP drawer copies exactly through real legacy behavior and restores mo
   }
 })
 
-test("the Export strip selects a range on the timeline and reports its transfer as facts", { timeout: 180_000 }, async () => {
+test("the Export dialog selects a range on the timeline and reports its transfer as facts", { timeout: 180_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const exportFilename = "kronika-2026-08-13-182958-2026-08-13-183001-utc.html"
@@ -1550,18 +1550,18 @@ test("the Export strip selects a range on the timeline and reports its transfer 
       await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
       await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${locale} locale`)
     }
-    const openStrip = async () => {
+    const openDialog = async () => {
       await clickCenter(cdp, '[data-testid="export-trigger"]')
-      await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') !== null`, "the Export strip")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') !== null`, "the Export dialog")
       await settleLayout(cdp)
     }
     const pressEscape = async () => {
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     }
-    const closeIdleStrip = async () => {
+    const closeIdleDialog = async () => {
       await pressEscape()
-      await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle Export close")
+      await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "idle Export close")
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="export-trigger"]')`, "Export trigger focus")
     }
     const typeClock = async (selector, value) => {
@@ -1570,8 +1570,8 @@ test("the Export strip selects a range on the timeline and reports its transfer 
       await cdp.send("Input.insertText", { text: value })
       await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(value)}`, `${selector} value`)
     }
-    const stripState = () => cdp.evaluate(`(() => {
-      const strip = document.querySelector('[data-testid="export-strip"]')
+    const dialogState = () => cdp.evaluate(`(() => {
+      const strip = document.querySelector('[data-testid="export-dialog"]')
       const shell = document.querySelector('.timeline-shell')
       return {
         from: strip?.dataset.rangeFrom ?? null,
@@ -1591,63 +1591,58 @@ test("the Export strip selects a range on the timeline and reports its transfer 
 
     await setLocale("en")
     await setViewport(1280)
-    await openStrip()
-    // The strip is under the timeline plot, the plot stays visible, and the whole hour is the selection.
-    const opened = await stripState()
+    await openDialog()
+    // A modal dialog inside the viewport over a scrim; the whole hour is the selection drawn on the timeline behind it.
+    const opened = await dialogState()
     assert.deepEqual({ ...opened, coverage: undefined, duration: undefined }, {
       from: String(HOUR_SECOND), to: String(HOUR_SECOND + 3_599), phase: "idle", preset: "export-preset-hour",
       shown: { from: String(HOUR), to: String(HOUR + HOUR_US) },
-      filename: "kronika-2026-08-13-050000-2026-08-13-055959-utc.html · opens offline",
+      filename: "kronika-2026-08-13-050000-2026-08-13-055959-utc.html",
       status: "", submitDisabled: false, closeDisabled: false, expanded: "true",
       coverage: undefined, duration: undefined,
     }, JSON.stringify(opened))
-    assert.equal(opened.duration, "1 h", JSON.stringify(opened))
+    assert.equal(opened.duration, "1\u00a0h", JSON.stringify(opened))
     assert.match(opened.coverage, /^recorded /, JSON.stringify(opened))
     const placement = await cdp.evaluate(`(() => {
-      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
-      const node = document.querySelector('[data-testid="export-strip"]')
-      const strip = node.getBoundingClientRect()
-      let neighbour = node.previousElementSibling
-      while (neighbour !== null && neighbour.getBoundingClientRect().height === 0) neighbour = neighbour.previousElementSibling
-      const above = neighbour.getBoundingClientRect()
-      return { plotBottom: plot.bottom, aboveBottom: above.bottom, stripTop: strip.top, stripBottom: strip.bottom, viewport: innerHeight, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, position: getComputedStyle(node).position, afterShell: neighbour.classList.contains("timeline-shell") }
+      const node = document.querySelector('[data-testid="export-dialog"]')
+      const rect = node.getBoundingClientRect()
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, viewport: { height: innerHeight, width: innerWidth }, modal: node.getAttribute("aria-modal"), scrim: document.querySelector('[data-testid="export-scrim"]') !== null, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, active: document.activeElement?.dataset.testid ?? null }
     })()`)
-    assert.ok(placement.stripTop >= placement.plotBottom - 1 && Math.abs(placement.stripTop - placement.aboveBottom) <= 1, JSON.stringify(placement))
-    assert.deepEqual([placement.position, placement.afterShell], ["relative", true], JSON.stringify(placement))
-    assert.equal(placement.overflow, false, JSON.stringify(placement))
+    assert.ok(placement.top >= 60 && placement.bottom <= placement.viewport.height && Math.abs(placement.left - (placement.viewport.width - placement.right)) <= 2, JSON.stringify(placement))
+    assert.deepEqual([placement.modal, placement.scrim, placement.overflow, placement.active], ["true", true, false, "export-preset-hour"], JSON.stringify(placement))
 
     // Presets read the cursor; shifting by an hour leaves the timeline, which then shows no selection.
     await clickCenter(cdp, '[data-testid="export-preset-around5"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the five-minute window")
-    let state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the five-minute window")
+    let state = await dialogState()
     assert.deepEqual([state.to, state.preset, state.shown, state.duration], [String(CURSOR_SECOND + 299), "export-preset-around5", { from: String(AT - 300_000_000), to: String(AT + 300_000_000) }, "10 min"], JSON.stringify(state))
     await clickCenter(cdp, '[data-testid="export-shift-back"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 3_900}"`, "the shifted window")
-    state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.rangeFrom === "${CURSOR_SECOND - 3_900}"`, "the shifted window")
+    state = await dialogState()
     assert.deepEqual([state.preset, state.shown], [null, { from: null, to: null }], JSON.stringify(state))
     await clickCenter(cdp, '[data-testid="export-shift-forward"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the window back on the hour")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.rangeFrom === "${CURSOR_SECOND - 300}"`, "the window back on the hour")
 
     // Exact seconds are one editable line in the shown zone; the seconds sent never change with the zone.
     await switchZone(cdp, "utc")
     await cdp.waitFor(`document.querySelector('[data-testid="export-from"]').value === "05:25:00"`, "UTC clocks")
     await typeClock('[data-testid="export-from"]', "05:10:00")
     await typeClock('[data-testid="export-to"]', "05:20:30")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeTo === "${HOUR_SECOND + 1_230}"`, "the typed end")
-    state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.rangeTo === "${HOUR_SECOND + 1_230}"`, "the typed end")
+    state = await dialogState()
     assert.deepEqual([state.from, state.to, state.duration], [String(HOUR_SECOND + 600), String(HOUR_SECOND + 1_230), "10 min 31 s"], JSON.stringify(state))
     await switchZone(cdp, "browser")
     await cdp.waitFor(`document.querySelector('[data-testid="export-from"]').value === "10:40:00"`, "Kolkata clocks")
-    assert.deepEqual([(await stripState()).from, (await stripState()).to], [String(HOUR_SECOND + 600), String(HOUR_SECOND + 1_230)])
+    assert.deepEqual([(await dialogState()).from, (await dialogState()).to], [String(HOUR_SECOND + 600), String(HOUR_SECOND + 1_230)])
     await typeClock('[data-testid="export-to"]', "25:00:00")
     await cdp.waitFor(`document.querySelector('[data-testid="export-to"]').getAttribute("aria-invalid") === "true"`, "the invalid clock")
-    state = await stripState()
+    state = await dialogState()
     assert.deepEqual([state.status, state.submitDisabled, state.to], ["Time as HH:mm:ss", true, String(HOUR_SECOND + 1_230)], JSON.stringify(state))
     await typeClock('[data-testid="export-to"]', "10:35:00")
     await cdp.waitFor(`document.querySelector('[data-testid="export-status"]').textContent.trim() === "Start is later than end"`, "the order error")
-    assert.equal((await stripState()).submitDisabled, true)
+    assert.equal((await dialogState()).submitDisabled, true)
     await clickCenter(cdp, '[data-testid="export-preset-hour"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.rangeFrom === "${HOUR_SECOND}" && document.querySelector('[data-testid="export-status"]').textContent.trim() === ""`, "the hour restored")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.rangeFrom === "${HOUR_SECOND}" && document.querySelector('[data-testid="export-status"]').textContent.trim() === ""`, "the hour restored")
 
     // The day picker offers only days that hold recordings.
     await clickCenter(cdp, '[data-testid="export-from-day"]')
@@ -1665,7 +1660,7 @@ test("the Export strip selects a range on the timeline and reports its transfer 
     assert.ok(days.enabled.includes("2026-08-13") && days.disabled > 0 && days.enabled.every((day) => !day.startsWith("2026-08-2")), JSON.stringify(days))
     await clickCenter(cdp, '[data-testid="export-day"][data-day="2026-08-13"]')
     await cdp.waitFor(`document.querySelector('[data-testid="export-day-grid"]') === null`, "the day picker closed")
-    assert.equal((await stripState()).from, String(HOUR_SECOND))
+    assert.equal((await dialogState()).from, String(HOUR_SECOND))
 
     // A busy server is said plainly and the strip stays editable.
     exportPlans.push("busy")
@@ -1675,7 +1670,7 @@ test("the Export strip selects a range on the timeline and reports its transfer 
     assert.equal(exportRequests.length, requestsBeforeBusy + 1)
     assert.equal(exportRequests.at(-1).query, `?from=${HOUR_SECOND}&to=${HOUR_SECOND + 3_599}`)
     assert.equal(exportRequests.at(-1).accept, "text/html")
-    state = await stripState()
+    state = await dialogState()
     assert.deepEqual([state.phase, state.submitDisabled, state.closeDisabled], ["idle", false, false], JSON.stringify(state))
 
     // Preparation is counted in seconds without a bar, cannot be cancelled, and the download is one saved file.
@@ -1691,16 +1686,16 @@ test("the Export strip selects a range on the timeline and reports its transfer 
     })()`)
     exportPlans.push("stream")
     await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "preparing"`, "Export preparation")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "preparing"`, "Export preparation")
     await delay(2_600)
-    state = await stripState()
+    state = await dialogState()
     assert.match(state.status, /^preparing the slice · [2-9] s$/, JSON.stringify(state))
     assert.equal(state.closeDisabled, true, JSON.stringify(state))
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="logout-action"]').disabled`), true)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]').getAttribute("aria-busy")`), "true")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-dialog"]').getAttribute("aria-busy")`), "true")
     await pressEscape()
     await delay(200)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]')?.dataset.phase`), "preparing", "Escape does not abandon a running export")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-dialog"]')?.dataset.phase`), "preparing", "Escape does not abandon a running export")
     const held = heldExports.shift()
     assert.notEqual(held, undefined)
     held.writeHead(200, {
@@ -1711,13 +1706,13 @@ test("the Export strip selects a range on the timeline and reports its transfer 
     })
     held.flushHeaders()
     held.write(exportChunks[0])
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "downloading"`, "Export response headers")
-    state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "downloading"`, "Export response headers")
+    state = await dialogState()
     assert.match(state.status, /^downloading · [\d.,]+ (B|KiB) \/ 12[.,]\d KiB$/, JSON.stringify(state))
     for (const chunk of exportChunks.slice(1, -1)) held.write(chunk)
     held.end(exportChunks.at(-1))
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "saved"`, "the saved export", 15_000)
-    state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "saved"`, "the saved export", 15_000)
+    state = await dialogState()
     assert.match(state.status, new RegExp(`^saved: ${exportFilename.replace(/\./g, "\\.")} · 12[.,]\\d KiB · \\d+ s$`), JSON.stringify(state))
     assert.equal(state.closeDisabled, false)
     const urls = await cdp.evaluate(`JSON.stringify(globalThis.__exportObjectUrls)`)
@@ -1727,48 +1722,48 @@ test("the Export strip selects a range on the timeline and reports its transfer 
     assert.deepEqual(parsed.revoked, [parsed.created[0].url], urls)
     assert.ok(Number(await cdp.evaluate(`localStorage.getItem("kronika.export-seconds")`)) > 0)
     await clickCenter(cdp, '[data-testid="export-again"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "idle" && document.querySelector('[data-testid="export-submit"]') !== null`, "another export offered")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "idle" && document.querySelector('[data-testid="export-submit"]') !== null`, "another export offered")
 
     // The second run remembers how long the first one took.
     exportPlans.push("stream")
     await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "preparing"`, "the second preparation")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "preparing"`, "the second preparation")
     await delay(400)
-    assert.match((await stripState()).status, /^preparing the slice · \d+ s · last time \d+ s$/)
+    assert.match((await dialogState()).status, /^preparing the slice · \d+ s · last time \d+ s$/)
     const second = heldExports.shift()
     second.writeHead(200, { "Cache-Control": "no-store", "Content-Disposition": `attachment; filename="${exportFilename}"`, "Content-Type": "text/html; charset=utf-8" })
     second.end(exportHtml)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "saved"`, "the second saved export", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "saved"`, "the second saved export", 15_000)
     await clickCenter(cdp, '[data-testid="export-again"]')
     await cdp.waitFor(`document.querySelector('[data-testid="export-submit"]') !== null && !document.querySelector('[data-testid="export-submit"]').disabled`, "a third export offered")
 
     // A connection lost before any status leaves the server state unknown: no restart, no close.
     dropExports = true
     await clickCenter(cdp, '[data-testid="export-submit"]')
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]').dataset.phase === "unknown"`, "unknown server state after a pre-header disconnect", 10_000)
-    state = await stripState()
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]').dataset.phase === "unknown"`, "unknown server state after a pre-header disconnect", 10_000)
+    state = await dialogState()
     assert.equal(state.status, "Connection lost. The server may still be preparing the report; a new run stays locked", JSON.stringify(state))
     assert.deepEqual([state.closeDisabled, state.submitDisabled], [true, true], JSON.stringify(state))
     await pressEscape()
     await delay(200)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-strip"]')?.dataset.phase`), "unknown")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="export-dialog"]')?.dataset.phase`), "unknown")
     dropExports = false
     await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null && document.querySelector('[data-testid="export-strip"]') === null`, "the reloaded page", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="export-trigger"]:not(:disabled)') !== null && document.querySelector('[data-testid="export-dialog"]') === null`, "the reloaded page", 15_000)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .u-over') !== null`, "the reloaded timeline", 15_000)
 
     // Idle, the strip closes on Escape, on Back and on hour navigation.
-    await openStrip()
-    await closeIdleStrip()
+    await openDialog()
+    await closeIdleDialog()
     const idleBaseUrl = await cdp.evaluate("location.href")
     await cdp.evaluate(`(() => { const next = new URL(location.href); next.searchParams.set("export_probe", "idle"); history.pushState({}, "", next) })()`)
-    await openStrip()
+    await openDialog()
     await cdp.evaluate("history.back()")
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle Back close")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "idle Back close")
     await cdp.waitFor(`location.href === ${JSON.stringify(idleBaseUrl)}`, "idle Back address")
-    await openStrip()
+    await openDialog()
     await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="export-strip"]') === null`, "idle hour close")
+    await cdp.waitFor(`document.querySelector('[data-testid="export-dialog"]') === null`, "idle hour close")
     await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR + HOUR_US}`, "the next selected hour", 15_000)
     await cdp.evaluate("history.back()")
     await cdp.waitFor(`Math.floor(Number(new URL(location.href).searchParams.get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored selected hour", 15_000)
@@ -1778,39 +1773,31 @@ test("the Export strip selects a range on the timeline and reports its transfer 
       await setViewport(width)
       for (const locale of ["ru", "en"]) {
         await setLocale(locale)
-        await openStrip()
+        await openDialog()
         const measured = await cdp.evaluate(`(() => {
-          const strip = document.querySelector('[data-testid="export-strip"]')
-          const rect = strip.getBoundingClientRect()
-          const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
-          let neighbour = strip.previousElementSibling
-          while (neighbour !== null && neighbour.getBoundingClientRect().height === 0) neighbour = neighbour.previousElementSibling
-          const above = neighbour?.getBoundingClientRect() ?? null
-          const targets = [...strip.querySelectorAll("button, input")].filter((node) => node.offsetParent !== null).map((node) => { const box = node.getBoundingClientRect(); return { id: node.dataset.testid ?? node.textContent, height: box.height, width: box.width } })
+          const node = document.querySelector('[data-testid="export-dialog"]')
+          const rect = node.getBoundingClientRect()
+          const targets = [...node.querySelectorAll("button, input")].filter((candidate) => candidate.offsetParent !== null).map((candidate) => { const box = candidate.getBoundingClientRect(); return { id: candidate.dataset.testid ?? candidate.textContent, height: box.height, width: box.width } })
           return {
             bottom: rect.bottom, top: rect.top, left: rect.left, right: rect.right, viewport: { height: innerHeight, width: innerWidth },
-            position: getComputedStyle(strip).position,
-            plotBottom: plot.bottom, aboveBottom: above?.bottom ?? null,
             overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-            presets: [...strip.querySelectorAll('[data-testid^="export-preset-"]')].map((node) => node.textContent),
+            presets: [...node.querySelectorAll('[data-testid^="export-preset-"]')].map((candidate) => candidate.textContent),
             targets,
-            title: strip.querySelector("h2").textContent,
+            title: node.querySelector("h2").textContent,
           }
         })()`)
         const label = `${width}px ${locale}: ${JSON.stringify(measured)}`
         assert.equal(measured.overflow, false, label)
-        assert.ok(measured.left >= -1 && measured.right <= measured.viewport.width + 1 && measured.bottom <= measured.viewport.height + 1, label)
+        assert.ok(measured.left >= -1 && measured.right <= measured.viewport.width + 1 && measured.top >= -1 && measured.bottom <= measured.viewport.height + 1, label)
         assert.equal(measured.title, locale === "ru" ? "Экспорт HTML" : "HTML export", label)
         assert.deepEqual(measured.presets, locale === "ru" ? ["Этот час", "±5 мин", "±15 мин", "±30 мин"] : ["This hour", "±5 min", "±15 min", "±30 min"], label)
         if (width === 360) {
-          assert.equal(measured.position, "fixed", label)
-          assert.ok(measured.top >= measured.plotBottom, `the sheet does not cover the plot: ${label}`)
+          assert.ok(Math.abs(measured.bottom - measured.viewport.height) <= 1 && measured.right - measured.left >= measured.viewport.width - 1, `the phone sheet: ${label}`)
           assert.ok(measured.targets.every(({ height }) => height >= 43.5), label)
         } else {
-          assert.equal(measured.position, "relative", label)
-          assert.ok(Math.abs(measured.top - measured.aboveBottom) <= 1, label)
+          assert.ok(Math.abs(measured.left - (measured.viewport.width - measured.right)) <= 2 && measured.right - measured.left <= 600, `centred: ${label}`)
         }
-        await closeIdleStrip()
+        await closeIdleDialog()
       }
     }
     assert.deepEqual(page.external, [])

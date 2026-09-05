@@ -1,5 +1,6 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Download, X } from "lucide-react"
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 
 import type { SegmentBound } from "./api"
 import { calendarDateLabel, calendarMonthDays, calendarMonthLabel } from "./display-time"
@@ -43,14 +44,16 @@ interface EndpointDraft {
 const SERVER_ERROR_KEYS = new Set(["bad_parameter", "export_busy", "export_empty", "export_failed"])
 const MICROS = 1_000_000
 const HOUR_MICROS = 3_600 * MICROS
+const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])'
 
-// The strip sits under the timeline and describes a selection on it. The
-// range comes from context first: the hour, a window around the cursor, a
-// shift by an hour; the exact seconds are one editable line, and the day
-// picker offers only days that hold recordings. What the file will contain and
-// how it will be named is said before anything is requested. States are facts:
-// seconds spent, bytes received, the saved name. No progress bars.
-export function ExportStrip({ availableHours, cursor, hour, locale, onActiveChange, onClose, onRange, range, segments, t }: {
+// One modal dialog for one question: which recorded interval becomes a file.
+// The range comes from context first (the hour, a window around the cursor,
+// an hour's shift) and is drawn on the timeline behind the dialog; the exact
+// seconds are two labelled lines, the day picker offers only days that hold
+// recordings, and the dialog says what the file will contain and how it will
+// be named before anything is requested. States are facts: seconds spent,
+// bytes received, the saved name. No progress bars.
+export function ExportDialog({ availableHours, cursor, hour, locale, onActiveChange, onClose, onRange, range, segments, t }: {
   readonly availableHours: readonly number[]
   readonly cursor: number
   readonly hour: number
@@ -74,7 +77,7 @@ export function ExportStrip({ availableHours, cursor, hour, locale, onActiveChan
   const [lastSeconds, setLastSeconds] = useState(() => readLastExportSeconds(localStorage))
   const activeJob = useRef(false)
   const previousHour = useRef(hour)
-  const strip = useRef<HTMLElement>(null)
+  const dialog = useRef<HTMLElement>(null)
   const firstPreset = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const statusId = useId()
@@ -120,23 +123,33 @@ export function ExportStrip({ availableHours, cursor, hour, locale, onActiveChan
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
+      event.preventDefault()
+      event.stopPropagation()
       if (dayPicker !== null) {
-        event.preventDefault()
-        event.stopPropagation()
         setDayPicker(null)
         return
       }
-      if (activeJob.current) {
-        if (strip.current?.contains(document.activeElement)) event.stopPropagation()
-        return
-      }
-      event.preventDefault()
-      event.stopPropagation()
-      close()
+      if (!activeJob.current) close()
     }
     window.addEventListener("keydown", escape, true)
     return () => window.removeEventListener("keydown", escape, true)
   }, [close, dayPicker])
+
+  // Tab stays inside the dialog; the page behind it is covered by the scrim.
+  const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab" || dialog.current === null) return
+    const focusable = [...dialog.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((node) => node.offsetParent !== null)
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (first === undefined || last === undefined) return
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 
   const choose = (next: ExportRange) => {
     if (activeJob.current) return
@@ -239,6 +252,7 @@ export function ExportStrip({ availableHours, cursor, hour, locale, onActiveChan
           ? t("export.error.server_state_unknown")
           : message ?? drafts.from.error ?? drafts.to.error ?? (orderError ? t("export.error.order") : null)
   const closeLabel = job.phase === "unknown" ? t("export.close_unknown") : busy ? t("export.close_busy") : t("export.close")
+  const problem = message !== null || job.phase === "unknown" || orderError || drafts.from.error !== null || drafts.to.error !== null
 
   const coverageText = coverage.recorded === null
     ? t("export.coverage.none")
@@ -260,103 +274,115 @@ export function ExportStrip({ availableHours, cursor, hour, locale, onActiveChan
     return missing
   }, [availableHours, hour, range.from, range.to])
 
-  const endpointField = (endpoint: Endpoint) => {
+  const endpointRow = (endpoint: Endpoint) => {
     const draft = drafts[endpoint]
     const second = range[endpoint]
-    const otherDay = dayOf(second) !== hourDay
-    return <span className="export-endpoint inline-flex min-w-0 items-center gap-1" key={endpoint}>
-      {otherDay && <span className="whitespace-nowrap font-sans text-sm text-fg3" data-testid={`export-${endpoint}-date`}>{time.date(second * MICROS)}</span>}
-      <input
-        aria-invalid={draft.error !== null || undefined}
-        aria-label={t(`export.${endpoint}`)}
-        autoComplete="off"
-        className="export-clock h-8 w-[84px] rounded-[var(--radius-xs)] border border-line2 bg-s2 px-1.5 text-center font-mono text-sm tabular-nums text-fg focus-visible:outline-2 focus-visible:outline-accent coarse:h-11 coarse:w-[96px]"
-        data-testid={`export-${endpoint}`}
-        disabled={busy}
-        inputMode="numeric"
-        onChange={(event) => editTime(endpoint, event.currentTarget.value)}
-        spellCheck={false}
-        value={draft.text}
-      />
-      <button
-        aria-expanded={dayPicker === endpoint}
-        aria-label={t(`export.${endpoint}_day`)}
-        className="icon-button coarse:!h-11 coarse:!w-11"
-        data-testid={`export-${endpoint}-day`}
-        disabled={busy}
-        onClick={() => setDayPicker((current) => current === endpoint ? null : endpoint)}
-        title={t(`export.${endpoint}_day`)}
-        type="button"
-      ><CalendarDays aria-hidden="true" size={14} /></button>
-      {draft.candidates.length > 1 && <span className="inline-flex items-center gap-1 font-sans text-sm text-fg3" data-testid={`export-${endpoint}-occurrence`} role="group">
-        <span>{t("export.occurrence")}</span>
-        {draft.candidates.map((candidate, index) => <button className="h-7 cursor-pointer rounded-[var(--radius-xs)] border border-line2 bg-s2 px-1.5 font-sans text-sm text-fg2 hover:bg-s3 coarse:h-11" key={candidate} onClick={() => chooseOccurrence(endpoint, candidate)} type="button">{t(index === 0 ? "export.occurrence.first" : "export.occurrence.second")}</button>)}
-      </span>}
-    </span>
+    return <div className="export-endpoint grid grid-cols-[minmax(64px,auto)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1" key={endpoint}>
+      <span className="font-sans text-sm text-fg3">{t(`export.${endpoint}`)}</span>
+      <span className="inline-flex items-center gap-1">
+        <button
+          aria-expanded={dayPicker === endpoint}
+          aria-label={`${t(`export.${endpoint}_day`)}: ${time.date(second * MICROS)}`}
+          className="export-day-button inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-xs)] border border-line2 bg-s2 px-2 font-sans text-sm text-fg2 hover:bg-s3 coarse:h-11"
+          data-testid={`export-${endpoint}-day`}
+          disabled={busy}
+          onClick={() => setDayPicker((current) => current === endpoint ? null : endpoint)}
+          type="button"
+        ><CalendarDays aria-hidden="true" size={13} />{time.date(second * MICROS)}</button>
+        <input
+          aria-invalid={draft.error !== null || undefined}
+          aria-label={`${t(`export.${endpoint}`)} · ${t("export.clock")}`}
+          autoComplete="off"
+          className="export-clock h-8 w-[92px] rounded-[var(--radius-xs)] border border-line2 bg-s2 px-1.5 text-center font-mono text-sm tabular-nums text-fg focus-visible:outline-2 focus-visible:outline-accent coarse:h-11 coarse:w-[104px]"
+          data-testid={`export-${endpoint}`}
+          disabled={busy}
+          inputMode="numeric"
+          onChange={(event) => editTime(endpoint, event.currentTarget.value)}
+          spellCheck={false}
+          value={draft.text}
+        />
+      </span>
+      <span className="min-w-0 font-sans text-sm text-fg3">
+        {draft.candidates.length > 1 && <span className="inline-flex flex-wrap items-center gap-1" data-testid={`export-${endpoint}-occurrence`} role="group">
+          <span>{t("export.occurrence")}</span>
+          {draft.candidates.map((candidate, index) => <button className="h-7 cursor-pointer rounded-[var(--radius-xs)] border border-line2 bg-s2 px-1.5 font-sans text-sm text-fg2 hover:bg-s3 coarse:h-11" key={candidate} onClick={() => chooseOccurrence(endpoint, candidate)} type="button">{t(index === 0 ? "export.occurrence.first" : "export.occurrence.second")}</button>)}
+        </span>}
+        {endpoint === "to" && draft.candidates.length <= 1 && <strong aria-label={t("export.duration")} className="whitespace-nowrap font-mono text-sm font-medium tabular-nums text-fg" data-testid="export-duration">{duration}</strong>}
+      </span>
+      {dayPicker === endpoint && <DayPicker
+        availableHours={availableHours}
+        dayKey={dayOf(second)}
+        label={t(`export.${endpoint}_day`)}
+        locale={locale}
+        onChoose={(day) => chooseDay(endpoint, day)}
+        onClose={() => setDayPicker(null)}
+        t={t}
+      />}
+    </div>
   }
 
-  return <section
-    aria-busy={busy}
-    aria-describedby={statusId}
-    aria-labelledby={titleId}
-    className="export-strip relative flex-none border-b border-line2 bg-s1 text-fg"
-    data-phase={job.phase}
-    data-range-from={range.from}
-    data-range-to={range.to}
-    data-testid="export-strip"
-    ref={strip}
-    role="region"
-  >
-    <button aria-label={closeLabel} className="icon-button absolute right-2 top-1.5 coarse:!h-11 coarse:!w-11" data-testid="export-close" disabled={busy} onClick={close} title={closeLabel} type="button"><X aria-hidden="true" size={14} /></button>
-    <form aria-busy={busy} className="grid gap-x-3 gap-y-1.5 py-1.5 pl-2.5 pr-11 coarse:pr-14" data-testid="export-form" noValidate onSubmit={(event) => { void submit(event) }}>
-      <div className="export-strip-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-        <h2 className="m-0 font-sans text-sm font-semibold text-fg2" id={titleId}>{t("export.title")}</h2>
-        <div aria-label={t("export.presets")} className="export-presets flex flex-wrap items-center gap-1" role="group">
-          {EXPORT_PRESETS.map((candidate, index) => <button
-            aria-pressed={preset === candidate}
-            className="export-chip h-7 cursor-pointer whitespace-nowrap rounded-[var(--radius-xs)] border border-line2 bg-s2 px-2 font-sans text-sm text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg coarse:h-11"
-            data-testid={`export-preset-${candidate}`}
-            disabled={busy}
-            key={candidate}
-            onClick={() => choose(presetRange(candidate, hour, cursor))}
-            ref={index === 0 ? firstPreset : undefined}
-            type="button"
-          >{t(`export.preset.${candidate}`)}</button>)}
-          <button aria-label={t("export.shift.back")} className="icon-button coarse:!h-11 coarse:!w-11" data-testid="export-shift-back" disabled={busy} onClick={() => choose(shiftRange(range, -3_600))} title={t("export.shift.back")} type="button"><ChevronLeft aria-hidden="true" size={14} /></button>
-          <button aria-label={t("export.shift.forward")} className="icon-button coarse:!h-11 coarse:!w-11" data-testid="export-shift-forward" disabled={busy} onClick={() => choose(shiftRange(range, 3_600))} title={t("export.shift.forward")} type="button"><ChevronRight aria-hidden="true" size={14} /></button>
-        </div>
-        <div className="export-exact flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-          {endpointField("from")}
-          <span aria-hidden="true" className="font-mono text-sm text-fg4">→</span>
-          {endpointField("to")}
-          <strong aria-label={t("export.duration")} className="ml-1 whitespace-nowrap font-mono text-sm font-medium tabular-nums text-fg" data-testid="export-duration">{duration}</strong>
-        </div>
-      </div>
-      <div className="export-strip-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="min-w-0 font-sans text-sm text-fg3" data-testid="export-coverage">
-          {coverageText}
-          {unrecordedHours > 0 && <> · {t("export.coverage.outside", { hours: String(unrecordedHours) })}</>}
-        </span>
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm text-fg3" data-testid="export-filename" title={filename}>{t("export.filename", { name: filename })}</span>
-        <span className={`export-status min-w-0 font-sans text-sm ${message !== null || job.phase === "unknown" || orderError ? "text-warn" : "text-fg2"}`} data-testid="export-status" id={statusId}>
-          {status}
-        </span>
-        <span aria-atomic="true" aria-live="polite" className="sr-only">{job.phase === "preparing" ? t("export.preparing.phase") : status ?? ""}</span>
-        {job.phase === "saved"
-          ? <button className="export-primary ml-auto inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s2 px-3 font-sans text-sm font-semibold text-fg2 hover:bg-s3 coarse:h-11" data-testid="export-again" onClick={() => { setJob({ phase: "idle" }); setMessage(null) }} type="button">{t("export.again")}</button>
-          : <button className="export-primary ml-auto inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-accent px-3 font-sans text-sm font-semibold text-bg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 coarse:h-11" data-testid="export-submit" disabled={busy || orderError || drafts.from.error !== null || drafts.to.error !== null} type="submit"><Download aria-hidden="true" size={14} />{t("export.submit")}</button>}
-      </div>
-    </form>
-    {dayPicker !== null && <DayPicker
-      availableHours={availableHours}
-      dayKey={dayOf(range[dayPicker])}
-      label={t(dayPicker === "from" ? "export.from_day" : "export.to_day")}
-      locale={locale}
-      onChoose={(day) => chooseDay(dayPicker, day)}
-      onClose={() => setDayPicker(null)}
-      t={t}
-    />}
-  </section>
+  const content = <div className="export-scrim fixed inset-0 z-[1100] flex items-start justify-center bg-[var(--color-scrim)]" data-testid="export-scrim" onPointerDown={(event) => { if (event.target === event.currentTarget && !busy) close() }}>
+    <section
+      aria-busy={busy}
+      aria-describedby={statusId}
+      aria-labelledby={titleId}
+      aria-modal="true"
+      className="export-dialog flex max-h-full w-[min(600px,calc(100vw-20px))] flex-col overflow-auto rounded-[var(--radius-md)] border border-line3 bg-s1 text-fg shadow-[var(--shadow-pop)]"
+      data-phase={job.phase}
+      data-range-from={range.from}
+      data-range-to={range.to}
+      data-testid="export-dialog"
+      onKeyDown={trapFocus}
+      ref={dialog}
+      role="dialog"
+    >
+      <header className="flex min-h-10 flex-none items-center gap-2 border-b border-line3 px-3">
+        <Download aria-hidden="true" className="flex-none text-fg3" size={14} />
+        <h2 className="m-0 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-sans text-md font-semibold text-fg" id={titleId}>{t("export.title")}</h2>
+        <button aria-label={closeLabel} className="icon-button coarse:!h-11 coarse:!w-11" data-testid="export-close" disabled={busy} onClick={close} title={closeLabel} type="button"><X aria-hidden="true" size={14} /></button>
+      </header>
+      <form aria-busy={busy} className="flex min-h-0 flex-col" data-testid="export-form" noValidate onSubmit={(event) => { void submit(event) }}>
+        <fieldset className="m-0 grid gap-2 border-0 border-b border-line2 px-3 py-2.5" disabled={busy}>
+          <legend className="sr-only">{t("export.section.range")}</legend>
+          <div aria-label={t("export.presets")} className="export-presets flex flex-wrap items-center gap-1" role="group">
+            {EXPORT_PRESETS.map((candidate, index) => <button
+              aria-pressed={preset === candidate}
+              className="export-chip h-8 cursor-pointer whitespace-nowrap rounded-[var(--radius-xs)] border border-line2 bg-s2 px-2.5 font-sans text-sm text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg coarse:h-11"
+              data-testid={`export-preset-${candidate}`}
+              key={candidate}
+              onClick={() => choose(presetRange(candidate, hour, cursor))}
+              ref={index === 0 ? firstPreset : undefined}
+              type="button"
+            >{t(`export.preset.${candidate}`)}</button>)}
+            <span className="mx-1 h-5 w-px flex-none bg-line3" aria-hidden="true" />
+            <button aria-label={t("export.shift.back")} className="export-chip inline-flex h-8 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[var(--radius-xs)] border border-line2 bg-s2 px-2 font-sans text-sm text-fg2 hover:bg-s3 coarse:h-11" data-testid="export-shift-back" onClick={() => choose(shiftRange(range, -3_600))} title={t("export.shift.back")} type="button"><ChevronLeft aria-hidden="true" size={13} />{t("export.shift.hour")}</button>
+            <button aria-label={t("export.shift.forward")} className="export-chip inline-flex h-8 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[var(--radius-xs)] border border-line2 bg-s2 px-2 font-sans text-sm text-fg2 hover:bg-s3 coarse:h-11" data-testid="export-shift-forward" onClick={() => choose(shiftRange(range, 3_600))} title={t("export.shift.forward")} type="button">{t("export.shift.hour")}<ChevronRight aria-hidden="true" size={13} /></button>
+          </div>
+          <div className="grid gap-1.5">
+            {endpointRow("from")}
+            {endpointRow("to")}
+          </div>
+        </fieldset>
+        <section aria-label={t("export.section.file")} className="grid gap-1 border-b border-line2 px-3 py-2.5 font-sans text-sm text-fg3">
+          <h3 className="m-0 font-sans text-sm font-semibold text-fg2">{t("export.section.file")}</h3>
+          <span data-testid="export-coverage">
+            {coverageText}
+            {unrecordedHours > 0 && <> · {t("export.coverage.outside", { hours: String(unrecordedHours) })}</>}
+          </span>
+          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm text-fg2" data-testid="export-filename" title={filename}>{filename}</span>
+          <span className="text-fg4">{t("export.offline")}</span>
+        </section>
+        <footer className="flex min-h-12 flex-none flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
+          <span className={`export-status min-w-0 flex-1 font-sans text-sm ${problem ? "text-warn" : "text-fg2"}`} data-testid="export-status" id={statusId}>{status}</span>
+          <span aria-atomic="true" aria-live="polite" className="sr-only">{job.phase === "preparing" ? t("export.preparing.phase") : status ?? ""}</span>
+          {job.phase === "saved"
+            ? <button className="export-primary inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border border-line2 bg-s2 px-3 font-sans text-sm font-semibold text-fg2 hover:bg-s3 coarse:h-11" data-testid="export-again" onClick={() => { setJob({ phase: "idle" }); setMessage(null) }} type="button">{t("export.again")}</button>
+            : <button className="export-primary inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border-0 bg-accent px-3 font-sans text-sm font-semibold text-bg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 coarse:h-11" data-testid="export-submit" disabled={busy || orderError || drafts.from.error !== null || drafts.to.error !== null} type="submit"><Download aria-hidden="true" size={14} />{t("export.submit")}</button>}
+        </footer>
+      </form>
+    </section>
+  </div>
+  return createPortal(content, document.body)
 }
 
 // Only days that hold recordings can be chosen: the picker is a fact about the
@@ -399,14 +425,14 @@ function DayPicker({ availableHours, dayKey, label, locale, onChoose, onClose, t
       type="button"
     >{String(Number(candidate.slice(-2)))}</button>
   })
-  return <div aria-label={label} className="export-days absolute left-2.5 top-full z-[1100] mt-1 w-[min(304px,calc(100vw-20px))] rounded-[var(--radius-md)] border border-line3 bg-s1 p-2 shadow-[var(--shadow-pop)]" data-testid="export-day-grid" ref={root} role="dialog">
-    <div className="mb-1 flex items-center justify-between">
+  return <div aria-label={label} className="export-days col-span-full grid gap-1 rounded-[var(--radius-sm)] border border-line3 bg-s2 p-2" data-testid="export-day-grid" ref={root} role="group">
+    <div className="flex items-center justify-between">
       <button aria-label={t("hour.month.previous")} className="icon-button coarse:!h-11 coarse:!w-11" disabled={monthIndex <= 0} onClick={() => setMonth(months[monthIndex - 1] ?? month)} type="button"><ChevronLeft aria-hidden="true" size={14} /></button>
       <strong aria-live="polite" className="font-sans text-sm font-medium text-fg2" data-testid="export-day-month">{calendarMonthLabel(month, locale)}</strong>
       <button aria-label={t("hour.month.next")} className="icon-button coarse:!h-11 coarse:!w-11" disabled={monthIndex < 0 || monthIndex >= months.length - 1} onClick={() => setMonth(months[monthIndex + 1] ?? month)} type="button"><ChevronRight aria-hidden="true" size={14} /></button>
     </div>
     <div className="grid grid-cols-7 gap-0.5" role="group">{cells}</div>
-    <p className="mb-0 mt-1.5 font-sans text-sm text-fg4">{t("export.days")}</p>
+    <p className="m-0 font-sans text-sm text-fg4">{t("export.days")}</p>
   </div>
 }
 

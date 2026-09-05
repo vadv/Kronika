@@ -641,38 +641,36 @@ complete HTML. It validates that result before sending headers and streams the
 and delivery remain bounded in memory. The report build omits this live-only
 control.
 
-The live Export action opens a non-modal strip directly under the hour
-timeline; the interval it will export is drawn on the plot as a selection, so
-the timeline stays the instrument that chooses the range and the address, view
-and cursor do not change. The range comes from context first: the selected
-hour, a window of five, fifteen or thirty minutes around the cursor, or the
-same range moved an hour earlier or later. The exact inclusive seconds are one
-editable line in the current Browser/UTC mode, with a date only when an
-endpoint leaves the hour's civil day; a day picker offers only days that hold
-recordings. Before anything is requested the strip states what the file will
-contain, the recorded span inside the range from the hour's segments, pauses
-longer than a minute between them and hours outside the current one without
-recordings, and its exact name, which the client derives from the same UTC
-seconds as the server. A local civil time skipped by a clock transition is
-rejected at that endpoint; a repeated civil time exposes first/second
-occurrence choices derived from the actual candidates, including transitions
-that are not one hour. On a phone the strip is a sheet at the bottom of the
-viewport that leaves the plot visible.
+The live Export action opens a modal dialog over the page; the interval it
+will export is drawn on the hour timeline behind it as a selection, and the
+address, view and cursor do not change. The range comes from context first:
+the selected hour, a window of five, fifteen or thirty minutes around the
+cursor, or the same range moved an hour earlier or later. Each endpoint is a
+labelled line with a day button and an editable clock in the current
+Browser/UTC mode; the day button offers only days that hold recordings. Before
+anything is requested the dialog states what the file will contain, the
+recorded span inside the range from the hour's segments, pauses longer than a
+minute between them and hours outside the current one without recordings, and
+its exact name, which the client derives from the same UTC seconds as the
+server. A local civil time skipped by a clock transition is rejected at that
+endpoint; a repeated civil time exposes first/second occurrence choices
+derived from the actual candidates, including transitions that are not one
+hour. On a phone the dialog is a sheet at the bottom of the viewport.
 
 An accepted export keeps immutable positive Unix-second bounds. Until response
-headers arrive, the strip reports preparation as elapsed seconds beside the
+headers arrive, the dialog reports preparation as elapsed seconds beside the
 seconds the previous export needed, kept in the browser, and offers no
-cancellation or restart. It cannot be dismissed during that work,
-while the rest of the interface and its navigation remain available. After
-headers, the strip reports received bytes and the declared `Content-Length`
+cancellation or restart. It cannot be dismissed during that work, and the page behind the scrim waits
+with it. After
+headers, the dialog reports received bytes and the declared `Content-Length`
 when present while assembling the streamed body. Completion creates one HTML
 download, revokes its object URL, reports the saved name, size and seconds,
 and offers another export. An HTTP error, response-body failure or
-local-download failure returns the strip to its editable state.
+local-download failure returns the dialog to its editable state.
 If the connection ends before any response status, server preparation remains
-unobservable: the strip retains its submitted range, reports that state and
+unobservable: the dialog retains its submitted range, reports that state and
 keeps close and restart unavailable. Browser Back and hour navigation close an
-idle strip; during an active export they leave the strip and its submitted
+idle dialog; during an active export they leave the dialog and its submitted
 range in place.
 
 English and Russian source dictionaries are flat YAML files. The interface
