@@ -16,7 +16,7 @@ storage root or earlier segment. A first rate that needs an earlier sample
 remains `null`.
 
 The HTML embeds the production React interface, the Rust `kronika-query` engine
-compiled to WebAssembly and run single-threaded in a Web Worker, the ZMS, and
+compiled to WebAssembly and running in the browser, the ZMS, and
 its canonical IDX. Open the file directly in an ordinary browser. Tables,
 heatmaps, search, and charts run locally without external assets or network
 requests. There is no authentication, MCP, live refresh, or second Export
