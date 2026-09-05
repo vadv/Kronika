@@ -196,7 +196,7 @@ when several calls overlap; it is not CPU utilization.
 **Known limitation of this hour:** Plans Activity returns an error because
 `pg_store_plans` recorded duplicate identities. The table and selected-plan
 Inspector used above work. Do not interpret that error as zero activity,
-and do not change scope to conceal it. This walkthrough makes no claim about
+This walkthrough makes no claim about
 an hourly plan ranking that could not be read.
 
 ### 4. A waiting query and an idle transaction can be in the same chain
@@ -270,8 +270,8 @@ For a self-contained handoff, use **Export** on your own web instance, review
 the selected range and download the interactive HTML. It contains all recorded
 sections in that range, including stored SQL, logs and command lines. The
 recipient can reopen views and selections without a collector or web server.
-The HTML remains frozen and has no live MCP endpoint. CLI slicing/report
-creation is an additional workflow in [the release guide](releases.md).
+The HTML remains frozen and has no live MCP endpoint. For scripted work, use [dump](../bins/kronika-dump/README.md) to slice
+a recording and [report](../bins/kronika-report/README.md) to create HTML.
 
 To involve an external AI client, use **Connect an AI agent** and the
 [MCP client guide](mcp-clients.md). Ask it to list recorded bounds/sections,
