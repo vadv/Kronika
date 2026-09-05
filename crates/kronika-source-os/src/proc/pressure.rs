@@ -1,4 +1,4 @@
-//! Parse `/proc/pressure/{cpu,memory,io}` into the `1_107_001` registry section.
+//! Parse Linux host or cgroup PSI into the `1_107_001` registry section.
 
 use kronika_registry::Ts;
 use kronika_registry::os_psi::OsPsi;
@@ -34,7 +34,8 @@ pub struct PsiRow {
 ///
 /// Returns `(avg10, avg60, avg300, total)` on success.
 fn parse_psi_line(
-    resource: &str,
+    source: &str,
+    file: &str,
     kind: &str,
     line: &str,
 ) -> Result<(f64, f64, f64, i64), ParseError> {
@@ -49,37 +50,41 @@ fn parse_psi_line(
         };
         match key {
             "avg10" => {
-                avg10 = Some(val.parse::<f64>().map_err(|e| {
-                    ParseError(format!("/proc/pressure/{resource} {kind} avg10: {e}"))
-                })?);
+                avg10 = Some(
+                    val.parse::<f64>()
+                        .map_err(|e| ParseError(format!("{source}/{file} {kind} avg10: {e}")))?,
+                );
             }
             "avg60" => {
-                avg60 = Some(val.parse::<f64>().map_err(|e| {
-                    ParseError(format!("/proc/pressure/{resource} {kind} avg60: {e}"))
-                })?);
+                avg60 = Some(
+                    val.parse::<f64>()
+                        .map_err(|e| ParseError(format!("{source}/{file} {kind} avg60: {e}")))?,
+                );
             }
             "avg300" => {
-                avg300 = Some(val.parse::<f64>().map_err(|e| {
-                    ParseError(format!("/proc/pressure/{resource} {kind} avg300: {e}"))
-                })?);
+                avg300 = Some(
+                    val.parse::<f64>()
+                        .map_err(|e| ParseError(format!("{source}/{file} {kind} avg300: {e}")))?,
+                );
             }
             "total" => {
-                total = Some(val.parse::<i64>().map_err(|e| {
-                    ParseError(format!("/proc/pressure/{resource} {kind} total: {e}"))
-                })?);
+                total = Some(
+                    val.parse::<i64>()
+                        .map_err(|e| ParseError(format!("{source}/{file} {kind} total: {e}")))?,
+                );
             }
             _ => {}
         }
     }
 
-    let avg10 = avg10
-        .ok_or_else(|| ParseError(format!("/proc/pressure/{resource} {kind}: missing avg10")))?;
-    let avg60 = avg60
-        .ok_or_else(|| ParseError(format!("/proc/pressure/{resource} {kind}: missing avg60")))?;
-    let avg300 = avg300
-        .ok_or_else(|| ParseError(format!("/proc/pressure/{resource} {kind}: missing avg300")))?;
-    let total = total
-        .ok_or_else(|| ParseError(format!("/proc/pressure/{resource} {kind}: missing total")))?;
+    let avg10 =
+        avg10.ok_or_else(|| ParseError(format!("{source}/{file} {kind}: missing avg10")))?;
+    let avg60 =
+        avg60.ok_or_else(|| ParseError(format!("{source}/{file} {kind}: missing avg60")))?;
+    let avg300 =
+        avg300.ok_or_else(|| ParseError(format!("{source}/{file} {kind}: missing avg300")))?;
+    let total =
+        total.ok_or_else(|| ParseError(format!("{source}/{file} {kind}: missing total")))?;
 
     Ok((avg10, avg60, avg300, total))
 }
@@ -92,7 +97,8 @@ fn parse_psi_line(
 ///
 /// Returns [`ParseError`] when a required field is missing or unparseable.
 fn parse_resource(
-    name: &str,
+    source: &str,
+    file: &str,
     resource: u8,
     content: &str,
     has_full: bool,
@@ -109,16 +115,16 @@ fn parse_resource(
         }
     }
 
-    let some_line = some_line
-        .ok_or_else(|| ParseError(format!("/proc/pressure/{name}: missing 'some' line")))?;
+    let some_line =
+        some_line.ok_or_else(|| ParseError(format!("{source}/{file}: missing 'some' line")))?;
 
     let (some_avg10, some_avg60, some_avg300, some_total) =
-        parse_psi_line(name, "some", some_line)?;
+        parse_psi_line(source, file, "some", some_line)?;
 
     let (full_avg10, full_avg60, full_avg300, full_total) = if has_full {
-        let line = full_line
-            .ok_or_else(|| ParseError(format!("/proc/pressure/{name}: missing 'full' line")))?;
-        let (a10, a60, a300, tot) = parse_psi_line(name, "full", line)?;
+        let line =
+            full_line.ok_or_else(|| ParseError(format!("{source}/{file}: missing 'full' line")))?;
+        let (a10, a60, a300, tot) = parse_psi_line(source, file, "full", line)?;
         (Some(a10), Some(a60), Some(a300), Some(tot))
     } else {
         (None, None, None, None)
@@ -154,16 +160,34 @@ pub fn parse_pressure(
     io: Option<&str>,
     ts: i64,
 ) -> Result<Vec<PsiRow>, ParseError> {
+    parse_pressure_at(
+        cpu,
+        memory,
+        io,
+        ts,
+        "/proc/pressure",
+        ["cpu", "memory", "io"],
+    )
+}
+
+pub(crate) fn parse_pressure_at(
+    cpu: Option<&str>,
+    memory: Option<&str>,
+    io: Option<&str>,
+    ts: i64,
+    source: &str,
+    files: [&str; 3],
+) -> Result<Vec<PsiRow>, ParseError> {
     let mut rows = Vec::with_capacity(3);
 
     if let Some(content) = cpu {
-        rows.push(parse_resource("cpu", 0, content, false, ts)?);
+        rows.push(parse_resource(source, files[0], 0, content, false, ts)?);
     }
     if let Some(content) = memory {
-        rows.push(parse_resource("memory", 1, content, true, ts)?);
+        rows.push(parse_resource(source, files[1], 1, content, true, ts)?);
     }
     if let Some(content) = io {
-        rows.push(parse_resource("io", 2, content, true, ts)?);
+        rows.push(parse_resource(source, files[2], 2, content, true, ts)?);
     }
 
     Ok(rows)

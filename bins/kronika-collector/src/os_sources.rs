@@ -230,11 +230,13 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 
 /// Read every procfs OS section synchronously.
 ///
-/// Counter sections (cpu, stat, meminfo, loadavg, vmstat, psi, diskstats,
+/// Counter sections (cpu, stat, meminfo, loadavg, vmstat, pressure, diskstats,
 /// netdev, snmp, netstat) are gated on `due.has(SourceKind::OsCore)` and are
-/// never emitted on an OsMountTopo-only tick. Mountinfo is parsed on every
-/// `OsCore` tick for diskstats attribution and emitted, together with topology,
-/// only when `due.has(SourceKind::OsMountTopo)` is true.
+/// never emitted on an OsMountTopo-only tick. Pressure comes from procfs on a
+/// machine and the collector's exact cgroup v2 path in a container.
+/// Mountinfo is parsed on every `OsCore` tick for diskstats attribution and
+/// emitted, together with topology, only when
+/// `due.has(SourceKind::OsMountTopo)` is true.
 /// On file read or parse failure the affected section is skipped and a
 /// `collection_degraded` event is logged; zeros are never fabricated. `scope`
 /// is the host scope for device-local sections; network sections carry their
@@ -272,7 +274,7 @@ pub(crate) fn collect_os_sources(
 
     let sys = SysFs::from_env();
     if due.has(SourceKind::OsCore) {
-        singletons::collect_singletons(fs, scope, ts, &mut os);
+        singletons::collect_singletons(fs, &sys, scope, ts, in_container, &mut os);
     }
     // OsCore needs mountinfo for the container device filter in diskstats;
     // OsMountTopo needs it to build the attribution section rows.
@@ -351,6 +353,19 @@ const fn os_entity_scope(in_container: bool) -> u8 {
 #[cfg(test)]
 pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool {
     in_container && due.has(SourceKind::OsCgroup)
+}
+
+#[cfg(test)]
+pub(crate) fn collect_pressure_for_test(
+    fs: &ProcFs,
+    sys: &SysFs,
+    scope: u8,
+    ts: i64,
+    in_container: bool,
+) -> Vec<OsPsi> {
+    let mut os = OsSources::empty();
+    singletons::collect_pressure_rows(fs, sys, scope, ts, in_container, &mut os);
+    os.psi
 }
 
 /// Intern one OS string, logging degradation and returning `None` on failure

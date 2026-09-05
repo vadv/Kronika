@@ -219,11 +219,16 @@ tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
-container. Every `os_psi` row records that scope. The current procfs collector
-produces host-scoped rows; when it runs in a container, their timestamps remain
-visible but health is null. Node pressure must not stand in for container
-pressure. Future rows from the container's own cgroup can be used without
-changing the formula.
+container. Every `os_psi` row records that scope. On a machine the core tick
+reads `/proc/pressure/{cpu,memory,io}` and records host scope. In a container
+with cgroup v2 it resolves one exact unified membership from
+`/proc/self/cgroup`, reads only `cpu.pressure`, `memory.pressure`, and
+`io.pressure` at that path under the configured cgroup root, and records
+container scope. It does not walk parents or children and never substitutes
+host pressure. A missing resource file omits that resource. An unreadable or
+malformed present file, an invalid or ambiguous membership, cgroup v1, or an
+unsupported hierarchy produces no replacement value; health remains `null`
+without all three resources.
 
 ## Health
 

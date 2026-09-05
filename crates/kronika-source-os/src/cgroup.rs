@@ -3,6 +3,8 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::io;
 
+use crate::proc::pressure::{PsiRow, parse_pressure_at};
+use crate::proc::stat::ParseError;
 use crate::{ProcFs, SysFs};
 
 mod model;
@@ -187,6 +189,74 @@ impl WorkloadMemberships {
         } else {
             collect_v1_paths(sys, ts, clock_ticks_per_sec, self.paths)
         })
+    }
+}
+
+/// Read PSI from the collector process's exact unified cgroup v2 membership.
+///
+/// Cgroup v1 and systems without a unified hierarchy return no rows. Missing
+/// resource files omit only those resources. Host pressure is never read here.
+///
+/// # Errors
+/// Returns an error when cgroup v2 is present but the exact membership cannot
+/// be read, is invalid or ambiguous, a present pressure file cannot be read,
+/// or a present pressure value cannot be parsed.
+pub fn collect_pressure(procfs: &ProcFs, sys: &SysFs, ts: i64) -> Result<Vec<PsiRow>, ParseError> {
+    if !is_v2(sys) {
+        return Ok(Vec::new());
+    }
+
+    let membership = procfs
+        .read_raw("self/cgroup")
+        .map_err(|err| ParseError(format!("self/cgroup: {err}")))?;
+    let path = exact_unified_path(&membership).ok_or_else(|| {
+        ParseError("self/cgroup: no single valid unified cgroup membership".to_owned())
+    })?;
+    let cpu = read_optional_pressure(sys, path, "cpu.pressure")?;
+    let memory = read_optional_pressure(sys, path, "memory.pressure")?;
+    let io = read_optional_pressure(sys, path, "io.pressure")?;
+
+    parse_pressure_at(
+        cpu.as_deref(),
+        memory.as_deref(),
+        io.as_deref(),
+        ts,
+        path,
+        ["cpu.pressure", "memory.pressure", "io.pressure"],
+    )
+    .map_err(|err| ParseError(format!("cgroup v2: {err}")))
+}
+
+fn exact_unified_path(content: &str) -> Option<&str> {
+    let mut unified = None;
+    for line in content.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(_hierarchy), Some(controllers), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if !controllers.is_empty() {
+            continue;
+        }
+        let path = normalize_self_cgroup_path(path)?;
+        if unified.replace(path).is_some() {
+            return None;
+        }
+    }
+    unified
+}
+
+fn read_optional_pressure(
+    sys: &SysFs,
+    path: &str,
+    file: &str,
+) -> Result<Option<String>, ParseError> {
+    let relative = rel(path, file);
+    match sys.read(&relative) {
+        Ok(content) => Ok(Some(content)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(ParseError(format!("{relative}: {err}"))),
     }
 }
 

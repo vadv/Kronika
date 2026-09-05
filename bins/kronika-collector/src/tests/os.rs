@@ -1,5 +1,6 @@
 use crate::os_sources::{
-    UserReferences, collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero,
+    UserReferences, collect_mountinfo, collect_os_sources, collect_pressure_for_test, cpu_max_mhz,
+    resolve_major_zero,
 };
 use crate::scheduler::{DueSet, SourceKind};
 use kronika_source_os::proc::process::ProcessIoCredentials;
@@ -19,6 +20,57 @@ fn mount_entry(major: i32, minor: i32, source: &str) -> MountEntry {
         deleted: false,
         is_k8s_infra: false,
     }
+}
+
+const HOST_CPU_PRESSURE: &str = "some avg10=0.10 avg60=0.05 avg300=0.02 total=10000\n";
+const CONTAINER_CPU_PRESSURE: &str = "some avg10=0.20 avg60=0.10 avg300=0.04 total=20000\n";
+
+#[test]
+fn pressure_collection_keeps_machine_procfs_scope_and_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path().join("proc");
+    let sys_root = dir.path().join("sys");
+    std::fs::create_dir_all(proc_root.join("pressure")).expect("mkdir host pressure");
+    std::fs::create_dir_all(sys_root.join("fs/cgroup/workload")).expect("mkdir cgroup pressure");
+    std::fs::write(proc_root.join("pressure/cpu"), HOST_CPU_PRESSURE).expect("write host pressure");
+    std::fs::write(sys_root.join("fs/cgroup/cgroup.controllers"), "cpu\n")
+        .expect("write unified marker");
+    std::fs::write(
+        sys_root.join("fs/cgroup/workload/cpu.pressure"),
+        CONTAINER_CPU_PRESSURE,
+    )
+    .expect("write cgroup pressure");
+    let rows =
+        collect_pressure_for_test(&ProcFs::new(proc_root), &SysFs::new(sys_root), 0, 7, false);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].scope, 0);
+    assert_eq!(rows[0].some_total, 10_000);
+}
+
+#[test]
+fn pressure_collection_replaces_host_values_with_container_scope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proc_root = dir.path().join("proc");
+    let sys_root = dir.path().join("sys");
+    std::fs::create_dir_all(proc_root.join("self")).expect("mkdir proc self");
+    std::fs::create_dir_all(proc_root.join("pressure")).expect("mkdir host pressure");
+    std::fs::create_dir_all(sys_root.join("fs/cgroup/workload")).expect("mkdir cgroup pressure");
+    std::fs::write(proc_root.join("self/cgroup"), "0::/workload\n").expect("write membership");
+    std::fs::write(proc_root.join("pressure/cpu"), HOST_CPU_PRESSURE).expect("write host pressure");
+    std::fs::write(sys_root.join("fs/cgroup/cgroup.controllers"), "cpu\n")
+        .expect("write unified marker");
+    std::fs::write(
+        sys_root.join("fs/cgroup/workload/cpu.pressure"),
+        CONTAINER_CPU_PRESSURE,
+    )
+    .expect("write cgroup pressure");
+    let rows =
+        collect_pressure_for_test(&ProcFs::new(proc_root), &SysFs::new(sys_root), 0, 8, true);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].scope, 3);
+    assert_eq!(rows[0].some_total, 20_000);
 }
 
 #[test]

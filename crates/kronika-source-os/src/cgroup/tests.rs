@@ -128,6 +128,135 @@ fn write_optional_file(path: &std::path::Path, content: Option<&str>) {
     }
 }
 
+const CPU_PRESSURE: &str = "some avg10=0.10 avg60=0.05 avg300=0.02 total=10000\n";
+const MEMORY_PRESSURE: &str = "some avg10=1.50 avg60=0.80 avg300=0.30 total=500000\n\
+full avg10=0.20 avg60=0.10 avg300=0.05 total=100000\n";
+const IO_PRESSURE: &str = "some avg10=0.50 avg60=0.25 avg300=0.10 total=200000\n\
+full avg10=0.05 avg60=0.02 avg300=0.01 total=20000\n";
+
+fn prepare_v2_pressure(dir: &tempfile::TempDir, path: &str) -> std::path::PathBuf {
+    std::fs::write(dir.path().join("proc/self/cgroup"), format!("0::{path}\n"))
+        .expect("write unified membership");
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    let cgroup = fixture_cgroup_path(dir, "", path);
+    std::fs::create_dir_all(&cgroup).expect("mkdir pressure cgroup");
+    cgroup
+}
+
+#[test]
+fn pressure_reads_only_the_exact_unified_v2_membership() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/team/workload");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(cgroup.join("memory.pressure"), MEMORY_PRESSURE).expect("write memory pressure");
+    std::fs::write(cgroup.join("io.pressure"), IO_PRESSURE).expect("write I/O pressure");
+    let other = fixture_cgroup_path(&dir, "", "/team/other");
+    std::fs::create_dir_all(&other).expect("mkdir other cgroup");
+    std::fs::write(
+        other.join("cpu.pressure"),
+        "some avg10=9.00 avg60=9.00 avg300=9.00 total=90000\n",
+    )
+    .expect("write other pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 77).expect("collect cgroup pressure");
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.resource, row.ts, row.some_total))
+            .collect::<Vec<_>>(),
+        [(0, 77, 10_000), (1, 77, 500_000), (2, 77, 200_000)]
+    );
+}
+
+#[test]
+fn pressure_accepts_the_unified_root_membership() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write root pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 88).expect("collect root pressure");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].some_total, 10_000);
+}
+
+#[test]
+fn pressure_rejects_a_membership_path_that_leaves_its_root() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    std::fs::write(
+        dir.path().join("proc/self/cgroup"),
+        "0::/workload/../outside\n",
+    )
+    .expect("write unsafe membership");
+    let outside = fixture_cgroup_path(&dir, "", "/outside");
+    std::fs::create_dir_all(&outside).expect("mkdir outside cgroup");
+    std::fs::write(outside.join("cpu.pressure"), CPU_PRESSURE).expect("write outside pressure");
+
+    let error = collect_pressure(&procfs, &sys, 99).expect_err("reject unsafe membership");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
+fn pressure_rejects_ambiguous_unified_memberships() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io\n",
+    )
+    .expect("write unified marker");
+    std::fs::write(
+        dir.path().join("proc/self/cgroup"),
+        "0::/first\n1::/second\n",
+    )
+    .expect("write ambiguous membership");
+
+    let error = collect_pressure(&procfs, &sys, 100).expect_err("reject ambiguous membership");
+
+    assert!(error.to_string().contains("no single valid unified"));
+}
+
+#[test]
+fn pressure_omits_a_missing_resource_and_rejects_a_malformed_one() {
+    let (dir, procfs, sys) = fixture_roots();
+    let cgroup = prepare_v2_pressure(&dir, "/workload");
+    std::fs::write(cgroup.join("cpu.pressure"), CPU_PRESSURE).expect("write CPU pressure");
+    std::fs::write(cgroup.join("io.pressure"), IO_PRESSURE).expect("write I/O pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 100).expect("collect partial pressure");
+    assert_eq!(
+        rows.iter().map(|row| row.resource).collect::<Vec<_>>(),
+        [0, 2]
+    );
+
+    std::fs::write(cgroup.join("io.pressure"), "some total=invalid\n")
+        .expect("write malformed pressure");
+    assert!(collect_pressure(&procfs, &sys, 101).is_err());
+}
+
+#[test]
+fn pressure_omits_cgroup_v1_without_reading_host_pressure() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(dir.path().join("proc/self/cgroup"), "2:cpu:/workload\n")
+        .expect("write v1 membership");
+    std::fs::create_dir_all(dir.path().join("proc/pressure")).expect("mkdir host pressure");
+    std::fs::write(dir.path().join("proc/pressure/cpu"), CPU_PRESSURE)
+        .expect("write host pressure");
+
+    let rows = collect_pressure(&procfs, &sys, 102).expect("collect unsupported cgroup pressure");
+
+    assert!(rows.is_empty());
+}
+
 fn collect_v2_pids_fixture(current: Option<&str>, max: Option<&str>) -> CgroupCollection {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("fs/cgroup");
