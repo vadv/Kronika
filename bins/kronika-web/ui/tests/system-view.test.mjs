@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { collectorCgroupOverview, cgroupDevicePresentations, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { cgroupDevicePresentations, dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, sharedCgroupPath, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -282,48 +282,6 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
   const malformedContext = { ...context, values: { ...context.values, effective_memory_max: -1 } }
   const malformedMemory = helpers.systemEntityRows({ ...source, sections: { ...source.sections, os_cgroup_context: [malformedContext] } }, "os_cgroup_memory", 10)[0]
   assert.equal(malformedMemory.values.effective_memory_max, null)
-})
-
-test("container overview follows the collector's exact v2 paths and keeps I/O devices separate", () => {
-  const typeIds = { os_cgroup_context: "1205001", os_cgroup_cpu: "1201001", os_cgroup_memory: "1202002", os_cgroup_io: "1203002", os_cgroup_pids: "1204001" }
-  const row = (logicalName, ordinal, values) => ({ logicalName, ordinal, segmentId: "s", timestamp: 20, typeId: typeIds[logicalName], values: { scope: 3, ...values } })
-  const context = row("os_cgroup_context", "context", {
-    cgroup_version: 2, cpu_path: "/", memory_path: "/", io_path: "/", cpuset_cpus: 2,
-    effective_cpu_quota_usec: 200_000, effective_cpu_period_usec: 100_000, effective_memory_max: 1_073_741_824,
-  })
-  const source = { sections: {
-    os_cgroup_context: [context],
-    os_cgroup_cpu: [row("os_cgroup_cpu", "cpu", { cgroup_path: "/", usage_usec: 2_000_000, user_usec: 1_200_000, system_usec: 700_000, quota_usec: -1, period_usec: 100_000 })],
-    os_cgroup_memory: [row("os_cgroup_memory", "memory", { cgroup_path: "/", current: 536_870_912, max: null, anon: 1, file: 1, kernel: 1, slab: 1 })],
-    os_cgroup_io: [
-      row("os_cgroup_io", "252:0", { cgroup_path: "/", major: 252, minor: 0, rbytes: 10, wbytes: 20 }),
-      row("os_cgroup_io", "259:0", { cgroup_path: "/", major: 259, minor: 0, rbytes: 30, wbytes: 40 }),
-      row("os_cgroup_io", "other", { cgroup_path: "/other", major: 7, minor: 0, rbytes: 50, wbytes: 60 }),
-    ],
-    os_diskstats: [row("os_diskstats", "dm-0", { major: 252, minor: 0, device: "dm-0", scope: 0 })],
-    os_mountinfo: [
-      row("os_mountinfo", "data", { major: 252, minor: 0, mount_point: "/var/lib/kronika/data", root: "/volumes/data/_data", source: "/dev/mapper/data-docker", is_k8s_infra: false, scope: 0 }),
-      row("os_mountinfo", "hosts", { major: 252, minor: 0, mount_point: "/etc/hosts", root: "/containers/id/hosts", source: "/dev/mapper/data-docker", is_k8s_infra: true, scope: 0 }),
-    ],
-    os_cgroup_pids: [
-      row("os_cgroup_pids", "tasks", { cgroup_path: "/", current: 4, max: 100 }),
-      row("os_cgroup_pids", "other", { cgroup_path: "/other", current: 9, max: 100 }),
-    ],
-  } }
-  const targets = helpers.collectorCgroupOverview(source, 20)
-  assert.deepEqual(targets.map(({ mode }) => mode), ["cpu", "memory", "io", "io", "tasks"])
-  assert.equal(targets.find(({ mode }) => mode === "cpu").row.values.cgroup_capacity, 2)
-  assert.equal(targets.find(({ mode }) => mode === "memory").row.values.effective_memory_max, 1_073_741_824)
-  assert.deepEqual(targets.filter(({ mode }) => mode === "io").map(({ row }) => row.values.device_id), ["252:0", "259:0"])
-  assert.equal(targets.find(({ mode }) => mode === "io").row.values.cgroup_device_target, "data-docker → /var/lib/kronika/data")
-  assert.equal(targets.filter(({ mode }) => mode === "io")[1].row.values.cgroup_device_target, null)
-  assert.equal(targets.filter(({ mode }) => mode === "io")[1].row.values.cgroup_mount_associations, null)
-  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.cgroup_path, "/")
-  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_current, 4)
-  assert.equal(targets.find(({ mode }) => mode === "tasks").row.values.tasks_max, 100)
-
-  const split = { ...source, sections: { ...source.sections, os_cgroup_context: [{ ...context, values: { ...context.values, io_path: "/io" } }] } }
-  assert.equal(helpers.collectorCgroupOverview(split, 20).some(({ mode }) => mode === "tasks"), false)
 })
 
 test("System loads cgroups only for the recorded container environment", () => {
@@ -647,20 +605,19 @@ test("System is one ledger: rows expand in place and the chart lives on the page
   // One operator question at a time inside a row: cgroup accounting stays
   // dedicated, and Disk separates device I/O, filesystems and topology.
   assert.match(source, /disk: \["io", "filesystems", "topology"\]/)
-  assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
   assert.match(source, /timelineLanePoints = environment === "container"[\s\S]*lane\.startsWith\("pg_"\)/)
   assert.match(source, /EXACT_TIMELINE_METRIC_LANES[^\n]+\["cpu_busy", "cpu_stall", "memory"\]/)
   assert.doesNotMatch(source, /function groupLane/)
   assert.doesNotMatch(source, /function timelineLane/)
-  assert.match(source, /afterCgroups=\{cgroupActivity\}/)
-  assert.match(source, /environment !== "container" \|\| openedContainer\.current[\s\S]*new Set\(\[\.\.\.current, "cgroups"\]\)/)
-  assert.match(source, /<ContainerCgroupOverview/)
-  assert.match(source, /cgroup-overview:\$\{request\.key\}/)
-  assert.match(source, /key !== "cgroups"/)
-  assert.match(source, /aria-pressed=\{selected\}/)
-  assert.match(source, /grid-cols-1 min-\[520px\]:grid-cols-2 min-\[1100px\]:grid-cols-4/)
-  assert.match(source, /data-testid="cgroup-overview-io"/)
   assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
+  // The container scope is four real USE rows: each discloses its own cgroup
+  // table, CPU and I/O carry the cgroup activity ledgers, and nothing is
+  // force-opened or drawn as a card strip above the ledger.
+  assert.match(source, /isContainerResource\(key\) \? \[sectionName\] : sectionEntities\(sectionName, mode\)/)
+  assert.match(source, /key === "cgroup_cpu" && data\.availableSections\.includes\("os_cgroup_cpu"\) && <CgroupActivity/)
+  assert.match(source, /key === "cgroup_io" && data\.availableSections\.includes\("os_cgroup_io"\) && <CgroupActivity/)
+  assert.match(source, /onOpenRow=\{openRow\}/)
+  assert.doesNotMatch(source, /ContainerCgroupOverview|cgroup-overview|openedContainer|afterCgroups/)
   // The ledger is the page: expansion is disclosure, the group chart renders
   // inline, and no machinery force-opens an Inspector to fake content.
   assert.match(source, /renderExpansion=\{renderExpansion\}/)

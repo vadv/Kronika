@@ -214,7 +214,7 @@ Web reads `instance_metadata.environment`. It hides Cgroups and requests no
 cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
 Threads (TIDs) and loads the complete already-bounded direct-live rows recorded in that
 namespace; the context row decorates only the collector's matching controller
-row. The controller paths remain independent for cgroup v1. A recursive cgroup
+row. The query layer derives the container lanes, `cg_cpu_share`, `cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`, `cg_memory`, `cg_memory_bytes`, `cg_mem_psi`, `cg_oom`, `cg_io_read`, `cg_io_write`, `cg_io_psi`, `cg_pids_share` and `cg_pids`, from the controller rows the context selects by exact path and scope and from container-scoped pressure; host-scoped pressure feeds only the host lanes, and a share lane exists only while a capacity or limit is recorded. The controller paths remain independent for cgroup v1. A recursive cgroup
 tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
@@ -701,7 +701,7 @@ native action that opens its resource and selects that exact recorded metric;
 an unavailable cell remains an inert dash. The cell action owns its complete
 label, reading, keyboard focus, and coarse-pointer target; lane text is not a
 second nested help action. Column-header help defines USE methodology, while
-the selected inline chart owns metric-specific help. Rows expand in place —
+the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to, since shares are comparable and byte rates are not; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events, where zero is the point. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
 several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
