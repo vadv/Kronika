@@ -159,9 +159,9 @@ ZMS хранит каждую секцию сжатой, а в каталоге 
 
 ```sh
 sudo journalctl -u kronika-collector -u kronika-web --since '10 minutes ago'
-kronika-dump /var/lib/kronika
-kronika-dump /var/lib/kronika --json
-kronika-dump /var/lib/kronika --section 1100001 --limit 10
+sudo kronika-dump /var/lib/kronika
+sudo kronika-dump /var/lib/kronika --json
+sudo kronika-dump /var/lib/kronika --section 1100001 --limit 10
 ```
 
 Замените `/var/lib/kronika` своим каталогом данных. Ошибки сборщика указывают

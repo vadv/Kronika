@@ -155,9 +155,9 @@ For the units in the [service guide](services.md), read both service logs:
 
 ```sh
 sudo journalctl -u kronika-collector -u kronika-web --since '10 minutes ago'
-kronika-dump /var/lib/kronika
-kronika-dump /var/lib/kronika --json
-kronika-dump /var/lib/kronika --section 1100001 --limit 10
+sudo kronika-dump /var/lib/kronika
+sudo kronika-dump /var/lib/kronika --json
+sudo kronika-dump /var/lib/kronika --section 1100001 --limit 10
 ```
 
 Use your configured data directory in place of `/var/lib/kronika`. Collector
