@@ -16,7 +16,7 @@ the first predecessor-derived point to remain unavailable.
 The ZMS SHA-256 is
 `ba8dd3deae058dfd1580e81b4abc534dee71688b708347db09b6877eeecac58e`; the IDX
 SHA-256 is
-`33d48ba4dc4726fd80dd8901f1956baaedf0de1639b01f65349c9e381b992033`.
+`464497ed3528ddb5628086362f978c15d621d9bd07e268985337735a137c451d`.
 The integration test reads a non-null `transactions_per_second` point from the
 IDX and rows and events from the ZMS, in addition to byte-for-byte comparison
 with the direct query composition.

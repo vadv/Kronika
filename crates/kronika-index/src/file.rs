@@ -9,7 +9,7 @@ use crate::decode::u32_at;
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 /// Magic for the current derived-index format.
-pub const MAGIC: [u8; 8] = *b"KRNIDX6\0";
+pub const MAGIC: [u8; 8] = *b"KRNIDX1\0";
 /// Bytes before the table: magic, entry count, checksum.
 pub const HEADER_LEN: usize = 16;
 /// Bytes per TOC entry: series kind, physical input layout, offset, length.

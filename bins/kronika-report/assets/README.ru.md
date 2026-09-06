@@ -23,7 +23,7 @@ wasm-bindgen создаёт target `web`. Скрипт добавляет огр
 создания экземпляра.
 
 Размер WebAssembly — 9 910 988 байт, gzip — 2 395 947 байт, SHA-256 gzip:
-`36100b0739d1dd73d373f61f8ab557592b7f2871284037bd4dfc628d5b22dd04`.
+`f2d246ed04e6239b27a93e9069e3662bcf740e6480746d52160c9b3aaadaa144`.
 Размер JavaScript binding — 3 885 байт, SHA-256:
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 

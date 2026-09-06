@@ -334,7 +334,7 @@ truncated and its omitted tail may intersect the hour, the filtered count
 covers only returned in-window locators and `truncated` remains true. The hour
 never counts a locator known to be outside its bounds.
 
-`KRNIDX6` is the current IDX format. IDX is derived data: web
+`KRNIDX1` is the current IDX format. IDX is derived data: web
 discards and rebuilds any other IDX; there is no old-format reader, migration,
 compatibility branch, or dual write.
 

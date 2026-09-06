@@ -1385,7 +1385,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
 }
 
 #[test]
-fn manual_only_idx_remains_valid_until_disposable_cache_is_rebuilt() {
+fn previous_idx_is_rebuilt_from_recorded_cpu_for_health_and_findings() {
     let directory = tempfile::tempdir().expect("tempdir");
     let data_root = DataRoot::open(directory.path()).expect("data root");
     let writer = data_root
@@ -1432,6 +1432,13 @@ fn manual_only_idx_remains_valid_until_disposable_cache_is_rebuilt() {
     let path = path_of(&zms_path(directory.path(), &finished)).expect("index path");
     let canonical = std::fs::read(&path).expect("canonical bytes");
     let mut stale = crate::Index::decode(&canonical).expect("decode current format");
+    assert!(
+        stale.blocks.iter().any(|block| matches!(
+            block,
+            SeriesBlock::Findings(block) if block.type_id == 1_001_004 && block.total_hits == 1
+        )),
+        "recorded VM capacity produces the active-backend finding"
+    );
     for block in &mut stale.blocks {
         match block {
             SeriesBlock::PostgresHealth(points) => {
@@ -1446,18 +1453,21 @@ fn manual_only_idx_remains_valid_until_disposable_cache_is_rebuilt() {
             _ => {}
         }
     }
-    let stale = stale.encode().expect("valid old calculation");
-    crate::Index::decode(&stale).expect("old calculation remains valid in the current format");
+    let mut stale = stale.encode().expect("valid old calculation");
+    stale[..8].copy_from_slice(b"KRNIDX6\0");
+    let mut checksum = kronika_format::Crc32c::new();
+    checksum.update(&stale[..12]);
+    checksum.update(&stale[16..]);
+    stale[12..16].copy_from_slice(&checksum.finalize().to_le_bytes());
+    assert_eq!(
+        crate::Index::decode(&stale),
+        Err(crate::IndexError::BadMagic)
+    );
     assert_ne!(stale, canonical);
     for logical_name in ["health", "pg_stat_activity"] {
         std::fs::write(&path, &stale).expect("persist old calculation");
-        let reused = resource(directory.path(), &reader, &finished, logical_name)
-            .expect("reuse current-format cache");
-        assert!(reused.persisted);
-        assert_eq!(std::fs::read(&path).expect("unchanged old cache"), stale);
-        std::fs::remove_file(&path).expect("remove disposable fixture cache");
         let rebuilt = resource(directory.path(), &reader, &finished, logical_name)
-            .expect("recompute missing derived cache");
+            .expect("recompute previous-format cache");
         assert!(rebuilt.persisted);
         assert_eq!(std::fs::read(&path).expect("rebuilt bytes"), canonical);
         assert_eq!(
