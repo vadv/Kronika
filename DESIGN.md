@@ -7,7 +7,9 @@ repository rather than what is being built.
 
 ## Components
 
-Kronika records Linux values and PostgreSQL statistics at collection times, and parses local logs. A finished recording file is called a segment. The four shipped programs have these duties:
+Kronika records Linux values and PostgreSQL statistics at collection times, and
+parses local logs. A finished recording file is called a segment. The four
+shipped programs have these duties:
 
 | Program | Operation |
 | --- | --- |
@@ -18,9 +20,17 @@ Kronika records Linux values and PostgreSQL statistics at collection times, and 
 
 ## Resource requirements
 
-The collector targets a peak RSS of 25 MiB on an ordinary host. RSS is its memory resident in physical RAM; segment-write logs record it as `rss_kib`. Ordinary OS snapshots retain all source rows. Large PostgreSQL results and logs are read in bounded batches. Each accepted PostgreSQL batch reaches the journal before the next is fetched; a later query failure is logged and leaves the earlier batches in storage.
+The collector targets a peak RSS of 25 MiB on an ordinary host. RSS is its
+memory resident in physical RAM; segment-write logs record it as
+`rss_kib`. Ordinary OS snapshots retain all source rows. Large
+PostgreSQL results and logs are read in bounded batches. Each accepted
+PostgreSQL batch reaches the journal before the next is fetched; a later query
+failure is logged and leaves the earlier batches in storage.
 
-The web server keeps its configuration and listening socket between requests. Each request owns its open segments, decoded sections and working buffers. Queries use recorded indexes when their selected fields and time bounds are supported.
+The web server keeps its configuration and listening socket between requests.
+Each request owns its open segments, decoded sections and working buffers.
+Queries use recorded indexes when their selected fields and time bounds are
+supported.
 
 ## Storage format
 
@@ -39,11 +49,27 @@ checksums, section bounds and writer profiles.
 
 ### Removing old files
 
-With a fixed byte budget `B`, the collector counts the journal, finished ZMS files, their IDX files and recognized temporary files. Let `S` be `KRONIKA_SEGMENT_MAX_BYTES`, in bytes. Startup requires `B ≥ min(2 × S, u64::MAX)`: multiplication saturates at the largest unsigned 64-bit value. This validates the setting; the active journal and newest finished segment are never removed.
+With a fixed byte budget `B`, the collector counts the journal,
+finished ZMS files, their IDX files and recognized temporary files. Let
+`S` be `KRONIKA_SEGMENT_MAX_BYTES`, in bytes. Startup requires
+`B ≥ min(2 × S, u64::MAX)`: multiplication saturates at the largest unsigned 64-bit
+value. This validates the setting; the active journal and newest finished
+segment are never removed.
 
-For `auto:P`, the threshold applies to the whole filesystem containing the data directory, including unrelated files. One `fstatvfs` call on the open directory supplies `f_blocks` (block count), `f_frsize` (bytes per block) and `f_bfree` (free blocks). Total bytes are `F = f_blocks × f_frsize`; free bytes are `L = f_bfree × f_frsize`; both products saturate at `u64::MAX`. Used bytes are `U = max(0, F − L)`. The percentage threshold is `floor(F × P / 100)`, where `floor` rounds down.
+For `auto:P`, the threshold applies to the whole filesystem
+containing the data directory, including unrelated files. One
+`fstatvfs` call on the open directory supplies `f_blocks`
+(block count), `f_frsize` (bytes per block) and `f_bfree`
+(free blocks). Total bytes are `F = f_blocks × f_frsize`; free bytes are
+`L = f_bfree × f_frsize`; both products saturate at `u64::MAX`. Used bytes
+are `U = max(0, F − L)`. The percentage threshold is `floor(F × P / 100)`, where
+`floor` rounds down.
 
-An unlinked file can still occupy space while a reader holds it open. `pending_reclaim` counts bytes removed by rotation whose physical release has not appeared in filesystem usage yet. The compared size is `max(0, U − pending_reclaim)`. Each observed fall in `U` reduces this pending count, stopping at zero. Sources: [budget validation](bins/kronika-collector/src/config.rs), [rotation](bins/kronika-collector/src/rotation.rs), [filesystem measurement](crates/kronika-layout/src/root.rs).
+An unlinked file can still occupy space while a reader holds it open.
+`pending_reclaim` counts bytes removed by rotation whose physical release has
+not appeared in filesystem usage yet. The compared size is `max(0, U − pending_reclaim)`.
+Each observed fall in `U` reduces this pending count, stopping
+at zero. Sources: [budget validation](bins/kronika-collector/src/config.rs), [rotation](bins/kronika-collector/src/rotation.rs), [filesystem measurement](crates/kronika-layout/src/root.rs).
 
 ## Metric registry
 
@@ -184,7 +210,15 @@ Web reads `instance_metadata.environment`. It hides Cgroups and requests no
 cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
 Threads (TIDs) and loads the complete already-bounded direct-live rows recorded in that
 namespace; the context row decorates only the collector's matching controller
-row. The query layer derives the container lanes, `cg_cpu_share`, `cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`, `cg_memory`, `cg_memory_bytes`, `cg_mem_psi`, `cg_oom`, `cg_io_read`, `cg_io_write`, `cg_io_psi`, `cg_pids_share` and `cg_pids`, from the controller rows the context selects by exact path and scope and from container-scoped pressure; host-scoped pressure feeds only the host lanes, and a share lane exists only while a capacity or limit is recorded. The controller paths remain independent for cgroup v1. A recursive cgroup
+row. The query layer derives the container lanes, `cg_cpu_share`,
+`cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`,
+`cg_memory`, `cg_memory_bytes`, `cg_mem_psi`,
+`cg_oom`, `cg_io_read`, `cg_io_write`,
+`cg_io_psi`, `cg_pids_share` and `cg_pids`, from the
+controller rows the context selects by exact path and scope and from
+container-scoped pressure; host-scoped pressure feeds only the host lanes, and a
+share lane exists only while a capacity or limit is recorded. The controller
+paths remain independent for cgroup v1. A recursive cgroup
 tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
@@ -598,7 +632,28 @@ native action that opens its resource and selects that exact recorded metric;
 an unavailable cell remains an inert dash. The cell action owns its complete
 label, reading, keyboard focus, and coarse-pointer target; lane text is not a
 second nested help action. Column-header help defines USE methodology, while
-the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
+the selected inline chart owns metric-specific help.
+
+The header cells are the hour's verdict, computed from the rows below them:
+Utilization is the largest share at the cursor and the resource it belongs to;
+Saturation names every resource whose pressure was not zero in the hour with
+that resource's own peak and never sums different quantities; Errors is the
+summed count of the hour's events. A verdict is a button that opens the row it
+names; there are no thresholds and no colours.
+
+In a container the ledger opens with a Container scope of four real rows for the
+collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the
+container lanes: the share of the recorded CPU capacity, or the used cores when
+no capacity is recorded; throttled time beside the cgroup's own CPU pressure;
+memory against the effective limit, or the plain bytes without one; memory
+pressure and OOM kills; read and write bytes with I/O pressure; threads against
+`pids.max`.
+
+The CPU and I/O rows disclose the ranked cgroup activity ledgers, every
+container row discloses its bounded cgroup table, and the Network namespace and
+Host scopes follow. A host CPU count never stands in for a missing cgroup
+capacity: the share lane is absent and the row shows the measurement. Rows
+expand in place —
 several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
@@ -674,7 +729,8 @@ scaling is optional. Null cells are blank and zero uses the lightest fill. A
 cell moves the cursor, a row filters the table, and the full-screen view allows
 a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
-that cell sets. A row with a reading at the cursor preserves the cursor. Only compact identities and allowed display labels travel with ranked
+that cell sets. A row with a reading at the cursor preserves the cursor. Only
+compact identities and allowed display labels travel with ranked
 entities in the heatmap response. Query text, plans, command lines, log or
 sample text, statements, context, hints, detail payloads, and similar stored
 data do not; the complete row remains on its owning point/detail path. Tables
@@ -882,10 +938,10 @@ metadata: when PostgreSQL collection is disabled, overall health equals OS healt
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
-Every current-view entity table owns a target-keyed local request state. Until
-the newest target succeeds, pending or failure is shown locally and completed
-empty copy is suppressed; the last successful same-surface rows remain labelled
-as retained. Only a successful zero-row response is empty.
+Each entity table tracks the request for its latest selected target. Until
+that request succeeds, the table shows its loading or error state. Previous
+successful rows from the same screen remain visible and labelled as retained.
+The empty-result message appears only after a successful zero-row response.
 
 Processes uses the whole viewport row left after the time preview and compact
 controls. Its four summary readings live in the lens bar instead of a separate
@@ -1082,22 +1138,23 @@ Signs, exponent notation, grouping and nonfinite values are invalid. Missing
 or unavailable values never become zero and match neither strict operator.
 Displayed humanization does not participate in comparison.
 
-The token field keeps an editable draft separate from the last valid applied
+The search field keeps an editable draft separate from the last valid applied
 expression. Submission is atomic: an invalid span is marked and announced
 while the URL, request and last successful rows remain unchanged. A valid
 expression becomes removable keyboard controls whose comparison form uses the
 localized semantic label plus the exact operator and threshold; manual entry,
 paste and related-row links all produce this same state. Progressive RU/EN
 help lists the complete current surface registry and rules. The server parses
-and validates the same bounded expression and loads the exact hidden
-dependency closure. At object level the complete boolean expression is
-evaluated only after the object reducer has made identity, text and metrics
-available. At database, schema and tablespace levels, string/member predicates
-select physical contributors before aggregation and quantity/result predicates
-compare the authoritative grouped reducer after aggregation and before
-semantic ordering, cursor validation and pagination. `AND` can join these two
-parts. Every `OR` subtree must stay wholly on one side: member-only alternatives
-run before the reducer, result-only alternatives run after it, and a mixed
+and validates the same bounded expression and loads all input fields required
+by its calculations, including fields hidden from the requested output. For an
+individual object, the complete boolean expression is evaluated only
+after its final identity fields, text and metrics have been computed. At
+database, schema and tablespace levels, string conditions select the
+contributing source rows before aggregation. Quantity conditions compare the
+computed group result after aggregation, before ordering by value, validating
+the page cursor and dividing the result into pages. `AND` can join these two
+parts. Every `OR` subtree must stay wholly on one side: alternatives over source rows
+run before aggregation, alternatives over group results run after it, and a mixed
 alternative is rejected atomically as `mixed_phase_or`. This preserves exact
 boolean meaning without exposing a generic query engine. Search refusal, a
 successful empty set and transport failure are distinct; refresh failure
@@ -1151,7 +1208,8 @@ prior view, cursor and expression.
 
 Plan detail also resolves the recorded related Statement Query text inline,
 before the separately labelled Execution plan. It uses the same public
-fork-transparent Query ID mapping, but not the navigation identity: the public
+Query ID mapping across extension implementations. The full identity used for
+related-row navigation does not apply to this text lookup: the public
 `query_id` is the normalized query-text hash, so database and role do not take
 part in this internal lookup. OSSC and Datasentinel use nonzero `queryid`; the
 vadv fork uses nonzero `queryid_stat_statements`. The client sends only
@@ -1278,7 +1336,8 @@ and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
 needed to rank them. A counter ranks by its whole-window delta and a gauge by
 its whole-window maximum, except for the RSS grid described below. A band total
-uses the sum for counters and the maximum for other gauges. The response also carries a totals band summing available entity values per
+uses the sum for counters and the maximum for other gauges. The response also
+carries a totals band summing available entity values per
 column and an others band summing entities outside the returned ranking. A
 band cell with no contributing value is `null`.
 
