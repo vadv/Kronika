@@ -29,8 +29,8 @@ HELP_CONTENT = {
         "KRONIKA_WEB_USER", "KRONIKA_WEB_PASSWORD", "KRONIKA_WEB_AUTH",
         "required", "disabled", "catalog", "health", "/mcp", "TMPDIR",
         "kronika-collector", "KRONIKA_PG_DSNS", "No default",
-        "do not start collection or filter saved sections",
-        "Source declarations do not change recorded health",
+        "0", "1", "2", "3", "recorded instance_metadata",
+        "All recorded sections remain", "queryable for every bitset value",
     ),
     "kronika-dump": (
         "--json", "--index", "--section", "--limit", "--from", "--to",

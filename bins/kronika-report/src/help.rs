@@ -1,4 +1,4 @@
-//! Terminal instructions for creating standalone reports.
+//! Report parameter reference.
 
 pub(crate) const HELP: &str = r"kronika-report - create one self-contained interactive HTML recording
 
@@ -9,14 +9,12 @@ Usage:
   kronika-report -h | --help
   kronika-report --version
 
-Create a report from an existing standalone ZMS:
+Example:
   kronika-report incident.zms incident.html
 
-Open incident.html directly in a browser. Its interface, recorded data, and
-query engine are embedded: no running collector, web server, PostgreSQL,
-internet connection, or separately installed web assets are needed. Linux-only
-and Linux/PostgreSQL recordings use the same command. No login is required;
-the file has no live refresh or MCP endpoint.
+The HTML embeds the interface, recorded data, fonts and WASM query engine.
+It opens as a local file; queries run on the browser main thread. The visible
+recording is fixed, with local tables, search, charts and heatmaps.
 
 Input and output:
   INPUT.zms          One finished, valid standalone ZMS file, with any basename.
@@ -35,8 +33,8 @@ Options:
                                  0 < from < to-exclusive <= 9007199254740991
                                The interval is [from, to-exclusive): its start
                                is included and its end is excluded.
-  -h, --help                   Print help and exit without opening any files.
-  --version                    Print the binary name and version and exit.
+  -h, --help                   Parameter reference.
+  --version                    Program version.
 
 By default the visible window spans the whole input, from its first recorded
 microsecond through one microsecond after its last. Explicit bounds restrict
@@ -51,7 +49,7 @@ Environment and completion:
   No environment variables are required or read as report configuration.
   KRONIKA_STORAGE_DIR and web credentials are not used by kronika-report.
   Temporary HTML is written beside OUTPUT.html; TMPDIR does not change this.
-  No .idx sidecar is created. Allow space for the existing file and new HTML.
+  No .idx sidecar is created. Required capacity includes old and new HTML.
   Success exits 0 without writing to stdout; errors go to stderr and exit
-  nonzero. There is no daemon to stop. Ctrl-C interrupts a running conversion.
+  nonzero. Ctrl-C interrupts a running conversion.
 ";

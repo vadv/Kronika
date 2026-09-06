@@ -1,4 +1,4 @@
-//! Operational help, printed before configuration or collector startup.
+//! Collector parameter reference.
 
 pub(crate) const HELP: &str = r"kronika-collector - record Linux metrics, PostgreSQL metrics, and local logs
 
@@ -33,14 +33,16 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
       session pooling. Transaction/statement pooling and TLS are unsupported.
   KRONIKA_POSTGRES_EFFECTIVE_CPUS
       Positive whole CPU count (1..4294967295) available to the monitored
-      PostgreSQL server, e.g. 4 for a target with four effective CPUs. Requires
-      KRONIKA_PG_DSNS. Never inferred from the collector host. Without this,
-      PostgreSQL metrics work but PostgreSQL health is null. Set the target's
-      actual capacity; do not copy an arbitrary example count.
+      PostgreSQL server. Requires KRONIKA_PG_DSNS. Health compares the active
+      backend count with twice this recorded capacity. An unset capacity gives
+      null PostgreSQL health.
   KRONIKA_PG_LOGS
       Semicolon-separated local PostgreSQL log paths or globs. Example:
       '/var/log/postgresql/*.csv;/srv/pg-logs/*.json'. Only the last path
-      component supports * and ?. Path-only input cannot parse stderr prefixes.
+      component supports * and ?. Filename .csv selects csvlog, .json selects
+      jsonlog, otherwise stderr. Explicit paths have no discovered server ID
+      or stderr prefix; severity, message and continuations are parsed. Missing
+      input timestamps use collection time.
   KRONIKA_PGBOUNCER_DSNS
       Semicolon-separated PgBouncer admin-console DSNs (dbname=pgbouncer), for
       SHOW CONFIG/logfile discovery. The account needs stats_users membership.
@@ -52,8 +54,9 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
   Log paths and patterns refer to files on the collector host. Paths reached
   twice are followed once.
   Discovery retries every five minutes; an unavailable source logs a warning
-  while other collection continues. Each log read has a 4 MiB buffer and reads
-  at most 256 MiB per file per collection.
+  while other collection continues. The file read buffer is 64 KiB; a batch
+  consumes up to 4 MiB of raw input, and one collection reads at most 256 MiB
+  per file across batches.
 
 OPTIONAL STORAGE ENVIRONMENT (sizes are unsigned decimal bytes)
   KRONIKA_SEGMENT_MAX_BYTES       default 67108864 (64 MiB), greater than 0
@@ -70,7 +73,7 @@ OPTIONAL STORAGE ENVIRONMENT (sizes are unsigned decimal bytes)
       10737418240 sets 10 GiB. auto:P targets used space on the whole filesystem.
       Rotation removes old finished segments/indexes, preserving active.wal and
       the newest finished segment. It checks after publication and every minute;
-      a running collection can delay the check. This is not an exact disk cap.
+      a running collection can delay the check and exceed the target.
 
 OPTIONAL COLLECTION INTERVALS (unsigned whole seconds)
   KRONIKA_INTERVAL_S                  default 5; maximum timer sleep
@@ -97,8 +100,8 @@ OPTIONAL LOGGING AND MOUNT PATHS
 
 STOPPING AND ERRORS
   SIGINT (Ctrl+C) and SIGTERM stop collection and retain active.wal. Restart
-  with the same data root to recover it. SIGUSR2 forces a collection window and
-  segment publication. Invalid configuration and unrecoverable storage failures
+  with the same data root to recover it. SIGUSR2 forces a collection cycle;
+  the accumulated segment is published when the cycle appended data and left
+  a nonempty segment. Invalid configuration and unrecoverable storage failures
   exit nonzero; individual source errors are logged and retried.
-  -h/--help and --version print to stdout and exit 0 without starting collection.
 ";

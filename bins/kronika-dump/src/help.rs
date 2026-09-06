@@ -10,7 +10,7 @@ Usage:
   kronika-dump -h | --help
   kronika-dump --version
 
-Start with an existing collector recording:
+Examples:
   kronika-dump /path/to/recording
   kronika-dump /path/to/recording --json
   kronika-dump /path/to/recording --index
@@ -20,14 +20,14 @@ DIR is the real storage directory used by kronika-collector, containing
 YYYY/MM/DD/*.zms and, while collecting, active.wal. A standalone .zms file,
 a flat directory of arbitrary .zms files, or a symlink is not a storage root.
 Both finished segments and the committed current journal are readable while
-the collector runs. Use sudo if your account cannot read the private storage.
-Inspection needs no environment variables, database connection, or web server.
+the collector runs. Inspection requires read access to the storage root
+and has no environment configuration.
 
 Inspection options:
   No display option   List each segment's time bounds, physical section IDs,
                       row counts, section bytes, and physical overhead bytes.
   --section ID        Decode rows of one physical numeric type_id, resolving
-                      dictionary references. Pick an ID from the default list.
+                      dictionary references. IDs are listed in default output.
                       Example: 1100001 is the OS process section.
   --index             Print derived series/index summaries. With --json, emit
                       their individual points and finding locators. Cannot be
@@ -40,8 +40,8 @@ Inspection options:
                       These signed integer bounds select intersecting segments;
                       they do not trim individual section rows. Units are
                       MICROSECONDS, not seconds or RFC3339. Either may be used.
-  -h, --help          Print this help and exit without opening storage.
-  --version           Print the binary name and version and exit.
+  -h, --help          Parameter reference (inspection and slice).
+  --version           Program version.
 
 Inspection prints data to stdout; text-mode scan warnings and errors use
 stderr. With --json, scan warnings are also JSON objects on stdout. It exits
@@ -75,7 +75,7 @@ Required options (each exactly once, in any order):
   --out FILE.zms       Exact new output path with a .zms suffix. Its parent
                       directory must exist and be writable. Existing paths are
                       refused; output is never overwritten.
-  -h, --help          Print slice help without configuration or storage access.
+  -h, --help          Slice parameter reference.
 
 An interval with no recorded rows fails. The file can retain up to 30 seconds
 of nearby samples on each side for interval calculations. On success, stdout
@@ -83,7 +83,7 @@ reports bytes, rows, sections, and requested/actual bounds in Unix microseconds.
 The requested_to_exclusive value is one second after the requested --to.
 
 Scratch and temporary output files are created beside --out, on its filesystem;
-TMPDIR does not move them. Allow free space for both work files and the result.
+TMPDIR does not move them. Required capacity includes both work files and result.
 The completed ZMS is validated before publication. The command exits when done;
 errors go to stderr and return nonzero. Ctrl-C interrupts a running command.
 ";
