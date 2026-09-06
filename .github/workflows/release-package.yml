@@ -54,7 +54,7 @@ jobs:
         run: |
           bash -n scripts/package-release.sh scripts/check-release.sh
           shellcheck scripts/package-release.sh scripts/check-release.sh
-      - name: Build all five binaries once and package
+      - name: Build all four binaries once and package
         env:
           TARGET: ${{ matrix.target }}
         run: scripts/package-release.sh --target "$TARGET"

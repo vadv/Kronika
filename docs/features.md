@@ -497,8 +497,6 @@ file; share the resulting recording with its intended recipients.
 For command-line inspection, `kronika-dump` lists and reads segment contents and
 can make a bounded ZMS slice; `kronika-report` wraps a recording as standalone
 HTML. Packaging and command examples are in [the release guide](releases.md).
-`kronika-demo` is an optional workload/example tool, not the collector required
-to record your own host.
 
 The metric catalogs provide field-level storage references:
 [Linux](type-registry/os.md), [PostgreSQL](type-registry/postgresql-metrics.md)

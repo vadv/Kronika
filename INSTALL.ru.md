@@ -6,10 +6,9 @@ Kronika запускается двумя процессами: **collector** п
 машину, **web** открывает её историю, когда она нужна. Начните с Linux.
 PostgreSQL — дополнительный источник данных, а не хранилище самой Kronika.
 
-В переносимом архиве пять статических программ для Linux: `kronika-collector`,
-`kronika-web`, `kronika-dump`, `kronika-report` и `kronika-demo`. Для первых
-четырёх не нужны Rust, Node.js, Docker или база данных. Demo запускает
-искусственную нагрузку; для наблюдения своего хоста запускать его не нужно.
+В переносимом архиве четыре статические программы для Linux: `kronika-collector`,
+`kronika-web`, `kronika-dump` и `kronika-report`. Для их запуска не нужны Rust,
+Node.js, Docker или база данных.
 
 ## 1. Скачать подходящий архив
 
@@ -48,21 +47,21 @@ commit, потому что версия исходного кода остаё�
 Из распакованного каталога, без `sudo` и настройки окружения:
 
 ```sh
-for binary in kronika-collector kronika-web kronika-dump kronika-report kronika-demo; do
+for binary in kronika-collector kronika-web kronika-dump kronika-report; do
   "./$binary" --version
 done
 ```
 
 Каждая строка содержит имя программы и `1.0.0`, например
-`kronika-collector 1.0.0`. Команды сразу завершаются, не запуская сбор,
-сетевой сервер или демонстрационную нагрузку.
+`kronika-collector 1.0.0`. Команды сразу завершаются, не запуская сбор
+или сетевой сервер.
 
-Установите пять программ в PATH:
+Установите четыре программы в PATH:
 
 ```sh
 sudo install -d -m 0755 /usr/local/bin
 sudo install -m 0755 kronika-collector kronika-web kronika-dump \
-  kronika-report kronika-demo /usr/local/bin/
+  kronika-report /usr/local/bin/
 /usr/local/bin/kronika-collector --version
 ```
 

@@ -126,7 +126,7 @@ and authentication; no third unit is needed.
 
 ## Replace binaries or remove services
 
-Verify the new archive, its `BUILDINFO`, and all five `--version` outputs first.
+Verify the new archive, its `BUILDINFO`, and all four `--version` outputs first.
 Stop both services, keep the old binaries and archive, install the new binaries
 using [Install](../INSTALL.md), and start the services again. Configuration and
 recordings stay in their existing directories. Do not run two collectors over
@@ -134,7 +134,7 @@ one directory. Storage compatibility follows the release's documented format
 contract; retaining an old executable alone does not guarantee downgrade support.
 
 To uninstall the services, disable and stop them, remove only the two unit
-files you installed, and run `systemctl daemon-reload`. Remove the five binaries
+files you installed, and run `systemctl daemon-reload`. Remove the four binaries
 from `/usr/local/bin` only if they are no longer used. Configuration and
 recordings are separate: removing programs never requires deleting recorded data.
 

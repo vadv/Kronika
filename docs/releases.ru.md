@@ -4,11 +4,11 @@
 
 ## Выбрать нужный артефакт
 
-Текущие архивы для проверки содержат все пять программ: `kronika-collector`,
-`kronika-web`, `kronika-dump`, `kronika-report` и `kronika-demo`. Начните с
-[установки на свою машину](../INSTALL.ru.md); demo — необязательная генерация
-нагрузки. Для установки из архива и сбора только OS-метрик не нужны компилятор,
-Docker, сервер PostgreSQL или отдельный каталог web-ресурсов.
+Текущие архивы для проверки содержат четыре программы: `kronika-collector`,
+`kronika-web`, `kronika-dump` и `kronika-report`. Начните с
+[установки на свою машину](../INSTALL.ru.md). Для установки из архива и сбора
+только OS-метрик не нужны компилятор, Docker, сервер PostgreSQL или отдельный
+каталог web-ресурсов.
 
 Существующий публичный [релиз v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
 старее. В нём есть collector, web, dump и demo, но **нет `--version`,
@@ -51,7 +51,7 @@ cd kronika-download
 
 ```text
 kronika-<cargo-version>-<12-character-commit>-<target>/
-  kronika-collector   kronika-web   kronika-dump   kronika-report   kronika-demo
+  kronika-collector   kronika-web   kronika-dump   kronika-report
   BUILDINFO          SHA256SUMS    LICENSE       THIRD_PARTY_LICENSES.html
   README.md          README.ru.md  INSTALL.md    INSTALL.ru.md
   DESIGN.md          DESIGN.ru.md
@@ -73,7 +73,7 @@ kronika-<cargo-version>-<12-character-commit>-<target>/
 в [справочнике GitHub](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 В этом workflow нет кросс-компиляции или эмуляции.
 
-Каждое задание собирает пять бинарных файлов **один раз**. Затем каждая строка
+Каждое задание собирает четыре бинарных файла **один раз**. Затем каждая строка
 ниже скачивает тот же архив для своей архитектуры, сверяет checksum архива
 и каждого файла, проверяет архитектуру ELF и отсутствие динамического
 интерпретатора и зависимостей от shared libraries, после чего запускает каждый
@@ -115,7 +115,7 @@ Ubuntu 26.04 не пропускается молча. В контейнерах
 
 Регрессионная проверка версии запускает непривилегированный процесс в рабочем
 каталоге только для чтения, с пустым и некорректным окружением конфигурации,
-таймаутом и точным сравнением exit status, stdout и stderr всех пяти программ.
+таймаутом и точным сравнением exit status, stdout и stderr всех четырёх программ.
 Ожидаемый stdout — одна строка, например `kronika-web 1.0.0`, с переводом строки
 в конце. Обычный CI также трассирует эти реальные запуски на ранние побочные
 эффекты.
@@ -140,8 +140,7 @@ scripts/package-release.sh --target x86_64-unknown-linux-musl
 scripts/package-release.sh --target aarch64-unknown-linux-musl
 ```
 
-Target по умолчанию — x86-64. Включены все пять бинарных файлов; старый параметр
-`--with-demo` принимается, но ничего не добавляет. Результат:
+Target по умолчанию — x86-64. Результат:
 
 ```text
 dist/kronika-<cargo-version>-<12-character-commit>-<target>.tar.gz
@@ -195,7 +194,7 @@ collector с явным временным хранилищем, записыв�
 сборки выполняют проверки collector/dump/report/web; x86-64 также запускает
 браузерную проверку. ARM64 использует `--no-browser`, поскольку на его runner
 нет предустановленного Chromium. Матрица контейнеров использует `--cli-only`:
-проверки архива, документации, checksum, статических ELF, версий и справки всех пяти
+проверки архива, документации, checksum, статических ELF, версий и справки всех четырёх
 программ сохраняются, а функциональная нагрузка повторно не запускается. Оба
 варианта вызова справки запускаются с пустым и некорректным окружением без
 привилегий из каталога только для чтения. Нативные проверки пакетов также

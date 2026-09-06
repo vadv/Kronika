@@ -19,7 +19,7 @@ trap 'rm -rf -- "$release_tmp"' EXIT
 tar -xzf "$archive" -C "$release_tmp"
 package="$release_tmp/$(basename "$archive" .tar.gz)"
 (cd "$package" && sha256sum --check SHA256SUMS)
-for required in kronika-collector kronika-web kronika-dump kronika-report kronika-demo LICENSE README.md README.ru.md INSTALL.md INSTALL.ru.md DESIGN.md DESIGN.ru.md BUILDINFO THIRD_PARTY_LICENSES.html; do
+for required in kronika-collector kronika-web kronika-dump kronika-report LICENSE README.md README.ru.md INSTALL.md INSTALL.ru.md DESIGN.md DESIGN.ru.md BUILDINFO THIRD_PARTY_LICENSES.html; do
   test -s "$package/$required"
 done
 target=$(sed -n 's/^target=//p' "$package/BUILDINFO")
@@ -55,6 +55,9 @@ from urllib.parse import unquote, urlsplit
 repo, package, scratch = map(Path, sys.argv[1:4])
 mode = sys.argv[4]
 members = {p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+assert {p.name for p in package.glob('kronika-*')} == {
+    'kronika-collector', 'kronika-web', 'kronika-dump', 'kronika-report',
+}, 'archive must contain exactly the four product programs'
 checksummed = {line.split('  ', 1)[1].removeprefix('./')
                for line in (package / 'SHA256SUMS').read_text().splitlines()}
 assert checksummed == members - {'SHA256SUMS'}, 'checksum manifest omits package files'

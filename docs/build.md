@@ -22,7 +22,7 @@ cd Kronika
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked --target x86_64-unknown-linux-musl \
   -p kronika-collector -p kronika-web -p kronika-dump \
-  -p kronika-report -p kronika-demo
+  -p kronika-report
 ```
 
 The binaries are in `target/x86_64-unknown-linux-musl/release/`. Run each with
@@ -40,7 +40,7 @@ CC_aarch64_unknown_linux_musl=musl-gcc \
 CFLAGS_aarch64_unknown_linux_musl=-mno-outline-atomics \
 cargo build --release --locked --target aarch64-unknown-linux-musl \
   -p kronika-collector -p kronika-web -p kronika-dump \
-  -p kronika-report -p kronika-demo
+  -p kronika-report
 ```
 
 The C flag keeps atomic operations in the baseline ARMv8 instruction set,

@@ -6,10 +6,9 @@ Kronika needs two processes: **collector** records this machine continuously;
 **web** opens its history when you need it. Start with Linux alone. PostgreSQL
 is an optional data source, not Kronika's storage engine.
 
-The portable archive contains five static Linux programs: `kronika-collector`,
-`kronika-web`, `kronika-dump`, `kronika-report`, and `kronika-demo`. No Rust,
-Node.js, Docker, or database is needed to run the first four. The demo is an
-optional workload runner; do not start it to monitor your host.
+The portable archive contains four static Linux programs: `kronika-collector`,
+`kronika-web`, `kronika-dump`, and `kronika-report`. No Rust, Node.js, Docker,
+or database is needed to run them.
 
 ## 1. Download the right archive
 
@@ -48,21 +47,21 @@ version. Keep `BUILDINFO` with the archive when reporting a problem.
 Run from the extracted directory, without `sudo` or any configuration:
 
 ```sh
-for binary in kronika-collector kronika-web kronika-dump kronika-report kronika-demo; do
+for binary in kronika-collector kronika-web kronika-dump kronika-report; do
   "./$binary" --version
 done
 ```
 
 Each line is the program name followed by `1.0.0`, for example
 `kronika-collector 1.0.0`. These commands exit immediately without starting
-collection, a listener, or demo workloads.
+collection or a listener.
 
-Install the five programs on your PATH:
+Install the four programs on your PATH:
 
 ```sh
 sudo install -d -m 0755 /usr/local/bin
 sudo install -m 0755 kronika-collector kronika-web kronika-dump \
-  kronika-report kronika-demo /usr/local/bin/
+  kronika-report /usr/local/bin/
 /usr/local/bin/kronika-collector --version
 ```
 

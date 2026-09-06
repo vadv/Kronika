@@ -30,12 +30,12 @@ HTML-экспорт, `kronika-report` и `kronika-dump slice`. Текущий а
 
 ```sh
 sha256sum --check SHA256SUMS
-for binary in kronika-collector kronika-web kronika-dump kronika-report kronika-demo; do
+for binary in kronika-collector kronika-web kronika-dump kronika-report; do
   "./$binary" --version
 done
 sudo install -d -m 0755 /usr/local/bin
 sudo install -m 0755 kronika-collector kronika-web kronika-dump \
-  kronika-report kronika-demo /usr/local/bin/
+  kronika-report /usr/local/bin/
 ```
 
 Начните с **Linux без БД** на машине, которую хотите исследовать:
@@ -155,7 +155,7 @@ Rust/WebAssembly работает в **главном потоке браузе�
 - **Работа:** [Исследовать час](docs/operator-guide.ru.md) · [Виды и управление](docs/features.ru.md)
   · [MCP-клиенты](docs/mcp-clients.ru.md)
 - **Настройка:** [Collector](bins/kronika-collector/README.ru.md) · [Web](bins/kronika-web/README.ru.md)
-- **Утилиты:** [Demo](bins/kronika-demo/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md)
+- **Утилиты:** [Dump](bins/kronika-dump/README.ru.md)
   · [HTML-отчёты](bins/kronika-report/README.ru.md)
 - **Записанные поля:** [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md)
   · [События PostgreSQL](docs/type-registry/postgresql.md) · [События PgBouncer](docs/type-registry/pgbouncer.md)

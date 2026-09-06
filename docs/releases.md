@@ -4,9 +4,9 @@
 
 ## Choose the artifact you mean to install
 
-Current review archives contain all five programs: `kronika-collector`,
-`kronika-web`, `kronika-dump`, `kronika-report`, and `kronika-demo`. Start with
-[installation on your own host](../INSTALL.md); the demo is an optional workload.
+Current review archives contain four programs: `kronika-collector`,
+`kronika-web`, `kronika-dump`, and `kronika-report`. Start with
+[installation on your own host](../INSTALL.md).
 No compiler, Docker, PostgreSQL server, or separate web asset directory is needed
 for an OS-only installation from an archive.
 
@@ -50,7 +50,7 @@ Each archive has one top-level directory:
 
 ```text
 kronika-<cargo-version>-<12-character-commit>-<target>/
-  kronika-collector   kronika-web   kronika-dump   kronika-report   kronika-demo
+  kronika-collector   kronika-web   kronika-dump   kronika-report
   BUILDINFO          SHA256SUMS    LICENSE       THIRD_PARTY_LICENSES.html
   README.md          README.ru.md  INSTALL.md    INSTALL.ru.md
   DESIGN.md          DESIGN.ru.md
@@ -71,7 +71,7 @@ Two native jobs build `x86_64-unknown-linux-musl` and
 in [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 There is no cross compilation or emulation in this workflow.
 
-Each job builds the five binaries **once**. Every row below then downloads the
+Each job builds the four binaries **once**. Every row below then downloads the
 same archive for its architecture, checks the archive checksum and every member
 checksum, verifies the ELF architecture and absence of a dynamic interpreter or
 shared-library dependency, and executes every binary with `--version`.
@@ -112,7 +112,7 @@ is added to make Kronika run.
 
 The version regression uses an unprivileged process, a read-only working
 directory, empty and invalid configuration environments, a timeout, and exact
-exit status, stdout, and stderr comparisons for all five executables. Expected
+exit status, stdout, and stderr comparisons for all four executables. Expected
 stdout is one line, for example `kronika-web 1.0.0`, followed by a newline. Normal
 CI also traces these actual executions for startup side effects.
 
@@ -135,8 +135,7 @@ scripts/package-release.sh --target x86_64-unknown-linux-musl
 scripts/package-release.sh --target aarch64-unknown-linux-musl
 ```
 
-The default target is x86-64. All five binaries are included; the old
-`--with-demo` option remains accepted and does nothing extra. Outputs are:
+The default target is x86-64. Outputs are:
 
 ```text
 dist/kronika-<cargo-version>-<12-character-commit>-<target>.tar.gz
@@ -189,7 +188,7 @@ which checks interactive reads and absence of external requests. Both native
 build jobs run the collector/dump/report/web checks; x86-64 also runs the browser
 smoke. ARM64 uses `--no-browser` because its runner has no preinstalled Chromium.
 The container matrix uses `--cli-only`, which retains archive, documentation,
-checksum, static ELF, and all-five version/help checks without running the
+checksum, static ELF, and all-four version/help checks without running the
 functional workload again. Both help aliases run in empty and invalid environments
 as an unprivileged user in a read-only directory. Native package checks also use
 `strace` to reject storage access, logging, thread, process, or network startup

@@ -6,7 +6,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/package-release.sh [--target TARGET] [--bin-dir DIR] [--output-dir DIR]
 
-Build and package all five static Linux binaries; publish nothing.
+Build and package all four static Linux binaries; publish nothing.
 --target TARGET  x86_64-unknown-linux-musl (default) or aarch64-unknown-linux-musl.
 --bin-dir DIR     Package existing binaries instead of compiling them.
 --output-dir DIR  Destination for the archive and its checksum (default: dist).
@@ -17,7 +17,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 bin_dir=
 output_dir="$repo/dist"
 target=x86_64-unknown-linux-musl
-binaries=(kronika-collector kronika-web kronika-dump kronika-report kronika-demo)
+binaries=(kronika-collector kronika-web kronika-dump kronika-report)
 while (($#)); do
   case "$1" in
     --target|--bin-dir|--output-dir)
@@ -28,7 +28,6 @@ while (($#)); do
         --output-dir) output_dir=$2 ;;
       esac
       shift 2 ;;
-    --with-demo) shift ;;
     --help|-h) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac

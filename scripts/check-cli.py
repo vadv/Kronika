@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 
 
-BINARIES = tuple(f"kronika-{name}" for name in ("collector", "web", "dump", "report", "demo"))
+BINARIES = tuple(f"kronika-{name}" for name in ("collector", "web", "dump", "report"))
 TIMEOUT_SECONDS = 5
 SECRET = "cli-check-secret-must-not-appear"
 # Required parameters and units, independent of help layout.
@@ -41,18 +41,10 @@ HELP_CONTENT = {
         "--from", "--to-exclusive", "microseconds", "input", "output",
         ".zms", ".html", "standalone", "kronika-dump", "TMPDIR",
     ),
-    "kronika-demo": (
-        "KRONIKA_DEMO_DIR", "KRONIKA_DEMO_DURATION_S", "KRONIKA_COLLECTOR_BIN",
-        "kronika-collector", "KRONIKA_DEMO_WORKLOAD_DSN",
-        "KRONIKA_DEMO_WORKLOAD_DIRECT_DSN",
-        "KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED", "KRONIKA_DEMO_SYSTEM_MEMORY_MIB",
-        "KRONIKA_DEMO_SYSTEM_CPU_PERCENT", "KRONIKA_DEMO_SYSTEM_DISK_KIB_PER_S",
-    ),
 }
 MALFORMED = {
     "kronika-collector": (["unexpected"],),
     "kronika-web": (["unexpected"],),
-    "kronika-demo": (["unexpected"],),
     "kronika-dump": (
         ["--limit"], ["--section", "not-a-number"], ["--from", "invalid-date"],
         ["slice", "--unknown-option"], ["slice", "--from"],
@@ -165,10 +157,6 @@ def check(binary, version, root, strace):
         "KRONIKA_WEB_AUTH": "invalid",
         "KRONIKA_WEB_USER": "cli-check-user",
         "KRONIKA_WEB_PASSWORD": SECRET,
-        "KRONIKA_DEMO_DIR": str(storage / "demo"),
-        "KRONIKA_DEMO_DURATION_S": "not-a-number",
-        "KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED": "invalid",
-        "KRONIKA_COLLECTOR_BIN": str(storage / "collector-must-not-start"),
         # Tokio rejects zero worker threads when its runtime is constructed.
         "TOKIO_WORKER_THREADS": "0",
         "TMPDIR": str(storage / "temporary-files"),
@@ -224,8 +212,7 @@ def check(binary, version, root, strace):
     if binary.name in ("kronika-collector", "kronika-web"):
         normal.append(("empty environment", {}, b"KRONIKA_STORAGE_DIR"))
     config_errors = {"kronika-collector": b"KRONIKA_INTERVAL_S",
-                     "kronika-web": b"KRONIKA_WEB_LISTEN",
-                     "kronika-demo": b"KRONIKA_DEMO_DURATION_S"}
+                     "kronika-web": b"KRONIKA_WEB_LISTEN"}
     if binary.name in config_errors:
         normal.append(("invalid configuration", dict(invalid, TOKIO_WORKER_THREADS="1"),
                        config_errors[binary.name]))
@@ -270,7 +257,7 @@ def main():
                 binary.unlink()
         finally:
             cwd.chmod(0o755)
-    print("All five CLI version, help and argument contracts passed as an unprivileged user in a read-only directory.")
+    print("All four CLI version, help and argument contracts passed as an unprivileged user in a read-only directory.")
 
 
 if __name__ == "__main__":

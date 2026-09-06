@@ -29,12 +29,12 @@ Once the archive is extracted, check and install its programs:
 
 ```sh
 sha256sum --check SHA256SUMS
-for binary in kronika-collector kronika-web kronika-dump kronika-report kronika-demo; do
+for binary in kronika-collector kronika-web kronika-dump kronika-report; do
   "./$binary" --version
 done
 sudo install -d -m 0755 /usr/local/bin
 sudo install -m 0755 kronika-collector kronika-web kronika-dump \
-  kronika-report kronika-demo /usr/local/bin/
+  kronika-report /usr/local/bin/
 ```
 
 Start with **Linux only** on the machine you want to examine:
@@ -152,7 +152,7 @@ browser's **main thread**. Static reports have no MCP or live refresh.
 - **Operate:** [Investigate an hour](docs/operator-guide.md) · [Views and controls](docs/features.md)
   · [MCP clients](docs/mcp-clients.md)
 - **Configure:** [Collector](bins/kronika-collector/README.md) · [Web](bins/kronika-web/README.md)
-- **Utilities:** [Demo](bins/kronika-demo/README.md) · [Dump](bins/kronika-dump/README.md)
+- **Utilities:** [Dump](bins/kronika-dump/README.md)
   · [HTML reports](bins/kronika-report/README.md)
 - **Recorded fields:** [Linux](docs/type-registry/os.md) · [PostgreSQL metrics](docs/type-registry/postgresql-metrics.md)
   · [PostgreSQL events](docs/type-registry/postgresql.md) · [PgBouncer events](docs/type-registry/pgbouncer.md)
