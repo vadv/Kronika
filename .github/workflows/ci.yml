@@ -28,6 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install repository lint tooling
         run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
           rustup toolchain install nightly-2026-05-28 --profile minimal --component rustc-dev --component llvm-tools-preview
           tool_dir=$(mktemp -d)
           curl --fail --location --silent --show-error \

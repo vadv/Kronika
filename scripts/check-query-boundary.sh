@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+    echo "check-query-boundary.sh requires ripgrep (rg) on PATH" >&2
+    exit 1
+fi
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 crate_root="$repo_root/crates/kronika-query"
 source_root="$crate_root/src"
