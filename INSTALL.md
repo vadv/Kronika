@@ -116,7 +116,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Optional integer `1..4294967295`: explicit CPU capacity of the monitored PostgreSQL server. Unset uses the collector VM/container's recorded CPU capacity. |
 | Extension discovery | Supported `pg_stat_statements` and `pg_store_plans` interfaces are detected in connectable databases. Activity, Locks and relation statistics use PostgreSQL's built-in views. |
 | Transport | Native client uses `NoTls`; direct PostgreSQL and PgBouncer session pooling are supported. Metric sessions retain `SET` state. |
-| Log paths | Discovery returns paths on the collector host. Mounted logs can be named with `KRONIKA_PG_LOGS`; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
+| Log paths | Each `KRONIKA_PG_DSNS` entry discovers its current log through `pg_current_logfile()` even with `KRONIKA_PG_LOGS` unset. The server path must be readable on the collector host. `KRONIKA_PG_LOGS` adds local paths/globs; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
 
 For remote PostgreSQL or a different cgroup, specify the target PostgreSQL
 capacity. Example for a collector with 8 CPUs and PostgreSQL with 4 CPUs:

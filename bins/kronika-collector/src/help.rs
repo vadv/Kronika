@@ -47,12 +47,15 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
       The DSN address does not establish resource scope. Health and active-backend
       marks compare the active count with twice this capacity.
   KRONIKA_PG_LOGS
-      Semicolon-separated local PostgreSQL log paths or globs. Example:
+      Optional local PostgreSQL log paths or globs, separated by semicolons.
+      When unset, each KRONIKA_PG_DSNS entry still discovers its current log
+      through pg_current_logfile(). Explicit entries add to those sources.
+      Files must be readable on the collector host. Example:
       '/var/log/postgresql/*.csv;/srv/pg-logs/*.json'. Only the last path
       component supports * and ?. Filename .csv selects csvlog, .json selects
-      jsonlog, otherwise stderr. Explicit paths have no discovered server ID
-      or stderr prefix; severity, message and continuations are parsed. Missing
-      input timestamps use collection time.
+      jsonlog, otherwise stderr. Paths found only through this list have no
+      discovered server ID or stderr prefix; severity, message and continuations
+      are parsed. Missing input timestamps use collection time.
   KRONIKA_PGBOUNCER_DSNS
       Semicolon-separated PgBouncer admin-console DSNs (dbname=pgbouncer), for
       SHOW CONFIG/logfile discovery. The account needs stats_users membership.
@@ -60,7 +63,7 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
   KRONIKA_PGBOUNCER_LOGS
       Semicolon-separated local PgBouncer log paths or final-component globs.
 
-  Blank lists mean no sources; blank entries between semicolons are errors.
+  Blank lists add no explicit entries; blank entries between semicolons are errors.
   Log paths and patterns refer to files on the collector host. Paths reached
   twice are followed once.
   Discovery retries every five minutes; an unavailable source logs a warning

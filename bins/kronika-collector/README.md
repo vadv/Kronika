@@ -60,13 +60,13 @@ times. A per-source `0` reads on every timer cycle.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KRONIKA_PG_DSNS` | Unset | Semicolon-separated PostgreSQL keyword DSNs or URLs. First DSN enables server metrics; every DSN discovers local log paths/format. |
+| `KRONIKA_PG_DSNS` | Unset | Semicolon-separated PostgreSQL keyword DSNs or URLs. First DSN enables server metrics; every DSN discovers server log paths/format. |
 | `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`: explicit CPU capacity of the first PostgreSQL target. Requires `KRONIKA_PG_DSNS`. Unset uses the collector VM/container's recorded CPU capacity for Health and marks. |
-| `KRONIKA_PG_LOGS` | Unset | Semicolon-separated local PostgreSQL paths or globs. Only the final component supports `*` and `?`. |
+| `KRONIKA_PG_LOGS` | Unset | Optional local PostgreSQL paths or globs separated by `;`; the final component supports `*` and `?`. When unset, every `KRONIKA_PG_DSNS` entry still discovers its current log through `pg_current_logfile()`. Explicit entries add to discovered sources; files must be readable on the collector host. |
 | `KRONIKA_PGBOUNCER_DSNS` | Unset | Semicolon-separated admin-console DSNs (`dbname=pgbouncer`) for `SHOW CONFIG`/`logfile`; account belongs to `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Unset | Semicolon-separated local PgBouncer paths or final-component globs. |
 
-Blank lists select no sources. Blank entries between semicolons are errors.
+Blank lists add no explicit entries. Blank entries between semicolons are errors.
 The first PostgreSQL DSN supplies metrics from its initial database and other
 connectable non-template databases on that server. Further DSNs supply log
 discovery only. PostgreSQL metric rows have no server identity column.
@@ -157,20 +157,30 @@ timeouts, slow queries, fetch/encoding/WAL times, encoded/appended bytes and
 
 ## Log collection
 
-DSN discovery supplies the local path, format, PostgreSQL `log_line_prefix` and
-`system_identifier`. Paths/globs directly name files on the collector host.
-A file reached through both methods is followed once with discovered metadata.
+For every `KRONIKA_PG_DSNS` entry, discovery reads `pg_current_logfile()`,
+`data_directory` and `log_line_prefix`. This runs even when `KRONIKA_PG_LOGS`
+is unset. The SQL function returns a current log path, not historical rotation
+files; null supplies no automatic file. A relative path is resolved against
+that PostgreSQL server's `data_directory`. The resulting file must be readable
+on the collector host; the collector does not fetch files from a remote server.
+
+`KRONIKA_PG_LOGS` adds local paths/globs to the discovered sources. An identical
+path is followed once, retaining discovered `system_identifier` and
+`log_line_prefix` when available. Path-only sources below are files absent from
+DSN discovery. Discovery requires the [function privileges](#postgresql-role)
+listed above.
 
 | Property | Behavior |
 | --- | --- |
-| Discovery cadence | Five minutes; retries after errors. `system_identifier` is cached after its first successful read. |
+| Discovery cadence | First collection cycle, then on the first collection cycle at least five minutes after the preceding scan; retries after errors. `system_identifier` is cached after its first successful read. |
 | Read bound | 64 KiB physical buffer; batches of at most 4 MiB raw bytes; at most 256 MiB per file per collection. |
 | PostgreSQL formats | Filename selects `.csv` → csvlog, `.json` → jsonlog, otherwise stderr. |
 | Path-only identity | `system_identifier` is null; every row records its source file. |
 | Path-only stderr | Database/user are unavailable; severity, SQLSTATE when present, message and continuations are parsed. Parsed timestamp is used when present, otherwise collection time. |
 | Source error | Logged; other collection continues. |
 
-Sources: [log collector](../../crates/kronika-source-log/src),
+Sources: [source discovery](src/log_sources.rs), [SQL facts and path resolution](src/log_sources/settings.rs),
+[log collector](../../crates/kronika-source-log/src),
 [PostgreSQL parser](../../crates/kronika-source-log/src/postgres.rs).
 
 ## Linux scope

@@ -60,13 +60,13 @@ ZMS temporaries, orphan indexes, затем старейшие готовые с
 
 | Переменная | По умолчанию | Значение |
 | --- | --- | --- |
-| `KRONIKA_PG_DSNS` | Не задана | PostgreSQL keyword DSNs или URLs через `;`. Первый DSN включает метрики сервера; каждый DSN обнаруживает локальные пути/формат логов. |
+| `KRONIKA_PG_DSNS` | Не задана | PostgreSQL keyword DSNs или URLs через `;`. Первый DSN включает метрики сервера; каждый DSN обнаруживает серверные пути/формат логов. |
 | `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Не задана | Целое `1..4294967295`: явная ёмкость CPU первого инстанса PostgreSQL. Требует `KRONIKA_PG_DSNS`. Без значения Health и marks используют записанную ёмкость CPU VM/контейнера collector. |
-| `KRONIKA_PG_LOGS` | Не задана | Локальные PostgreSQL paths или globs через `;`. Только последний компонент поддерживает `*` и `?`. |
+| `KRONIKA_PG_LOGS` | Не задана | Необязательные локальные пути или globs PostgreSQL через `;`; последний компонент поддерживает `*` и `?`. Без значения каждый DSN из `KRONIKA_PG_DSNS` по-прежнему автоматически обнаруживает текущий лог через `pg_current_logfile()`. Явные пути дополняют найденные источники; файлы должны быть доступны для чтения на машине collector. |
 | `KRONIKA_PGBOUNCER_DSNS` | Не задана | Admin-console DSNs (`dbname=pgbouncer`) через `;` для `SHOW CONFIG`/`logfile`; account входит в `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Не задана | Локальные PgBouncer paths или final-component globs через `;`. |
 
-Пустой список не выбирает источников. Пустые элементы между `;` — ошибка.
+Пустой список не добавляет явных элементов. Пустые элементы между `;` — ошибка.
 Первый PostgreSQL DSN даёт метрики начальной database и других доступных для
 подключения non-template databases того же сервера. Остальные DSNs дают только
 log discovery. PostgreSQL metric rows не содержат server identity column.
@@ -157,20 +157,31 @@ timeouts, slow queries, fetch/encoding/WAL times, encoded/appended bytes и
 
 ## Сбор логов
 
-DSN discovery даёт локальный path, format, PostgreSQL `log_line_prefix` и
-`system_identifier`. Paths/globs напрямую задают файлы на машине collector.
-Файл, найденный обоими способами, читается один раз с обнаруженными metadata.
+Для каждого DSN из `KRONIKA_PG_DSNS` обнаружение читает `pg_current_logfile()`,
+`data_directory` и `log_line_prefix`, даже если `KRONIKA_PG_LOGS` не задана.
+SQL-функция возвращает путь к текущему логу, а не файлы предыдущих ротаций;
+null не добавляет автоматический источник. Относительный путь разрешается
+относительно `data_directory` этого сервера PostgreSQL. Полученный файл должен
+быть доступен для чтения на машине collector; collector не загружает файлы
+с удалённого сервера.
+
+`KRONIKA_PG_LOGS` добавляет локальные пути/globs к обнаруженным источникам.
+Одинаковый путь читается один раз с сохранением обнаруженных
+`system_identifier` и `log_line_prefix`, когда они доступны. Path-only ниже —
+файлы, отсутствующие в DSN discovery. Для обнаружения нужны
+[права на функции](#postgresql-role), перечисленные выше.
 
 | Свойство | Поведение |
 | --- | --- |
-| Discovery cadence | Пять минут; повторные попытки после ошибок. `system_identifier` кешируется после первого успешного чтения. |
+| Discovery cadence | Первый цикл сбора, затем первый цикл не ранее чем через пять минут после предыдущего scan; повторные попытки после ошибок. `system_identifier` кешируется после первого успешного чтения. |
 | Read bound | Physical buffer 64 KiB; batches до 4 MiB raw bytes; до 256 MiB на файл за один сбор. |
 | PostgreSQL formats | Имя файла выбирает `.csv` → csvlog, `.json` → jsonlog, остальные → stderr. |
 | Path-only identity | `system_identifier` — null; каждая строка содержит source file. |
 | Path-only stderr | Database/user недоступны; severity, SQLSTATE при наличии, message и continuations разбираются. Используется parsed timestamp при наличии, иначе время сбора. |
 | Source error | Записывается в лог; другой сбор продолжается. |
 
-Исходники: [log collector](../../crates/kronika-source-log/src),
+Исходники: [обнаружение источников](src/log_sources.rs), [SQL-факты и разрешение пути](src/log_sources/settings.rs),
+[log collector](../../crates/kronika-source-log/src),
 [PostgreSQL parser](../../crates/kronika-source-log/src/postgres.rs).
 
 ## Linux scope

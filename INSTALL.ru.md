@@ -117,7 +117,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Необязательное целое `1..4294967295`: явная ёмкость CPU наблюдаемого PostgreSQL. Без значения используется записанная ёмкость CPU VM/контейнера collector. |
 | Обнаружение extensions | Поддерживаемые интерфейсы `pg_stat_statements` и `pg_store_plans` обнаруживаются в доступных databases. Activity, Locks и статистика relations используют встроенные views PostgreSQL. |
 | Transport | Native client использует `NoTls`; поддерживаются прямое подключение к PostgreSQL и PgBouncer session pooling. Metric sessions сохраняют состояние `SET`. |
-| Пути логов | Обнаружение возвращает пути на машине collector. Смонтированные логи задаются через `KRONIKA_PG_LOGS`; PgBouncer использует `KRONIKA_PGBOUNCER_DSNS` или `KRONIKA_PGBOUNCER_LOGS`. |
+| Пути логов | Каждый DSN из `KRONIKA_PG_DSNS` автоматически обнаруживает текущий лог через `pg_current_logfile()`, даже если `KRONIKA_PG_LOGS` не задана. Серверный путь должен быть доступен для чтения на машине collector. `KRONIKA_PG_LOGS` добавляет локальные пути/globs; PgBouncer использует `KRONIKA_PGBOUNCER_DSNS` или `KRONIKA_PGBOUNCER_LOGS`. |
 
 Для удалённого PostgreSQL или другого cgroup укажите ёмкость CPU целевого
 PostgreSQL. Пример для collector с 8 CPU и PostgreSQL с 4 CPU:
