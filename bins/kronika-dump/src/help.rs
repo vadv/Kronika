@@ -43,18 +43,12 @@ Inspection options:
   -h, --help          Print this help and exit without opening storage.
   --version           Print the binary name and version and exit.
 
-To start collection in another terminal, use your chosen recording directory:
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
-Then inspect with sudo kronika-dump /path/to/recording. OS and PostgreSQL
-recordings use the same inspection and slice commands; PostgreSQL collection
-is configured on the collector, not on this command.
-
 Inspection prints data to stdout; text-mode scan warnings and errors use
 stderr. With --json, scan warnings are also JSON objects on stdout. It exits
 after reading; a closed output pipe is successful. Other failures exit nonzero.
 ";
 
-pub(crate) const SLICE_HELP: &str = r#"kronika-dump slice - extract a time interval into one standalone ZMS file
+pub(crate) const SLICE_HELP: &str = r"kronika-dump slice - extract a time interval into one standalone ZMS file
 
 Usage:
   KRONIKA_STORAGE_DIR=<DIR> kronika-dump slice \
@@ -65,8 +59,6 @@ Example: extract 19:00:00 through 19:59:59 UTC, including both whole seconds:
   sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-dump slice \
     --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z \
     --out incident.zms
-  sudo chown "$(id -u):$(id -g)" incident.zms
-  kronika-report incident.zms incident.html
 
 Required environment:
   KRONIKA_STORAGE_DIR  Existing real collector storage directory, not a .zms
@@ -90,13 +82,8 @@ of nearby samples on each side for interval calculations. On success, stdout
 reports bytes, rows, sections, and requested/actual bounds in Unix microseconds.
 The requested_to_exclusive value is one second after the requested --to.
 
-To keep an HTML report's visible bounds at exactly 19:00-20:00 UTC:
-  kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
-    incident.zms incident.html
-The report bounds are a pair of Unix MICROSECOND values, [from, to-exclusive).
-
 Scratch and temporary output files are created beside --out, on its filesystem;
 TMPDIR does not move them. Allow free space for both work files and the result.
 The completed ZMS is validated before publication. The command exits when done;
 errors go to stderr and return nonzero. Ctrl-C interrupts a running command.
-"#;
+";

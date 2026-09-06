@@ -13,20 +13,6 @@ in the current directory. No PostgreSQL is required.
 Linux /proc and a runnable collector are required; sudo supplies the collector's
 required privileges. Use a separate directory from your regular recordings.
 
-Inspect that recording (same private directory and privileged account):
-  sudo kronika-dump demo-data/segments
-  sudo env KRONIKA_STORAGE_DIR=demo-data/segments \
-    KRONIKA_WEB_SOURCES=1 KRONIKA_WEB_USER=kronika \
-    KRONIKA_WEB_PASSWORD='replace-with-a-random-password' kronika-web
-  Open http://127.0.0.1:8080/ and sign in with the credentials above.
-  The same web process serves authenticated MCP at http://127.0.0.1:8080/mcp.
-
-This executable starts its collector child and workload threads. To start the
-repository's all-in-one PostgreSQL/PgBouncer/web environment, use make demo-up
-from a source checkout with Docker and Compose v2 installed. That wrapper has
-its own demo:forensics login and make demo-stop command. The packaged binary
-does not install or start Docker, PostgreSQL, PgBouncer, or a web server.
-
 Run controls (all optional; values below are defaults):
   KRONIKA_DEMO_DIR=demo-data
       Writable directory for collector.log and report.json. If storage is
@@ -81,39 +67,14 @@ Optional PostgreSQL workload:
   The workload DSN can use PgBouncer transaction pooling; the direct DSN must
   reach PostgreSQL directly for session settings. Neither starts a database.
 
-  Example with a local, already running PostgreSQL server: open its admin shell
-  with sudo -u postgres psql, then create a disposable database and monitor:
-    CREATE ROLE kronika_demo LOGIN;
-    \password kronika_demo
-    CREATE DATABASE kronika_demo OWNER kronika_demo;
-    CREATE ROLE kronika_monitor LOGIN;
-    \password kronika_monitor
-    GRANT pg_monitor TO kronika_monitor;
-    GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
-    \q
-
-  Replace the workload password in the first two DSNs and the monitor
-  password in the third. This generates activity and records both Linux
-  and PostgreSQL:
+  Example using existing workload and monitoring connections:
+  Replace the DSNs with your configured connection strings:
     sudo env KRONIKA_DEMO_DIR=demo-data \
       KRONIKA_DEMO_DURATION_S=240 \
       KRONIKA_DEMO_WORKLOAD_DSN='host=127.0.0.1 dbname=kronika_demo user=kronika_demo password=replace-workload-password' \
       KRONIKA_DEMO_WORKLOAD_DIRECT_DSN='host=127.0.0.1 dbname=kronika_demo user=kronika_demo password=replace-workload-password' \
       KRONIKA_PG_DSNS='host=127.0.0.1 dbname=kronika_demo user=kronika_monitor password=replace-monitor-password' \
       kronika-demo
-  For PostgreSQL health, also set KRONIKA_POSTGRES_EFFECTIVE_CPUS to that
-  server's positive whole effective CPU capacity. It has no default; ordinary
-  metrics work without it, but PostgreSQL health is then null. Grant CONNECT
-  on the database if PUBLIC access was revoked. Installed pg_stat_statements
-  and pg_store_plans extensions supply statement/plan recordings; the harness
-  does not install them. Start web for this recording:
-    sudo env KRONIKA_STORAGE_DIR=demo-data/segments \
-      KRONIKA_WEB_SOURCES=3 KRONIKA_WEB_USER=kronika \
-      KRONIKA_WEB_PASSWORD='replace-with-a-random-password' kronika-web
-  Use the same URL and login flow as the Linux example. KRONIKA_WEB_SOURCES=3
-  declares both families as configured in the catalog; 1 declares Linux,
-  2 PostgreSQL, and 0 neither (not useful here). This declaration does not
-  filter recorded data or change recorded health.
 
 PostgreSQL workload controls (only read when WORKLOAD_DSN is set):
   KRONIKA_DEMO_WORKLOAD_SCHEMAS=1

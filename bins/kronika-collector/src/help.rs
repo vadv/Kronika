@@ -8,73 +8,14 @@ Usage: kronika-collector
 Runs in the foreground. Configure it with environment variables; there are no
 collection flags or public subcommands. Only KRONIKA_STORAGE_DIR is required.
 
-FIRST LAUNCH: LINUX ONLY
-  Set KRONIKA_STORAGE_DIR to your chosen recording directory:
+EXAMPLES
+  Linux recording:
+    sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
 
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
-
-  In another terminal, replace the example web password and start the viewer:
-
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=1 \
-    KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    kronika-web
-
-  Open http://127.0.0.1:8080/ and sign in with those web credentials. Web can
-  read the active journal immediately; no finished segment is needed. sudo gives
-  the collector access to process details and logs. Both commands use the same
-  account so the shared recording stays private. One collector owns a data root.
-  Ctrl+C stops either process; the recording remains.
-
-ADD POSTGRESQL
-  KRONIKA_PG_DSNS alone enables PostgreSQL metric collection. Leave it unset for
-  Linux only. Set up a login on the PostgreSQL server: in psql as an administrator,
-  run these commands and enter a new password at the prompt:
-
-  sudo -u postgres psql
-
-  Then at the psql prompt:
-  CREATE ROLE kronika_monitor LOGIN INHERIT;
-  \password kronika_monitor
-  GRANT pg_monitor TO kronika_monitor;
-  GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
-  \q
-
-  Stop the first collector with Ctrl+C. Restart it against local PostgreSQL,
-  replacing the DSN password with the one just entered:
-
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
-    KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
-    kronika-collector
-
-  Stop web and restart it declaring both families as configured:
-
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=3 \
-    KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    kronika-web
-
-  The first DSN supplies metrics from all connectable non-template databases on
-  that server, starting with its dbname. Additional DSNs discover logs only;
-  do not add a DSN per database. One persistent connection per database is reused
-  for up to one hour. Database and extension discovery repeats every 300 seconds
-  by default. Activity, Locks, and relation statistics need no extensions;
-  installed supported pg_stat_statements and pg_store_plans are discovered.
-
-  The monitoring role needs inherited pg_monitor membership, CONNECT on each
-  database, and normal pg_catalog read/function access. It needs no superuser
-  or SELECT on application tables. If standard grants were revoked, grant USAGE
-  on each extension schema and EXECUTE on its installed reader functions:
-  pg_stat_statements(boolean), pg_store_plans() or pg_store_plans(boolean).
-  The latter interface also needs pg_store_plans_get_plan(oid,oid,bigint,bigint)
-  and pg_store_plans_textplan(text). Installed *_info views need SELECT and
-  EXECUTE on their same-named zero-argument functions. Log discovery needs
-  pg_current_logfile() and pg_control_system() execution in each DSN database.
-
-  Connect directly or through PgBouncer session pooling. Transaction/statement
-  pooling cannot preserve the metric sessions' settings. The native client has
-  no TLS support; use a local connection or an independently protected transport.
-  Each metric session sets a 30-second statement timeout; the client deadline
-  is 35 seconds. DSNs and credentials in these examples are placeholders; keep
-  persistent service environment files private.
+  Linux and PostgreSQL recording, using an existing connection:
+    sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
+      KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+      kronika-collector
 
 REQUIRED ENVIRONMENT
   KRONIKA_STORAGE_DIR
@@ -85,7 +26,11 @@ REQUIRED ENVIRONMENT
 OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
   KRONIKA_PG_DSNS
       Semicolon-separated keyword DSNs or PostgreSQL connection URLs. The first
-      enables metrics; all entries discover PostgreSQL log paths and formats.
+      enables metrics from that server's connectable databases; all entries
+      discover PostgreSQL log paths and formats. Additional DSNs are for log
+      discovery, not additional metric sources. Leave unset for Linux only.
+      Use an existing monitoring connection, directly or through PgBouncer
+      session pooling. Transaction/statement pooling and TLS are unsupported.
   KRONIKA_POSTGRES_EFFECTIVE_CPUS
       Positive whole CPU count (1..4294967295) available to the monitored
       PostgreSQL server, e.g. 4 for a target with four effective CPUs. Requires
@@ -104,8 +49,8 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
       Semicolon-separated local PgBouncer log paths or final-component globs.
 
   Blank lists mean no sources; blank entries between semicolons are errors.
-  A discovered log path must exist on the collector host. Mount remote logs here
-  and name them with KRONIKA_PG_LOGS. Paths reached twice are followed once.
+  Log paths and patterns refer to files on the collector host. Paths reached
+  twice are followed once.
   Discovery retries every five minutes; an unavailable source logs a warning
   while other collection continues. Each log read has a 4 MiB buffer and reads
   at most 256 MiB per file per collection.

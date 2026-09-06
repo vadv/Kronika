@@ -15,13 +15,13 @@ import tempfile
 BINARIES = tuple(f"kronika-{name}" for name in ("collector", "web", "dump", "report", "demo"))
 TIMEOUT_SECONDS = 5
 SECRET = "cli-check-secret-must-not-appear"
-# These are launch instructions and units an operator needs, not formatting rules.
+# Required parameters and units, independent of help layout.
 HELP_CONTENT = {
     "kronika-collector": (
-        "KRONIKA_STORAGE_DIR", "KRONIKA_PG_DSNS", "sudo", "pg_monitor",
+        "KRONIKA_STORAGE_DIR", "KRONIKA_PG_DSNS", "sudo",
         "KRONIKA_POSTGRES_EFFECTIVE_CPUS", "KRONIKA_INTERVAL_S", "5",
         "KRONIKA_SEGMENT_MAX_BYTES", "67108864", "KRONIKA_SEGMENT_MAX_AGE_S", "900",
-        "KRONIKA_RETENTION", "KRONIKA_LOG_LEVEL", "SIGTERM", "kronika-web",
+        "KRONIKA_RETENTION", "KRONIKA_LOG_LEVEL", "SIGTERM",
         "KRONIKA_JOURNAL_MAX_BYTES", "1073741824", "2147483648",
     ),
     "kronika-web": (
@@ -43,7 +43,8 @@ HELP_CONTENT = {
     ),
     "kronika-demo": (
         "KRONIKA_DEMO_DIR", "KRONIKA_DEMO_DURATION_S", "KRONIKA_COLLECTOR_BIN",
-        "kronika-collector", "kronika-web", "make demo-up", "Docker",
+        "kronika-collector", "KRONIKA_DEMO_WORKLOAD_DSN",
+        "KRONIKA_DEMO_WORKLOAD_DIRECT_DSN",
         "KRONIKA_DEMO_SYSTEM_WORKLOAD_ENABLED", "KRONIKA_DEMO_SYSTEM_MEMORY_MIB",
         "KRONIKA_DEMO_SYSTEM_CPU_PERCENT", "KRONIKA_DEMO_SYSTEM_DISK_KIB_PER_S",
     ),
@@ -136,7 +137,7 @@ def check_help(name, output, slice_help=False):
     lowered = " ".join(text.lower().split())
     required = ("usage:", name, "--help", "-h")
     if slice_help:
-        required += ("slice", "--from", "--to", "--out", "KRONIKA_STORAGE_DIR", "RFC3339", "inclusive", "kronika-report")
+        required += ("slice", "--from", "--to", "--out", "KRONIKA_STORAGE_DIR", "RFC3339", "inclusive")
     else:
         required += ("--version", *HELP_CONTENT[name])
     for fragment in required:

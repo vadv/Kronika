@@ -1,6 +1,6 @@
 //! Terminal instructions for creating standalone reports.
 
-pub(crate) const HELP: &str = r#"kronika-report - create one self-contained interactive HTML recording
+pub(crate) const HELP: &str = r"kronika-report - create one self-contained interactive HTML recording
 
 Usage:
   kronika-report <INPUT.zms> <OUTPUT.html>
@@ -47,19 +47,6 @@ Example: show exactly 2026-09-05 19:00-20:00 UTC:
   kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
     incident.zms incident.html
 
-To obtain that input from an existing collector storage directory:
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-dump slice \
-    --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z \
-    --out incident.zms
-  sudo chown "$(id -u):$(id -g)" incident.zms
-  kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
-    incident.zms incident.html
-Slice uses inclusive RFC3339 whole seconds and may retain nearby samples;
-the report uses the explicit half-open microsecond window above. If no recording
-exists, start the collector in another terminal using your recording directory:
-  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
-Choose slice times that contain the data you collected.
-
 Environment and completion:
   No environment variables are required or read as report configuration.
   KRONIKA_STORAGE_DIR and web credentials are not used by kronika-report.
@@ -67,4 +54,4 @@ Environment and completion:
   No .idx sidecar is created. Allow space for the existing file and new HTML.
   Success exits 0 without writing to stdout; errors go to stderr and exit
   nonzero. There is no daemon to stop. Ctrl-C interrupts a running conversion.
-"#;
+";
