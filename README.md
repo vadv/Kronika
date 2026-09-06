@@ -66,8 +66,8 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 ```
 
 The connection address alone does not show whether the programs share resource
-limits. Restart the web server with `KRONIKA_WEB_SOURCES=3` to see both Linux
-and PostgreSQL.
+limits. When the collector is configured for Linux and PostgreSQL, set
+`KRONIKA_WEB_SOURCES=3` when starting the web server.
 
 ### Storage
 
