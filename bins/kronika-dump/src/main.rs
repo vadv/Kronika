@@ -1,6 +1,7 @@
 //! Inspect Kronika storage or extract one bounded standalone ZMS.
 
 mod args;
+mod help;
 mod render;
 
 use std::ffi::OsString;
@@ -30,6 +31,20 @@ use kronika_writer as _;
 use tempfile as _;
 
 fn main() -> ExitCode {
+    if std::env::args_os().skip(1).eq(["--version"]) {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args_os().skip(1).eq(["--help"]) || std::env::args_os().skip(1).eq(["-h"]) {
+        print!("{}\n{}", help::HELP, help::SLICE_HELP);
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args_os().skip(1).eq(["slice", "--help"])
+        || std::env::args_os().skip(1).eq(["slice", "-h"])
+    {
+        print!("{}", help::SLICE_HELP);
+        return ExitCode::SUCCESS;
+    }
     let parsed = match args::parse(std::env::args().skip(1)) {
         Ok(parsed) => parsed,
         Err(problem) => {

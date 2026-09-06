@@ -1,6 +1,7 @@
 mod dump;
 mod fixture;
 mod given;
+mod pg_session;
 mod then_demo;
 mod then_dump;
 mod then_log;

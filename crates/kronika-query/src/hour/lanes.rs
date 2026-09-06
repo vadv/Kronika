@@ -251,23 +251,12 @@ fn membership(row: &Row) -> Membership {
     }
 }
 
-/// Effective CPU capacity in cores: the hierarchy quota bounded by the cpuset,
-/// or the cpuset alone when the quota is unlimited. Unknown otherwise; a host
-/// CPU count never substitutes for cgroup capacity.
 fn cgroup_cpu_capacity(row: &Row) -> Option<f64> {
-    let cpuset = number(row, "cpuset_cpus").filter(|cpus| *cpus > 0.0);
-    match (
+    kronika_index::cgroup_cpu_capacity(
+        integer(row, "cpuset_cpus"),
         integer(row, "effective_cpu_quota_usec"),
         integer(row, "effective_cpu_period_usec"),
-    ) {
-        (Some(-1), _period) => cpuset,
-        (Some(quota), Some(period)) if quota > 0 && period > 0 => {
-            #[expect(clippy::cast_precision_loss, reason = "microseconds of one period")]
-            let cores = quota as f64 / period as f64;
-            Some(cpuset.map_or(cores, |cpus| cores.min(cpus)))
-        }
-        _other => None,
-    }
+    )
 }
 
 /// Whether a cgroup row is the collector's own membership for one controller.

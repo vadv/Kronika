@@ -1,16 +1,28 @@
 # Class 2: PostgreSQL log events
 
-Log events occupy `2_001_001`–`2_099_999`. The schemas are declared in
-[`crates/kronika-registry/src/codec/pg_log.rs`](../../crates/kronika-registry/src/codec/pg_log.rs);
-this file says what the sections are for, which lines produce them, and what
-the collector cannot see.
+[Русская версия](postgresql.ru.md)
 
-A cluster is named either by `KRONIKA_PG_DSNS`, and then the server says which
-file it writes through `pg_current_logfile()`, or by `KRONIKA_PG_LOGS`, which
-takes paths and patterns. Both may be given; a file reached both ways is
-followed once.
+Sections occupy `2_001_001`–`2_099_999`. The [codec](../../crates/kronika-registry/src/codec/pg_log.rs) defines fields and units; the [Events reference](../features.md#events) defines UI grouping.
+
+## Sources and formats
+
+Using the connections in `KRONIKA_PG_DSNS`, the collector discovers log files through `pg_current_logfile()`. Paths and patterns in `KRONIKA_PG_LOGS` add files to that set. The collector reads the files locally; they must be accessible on its host. A file reached by both methods is read once. A previously unread file starts at its beginning; a known file resumes at its saved offset.
+
+| Format by filename | Parsing |
+| --- | --- |
+| `.csv` | csvlog: positional fields; appended columns ignored. Open quotes continue the record onto the next line. |
+| `.json` | jsonlog: one JSON object per line. |
+| Any other name | stderr: severity, message and continuation fields. `log_line_prefix` is discovered through a DSN; an explicit path without a known prefix has absent database and user. |
+
+`system_identifier` comes from `pg_control_system()` for a DSN source; it is `null` for an explicit path. `source_file` stores the filename. The filename suffix selects the format without content detection.
+
+In stderr, `DETAIL:`, `HINT:`, `CONTEXT:`, `STATEMENT:` and `QUERY:` lines attach to the record; a leading tab continues the previous field. `STATEMENT:` and `QUERY:` are stored in `statement`.
+
+Text log times are parsed in the collector host's local timezone; the printed zone designation is skipped. An ambiguous clock resolves to its first occurrence. If the timestamp is absent or unparseable, the PostgreSQL parser uses collection time. Fractional seconds retain microsecond precision. Correct text-log timing requires `log_timezone` to match the collector host zone.
 
 ## Registered types
+
+`event_stream` denotes events or grouped repetitions, rather than a complete state snapshot. `type_id` selects the section’s field layout.
 
 | `type_id` | Section | Semantics | Sort key |
 |-----------|---------|-----------|----------|
@@ -22,110 +34,48 @@ followed once.
 | `2_006_001` | `pg_log_lifecycle` | `event_stream` | `(ts, kind)` |
 | `2_007_001` | `pg_log_temp_files` | `event_stream` | `(ts, size_bytes)` |
 
-## The three formats
+## Collection grouping
 
-`log_destination` decides the shape of a record, and the file name decides how
-the collector reads it: `.csv` is `csvlog`, `.json` is `jsonlog`, anything else
-is `stderr`.
+| Section | Key within one read batch | Stored sample |
+| --- | --- | --- |
+| `pg_log_errors` | `(severity, category, pattern)` | First occurrence with original values. Pattern normalizes quoted names, bracketed/parenthesized lists, numbers after `transaction`/`relation`/`process`/`PID`/`signal`, and WAL addresses. |
+| `pg_log_slow_queries` | SQL with normalized literals | Slowest occurrence and its duration. |
 
-**`csvlog`** has the same 23 columns in every release since PG 9.0; PG 13 and
-PG 14 appended `backend_type`, `leader_pid` and `query_id` after them. The
-collector reads by position and ignores what a newer release appends next. A
-statement with a newline in it spans lines, and a record continues while a
-quoted field is still open.
+A group crossing a read-batch boundary produces a separate row in each batch. Other sections contain individual events.
 
-**`jsonlog`** exists from PG 15 and is one object per line. Newlines inside a
-value are escaped, so a record never spans lines.
+## Recognized records
 
-**`stderr`** has no fixed shape: what precedes `SEVERITY:` is whatever
-`log_line_prefix` says. The setting is read from `pg_settings` over
-`KRONIKA_PG_DSNS`, because it is the server's setting and declaring it a second
-time in the collector's environment would be a second place to get it wrong.
-A log named through `KRONIKA_PG_LOGS` alone has no prefix to go by: the time,
-severity and message are still read, and the database and user, which only the
-prefix carries, are `NULL`.
+`WARNING` and higher severities produce error groups. `LOG` recognizes the following English forms; other `LOG` messages are omitted. Localized messages retain error groups but do not match the English `LOG` forms. Extended Protocol duration messages support `statement:` and `execute`; `parse` and `bind` are omitted.
 
-Every section carries two more columns. `system_identifier` comes from
-`pg_control_system()` and names the cluster whatever its log is called today;
-it is `NULL` for a log named outright, because no server was asked.
-`source_file` is the file the record was read from.
-
-A `stderr` record's `DETAIL:`, `HINT:`, `CONTEXT:`, `STATEMENT:` and `QUERY:`
-lines are separate lines carrying the prefix again. A line the server wrapped
-inside one of them starts with a tab. `QUERY:` and `STATEMENT:` both land in
-`statement`: both name the SQL the record was raised under.
-
-## Grouping
-
-Two sections arrive grouped, because a log that repeats one message ten
-thousand times says what a count of ten thousand says and costs ten thousand
-rows to say it.
-
-`pg_log_errors` groups on `(severity, category, pattern)`, where `pattern` is
-the message with its values replaced: quoted names, parenthesized and bracketed
-lists, the number after `transaction`/`relation`/`process`/`PID`/`signal`, and
-WAL addresses. `sample` keeps the first occurrence with its values intact.
-
-`pg_log_slow_queries` groups on the statement with its literals replaced as
-well, and keeps the slowest occurrence as `sample` with its duration.
-
-The window is one read. A group that spans two reads is two rows, which is what
-`event_stream` means.
-
-## Which records produce rows
-
-Everything at `WARNING` and above becomes an error group. At `LOG`, only the
-six shapes below produce rows, and a `LOG` record that matches none of them is
-dropped: on a default install the log also carries a line per connection
-authorized, which is traffic, not an event.
-
-| Section | The record it reads | Setting that produces it |
-|---|---|---|
-| `pg_log_checkpoints` | `checkpoint starting:`, `checkpoint complete:`, `checkpoints are occurring too frequently` | `log_checkpoints`, on by default from PG 15 |
-| `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table`, including the aggressive and anti-wraparound wordings | `log_autovacuum_min_duration` |
+| Section | Message prefix/shape | Source setting |
+| --- | --- | --- |
+| `pg_log_checkpoints` | `checkpoint starting:`, `checkpoint complete:`, `checkpoints are occurring too frequently` | `log_checkpoints` |
+| `pg_log_autovacuum` | `automatic vacuum of table`, `automatic analyze of table`, including aggressive and anti-wraparound forms | `log_autovacuum_min_duration` |
 | `pg_log_slow_queries` | `duration: <ms> ms  statement: <sql>`, `duration: <ms> ms  execute <name>: <sql>` | `log_min_duration_statement` |
-| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; the `DETAIL` pid lists after `holding the lock:` and `Wait queue:` are stored in `holding_pids` and `wait_queue` | `log_lock_waits` |
-| `pg_log_lifecycle` | `server process (PID …) was terminated`, `received … shutdown request`, `database system is ready to accept connections` | always |
+| `pg_log_lock_waits` | `process <pid> still waiting for`, `process <pid> acquired`; PID lists from `holding the lock:` and `Wait queue:` → `holding_pids`, `wait_queue` | `log_lock_waits` |
+| `pg_log_lifecycle` | `server process (PID …) was terminated`, `received … shutdown request`, `database system is ready to accept connections` | Server lifecycle messages |
 | `pg_log_temp_files` | `temporary file: path …, size …` | `log_temp_files` |
 
 ## Error categories
 
-`category` is the first family whose phrases the pattern matches, so a deadlock
-reported alongside a permission problem counts as a lock.
+`PANIC` always receives category `5`. A message containing `terminated by signal` and `: killed` receives `4`. Otherwise the first matching category in table order is selected; unmatched `FATAL` receives `6`, other unmatched messages receive `10`.
 
-| Code | Category | What it covers |
+| Code | Category | Content |
 | ---: | --- | --- |
-| `0` | lock | deadlocks, lock timeouts, waits |
-| `1` | constraint | duplicate keys, foreign keys, not-null, check, exclusion |
-| `2` | serialization | `could not serialize access` |
-| `3` | timeout | statement, transaction and idle-session timeouts, cancellation |
-| `4` | resource | memory, connection slots, disk, and an OOM kill |
-| `5` | data corruption | bad pages, unreadable blocks, every `PANIC` |
-| `6` | system | files, I/O, crashes, and any otherwise uncategorized `FATAL` |
-| `7` | connection | resets, unexpected EOF, broken pipes |
-| `8` | auth | password failures, `pg_hba.conf`, permissions |
-| `9` | syntax | syntax errors, missing objects, bad input |
-| `10` | other | everything else |
+| `0` | lock | Deadlock, lock timeout, lock wait. |
+| `1` | constraint | Duplicate key, foreign key, not-null, check, exclusion. |
+| `2` | serialization | `could not serialize access`. |
+| `3` | timeout | Statement, transaction and idle-session timeouts; cancellation. |
+| `4` | resource | Memory, connection slots, disk, OOM kill. |
+| `5` | data corruption | Bad pages, unreadable blocks, every `PANIC`. |
+| `6` | system | Files, I/O, crashes, remaining `FATAL`. |
+| `7` | connection | Resets, unexpected EOF, broken pipes. |
+| `8` | auth | Passwords, `pg_hba.conf`, permissions. |
+| `9` | syntax | Syntax, missing objects, bad input. |
+| `10` | other | Remaining errors. |
 
-## What the collector cannot see
+## Read bounds
 
-- **A localized log.** The messages above are matched in English. A server with
-  `lc_messages` set to another locale still yields error groups, but its
-  patterns are that locale's text and no `LOG` record is recognized as a typed
-  shape.
-- **The extended protocol's parse and bind steps.** `duration: … ms  parse …`
-  and `bind …` are not read; `statement:` and `execute …:` are.
-- **A record older than the collector's first read.** A log file that already
-  exists when the collector starts is read from its beginning; one that has
-  been read before resumes at its offset.
-- **A `log_timezone` that differs from the host's.** Both `PostgreSQL` and the
-  collector print and read a local wall clock, and the collector reads it in the
-  host's timezone. A server configured with a different one shifts every
-  event's `ts` by the difference.
+The read buffer is 64 KiB; a batch consumes up to 4 MiB of raw file bytes. One collection reads up to 256 MiB from each file; remaining input waits for the next collection. A retained raw record is bounded to 64 KiB, message/statement/continuation text to 5 KiB, and a pattern to 256 bytes. Truncated CSV records are omitted because field boundaries after truncation are unresolved.
 
-## Bounds
-
-A line longer than 64 KiB is cut there and the rest of it dropped. A stored
-message, statement or continuation is cut at 5 KiB, a grouping pattern at
-256 bytes. One read takes at most 4 MiB from a file; the rest waits for the
-next tick.
+Sources: [parser](../../crates/kronika-source-log/src/postgres.rs), [time](../../crates/kronika-source-log/src/timestamp.rs), [tail](../../crates/kronika-source-log/src/tail.rs), [collector loop](../../bins/kronika-collector/src/log_sources.rs).

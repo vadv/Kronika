@@ -4,6 +4,33 @@ use super::{Arguments, arguments};
 use kronika_report::ReportTimeRange;
 
 #[test]
+fn options_cannot_be_interpreted_as_file_paths() {
+    for values in [
+        vec!["--help", "--unknown-option"],
+        vec!["--unknown-option", "-h"],
+        vec!["-h", "report.html"],
+        vec!["incident.zms", "--help"],
+        vec![
+            "--from",
+            "1",
+            "--to-exclusive",
+            "2",
+            "--help",
+            "report.html",
+        ],
+    ] {
+        assert_eq!(
+            arguments(values.into_iter().map(OsString::from)),
+            Err("unknown or misplaced option; use ./ before a path beginning with '-'")
+        );
+    }
+    assert!(
+        arguments(["./-input.zms", "./-output.html"].map(OsString::from)).is_ok(),
+        "an explicit relative path may start with a dash"
+    );
+}
+
+#[test]
 fn command_line_requires_exactly_two_paths() {
     let parsed = arguments([
         OsString::from("incident.zms"),

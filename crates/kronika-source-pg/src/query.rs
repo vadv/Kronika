@@ -32,12 +32,19 @@ pub const SERVER_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Client-side backstop for opening and consuming one bounded row stream.
 pub const QUERY_FETCH_TIMEOUT: Duration = Duration::from_secs(35);
 
-pub(crate) const SESSION_SETUP_SQL: &str = marked!("SET statement_timeout = '30s'");
+pub(crate) const SESSION_SETUP_SQL: &str = concat!(
+    marked!("SET statement_timeout = '30s'"),
+    "; ",
+    marked!("SET lock_timeout = '100ms'"),
+);
 
 /// Maximum time spent sending a best-effort `PostgreSQL` `CancelRequest`.
 pub const CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Install the monitoring query deadline on one newly opened frontend session.
+/// Install the query deadline and lock-wait limit on a new monitoring session.
+///
+/// The 100 ms limit bounds each lock acquisition wait, not how long an acquired
+/// lock is held.
 ///
 /// This uses one Simple Query message and waits for `ReadyForQuery` before the
 /// session can be exposed to a caller.

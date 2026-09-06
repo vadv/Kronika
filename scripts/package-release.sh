@@ -4,30 +4,39 @@ export LC_ALL=C
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/package-release.sh [--bin-dir DIR] [--output-dir DIR] [--with-demo]
+Usage: scripts/package-release.sh [--target TARGET] [--bin-dir DIR] [--output-dir DIR]
 
-Build and package static x86-64 Linux binaries; publish nothing.
+Build and package all four static Linux binaries; publish nothing.
+--target TARGET  x86_64-unknown-linux-musl (default) or aarch64-unknown-linux-musl.
 --bin-dir DIR     Package existing binaries instead of compiling them.
 --output-dir DIR  Destination for the archive and its checksum (default: dist).
---with-demo       Also build/package the optional kronika-demo binary.
 USAGE
 }
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 bin_dir=
 output_dir="$repo/dist"
+target=x86_64-unknown-linux-musl
 binaries=(kronika-collector kronika-web kronika-dump kronika-report)
 while (($#)); do
   case "$1" in
-    --bin-dir|--output-dir)
+    --target|--bin-dir|--output-dir)
       if (($# < 2)) || [[ -z "$2" ]]; then usage >&2; exit 2; fi
-      if [[ "$1" == --bin-dir ]]; then bin_dir=$2; else output_dir=$2; fi
+      case "$1" in
+        --target) target=$2 ;;
+        --bin-dir) bin_dir=$2 ;;
+        --output-dir) output_dir=$2 ;;
+      esac
       shift 2 ;;
-    --with-demo) binaries+=(kronika-demo); shift ;;
     --help|-h) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+case "$target" in
+  x86_64-unknown-linux-musl) machine='Advanced Micro Devices X86-64'; cpu=x86-64 ;;
+  aarch64-unknown-linux-musl) machine=AArch64; cpu=generic ;;
+  *) echo "Unsupported release target: $target" >&2; exit 2 ;;
+esac
 
 if [[ -n $(git -C "$repo" status --porcelain --untracked-files=normal) ]]; then
   echo 'Commit or set aside checkout changes before packaging.' >&2
@@ -43,11 +52,23 @@ with open(sys.argv[1], 'rb') as source:
 PY
 )
 [[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo 'Invalid package version' >&2; exit 1; }
-target=x86_64-unknown-linux-musl
 name="kronika-$version-${revision:0:12}-$target"
 build_mode=prebuilt
 if [[ -z "$bin_dir" ]]; then
   build_mode=source
+  [[ $(uname -m) == "${target%%-*}" ]] || {
+    echo "Build $target on a native ${target%%-*} Linux machine." >&2; exit 1;
+  }
+  # Use the target's baseline ISA even on newer CI processors.
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=$cpu"
+  build_cflags=${CFLAGS_x86_64_unknown_linux_musl:-}
+  if [[ "$target" == aarch64-unknown-linux-musl ]]; then
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+    export CC_aarch64_unknown_linux_musl=musl-gcc
+    # Avoid native libgcc outline helpers that depend on glibc symbols.
+    export CFLAGS_aarch64_unknown_linux_musl="${CFLAGS_aarch64_unknown_linux_musl:-} -mno-outline-atomics"
+    build_cflags=$CFLAGS_aarch64_unknown_linux_musl
+  fi
   packages=()
   for binary in "${binaries[@]}"; do packages+=(-p "$binary"); done
   build_command=(cargo build --release --locked --target "$target" "${packages[@]}")
@@ -65,7 +86,7 @@ for binary in "${binaries[@]}"; do
   [[ -f "$path" && -x "$path" && ! -L "$path" ]] || {
     echo "Missing regular executable: $path" >&2; exit 1;
   }
-  readelf -h "$path" | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+  readelf -h "$path" | grep -q "Machine:.*$machine"
   if readelf -l "$path" | grep -q INTERP || readelf -d "$path" | grep -q NEEDED; then
     echo "Not a static executable: $path" >&2
     exit 1
@@ -100,7 +121,7 @@ files = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z']).decode().
 for name in filter(None, files):
     path = Path(name)
     documentation = (
-        name in ('README.md', 'README.ru.md')
+        name in ('README.md', 'README.ru.md', 'DESIGN.md', 'DESIGN.ru.md')
         or (path.parts[0] == 'docs' and 'superpowers' not in path.parts
             and path.suffix in ('.md', '.png', '.svg', '.drawio'))
         or (len(path.parts) == 3 and path.parts[0] == 'bins'
@@ -142,7 +163,8 @@ if [[ "$build_mode" == source ]]; then
     cd "$repo"
     printf 'build_command='
     printf '%q ' "${build_command[@]}"
-    printf '\ncompiler=%s\n' "$build_compiler"
+    printf '\ncompiler=%s\nrustflags=%s\ncflags=%s\ntarget_cflags=%s\narch_cflags=%s\n' \
+      "$build_compiler" "$RUSTFLAGS" "${CFLAGS:-}" "${TARGET_CFLAGS:-}" "$build_cflags"
   ) >> "$stage/BUILDINFO"
 fi
 (

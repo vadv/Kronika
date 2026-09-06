@@ -551,6 +551,105 @@ fn server_statement_timeout_is_timeout_telemetry_not_capability_loss() {
     );
 }
 
+#[tokio::test]
+async fn lock_timeout_is_a_source_error_and_keeps_the_session_usable() {
+    use futures_util::TryStreamExt as _;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the protocol probe");
+    let port = listener
+        .local_addr()
+        .expect("read the probe address")
+        .port();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _peer) = listener.accept().expect("accept the connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound the probe");
+        accept_startup(&mut stream);
+        for _ in 0..2 {
+            let mut header = [0_u8; 5];
+            stream
+                .read_exact(&mut header)
+                .expect("read the query header");
+            assert_eq!(header[0], b'Q');
+            let len = u32::from_be_bytes(header[1..].try_into().expect("length bytes"));
+            let mut body = vec![0; usize::try_from(len - 4).expect("query fits")];
+            stream.read_exact(&mut body).expect("read the query body");
+            let error = b"SERROR\0C55P03\0Mcanceling statement due to lock timeout\0\0";
+            stream.write_all(b"E").expect("write the error tag");
+            stream
+                .write_all(
+                    &u32::try_from(error.len() + 4)
+                        .expect("error fits")
+                        .to_be_bytes(),
+                )
+                .expect("write the error length");
+            stream.write_all(error).expect("write the lock timeout");
+            stream
+                .write_all(&[b'Z', 0, 0, 0, 5, b'I'])
+                .expect("write ready");
+            stream.flush().expect("flush the error");
+        }
+        let mut byte = [0];
+        assert_eq!(stream.read(&mut byte).expect("read session close"), 0);
+        closed_tx.send(()).expect("report closed session");
+    });
+    let mut pool = Pool::new(&format!(
+        "host=127.0.0.1 port={port} user=monitor dbname=metrics"
+    ))
+    .expect("the probe DSN parses");
+    let mut observations = Vec::new();
+    for batched in [false, true] {
+        let error = {
+            let session = pool.session().await.expect("open or reuse the session");
+            assert_eq!(session.generation(), 1);
+            let mut stats = kronika_source_pg::query::QueryStats::default();
+            let stream = session
+                .simple_stream("SELECT 1", &mut stats)
+                .await
+                .expect("send the query");
+            let mut stream = std::pin::pin!(stream);
+            stream.try_next().await.expect_err("receive SQLSTATE 55P03")
+        };
+        assert_eq!(
+            error.code(),
+            Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+        );
+        let mut observe = |observation| observations.push(observation);
+        let measured = measure(&mut observe, "probe", "monitor@127.0.0.1", "metrics");
+        let completion = if batched {
+            finish_batched_kind(
+                &mut pool,
+                measured,
+                Err(BatchError::<()>::PostgreSql(error)),
+            )
+            .expect("a server error is a source failure")
+        } else {
+            super::finish_failed::<()>(measured, Ok(Err(error.into())))
+        };
+        assert_eq!(completion, QueryCompletion::SourceFailed);
+        assert!(fixed_source_can_continue(completion));
+        assert_eq!(pool.generation(), Some(1));
+    }
+    assert_eq!(observations.len(), 2);
+    for observation in observations {
+        let PgObservation::Query(observation) = observation else {
+            panic!("expected a query observation");
+        };
+        assert_eq!(observation.outcome, QueryOutcome::Error);
+        assert!(
+            observation
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("lock timeout"))
+        );
+    }
+    pool.close();
+    closed_rx.await.expect("the driver closes the session");
+    server.join().expect("the protocol probe exits");
+}
+
 #[test]
 fn dropping_an_inflight_measurement_emits_one_cancelled_observation() {
     let mut observations = Vec::new();
@@ -688,14 +787,13 @@ fn accept_startup(stream: &mut TcpStream) {
     let mut body = vec![0_u8; body_len];
     stream.read_exact(&mut body).expect("read setup body");
     let sql = body.strip_suffix(&[0]).expect("setup SQL is terminated");
-    assert!(
-        std::str::from_utf8(sql)
-            .expect("setup SQL is UTF-8")
-            .contains("SET statement_timeout = '30s'")
-    );
+    let sql = std::str::from_utf8(sql).expect("setup SQL is UTF-8");
+    assert!(sql.contains("SET statement_timeout = '30s'"));
+    assert!(sql.contains("SET lock_timeout = '100ms'"));
     stream
         .write_all(&[
-            b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'Z', 0, 0, 0, 5, b'I',
+            b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'Z', 0,
+            0, 0, 5, b'I',
         ])
         .expect("write setup completion and ready messages");
     stream.flush().expect("flush setup response");

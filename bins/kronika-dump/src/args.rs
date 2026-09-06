@@ -139,7 +139,7 @@ fn parse_inspect<I: IntoIterator<Item = String>>(arguments: I) -> Result<Inspect
                     to = Some(ts);
                 }
             }
-            flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+            flag if flag.starts_with('-') => return Err(format!("unknown flag {flag}")),
             path if root.is_none() => root = Some(PathBuf::from(path)),
             extra => return Err(format!("unexpected argument {extra:?}")),
         }

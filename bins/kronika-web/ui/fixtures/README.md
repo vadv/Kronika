@@ -1,17 +1,18 @@
 # Captured-hour interface fixture
 
-`real-hour.json.gz` is the data object recovered from the owner-approved
-standalone interface capture. It retains the captured OS process rows,
+[Русская версия](README.ru.md)
+
+`real-hour.json.gz` contains the data recovered from a saved standalone HTML interface. It retains the captured OS process rows,
 PostgreSQL activity rows, exact PID relationships, one-hour system series and
 finding locators. It is used only by interface tests and the opt-in standalone
 demo build; `kronika-web` does not ship the captured rows.
 
-The fixture is deterministic unnamed gzip. `real-hour.manifest.json` records
+The data is compressed reproducibly with gzip, without an original filename. `real-hour.manifest.json` records
 its source and content hashes. `npm run fixture:check` validates structure,
-cardinalities, deterministic compression and credential/DSN/authorization/key
-signatures without printing command lines or SQL text.
+record counts, reproducible compression and patterns for credentials, connection
+strings, authorization headers and keys without printing command lines or SQL text.
 
-To reproduce the fixture from the preserved owner-approved HTML:
+To reproduce the fixture from the preserved HTML:
 
 ```sh
 node scripts/real-fixture.mjs --recover /path/to/index.html

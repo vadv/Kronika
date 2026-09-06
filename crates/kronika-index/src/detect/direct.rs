@@ -4,6 +4,7 @@ use kronika_reader::{Cell, Segment};
 
 use crate::Index;
 use crate::build::{ActiveBackendSample, BuildError};
+use crate::cpu_capacity::RecordedCpuCapacity;
 use crate::findings::{Finding, FindingKind};
 use crate::series::SeriesBlock;
 
@@ -667,7 +668,7 @@ impl FindingBuilder {
     pub(super) fn find_active_backends(
         &self,
         samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
-        postgres_cpus: Option<u32>,
+        postgres_cpus: &RecordedCpuCapacity,
         hits: &mut BTreeMap<u32, Vec<Finding>>,
     ) {
         let requested: Vec<u32> = activity_layouts()
@@ -677,9 +678,6 @@ impl FindingBuilder {
         if requested.is_empty() {
             return;
         }
-        let Some(cpus) = postgres_cpus else {
-            return;
-        };
         let mut combined = BTreeMap::<i64, Option<ActiveSnapshot>>::new();
         for type_id in requested {
             let Some(samples) = samples.get(&type_id) else {
@@ -699,10 +697,10 @@ impl FindingBuilder {
                     }));
             }
         }
-        let service_slots = cpus.saturating_mul(2);
         for (timestamp, sample) in combined {
             if let Some(sample) = sample
-                && sample.count > service_slots
+                && let Some(cpus) = postgres_cpus.at(timestamp)
+                && f64::from(sample.count) > 2.0 * cpus
             {
                 hits.entry(sample.type_id).or_default().push(known_bad(
                     activity_state_field(sample.type_id),

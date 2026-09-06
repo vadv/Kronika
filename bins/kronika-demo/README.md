@@ -1,11 +1,11 @@
-# Kronika interactive demo
+# Kronika development demo
 
 [Русская версия](README.ru.md)
 
-The demo starts PostgreSQL 15, PgBouncer, the Kronika collector, a bounded
-synthetic workload, and the Kronika web UI in one Docker Compose service. It
-uses the real collection and storage paths and needs no external database or
-private environment.
+Build this demo from source to explore the interface or develop Kronika.
+Docker Compose starts PostgreSQL 15, PgBouncer, collector, web and synthetic
+workloads in one service. The `kronika-demo` program is not included in prebuilt
+archives; those contain collector, web, dump and report.
 
 ## Start and inspect
 
@@ -23,23 +23,11 @@ Username: demo
 Password: forensics
 ```
 
-Processes is the default view. Host, Processes, PostgreSQL, and Events expose
-the collected hour through the normal Kronika UI. PostgreSQL includes
-Overview, Activity, Vacuum, Locks, Statements, Plans, Databases, Tables, and
-Indexes when the corresponding samples are present. PgBouncer is represented
-by its real log events under Events; Kronika does not currently have a separate
-PgBouncer dashboard.
+Navigation and metric definitions: [controls](../../docs/features.md),
+[Linux](../../docs/metrics-linux.md), [PostgreSQL](../../docs/metrics-postgresql.md).
+The interface marks this recording as `DEMO · synthetic data`.
 
-Move the timeline cursor to inspect a recorded moment. Select a table row to
-open its Inspector detail, use the chart button for the Inspector chart, and
-press Escape to close it. The visible search controls filter the current
-surface; browser Back restores addressable navigation state.
-
-The small `DEMO · synthetic data` label distinguishes this dataset from a real
-host. The workload and its credentials are local to the Compose network. The
-running UI uses no remote fonts, assets, or packages.
-
-If port 8080 is occupied, choose another loopback port:
+To set another loopback port:
 
 ```sh
 DEMO_PORT=18081 make demo-up
@@ -63,8 +51,7 @@ make demo-stop
 Run `make demo-up` to start it again. PostgreSQL and PgBouncer use ephemeral
 tmpfs filesystems and are recreated on every container start. The named volume
 contains Kronika history and, while the demo is running, one bounded system
-workload scratch file. A clean stop removes that file. History retention is
-capped at 512 MiB.
+workload scratch file. A clean stop removes that file. The history retention target is 512 MiB.
 
 Remove the container, network, and named demo-data volume:
 
@@ -77,10 +64,12 @@ pinned base images, locked Cargo dependencies, and the exact pg_store_plans
 source revision. Normal runtime does not require network access beyond the
 browser connecting to the published loopback port.
 
-## `kronika-demo` binary
+<a id="kronika-demo-binary"></a>
+## The `kronika-demo` program
 
-The binary runs `kronika-collector` for a bounded window and reports segment
-size, journal size, peak RSS, and CPU time. The image uses it as the supervisor
+The program runs `kronika-collector` for a configured duration and reports
+compressed recording size, current journal size, peak process memory (RSS),
+and CPU time. The image uses it as the supervisor
 for the collector, the default system workload, and the optional PostgreSQL
 workload.
 
@@ -122,8 +111,8 @@ port.
 CPU, disk, and network follow a fixed 60-second waveform with six 10-second
 phases at 25%, 50%, 75%, 100%, 75%, and 50% of the configured peak. With the
 defaults, CPU therefore moves through 3%, 6%, 9%, 12%, 9%, and 6% of one core;
-disk and loopback payload move through 8, 16, 24, 32, 24, and 16 KiB/s. The
-hourly mean is exactly five-eighths of the peak:
+disk and loopback payload move through 8, 16, 24, 32, 24, and 16 KiB/s. For ideal scheduling, the mean phase weight is
+`(0.25 + 0.50 + 0.75 + 1 + 0.75 + 0.50) / 6 = 0.625` of the peak:
 
 - CPU: 270 CPU-seconds per hour, or 7.5% of one core on average (3.75% of the
   two-core Compose allowance).
@@ -229,8 +218,8 @@ printf 'Smoke data retained at %s\n' "$smoke_dir"
 
 ### Optional PostgreSQL workload
 
-`KRONIKA_DEMO_WORKLOAD_DSN` enables the workload. If it is unset,
-`kronika-demo` keeps its original collector-only behavior.
+`KRONIKA_DEMO_WORKLOAD_DSN` enables the PostgreSQL workload. If unset, the
+PostgreSQL workload is disabled; the system workload remains enabled by default.
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
@@ -266,23 +255,18 @@ live OLTP rows each while continuing to produce WAL, buffer, table, and index
 activity. A slow transaction reduces the achieved rate; the client does not
 replay missed work in a burst.
 
-The commerce relations have primary keys, foreign keys, checks, and the indexes
-used by the workload. Reference rows cover 20000 customers and 2048 products.
-The plan and Vacuum fixtures use lower IDs; the OLTP slot ring is placed above
-both ranges. `checkout-api`, `catalog-api`, `vacuum-worker`, and the other
-story-specific names remain visible alongside the steady clients.
+Reference data contains 20,000 customers and 2,048 products. OLTP order slots
+occupy IDs above the plan and Vacuum fixtures.
 
-The opening investigation reel runs the same checkout query against
-`shop.orders` before, during, and after a supporting index is dropped and
-restored. Kronika therefore records two plans under one query ID: a fast indexed
-baseline and recovery around a slower sequential-scan interval. A finite row-lock
-convoy begins after 65 seconds, Vacuum after 95 seconds, and explicit log/error
-events after 140 seconds. Each story has statement and transaction timeouts
-and a long quiet period, so the historical screens show both the problem and
-the recovery while the live database remains usable. The image samples
-PostgreSQL every 5 seconds so each bounded episode crosses at least one
-collection tick. No scenario disables `statement_timeout` or
-`idle_in_transaction_session_timeout`.
+| Fixture | Operation and start time |
+| --- | --- |
+| Plans | Repeats the same checkout query on `shop.orders` before, during and after removal/restoration of its supporting index. |
+| Locks | Row-lock chain starts after 65 seconds. |
+| Vacuum | Maintenance episode starts after 95 seconds. |
+| Events | Explicit slow-query/error/connection events start after 140 seconds. |
+
+The image collects PostgreSQL every 5 seconds. Workload statements and
+transactions have finite timeouts. Source: [workload](src/workload).
 
 For a direct binary run:
 
@@ -293,5 +277,7 @@ KRONIKA_DEMO_WORKLOAD_DIRECT_DSN='host=127.0.0.1 port=5432 user=kronika_demo dbn
     kronika-demo
 ```
 
-`SIGTERM` and `SIGINT` stop the workload and collector, close the active
-segment, and write the final report before exit.
+`SIGTERM` and `SIGINT` stop the workload and collector, retain the collector journal,
+and write the final report before exit.
+
+Sources: [supervisor](src/main.rs), [system workload](src/system_activity), [Compose](../../compose.demo.yml).

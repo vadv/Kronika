@@ -1,13 +1,15 @@
 # Generated report assets
 
-The UI shell is built from the production React sources in
+[Русская версия](README.ru.md)
+
+The interface shell is built from the main React sources in
 `bins/kronika-web/ui`. The JavaScript bindings and compressed WebAssembly are
 built from `crates/kronika-report-wasm` with the repository-pinned Rust and
 wasm-bindgen versions. Repository checks reproduce these files byte-for-byte.
 
 Run `scripts/report-assets.sh build` with `WASM_BINDGEN` set to a
 `wasm-bindgen 0.2.127` executable. Passing `--download-bindgen` explicitly
-downloads the pinned static Linux release and verifies its SHA-256 before use.
+downloads the pinned static x86_64 Linux musl release and verifies its SHA-256 before use.
 Use `scripts/report-assets.sh check` to compare a fresh build with the committed
 JavaScript and deterministic gzip files. `CARGO_BIN` and `NODE_BIN` select the
 Cargo and Node executables when they are not first on `PATH`.
@@ -22,9 +24,9 @@ only that entry point and `ReportSession` in the classic-script
 The report compiles its embedded bytes and passes the resulting
 `WebAssembly.Module` to `initEmbedded`, which instantiates asynchronously.
 
-The raw generated WebAssembly is 9,898,300 bytes. Its committed gzip form is
-2,369,548 bytes with SHA-256
-`18ece5f4175147842232787f6bdf76df1b54804d2ac888431ab974b92a8494a8`.
+The raw generated WebAssembly is 9,910,988 bytes. Its committed gzip form is
+2,395,947 bytes with SHA-256
+`f2d246ed04e6239b27a93e9069e3662bcf740e6480746d52160c9b3aaadaa144`.
 The 3,885-byte JavaScript binding has SHA-256
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 
@@ -32,6 +34,4 @@ Each input `Uint8Array` is copied once into WebAssembly linear memory by the
 generated binding. Rust adopts those allocations as `Vec<u8>` values and moves
 them into the retained `ReportEngine` without another complete ZMS or IDX
 copy. Returned NDJSON is assembled from the existing streamed records and is
-copied once from WebAssembly into JavaScript. The committed fixture starts the
-module with 2,621,440 bytes of linear memory and grows it to 5,767,168 bytes
-after eight catalog, snapshot, index, hour, paging and detail requests.
+copied once from WebAssembly into JavaScript.

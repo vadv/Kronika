@@ -8,6 +8,7 @@ use kronika_reader::{Cell, Segment};
 
 use crate::Index;
 use crate::build::{ActiveBackendSample, BuildError};
+use crate::cpu_capacity::RecordedCpuCapacity;
 use crate::findings::{
     Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK, MAX_LOG_ERROR_CATEGORY,
     PG_LOG_ERRORS_TYPE_ID,
@@ -203,7 +204,7 @@ impl FindingBuilder {
         segment: &Segment,
         index: &Index,
         active_samples: &BTreeMap<u32, Vec<ActiveBackendSample>>,
-        postgres_cpus: Option<u32>,
+        postgres_cpus: &RecordedCpuCapacity,
     ) -> Result<Vec<SeriesBlock>, BuildError> {
         let mut hits = BTreeMap::<u32, Vec<Finding>>::new();
         for type_id in &self.requested {

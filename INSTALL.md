@@ -1,103 +1,157 @@
-# Install the Kronika archive
+# Install on Linux
 
-[Русская версия](INSTALL.ru.md)
+[Русская версия](INSTALL.ru.md) · [README](README.md)
 
-This package contains static x86-64 Linux executables: `kronika-collector`,
-`kronika-web`, `kronika-dump`, and `kronika-report`. Some packages also include
-`kronika-demo`, the workload and collection runner. `BUILDINFO` identifies the
-packaging source revision and build mode. `SHA256SUMS` checks every packaged file.
-The executables sit directly in the extracted directory; run the commands
-below there. No Node.js or database is required for Kronika's own storage.
+Use `kronika-collector` to record your machine and `kronika-web` to view its
+history in a browser. The archive also includes `kronika-dump` to inspect or
+extract part of a recording and `kronika-report` to create an HTML report.
 
-## Verify and unpack
+Choose the archive for your Linux machine's architecture. The programs need
+access to the recording directory. PostgreSQL collection also needs a server
+connection with monitoring permissions.
 
-Place the archive and its matching `.tar.gz.sha256` in the same directory.
-Set the exact received filename, then verify before extracting:
+## 1. Download and extract
+
+[Download a candidate archive](docs/releases.md#download) and its
+`.tar.gz.sha256`. Architecture mapping:
+
+| `uname -m` | Archive target |
+| --- | --- |
+| `x86_64` | `x86_64-unknown-linux-musl` |
+| `aarch64` | `aarch64-unknown-linux-musl` |
+
+Run in the download directory, substituting the downloaded filename:
 
 ```sh
-archive='kronika-1.0.0-COMMIT-x86_64-unknown-linux-musl.tar.gz'
+archive='kronika-1.0.0-REPLACE_WITH_COMMIT-x86_64-unknown-linux-musl.tar.gz'
 sha256sum --check "$archive.sha256"
 tar -xzf "$archive"
 cd "${archive%.tar.gz}"
 sha256sum --check SHA256SUMS
+cat BUILDINFO
 ```
 
-The commit-qualified filename identifies a prepared artifact, not a published
-version tag. The original published v1.0.0 archive predates
-`kronika-dump slice`, `kronika-report`, and HTML export; these instructions
-describe the current package.
-
-## Record Linux and PostgreSQL
-
-Create a PostgreSQL role on the monitored server; replace the sample password:
+## 2. Install
 
 ```sh
-sudo -u postgres psql <<'SQL'
-CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
-GRANT pg_monitor TO kronika_monitor;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
-SQL
+for binary in kronika-collector kronika-web kronika-dump kronika-report; do
+  "./$binary" --version
+done
+sudo install -d -m 0755 /usr/local/bin
+sudo install -m 0755 kronika-collector kronika-web kronika-dump \
+  kronika-report /usr/local/bin/
 ```
 
-Start the collector on the monitored host:
+## 3. Record Linux
+
+```sh
+sudo install -d -m 0700 /var/lib/kronika
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  /usr/local/bin/kronika-collector
+```
+
+Use a real storage directory, not a symlink. Root can read protected process
+I/O counters and local logs. Processes are sampled every 5 seconds and core
+Linux metrics every 10 seconds. When the accumulated recording reaches
+900 seconds of age, it is saved as a finished compressed file called a segment.
+A size limit can finish the segment earlier. Web can read `active.wal` before
+it becomes a finished segment. `Ctrl+C` stops collection and retains the journal; the same
+command reopens the recording.
+
+`KRONIKA_RETENTION` defaults to `2147483648` bytes (2 GiB). For a fixed 10 GiB
+target, add `KRONIKA_RETENTION=10737418240`.
+[Storage](bins/kronika-collector/README.md#storage) defines the counted files
+and deletion order.
+
+## 4. Start web
+
+In a second terminal, replace the password and run:
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
+  KRONIKA_WEB_SOURCES=1 \
+  KRONIKA_WEB_USER=kronika \
+  KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+  /usr/local/bin/kronika-web
+```
+
+Open <http://127.0.0.1:8080/> and sign in. Web requires write access to the
+recording directory to create search indexes (`.idx`) and a lock file that
+prevents concurrent index rebuilds. This
+example runs both programs as root with private storage.
+
+For access from another machine, run on that machine:
+
+```sh
+ssh -N -L 8080:127.0.0.1:8080 user@monitored-host
+```
+
+Open <http://127.0.0.1:8080/> there. MCP uses the same listener and credentials
+at `/mcp`; [client setup](docs/mcp-clients.md) is also available in the **AI**
+panel. [Systemd](docs/services.md) defines persistent services.
+
+## 5. PostgreSQL
+
+In `psql` as a PostgreSQL administrator:
+
+```sql
+CREATE ROLE kronika_monitor LOGIN;
+\password kronika_monitor
+GRANT pg_monitor TO kronika_monitor;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
+```
+
+The role needs inherited `pg_monitor` membership, `CONNECT` to each collected
+database and the database-local extension permissions listed in
+[PostgreSQL role](bins/kronika-collector/README.md#postgresql-role).
+
+Stop collector with `Ctrl+C`. For local PostgreSQL in the same VM or container
+resource scope, restart without `KRONIKA_POSTGRES_EFFECTIVE_CPUS`:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
-  ./kronika-collector
+  /usr/local/bin/kronika-collector
 ```
 
-Omit `KRONIKA_PG_DSNS` for Linux only. PostgreSQL metrics need no other enable
-switch. The first DSN supplies metrics across its connectable databases;
-`pg_stat_statements` and `pg_store_plans` are collected when a supported
-installation is available. Log discovery names files that must be readable
-locally. The default retention target is 2 GiB, including the current journal,
-finished recordings, and derived indexes. `KRONIKA_RETENTION` accepts a decimal
-byte budget or `auto:P`, the backing filesystem's target used-space percentage.
-`Ctrl+C` stops collection; a later start resumes from the journal.
+| Setting or connection | Contract |
+| --- | --- |
+| `KRONIKA_PG_DSNS` | The first connection string (DSN) enables metrics from that server's connectable databases. Additional semicolon-separated DSNs discover logs. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Optional integer `1..4294967295`: explicit CPU capacity of the monitored PostgreSQL server. Unset uses the collector VM/container's recorded CPU capacity. |
+| Extension discovery | Supported `pg_stat_statements` and `pg_store_plans` interfaces are detected in connectable databases. Activity, Locks and relation statistics use PostgreSQL's built-in views. |
+| Transport | Native client uses `NoTls`; direct PostgreSQL and PgBouncer session pooling are supported. Metric sessions retain `SET` state. |
+| Log paths | Each `KRONIKA_PG_DSNS` entry discovers its current log through `pg_current_logfile()` even with `KRONIKA_PG_LOGS` unset. The server path must be readable on the collector host. `KRONIKA_PG_LOGS` adds local paths/globs; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
 
-In another terminal, from this package directory:
+For remote PostgreSQL or a different cgroup (a group of processes with shared
+resource limits), specify the target PostgreSQL CPU capacity. Example for a collector with 8 CPUs and PostgreSQL with 4 CPUs:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-  KRONIKA_WEB_SOURCES=3 \
-  KRONIKA_WEB_USER=kronika \
-  KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-  ./kronika-web
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
 ```
 
-Open <http://127.0.0.1:8080/> and sign in with these credentials. The default
-listener is loopback. `KRONIKA_WEB_SOURCES=3` declares both source families;
-use `1` for Linux only. It does not enable collection or filter stored data.
-Web needs write access to the same storage directory to create indexes.
-MCP is available at `http://127.0.0.1:8080/mcp` with the same authentication;
-use the web interface's MCP panel for client configuration.
+Leaving this value unset assumes PostgreSQL and collector share the same
+resources; the connection address does not verify that condition. A VM uses its latest recorded CPU
+snapshot; a container uses its CPU-time quota, quota period and allowed CPU set
+(`cpuset`). A fractional
+quota of `150000/100000` gives `1.5` CPUs. If recorded capacity is unknown,
+PostgreSQL Health is null; set a known capacity manually.
+[Formulas and time selection](docs/metrics-time.md#health).
 
-## Inspect and export
+Restart web with `KRONIKA_WEB_SOURCES=3` to mark both OS and PostgreSQL as
+configured in its catalog. The collector connection strings enable
+collection; this web setting only reports which sources are configured. User and password remain required with
+`KRONIKA_WEB_AUTH=disabled`.
 
-The storage root must be a real directory, not a file or symlink:
+[Service configuration](docs/services.md) stores DSNs and web credentials in
+root-readable environment files. [Collector reference](bins/kronika-collector/README.md)
+defines intervals, supported extension layouts and log formats.
 
-```sh
-sudo ./kronika-dump /var/lib/kronika
-```
+## Reference
 
-Choose a recorded interval; the two slice endpoints are inclusive RFC 3339
-whole seconds. The command refuses an existing output file.
-
-```sh
-sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-dump slice \
-  --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z --out incident.zms
-sudo chown "$(id -u):$(id -g)" incident.zms
-./kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
-  incident.zms incident.html
-```
-
-Report bounds use Unix microseconds: these select exactly 19:00–20:00 UTC,
-keeping the slice's nearby calculation samples outside navigation. Without
-bounds, report exposes the entire ZMS interval. It atomically replaces an
-existing HTML output. The resulting HTML opens directly in a browser without
-a server, network, or sidecar files. Web's Export action creates the same kind
-of report. Static reports have no MCP or live refresh.
-
-Full source documentation is in the repository's README, collector and web
-guides, and `docs/mcp-clients.md` at the revision named in `BUILDINFO`.
+[Controls](docs/features.md) · [Worked examples](docs/operator-guide.md) ·
+[Source build](docs/build.md) · [Dump](bins/kronika-dump/README.md) ·
+[HTML reports](bins/kronika-report/README.md)

@@ -249,3 +249,18 @@ fn slice_rejects_reversed_bounds_and_inspection_flags() {
         .is_err()
     );
 }
+
+#[test]
+fn short_options_are_not_storage_paths() {
+    for values in [["-h", "--json"], ["-x", "--index"]] {
+        assert!(
+            parse(values.into_iter().map(str::to_owned))
+                .is_err_and(|error| error.starts_with("unknown flag")),
+            "short options must fail before opening storage"
+        );
+    }
+    assert!(
+        parse(std::iter::once("./-recording".to_owned())).is_ok(),
+        "an explicit relative storage path may start with a dash"
+    );
+}

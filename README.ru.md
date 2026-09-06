@@ -2,238 +2,154 @@
 
 [English version](README.md)
 
-**Вернитесь к моменту замедления Linux и PostgreSQL.** Kronika записывает
-процессы, использование ресурсов, активность базы, SQL-запросы, планы выполнения
-и события из логов. Найдите, когда изменились загрузка CPU, дисковый I/O
-или активность запросов. Выберите процесс, запрос или план и посмотрите,
-что происходило в тот момент.
+Kronika сохраняет метрики Linux, статистику PostgreSQL, планы запросов и
+события из журналов PostgreSQL/PgBouncer. Сборщик работает на наблюдаемой машине
+и пишет данные на её диск. Веб-интерфейс показывает, что происходило в выбранный
+час: нагрузку, отдельные процессы и запросы, блокировки и изменения показателей.
 
-**Экспортируйте свои данные в один интерактивный HTML-файл.** В работающей
-Kronika выберите интервал и нажмите **«Экспорт»**. Отправьте скачанный `.html`
-коллеге: он откроет его в браузере без установки Kronika, сервера и подключения
-к интернету. Таблицы, heatmap, поиск и графики останутся интерактивными.
+![Использование CPU и значения показателей процессов за записанный час](docs/images/processes.png)
 
-**[Открыть интерактивное демо →](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html)**
-Попробуйте такой HTML-отчёт на часовой записи синтетической нагрузки Linux
-и PostgreSQL: 5 сентября 2026 года, 19:00–20:00 UTC.
-Установка и вход не нужны; сохраните файл, чтобы открыть его без сети.
+[Открыть интерактивный пример](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html).
 
-![Processes: heatmap нагрузки на CPU над таблицей процессов](docs/images/processes.png)
+## Установка и запуск
 
-*Processes в синтетическом демо. Найдите нагруженный интервал на heatmap,
-затем выберите процесс, чтобы изучить историю его CPU, памяти и I/O.*
+Можно установить [готовую сборку для Linux](INSTALL.ru.md) или
+[собрать из исходников](docs/build.ru.md). Архив содержит `kronika-collector`,
+`kronika-web`, `kronika-dump` и `kronika-report`.
 
-## Попробовать локально
-
-Для работающего демо нужен Docker с Compose v2 на Linux amd64 или arm64.
-Команды выбирают текущую ветку для ревью с описанными здесь возможностями
-и запускают демо из корня репозитория:
+После установки запустите сбор на наблюдаемой машине:
 
 ```sh
-git clone --branch fix/events-count-scope https://github.com/vadv/Kronika.git kronika
-cd kronika
-docker compose --file compose.demo.yml up --build --wait
+sudo install -d -m 0700 /var/lib/kronika
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  /usr/local/bin/kronika-collector
 ```
 
-Откройте **<http://127.0.0.1:8080/>**, имя **`demo`**, пароль **`forensics`**.
-При первом запуске собирается образ. В нём есть PostgreSQL 15, PgBouncer,
-collector, web и ограниченная синтетическая нагрузка: OLTP-транзакции, смена
-планов, ожидания блокировок, Vacuum, а также CPU, память, disk и loopback I/O
-в Linux. Внешняя база данных не нужна.
+Во втором терминале запустите веб-сервер с тем же каталогом данных:
 
 ```sh
-docker compose --file compose.demo.yml logs --follow --tail=100
-docker compose --file compose.demo.yml stop
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
+  KRONIKA_WEB_SOURCES=1 \
+  KRONIKA_WEB_USER=kronika \
+  KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
+  /usr/local/bin/kronika-web
 ```
 
-Остановка сохраняет записанную историю. Другой порт, настройки нагрузки и
-удаление данных описаны в [руководстве по демо](bins/kronika-demo/README.ru.md).
+Откройте <http://127.0.0.1:8080/> и войдите. Веб-сервер читает данные и во время
+сбора. `Ctrl+C` останавливает любой из процессов; записанные данные остаются
+на диске.
+[Службы systemd](docs/services.ru.md) запускают обе программы как сервисы.
 
-## Найти запросы и планы за нужный интервал
+### Локальный и удалённый PostgreSQL
 
-**Statements: найти SQL, на который приходилась нагрузка.** Сортируйте запросы
-по нагрузке выполнения, вызовам, активности buffers или WAL. Выберите строку,
-чтобы прочитать SQL и увидеть, как менялась его активность за этот интервал.
-
-![Statements: heatmap активности запросов, текст SQL и история в синтетическом демо](docs/images/statements.png)
-
-**Plans: посмотреть, как выполнялся запрос.** Откройте записанные планы по
-Query ID, сравните метрики выполнения и прочитайте выбранный план рядом с SQL.
-Statements и Plans используют историю `pg_stat_statements` и `pg_store_plans`,
-если эти расширения установлены.
-
-![Plans: записанный план выполнения и связанный SQL в синтетическом демо](docs/images/plans.png)
-
-*Выбранный план и SQL взяты из того же часа. В этой записи Plans Activity
-недоступна из-за повторяющихся идентификаторов одного записанного плана;
-таблица и Inspector работают.*
-
-За тот же период можно посмотреть **ожидания backends и блокирующие процессы**,
-**ход Vacuum**, **активность таблиц и индексов**, **события из логов PostgreSQL**.
-В Linux доступны **история дисков, сети, памяти и CPU**, а в контейнерах —
-**потребление ресурсов cgroup, лимиты и throttling**.
-
-## Записать историю своей машины
-
-Запустите коллектор на своей Linux-машине и укажите web каталог с записью.
-Kronika хранит историю в локальных файлах; web предоставляет доступ к этой
-записи через браузер и MCP.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-ru-dark.svg">
-  <img alt="Linux и PostgreSQL передают данные коллектору; web читает запись для браузера и MCP-клиентов" src="docs/images/architecture-ru.svg">
-</picture>
-
-### Собрать актуальные бинарные файлы
-
-Поддерживаемая статическая native-сборка — **Linux x86-64 с musl**. Установите
-`rustup`, инструменты сборки C и `musl-gcc` (`build-essential` и `musl-tools`
-в Debian/Ubuntu), затем из корня репозитория выполните:
-
-```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked --target x86_64-unknown-linux-musl \
-  -p kronika-collector -p kronika-web -p kronika-dump -p kronika-report
-```
-
-В репозитории закреплена версия Rust 1.96.0. Интерфейс браузера и WebAssembly
-для отчётов уже подготовлены: обычная Cargo-сборка не требует Node.js.
-
-Опубликованный [архив v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
-содержит collector, web, dump и demo; **в нём ещё нет `kronika-dump slice`,
-`kronika-report` и HTML-экспорта**. До публикации обновлённого архива используйте
-сборку из исходного кода выше для возможностей, описанных на этой странице. Готового
-архива для arm64 нет. [Упаковка и команды скачивания с проверкой](docs/releases.ru.md)
-описаны отдельно для существующего релиза и сборки архива из исходного кода.
-
-### Запустить коллектор
-
-Для PostgreSQL создайте на сервере учётную запись мониторинга:
-
-```sh
-sudo -u postgres psql <<'SQL'
-CREATE ROLE kronika_monitor LOGIN PASSWORD 'replace-with-password';
-GRANT pg_monitor TO kronika_monitor;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
-SQL
-```
-
-Запустите коллектор на Linux-машине, которую нужно записывать. Замените пароль
-из примера в обеих командах. Коллектору нужен доступ к сведениям о процессах и
-локальным логам; для простого локального запуска используется `sudo`.
+После [создания роли для сбора данных](INSTALL.ru.md#5-postgresql) остановите
+сборщик и задайте строку подключения (DSN). Если локальный PostgreSQL использует те же
+ограничения CPU, что и сборщик, не задавайте
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS`: доступное число CPU определяется по записанным
+данным. Cgroup — группа процессов Linux с общими ограничениями ресурсов;
+учитываются квота процессорного времени и разрешённый набор CPU.
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
-  ./target/x86_64-unknown-linux-musl/release/kronika-collector
+  /usr/local/bin/kronika-collector
 ```
 
-Одной `KRONIKA_PG_DSNS` достаточно для включения сбора PostgreSQL. Уберите её,
-если нужна только запись Linux. Установленные расширения обнаруживаются автоматически,
-логи должны быть доступны локально. Доступ к базам, расширения, пути к логам
-и интервалы сбора описаны в
-[руководстве коллектора](bins/kronika-collector/README.ru.md).
-
-### Открыть web и MCP
-
-В другом терминале укажите тот же каталог данных:
+Для удалённого PostgreSQL или PostgreSQL в другой cgroup задайте число CPU,
+доступных именно ему. Пример для PostgreSQL с 4 CPU:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-  KRONIKA_WEB_SOURCES=3 \
-  KRONIKA_WEB_USER=kronika \
-  KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-  ./target/x86_64-unknown-linux-musl/release/kronika-web
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
 ```
 
-Откройте **<http://127.0.0.1:8080/>** и войдите с заданными учётными данными.
-По умолчанию web слушает loopback. `KRONIKA_WEB_SOURCES=3` отмечает OS и
-PostgreSQL как настроенные семейства источников (`1` — только OS); переменная
-не включает сбор и не фильтрует сохранённые данные. Настройки и HTTP API описаны
-в [руководстве web](bins/kronika-web/README.ru.md).
+Адрес подключения сам по себе не показывает, общие ли у программ ограничения
+ресурсов. Если сборщик настроен на Linux и PostgreSQL, укажите
+`KRONIKA_WEB_SOURCES=3` при запуске веб-сервера.
 
-Этот же процесс отдаёт MCP по адресу **`http://127.0.0.1:8080/mcp`**, с той же
-аутентификацией. MCP-клиент может получать рейтинги, строки, историю и события
-из записи для разбора происходившего. Отдельный MCP-сервер не нужен. Например,
-получите список инструментов с учётными данными web (`curl` запросит пароль):
+### Место на диске
 
-```sh
-curl --fail --silent --show-error --user kronika \
-  --header 'Content-Type: application/json' \
-  --header 'Accept: application/json, text/event-stream' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-  http://127.0.0.1:8080/mcp
-```
+Ориентир для PostgreSQL с примерно 500 таблицами и 3000 индексами —
+**около 200 MB сжатых записей в сутки**. Объём зависит от интервалов сбора,
+числа записываемых объектов и уникальных запросов.
 
-Для Claude Code, Codex CLI и Cursor используйте панель MCP в web или
-[руководство по MCP-клиентам](docs/mcp-clients.ru.md). MCP читает запись,
-не обращаясь к наблюдаемому PostgreSQL или текущему состоянию машины.
-У статического HTML-отчёта нет MCP-эндпоинта.
+`KRONIKA_RETENTION=2147483648` задаёт бюджет хранения **2 GiB** по умолчанию,
+включая журналы и индексы. При превышении целевого объёма сборщик автоматически
+удаляет самые старые завершённые записи вместе с их индексами.
+Для **10 GiB** задайте `KRONIKA_RETENTION=10737418240` (значение в байтах).
 
-## Экспортировать интервал из командной строки
+`auto` и `auto:P` вместо фиксированного объёма задают целевую долю занятого места
+на всей файловой системе хранилища. Правила ротации и автоматический режим —
+в [настройках хранения](bins/kronika-collector/README.ru.md#storage).
 
-Кнопка **«Экспорт»** — самый короткий путь к отправке своей записи коллеге.
-Для готовой записи или экспорта из скрипта создайте HTML-файл командами
-`kronika-dump slice` и `kronika-report`.
+## Данные и представления
+
+Названия в первом столбце соответствуют разделам интерфейса.
+
+| Область | Что можно посмотреть | Справочник |
+| --- | --- | --- |
+| Processes — процессы | Команда, состояние и номер процесса (PID), использование CPU, память, чтение и запись на диск; дерево процессов и активность за час. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Host — система | CPU, память, ожидание ресурсов (PSI), сеть и диски, свободное место и связи устройств; ограничения и использование ресурсов контейнера. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Overview, Activity, Locks, Vacuum — работа PostgreSQL | Общая нагрузка, сеансы и ожидания, цепочки блокировок, длительность запросов и транзакций, ход очистки таблиц. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Statements и Plans — запросы и планы | Число вызовов, время выполнения и планирования, чтение страниц и временных файлов, запись журнала WAL, текст SQL и плана. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Databases, Tables, Indexes — объекты PostgreSQL | Размеры, чтение и изменение данных, обслуживание и возраст транзакций; объединение объектов по базе, схеме и табличному пространству. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Events — события | Сообщения журналов PostgreSQL/PgBouncer, группы похожих сообщений, время и длительность событий. | [Управление интерфейсом](docs/features.ru.md) |
+| Время и графики | Выбор часа и момента внутри него, изменение показателей, карты активности, итоговые значения и распределение измерений. | [Время и вычисления](docs/metrics-time.ru.md) |
+
+[Руководство по интерфейсу](docs/features.ru.md) описывает выбор показателей,
+группировку, поиск, сортировку, просмотр подробностей (Inspector), графики
+и экспорт. В [руководстве оператора](docs/operator-guide.ru.md) — четыре
+примера с расчётами по записи выше.
+
+![Записанный запрос, текст SQL и активность за интервал](docs/images/statements.png)
+
+![Записанный план выполнения и связанный SQL](docs/images/plans.png)
+
+## Сбор и доступ
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-ru-dark.svg">
+  <img alt="Сборщик получает данные Linux и PostgreSQL; веб-сервер передаёт запись браузеру и MCP-клиентам" src="docs/images/architecture-ru.svg">
+</picture>
+
+Интервалы сбора по умолчанию: процессы — 5 секунд, основные метрики Linux —
+10 секунд, метрики PostgreSQL — 30 секунд, таблицы и индексы — 300 секунд.
+[Настройки сборщика](bins/kronika-collector/README.ru.md) описывают источники
+данных, интервалы, права доступа и удаление старых записей.
+
+Веб-сервер обслуживает браузер, HTTP API и MCP на одном адресе и порту.
+MCP — протокол, через который ИИ-клиент может читать сохранённые данные.
+Панель **AI** содержит настройки такого подключения.
+[Инструменты MCP](docs/features.ru.md#mcp) возвращают значения на выбранный
+момент, списки объектов по величине показателя, описания полей, события
+и подробности строк.
+
+## Переносимый HTML-экспорт
+
+**Export** сохраняет выбранный интервал вашей записи в один интерактивный
+HTML-файл. Он содержит интерфейс, данные и программу обработки запросов
+на Rust/WebAssembly, которая выполняется в основном потоке браузера. Для открытия файла не нужны
+сервер или сетевое подключение.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-ru-dark.svg">
-  <img alt="Экспорт интервала из web или готовой записи в один HTML-файл для просмотра без сети и отправки коллеге" src="docs/images/report-export-ru.svg">
+  <img alt="Сохранение интервала записи в интерактивный HTML-файл для просмотра без сервера" src="docs/images/report-export-ru.svg">
 </picture>
 
-Утилиты командной строки работают с той же записью. Посмотрите размеры секций:
-
-```sh
-sudo ./target/x86_64-unknown-linux-musl/release/kronika-dump /var/lib/kronika
-```
-
-Создайте срез и отчёт; замените время на интервал своей записи:
-
-```sh
-sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
-  ./target/x86_64-unknown-linux-musl/release/kronika-dump slice \
-  --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z \
-  --out incident.zms
-sudo chown "$(id -u):$(id -g)" incident.zms
-
-./target/x86_64-unknown-linux-musl/release/kronika-report \
-  --from 1788634800000000 --to-exclusive 1788638400000000 \
-  incident.zms incident.html
-```
-
-Slice принимает целые секунды в RFC 3339 с обеими включёнными границами.
-Параметры report задают **19:00–20:00 UTC** в Unix-микросекундах и исключают
-из просмотра соседние отсчёты, сохранённые для вычислений. Без этих параметров
-report показывает весь временной диапазон входного файла. Форматы и параметры
-вывода описаны в руководствах [dump](bins/kronika-dump/README.ru.md)
-и [report](bins/kronika-report/README.ru.md).
-
-## Хранение и реализация
-
-В замере нагрузки с **примерно 500 таблицами и 3 тыс. индексов** объём сжатой
-записи составил около **184 MB в сутки**: пересчёт по 43 готовым сегментам
-со средним размером 1,92 MB и интервалом записи 15 минут. Цель retention
-по умолчанию — **2 GiB** для записанных данных, включая журналы и индексы.
-Замер и настройки retention приведены в разделе
-[хранилища](bins/kronika-collector/README.ru.md#хранилище).
-
-Проектный предел коллектора — **менее 25 MiB пиковой памяти на обычной машине**;
-при записи каждого сегмента он выводит пиковое потребление памяти в лог.
-Коллектор и движок запросов написаны на Rust, интерфейс — на React.
-HTML-отчёт содержит данные, интерфейс и движок запросов WebAssembly,
-который работает в основном потоке браузера.
-Подробности — в [руководстве по HTML-отчётам](bins/kronika-report/README.ru.md).
+[kronika-dump](bins/kronika-dump/README.ru.md) читает хранилище и извлекает
+интервал в отдельный файл записи ZMS; [kronika-report](bins/kronika-report/README.ru.md) преобразует
+отдельный ZMS в HTML. Отчёт работает без сервера: в нём доступны таблицы, поиск,
+графики и карты активности.
 
 ## Документация
 
-- [Коллектор](bins/kronika-collector/README.ru.md) · [Web](bins/kronika-web/README.ru.md)
-  · [MCP-клиенты](docs/mcp-clients.ru.md)
-- [Демо](bins/kronika-demo/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md)
-  · [HTML-отчёты](bins/kronika-report/README.ru.md) · [Архивы релизов](docs/releases.ru.md)
-- Записываемые поля: [Linux](docs/type-registry/os.ru.md),
-  [метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md),
-  [события из логов PostgreSQL](docs/type-registry/postgresql.md),
-  [события из логов PgBouncer](docs/type-registry/pgbouncer.md)
-- [Формат сегмента](crates/kronika-format/README.ru.md)
+- Настройка: [Установка](INSTALL.ru.md) · [Архивы и CI](docs/releases.ru.md) · [Сервисы](docs/services.ru.md) · [Сбои хранения](docs/storage-recovery.ru.md) · [Сборка](docs/build.ru.md)
+- Справочники: [Интерфейс](docs/features.ru.md) · [Время](docs/metrics-time.ru.md) · [Linux](docs/metrics-linux.ru.md) · [PostgreSQL](docs/metrics-postgresql.ru.md) · [MCP](docs/mcp-clients.ru.md)
+- Программы: [Сборщик](bins/kronika-collector/README.ru.md) · [Веб-сервер](bins/kronika-web/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md) · [Report](bins/kronika-report/README.ru.md)
+- Записанные поля: [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) · [События PostgreSQL](docs/type-registry/postgresql.ru.md) · [События PgBouncer](docs/type-registry/pgbouncer.ru.md)
+- Устройство: [Контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md) · [Демонстрационная нагрузка для разработки](bins/kronika-demo/README.ru.md)
 
-Kronika — open source под [лицензией MIT](LICENSE).
+[Лицензия MIT](LICENSE).

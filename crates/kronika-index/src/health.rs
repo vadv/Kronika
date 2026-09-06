@@ -46,20 +46,24 @@ pub fn health(before: Stall, before_ts: i64, after: Stall, after_ts: i64) -> Opt
 ///
 /// One effective CPU supplies two service slots: one backend can execute while
 /// another sends results to its client. Pressure starts only above that bound.
-/// `None` means the configured capacity is zero and therefore unusable.
+/// `None` means capacity is nonpositive or nonfinite.
 #[must_use]
-pub fn postgres_penalty(active: u32, effective_cpus: u32) -> Option<u8> {
-    if effective_cpus == 0 {
+pub fn postgres_penalty(active: u32, effective_cpus: f64) -> Option<u8> {
+    if !effective_cpus.is_finite() || effective_cpus <= 0.0 {
         return None;
     }
-    let active = u64::from(active);
-    let service_slots = u64::from(effective_cpus).saturating_mul(2);
+    let active = f64::from(active);
+    let service_slots = 2.0 * effective_cpus;
     if active <= service_slots {
         return Some(0);
     }
-    let waiting = active.saturating_sub(service_slots);
-    let rounded = waiting.saturating_mul(100).saturating_add(active / 2) / active;
-    Some(u8::try_from(rounded).unwrap_or(100))
+    let rounded = (100.0 * (active - service_slots) / active).round();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded penalty is in 0..=100"
+    )]
+    Some(rounded as u8)
 }
 
 /// Add OS and `PostgreSQL` penalties into one `0..=100` value.

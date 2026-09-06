@@ -2,68 +2,25 @@
 
 [Русская версия](postgresql-metrics.ru.md)
 
-PostgreSQL metric sections occupy `1_001_001`–`1_020_001`. Their exact
-columns, units, keys, and semantics are declared in
-[`crates/kronika-registry/src/codec`](../../crates/kronika-registry/src/codec).
-This reference records which server or extension version selects each layout.
+Sections occupy `1_001_001`–`1_020_001`. Columns, units and keys are declared in the [registry codec](../../crates/kronika-registry/src/codec); derived values are defined in the [PostgreSQL reference](../metrics-postgresql.md).
 
-## Collection boundary
+## Collection scope and protocol
 
-The collector reads one configured PostgreSQL instance: the first entry in
-`KRONIKA_PG_DSNS`. Metric rows do not carry `system_identifier`.
+Metrics come from the first instance in `KRONIKA_PG_DSNS`; metric rows do not carry `system_identifier`. Database-local views are read from each connectable database. An absent, unsupported or unreadable source produces no section for that read.
 
-Native server views use the PostgreSQL major version to select their layout.
-Views tied to a database are read from each connectable database in that
-instance. A source that is absent, unsupported, or unreadable produces no
-section for that read.
+The collector retains one connection per database between cycles. Database and extension discovery runs approximately every five minutes and updates the connection set.
 
-For PostgreSQL 14–18, `pg_stat_activity` type `1_001_004` stores nullable
-`datid` directly from the server view beside `query_id`. Shared and background
-backends retain a null database OID. Activity identity remains PID; the OID is
-only an operator navigation predicate for related top-level
-`pg_stat_statements` rows and is never derived from a database name.
-
-The collector keeps one healthy connection per database across collection
-cycles. Database and extension discovery runs about every five minutes. A
-database that appears gets a connection; one that disappears loses it.
-
-Extension inventory runs once in every database during discovery and records
-the database, schema, and usable interfaces of each installation.
-`pg_stat_statements` and `pg_store_plans` expose instance-wide counters, so the
-collector reads one usable installation of each and does not duplicate shared
-rows. An extension may be created, dropped, or moved to another database or
-schema; the next discovery selects its new location. If no supported
-installation is present, its sections are absent.
-Each readable info view is selected independently of the main extension reader.
-When installations expose different layouts, the collector chooses the newest
-`pg_stat_statements` layout. `pg_store_plans` implementations are not ranked:
-the current database wins when usable, otherwise database name is the
-deterministic tie-break.
-
-The `pg_stat_statements` layout follows its extension version. The
-`pg_store_plans` family is selected by function signatures and result columns,
-not by `extversion`. OSSC, Datasentinel, and vadv have distinct layouts.
-Datasentinel adds relation OIDs and command type to the OSSC-shaped counters;
-vadv has an internal `queryid`, `queryid_stat_statements`, and a four-key plan
-getter. The vadv layout is usable only when the same extension also exposes an
-immediately executable, non-set-returning `text -> text` plan converter. The
-collector nests that converter around the keyed getter in the discovered
-schema, then applies the 65,536-character bound. Thus `plan` is bounded
-human-readable text in every supported layout; compact extension payloads do
-not cross the PostgreSQL collection boundary.
-
-Small administrative reads use Simple Query Protocol. Typed metric reads use
-one-shot unnamed Extended Protocol queries. Queries run sequentially without
-named prepared statements or pipelining. Large results are streamed in batches
-of at most 256 rows, targeting approximately 512 KiB of decoded application
-data. The final SQL-bounded row may exceed the byte target. A batch reaches the
-WAL before the collector fetches another row. Statement and plan text is
-limited in SQL to 65,536 characters per field. The collector does not select a
-top-N subset or apply a shared text budget.
-A timed-out query gets one bounded PostgreSQL CancelRequest before its
-connection is closed.
+| Read | Contract |
+| --- | --- |
+| Administrative queries | Simple Query Protocol. |
+| Typed metrics | Sequential unnamed Extended Protocol queries; no named prepared statements or pipelining. |
+| Result batch | At most 256 rows; approximately 512 KiB decoded-data target. The final row may exceed the byte target. The batch reaches WAL before the next row is fetched. |
+| Query/plan text | SQL bounds each field to its first 65,536 characters; all eligible rows are read without top-N or a shared text budget. |
+| Timeout | One bounded CancelRequest, then connection closure. |
 
 ## Native server views
+
+`type_id` selects the section’s field layout. `snapshot_full` records a full snapshot on each collection; `conditional_full` records a full snapshot on cycles when the source’s collection condition holds; `on_change` records a changed state or a scheduled refresh. Additional settings emission rules appear below.
 
 | `type_id` | Section | PostgreSQL | Collection scope | Semantics |
 |---|---|---|---|---|
@@ -98,35 +55,15 @@ connection is closed.
 | `1_019_001` | `pg_settings` | 10–18 | metric session | `on_change` |
 | `1_020_001` | `pg_wal_storage` | 10–18 | instance | `snapshot_full` |
 
-`pg_stat_wal`, `pg_stat_io`, and `pg_stat_checkpointer` have no section before
-the first PostgreSQL release listed above. PostgreSQL 17 and 18 changed
-`pg_stat_progress_vacuum`, so those layouts have separate `type_id` values.
-Each `pg_stat_progress_vacuum` row also carries `schemaname`/`relname`,
-resolved from `pg_class`/`pg_namespace` in the same query the collector reads
-the view with; `relid` is a `pg_class` OID and is not reused in any timeframe
-this product cares about, so it stays the row's identity whether or not the
-name resolves. It resolves only for a relation in the database the connection
-is on — a session's catalog shows only its own database — and stays absent
-otherwise, never guessed from another database's row.
-`pg_settings` records the effective configuration of the collector's metric
-session. Each row identifies its database and login role as `datid`, `datname`,
-`usesysid`, and `usename`; `(datid, usesysid, name)` is the row identity. The
-server probe reads those facts from the current metric session. The view is read
-on each PostgreSQL cycle and emitted on its first successful read, when it
-changes, and in every new segment. The latest successful snapshot is reused when
-another source opens a segment between PostgreSQL cycles.
-The `primary_conninfo` and `ssl_passphrase_command` rows are excluded because
-their values may contain secrets. Other command settings and custom settings
-remain in the snapshot.
-`pg_wal_storage` stores one exact sum of the regular-file sizes returned by
-`pg_ls_waldir()`. It does not inspect subdirectories or infer file purpose from
-names; without permission to execute that function the section is absent.
-The relation sections store the effective cluster-wide tablespace OID and a
-nullable catalog name. A zero `reltablespace` resolves through the connected
-database's actual `dattablespace`, including custom database defaults. A
-storage-less partitioned table parent has no effective placement; index rows
-record the index's own placement independently of the table. Tables retain
-heap main-fork plus TOAST storage and never include user-index bytes.
+## Rows and field scope
+
+| Section | Contract |
+| --- | --- |
+| `pg_stat_activity` | PID identifies a backend. PostgreSQL 14–18 reads nullable `datid` and `query_id` directly from the view. `datid` participates in navigation to Statements; shared/background backends may have `null`. |
+| `pg_stat_progress_vacuum` | `relid` is a `pg_class` OID; `schemaname`/`relname` resolve from the catalog in the same query only for the connected database. Relations in other databases have absent names. |
+| `pg_settings` | Effective metric-session settings; identity `(datid, usesysid, name)`, database and role names `datname`, `usename`. Read each PostgreSQL cycle; emitted on first success, change and new segment. A segment opened by another source reuses the latest successful snapshot. `primary_conninfo` and `ssl_passphrase_command` are excluded; other settings remain. |
+| `pg_wal_storage` | Sum of regular-file sizes returned by `pg_ls_waldir()`; subdirectories excluded. The section is absent without permission to call the function. |
+| Tables and indexes | Zero `reltablespace` resolves through the database's `dattablespace`. A storage-less partitioned parent has no placement. An index records its own tablespace. Table size includes heap main fork and TOAST; user indexes are excluded. |
 
 ## Extension views
 
@@ -144,9 +81,10 @@ heap main-fork plus TOAST storage and never include user-index bytes.
 | `1_016_001` | `pg_store_plans_info` | exact readable `dealloc, stats_reset` view | discovered installation | `snapshot_full` |
 | `1_018_001` | `pg_store_plans_datasentinel` | Datasentinel-compatible zero-argument reader with `relids` and `cmd_type` | discovered installation | `conditional_full` |
 
-`pg_stat_statements` below 1.5 is not collected. Its main reader is used only
-when the current role can use `pg_read_all_stats`; a readable
-`pg_stat_statements_info` view remains independently selectable without that
-role. Rows with a privilege-masked `queryid` have no usable identity and are
-omitted. `pg_store_plans_info` is selected by its exact readable view shape;
-the vadv interface does not expose that view.
+Discovery selects one usable installation per extension. `pg_stat_statements` selects the newest supported layout by extension version. `pg_store_plans` checks function signatures and result columns; the current database takes precedence, followed by database name. Readable info views are selected independently of the main reader.
+
+`pg_stat_statements` requires version 1.5 or later and `pg_read_all_stats`; rows with a privilege-masked `queryid` are omitted. A separately readable `pg_stat_statements_info` does not require that role. `pg_store_plans_info` is selected by the exact `dealloc, stats_reset` shape; the vadv interface does not provide it.
+
+Datasentinel adds `relids` and `cmd_type` to OSSC counters. vadv carries internal `queryid` and `queryid_stat_statements`; plan retrieval requires four keys and an executable non-set-returning `text -> text` converter from the same extension. The converter in the discovered schema wraps the getter, then SQL bounds the readable plan text to 65,536 characters.
+
+Source: [PostgreSQL collector](../../crates/kronika-source-pg/src).

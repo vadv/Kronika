@@ -5,96 +5,108 @@
 Agents read this before `AGENTS.md`, which covers how to work in the
 repository rather than what is being built.
 
-## What Kronika is
+## Components
 
-Kronika records the history of a machine and the databases on it, the way
-`atop` records system history, and replays it later.
+Kronika records Linux values and PostgreSQL statistics at collection times, and
+parses local logs. A finished recording file is called a segment. The four
+shipped programs have these duties:
 
-The collector takes periodic snapshots of system and database metrics, parses
-logs, and turns notable log events into metrics. The web part reads and displays
-the collected data. Everything below serves those two sentences.
+| Program | Operation |
+| --- | --- |
+| `kronika-collector` | Runs in the foreground; schedules source reads, appends the journal, writes segments and removes old files under the retention rules. |
+| `kronika-web` | Serves HTTP requests for the interface, API and MCP; reads recordings and releases decoded data after each request. |
+| `kronika-dump` | Inspects the recording directory or extracts one time range into a standalone ZMS file. |
+| `kronika-report` | Converts one standalone ZMS into interactive HTML. |
 
-Three duty cycles:
+## Resource requirements
 
-- **collector** runs all the time on the monitored host.
-- **web** runs occasionally, when a person opens it.
-- **sync** moves old segments to S3-like storage in the background.
+The collector targets a peak RSS of 25 MiB on an ordinary host. RSS is its
+memory resident in physical RAM; segment-write logs record it as
+`rss_kib`. Ordinary OS snapshots retain all source rows. Large
+PostgreSQL results and logs are read in bounded batches. Each accepted
+PostgreSQL batch reaches the journal before the next is fetched; a later query
+failure is logged and leaves the earlier batches in storage.
 
-## The value we protect
+Before the first query, every PostgreSQL monitoring connection, including log
+discovery and each database connection, installs `statement_timeout = '30s'`
+and `lock_timeout = '100ms'` in one Simple Query request. Setup failure closes
+the connection; reconnection installs both limits again. The 100 ms limit applies
+to each lock acquisition wait, not to holding an acquired lock. The overall
+statement deadline remains 30 seconds and the client fetch backstop 35 seconds.
+Lock-wait errors skip the failed read, preserve independent sources and allow
+a later scheduled collection pass to try again. These PostgreSQL settings are
+not sent to the PgBouncer admin console. Source:
+[session setup](crates/kronika-source-pg/src/query.rs).
 
-Minimum memory and CPU. This is the reason the project exists, and it outranks
-speed, elegance, and feature count.
-
-Concrete consequences:
-
-- When web has to scan an hour of data, it takes longer and uses less RAM and
-  CPU. Trade time for footprint, not the other way around.
-- Web has a standby mode. With no human traffic, it drops everything it holds
-  and goes quiet. Serving Prometheus `/metrics` does not count as traffic and
-  must not wake the heavy paths.
-- The collector shares a host with a production database. An out-of-memory kill
-  there costs more than a lost segment.
-- **The collector's peak RSS stays under 25 MiB on an ordinary host**, and each
-  segment write logs it as `rss_kib`. A host with thirty thousand processes is
-  a host already in trouble; an ordinary OS snapshot reads all of them and is
-  allowed to die trying rather than report a fraction. Log files and potentially
-  large PostgreSQL query results are streamed through bounded buffers. A
-  PostgreSQL batch limits retained memory, not the number of source rows; each
-  batch reaches the WAL before the collector fetches the next one. If a query
-  fails after earlier batches reached the WAL, those batches remain and the
-  collector logs the query error. It keeps no separate completeness or
-  continuity state.
+The web server keeps its configuration and listening socket between requests.
+Each request owns its open segments, decoded sections and working buffers.
+Queries use recorded indexes when their selected fields and time bounds are
+supported.
 
 ## Storage format
 
-Fresh data goes to a raw write-ahead log (`.wal`). On a size threshold or a
-timer, the collector compresses it into a segment.
+The local data root contains `active.wal` and self-contained finished files at
+`YYYY/MM/DD/<segment-id>.zms`. Journal publication follows configured byte/age
+thresholds. Collection-window bodies use Parquet/Zstd level 3; final bodies
+use Parquet 1.0, PLAIN values, RLE levels and Zstd level 6. The physical
+Parquet schema remains; redundant Arrow schema metadata is omitted.
 
-A segment is `.zms` (compressed metric segment), stored at `YYYY/MM/DD/ts.zms`.
-It is independent and self-contained: opening one segment requires no other
-file, no external schema, no registry lookup at runtime.
+Rows reference dictionary bytes through `StrId = xxh3_64(original_bytes)`.
+Truncated dictionary values retain their original byte length and SHA-256.
+ZMS framing and catalogs locate sections independently. Registry field kinds,
+units and identity definitions are compiled with the programs.
+[The format reference](crates/kronika-format/README.md) defines offsets,
+checksums, section bounds and writer profiles.
 
-Segments are optimized for size above everything else:
+### Removing old files
 
-- The segment stores no schema description. Kronika readers use the compiled
-  registry to decode it.
-- Strings are the main cost. Normalize repeated strings to a `sha256` and store
-  references.
-- Small strings are stored as-is. Compressing them costs more than it saves.
+With a fixed byte budget `B`, the collector counts the journal,
+finished ZMS files, their IDX files and recognized temporary files. Let
+`S` be `KRONIKA_SEGMENT_MAX_BYTES`, in bytes. Startup requires
+`B ≥ min(2 × S, u64::MAX)`: multiplication saturates at the largest unsigned 64-bit
+value. This validates the setting; the active journal and newest finished
+segment are never removed.
 
-Segments live on local disk and on S3-like storage. Old segments move to S3 in
-the background.
+For `auto:P`, the threshold applies to the whole filesystem
+containing the data directory, including unrelated files. One
+`fstatvfs` call on the open directory supplies `f_blocks`
+(block count), `f_frsize` (bytes per block) and `f_bfree`
+(free blocks). Total bytes are `F = f_blocks × f_frsize`; free bytes are
+`L = f_bfree × f_frsize`; both products saturate at `u64::MAX`. Used bytes
+are `U = max(0, F − L)`. The percentage threshold is `floor(F × P / 100)`, where
+`floor` rounds down.
+
+An unlinked file can still occupy space while a reader holds it open.
+`pending_reclaim` counts bytes removed by rotation whose physical release has
+not appeared in filesystem usage yet. The compared size is `max(0, U − pending_reclaim)`.
+Each observed fall in `U` reduces this pending count, stopping
+at zero. Sources: [budget validation](bins/kronika-collector/src/config.rs), [rotation](bins/kronika-collector/src/rotation.rs), [filesystem measurement](crates/kronika-layout/src/root.rs).
 
 ## Metric registry
 
 A segment holds many metrics and the set is extensible. Each metric has an id.
 
 **Any change to a metric's fields creates a new metric id.** There is no
-backward compatibility inside a metric id, and none is wanted.
+backward compatibility between different field layouts under one metric id.
 
-- `pg_stat_statements` v1.2 and v1.3 are separate metric ids.
-- Adding one field to the existing v1.2 shape also creates a new metric id.
+- `pg_stat_statements` v1.8 and v1.9 are separate metric ids.
+- Adding one field to the existing v1.8 shape also creates a new metric id.
 
-Optional columns must not be used to keep an id stable. That is the mistake
-this rule exists to prevent.
+Optional columns must not be used to keep an id stable.
 
-Every metric declares its kind and its unit, the way Prometheus does:
+Every metric declares its kind and its unit:
 
 - `gauge` for a value that goes up and down.
 - `counter` for a value that only grows.
-- `event` for a discrete occurrence. A PostgreSQL `statement_timeout` is an
-  event. It is not a counter and not a gauge, and forcing it into either loses
-  what happened and when.
+- `event` for a discrete occurrence, such as PostgreSQL `statement_timeout`.
 
 Units are part of the declaration: seconds, bytes, and so on. The column
 contract stores the unit as compile-time data. It never reaches the segment,
 costs no disk space, and does not change a metric id.
 
-A section whose snapshot holds more than one row declares the columns that
-identify one object across snapshots. Without that declaration a section is a
-list of rows and nothing can ask what one disk, one interface or one table did
-over time. Where rows of one section can come from more than one source, the
-identity names the source too, or two sources write over each other's objects.
+A section with multiple rows per snapshot declares the identity columns used
+to match objects across snapshots. When a section contains multiple sources,
+the identity also includes the source.
 
 The registry also assigns each physical section layout a stable textual logical
 name. Several physical layouts may share that name; generated compatibility
@@ -111,9 +123,7 @@ absent from a physical layout is unavailable or `null`; it is never zero.
 There is recorded metric data. Kronika adds no collection-quality model.
 
 Kronika does not ship a layer that reasons about whether its own data is
-trustworthy, complete, or continuous. That layer catches nothing an operator
-cares about, and the effort it absorbs comes straight out of collecting more
-metrics.
+trustworthy, complete, or continuous.
 
 Specifically, none of this belongs in the project:
 
@@ -128,10 +138,7 @@ Specifically, none of this belongs in the project:
   continuity rather than store metrics.
 
 A missing metric produces one warning in the collector log and a `null` in
-web. That is the whole treatment.
-
-This section outranks a reviewer's suggestion. When a review proposes adding
-one of these, the answer is no, and the reason is this paragraph.
+web.
 
 ### Banned words
 
@@ -150,8 +157,9 @@ documentation because they name the excluded machinery:
 | recommend, should | (nothing — state the fact, not the action) |
 | root cause | (nothing — do not name the concept) |
 
-Write plainly. The collector writes a segment. A corrupt journal part is
-damaged and gets set aside. Two snapshots an hour apart are two snapshots.
+Write plainly. The collector writes a segment. A damaged populated journal
+stops collector startup and remains at `active.wal`. Two snapshots an hour apart
+are two snapshots.
 MCP tools read Kronika recordings and return recorded or computed values. They
 do not query the monitored host or PostgreSQL, interpret the values, or
 prescribe action.
@@ -214,7 +222,15 @@ Web reads `instance_metadata.environment`. It hides Cgroups and requests no
 cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
 Threads (TIDs) and loads the complete already-bounded direct-live rows recorded in that
 namespace; the context row decorates only the collector's matching controller
-row. The query layer derives the container lanes, `cg_cpu_share`, `cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`, `cg_memory`, `cg_memory_bytes`, `cg_mem_psi`, `cg_oom`, `cg_io_read`, `cg_io_write`, `cg_io_psi`, `cg_pids_share` and `cg_pids`, from the controller rows the context selects by exact path and scope and from container-scoped pressure; host-scoped pressure feeds only the host lanes, and a share lane exists only while a capacity or limit is recorded. The controller paths remain independent for cgroup v1. A recursive cgroup
+row. The query layer derives the container lanes, `cg_cpu_share`,
+`cg_cpu_cores`, `cg_cpu_throttle`, `cg_cpu_psi`,
+`cg_memory`, `cg_memory_bytes`, `cg_mem_psi`,
+`cg_oom`, `cg_io_read`, `cg_io_write`,
+`cg_io_psi`, `cg_pids_share` and `cg_pids`, from the
+controller rows the context selects by exact path and scope and from
+container-scoped pressure; host-scoped pressure feeds only the host lanes, and a
+share lane exists only while a capacity or limit is recorded. The controller
+paths remain independent for cgroup v1. A recursive cgroup
 tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
@@ -232,97 +248,34 @@ without all three resources.
 
 ## Health
 
-Health is up to three ordinary nullable point series from 0 to 100: OS,
-PostgreSQL, and their combined value. A component penalty is `100 - health`.
-Disabled PostgreSQL contributes no penalty. Enabled PostgreSQL with no usable
-snapshot is `null`, and makes combined health `null` rather than silently
-healthy. The timeline omits a component whose selected range contains only
-`null` values and keeps every component with a numeric value visible. The
-combined threshold is drawn only when combined health itself is visible.
+IDX contains nullable OS, PostgreSQL and combined Health point series on a 0–100
+scale. The query engine computes these from recorded PSI counters,
+`pg_stat_activity`, `instance_metadata`, `os_cpu` and `os_cgroup_context`.
+Metadata records whether PostgreSQL collection is enabled, an optional explicit
+CPU capacity override and the effective collection interval. Disabled PostgreSQL
+contributes zero penalty; enabled PostgreSQL without a usable snapshot or
+capacity makes combined Health unavailable.
 
-OS health is the share of the interval in which nothing was waiting for the
-most contended resource:
+Health and active-backend marks share one recorded-time capacity resolver for
+`C` at each PostgreSQL sample. A positive `postgresql_effective_cpus` wins.
+Without it, machine/VM uses the distinct `os_cpu.cpu_id ≥ 0` count from the
+latest complete CPU snapshot at or before that time. Container uses its latest
+recorded own-scope `os_cgroup_context` at or before the sample: positive effective
+quota/period bounded by positive cpuset when available. Quota `−1` uses a
+positive cpuset; unknown quota or neither bound gives null. Fractions are
+preserved. Capacity changes apply to subsequent samples only; instance metadata
+remains static.
 
-```
-health = 100 * (1 - max(cpu, memory, io))
-```
+Without an override, the deployment contract assigns local PostgreSQL the
+collector's VM/container resource scope. Remote PostgreSQL or a different cgroup
+requires an explicit target PostgreSQL capacity. DSN, hostname and PID do not
+establish locality or resource scope. WAL, ZMS and the engine in newly generated
+HTML reports use recorded facts; reader-machine resources do not participate.
 
-Each term is `delta(some_total) / elapsed wall time` for that resource.
-`some_total` accumulates wall-clock microseconds during which at least one task
-in the recorded scope was stalled. One stalled task and several stalled tasks
-count the same instant once. The counter is not weighted by task or CPU count,
-and a reader does not divide it by CPU count or by a cgroup quota.
-
-`some` rather than `full`, because the question is whether anyone lost time,
-not whether everything stopped. `full` is undefined for CPU and always reads
-zero, so the three resources would not be measured the same way.
-
-The counters rather than `avg10`: a kernel rolling average is sampled at read
-time and lags, so it does not describe exactly the interval between two
-snapshots.
-
-No thresholds and no weights inside the OS component. The worst resource
-decides, because an average hides a saturated disk behind an idle CPU.
-
-Health is null when it cannot be computed: the first recorded snapshot has
-nothing to subtract from; a counter that went backwards yields no stall time
-to put over the interval; the pressure scope does not describe the recorded
-environment; or either adjacent snapshot lacks a usable counter for CPU,
-memory, or IO. The first snapshot in a later segment uses the immediately
-preceding recorded snapshot when the environment and boot identity match;
-storage boundaries do not reset the baseline. When a missing resource
-reappears, that complete snapshot starts a new baseline.
-
-A container on cgroup v1 has no `*.pressure` files and so no health. The host's
-pressure belongs to the node, and standing in with it would report someone
-else's numbers.
-
-A kernel built with `CONFIG_PSI_DEFAULT_DISABLED` and booted without `psi=1`
-has no health either: `/proc/pressure` is absent, or the files are there and
-reading one returns `EOPNOTSUPP`. The collector handles both and says `psi=1`
-in the log line, because that is the whole fix.
-
-An OOM kill, a filesystem at zero free and cgroup throttling are not a share of
-time. They stay out of the formula and are shown alongside the line. Folding
-them in would need weights, and weights need tuning.
-
-PostgreSQL pressure uses the number of rows whose `pg_stat_activity.state` is
-exactly `active` in one snapshot. It does not split running and waiting
-backends: both are active work the server must service. It does not use
-`max_connections`, because that limit says nothing about the CPU capacity
-available to the workload.
-
-The operator records the monitored server's positive effective CPU capacity in
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS`. A metric DSN can be remote, so Kronika never
-substitutes the collector host's CPU count. One effective CPU supplies two
-service slots: one backend may execute while another sends results to its
-client.
-
-```
-service_slots = 2 * effective_postgres_cpu
-postgres_penalty = 0                                      when active <= service_slots
-postgres_penalty = round(100 * (active-service_slots)/active) otherwise
-postgres_health = 100 - postgres_penalty
-```
-
-For a two-CPU server, the first penalty is at five active backends. Enabled
-PostgreSQL without a configured capacity or a usable activity snapshot is
-`null`. The PostgreSQL enabled flag, capacity, and effective collection
-interval are recorded once in the current `instance_metadata` row
-of every segment. When the PostgreSQL interval is configured as zero, the
-recorded effective interval is the collector timer tick.
-
-```
-overall_health = clamp(100 - os_penalty - postgres_penalty, 0, 100)
-```
-
-Each combined point has an OS-health timestamp. It uses the latest PostgreSQL
-snapshot not later than that timestamp, including one from the preceding
-segment, only while its age is at most the recorded effective PostgreSQL
-interval. There is no interpolation: before the first PostgreSQL snapshot and
-after a stale one the combined value is `null`. The index always exposes OS and
-combined health; it exposes PostgreSQL health only when that source is
-configured. These blocks contain only small points, never large source rows.
+The exact operands, rounding, clamping and snapshot-age rules are defined in
+[Health](docs/metrics-time.md#health). Timeline rendering omits a component whose
+selected range contains only nulls. The combined threshold is drawn only when
+combined Health has a numeric value in the selected range.
 
 ## Highlighting
 
@@ -366,8 +319,8 @@ The initial exact comparisons are:
 - a local filesystem with exact stored capacity is at least 90% used;
 - overall health is below 50;
 - the host OOM-kill counter or a database deadlock counter increases;
-- active PostgreSQL backends exceed twice the configured positive effective
-  PostgreSQL CPU count;
+- active PostgreSQL backends exceed twice the capacity `C` resolved at that
+  sample by the same calculation as PostgreSQL Health;
 - a recorded `pg_locks` row's `blocked_by` is non-empty;
 - a database's checksum-failure counter increases;
 - the WAL archiver's failed-archive counter increases;
@@ -428,32 +381,26 @@ truncated and its omitted tail may intersect the hour, the filtered count
 covers only returned in-window locators and `truncated` remains true. The hour
 never counts a locator known to be outside its bounds.
 
-`KRNIDX6` is the IDX format shipped in Kronika 1.0.0. IDX is derived data: web
+`KRNIDX1` is the current IDX format. IDX is derived data: web
 discards and rebuilds any other IDX; there is no old-format reader, migration,
 compatibility branch, or dual write.
 
 ### One timeline, no diagnosis
 
-Kronika places event locators and independent marks on one timeline. An
-`event` locator says only that the source row was recorded; it is not a visual
-mark, anomaly, alert, incident, severity, cause, diagnosis, or correlation.
-Kronika does not group marks into incidents or infer a main symptom, severity,
-cause, relationship, confidence, or diagnosis. Several unrelated problems may
-coexist, and the person examining the recorded data is the sole judge.
-
-The Events console groups rows by recorded patterns, relations, or holder
-lists. It does not group across streams or derive incidents.
+Kronika places recorded event locators and fixed metric marks on one timeline.
+Events groups rows by their recorded patterns, relations or holder lists,
+within each source. [Event reductions](docs/features.md#events) and
+[mark predicates](docs/metrics-time.md) define their values.
 
 ## Reading
 
 One crate reads segments: `kronika-reader`. It takes a data directory and a
-time range and returns rows, and everything that reads goes through it. A
-second reading path would be a second set of bugs, and the one the tests
-exercise would not be the one that ships.
+time range and returns rows. All segment readers use this crate.
 
 A read includes finished `.zms` segments and the current logical segment from
-the valid prefix of `active.wal`. Finished segments are immutable and
-browser-cacheable. Web revalidates the catalog and refreshes append-only active
+a captured, validated boundary of `active.wal`. This boundary fixes the data
+for that read; it is not a salvaged prefix of a damaged journal. Finished
+segments are immutable and browser-cacheable. Web revalidates the catalog and refreshes append-only active
 resources when a user requests current data.
 
 ### Bounded ZMS slices
@@ -489,9 +436,8 @@ reader.
 The nine MCP current-state finders share one snapshot selector and the existing
 snapshot compute and search paths. Omitted `at` resolves once to the last
 timestamp in the whole captured store. The selector then uses the section's
-internal current-sample window at or before that point; an old sparse section
-does not become the present merely because it has no newer row. No usable row
-in the window produces an empty `rows` array.
+internal current-sample window at or before that point. No usable row in that
+window produces an empty `rows` array.
 
 Structured filters are ANDed. `in` is one predicate with at most eight exact
 values and stays inside the same row scan. MCP finder results are bounded with
@@ -504,7 +450,7 @@ contract.
 Web builds `.idx` files next to the segments for fast dashboard access. An
 `.idx` holds compact segment-grain summaries for a curated set of presentation
 fields plus the sparse findings defined above. Fields outside the summary
-allowlist are read from ZMS; IDX does not promise a scan of every metric.
+allowlist are read from ZMS.
 
 The file has a header, a table of contents and typed blocks. Each block belongs
 to one physical section, so a request decodes only the section and block kind it
@@ -526,10 +472,9 @@ compact labels while decoding each selected row once, and retains the winning
 entity's exact detail locator in that pass. A caller requests the complete row
 explicitly through row detail; ranking does not start a later read.
 
-An `.idx` carries a checksum of its contents in its header. That is what a
-browser revalidates against, so the file has to hold it rather than have web
-compute it per request. Web writes a complete temporary index and replaces the
-derived file atomically.
+An `.idx` carries a checksum of its contents in its header for browser
+revalidation. Web writes a complete temporary index and replaces the derived
+file atomically.
 
 `.idx` files are derived data. Deleting one is safe; web rebuilds it from ZMS
 files. When web finds an `.idx` written by an incompatible version, it
@@ -546,10 +491,10 @@ Rust for the API, static JavaScript for the interface. The API comes first and
 is tested on its own; the interface is written against an API that already
 works.
 
-Web configuration selects which source families the interface shows. It never
-selects a physical PostgreSQL layout; the catalog reports the layouts actually
-present. A configured source with no data is drawn empty. A misconfigured DSN
-is a line in the collector's log, not a change in the interface.
+`KRONIKA_WEB_SOURCES` sets configured-source catalog flags. The PostgreSQL bit
+controls the empty-data tooltip; the OS bit is metadata only. Recorded sections
+and navigation remain accessible for every bitset. The catalog reports physical
+layouts found in the data. Collector DSNs determine PostgreSQL collection.
 
 Direct API requests accept HTTP Basic authentication. The browser sends Basic
 only to create a signed first-party HttpOnly session cookie, then uses that
@@ -678,20 +623,14 @@ document. A saved locale wins over `navigator.languages`, with English as the
 fallback; source values, identifiers, queries and command lines are never
 translated.
 
-Wording follows one rule with two halves. A label carries the term the trade
-already uses, in English, because that is how the counter is named in `top`,
-`atop` and `pg_stat_*`: `Major page faults`, `Seq scans`, `Tuples updated`,
-`Autovacuum`, `WAL`, `PSI`, `OOM kills`. Translating those into Russian breaks
-recognition, and mixing the two inside one label is worse than either. Only the
-grammatical frame and the units stay Russian, including the genitive that
-fractions require.
+Metric labels retain their English technical names in both locales: `Major
+page faults`, `Seq scans`, `Tuples updated`, `Autovacuum`, `WAL`, `PSI`, and
+`OOM kills`. Russian labels use Russian grammar and units.
 
-A help string is the opposite. It explains the counter in plain Russian and does
-not repeat the English term standing next to it. It says what the number really
-measures, when it grows, and whether a high value is worse or better, in a
-sentence or two, without pointing at another screen. One concept keeps one name
-everywhere; a counter named twice is a defect, and drift in the English
-dictionary is fixed before the Russian one is translated from it.
+Russian help defines the quantity, operands and meaning in one or two
+sentences without repeating the adjacent English label. Each concept uses one name across the interface; English dictionary
+changes precede the corresponding Russian translation.
+
 The buffer/block byte families are one such contract: labels such as `Shared
 buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
@@ -706,7 +645,28 @@ native action that opens its resource and selects that exact recorded metric;
 an unavailable cell remains an inert dash. The cell action owns its complete
 label, reading, keyboard focus, and coarse-pointer target; lane text is not a
 second nested help action. Column-header help defines USE methodology, while
-the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to, since shares are comparable and byte rates are not; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events, where zero is the point. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
+the selected inline chart owns metric-specific help.
+
+The header cells are the hour's verdict, computed from the rows below them:
+Utilization is the largest share at the cursor and the resource it belongs to;
+Saturation names every resource whose pressure was not zero in the hour with
+that resource's own peak and never sums different quantities; Errors is the
+summed count of the hour's events. A verdict is a button that opens the row it
+names; there are no thresholds and no colours.
+
+In a container the ledger opens with a Container scope of four real rows for the
+collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the
+container lanes: the share of the recorded CPU capacity, or the used cores when
+no capacity is recorded; throttled time beside the cgroup's own CPU pressure;
+memory against the effective limit, or the plain bytes without one; memory
+pressure and OOM kills; read and write bytes with I/O pressure; threads against
+`pids.max`.
+
+The CPU and I/O rows disclose the ranked cgroup activity ledgers, every
+container row discloses its bounded cgroup table, and the Network namespace and
+Host scopes follow. A host CPU count never stands in for a missing cgroup
+capacity: the share lane is absent and the row shows the measurement. Rows
+expand in place —
 several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
@@ -732,21 +692,17 @@ index phases. PG17 and PG18 columns appear only when the hour recorded such
 a layout, and a layout-absent field reads as N/A, never as 0. The recorded
 row carries its own `schemaname`/`relname`, resolved from `pg_class` in the
 same collector query; the fallback identity is `relid`, a `pg_class` OID
-that is never reused in any timeframe the product cares about, and it is
-shown only inside the one relation string it identifies, never as a bare
-number in the detail block.
+shown within the relation label.
 
-A selected row's Process panel joins straight on `pid` to the recorded
-`os_process` history for that process, no episode-style identity caution: an
-autovacuum worker gets a fresh PID every run, and a manual `VACUUM`'s backend
-PID is exactly the PID `pg_stat_activity` already records for that session.
-The panel takes the two `os_process` samples nearest the episode's own first
-and last recorded moment and reports their delta — CPU time, bytes read and
-written, block-I/O wait, major page faults — as what the process did in that
-span, next to a comparison against what PG itself reports scanning. This is a
-hint about cost, not proof the vacuum alone produced it: a manual `VACUUM`'s
-backend may have done other work in the same window, and the panel says so
-rather than pretending otherwise.
+The selected Vacuum episode's Process panel joins `os_process` by numeric
+`pid`. It selects the latest sample at or before each episode endpoint and
+reports CPU time, storage read/write bytes, block-I/O wait and major-fault
+differences between those samples. CPU time uses recorded clock ticks per
+second; read share compares process read bytes with scanned heap blocks times
+the recorded PostgreSQL block size. The interval includes all work by that PID.
+[The metric reference](docs/metrics-postgresql.md#vacuum-progress) defines the
+operands, units and unavailable values.
+
 Events is the grouped log console described below; the same findings stay
 drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
@@ -786,9 +742,8 @@ scaling is optional. Null cells are blank and zero uses the lightest fill. A
 cell moves the cursor, a row filters the table, and the full-screen view allows
 a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
-that cell sets — because a correct filter at a silent moment reads as a wrong
-filter; a row with a reading at the cursor leaves the cursor where the reader
-put it. Only compact identities and allowed display labels travel with ranked
+that cell sets. A row with a reading at the cursor preserves the cursor. Only
+compact identities and allowed display labels travel with ranked
 entities in the heatmap response. Query text, plans, command lines, log or
 sample text, statements, context, hints, detail payloads, and similar stored
 data do not; the complete row remains on its owning point/detail path. Tables
@@ -988,19 +943,18 @@ has an explicit zero-based or semantic scale, exact sample cursor, recorded
 finding shapes, missing intervals and the uncollected future tail; it is not a
 silent sparkline. Its Chart action opens the full chart in the shared Inspector.
 Process-summary loads retain the last successful rows and distinguish loading,
-request failure, and a successful empty result. PostgreSQL navigation and
-visuals are absent when the
-selected current data has PostgreSQL disabled; a historical hour that contains
-PostgreSQL telemetry remains available, and disabled PostgreSQL leaves overall
-health equal to OS health. A selected Linux process links to the nearest
+request failure, and a successful empty result. `KRONIKA_WEB_SOURCES` records configured-source flags in the catalog; its
+PostgreSQL bit controls only the empty-data tooltip. Navigation and recorded
+sections remain available for every flag value. Health uses recorded collector
+metadata: when PostgreSQL collection is disabled, overall health equals OS health. A selected Linux process links to the nearest
 `pg_stat_activity` data by exact PID and shows the PostgreSQL PID, database,
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
-Every current-view entity table owns a target-keyed local request state. Until
-the newest target succeeds, pending or failure is shown locally and completed
-empty copy is suppressed; the last successful same-surface rows remain labelled
-as retained. Only a successful zero-row response is empty.
+Each entity table tracks the request for its latest selected target. Until
+that request succeeds, the table shows its loading or error state. Previous
+successful rows from the same screen remain visible and labelled as retained.
+The empty-result message appears only after a successful zero-row response.
 
 Processes uses the whole viewport row left after the time preview and compact
 controls. Its four summary readings live in the lens bar instead of a separate
@@ -1009,7 +963,7 @@ same Inspector as Host, PostgreSQL and Events: an adjacent resizable region on
 desktop, a right overlay on tablet and a bottom sheet on phone. The table and
 Inspector scroll independently, and closing the Inspector restores the entire
 row without leaving a band. The fixed Inspector header is outside its vertical
-scrollport. Its Chart panel uses one full-width native metric selector rather
+scrollport. Its Chart panel uses one metric selector rather
 than a second horizontal scrollbar, and the body reserves its own scrollbar
 gutter without exposing horizontal overflow.
 CPU history offers temporal counters and gauges, including major page faults,
@@ -1046,8 +1000,7 @@ instrument before the following navigation. A marker cluster pairs each kind
 shape with its own count and exposes the same typed split in its accessible
 name and the Events selection. It has no untyped aggregate count. The Inspector's Chart
 panel belongs to the selection: a selected row shows its own metric history
-there, with a wrapped metric-button selector instead of a hidden horizontal
-scrollbar, while the Detail panel keeps the facts. Only without such a history
+there, with a metric selector, while the Detail panel keeps the facts. Only without such a history
 does the panel hold the preview's full chart — and then the preview yields its
 figure and keeps its rail, so the plot and its marker lane exist once on
 screen. An explicit control on the Inspector expands its chart across the
@@ -1198,22 +1151,23 @@ Signs, exponent notation, grouping and nonfinite values are invalid. Missing
 or unavailable values never become zero and match neither strict operator.
 Displayed humanization does not participate in comparison.
 
-The token field keeps an editable draft separate from the last valid applied
+The search field keeps an editable draft separate from the last valid applied
 expression. Submission is atomic: an invalid span is marked and announced
 while the URL, request and last successful rows remain unchanged. A valid
 expression becomes removable keyboard controls whose comparison form uses the
 localized semantic label plus the exact operator and threshold; manual entry,
 paste and related-row links all produce this same state. Progressive RU/EN
 help lists the complete current surface registry and rules. The server parses
-and validates the same bounded expression and loads the exact hidden
-dependency closure. At object level the complete boolean expression is
-evaluated only after the object reducer has made identity, text and metrics
-available. At database, schema and tablespace levels, string/member predicates
-select physical contributors before aggregation and quantity/result predicates
-compare the authoritative grouped reducer after aggregation and before
-semantic ordering, cursor validation and pagination. `AND` can join these two
-parts. Every `OR` subtree must stay wholly on one side: member-only alternatives
-run before the reducer, result-only alternatives run after it, and a mixed
+and validates the same bounded expression and loads all input fields required
+by its calculations, including fields hidden from the requested output. For an
+individual object, the complete boolean expression is evaluated only
+after its final identity fields, text and metrics have been computed. At
+database, schema and tablespace levels, string conditions select the
+contributing source rows before aggregation. Quantity conditions compare the
+computed group result after aggregation, before ordering by value, validating
+the page cursor and dividing the result into pages. `AND` can join these two
+parts. Every `OR` subtree must stay wholly on one side: alternatives over source rows
+run before aggregation, alternatives over group results run after it, and a mixed
 alternative is rejected atomically as `mixed_phase_or`. This preserves exact
 boolean meaning without exposing a generic query engine. Search refusal, a
 successful empty set and transport failure are distinct; refresh failure
@@ -1267,7 +1221,8 @@ prior view, cursor and expression.
 
 Plan detail also resolves the recorded related Statement Query text inline,
 before the separately labelled Execution plan. It uses the same public
-fork-transparent Query ID mapping, but not the navigation identity: the public
+Query ID mapping across extension implementations. The full identity used for
+related-row navigation does not apply to this text lookup: the public
 `query_id` is the normalized query-text hash, so database and role do not take
 part in this internal lookup. OSSC and Datasentinel use nonzero `queryid`; the
 vadv fork uses nonzero `queryid_stat_statements`. The client sends only
@@ -1313,23 +1268,19 @@ row for another PID must never hide or replace the selected backend.
 
 ### Segment resources
 
-HTTP exposes cacheable resources for explicit segments. It has no generic
-query language or global health, top, series or rows calls. The route names
-below are sketches rather than a framework choice:
+The [route parser](crates/kronika-api/src/lib.rs) accepts these stored-data routes:
 
-- `/api/catalog` lists finished `SegmentId` values, their time bounds and the
-  physical section layouts actually present. It also lists the active
-  `SegmentId`, its actual sections and the cursor at the committed valid WAL
-  prefix.
-- `/api/segments/{segment_id}/sections/{logical_name}/index` returns one
-  finished segment's derived index representation for that section.
-- `/api/segments/{segment_id}/sections/{logical_name}/history` returns selected
-  fields for one or more series in that segment. Label filters are exact
-  equality matches.
-- `/api/segments/{segment_id}/sections/{logical_name}/rows` returns raw rows in
-  pages with a stable order and a next-page cursor.
-- Active paths expose the same section projections and an append-only tail for
-  the active `SegmentId` up to a returned WAL cursor.
+| Route | Result |
+| --- | --- |
+| `/api/catalog` | Segment identities, bounds, recorded sections and active journal cursor. |
+| `/api/hour` | Selected hour summaries, lanes and findings. |
+| `/api/heatmap` | Whole-range entity ranking and grid cells. |
+| `/api/events` | Grouped or individual recorded events. |
+| `/api/row-detail` | Complete row selected by opaque `detail_ref`. |
+| `/api/segments/{id}/snapshot` | Surface snapshots, filters, grouping, sorting and pages. |
+| `/api/segments/{id}/sections/{section}/index` | Derived section index. |
+| `/api/segments/{id}/sections/{section}/history` | Selected field histories and label filters. |
+| `/api/segments/{id}/sections/{section}/rows` | Raw rows with stable pagination. |
 
 The catalog reports which layouts are present, not their schemas. Registry and
 layout metadata are generated from the compiled Rust registry into the static
@@ -1368,14 +1319,10 @@ limit.
 
 ### Heatmap values
 
-Every heatmap column carries its exact interval boundaries. A sample is drawn
-in the column holding the middle of the span it measures, which runs from the
-identity's previous sample within the requested window to this one, not in the
-column holding the moment it was taken. A section read once per five minutes
-describes five minutes around itself, and drawing it there is what keeps a
-cadence as coarse as a column readable: collection drifts across a boundary,
-and attributing a reading to the moment of the read would pair two readings in
-one column and leave the next one empty.
+Every heatmap column carries its exact interval boundaries. An observation is
+assigned to the column containing the midpoint of the span from that identity's
+preceding observation to the current observation. Allocation uses recorded
+timestamps and does not resample the series.
 
 For a counter, a cell is the last value attributed to the column minus the
 first, divided by the elapsed time between those two observations; a column
@@ -1402,14 +1349,16 @@ and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
 needed to rank them. A counter ranks by its whole-window delta and a gauge by
 its whole-window maximum, except for the RSS grid described below. A band total
-uses the sum for counters and the maximum for other gauges. The response also carries a totals band containing the per-column
-sum of every entity and an others band equal to totals minus the ranked rows.
+uses the sum for counters and the maximum for other gauges. The response also
+carries a totals band summing available entity values per
+column and an others band summing entities outside the returned ranking. A
+band cell with no contributing value is `null`.
 
 For a Grid request selecting only `os_process.rmem_kb`, each summary is the sum
-of its recorded RSS values divided by the number of distinct process snapshot
-timestamps in the requested window. Groups, individual PIDs, Total, and Other
+of its recorded RSS values divided by the number of distinct timestamps with
+a usable RSS value from any process in the requested window. Groups, individual PIDs, Total, and Other
 share that denominator: a PID absent at a recorded timestamp contributes
-nothing, and times without any recorded process values do not enter the mean.
+nothing, and times without any usable RSS value do not enter the mean.
 Ranking and label selection use the same mean, independently of grid columns.
 The response identifies its summary as `mean`, `sum`, or `max`; compact UI rows
 combine hidden means by addition. Cells retain their interval gauge readings.
@@ -1500,9 +1449,12 @@ the active form for that `SegmentId` instead of appending another copy, so the
 transition cannot duplicate rows. It then follows the new active `SegmentId`
 from the catalog.
 
-A request refreshes the tail; a timer must not. A front end that polls on an
-interval keeps web awake for nobody, which is the one thing standby exists to
-prevent.
+The visible current-hour page requests a refresh every 15 seconds after the
+previous load completes. A hidden page cancels its timer and requests a refresh
+when visible again. Historical hours do not poll. Refresh preserves a pinned
+cursor; a cursor following the latest observation advances with the recording.
+The selected hour does not roll forward automatically. Web keeps no background
+refresh timer of its own.
 
 Browser caching is only an optimization. If the browser evicts a response or
 ignores cache headers, web performs a normal reread; correctness does not
@@ -1510,14 +1462,10 @@ change.
 
 ### Standby
 
-Web is not a resident service. Between requests it holds nothing: buffers,
-decoded sections and open segments are all released, and the next request pays
-to open what it needs.
-
-This is why the index files exist. A long-range dashboard reads segment-grain
-summaries for allowlisted fields in complete segments and raw projections for
-other fields or where exact boundaries require them, so starting from nothing
-stays cheap.
+Web retains its HTTP listener and configuration between requests. Query buffers,
+decoded sections and segment handles are released after each request. Indexes
+provide segment summaries for supported fields; exact boundary reads and other
+fields use recorded projections.
 
 ### Web BDD
 
@@ -1538,36 +1486,33 @@ Web BDD runs only in CI. Its scenarios cover:
 
 ## Logging
 
-Logs are part of the product output and carry the same weight as metrics.
-
 Collector:
 
-- Every error is logged with enough detail to act on it. No swallowed errors,
-  no bare "failed".
+- Errors include the operation and original error details.
 - Writing a segment logs elapsed time, segment and journal bytes, section and
   journal-part counts, timestamps, and peak RSS.
 - A metric that could not be collected is logged as such by the collector.
 
 Web:
 
-- Logs what it opened and what index it built, with timings and the same cheap
-  counters.
+- Logs catalog and segment reads and loaded or built indexes with elapsed time
+  and counts. Store-scan warnings contain a code; failed HTTP API reads log the
+  underlying error message.
 - Shows `null` for a metric the collector failed to collect. Web does not
   invent or interpolate a value it does not have.
 
 ## Fail fast
 
-A component that cannot return to a known durable state fails immediately and
-visibly: the log carries the full error, and the daemon exits. The next start
-finishes the interrupted operation.
+A collector that cannot complete or roll back a journal operation stops with
+an error. It refuses further use of a poisoned journal handle. On restart it
+validates the stored journal and handles supported interrupted publication or
+reset states. A damaged header or incomplete append can instead prevent startup;
+the file remains unchanged.
 
-Startup recovery is the only recovery path. A crash and a deliberate stop run
-the same code, and the tests exercise it. The journal's poisoned state is this
-rule applied: a reset that cannot complete or roll back refuses further use
-until reopen.
-
-A segment is published before the journal is reset, so a failed reset stops
-without risking collected data.
+A segment is published before the journal is reset. A failed reset therefore
+leaves the published segment available. An ordinary web read failure ends that
+request; it does not stop the server. See [storage failures and recovery](docs/storage-recovery.md)
+for the write boundaries, checks and request-specific behavior.
 
 ## Demo
 
@@ -1636,23 +1581,9 @@ system workers continue. Shutdown signals all workers first, wakes their
 bounded waits, joins them, and completes scratch cleanup inside the existing
 demo stop interval.
 
-## Roadmap
+## Future work
 
-Collector:
-
-1. System metrics.
-2. Log parsing primitives.
-3. PostgreSQL log handling.
-4. PostgreSQL metrics.
-5. Other databases: MySQL, ClickHouse, CockroachDB.
-
-Web:
-
-1. Day and hour selection.
-2. OS metrics.
-3. Log events.
-4. PostgreSQL metrics.
-5. ClickHouse, CockroachDB, MySQL.
-6. A dumper: what a segment's size is made of.
-
-Work the list in order. Moving a step needs the owner's agreement.
+Planned background synchronization will copy older finished segments to
+S3-compatible object storage. Collection from MySQL, ClickHouse and
+CockroachDB also remains planned. Current collection and views are defined in the
+[technical reference](docs/features.md).

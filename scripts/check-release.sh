@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
+mode=full
+case "${1:-}" in
+  --cli-only) mode=cli; shift ;;
+  --no-browser) mode=native; shift ;;
+esac
 if [[ $# -ne 1 || ! -f "$1" ]]; then
-  echo "Usage: scripts/check-release.sh ARCHIVE.tar.gz" >&2
+  echo "Usage: scripts/check-release.sh [--cli-only|--no-browser] ARCHIVE.tar.gz" >&2
   exit 2
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -13,19 +19,25 @@ trap 'rm -rf -- "$release_tmp"' EXIT
 tar -xzf "$archive" -C "$release_tmp"
 package="$release_tmp/$(basename "$archive" .tar.gz)"
 (cd "$package" && sha256sum --check SHA256SUMS)
-for required in kronika-collector kronika-web kronika-dump kronika-report LICENSE README.md README.ru.md INSTALL.md INSTALL.ru.md BUILDINFO THIRD_PARTY_LICENSES.html; do
+for required in kronika-collector kronika-web kronika-dump kronika-report LICENSE README.md README.ru.md INSTALL.md INSTALL.ru.md DESIGN.md DESIGN.ru.md docs/storage-recovery.md docs/storage-recovery.ru.md BUILDINFO THIRD_PARTY_LICENSES.html; do
   test -s "$package/$required"
 done
+target=$(sed -n 's/^target=//p' "$package/BUILDINFO")
+case "$target" in
+  x86_64-unknown-linux-musl) machine='Advanced Micro Devices X86-64' ;;
+  aarch64-unknown-linux-musl) machine=AArch64 ;;
+  *) echo "Unsupported archive target: $target" >&2; exit 1 ;;
+esac
 for binary in "$package"/kronika-*; do
   test -f "$binary" && test -x "$binary" && test ! -L "$binary"
-  readelf -h "$binary" | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+  readelf -h "$binary" | grep -q "Machine:.*$machine"
   if readelf -l "$binary" | grep -q INTERP || readelf -d "$binary" | grep -q NEEDED; then
     echo "Not a static executable: $binary" >&2
     exit 1
   fi
 done
 
-python3 - "$repo" "$package" "$release_tmp" <<'PY'
+python3 - "$repo" "$package" "$release_tmp" "$mode" <<'PY'
 import base64
 import json
 import os
@@ -40,8 +52,12 @@ import urllib.error
 import urllib.request
 from urllib.parse import unquote, urlsplit
 
-repo, package, scratch = map(Path, sys.argv[1:])
+repo, package, scratch = map(Path, sys.argv[1:4])
+mode = sys.argv[4]
 members = {p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+assert {p.name for p in package.glob('kronika-*')} == {
+    'kronika-collector', 'kronika-web', 'kronika-dump', 'kronika-report',
+}, 'archive must contain exactly the four product programs'
 checksummed = {line.split('  ', 1)[1].removeprefix('./')
                for line in (package / 'SHA256SUMS').read_text().splitlines()}
 assert checksummed == members - {'SHA256SUMS'}, 'checksum manifest omits package files'
@@ -63,10 +79,48 @@ for document in package.rglob('*.md'):
         target = (document.parent / unquote(url.path)).resolve()
         assert target.exists(), f'broken bundled link: {document}: {href}'
 print(f'Archive documentation, static ELF and full checksum manifest passed: {len(members)} files')
+cli_check = [sys.executable, repo / 'scripts/check-cli.py', package]
+if mode != 'cli':
+    cli_check.append('--strace')
+subprocess.run(cli_check, check=True, timeout=120)
+if mode == 'cli':
+    sys.exit(0)
 env = {k: v for k, v in os.environ.items() if not k.startswith('KRONIKA_')}
 collector = subprocess.run([package / 'kronika-collector'], env=env,
                            capture_output=True, text=True, timeout=10)
 assert collector.returncode != 0 and 'KRONIKA_STORAGE_DIR' in collector.stderr
+capture = scratch / 'capture'
+capture_env = dict(env, KRONIKA_STORAGE_DIR=str(capture), KRONIKA_INTERVAL_S='1',
+                   KRONIKA_SEGMENT_MAX_AGE_S='1')
+with (scratch / 'collector.log').open('w+') as log:
+    collector = subprocess.Popen([package / 'kronika-collector'], env=capture_env,
+                                 stdout=log, stderr=log)
+    try:
+        deadline = time.monotonic() + 30
+        while not list(capture.rglob('*.zms')):
+            if collector.poll() is not None or time.monotonic() >= deadline:
+                log.seek(0)
+                raise RuntimeError('collector did not publish an OS segment:\n' + log.read())
+            time.sleep(0.1)
+    finally:
+        if collector.poll() is None:
+            collector.terminate()
+        try:
+            collector.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            collector.kill()
+            collector.wait()
+    assert collector.returncode == 0, 'collector did not stop cleanly'
+captured = subprocess.run([package / 'kronika-dump', capture, '--json'], env=env,
+                          capture_output=True, text=True, check=True, timeout=30)
+sections = [json.loads(line) for line in captured.stdout.splitlines()]
+for name in ('os_cpu', 'os_process'):
+    section = next(row for row in sections if row.get('section') == name and row['rows'] > 0)
+    decoded = subprocess.run([package / 'kronika-dump', capture, '--json',
+                              '--section', str(section['type_id']), '--limit', '1'],
+                             env=env, capture_output=True, text=True, check=True, timeout=30)
+    rows = [json.loads(line) for line in decoded.stdout.splitlines()]
+    assert any(row.get('kind') == 'row' and row['row'] for row in rows), decoded.stdout
 store = scratch / 'data'
 segment_dir = store / '2024/02/29'
 segment_dir.mkdir(parents=True)
@@ -134,6 +188,8 @@ with (scratch / 'web.log').open('w+') as log:
         except subprocess.TimeoutExpired:
             web.kill()
             web.wait()
-print('Package smoke passed: collector configuration, dump, slice, deterministic report, web auth, MCP')
+print('Package smoke passed: OS collection and clean stop, dump, slice, deterministic report, web auth, MCP')
 PY
-"$repo/scripts/report-browser-smoke.sh" "$release_tmp/report.html"
+if [[ "$mode" == full ]]; then
+  "$repo/scripts/report-browser-smoke.sh" "$release_tmp/report.html"
+fi

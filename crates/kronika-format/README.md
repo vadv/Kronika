@@ -70,7 +70,7 @@ handle:
 
 ## From collection windows to a segment
 
-The collector keeps one string interner for the open segment and creates fresh
+The collector keeps one string dictionary (interner) for the open segment and creates fresh
 row buffers for each non-empty collection cycle. The registry sorts each
 snapshot section by its contract key and encodes it. The writer adds the
 current window's dictionary records, builds a ZMS part, wraps it in a `ZMSP`
@@ -368,13 +368,14 @@ $KRONIKA_STORAGE_DIR/YYYY/MM/DD/N.zms  (one file)
 
 The snapshot section contains two logical `StrId` values represented
 as `u64`, while the dictionary contains one record with the `postgres` bytes.
-The catalog points to the dictionary body:
 
 The `os_user` reference section uses this same representation: it stores one
 interned user name for an observed UID and process rows keep their numeric real
 and effective UIDs. Repeated processes therefore do not repeat the name. The
 reference row and its `dict.strings` entry travel through the ordinary journal
 and ZMS writer, so restart recovery and dictionary normalization are unchanged.
+
+The catalog points to the dictionary body:
 
 ```text
 ZMS catalog entry: type_id=3_001_001, offset=X, len=T
@@ -443,12 +444,13 @@ The default limits are:
 | --- | ---: | --- |
 | Blob threshold | 4 KiB | Values at or above it use `dict.blobs`. |
 | Truncation limit | 1 MiB | Longer values retain exactly this prefix. |
-| Stored-byte cap | 64 MiB | Rejects an ordinary new value when stored dictionary bytes would exceed the cap; required hot values are exempt. |
+| Stored-byte cap | 64 MiB | Rejects an ordinary new value when stored dictionary bytes would exceed the cap; required `dict.hot_strings` values are inserted even when the cap is exceeded. |
 
 These values are fixed in code, not environment variables.
 The byte cap counts stored value bytes after truncation, not Parquet metadata.
-For an ordinary new value, exceeding it returns `DictError::Full`; it is not an
-absolute encoded-section limit because required hot strings remain exempt.
+For an ordinary new value, exceeding it returns `DictError::Full`. Required
+`dict.hot_strings` values count toward stored bytes, but exceeding the cap does
+not prevent their insertion. The encoded section can therefore exceed this cap.
 
 `SegmentDicts` also models a `dict.hot_strings` subset, but `kronika-writer`
 does not emit a third dictionary section. Those values are written into the
