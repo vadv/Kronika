@@ -14,8 +14,8 @@
 | Операция | Полученный выбор |
 | --- | --- |
 | Processes → строка → Activity | Ближайший к cursor PostgreSQL sample для этого точного PID. |
-| Statements → Query ID / Open plans | Plans с фильтром public Query ID при тех же часе/cursor. |
-| Plans → Related statements | Statements с фильтром записанного связанного Query ID. |
+| Statements → Query ID / Open plans | Plans с фильтром database, role и public Query ID при тех же часе/cursor. |
+| Plans → Related statements | Statements с фильтром database, role и записанного связанного Query ID. |
 | Tables → Indexes | Indexes выбранного записанного relation. |
 | Locks → строка | Blocker PIDs, lock target и backend context в Inspector. |
 | Events → группа → представительная запись | Полная записанная строка журнала и её timestamp. |
@@ -33,7 +33,7 @@
 | Чтение | Расчёт / область |
 | --- | --- |
 | Container CPU **66.8%** | `100 × used cgroup cores / effective cgroup CPU capacity`. |
-| Host CPU **17.5%** | Занятое время CPU host, делённое на полное время CPU. |
+| Host CPU **17.5%** | `100 × R(user+nice+system+irq+softirq+steal)/(H×N)`, с записанными ticks/s `H` и числом online CPU `N`. |
 | Container memory **53.8%** | `100 × memory.current / effective memory limit`. |
 | Host memory **12.9%** | Доля использованной памяти host; операнды в [Linux](metrics-linux.ru.md). |
 | Throttled **34.9%** | Время throttling cgroup / наблюдаемый интервал реального времени × 100. |
@@ -83,7 +83,7 @@ where customer_id = $1 order by placed_at desc limit $2
 | **1.42 s/s** | `Δtotal_exec_time / (1000×Δt)`. Параллельные длительности исполнения складываются. |
 | **11.9 ms/call** | `Δtotal_exec_time / Δcalls`; рассчитывается перед округлением для отображения. |
 
-2. Выбрать **Per call**, **I/O**, **Resources**, **Stability** для производных величин той же пары; [все операнды](metrics-postgresql.ru.md).
+2. Выбрать **Per call**, **I/O**, **Resources** для интервальных величин. **Stability** показывает записанные Mean/Min/Max/Stddev и их CV за статистический период расширения; [все операнды](metrics-postgresql.ru.md).
 3. Нажать **Open plans** и выбрать Plan ID **`1544266440`**. Inspector содержит `Parallel Seq Scan on orders`, `Sort` по `placed_at DESC`, `Gather Merge`, `Limit`, `Workers Planned: 1` и `(customer_id = 4244)`.
 4. Использовать **Related statements** или Back браузера. Открыть **Tables**, применить `schema:shop AND table_name:orders`, выбрать **Access**, **Size and buffers**, затем Indexes relation.
 

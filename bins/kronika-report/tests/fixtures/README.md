@@ -1,5 +1,7 @@
 # Standalone report fixture
 
+[Русская версия](README.ru.md)
+
 `standalone.zms` is one finished segment written through `kronika-writer` with
 the rich query parity rows used by `kronika-query`: metadata, CPU, process,
 relations, activity, locks, vacuum, database, statement, plan, and one

@@ -1,50 +1,65 @@
 # kronika-dump
 
-[English version](README.md)
+[English version](README.md) · [Установка](../../INSTALL.ru.md)
 
-Просмотр **каталога хранилища** Kronika и извлечение интервала в один автономный
-ZMS. Корень хранилища должен быть настоящим каталогом: отдельный `.zms` или
-symlink не подходят. Выполняйте команды из каталога собранного бинарного файла
-или укажите полный путь к нему.
+`kronika-dump` читает каталог записи или извлекает интервал в один отдельный
+ZMS. Исходники: [inspection parser](src/main.rs), [команда slice](src/slice.rs),
+[справка параметров](src/help.rs).
 
-## Просмотр
+## Inspect
 
 ```sh
-./kronika-dump /var/lib/kronika
-./kronika-dump /var/lib/kronika --json
-./kronika-dump /var/lib/kronika --index
-./kronika-dump /var/lib/kronika --section 1100001 --limit 10
+kronika-dump /var/lib/kronika
+kronika-dump /var/lib/kronika --json
+kronika-dump /var/lib/kronika --index
+kronika-dump /var/lib/kronika --section 1100001 --limit 10
 ```
 
-По умолчанию выводятся сегменты и размеры их секций. `--index` показывает
-типизированные идентификаторы и сводные значения; `--section` — декодированные
-строки физического `type_id` с раскрытыми ссылками на словарь. По умолчанию
-выводятся 20 строк на сегмент; `--limit 0` выводит все строки и требует
-`--section`. `--json` включает машиночитаемый вывод. При просмотре `--from` и
-`--to` принимают включённые границы в Unix-микросекундах. Используйте `sudo`,
-если этого требуют права на каталог данных.
+| Параметр | По умолчанию | Значение |
+| --- | --- | --- |
+| `DIR` | Обязателен | Обычный корень хранения collector с `YYYY/MM/DD/*.zms` и необязательным `active.wal`. Symlinks и пути отдельных ZMS отклоняются. |
+| Вывод без flags | Сводка сегментов | Границы сегментов, physical section IDs, число строк, bytes секций и physical overhead bytes. |
+| `--section ID` | Не задан | Декодирование одного physical numeric `type_id` с раскрытием dictionary references. |
+| `--index` | Не задан | Сводки derived series/index; с `--json` — отдельные points и finding locators. Несовместим с `--section`; sidecar не создаётся. |
+| `--json` | Текст | NDJSON; scan warnings выводятся как JSON objects в stdout. |
+| `--limit N` | `20` | Неотрицательный лимит строк на сегмент; `0` — все строки. Требует `--section`. |
+| `--from`, `--to` | Без границ | Inclusive signed Unix microseconds; выбирают пересекающиеся сегменты. Строки секций внутри выбранных сегментов не обрезаются. Можно задать одну границу. |
 
-## Срез
+Inspection читает готовые сегменты и committed active journal. Нужен доступ на
+чтение хранения; configuration environment не читается. Данные идут в stdout;
+текстовые warnings/errors — в stderr. Закрытый output pipe завершает команду
+успешно; остальные ошибки дают ненулевой exit status.
+
+## Slice
 
 ```sh
-KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-dump slice \
+KRONIKA_STORAGE_DIR=/var/lib/kronika kronika-dump slice \
   --from 2026-09-05T19:00:00Z \
   --to 2026-09-05T19:59:59Z \
   --out incident.zms
 ```
 
-Slice принимает целые секунды RFC 3339 с часовым поясом; обе границы включены.
-Он читает готовые сегменты и текущий журнал и пишет точно в заданный новый путь
-`.zms`. Существующий выходной файл или диапазон без записанных строк приводят
-к ошибке. Результат может содержать до 30 секунд соседних отсчётов с каждой
-стороны для вычислений. Команда проверяет новый ZMS и печатает запрошенные и
-фактические границы, число строк, секций и байтов. Временные файлы создаются
-в файловой системе выходного файла.
+| Параметр | Значение |
+| --- | --- |
+| `KRONIKA_STORAGE_DIR` | Обязательный обычный корень хранения collector с доступом на чтение; вход — готовые сегменты и committed journal. |
+| `--from RFC3339` | Обязательная первая целая секунда включительно, с `Z` или timezone offset. |
+| `--to RFC3339` | Обязательная последняя целая секунда включительно, не раньше `--from`. Равные границы выбирают одну полную секунду. Fractional seconds и numeric Unix values отклоняются. |
+| `--out FILE.zms` | Обязательный новый путь `.zms`. Родительский каталог существует и доступен на запись. Существующие пути отклоняются. |
 
-Передайте `incident.zms` в [kronika-report](../kronika-report/README.ru.md) для
-создания автономного HTML. Если slice выполнялся через `sudo`, передайте файл
-своему пользователю перед чтением без привилегий:
+Каждый параметр задаётся один раз, в любом порядке. Логический интервал —
+`[from, to + 1 second)`. Результат может сохранять samples в пределах 30 секунд
+с каждой стороны для интервальных вычислений. Интервал без записанных строк
+завершается ошибкой.
 
-```sh
-sudo chown "$(id -u):$(id -g)" incident.zms
-```
+Временные файлы и scratch data создаются рядом с результатом на той же
+filesystem. Готовый ZMS проверяется перед публикацией. Stdout содержит bytes,
+rows, sections и requested/actual bounds в Unix microseconds;
+`requested_to_exclusive` на одну секунду больше `--to`. Ошибки идут в stderr и
+дают ненулевой exit status. [kronika-report](../kronika-report/README.ru.md)
+преобразует результат в HTML.
+
+## Общие параметры
+
+`-h` и `--help` выбирают общую справку; `slice -h` и `slice --help` — справку
+slice. `--version` выводит версию binary. Эти вызовы завершаются до обращения
+к хранилищу. `Ctrl+C` прерывает выполняемую команду.

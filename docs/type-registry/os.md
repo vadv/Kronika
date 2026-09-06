@@ -18,9 +18,7 @@ Every row carries `scope`:
 | `4` | undetermined |
 
 CPU, memory, disks, mount points, and topology describe the node even when the
-collector runs inside a container. Network sections get `pod_net` once cgroup
-data identifies the container environment. Processes and cgroups get
-`container` inside a container, `host` otherwise.
+collector runs inside a container. Network sections use `pod_net` in the collector's recorded container environment. Process rows use `container` inside a container and `host` otherwise. Workload cgroup sections are collected only in container environments.
 
 The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 `/proc`) and `KRONIKA_SYS_ROOT` (default `/sys`).
@@ -36,7 +34,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_104_001` | `/proc/meminfo` | `snapshot_full` | `(ts)` |
 | `1_105_001` | `/proc/loadavg` | `snapshot_full` | `(ts)` |
 | `1_106_001` | `/proc/vmstat` | `snapshot_full` | `(ts)` |
-| `1_107_001` | `/proc/pressure/*` | `snapshot_full` | `(resource, ts)` |
+| `1_107_001` | `/proc/pressure/*`, cgroup pressure files | `snapshot_full` | `(resource, ts)` |
 | `1_108_001` | `/proc/diskstats` | `snapshot_full` | `(major, minor, ts)` |
 | `1_109_001` | `/proc/net/dev` plus sysfs link facts | `snapshot_full` | `(iface, ts)` |
 | `1_110_001` | `/proc/net/snmp` | `snapshot_full` | `(ts)` |
@@ -74,8 +72,7 @@ when `cpu` and `cpuacct` name the same path. A tick accepts at most 512 distinct
 controller/path candidates and 512 KiB of candidate path bytes. Exceeding
 either ceiling omits all workload cgroup sections for that tick. More than
 1,024 cgroup/device rows omits the complete I/O section while retaining the
-independently complete CPU, memory, and PIDs sections. Collection runs on the
-same 30-second cadence as process-to-cgroup mapping.
+independently complete CPU, memory, and PIDs sections. Cgroup and process-to-cgroup collection each default to a 30-second cadence.
 The collector reuses the process pass's membership reads on that shared tick.
 Each valid per-device I/O counter is recorded independently; a missing byte or
 operation counter does not discard the other counters from that device row.
@@ -98,7 +95,7 @@ root alone means an unbounded true root; every descendant is required. Other
 root errors are not ignored, and root membership requires a readable root file.
 Cgroup v1 binds one unambiguous CPU-controller root at the membership leaf,
 then reads `cpu.cfs_quota_us` and `cpu.cfs_period_us` from that same root at
-every ancestor. Ratios are compared as ratios, not as raw quota values.
+every ancestor. Ratio ordering uses cross multiplication: `Q₁ × P₂ < Q₂ × P₁`.
 
 `effective_memory_max` stores the smallest finite v2 `memory.max` across the
 same exact hierarchy and applies the same v2 mount-root rule. On cgroup v1, the
@@ -129,10 +126,8 @@ driver, the selected actual-frequency attribute, and hardware min/max in
 integer hertz. `1_122_001` stores one temporal row per policy. The collector
 uses the first successfully parsed actual-frequency attribute on every
 observation, preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`. If
-neither can be read, the value and source are null. `scaling_cur_freq` is
-retained separately because it is a
-reported or requested policy value, not necessarily a hardware measurement.
-One policy sample is never copied into per-logical-CPU rows.
+neither can be read, the value and source are null. `scaling_cur_freq` records the policy-reported/requested operating frequency.
+Each temporal row belongs to one policy.
 
 ## Bounds
 
@@ -158,78 +153,75 @@ registry linter rejects one that does not. The set in use:
 | `jiffies` | scheduler ticks, of `instance_metadata.clock_ticks_per_sec` per second |
 | `hertz` | clock frequency |
 | `megabits_per_second` | negotiated link speed |
-| `megabytes_per_second` | the I/O rates `PostgreSQL` prints in an autovacuum report |
 | `percent`, `celsius` | declared and unused by OS sections |
 
-`TypeContract` is compile-time data and never reaches a segment, so a unit
-costs nothing on disk and changes no `type_id`.
+`TypeContract` is compiled into the reader and writer. Segment sections store
+values without unit metadata.
 
-## Coverage
+## Metric families
 
-The target for this registry is the union of what `atop` records, what the
-predecessor project recorded, and what an internal reference tool
-recorded. `✓` means the data is in a section above.
+Each family maps to the registered section prefix below. Display formulas and reductions are in the [Linux metric reference](../metrics-linux.md).
 
 ### CPU
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| Per-CPU and total user/nice/system/idle/iowait/irq/softirq/steal/guest | ✓ | ✓ | ✓ | ✓ `1_102` |
-| Context switches, forks, run and blocked queue | ✓ | ✓ | ✓ | ✓ `1_103` |
-| Hardware interrupt total, softirq total | ✓ | — | ✓ | ✓ `1_103` |
-| Uptime and cumulative idle | ✓ | — | ✓ | ✓ `1_103` |
-| Load average and process counts | ✓ | ✓ | ✓ | ✓ `1_105` |
-| Per-IRQ counts | ✓ | — | ✓ | ✓ `1_114` |
-| Per-softirq-vector counts | ✓ | — | ✓ | ✓ `1_115` |
-| Model, core, socket, max frequency | ✓ | ✓ | — | ✓ `1_113` |
-| NUMA node per CPU | ✓ | — | — | ✓ `1_113` |
-| CPUFreq policy membership and actual/scaling frequency history | ✓ | — | — | ✓ `1_121`, `1_122` |
-| Instructions and cycles (`perf`) | ✓ | — | — | — (not collected) |
+| Metric | Section |
+| --- | --- |
+| Per-CPU and total user/nice/system/idle/iowait/irq/softirq/steal/guest | `1_102` |
+| Context switches, forks, run and blocked queue | `1_103` |
+| Hardware interrupt total, softirq total | `1_103` |
+| Uptime and cumulative idle | `1_103` |
+| Load average and process counts | `1_105` |
+| Per-IRQ counts | `1_114` |
+| Per-softirq-vector counts | `1_115` |
+| Model, core, socket, max frequency | `1_113` |
+| NUMA node per CPU | `1_113` |
+| CPUFreq policy membership and actual/scaling frequency history | `1_121`, `1_122` |
+| Instructions and cycles (`perf`) | — (not collected) |
 
 ### Memory and swap
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| Total, free, available, buffers, cache, slab | ✓ | ✓ | ✓ | ✓ `1_104` |
-| Dirty, writeback, anon, mapped, shmem, page tables | ✓ | ✓ | — | ✓ `1_104` |
-| Commit limit and committed | ✓ | ✓ | — | ✓ `1_104` |
-| Huge pages: total, free, size | ✓ | ✓ | — | ✓ `1_104` |
-| Huge pages: reserved, surplus, anonymous, shmem | ✓ | — | — | ✓ `1_104` |
-| Swap total, free, cached | ✓ | partial | ✓ | ✓ `1_104` |
-| Kernel stack, per-CPU, bounce, vmalloc, unevictable, mlocked | ✓ | — | — | ✓ `1_104` |
-| Zswap pool and stored size | ✓ | — | — | ✓ `1_104` |
-| Page in/out, swap in/out, faults | ✓ | ✓ | ✓ | ✓ `1_106` |
-| Scan and steal, kswapd and direct | ✓ | ✓ | ✓ | ✓ `1_106` |
-| Scan and steal, khugepaged | ✓ | — | — | ✓ `1_106` |
-| Allocation stalls, compaction stalls | ✓ | — | — | ✓ `1_106` |
-| NUMA migration, page migration success and failure | ✓ | — | — | ✓ `1_106` |
-| Transparent huge page allocations | ✓ | — | — | ✓ `1_106` |
-| Working-set refault, restore, node reclaim | — | — | — | ✓ `1_106` |
-| Swap read-ahead and hits | — | — | — | ✓ `1_106` |
-| OOM kills | ✓ | ✓ | ✓ | ✓ `1_106` |
-| Per-NUMA-node memory | ✓ | — | — | ✓ `1_117` |
-| KSM sharing, ZFS ARC, balloon | ✓ | — | — | — (not collected) |
+| Metric | Section |
+| --- | --- |
+| Total, free, available, buffers, cache, slab | `1_104` |
+| Dirty, writeback, anon, mapped, shmem, page tables | `1_104` |
+| Commit limit and committed | `1_104` |
+| Huge pages: total, free, size | `1_104` |
+| Huge pages: reserved, surplus, anonymous, shmem | `1_104` |
+| Swap total, free, cached | `1_104` |
+| Kernel stack, per-CPU, bounce, vmalloc, unevictable, mlocked | `1_104` |
+| Zswap pool and stored size | `1_104` |
+| Page in/out, swap in/out, faults | `1_106` |
+| Scan and steal, kswapd and direct | `1_106` |
+| Scan and steal, khugepaged | `1_106` |
+| Allocation stalls, compaction stalls | `1_106` |
+| NUMA migration, page migration success and failure | `1_106` |
+| Transparent huge page allocations | `1_106` |
+| Working-set refault, restore, node reclaim | `1_106` |
+| Swap read-ahead and hits | `1_106` |
+| OOM kills | `1_106` |
+| Per-NUMA-node memory | `1_117` |
+| KSM sharing, ZFS ARC, balloon | — (not collected) |
 
 ### Pressure stall
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| CPU, memory, IO: some and full, avg10/60/300 and total | ✓ | ✓ | ✓ | ✓ `1_107` |
+| Metric | Section |
+| --- | --- |
+| CPU, memory, IO: some and full, avg10/60/300 and total | `1_107` |
 
 ### Storage
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| Reads, writes, sectors, merges, service and queue time | ✓ | ✓ | ✓ | ✓ `1_108` |
-| Discards and flushes | ✓ | ✓ | — | ✓ `1_108` |
-| In-flight requests | ✓ | ✓ | ✓ | ✓ `1_108` |
-| LVM and MD devices | ✓ | ✓ | — | ✓ `1_108` (`/proc/diskstats` lists them) |
-| Loop and RAM devices | ✓ | ✓ | ✓ | — (majors `7` and `1` store nothing of their own; a snap's squashfs already counts on the device under it) |
-| Mount points, filesystem type, source | — | ✓ | ✓ | ✓ `1_112` |
-| Filesystem total and free bytes | — | ✓ | ✓ | ✓ `1_112` |
-| Filesystem root and total/available inodes | — | — | — | ✓ `1_112` |
-| Exact partition-to-parent device edges | — | — | — | ✓ `1_123` |
-| File handles, inodes, dentries | — | — | ✓ | ✓ `1_116` |
+| Metric | Section |
+| --- | --- |
+| Reads, writes, sectors, merges, service and queue time | `1_108` |
+| Discards and flushes | `1_108` |
+| In-flight requests | `1_108` |
+| LVM and MD devices | `1_108` (`/proc/diskstats` lists them) |
+| Loop and RAM devices | Excluded: device majors `7` and `1` |
+| Mount points, filesystem type, source | `1_112` |
+| Filesystem total and available bytes | `1_112` |
+| Filesystem root and total/available inodes | `1_112` |
+| Exact partition-to-parent device edges | `1_123` |
+| File handles, inodes, dentries | `1_116` |
 
 Filesystem capacity is populated only for the explicit local allowlist:
 `ext2`, `ext3`, `ext4`, `xfs`, `btrfs`, `f2fs`, `zfs`, `tmpfs`, and `overlay`.
@@ -237,10 +229,10 @@ Network, FUSE/userspace, `autofs`, and unknown types remain `null`. The entire
 capacity pass has a single one-second deadline; results completed before it are
 retained.
 
-`1_112_002` directly replaces the unreleased mount layout. Its identity is
+`1_112_002` identity is
 `(major, minor, mount_point)`, so two mount points exposing the same filesystem
-remain distinct. `root` is mountinfo field 4. Byte availability is `f_bavail`
-and inode availability is `f_favail`; neither is renamed to free or used space.
+remain distinct. `root` is mountinfo field 4. Recorded `free_bytes = f_bavail × f_frsize`;
+`available_inodes = f_favail`, from `statvfs`.
 `1_123_001` emits one row per exact sysfs edge: a partition marker with its
 immediate parent `dev`, and a layered dm/LVM/MD device with each device it
 lists under `slaves/`. Plain whole devices, unresolved sysfs links, and
@@ -253,39 +245,39 @@ under those devices. `1_112_002` never records mount points inside `/proc` or
 
 ### Network
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| Per-interface bytes, packets, errors, drops, fifo, frame, carrier, collisions | ✓ | ✓ | ✓ | ✓ `1_109` |
-| Link speed and duplex | ✓ | — | — | ✓ `1_109` |
-| TCP opens, resets, segments, retransmits, established | ✓ | ✓ | ✓ | ✓ `1_110` |
-| UDP datagrams, errors, no-port | ✓ | ✓ | ✓ | ✓ `1_110` |
-| IPv4 receive, deliver, forward, discard, reassembly, fragmentation | ✓ | — | — | ✓ `1_110` |
-| ICMP in and out, with errors | ✓ | — | — | ✓ `1_110` |
-| Listen overflows and drops, timeouts, retransmit detail | — | ✓ | ✓ | ✓ `1_111` |
-| Aborts, memory pressure, backlog drops, pruning, delayed ACKs | — | — | — | ✓ `1_111` |
-| Payload octets in and out | ✓ | — | — | ✓ `1_111` |
-| IPv6 and ICMPv6 and UDPv6 | ✓ | — | — | ✓ `1_118` |
-| NFS client RPC and operations | ✓ | — | — | ✓ `1_119` |
-| NFS server RPC, reply cache, I/O | ✓ | — | — | ✓ `1_120` |
-| Per-process network I/O | ✓ | — | — | — (not collected) |
+| Metric | Section |
+| --- | --- |
+| Per-interface bytes, packets, errors, drops, fifo, frame, carrier, collisions | `1_109` |
+| Link speed and duplex | `1_109` |
+| TCP opens, resets, segments, retransmits, established | `1_110` |
+| UDP datagrams, errors, no-port | `1_110` |
+| IPv4 receive, deliver, forward, discard, reassembly, fragmentation | `1_110` |
+| ICMP in and out, with errors | `1_110` |
+| Listen overflows and drops, timeouts, retransmit detail | `1_111` |
+| Aborts, memory pressure, backlog drops, pruning, delayed ACKs | `1_111` |
+| Payload octets in and out | `1_111` |
+| IPv6 and ICMPv6 and UDPv6 | `1_118` |
+| NFS client RPC and operations | `1_119` |
+| NFS server RPC, reply cache, I/O | `1_120` |
+| Per-process network I/O | — (not collected) |
 
 ### Processes
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| Identity: pid, ppid, uid, gid, name, command line, start time | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Real and effective user names, with numeric UID retained | ✓ | ✓ | ✓ | ✓ `1_100`, `1_124` |
-| State, threads, priority, nice, policy, real-time priority, current CPU | ✓ | ✓ | ✓ | ✓ `1_100` |
-| User and system CPU time | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Run-queue delay and block-I/O delay | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Voluntary and involuntary context switches | ✓ | ✓ | ✓ | ✓ `1_100`, `1_101` |
-| Minor and major faults | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Virtual, resident, and swap footprint | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Read and write syscalls, characters, and storage bytes | ✓ | ✓ | ✓ | ✓ `1_100` |
-| Data, stack, library, locked, page-table, peak, high-water footprint | ✓ | ✓ | ✓ | ✓ `1_101` |
-| File descriptor table size | — | — | — | ✓ `1_101` |
-| cgroup of a process | ✓ | ✓ | ✓ | ✓ `1_200` |
-| Per-thread rows, `wchan`, proportional set size | ✓ | — | — | — (not collected) |
+| Metric | Section |
+| --- | --- |
+| Identity: pid, ppid, uid, gid, name, command line, start time | `1_100` |
+| Real and effective user names, with numeric UID retained | `1_100`, `1_124` |
+| State, threads, priority, nice, policy, real-time priority, current CPU | `1_100` |
+| User and system CPU time | `1_100` |
+| Run-queue delay and block-I/O delay | `1_100` |
+| Voluntary and involuntary context switches | `1_100`, `1_101` |
+| Minor and major faults | `1_100` |
+| Virtual, resident, and swap footprint | `1_100` |
+| Read and write syscalls, characters, and storage bytes | `1_100` |
+| Data, stack, library, locked, page-table, peak, high-water footprint | `1_101` |
+| File descriptor table size | `1_101` |
+| cgroup of a process | `1_200` |
+| Per-thread rows, `wchan`, proportional set size | — (not collected) |
 
 `os_user` records at most one mapping for each observed `(scope, uid)` in an
 open segment. Only real and effective UIDs from successfully decoded
@@ -308,32 +300,28 @@ search selectors are resolved by the server before ordering and pagination;
 text search covers command plus both resolved names. No query path consults
 the live host identity database.
 
-A snapshot serves every cumulative column as a rate, which leaves no room for
-the CPU time a process has burned since it started. `cpu_time_ticks` carries
-that total, as the plain sum of `utime` and `stime` in clock ticks.
+Process snapshots expose cumulative columns as interval rates. The additional
+`cpu_time_ticks = utime + stime` field retains cumulative lifetime CPU time in clock ticks.
 
 ### cgroup and container
 
-| Metric | atop | predecessor | internal | Kronika |
-| --- | :-: | :-: | :-: | :-: |
-| CPU usage, user, system, throttling, quota, period | ✓ | ✓ | ✓ | ✓ `1_201` |
-| Memory current, max, anon, file, kernel, slab, events, OOM | ✓ | ✓ | ✓ | ✓ `1_202` |
-| Block I/O bytes and operations per device | ✓ | ✓ | ✓ | ✓ `1_203` |
-| PIDs current and max | ✓ | ✓ | ✓ | ✓ `1_204` |
-| cgroup v1 and v2 layouts | ✓ | ✓ | ✓ | ✓ |
+| Metric | Section |
+| --- | --- |
+| CPU usage, user, system, throttling, quota, period | `1_201` |
+| Memory current, max, anon, file, kernel, slab, events, OOM | `1_202` |
+| Block I/O bytes and operations per device | `1_203` |
+| Threads (TIDs): pids.current and pids.max | `1_204` |
+| cgroup v1 and v2 layouts | `1_200`–`1_205` |
 
 ## Not collected
 
-The collector omits sources that require extra privileges, kernel modules,
-vendor hardware, or more CPU and memory than its host budget allows.
-
-| Missing | Source | Why not |
-| --- | --- | --- |
-| Instructions, cycles, and other PMU counters | `perf_event_open` | Needs `CAP_PERFMON` or a permissive `perf_event_paranoid`, and opens one event per CPU. |
-| GPU utilization and memory | NVML through a helper daemon | Needs a vendor library and a second process; `atop` ships a separate daemon for it. |
-| Per-process network I/O | `netatop` kernel module | Needs an out-of-tree module loaded on the monitored host. |
-| Infiniband port counters | `/sys/class/infiniband` | Plain sysfs reads; not implemented. |
-| Last-level cache occupancy and memory bandwidth | `/sys/fs/resctrl` | Needs `resctrl` mounted and Intel RDT; not implemented. |
-| Per-thread rows and `wchan` | `/proc/PID/task/*` | One directory walk per process per snapshot; the cost does not fit the memory and CPU budget. |
-| Proportional set size | `/proc/PID/smaps_rollup` | Walks the whole address space per process; measurably expensive on a large shared-buffers backend. |
-| KSM, ZFS ARC, hypervisor balloon | `/sys/kernel/mm/ksm`, ZFS module state | Each needs a subsystem that is absent on a plain database host. |
+| Uncollected metric | Kernel/library interface |
+| --- | --- |
+| Instructions, cycles, and other PMU counters | `perf_event_open` |
+| GPU utilization and memory | NVML through a helper daemon |
+| Per-process network I/O | `netatop` kernel module |
+| Infiniband port counters | `/sys/class/infiniband` |
+| Last-level cache occupancy and memory bandwidth | `/sys/fs/resctrl` |
+| Per-thread rows and `wchan` | `/proc/PID/task/*` |
+| Proportional set size | `/proc/PID/smaps_rollup` |
+| KSM, ZFS ARC, hypervisor balloon | `/sys/kernel/mm/ksm`, ZFS module state |

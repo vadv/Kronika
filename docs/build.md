@@ -1,37 +1,38 @@
 # Build from source
 
-[Русская версия](build.ru.md) · [Install a binary archive](../INSTALL.md)
+[Русская версия](build.ru.md) · [Install](../INSTALL.md)
 
 You can install a [prebuilt binary archive](../INSTALL.md) or build Kronika
 from source using the instructions below.
 
-The repository pins Rust **1.96.0** and locks its dependencies. The web
-interface and report engine are committed build assets: a normal native
-build needs no Node.js.
+## Toolchain
+
+| Component | Version or requirement |
+| --- | --- |
+| Rust | `1.96.0`, pinned by [rust-toolchain.toml](../rust-toolchain.toml). Dependencies use `Cargo.lock`. |
+| Native tools | C compiler, GNU make, `pkg-config`; static builds use native `musl-gcc`. Debian/Ubuntu packages: `build-essential musl-tools pkg-config`. |
+| Browser assets | Committed HTML and WebAssembly assets are used by native Cargo builds. |
+| Asset rebuild | Node.js `22.21.1`, `wasm32-unknown-unknown`, locked npm dependencies. |
 
 ## Native Linux binaries
 
-Install `rustup`, a C compiler, GNU make, and the musl C toolchain. On
-Debian/Ubuntu the build packages are `build-essential`, `musl-tools`, and
-`pkg-config`. Then:
+On native x86-64 Linux with rustup and the native tools installed:
 
 ```sh
 git clone https://github.com/vadv/Kronika.git
 cd Kronika
-# For a review candidate, first: git checkout FULL_COMMIT_FROM_BUILDINFO
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked --target x86_64-unknown-linux-musl \
   -p kronika-collector -p kronika-web -p kronika-dump \
   -p kronika-report
 ```
 
-The binaries are in `target/x86_64-unknown-linux-musl/release/`. Run each with
-`--version`, then follow [installation](../INSTALL.md) from the binary install
-step. An ordinary `cargo build` defaults to the x86-64 musl target in
-`.cargo/config.toml`. No build uses `target-cpu=native`; keep the target's
-baseline instruction set when distributing the result to other machines.
+Outputs: `target/x86_64-unknown-linux-musl/release/kronika-{collector,web,dump,report}`.
+The default Cargo target in [.cargo/config.toml](../.cargo/config.toml) is
+`x86_64-unknown-linux-musl`. To build an exact revision, run
+`git checkout FULL_COMMIT` before `cargo build`.
 
-On a **native arm64 Linux builder** with its native musl toolchain:
+On native ARM64 Linux:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
@@ -43,39 +44,32 @@ cargo build --release --locked --target aarch64-unknown-linux-musl \
   -p kronika-report
 ```
 
-The C flag keeps atomic operations in the baseline ARMv8 instruction set,
-without GCC outline-atomic helper dependencies from a glibc toolchain.
-The [release workflow](../.github/workflows/release-package.yml) uses the same
-native build and validates actual ARM64 execution. A successful
-cross-compilation alone does not establish that an archive runs.
+Outputs: `target/aarch64-unknown-linux-musl/release/`. The C flag emits inline
+ARMv8 atomic operations. [Install](../INSTALL.md#2-install) provides the binary
+installation commands.
 
-To work with the host GNU toolchain instead of making a portable archive:
+To build every workspace binary, including development tooling, with the host
+GNU toolchain on x86-64:
 
 ```sh
 make build TARGET=x86_64-unknown-linux-gnu
 ```
 
-This example is for an x86-64 host. `make build` otherwise selects rustc's host
-target. GNU-linked development binaries are not the portable release artifact.
+`make build` defaults to rustc's host target.
 
-## Verify changes
-
-The repository's [agent contract](../AGENTS.md) defines review and checks.
-For host-target tests and linting:
+## Checks
 
 ```sh
 export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
 make fmt-check lint test
 ```
 
-`lint` includes the pinned repository and Mordant Dylint rules as well as
-strict workspace Clippy. See [lint tooling](../scripts/check-dylints.sh) for setup.
-`test` runs the complete non-BDD suite. BDD and the container portability matrix
-run in CI; portable archives also get real extracted-program checks.
+`lint` runs repository/Mordant Dylint rules and workspace Clippy with warnings
+denied. [Dylint setup](../scripts/check-dylints.sh) defines its dependencies.
+`test` runs non-BDD unit and integration tests. BDD runs in CI.
+The [agent contract](../AGENTS.md) defines review requirements.
 
-## Rebuild browser assets only when changing them
-
-Install Node.js **22.21.1** and the pinned WebAssembly target:
+## Browser assets
 
 ```sh
 rustup target add wasm32-unknown-unknown --toolchain 1.96.0
@@ -84,16 +78,17 @@ make report-assets REPORT_ASSET_FLAGS=--download-bindgen
 make report-assets-check REPORT_ASSET_FLAGS=--download-bindgen
 ```
 
-This rebuilds and checks the committed web HTML, report shell, and WebAssembly
-bindings. It is a development path, not an end-user installation prerequisite.
-The static report runs its WebAssembly engine on the browser's **main thread**.
+These targets build and reproduce the committed web HTML, report shell and
+WebAssembly bindings. The report's query engine executes on the browser's main
+thread. Target definitions: [Makefile](../Makefile).
 
-## Package a revision
+## Archive
 
-Commit the intended source and documentation, then use
-[`scripts/package-release.sh`](../scripts/package-release.sh) from that clean
-checkout. It includes the locked dependency notices, bilingual guides, images,
-and editable diagrams, with a commit-qualified filename and member checksums.
-The [release guide](releases.md) explains native targets, prebuilt mode,
-deterministic packaging, artifact downloads, and validation. Packaging does not
-create a release or tag.
+From a clean committed checkout:
+
+```sh
+scripts/package-release.sh --target x86_64-unknown-linux-musl
+```
+
+[Archive reference](releases.md) defines targets, output names, build metadata,
+checksums, packaged documents and CI checks.

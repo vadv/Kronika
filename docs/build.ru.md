@@ -1,35 +1,37 @@
 # Сборка из исходников
 
-[English version](build.md) · [Установка готового архива](../INSTALL.ru.md)
+[English version](build.md) · [Установка](../INSTALL.ru.md)
 
-Можно установить [готовую сборку](../INSTALL.ru.md) или собрать Kronika из
-исходников по инструкции ниже.
+Можно установить [готовую сборку](../INSTALL.ru.md) или собрать Kronika из исходников по инструкции ниже.
 
-Репозиторий фиксирует Rust **1.96.0** и зависимости. Web-интерфейс и движок
-отчётов хранятся как готовые артефакты: обычной нативной сборке Node.js не нужен.
+## Toolchain
 
-## Нативные программы Linux
+| Компонент | Версия или требование |
+| --- | --- |
+| Rust | `1.96.0`, закреплён в [rust-toolchain.toml](../rust-toolchain.toml). Зависимости используют `Cargo.lock`. |
+| Native tools | C compiler, GNU make, `pkg-config`; статическая сборка использует native `musl-gcc`. Пакеты Debian/Ubuntu: `build-essential musl-tools pkg-config`. |
+| Browser assets | Native Cargo builds используют сохранённые в репозитории HTML и WebAssembly assets. |
+| Пересборка assets | Node.js `22.21.1`, `wasm32-unknown-unknown`, закреплённые npm dependencies. |
 
-Установите `rustup`, компилятор C, GNU make и musl toolchain. В Debian/Ubuntu
-пакеты сборки — `build-essential`, `musl-tools` и `pkg-config`. Затем:
+## Native binaries для Linux
+
+На native x86-64 Linux с установленными rustup и native tools:
 
 ```sh
 git clone https://github.com/vadv/Kronika.git
 cd Kronika
-# For a review candidate, first: git checkout FULL_COMMIT_FROM_BUILDINFO
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked --target x86_64-unknown-linux-musl \
   -p kronika-collector -p kronika-web -p kronika-dump \
   -p kronika-report
 ```
 
-Программы находятся в `target/x86_64-unknown-linux-musl/release/`. Запустите
-каждую с `--version`, затем продолжите [установку](../INSTALL.ru.md) с шага
-копирования программ. Обычный `cargo build` использует x86-64 musl из
-`.cargo/config.toml`. Сборки не задают `target-cpu=native`; сохраняйте базовый
-набор инструкций target при передаче результата на другие машины.
+Результат: `target/x86_64-unknown-linux-musl/release/kronika-{collector,web,dump,report}`.
+Cargo target по умолчанию в [.cargo/config.toml](../.cargo/config.toml) —
+`x86_64-unknown-linux-musl`. Для сборки точной ревизии выполните
+`git checkout FULL_COMMIT` перед `cargo build`.
 
-На **нативной машине Linux arm64** с её нативным musl toolchain:
+На native ARM64 Linux:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
@@ -41,39 +43,32 @@ cargo build --release --locked --target aarch64-unknown-linux-musl \
   -p kronika-report
 ```
 
-Флаг C оставляет атомарные операции в базовом наборе ARMv8, без зависимости
-от outline-atomic helpers GCC из glibc toolchain.
-[Release workflow](../.github/workflows/release-package.yml) использует ту же
-нативную сборку и проверяет настоящий запуск ARM64. Успешная кросс-компиляция
-сама по себе не подтверждает работу архива.
+Результат: `target/aarch64-unknown-linux-musl/release/`. C flag создаёт inline
+ARMv8 atomic operations. Раздел [установки](../INSTALL.ru.md#2-установка)
+содержит команды установки binaries.
 
-Для разработки с GNU toolchain хоста, без переносимого архива:
+Сборка всех workspace binaries, включая инструменты разработки, с host GNU
+toolchain на x86-64:
 
 ```sh
 make build TARGET=x86_64-unknown-linux-gnu
 ```
 
-Пример рассчитан на x86-64. Без настройки `make build` выбирает host target
-rustc. Бинарники с GNU linkage не являются переносимым релизным архивом.
+`make build` по умолчанию использует host target rustc.
 
-## Проверить изменения
-
-[Контракт репозитория](../AGENTS.md) определяет ревью и проверки.
-Для тестов и линтов под host target:
+## Проверки
 
 ```sh
 export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
 make fmt-check lint test
 ```
 
-`lint` включает фиксированные правила Dylint репозитория и Mordant, а также
-строгий Clippy по workspace. Установка описана в [руководстве линтов](../scripts/check-dylints.sh).
-`test` запускает весь набор без BDD. BDD и контейнерная матрица переносимости
-работают в CI; для архивов также проверяются реальные распакованные программы.
+`lint` запускает repository/Mordant Dylint rules и workspace Clippy с запретом
+warnings. [Настройка Dylint](../scripts/check-dylints.sh) определяет зависимости.
+`test` запускает unit и integration tests без BDD. BDD выполняется в CI.
+[Контракт агента](../AGENTS.md) определяет требования review.
 
-## Пересобирать браузерные файлы только при их изменении
-
-Установите Node.js **22.21.1** и фиксированный WebAssembly target:
+## Browser assets
 
 ```sh
 rustup target add wasm32-unknown-unknown --toolchain 1.96.0
@@ -82,17 +77,17 @@ make report-assets REPORT_ASSET_FLAGS=--download-bindgen
 make report-assets-check REPORT_ASSET_FLAGS=--download-bindgen
 ```
 
-Так пересобираются и проверяются сохранённые web HTML, оболочка отчёта и
-WebAssembly bindings. Это путь разработки, не условие установки для
-пользователя. Движок WebAssembly статического отчёта работает в **главном
-потоке браузера**.
+Эти targets собирают и воспроизводят сохранённые web HTML, report shell и
+WebAssembly bindings. Query engine отчёта выполняется на основном потоке
+браузера. Определения targets: [Makefile](../Makefile).
 
-## Упаковать ревизию
+## Архив
 
-Закоммитьте нужные исходники и документацию, затем запустите
-[`scripts/package-release.sh`](../scripts/package-release.sh) из чистого
-checkout. Архив содержит лицензии фиксированных зависимостей, парные
-руководства, изображения и редактируемые диаграммы; имя содержит commit,
-а файлы имеют контрольные суммы. [Руководство по архивам](releases.ru.md)
-описывает нативные target, режим готовых бинарников, детерминированную
-упаковку, скачивание артефактов и проверку. Упаковка не создаёт релиз или тег.
+В чистом checkout с сохранёнными commits:
+
+```sh
+scripts/package-release.sh --target x86_64-unknown-linux-musl
+```
+
+[Справочник архивов](releases.ru.md) определяет targets, имена результатов,
+build metadata, checksums, вложенные документы и проверки CI.

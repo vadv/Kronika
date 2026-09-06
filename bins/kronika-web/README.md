@@ -1,33 +1,35 @@
 # kronika-web
 
-[Русская версия](README.ru.md)
+[Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-`kronika-web` serves recorded Kronika data through a browser interface, an
-HTTP API, and MCP. It reads `active.wal` and finished `.zms` segments through
-`kronika-reader`, and creates derived `.idx` files in the data directory. The
-server is configured only through environment variables.
+Web reads `active.wal` and finished `.zms` segments through `kronika-reader`.
+It serves the embedded browser interface, HTTP API and MCP, and writes derived
+`.idx` files in the recording directory.
 
 ## Configuration
 
-Missing required variables and invalid values stop startup before the listener
-binds.
+Environment is validated before the listener binds.
+Source: [config.rs](src/config.rs).
 
-| Variable | Default | Description |
-| --- | ---: | --- |
-| `KRONIKA_STORAGE_DIR` | — | Required data directory. It must contain the collector output and allow web to create and replace `.idx` files and `.kronika-index.owner.lock`. |
-| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | HTTP listen address. |
-| `KRONIKA_WEB_SOURCES` | — | Required decimal configuration bitset reported by the web catalog: `0` marks neither family configured, `1` marks OS configured (bit 0), `2` marks PostgreSQL configured (bit 1), and `3` marks both configured. Values above `3` are rejected. It does not enable collection or filter stored data. |
-| `KRONIKA_WEB_USER` | — | Required non-empty Basic user name, including when authentication is disabled. |
-| `KRONIKA_WEB_PASSWORD` | — | Required non-empty Basic password, including when authentication is disabled. |
-| `KRONIKA_WEB_AUTH` | `required` | `required` protects `/api/*` and `/mcp`; `disabled` removes the credential check. |
-| `KRONIKA_WEB_DEMO` | unset | Accepts only `synthetic`. It marks responses and the interface as synthetic; data still comes from `KRONIKA_STORAGE_DIR`. |
+| Variable | Default | Accepted value and meaning |
+| --- | --- | --- |
+| `KRONIKA_STORAGE_DIR` | Required | Existing real collector storage root; read/write access for `.idx` files and `.kronika-index.owner.lock`. |
+| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | IP address and port, including IPv6 as `[::1]:8080`. Plain HTTP. |
+| `KRONIKA_WEB_SOURCES` | Required | Decimal bitset `0..3`: bit 0 marks OS configured; bit 1 marks PostgreSQL configured. `0` neither, `1` OS, `2` PostgreSQL, `3` both. |
+| `KRONIKA_WEB_USER` | Required | Nonempty user name, also required with authentication disabled. |
+| `KRONIKA_WEB_PASSWORD` | Required | Nonempty password, also required with authentication disabled. |
+| `KRONIKA_WEB_AUTH` | `required` | `required` checks credentials/session; `disabled` permits unauthenticated access. |
+| `KRONIKA_WEB_DEMO` | Unset | Only set value: `synthetic`; marks the catalog and interface as a synthetic recording. |
+| `TMPDIR` | System temporary directory, normally `/tmp` | Writable filesystem location for export temporary files. |
+
+The source bitset sets catalog `configured` fields. In the browser, the
+PostgreSQL bit suppresses its no-data tooltip; recorded PostgreSQL data also
+suppresses it. The OS bit remains catalog metadata. All tabs and recorded
+sections remain available. Recorded health uses collector metadata.
 
 ## Run
 
-Install the [portable archive](../../INSTALL.md), then run:
-
 ```sh
-/usr/local/bin/kronika-web --version
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
   KRONIKA_WEB_SOURCES=1 \
@@ -36,36 +38,26 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-web
 ```
 
-The data directory must already exist. On success, the process prints
-`ready <addr>` and starts its HTTP/1.1 listener.
+On startup, stdout receives `ready <addr>`. Open <http://127.0.0.1:8080/> and
+sign in with the configured account. API and MCP accept HTTP Basic credentials;
+protected API requests also accept the browser session cookie.
 
-Open <http://127.0.0.1:8080/> and sign in as `kronika` with the configured
-password.
+## Endpoints
 
-`KRONIKA_WEB_SOURCES` changes only the `configured` markers in the web catalog.
-The browser uses the PostgreSQL marker for its no-data navigation state; the OS
-marker currently remains catalog metadata. Stored data remains detected and
-readable through the browser, API, and MCP regardless of this value. The
-collector reads PostgreSQL metrics only when `KRONIKA_PG_DSNS` contains at
-least one DSN.
+| Route | Methods | Contract |
+| --- | --- | --- |
+| `/` | `GET`, `HEAD` | Embedded browser interface. |
+| `/auth/session` | `GET`, `POST`, `DELETE` | Check, create from Basic credentials, or clear a browser session. Cookies receive `Secure` over HTTPS. |
+| `/api/export?from=<unix_second>&to=<unix_second>` | `GET` | Authenticated HTML attachment for inclusive whole-second bounds. |
+| Other `/api/*` | `GET` | JSON/NDJSON resources for recorded data. |
+| `/mcp` | `POST` | Stateless Streamable HTTP; same authentication. Query strings and `Origin` headers are rejected. [MCP reference](../../docs/mcp-clients.md). |
 
-The roadmap lists ClickHouse, CockroachDB, and MySQL. Their bits are not
-assigned yet; values above `3` are rejected.
+## Export files
 
-With `KRONIKA_WEB_AUTH=required`, protected requests accept either Basic
-credentials or the browser session cookie issued by `POST /auth/session`.
-
-## Export temporary files
-
-Each export creates two automatically deleted files in the operating system's
-standard temporary directory: the sliced ZMS, and a second file used first as
-slice scratch space and then as the complete HTML report. On Linux this is
-usually `/tmp` when `TMPDIR` is unset. The service account needs write access
-to the selected directory and enough free capacity for both files at the same
-time.
-
-For a hardened systemd unit that restricts filesystem writes, create a
-dedicated directory owned by the service account and allow that same path:
+An export creates two temporary files: sliced ZMS, and a file used first for
+slice scratch data then for the complete HTML. Both exist simultaneously and
+are deleted when closed. The service account needs write access and space for
+both. A restricted systemd unit can use:
 
 ```ini
 [Service]
@@ -73,17 +65,14 @@ Environment=TMPDIR=/var/tmp/kronika-web
 ReadWritePaths=/var/tmp/kronika-web
 ```
 
-## Endpoints
+Create that directory for the service account in the
+[service setup](../../docs/services.md). Query preparation is limited to one
+export at a time per process. Sources: [export.rs](src/export.rs),
+[config.rs](src/config.rs).
 
-- `/` — embedded browser interface; accepts `GET` and `HEAD`.
-- `/auth/session` — checks a browser session with `GET`, creates one from Basic
-  credentials with `POST`, and clears it with `DELETE`. Browser sessions use a
-  `Secure` cookie automatically over HTTPS.
-- `/api/export?from=<unix_second>&to=<unix_second>` — creates an authenticated
-  standalone HTML report for the inclusive range and returns it as an `.html`
-  attachment; accepts `GET`.
-- Other `/api/*` routes — JSON and NDJSON resources used by the interface;
-  accept `GET`.
-- `/mcp` — stateless Streamable HTTP endpoint; accepts `POST`. A query string or
-  an `Origin` header is rejected. MCP reads stored Kronika data. See
-  [MCP client setup](../../docs/mcp-clients.md).
+## Process interface
+
+`-h`, `--help` and `--version` print to stdout and exit before configuration,
+storage access or listener startup. Request, connection and export errors and
+export timings go to stderr; web has no log-level setting. `Ctrl+C` or
+`SIGTERM` terminates web. Startup/configuration errors exit nonzero.

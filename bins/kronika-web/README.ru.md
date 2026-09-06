@@ -1,33 +1,35 @@
 # kronika-web
 
-[English version](README.md)
+[English version](README.md) · [Установка](../../INSTALL.ru.md)
 
-`kronika-web` показывает сохранённые данные Kronika в браузере и отдаёт их
-через HTTP API и MCP. Он читает `active.wal` и готовые сегменты `.zms` через
-`kronika-reader`, а также создаёт производные файлы `.idx` в каталоге данных.
-Сервер настраивается только переменными окружения.
+Web читает `active.wal` и готовые `.zms` через `kronika-reader`. Он обслуживает
+встроенный browser interface, HTTP API и MCP и пишет derived `.idx` в каталог
+записи.
 
-## Настройка
+## Конфигурация
 
-Если обязательной переменной нет или значение неверно, сервер завершается до
-открытия сетевого сокета.
+Environment проверяется до открытия listener.
+Исходник: [config.rs](src/config.rs).
 
-| Переменная | По умолчанию | Описание |
-| --- | ---: | --- |
-| `KRONIKA_STORAGE_DIR` | — | Обязательный каталог данных. В нём должны находиться результаты работы коллектора; web должен иметь право создавать и заменять файлы `.idx` и `.kronika-index.owner.lock`. |
-| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | Адрес, на котором HTTP-сервер принимает соединения. |
-| `KRONIKA_WEB_SOURCES` | — | Обязательная десятичная битовая маска настроенных семейств в web-каталоге: `0` — ни одно не настроено, `1` — настроена OS (бит 0), `2` — настроен PostgreSQL (бит 1), `3` — настроены оба семейства. Значения больше `3` отклоняются. Маска не включает сбор и не фильтрует сохранённые данные. |
-| `KRONIKA_WEB_USER` | — | Обязательное непустое имя пользователя Basic, в том числе при отключённой аутентификации. |
-| `KRONIKA_WEB_PASSWORD` | — | Обязательный непустой пароль Basic, в том числе при отключённой аутентификации. |
-| `KRONIKA_WEB_AUTH` | `required` | `required` защищает `/api/*` и `/mcp`; `disabled` отключает проверку учётных данных. |
-| `KRONIKA_WEB_DEMO` | не задана | Допустимо только значение `synthetic`. Оно помечает ответы и интерфейс как синтетические; данные по-прежнему читаются из `KRONIKA_STORAGE_DIR`. |
+| Переменная | По умолчанию | Допустимое значение и смысл |
+| --- | --- | --- |
+| `KRONIKA_STORAGE_DIR` | Обязательна | Существующий обычный корень хранения collector; read/write access для `.idx` и `.kronika-index.owner.lock`. |
+| `KRONIKA_WEB_LISTEN` | `127.0.0.1:8080` | IP address и port, включая IPv6 в виде `[::1]:8080`. Plain HTTP. |
+| `KRONIKA_WEB_SOURCES` | Обязательна | Decimal bitset `0..3`: bit 0 отмечает OS configured; bit 1 — PostgreSQL configured. `0` ни одного, `1` OS, `2` PostgreSQL, `3` оба. |
+| `KRONIKA_WEB_USER` | Обязательна | Непустой user name, обязателен и при отключённой authentication. |
+| `KRONIKA_WEB_PASSWORD` | Обязательна | Непустой password, обязателен и при отключённой authentication. |
+| `KRONIKA_WEB_AUTH` | `required` | `required` проверяет credentials/session; `disabled` разрешает доступ без аутентификации. |
+| `KRONIKA_WEB_DEMO` | Не задана | Единственное значение: `synthetic`; помечает каталог и интерфейс как синтетическую запись. |
+| `TMPDIR` | Системный временный каталог, обычно `/tmp` | Доступная на запись filesystem location для временных файлов export. |
+
+Source bitset задаёт поля `configured` каталога. В браузере PostgreSQL bit
+подавляет его no-data tooltip; записанные PostgreSQL data также подавляют его.
+OS bit остаётся метаданными каталога. Все tabs и записанные sections доступны.
+Recorded health использует метаданные collector.
 
 ## Запуск
 
-Установите [переносимый архив](../../INSTALL.ru.md), затем запустите:
-
 ```sh
-/usr/local/bin/kronika-web --version
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   KRONIKA_WEB_LISTEN=127.0.0.1:8080 \
   KRONIKA_WEB_SOURCES=1 \
@@ -36,36 +38,26 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-web
 ```
 
-Каталог данных должен существовать до запуска. После успешного старта процесс
-печатает `ready <addr>` и начинает принимать запросы HTTP/1.1.
+При запуске stdout получает `ready <addr>`. Откройте <http://127.0.0.1:8080/>
+и войдите с заданным account. API и MCP принимают HTTP Basic credentials;
+защищённые API requests также принимают browser session cookie.
 
-Откройте <http://127.0.0.1:8080/> и войдите как `kronika` с заданным паролем.
+## Endpoints
 
-`KRONIKA_WEB_SOURCES` меняет только признаки `configured` в web-каталоге.
-Браузер учитывает признак PostgreSQL при выборе состояния «нет данных» для
-этой вкладки; признак OS сейчас остаётся только метаданными каталога.
-Значение не влияет на обнаружение и чтение сохранённых данных через браузер,
-API и MCP. Коллектор читает метрики PostgreSQL только если
-`KRONIKA_PG_DSNS` содержит хотя бы один DSN.
+| Route | Methods | Контракт |
+| --- | --- | --- |
+| `/` | `GET`, `HEAD` | Встроенный browser interface. |
+| `/auth/session` | `GET`, `POST`, `DELETE` | Проверить, создать из Basic credentials или удалить browser session. Cookies получают `Secure` при HTTPS. |
+| `/api/export?from=<unix_second>&to=<unix_second>` | `GET` | HTML attachment с аутентификацией за inclusive whole-second bounds. |
+| Другие `/api/*` | `GET` | JSON/NDJSON resources записанных данных. |
+| `/mcp` | `POST` | Stateless Streamable HTTP; та же authentication. Query strings и `Origin` headers отклоняются. [Справочник MCP](../../docs/mcp-clients.ru.md). |
 
-В плане развития указаны ClickHouse, CockroachDB и MySQL. Биты для них ещё не
-назначены; значения больше `3` отклоняются.
+## Файлы export
 
-При `KRONIKA_WEB_AUTH=required` защищённые запросы принимают учётные данные
-Basic или сессионный cookie, созданный запросом `POST /auth/session`.
-
-## Временные файлы экспорта
-
-При каждом экспорте в стандартном системном каталоге временных файлов
-создаются два файла, которые автоматически удаляются: ZMS со срезом и второй
-файл, который сначала служит вспомогательным файлом при подготовке среза, а
-затем содержит готовый HTML-отчёт. В Linux при незаданной `TMPDIR` это обычно
-`/tmp`. Учётной записи сервиса нужны право записи в выбранный каталог и
-достаточно свободного места для одновременного размещения обоих файлов.
-
-Для systemd-юнита с ограниченной записью в файловую систему создайте отдельный
-каталог, принадлежащий учётной записи сервиса, укажите его в `TMPDIR` и
-разрешите запись по тому же пути:
+Export создаёт два временных файла: срез ZMS и файл, используемый сначала для
+scratch data среза, затем для готового HTML. Оба существуют одновременно и
+удаляются при закрытии. Service account нужны доступ на запись и место для
+обоих. В ограниченном systemd unit можно задать:
 
 ```ini
 [Service]
@@ -73,18 +65,14 @@ Environment=TMPDIR=/var/tmp/kronika-web
 ReadWritePaths=/var/tmp/kronika-web
 ```
 
-## Эндпоинты
+Создайте этот каталог для service account при
+[настройке сервиса](../../docs/services.ru.md). Подготовка запросов ограничена
+одним export одновременно на процесс. Исходники: [export.rs](src/export.rs),
+[config.rs](src/config.rs).
 
-- `/` — встроенный веб-интерфейс; принимает `GET` и `HEAD`.
-- `/auth/session` — проверяет сессию браузера запросом `GET`, создаёт её из
-  учётных данных Basic запросом `POST` и удаляет запросом `DELETE`. Для HTTPS
-  браузерная сессия автоматически использует cookie с `Secure`.
-- `/api/export?from=<unix_second>&to=<unix_second>` — по аутентифицированному
-  запросу создаёт автономный HTML-отчёт для диапазона с включёнными границами
-  и возвращает его как вложение `.html`; принимает `GET`.
-- Остальные маршруты `/api/*` — ресурсы JSON и NDJSON для веб-интерфейса;
-  принимают `GET`.
-- `/mcp` — MCP через Streamable HTTP без серверных сессий; принимает `POST`.
-  Запросы со строкой параметров или заголовком `Origin` отклоняются. MCP читает
-  сохранённые данные Kronika. См.
-  [настройку MCP-клиентов](../../docs/mcp-clients.ru.md).
+## Process interface
+
+`-h`, `--help` и `--version` пишут в stdout и завершаются до конфигурации,
+обращения к хранилищу и запуска listener. Ошибки request, connection и export,
+а также timings export идут в stderr; у web нет log-level setting. `Ctrl+C`
+или `SIGTERM` завершает web. Ошибки startup/configuration дают ненулевой exit status.

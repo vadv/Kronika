@@ -14,8 +14,8 @@ The four cases use the recorded Linux/PostgreSQL demo workload on **5 September 
 | Operation | Resulting selection |
 | --- | --- |
 | Processes → row → Activity | PostgreSQL sample nearest to the cursor for this exact PID. |
-| Statements → Query ID / Open plans | Plans filtered by public Query ID at the same hour/cursor. |
-| Plans → Related statements | Statements filtered by the recorded related Query ID. |
+| Statements → Query ID / Open plans | Plans filtered by database, role and public Query ID at the same hour/cursor. |
+| Plans → Related statements | Statements filtered by database, role and recorded related Query ID. |
 | Tables → Indexes | Indexes for the selected recorded relation. |
 | Locks → row | Blocker PIDs, lock target and backend context in Inspector. |
 | Events → group → representative | Complete stored log occurrence and its timestamp. |
@@ -33,7 +33,7 @@ The four cases use the recorded Linux/PostgreSQL demo workload on **5 September 
 | Readout | Calculation / scope |
 | --- | --- |
 | Container CPU **66.8%** | `100 × used cgroup cores / effective cgroup CPU capacity`. |
-| Host CPU **17.5%** | Host busy CPU time divided by total CPU time. |
+| Host CPU **17.5%** | `100 × R(user+nice+system+irq+softirq+steal)/(H×N)`, with recorded ticks/s `H` and online CPU count `N`. |
 | Container memory **53.8%** | `100 × memory.current / effective memory limit`. |
 | Host memory **12.9%** | Host used memory share; operands in [Linux](metrics-linux.md). |
 | Throttled **34.9%** | Cgroup throttled time / observed wall interval × 100. |
@@ -83,7 +83,7 @@ where customer_id = $1 order by placed_at desc limit $2
 | **1.42 s/s** | `Δtotal_exec_time / (1000×Δt)`. Concurrent elapsed execution durations add. |
 | **11.9 ms/call** | `Δtotal_exec_time / Δcalls`; calculated before display rounding. |
 
-2. Select **Per call**, **I/O**, **Resources** and **Stability** to read the same pair's derived measures; [all operands](metrics-postgresql.md).
+2. Select **Per call**, **I/O** and **Resources** for interval measures. **Stability** shows recorded Mean/Min/Max/Stddev and their CV for the extension statistics period; [all operands](metrics-postgresql.md).
 3. Use **Open plans** and choose Plan ID **`1544266440`**. Inspector contains `Parallel Seq Scan on orders`, `Sort` on `placed_at DESC`, `Gather Merge`, `Limit`, `Workers Planned: 1` and `(customer_id = 4244)`.
 4. Use **Related statements** or browser Back. Open **Tables**, apply `schema:shop AND table_name:orders`, select **Access**, **Size and buffers**, then the relation's Indexes.
 

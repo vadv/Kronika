@@ -1,42 +1,53 @@
 # kronika-report
 
-[Русская версия](README.ru.md)
+[Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-Create one self-contained interactive HTML report from one finished standalone
-ZMS. Run the built binary directly; no web process or database is needed:
+`kronika-report` converts one finished standalone ZMS into an interactive HTML
+file. Sources: [command and argument validation](src/main.rs),
+[parameter help](src/help.rs).
 
 ```sh
-./kronika-report incident.zms incident.html
+kronika-report incident.zms incident.html
 ```
 
-The input may have any `.zms` basename. The command validates it, derives its
-internal segment identity from the ZMS catalog, builds the canonical IDX, and
-atomically replaces the HTML output. It creates no sidecars and needs no
-storage root or earlier segment. A first rate that needs an earlier sample
-remains `null`.
+## Parameters
 
-The HTML embeds the production React interface, the Rust `kronika-query` engine
-compiled to WebAssembly and running in the browser, the ZMS, and
-its canonical IDX. Open the file directly in an ordinary browser. Tables,
-heatmaps, search, and charts run locally without external assets or network
-requests. There is no authentication, MCP, live refresh, or second Export
-control in the offline interface.
+| Parameter | Default | Contract |
+| --- | --- | --- |
+| `INPUT.zms` | Required | Valid finished standalone ZMS, with any basename. |
+| `OUTPUT.html` | Required | Exact `.html` path; existing output is atomically replaced. Parent directory must exist and be writable. |
+| `--from MICROSECONDS` | First recorded microsecond | Inclusive beginning of visible navigation window. |
+| `--to-exclusive MICROSECONDS` | Last recorded microsecond + 1 | Exclusive end of visible navigation window. |
+| `-h`, `--help` | — | Parameter reference; exits before file access. |
+| `--version` | — | Binary version; exits before file access. |
+
+Explicit bounds are supplied together in this order, before both paths, and
+satisfy `0 < from < to-exclusive <= 9007199254740991`. Units are whole Unix
+microseconds. The visible interval is `[from, to-exclusive)`.
 
 ## Exact report interval
 
-An [already-sliced ZMS](../kronika-dump/README.md#slice) can retain nearby
-samples for interval calculations. Limit report navigation to the requested
-interval with `--from` and `--to-exclusive`, before the two file paths:
-
 ```sh
-./kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
+kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
   incident.zms incident.html
 ```
 
-This is exactly 2026-09-05 **19:00–20:00 UTC**, a half-open interval in Unix
-microseconds. Both bounds must be positive JavaScript-safe integers. Without
-them, navigation uses the entire ZMS time range. Nearby samples remain available
-for calculations but do not add hours to the report picker.
+This selects 5 September 2026, 19:00–20:00 UTC. A
+[sliced ZMS](../kronika-dump/README.md#slice) can retain nearby samples for
+interval calculations; explicit bounds restrict report navigation while those
+samples remain available to the query engine. A first rate requiring an earlier
+sample remains null when that sample is absent.
 
-The web interface's **Export** creates the same kind of HTML directly from the
-storage directory and passes the chosen interval automatically.
+## Output and execution
+
+The command validates the ZMS, derives its internal segment identity, builds
+the canonical IDX, and embeds the ZMS/IDX, production interface and
+Rust/WebAssembly query engine into HTML. The engine runs on the browser's
+main thread. Tables, heatmaps, search and charts execute locally; the interface
+has no authentication, MCP, live refresh or Export control.
+
+Temporary HTML is written beside `OUTPUT.html`; no IDX sidecar is created.
+Report configuration reads no environment variables. Success exits 0 with
+empty stdout; errors go to stderr and exit nonzero. `Ctrl+C` interrupts the
+conversion. Web's **Export** creates this HTML and supplies its visible bounds
+from the selected interval.

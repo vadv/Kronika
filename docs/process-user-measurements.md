@@ -1,18 +1,21 @@
 # Process user-reference measurements
 
-These measurements exercise the production journal encoder, append path,
-finished-segment writer, reader, and string dictionary. They were recorded on
-Linux 6.17.10-100.fc41.x86_64, an AMD Ryzen 9 8945HS, with an optimized build
-and a 100 Hz process CPU clock. Reproduce them with:
+[Русская версия](process-user-measurements.ru.md)
 
-```text
-CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu cargo test --release --ignore-rust-version -p kronika-collector process_user_references_report_production_storage_and_resource_costs -- --nocapture --test-threads=1
+Historical measurements of `os_user` and its `dict.strings` sections on Linux
+6.17.10-100.fc41.x86_64, AMD Ryzen 9 8945HS, optimized build, process CPU clock
+100 Hz. The measurement date, source revision, compiler version, repeated-run
+count, and variability were not recorded with these results.
+
+Current reproduction, using the repository toolchain:
+
+```bash
+CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu cargo test --release -p kronika-collector process_user_references_report_production_storage_and_resource_costs -- --nocapture --test-threads=1
 ```
 
-The local Rust compiler predates the workspace MSRV, so the measurement uses
-`--ignore-rust-version`; CI uses the repository toolchain. Each artifact below
-contains only `os_user` and its `dict.strings` data. Process rows are unchanged,
-so this is the feature's direct storage contribution.
+The test runs the three cases sequentially in one isolated child test process.
+Artifacts contain user references and their string dictionary; process rows are
+absent. Source: [`user_cost_artifact` and the measurement test](../bins/kronika-collector/src/tests/zms.rs).
 
 | Case | UID observations | Mapping rows | Raw `os_user` body | Raw dictionary body | Raw WAL | Finished `os_user` | Finished dictionary | Marginal finished bytes | Whole ZMS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -20,29 +23,31 @@ so this is the feature's direct storage contribution.
 | Several ordinary UIDs | 16 | 16 | 1,343 B | 648 B | 2,151 B | 694 B | 428 B | 1,186 B | 1,230 B |
 | Maximum distinct observed UIDs and names | 4,096 | 4,096 | 55,368 B | 43,684 B | 99,212 B | 42,414 B | 43,219 B | 85,697 B | 85,741 B |
 
-`Marginal finished bytes` includes the two catalog entries. Raw WAL and whole
-ZMS include their normal framing and file metadata. The shared-UID case proves
-that process count and repeated ticks do not increase mapping row count.
+`Marginal finished bytes = finished os_user body + finished dictionary body + 2 × catalog_entry_bytes`.
+For the shared UID: `517 + 245 + 2 × 32 = 826 B`; the complete ZMS is `870 B`.
+The 120,000 UID observations produce one mapping row. WAL and complete ZMS
+sizes include file framing and metadata.
 
-Capture took 131 microseconds for the 120,000 repeated observations, 5
-microseconds for 16 UIDs, and 1,240 microseconds at the 4,096-UID bound. Each
-was below one 10 ms CPU clock tick. Production encoding, append, completion,
-and read validation took 9,248, 7,017, and 10,630 microseconds respectively.
+| Measurement | Shared UID | 16 UIDs | 4,096 UIDs |
+|---|---:|---:|---:|
+| Capture elapsed, µs | 131 | 5 | 1,240 |
+| Writer elapsed, µs | 9,248 | 7,017 | 10,630 |
+| Test-process peak RSS, KiB | 15,832 | 17,048 | 20,496 |
+| Capture increase in peak RSS, KiB | 128 | 0 | 0 |
 
-The optimized test process reached 15,832 KiB, 17,048 KiB, and 20,496 KiB for
-the three sequential cases. The last value conservatively includes the test
-harness, earlier allocator state, and production Parquet writer, and remains
-below the collector's 25,600 KiB limit. Capture itself grew peak RSS by 128 KiB
-in the first case and did not raise the already established peak in the next
-two cases.
+Capture elapsed is the sum of `Instant::elapsed().as_micros()` around
+`prepare_rows` for each sample. Writer elapsed sums encoding and WAL append,
+plus final segment writing. Reader/dictionary validation runs after this timed
+writer block. The 100 Hz clock describes the separate process CPU-time counter;
+it does not set the resolution of `Instant` elapsed measurements.
 
-An unresolved UID emits no reference row. A malformed record is rejected while
-a separate valid record remains available. A source larger than 256 KiB is
-rejected as a whole. These cases add no user-reference WAL or ZMS bytes; process
-metrics continue without name enrichment. The same test validates recovery and
-forced rollover separately: each resulting segment contains exactly one
-mapping and a resolvable segment-local dictionary entry.
+Peak RSS is the test-process high-water mark, including the harness, allocator
+state retained from earlier cases, and Parquet writer. The 25,600 KiB value in
+the project design is the collector RSS budget, not a runtime memory cap.
 
-The results apply to the approved `/etc/passwd` source. NSS-only, LDAP, SSSD,
-and other dynamic identities remain numeric. A UID remap after its first use in
-an open segment is visible from the next segment, by design.
+The test asserts one row per recorded UID, no row for an unresolved UID, and
+rejection of an oversized passwd source. A malformed passwd line can coexist
+with a retained valid line. Separate recovery and forced-rollover tests check
+segment-local mappings and dictionary resolution. `/etc/passwd` is the recorded
+name source; identities available only through NSS, LDAP, or SSSD remain numeric.
+A UID mapping first recorded in a segment stays fixed for that segment.

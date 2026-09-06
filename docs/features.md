@@ -118,7 +118,7 @@ Sources: [event query and fields](../crates/kronika-query/src/events.rs), [group
 | `kronika_get_instance` | `settings`: `non_default` (default) or `all` | Latest host metadata and latest PostgreSQL settings with separate `host_as_of`/`settings_as_of`, returned count and scope. `non_default` removes only exact recorded `source="default"`. |
 | `kronika_rank_metrics` | `from`, `to`, nonempty `rankings:[{section,fields,top?}]`; 1–4 fields; top 1–500, default 25 | One independent ordered result per field, including repeats. Counter changes or gauge maxima, unit, identities, labels, detail refs, total/other and entity count. Each field has its own top limit. |
 | `kronika_find_processes` | Common finder inputs | Process rows. |
-| `kronika_find_postgresql_activity` | Common finder inputs | Backend states, waits and durations. |
+| `kronika_find_postgresql_activity` | Common finder inputs | Backend states, waits and start timestamps. |
 | `kronika_find_postgresql_locks` | Common finder inputs | Recorded locks and blocker context. |
 | `kronika_find_postgresql_vacuum` | Common finder inputs | Vacuum progress rows. |
 | `kronika_find_postgresql_databases` | Common finder inputs | Database statistics. |

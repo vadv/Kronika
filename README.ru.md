@@ -2,43 +2,23 @@
 
 [English version](README.md)
 
-**Вернитесь к замедлению Linux и PostgreSQL.** Kronika записывает процессы,
-CPU, память, хранилище, сетевую активность, ожидания backend, SQL, планы
-выполнения и события журналов. Откройте записанный час, найдите изменение
-активности и проследите историю процесса, backend, запроса или отношения.
+Kronika записывает метрики процессов и хоста Linux, статистику PostgreSQL,
+планы запросов и события логов PostgreSQL/PgBouncer. Collector пишет локальные
+журналы и сжатые сегменты; web показывает выбранный час, snapshots на момент
+курсора и историю объектов.
 
-![Записанный час: активность CPU процессов, временная шкала и таблица](docs/images/processes.png)
+![CPU-активность процессов и snapshot процессов за записанный час](docs/images/processes.png)
 
-*Реальный час искусственной нагрузки: 5 сентября 2026, 19:00–20:00 UTC.
-Heatmap помогает найти занятый интервал; таблица и Inspector показывают
-выбранный объект у курсора. [Открыть эту запись](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html)
-можно для знакомства с интерфейсом. Для записи своей машины установите Kronika ниже.*
+Запись синтетической нагрузки: 5 сентября 2026, 19:00–20:00 UTC.
+[Открыть интерактивный пример](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html).
 
-## Установить и запустить на своём хосте
+## Установка и запуск
 
-Скачайте **готовый статический архив для Linux** своей архитектуры по
-[руководству релизов](docs/releases.ru.md), затем проверьте, распакуйте и
-установите его по [инструкции](INSTALL.ru.md). Rust, Node.js, Docker и база
-данных не нужны.
+Можно установить [готовую сборку для Linux](INSTALL.ru.md) или
+[собрать из исходников](docs/build.ru.md). Архив содержит `kronika-collector`,
+`kronika-web`, `kronika-dump` и `kronika-report`.
 
-**Состояние релиза:** опубликованный v1.0.0 ещё не содержит `--version`,
-HTML-экспорт, `kronika-report` и `kronika-dump slice`. Текущий архив —
-**кандидат из CI для проверки**, с commit в имени; новый публичный релиз
-ещё не опубликован. Руководство указывает артефакты workflow и матрицу Linux.
-
-После распаковки проверьте и установите программы:
-
-```sh
-sha256sum --check SHA256SUMS
-for binary in kronika-collector kronika-web kronika-dump kronika-report; do
-  "./$binary" --version
-done
-sudo install -d -m 0755 /usr/local/bin
-sudo install -m 0755 kronika-collector kronika-web kronika-dump \
-  kronika-report /usr/local/bin/
-```
-
-Начните с **Linux без БД** на машине, которую хотите исследовать:
+После установки запустите сбор на наблюдаемой машине:
 
 ```sh
 sudo install -d -m 0700 /var/lib/kronika
@@ -46,7 +26,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-В другом терминале замените пароль и откройте web над той же записью:
+Во втором терминале запустите web с тем же каталогом:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -57,108 +37,73 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-web
 ```
 
-Откройте **<http://127.0.0.1:8080/>** и войдите. Сбор начинается сразу;
-web читает активный журнал, поэтому ждать готового сегмента не нужно.
-`sudo` даёт коллектору доступ к деталям процессов и локальным журналам;
-запуск web под той же учётной записью сохраняет закрытые права хранения.
-`Ctrl+C` останавливает любой из процессов, сохраняя запись.
+Откройте <http://127.0.0.1:8080/> и войдите. Web читает активный журнал во время
+сбора. `Ctrl+C` останавливает любой из процессов и сохраняет запись.
+[Настройка PostgreSQL](INSTALL.ru.md#5-postgresql) добавляет подключение для
+мониторинга; [units systemd](docs/services.ru.md) запускают обе программы как
+сервисы.
 
-Следующим шагом [подключите PostgreSQL](INSTALL.ru.md) через роль наблюдения
-и `KRONIKA_PG_DSNS`; sources web `3` означает OS + PostgreSQL.
-[Systemd](docs/services.ru.md) обеспечивает постоянный сбор с закрытыми
-конфигурационными файлами. [Сборка из исходников](docs/build.ru.md) и
-необязательное [Docker-демо](bins/kronika-demo/README.ru.md) описаны отдельно.
+## Данные и представления
 
-## Исследовать произошедшее
+| Область | Представления и значения | Справочник |
+| --- | --- | --- |
+| Processes | General, Tree, CPU, Memory, Disk; counters и rates по PID, команда и status; активность за час и история. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Host | CPU, memory, PSI, network, counters дисков, ёмкость filesystem, топология mounts/devices; CPU, memory, I/O и threads cgroup контейнера. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Сессии PostgreSQL | Overview, Activity, Locks, Vacuum; состояния backend, waits, цепочки блокировок, возраст транзакций/запросов и ход maintenance. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| SQL PostgreSQL | Statements и Plans; calls, время execution/planning, buffers, temporary I/O, WAL, записанные SQL и текст плана. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Объекты PostgreSQL | Databases, Tables, Indexes и settings; traffic, size, scans, changes, maintenance counters, возраст транзакций и группы по database/schema/tablespace. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Events | Группы событий логов PostgreSQL/PgBouncer, отдельные события, длительности и записанный контекст; metric marks. | [Представления и controls](docs/features.ru.md) |
+| Время и charts | Календарный час, курсор, выбор samples, интервальные вычисления, heatmaps, totals и percentiles. | [Время и вычисления](docs/metrics-time.ru.md) |
 
-Начните с **когда**: выберите час и точку на его временной шкале. Затем
-найдите **где**: ресурс с давлением, занятый процесс, ожидающий backend или
-затратный запрос. Откройте историю выбранной строки и переходите к связанным
-объектам. Kronika располагает наблюдения рядом; оператор решает, какие из них
-относятся к одной проблеме.
+[Представления и controls](docs/features.ru.md) определяют навигацию, lenses,
+grouping, поиск, сортировку, Inspector, charts и Export.
+[Руководство оператора](docs/operator-guide.ru.md) содержит четыре расчётных
+примера из записи выше.
 
-| Вопрос | Что открыть |
-| --- | --- |
-| Какой процесс занимал машину? | **Processes**: режимы Tree, CPU, память, дисковый I/O и общий; поиск процессов, активность часа, записанная команда и контекст. |
-| Какой ресурс был занят или задерживал работу? | **Host**: CPU, память, PSI, устройства, ёмкость mount, топология хранения и сеть. В контейнере первыми идут CPU, память, I/O и лимиты потоков собственного cgroup коллектора. |
-| Что тогда делал PostgreSQL? | **Overview**, **Activity**, **Databases**: активные сессии, ожидания, возраст транзакций, трафик баз, WAL, обслуживание и записанные настройки. |
-| Кто кого блокировал? | **Locks**: деревья holder/waiter, точные PID блокирующих, цели блокировок, SQL и записанный контекст backend. |
-| Какой SQL занял интервал? | **Statements**: выполнение, вызовы, буферы, строки, планирование и WAL; полный SQL и переходы к записанным планам. |
-| Как исполнялся запрос? | **Plans**: метрики каждого плана и записанный текст из `pg_store_plans`, связанные со Statements по Query ID. |
-| Участвовало ли обслуживание? | **Vacuum**: эпизоды, фазы, прогресс и сопоставленная стоимость процесса. **Tables / Indexes**: активность, изменения, обслуживание, размер, буферы, группировка по базе, схеме и tablespace. |
-| Что сообщили журналы? | **Events**: отметки метрик и группы событий PostgreSQL/PgBouncer; отдельные появления, запросы, отношения и держатели блокировок. |
+![Записанный statement, текст SQL и активность за интервал](docs/images/statements.png)
 
-[Руководство оператора](docs/operator-guide.ru.md) проводит по этим путям на
-конкретных примерах публичного часа. [Справочник видов и управления](docs/features.ru.md)
-объясняет все поверхности, режимы, группировки, графики, пороги и небольшие
-элементы: фиксированный час и курсор, Browser/UTC, обновление, Find,
-сортировку, шкалы heatmap, Total/Other, историю строки, Inspector,
-клавиатуру и мобильные представления.
+![Записанный план выполнения и связанный SQL](docs/images/plans.png)
 
-![Statements: выбранный реальный запрос, текст SQL и активность интервала](docs/images/statements.png)
-
-*Statements связывает занятый интервал с конкретным SQL. Метрики поступают
-из установленного поддерживаемого расширения `pg_stat_statements`.*
-
-![Plans: записанный текст плана рядом с SQL и таблицей планов](docs/images/plans.png)
-
-*Plans использует поддерживаемую установку `pg_store_plans`. В этой публичной
-записи Plans Activity завершается ошибкой: идентификатор плана повторяется
-в одной временной точке. Таблица и Inspector выбранного плана работают;
-руководство явно описывает ограничение и использует эти виды.*
-
-## Записать сейчас, разобраться позднее
+## Сбор и доступ
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-ru-dark.svg">
-  <img alt="Linux и PostgreSQL поступают в collector; web читает запись для браузера и MCP-клиентов" src="docs/images/architecture-ru.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="Linux и PostgreSQL передают данные collector; web читает запись для браузера и MCP-клиентов" src="docs/images/architecture.svg">
 </picture>
 
-Коллектор работает на наблюдаемом Linux-хосте и пишет локальные файлы.
-Web читает их для браузера и **MCP**: тот же процесс обслуживает
-`http://127.0.0.1:8080/mcp` с той же аутентификацией. Настройки клиента
-находятся в панели **AI** и [руководстве MCP](docs/mcp-clients.ru.md).
-Инструменты возвращают записанные рейтинги, строки, историю, определения и
-события; они не опрашивают работающий PostgreSQL или текущее состояние хоста.
+Интервалы сбора по умолчанию: процессы — 5 секунд, основные метрики Linux —
+10 секунд, метрики PostgreSQL — 30 секунд, relations — 300 секунд. Целевой
+объём локального хранения по умолчанию — 2 GiB.
+[Конфигурация collector](bins/kronika-collector/README.ru.md) определяет scope
+источников, интервалы, права и ротацию хранения.
 
-Коллектор рассчитан на **менее 25 MiB пикового RSS на обычном хосте** и
-записывает пик памяти в лог при каждой записи сегмента. Цель retention
-по умолчанию — **2 GiB**, включая журналы, сжатые записи и индексы.
-Один замер нагрузки примерно с 500 таблицами и 3000 индексами дал
-экстраполяцию **184 MB/день** готовых сжатых сегментов; это не универсальная
-оценка размера. [Настройки хранения](bins/kronika-collector/README.ru.md)
-объясняют замер и состав retention.
+Web обслуживает браузер, HTTP API и MCP на одном listener. Панель **AI**
+содержит параметры подключения MCP-клиентов. [MCP tools](docs/features.ru.md#mcp)
+читают snapshots, rankings, field definitions, events и полные row details.
 
-## Поделиться интервалом
+## Переносимый HTML-экспорт
 
-Нажмите **Export** в web, чтобы скачать выбранный интервал одним
-интерактивным HTML-файлом. Коллега откроет его прямо в браузере, без Kronika,
-сервера и сети. Таблицы, heatmap, поиск и графики остаются интерактивными.
-Файл содержит выбранные записанные данные; передавайте его с теми же
-ограничениями доступа, что и саму запись.
+**Export** сохраняет выбранный интервал вашей записи в один интерактивный
+HTML-файл. Он содержит интерфейс, данные и Rust/WebAssembly query engine,
+который выполняется на основном потоке браузера. Для открытия файла не нужны
+сервер или сетевое подключение.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-ru-dark.svg">
-  <img alt="Экспорт интервала из web или сохранённой записи в один интерактивный офлайн HTML-файл" src="docs/images/report-export-ru.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-dark.svg">
+  <img alt="Экспорт интервала из web или сохранённой записи в один интерактивный offline HTML-файл" src="docs/images/report-export.svg">
 </picture>
 
-Для сохранённых файлов и скриптов [dump](bins/kronika-dump/README.ru.md)
-показывает содержимое записи и вырезает интервал, а
-[report](bins/kronika-report/README.ru.md) создаёт HTML. Встроенный движок
-Rust/WebAssembly работает в **главном потоке браузера**. В статических
-отчётах нет MCP и живого обновления.
+[kronika-dump](bins/kronika-dump/README.ru.md) читает хранилище и извлекает
+интервал в ZMS; [kronika-report](bins/kronika-report/README.ru.md) преобразует
+отдельный ZMS в HTML. Offline reports предоставляют локальные таблицы, поиск,
+charts и heatmaps.
 
 ## Документация
 
-- **Начало:** [Установка](INSTALL.ru.md) · [Архивы Linux и проверенные системы](docs/releases.ru.md)
-  · [Systemd](docs/services.ru.md) · [Сборка из исходников](docs/build.ru.md)
-- **Работа:** [Исследовать час](docs/operator-guide.ru.md) · [Виды и управление](docs/features.ru.md)
-  · [MCP-клиенты](docs/mcp-clients.ru.md)
-- **Настройка:** [Collector](bins/kronika-collector/README.ru.md) · [Web](bins/kronika-web/README.ru.md)
-- **Утилиты:** [Dump](bins/kronika-dump/README.ru.md)
-  · [HTML-отчёты](bins/kronika-report/README.ru.md)
-- **Записанные поля:** [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md)
-  · [События PostgreSQL](docs/type-registry/postgresql.md) · [События PgBouncer](docs/type-registry/pgbouncer.md)
-- **Устройство:** [Принципы и контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md)
+- Настройка: [Установка](INSTALL.ru.md) · [Архивы и CI](docs/releases.ru.md) · [Сервисы](docs/services.ru.md) · [Сборка](docs/build.ru.md)
+- Справочники: [Controls](docs/features.ru.md) · [Время](docs/metrics-time.ru.md) · [Linux](docs/metrics-linux.ru.md) · [PostgreSQL](docs/metrics-postgresql.ru.md) · [MCP](docs/mcp-clients.ru.md)
+- Программы: [Collector](bins/kronika-collector/README.ru.md) · [Web](bins/kronika-web/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md) · [Report](bins/kronika-report/README.ru.md)
+- Записанные поля: [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) · [События PostgreSQL](docs/type-registry/postgresql.md) · [События PgBouncer](docs/type-registry/pgbouncer.md)
+- Устройство: [Контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md) · [Demo для разработки](bins/kronika-demo/README.ru.md)
 
-Kronika распространяется по [лицензии MIT](LICENSE).
+[Лицензия MIT](LICENSE).

@@ -118,7 +118,7 @@ Digest источника/типа фильтрует группы; Search со�
 | `kronika_get_instance` | `settings`: `non_default` (по умолчанию) или `all` | Последние host metadata и PostgreSQL settings с отдельными `host_as_of`/`settings_as_of`, числом строк и scope. `non_default` удаляет только точный записанный `source="default"`. |
 | `kronika_rank_metrics` | `from`, `to`, непустой `rankings:[{section,fields,top?}]`; 1–4 поля; top 1–500, по умолчанию 25 | Отдельный упорядоченный результат на поле, включая повторы. Разности counters или максимумы gauges, unit, identities, labels, detail refs, total/other и число объектов. У каждого поля свой top limit. |
 | `kronika_find_processes` | Общие входы finder | Строки процессов. |
-| `kronika_find_postgresql_activity` | Общие входы finder | Состояния backend, waits и длительности. |
+| `kronika_find_postgresql_activity` | Общие входы finder | Состояния backend, waits и timestamps начала. |
 | `kronika_find_postgresql_locks` | Общие входы finder | Записанные locks и контекст blockers. |
 | `kronika_find_postgresql_vacuum` | Общие входы finder | Строки progress Vacuum. |
 | `kronika_find_postgresql_databases` | Общие входы finder | Статистика database. |
