@@ -61,7 +61,7 @@ ZMS temporaries, orphan indexes, затем старейшие готовые с
 | Переменная | По умолчанию | Значение |
 | --- | --- | --- |
 | `KRONIKA_PG_DSNS` | Не задана | PostgreSQL keyword DSNs или URLs через `;`. Первый DSN включает метрики сервера; каждый DSN обнаруживает локальные пути/формат логов. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Не задана | Целое `1..4294967295`, effective CPU capacity первого PostgreSQL target. Требует `KRONIKA_PG_DSNS`; записывается как operand для PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Не задана | Целое `1..4294967295`: ёмкость CPU, доступная первому инстансу PostgreSQL, в том числе на удалённом сервере или в отдельном cgroup. Требует `KRONIKA_PG_DSNS`; записывается для расчёта PostgreSQL health. |
 | `KRONIKA_PG_LOGS` | Не задана | Локальные PostgreSQL paths или globs через `;`. Только последний компонент поддерживает `*` и `?`. |
 | `KRONIKA_PGBOUNCER_DSNS` | Не задана | Admin-console DSNs (`dbname=pgbouncer`) через `;` для `SHOW CONFIG`/`logfile`; account входит в `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Не задана | Локальные PgBouncer paths или final-component globs через `;`. |

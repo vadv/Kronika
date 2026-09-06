@@ -61,7 +61,7 @@ times. A per-source `0` reads on every timer cycle.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KRONIKA_PG_DSNS` | Unset | Semicolon-separated PostgreSQL keyword DSNs or URLs. First DSN enables server metrics; every DSN discovers local log paths/format. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`, effective CPU capacity of the first PostgreSQL target. Requires `KRONIKA_PG_DSNS`; recorded as the operand for PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`, CPU capacity available to the first PostgreSQL target, including a remote server or a separate cgroup. Requires `KRONIKA_PG_DSNS`; recorded as the operand for PostgreSQL health. |
 | `KRONIKA_PG_LOGS` | Unset | Semicolon-separated local PostgreSQL paths or globs. Only the final component supports `*` and `?`. |
 | `KRONIKA_PGBOUNCER_DSNS` | Unset | Semicolon-separated admin-console DSNs (`dbname=pgbouncer`) for `SHOW CONFIG`/`logfile`; account belongs to `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Unset | Semicolon-separated local PgBouncer paths or final-component globs. |

@@ -117,6 +117,12 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | Transport | Native client uses `NoTls`; direct PostgreSQL and PgBouncer session pooling are supported. Metric sessions retain `SET` state. |
 | Log paths | Discovery returns paths on the collector host. Mounted logs can be named with `KRONIKA_PG_LOGS`; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
 
+PostgreSQL can run on another host or in a separate cgroup. Set
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS` to the CPU capacity available to that
+PostgreSQL instance. For a collector with 2 CPUs monitoring PostgreSQL with
+8 CPUs, the value is `8`. The collector's OS and cgroup metrics describe its
+own resource scope.
+
 Restart web with `KRONIKA_WEB_SOURCES=3` to mark both OS and PostgreSQL as
 configured in its catalog. Collection is enabled by collector DSNs; web's
 bitset supplies catalog metadata. User and password remain required with

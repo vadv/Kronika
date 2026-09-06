@@ -117,6 +117,12 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | Transport | Native client использует `NoTls`; поддерживаются прямое подключение к PostgreSQL и PgBouncer session pooling. Metric sessions сохраняют состояние `SET`. |
 | Пути логов | Обнаружение возвращает пути на машине collector. Смонтированные логи задаются через `KRONIKA_PG_LOGS`; PgBouncer использует `KRONIKA_PGBOUNCER_DSNS` или `KRONIKA_PGBOUNCER_LOGS`. |
 
+PostgreSQL может работать на другой машине или в отдельном cgroup.
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS` задаёт ёмкость CPU, доступную этому
+инстансу PostgreSQL. Если у коллектора 2 CPU, а у наблюдаемого PostgreSQL
+8 CPU, значение параметра — `8`. Метрики OS и cgroup коллектора описывают
+его собственные ресурсы.
+
 Перезапустите web с `KRONIKA_WEB_SOURCES=3`, чтобы отметить OS и PostgreSQL как
 настроенные в его каталоге. Сбор включают DSNs collector; bitset web задаёт
 метаданные каталога. User и password обязательны и при

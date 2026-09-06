@@ -33,9 +33,10 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
       session pooling. Transaction/statement pooling and TLS are unsupported.
   KRONIKA_POSTGRES_EFFECTIVE_CPUS
       Positive whole CPU count (1..4294967295) available to the monitored
-      PostgreSQL server. Requires KRONIKA_PG_DSNS. Health compares the active
-      backend count with twice this recorded capacity. An unset capacity gives
-      null PostgreSQL health.
+      PostgreSQL server, including a remote host or a separate cgroup.
+      Requires KRONIKA_PG_DSNS. Health compares the active backend count with
+      twice this recorded capacity. An unset capacity gives null PostgreSQL
+      health. The collector's CPU count does not supply this value.
   KRONIKA_PG_LOGS
       Semicolon-separated local PostgreSQL log paths or globs. Example:
       '/var/log/postgresql/*.csv;/srv/pg-logs/*.json'. Only the last path

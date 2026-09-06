@@ -123,6 +123,11 @@ Let `A` be the count of recorded `pg_stat_activity` rows whose state is exactly 
 
 Capacity comes from `KRONIKA_POSTGRES_EFFECTIVE_CPUS`, recorded by the collector; it has no inferred host/container fallback. `KRONIKA_PG_DSNS` enables PostgreSQL collection. Missing active-count input or missing/zero capacity gives null. Conflicting activity layouts at the same timestamp give an unknown count.
 
+`C` belongs to the monitored PostgreSQL instance. A remote server or a separate
+cgroup can have a different capacity from the collector. The value recorded
+for PostgreSQL is used unchanged when reading WAL, ZMS or an HTML report;
+the CPU count of the machine opening the recording does not enter this formula.
+
 At each OS health timestamp, overall health uses the latest PostgreSQL health at or before it, no older than recorded `postgresql_interval_seconds`:
 
 `Overall health = max(0, OS health − PG penalty)`.

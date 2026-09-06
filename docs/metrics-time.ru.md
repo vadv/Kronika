@@ -123,6 +123,12 @@ Health — целочисленные проценты. Пусть `E = t₁ −
 
 Capacity берётся из `KRONIKA_POSTGRES_EFFECTIVE_CPUS` и записывается collector; вычисляемого host/container fallback нет. `KRONIKA_PG_DSNS` включает PostgreSQL collection. Отсутствующий active count или отсутствующая/нулевая capacity дают null. Конфликтующие activity layouts на одном timestamp дают unknown count.
 
+`C` относится к наблюдаемому инстансу PostgreSQL. У удалённого сервера или
+отдельного cgroup ёмкость CPU может отличаться от ёмкости коллектора.
+Записанное для PostgreSQL значение одинаково используется при чтении WAL,
+ZMS и HTML-отчёта; число CPU машины, на которой открыта запись, в формулу
+не входит.
+
 На каждом OS health timestamp overall health использует последний PostgreSQL health не позже него, возрастом не более записанного `postgresql_interval_seconds`:
 
 `Overall health = max(0, OS health − PG penalty)`.
