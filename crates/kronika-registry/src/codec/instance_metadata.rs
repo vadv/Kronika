@@ -81,7 +81,7 @@ pub struct InstanceMetadata {
     /// Effective cadence of the `PostgreSQL` snapshot source, seconds.
     #[column(l, unit = seconds)]
     pub postgresql_interval_seconds: u64,
-    /// CPU capacity available to the monitored `PostgreSQL` server.
+    /// Explicit CPU capacity override for the monitored `PostgreSQL` server.
     #[column(l)]
     pub postgresql_effective_cpus: Option<u32>,
 }

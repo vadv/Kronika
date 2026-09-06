@@ -8,7 +8,7 @@ use kronika_format::Crc32c;
 use crate::decode::u32_at;
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
-/// Magic for the derived-index format shipped in Kronika 1.0.0.
+/// Magic for the current derived-index format.
 pub const MAGIC: [u8; 8] = *b"KRNIDX6\0";
 /// Bytes before the table: magic, entry count, checksum.
 pub const HEADER_LEN: usize = 16;

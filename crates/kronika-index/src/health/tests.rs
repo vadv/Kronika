@@ -77,29 +77,29 @@ fn a_long_interval_does_not_overflow_the_multiplication() {
 
 #[test]
 fn two_service_slots_per_cpu_set_the_postgres_boundary() {
-    assert_eq!(postgres_penalty(0, 2), Some(0));
-    assert_eq!(postgres_penalty(4, 2), Some(0));
-    assert_eq!(postgres_penalty(5, 2), Some(20));
-    assert_eq!(postgres_penalty(8, 2), Some(50));
-    assert_eq!(postgres_penalty(40, 2), Some(90));
+    assert_eq!(postgres_penalty(0, 2.0), Some(0));
+    assert_eq!(postgres_penalty(4, 2.0), Some(0));
+    assert_eq!(postgres_penalty(5, 2.0), Some(20));
+    assert_eq!(postgres_penalty(8, 2.0), Some(50));
+    assert_eq!(postgres_penalty(40, 2.0), Some(90));
 }
 
 #[test]
 fn postgres_pressure_rounds_to_the_nearest_percent() {
-    assert_eq!(postgres_penalty(3, 1), Some(33));
-    assert_eq!(postgres_penalty(6, 2), Some(33));
-    assert_eq!(postgres_penalty(7, 2), Some(43));
+    assert_eq!(postgres_penalty(3, 1.0), Some(33));
+    assert_eq!(postgres_penalty(6, 2.0), Some(33));
+    assert_eq!(postgres_penalty(7, 2.0), Some(43));
 }
 
 #[test]
 fn zero_postgres_capacity_is_unknown() {
-    assert_eq!(postgres_penalty(0, 0), None);
-    assert_eq!(postgres_penalty(u32::MAX, 0), None);
+    assert_eq!(postgres_penalty(0, 0.0), None);
+    assert_eq!(postgres_penalty(u32::MAX, 0.0), None);
 }
 
 #[test]
 fn very_large_postgres_capacity_does_not_overflow() {
-    assert_eq!(postgres_penalty(u32::MAX, u32::MAX), Some(0));
+    assert_eq!(postgres_penalty(u32::MAX, f64::from(u32::MAX)), Some(0));
 }
 
 #[test]
@@ -121,4 +121,28 @@ fn disabled_sources_do_not_reduce_health() {
 fn enabled_unknown_sources_make_overall_health_unknown() {
     assert_eq!(overall_health(Some(100), SourcePenalty::Unknown), None);
     assert_eq!(overall_health(None, SourcePenalty::Disabled), None);
+}
+
+#[test]
+fn fractional_postgres_capacity_keeps_the_recorded_service_slots() {
+    assert_eq!(postgres_penalty(3, 1.5), Some(0));
+    assert_eq!(postgres_penalty(4, 1.5), Some(25));
+    for capacity in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        assert_eq!(postgres_penalty(4, capacity), None);
+    }
+}
+
+#[test]
+fn integer_postgres_capacity_keeps_existing_rounding() {
+    for cpus in 1..=64_u32 {
+        for active in 1..=2048_u32 {
+            let active64 = u64::from(active);
+            let waiting = active64.saturating_sub(2 * u64::from(cpus));
+            let old = (100 * waiting + active64 / 2) / active64;
+            assert_eq!(
+                postgres_penalty(active, f64::from(cpus)).map(u64::from),
+                Some(old)
+            );
+        }
+    }
 }

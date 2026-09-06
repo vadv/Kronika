@@ -7,6 +7,7 @@ use kronika_reader::{Cell, ReaderError, Resolved, Segment};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use kronika_registry::instance_metadata::Environment;
 
+use crate::cpu_capacity::RecordedCpuCapacity;
 use crate::detect::{FindingBuilder, finding_layout};
 use crate::file::Index;
 use crate::health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
@@ -35,6 +36,14 @@ const CONTAINER: u32 = 3;
 struct HealthSeed {
     os: Option<StallSnapshot>,
     postgres: Option<HealthPoint>,
+    capacity: Option<CapacitySeed>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CapacitySeed {
+    identity: SnapshotIdentity,
+    timestamp: i64,
+    cpus: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +80,14 @@ struct MetadataProjection {
 }
 
 impl MetadataProjection {
+    const fn identity(self) -> SnapshotIdentity {
+        SnapshotIdentity {
+            environment: self.environment,
+            boot_id: self.boot_id,
+            boot_time: self.boot_time,
+        }
+    }
+
     fn postgres_cpus(self) -> Option<u32> {
         if !self.ambiguous && self.postgresql_enabled == Some(true) {
             match self.postgresql_effective_cpus {
@@ -154,7 +171,9 @@ fn predecessor_health_seed(
         .iter()
         .any(|key| matches!(key.kind, SeriesKind::OsHealth | SeriesKind::OverallHealth));
     let needs_postgres = requested.contains(&SeriesKey::OVERALL_HEALTH);
-    let Some(predecessor) = predecessor.filter(|_| needs_os || needs_postgres) else {
+    let needs_capacity = requested.iter().copied().any(needs_postgres_capacity);
+    let Some(predecessor) = predecessor.filter(|_| needs_os || needs_postgres || needs_capacity)
+    else {
         return Ok(HealthSeed::default());
     };
     let has_psi = predecessor
@@ -165,12 +184,26 @@ fn predecessor_health_seed(
         .sections()
         .iter()
         .any(|section| section.type_id == INSTANCE_METADATA_TYPE_ID);
-    if !(needs_os && has_psi || needs_postgres && has_metadata) {
+    if !(needs_os && has_psi || (needs_postgres || needs_capacity) && has_metadata) {
         return Ok(HealthSeed::default());
     }
 
     let segment = reader.open_segment(predecessor)?;
     let metadata_projection = metadata_projection(&segment)?;
+    let capacity = postgres_capacity(
+        &segment,
+        metadata_projection.filter(|_| needs_capacity),
+        None,
+    )?;
+    let capacity_seed = metadata_projection.and_then(|projection| {
+        capacity
+            .last_snapshot()
+            .map(|(timestamp, cpus)| CapacitySeed {
+                identity: projection.identity(),
+                timestamp,
+                cpus,
+            })
+    });
     let os = if needs_os && has_psi {
         last_stall_snapshot(&segment, metadata_projection.as_ref())?
     } else {
@@ -189,7 +222,7 @@ fn predecessor_health_seed(
                     active_backend_points(&active_backend_samples(&segment, type_id)?),
                 );
             }
-            postgres_health_points(&metadata, &combined_active_points(&activity))
+            postgres_health_points(&metadata, &combined_active_points(&activity), &capacity)
                 .and_then(|points| points.last().copied())
         } else {
             None
@@ -197,7 +230,11 @@ fn predecessor_health_seed(
     } else {
         None
     };
-    Ok(HealthSeed { os, postgres })
+    Ok(HealthSeed {
+        os,
+        postgres,
+        capacity: capacity_seed,
+    })
 }
 
 /// Return the complete current allowlist for a captured segment.
@@ -253,7 +290,7 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
     let finder = FindingBuilder::new(segment, requested);
     let mut active_samples = BTreeMap::new();
-    let mut postgres_cpus = None;
+    let mut postgres_cpus = RecordedCpuCapacity::default();
     let mut index = build_selected_series(
         segment,
         requested,
@@ -263,7 +300,7 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
     )?;
     index
         .blocks
-        .extend(finder.finish(segment, &index, &active_samples, postgres_cpus)?);
+        .extend(finder.finish(segment, &index, &active_samples, &postgres_cpus)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
@@ -319,7 +356,7 @@ pub(crate) fn build_selected_from_reader(
         finder.observe_prior(&prior)?;
     }
     let mut active_samples = BTreeMap::new();
-    let mut postgres_cpus = None;
+    let mut postgres_cpus = RecordedCpuCapacity::default();
     let mut index = build_selected_series(
         segment,
         requested,
@@ -329,9 +366,34 @@ pub(crate) fn build_selected_from_reader(
     )?;
     index
         .blocks
-        .extend(finder.finish(segment, &index, &active_samples, postgres_cpus)?);
+        .extend(finder.finish(segment, &index, &active_samples, &postgres_cpus)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
+}
+
+fn postgres_capacity(
+    segment: &Segment,
+    projection: Option<MetadataProjection>,
+    seed: Option<CapacitySeed>,
+) -> Result<RecordedCpuCapacity, ReaderError> {
+    let Some(projection) = projection
+        .filter(|projection| !projection.ambiguous && projection.postgresql_enabled == Some(true))
+    else {
+        return Ok(RecordedCpuCapacity::default());
+    };
+    let mut capacity =
+        RecordedCpuCapacity::read(segment, projection.environment, projection.postgres_cpus())?;
+    if let Some(seed) = seed.filter(|seed| seed.identity == projection.identity()) {
+        capacity.seed(seed.timestamp, seed.cpus);
+    }
+    Ok(capacity)
+}
+
+fn needs_postgres_capacity(key: SeriesKey) -> bool {
+    matches!(
+        key.kind,
+        SeriesKind::PostgresHealth | SeriesKind::OverallHealth
+    ) || key.kind == SeriesKind::Findings && pg_activity_layout(key.type_id)
 }
 
 fn build_selected_series(
@@ -339,7 +401,7 @@ fn build_selected_series(
     requested: &[SeriesKey],
     health_seed: HealthSeed,
     active_samples: &mut BTreeMap<u32, Vec<ActiveBackendSample>>,
-    postgres_cpus: &mut Option<u32>,
+    postgres_cpus: &mut RecordedCpuCapacity,
 ) -> Result<Index, BuildError> {
     let mut requested = requested.to_vec();
     requested.sort_unstable();
@@ -359,7 +421,11 @@ fn build_selected_series(
         .then(|| metadata_projection(segment))
         .transpose()?
         .flatten();
-    *postgres_cpus = metadata_projection.and_then(MetadataProjection::postgres_cpus);
+    *postgres_cpus = postgres_capacity(
+        segment,
+        metadata_projection.filter(|_| requested.iter().copied().any(needs_postgres_capacity)),
+        health_seed.capacity,
+    )?;
     let metadata = wants_health
         .then(|| health_metadata(segment, metadata_projection.as_ref()))
         .transpose()?;
@@ -368,12 +434,8 @@ fn build_selected_series(
     } else {
         Vec::new()
     };
-    let needs_pg_health = requested.iter().any(|key| {
-        matches!(
-            key.kind,
-            SeriesKind::PostgresHealth | SeriesKind::OverallHealth
-        )
-    });
+    let needs_pg_health = requested.contains(&SeriesKey::POSTGRES_HEALTH)
+        || requested.contains(&SeriesKey::OVERALL_HEALTH);
     let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
     for type_id in segment
         .type_ids()
@@ -400,7 +462,7 @@ fn build_selected_series(
     let combined_active = combined_active_points(&activity);
     let postgres_points = metadata
         .as_ref()
-        .and_then(|metadata| postgres_health_points(metadata, &combined_active));
+        .and_then(|metadata| postgres_health_points(metadata, &combined_active, postgres_cpus));
 
     for key in requested {
         match key.kind {
@@ -448,7 +510,6 @@ fn build_selected_series(
 struct HealthMetadata {
     timestamp: i64,
     postgresql_enabled: Option<bool>,
-    postgresql_effective_cpus: Option<u32>,
     postgresql_interval_seconds: u64,
 }
 
@@ -460,7 +521,6 @@ const fn health_metadata(
         return Ok(HealthMetadata {
             timestamp: segment.min_ts(),
             postgresql_enabled: None,
-            postgresql_effective_cpus: None,
             postgresql_interval_seconds: 0,
         });
     };
@@ -468,7 +528,6 @@ const fn health_metadata(
         return Ok(HealthMetadata {
             timestamp: segment.min_ts(),
             postgresql_enabled: None,
-            postgresql_effective_cpus: None,
             postgresql_interval_seconds: 0,
         });
     }
@@ -482,7 +541,6 @@ const fn health_metadata(
     Ok(HealthMetadata {
         timestamp,
         postgresql_enabled: Some(postgresql_enabled),
-        postgresql_effective_cpus: projection.postgresql_effective_cpus,
         postgresql_interval_seconds,
     })
 }
@@ -595,6 +653,7 @@ fn combined_active_points(
 fn postgres_health_points(
     metadata: &HealthMetadata,
     active: &[(i64, Option<u32>)],
+    capacity: &RecordedCpuCapacity,
 ) -> Option<Vec<HealthPoint>> {
     if metadata.postgresql_enabled != Some(true) {
         return None;
@@ -611,7 +670,7 @@ fn postgres_health_points(
             .map(|(timestamp, active)| HealthPoint {
                 timestamp: *timestamp,
                 value: active
-                    .zip(metadata.postgresql_effective_cpus)
+                    .zip(capacity.at(*timestamp))
                     .and_then(|(active, cpus)| postgres_penalty(active, cpus))
                     .map(|penalty| 100_u8.saturating_sub(penalty)),
             })
@@ -969,11 +1028,7 @@ fn stall_snapshot_identity(
     mut keep_going: impl FnMut() -> bool,
 ) -> Result<Option<SnapshotIdentity>, ReaderError> {
     if let Some(metadata) = metadata {
-        return Ok(Some(SnapshotIdentity {
-            environment: metadata.environment,
-            boot_id: metadata.boot_id,
-            boot_time: metadata.boot_time,
-        }));
+        return Ok(Some(metadata.identity()));
     }
     let mut running = true;
     let mut identity = SnapshotIdentity {

@@ -4,6 +4,7 @@ use super::{
     HealthMetadata, MetadataProjection, combined_active_points, overall_points,
     postgres_health_points, transaction_rate,
 };
+use crate::cpu_capacity::RecordedCpuCapacity;
 use crate::{ActiveBackendPoint, HealthPoint};
 
 #[test]
@@ -22,7 +23,6 @@ fn metadata() -> HealthMetadata {
     HealthMetadata {
         timestamp: 1,
         postgresql_enabled: Some(true),
-        postgresql_effective_cpus: Some(2),
         postgresql_interval_seconds: 30,
     }
 }
@@ -63,9 +63,12 @@ fn shared_metadata_projection_only_exposes_valid_postgres_capacity() {
 
 #[test]
 fn postgres_health_starts_above_two_active_backends_per_cpu() {
-    let points =
-        postgres_health_points(&metadata(), &[(10, Some(4)), (20, Some(5)), (30, Some(8))])
-            .expect("enabled PostgreSQL has a component");
+    let points = postgres_health_points(
+        &metadata(),
+        &[(10, Some(4)), (20, Some(5)), (30, Some(8))],
+        &RecordedCpuCapacity::fixed(2.0),
+    )
+    .expect("enabled PostgreSQL has a component");
     assert_eq!(
         points,
         [
@@ -87,17 +90,16 @@ fn postgres_health_starts_above_two_active_backends_per_cpu() {
 
 #[test]
 fn missing_capacity_or_snapshot_is_explicitly_unknown() {
-    let mut facts = metadata();
-    facts.postgresql_effective_cpus = None;
+    let facts = metadata();
     assert_eq!(
-        postgres_health_points(&facts, &[(10, Some(4))]),
+        postgres_health_points(&facts, &[(10, Some(4))], &RecordedCpuCapacity::default()),
         Some(vec![HealthPoint {
             timestamp: 10,
             value: None,
         }])
     );
     assert_eq!(
-        postgres_health_points(&metadata(), &[]),
+        postgres_health_points(&metadata(), &[], &RecordedCpuCapacity::fixed(2.0)),
         Some(vec![HealthPoint {
             timestamp: 1,
             value: None,

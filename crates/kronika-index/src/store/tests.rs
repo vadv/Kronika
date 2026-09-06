@@ -1384,6 +1384,90 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     );
 }
 
+#[test]
+fn manual_only_idx_remains_valid_until_disposable_cache_is_rebuilt() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let mut interner = Interner::new(DictLimits::default());
+    let active = StrId(interner.intern(b"active").expect("active state").get());
+    let dictionary = dict::encode(interner.window()).expect("dictionary");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(InstanceMetadata {
+            ts: Ts(SEGMENT_ID),
+            hostname: active,
+            kernel_version: active,
+            environment: 0,
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4_096,
+            boot_id: active,
+            btime: Ts(1),
+            postgresql_enabled: true,
+            postgresql_interval_seconds: 30,
+            postgresql_effective_cpus: None,
+        })
+        .expect("metadata");
+    for cpu_id in -1..8 {
+        buffers
+            .push(cpu_row(SEGMENT_ID, cpu_id, 0, 0, 0))
+            .expect("CPU snapshot");
+    }
+    for pid in 1..=20 {
+        buffers
+            .push(activity_row(SEGMENT_ID + 1, pid, active, active))
+            .expect("activity");
+    }
+    let part = buffers.flush(&dictionary).expect("flush").expect("part");
+    journal.append(address().id, &part).expect("append");
+    write_segment(&journal, &writer, address()).expect("finish");
+    journal.reset().expect("reset");
+    let reader = Reader::open(directory.path()).expect("reader");
+    let finished = only_segment(&reader, SegmentKind::Finished);
+    let health = resource(directory.path(), &reader, &finished, "health").expect("health");
+    assert_eq!(health_values(&health, "postgres"), [Some(80)]);
+    let path = path_of(&zms_path(directory.path(), &finished)).expect("index path");
+    let canonical = std::fs::read(&path).expect("canonical bytes");
+    let mut stale = crate::Index::decode(&canonical).expect("decode current format");
+    for block in &mut stale.blocks {
+        match block {
+            SeriesBlock::PostgresHealth(points) => {
+                for point in points {
+                    point.value = None;
+                }
+            }
+            SeriesBlock::Findings(block) if block.type_id == 1_001_004 => {
+                block.findings.clear();
+                block.total_hits = 0;
+            }
+            _ => {}
+        }
+    }
+    let stale = stale.encode().expect("valid old calculation");
+    crate::Index::decode(&stale).expect("old calculation remains valid in the current format");
+    assert_ne!(stale, canonical);
+    for logical_name in ["health", "pg_stat_activity"] {
+        std::fs::write(&path, &stale).expect("persist old calculation");
+        let reused = resource(directory.path(), &reader, &finished, logical_name)
+            .expect("reuse current-format cache");
+        assert!(reused.persisted);
+        assert_eq!(std::fs::read(&path).expect("unchanged old cache"), stale);
+        std::fs::remove_file(&path).expect("remove disposable fixture cache");
+        let rebuilt = resource(directory.path(), &reader, &finished, logical_name)
+            .expect("recompute missing derived cache");
+        assert!(rebuilt.persisted);
+        assert_eq!(std::fs::read(&path).expect("rebuilt bytes"), canonical);
+        assert_eq!(
+            resource(directory.path(), &reader, &finished, logical_name)
+                .expect("reuse matching calculation"),
+            rebuilt
+        );
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "one assertion checks one exact stored finding"
