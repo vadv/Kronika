@@ -67,7 +67,6 @@ make fmt-check lint test
 `lint` runs repository/Mordant Dylint rules and workspace Clippy with warnings
 denied. [Dylint setup](../scripts/check-dylints.sh) defines its dependencies.
 `test` runs non-BDD unit and integration tests. BDD runs in CI.
-The [agent contract](../AGENTS.md) defines review requirements.
 
 ## Browser assets
 

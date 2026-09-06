@@ -89,8 +89,6 @@ where customer_id = $1 order by placed_at desc limit $2
 
 ![Stored plan text and related query](images/plans.png)
 
-In this recording, Plans Activity fails with duplicate recorded plan identities from `pg_store_plans`; the Plans table and selected-plan Inspector above work.
-
 ## 4. Blocker chain and backend state
 
 [Locks, 19:00:33 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788634833931637&view=pg.locks)

@@ -89,8 +89,6 @@ where customer_id = $1 order by placed_at desc limit $2
 
 ![Записанный plan text и связанный query](images/plans.png)
 
-В этой записи Plans Activity завершается ошибкой из-за повторяющихся записанных identities `pg_store_plans`; таблица Plans и показанный Inspector выбранного plan работают.
-
 ## 4. Цепочка blockers и состояние backend
 
 [Locks, 19:00:33 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788634833931637&view=pg.locks)

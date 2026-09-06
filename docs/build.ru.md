@@ -66,7 +66,6 @@ make fmt-check lint test
 `lint` запускает repository/Mordant Dylint rules и workspace Clippy с запретом
 warnings. [Настройка Dylint](../scripts/check-dylints.sh) определяет зависимости.
 `test` запускает unit и integration tests без BDD. BDD выполняется в CI.
-[Контракт агента](../AGENTS.md) определяет требования review.
 
 ## Browser assets
 
