@@ -7,10 +7,6 @@ standalone ZMS. The storage root must be a real directory; a standalone `.zms`
 file or symlink is not a storage root. Run from the built binary's directory,
 or use its full path.
 
-`kronika-dump --version` prints `kronika-dump 1.0.0` and exits
-without reading configuration, accessing storage, or starting services.
-It needs no root access; pass `--version` as the only argument.
-
 ## Inspect
 
 ```sh

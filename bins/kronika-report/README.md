@@ -9,10 +9,6 @@ ZMS. Run the built binary directly; no web process or database is needed:
 ./kronika-report incident.zms incident.html
 ```
 
-`kronika-report --version` prints `kronika-report 1.0.0` and exits
-without reading configuration, accessing storage, or starting services.
-It needs no root access; pass `--version` as the only argument.
-
 The input may have any `.zms` basename. The command validates it, derives its
 internal segment identity from the ZMS catalog, builds the canonical IDX, and
 atomically replaces the HTML output. It creates no sidecars and needs no

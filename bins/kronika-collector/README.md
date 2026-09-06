@@ -6,10 +6,6 @@
 PostgreSQL and PgBouncer logs, and writes Kronika segments. Environment
 variables provide its configuration.
 
-`kronika-collector --version` prints `kronika-collector 1.0.0` and exits
-without reading configuration, accessing storage, or starting services.
-It needs no root access; pass `--version` as the only argument.
-
 ## Configuration
 
 Every variable below is read and parsed once, before the first collection. A
