@@ -49,30 +49,26 @@ checksums, section bounds and writer profiles.
 A segment holds many metrics and the set is extensible. Each metric has an id.
 
 **Any change to a metric's fields creates a new metric id.** There is no
-backward compatibility inside a metric id, and none is wanted.
+backward compatibility between different field layouts under one metric id.
 
-- `pg_stat_statements` v1.2 and v1.3 are separate metric ids.
-- Adding one field to the existing v1.2 shape also creates a new metric id.
+- `pg_stat_statements` v1.8 and v1.9 are separate metric ids.
+- Adding one field to the existing v1.8 shape also creates a new metric id.
 
 Optional columns must not be used to keep an id stable.
 
-Every metric declares its kind and its unit, the way Prometheus does:
+Every metric declares its kind and its unit:
 
 - `gauge` for a value that goes up and down.
 - `counter` for a value that only grows.
-- `event` for a discrete occurrence. A PostgreSQL `statement_timeout` is an
-  event. It is not a counter and not a gauge, and forcing it into either loses
-  what happened and when.
+- `event` for a discrete occurrence, such as PostgreSQL `statement_timeout`.
 
 Units are part of the declaration: seconds, bytes, and so on. The column
 contract stores the unit as compile-time data. It never reaches the segment,
 costs no disk space, and does not change a metric id.
 
-A section whose snapshot holds more than one row declares the columns that
-identify one object across snapshots. Without that declaration a section is a
-list of rows and nothing can ask what one disk, one interface or one table did
-over time. Where rows of one section can come from more than one source, the
-identity names the source too, or two sources write over each other's objects.
+A section with multiple rows per snapshot declares the identity columns used
+to match objects across snapshots. When a section contains multiple sources,
+the identity also includes the source.
 
 The registry also assigns each physical section layout a stable textual logical
 name. Several physical layouts may share that name; generated compatibility
@@ -375,9 +371,8 @@ reader.
 The nine MCP current-state finders share one snapshot selector and the existing
 snapshot compute and search paths. Omitted `at` resolves once to the last
 timestamp in the whole captured store. The selector then uses the section's
-internal current-sample window at or before that point; an old sparse section
-does not become the present merely because it has no newer row. No usable row
-in the window produces an empty `rows` array.
+internal current-sample window at or before that point. No usable row in that
+window produces an empty `rows` array.
 
 Structured filters are ANDed. `in` is one predicate with at most eight exact
 values and stays inside the same row scan. MCP finder results are bounded with
@@ -390,7 +385,7 @@ contract.
 Web builds `.idx` files next to the segments for fast dashboard access. An
 `.idx` holds compact segment-grain summaries for a curated set of presentation
 fields plus the sparse findings defined above. Fields outside the summary
-allowlist are read from ZMS; IDX does not promise a scan of every metric.
+allowlist are read from ZMS.
 
 The file has a header, a table of contents and typed blocks. Each block belongs
 to one physical section, so a request decodes only the section and block kind it
@@ -412,10 +407,9 @@ compact labels while decoding each selected row once, and retains the winning
 entity's exact detail locator in that pass. A caller requests the complete row
 explicitly through row detail; ranking does not start a later read.
 
-An `.idx` carries a checksum of its contents in its header. That is what a
-browser revalidates against, so the file has to hold it rather than have web
-compute it per request. Web writes a complete temporary index and replaces the
-derived file atomically.
+An `.idx` carries a checksum of its contents in its header for browser
+revalidation. Web writes a complete temporary index and replaces the derived
+file atomically.
 
 `.idx` files are derived data. Deleting one is safe; web rebuilds it from ZMS
 files. When web finds an `.idx` written by an incompatible version, it
@@ -564,20 +558,14 @@ document. A saved locale wins over `navigator.languages`, with English as the
 fallback; source values, identifiers, queries and command lines are never
 translated.
 
-Wording follows one rule with two halves. A label carries the term the trade
-already uses, in English, because that is how the counter is named in `top`,
-`atop` and `pg_stat_*`: `Major page faults`, `Seq scans`, `Tuples updated`,
-`Autovacuum`, `WAL`, `PSI`, `OOM kills`. Translating those into Russian breaks
-recognition, and mixing the two inside one label is worse than either. Only the
-grammatical frame and the units stay Russian, including the genitive that
-fractions require.
+Metric labels retain their English technical names in both locales: `Major
+page faults`, `Seq scans`, `Tuples updated`, `Autovacuum`, `WAL`, `PSI`, and
+`OOM kills`. Russian labels use Russian grammar and units.
 
-A help string is the opposite. It explains the counter in plain Russian and does
-not repeat the English term standing next to it. It says what the number really
-measures, when it grows, and whether a high value is worse or better, in a
-sentence or two, without pointing at another screen. One concept keeps one name
-everywhere; a counter named twice is a defect, and drift in the English
-dictionary is fixed before the Russian one is translated from it.
+Russian help defines the quantity, operands and meaning in one or two
+sentences without repeating the adjacent English label. Each concept uses one name across the interface; English dictionary
+changes precede the corresponding Russian translation.
+
 The buffer/block byte families are one such contract: labels such as `Shared
 buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
@@ -592,7 +580,7 @@ native action that opens its resource and selects that exact recorded metric;
 an unavailable cell remains an inert dash. The cell action owns its complete
 label, reading, keyboard focus, and coarse-pointer target; lane text is not a
 second nested help action. Column-header help defines USE methodology, while
-the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to, since shares are comparable and byte rates are not; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events, where zero is the point. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
+the selected inline chart owns metric-specific help. The header cells are the hour's verdict, computed from the rows below them: Utilization is the largest share at the cursor and the resource it belongs to; Saturation names every resource whose pressure was not zero in the hour with that resource's own peak and never sums different quantities; Errors is the summed count of the hour's events. A verdict is a button that opens the row it names; there are no thresholds and no colours. In a container the ledger opens with a Container scope of four real rows for the collector's own cgroup, CPU, Memory, I/O and Threads, whose cells read the container lanes: the share of the recorded CPU capacity, or the used cores when no capacity is recorded; throttled time beside the cgroup's own CPU pressure; memory against the effective limit, or the plain bytes without one; memory pressure and OOM kills; read and write bytes with I/O pressure; threads against `pids.max`. The CPU and I/O rows disclose the ranked cgroup activity ledgers, every container row discloses its bounded cgroup table, and the Network namespace and Host scopes follow. A host CPU count never stands in for a missing cgroup capacity: the share lane is absent and the row shows the measurement. Rows expand in place —
 several at once — into the group's ordinary metric chips, its inline
 composition chart with measured statistics, its entity tables and its
 topology references. There are no per-resource tabs and no overview apart
@@ -618,9 +606,7 @@ index phases. PG17 and PG18 columns appear only when the hour recorded such
 a layout, and a layout-absent field reads as N/A, never as 0. The recorded
 row carries its own `schemaname`/`relname`, resolved from `pg_class` in the
 same collector query; the fallback identity is `relid`, a `pg_class` OID
-that is never reused in any timeframe the product cares about, and it is
-shown only inside the one relation string it identifies, never as a bare
-number in the detail block.
+shown within the relation label.
 
 The selected Vacuum episode's Process panel joins `os_process` by numeric
 `pid`. It selects the latest sample at or before each episode endpoint and
@@ -670,9 +656,7 @@ scaling is optional. Null cells are blank and zero uses the lightest fill. A
 cell moves the cursor, a row filters the table, and the full-screen view allows
 a larger rank limit. A drilled row with no reading in the cursor's cell also
 moves the cursor to the row's own busiest interval — the same instant clicking
-that cell sets — because a correct filter at a silent moment reads as a wrong
-filter; a row with a reading at the cursor leaves the cursor where the reader
-put it. Only compact identities and allowed display labels travel with ranked
+that cell sets. A row with a reading at the cursor preserves the cursor. Only compact identities and allowed display labels travel with ranked
 entities in the heatmap response. Query text, plans, command lines, log or
 sample text, statements, context, hints, detail payloads, and similar stored
 data do not; the complete row remains on its owning point/detail path. Tables
@@ -1246,14 +1230,10 @@ limit.
 
 ### Heatmap values
 
-Every heatmap column carries its exact interval boundaries. A sample is drawn
-in the column holding the middle of the span it measures, which runs from the
-identity's previous sample within the requested window to this one, not in the
-column holding the moment it was taken. A section read once per five minutes
-describes five minutes around itself, and drawing it there is what keeps a
-cadence as coarse as a column readable: collection drifts across a boundary,
-and attributing a reading to the moment of the read would pair two readings in
-one column and leave the next one empty.
+Every heatmap column carries its exact interval boundaries. An observation is
+assigned to the column containing the midpoint of the span from that identity's
+preceding observation to the current observation. Allocation uses recorded
+timestamps and does not resample the series.
 
 For a counter, a cell is the last value attributed to the column minus the
 first, divided by the elapsed time between those two observations; a column
@@ -1280,14 +1260,15 @@ and latest automatic-label references; only the metric fold is ranking-local.
 The requested K limits the returned identities, not scan admission or the work
 needed to rank them. A counter ranks by its whole-window delta and a gauge by
 its whole-window maximum, except for the RSS grid described below. A band total
-uses the sum for counters and the maximum for other gauges. The response also carries a totals band containing the per-column
-sum of every entity and an others band equal to totals minus the ranked rows.
+uses the sum for counters and the maximum for other gauges. The response also carries a totals band summing available entity values per
+column and an others band summing entities outside the returned ranking. A
+band cell with no contributing value is `null`.
 
 For a Grid request selecting only `os_process.rmem_kb`, each summary is the sum
-of its recorded RSS values divided by the number of distinct process snapshot
-timestamps in the requested window. Groups, individual PIDs, Total, and Other
+of its recorded RSS values divided by the number of distinct timestamps with
+a usable RSS value from any process in the requested window. Groups, individual PIDs, Total, and Other
 share that denominator: a PID absent at a recorded timestamp contributes
-nothing, and times without any recorded process values do not enter the mean.
+nothing, and times without any usable RSS value do not enter the mean.
 Ranking and label selection use the same mean, independently of grid columns.
 The response identifies its summary as `mean`, `sum`, or `max`; compact UI rows
 combine hidden means by addition. Cells retain their interval gauge readings.
@@ -1415,20 +1396,16 @@ Web BDD runs only in CI. Its scenarios cover:
 
 ## Logging
 
-Logs are part of the product output and carry the same weight as metrics.
-
 Collector:
 
-- Every error is logged with enough detail to act on it. No swallowed errors,
-  no bare "failed".
+- Errors include the operation and original error details.
 - Writing a segment logs elapsed time, segment and journal bytes, section and
   journal-part counts, timestamps, and peak RSS.
 - A metric that could not be collected is logged as such by the collector.
 
 Web:
 
-- Logs what it opened and what index it built, with timings and the same cheap
-  counters.
+- Logs opened sources and built indexes with elapsed time and resource counts.
 - Shows `null` for a metric the collector failed to collect. Web does not
   invent or interpolate a value it does not have.
 
@@ -1515,6 +1492,7 @@ demo stop interval.
 
 ## Future work
 
-Remote object storage and collection from MySQL, ClickHouse and CockroachDB
-remain planned. Current collection and views are defined in the
+Planned background synchronization will copy older finished segments to
+S3-compatible object storage. Collection from MySQL, ClickHouse and
+CockroachDB also remains planned. Current collection and views are defined in the
 [technical reference](docs/features.md).
