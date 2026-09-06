@@ -10,7 +10,7 @@ Usage:
   kronika-report --version
 
 Create a report from an existing standalone ZMS:
-  ./kronika-report incident.zms incident.html
+  kronika-report incident.zms incident.html
 
 Open incident.html directly in a browser. Its interface, recorded data, and
 query engine are embedded: no running collector, web server, PostgreSQL,
@@ -44,21 +44,20 @@ navigation and the displayed interval; nearby stored samples remain available
 for interval calculations. A first rate without an earlier sample stays null.
 
 Example: show exactly 2026-09-05 19:00-20:00 UTC:
-  ./kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
+  kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
     incident.zms incident.html
 
 To obtain that input from an existing collector storage directory:
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-dump slice \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-dump slice \
     --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z \
     --out incident.zms
   sudo chown "$(id -u):$(id -g)" incident.zms
-  ./kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
+  kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
     incident.zms incident.html
 Slice uses inclusive RFC3339 whole seconds and may retain nearby samples;
 the report uses the explicit half-open microsecond window above. If no recording
-exists, first run the collector in another terminal from the binary directory:
-  sudo install -d -m 700 /var/lib/kronika
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-collector
+exists, start the collector in another terminal using your recording directory:
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
 Choose slice times that contain the data you collected.
 
 Environment and completion:

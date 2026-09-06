@@ -11,10 +11,10 @@ Usage:
   kronika-dump --version
 
 Start with an existing collector recording:
-  ./kronika-dump /var/lib/kronika
-  ./kronika-dump /var/lib/kronika --json
-  ./kronika-dump /var/lib/kronika --index
-  ./kronika-dump /var/lib/kronika --section 1100001 --limit 10
+  kronika-dump /path/to/recording
+  kronika-dump /path/to/recording --json
+  kronika-dump /path/to/recording --index
+  kronika-dump /path/to/recording --section 1100001 --limit 10
 
 DIR is the real storage directory used by kronika-collector, containing
 YYYY/MM/DD/*.zms and, while collecting, active.wal. A standalone .zms file,
@@ -43,10 +43,9 @@ Inspection options:
   -h, --help          Print this help and exit without opening storage.
   --version           Print the binary name and version and exit.
 
-To record Linux data first (in another terminal, from the binary directory):
-  sudo install -d -m 700 /var/lib/kronika
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-collector
-Then inspect with sudo ./kronika-dump /var/lib/kronika. OS and PostgreSQL
+To start collection in another terminal, use your chosen recording directory:
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
+Then inspect with sudo kronika-dump /path/to/recording. OS and PostgreSQL
 recordings use the same inspection and slice commands; PostgreSQL collection
 is configured on the collector, not on this command.
 
@@ -63,11 +62,11 @@ Usage:
   kronika-dump slice -h | --help
 
 Example: extract 19:00:00 through 19:59:59 UTC, including both whole seconds:
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-dump slice \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-dump slice \
     --from 2026-09-05T19:00:00Z --to 2026-09-05T19:59:59Z \
     --out incident.zms
   sudo chown "$(id -u):$(id -g)" incident.zms
-  ./kronika-report incident.zms incident.html
+  kronika-report incident.zms incident.html
 
 Required environment:
   KRONIKA_STORAGE_DIR  Existing real collector storage directory, not a .zms
@@ -92,7 +91,7 @@ reports bytes, rows, sections, and requested/actual bounds in Unix microseconds.
 The requested_to_exclusive value is one second after the requested --to.
 
 To keep an HTML report's visible bounds at exactly 19:00-20:00 UTC:
-  ./kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
+  kronika-report --from 1788634800000000 --to-exclusive 1788638400000000 \
     incident.zms incident.html
 The report bounds are a pair of Unix MICROSECOND values, [from, to-exclusive).
 

@@ -10,18 +10,15 @@ KRONIKA_STORAGE_DIR, KRONIKA_WEB_USER, KRONIKA_WEB_PASSWORD, KRONIKA_WEB_SOURCES
 The default address is 127.0.0.1:8080; sign in at http://127.0.0.1:8080/.
 
 FIRST LAUNCH: LINUX ONLY
-  Run these examples from the directory containing the unpacked binaries.
-  First collect data:
+  Use your chosen recording directory. To start collection:
 
-  sudo install -d -m 0700 /var/lib/kronika
-  sudo env -u KRONIKA_PG_DSNS -u KRONIKA_POSTGRES_EFFECTIVE_CPUS \
-    KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-collector
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
 
   In another terminal, replace the password and start web over the same storage:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika KRONIKA_WEB_SOURCES=1 \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=1 \
     KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    ./kronika-web
+    kronika-web
 
   Open http://127.0.0.1:8080/ and sign in as kronika with that password. The
   active journal is readable immediately; no finished segment is needed. sudo
@@ -59,15 +56,15 @@ ADD POSTGRESQL TO THE LINUX RECORDING
   Stop the existing collector with Ctrl+C and restart it, replacing the DSN
   password with the one just entered. This example uses local PostgreSQL:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
     KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
-    ./kronika-collector
+    kronika-collector
 
   Stop web and restart it with both source families:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika KRONIKA_WEB_SOURCES=3 \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=3 \
     KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    ./kronika-web
+    kronika-web
 
   The first collector DSN supplies metrics from that server's connectable
   databases; additional semicolon-separated DSNs discover logs only. No DSN per

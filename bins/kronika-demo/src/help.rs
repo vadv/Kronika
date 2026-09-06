@@ -3,22 +3,21 @@ pub(crate) const HELP: &str = r"kronika-demo - measure a collector run with boun
 Usage: kronika-demo
        kronika-demo -h | --help | --version
 
-First run (Linux; run from the unpacked archive):
-  sudo install -d -m 0700 /var/lib/kronika-demo
-  sudo env KRONIKA_DEMO_DIR=/var/lib/kronika-demo ./kronika-demo
+Run with the defaults:
+  sudo kronika-demo
 
 This runs the adjacent kronika-collector for 60 seconds, generates modest CPU,
 memory, disk and loopback activity, then prints collection size, peak RSS and
-CPU time. It writes /var/lib/kronika-demo/report.json and collector.log;
-recordings are in /var/lib/kronika-demo/segments. No PostgreSQL is required.
+CPU time. It writes report.json, collector.log and recordings under demo-data
+in the current directory. No PostgreSQL is required.
 Linux /proc and a runnable collector are required; sudo supplies the collector's
 required privileges. Use a separate directory from your regular recordings.
 
 Inspect that recording (same private directory and privileged account):
-  sudo ./kronika-dump /var/lib/kronika-demo/segments
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika-demo/segments \
+  sudo kronika-dump demo-data/segments
+  sudo env KRONIKA_STORAGE_DIR=demo-data/segments \
     KRONIKA_WEB_SOURCES=1 KRONIKA_WEB_USER=kronika \
-    KRONIKA_WEB_PASSWORD='replace-with-a-random-password' ./kronika-web
+    KRONIKA_WEB_PASSWORD='replace-with-a-random-password' kronika-web
   Open http://127.0.0.1:8080/ and sign in with the credentials above.
   The same web process serves authenticated MCP at http://127.0.0.1:8080/mcp.
 
@@ -30,8 +29,8 @@ does not install or start Docker, PostgreSQL, PgBouncer, or a web server.
 
 Run controls (all optional; values below are defaults):
   KRONIKA_DEMO_DIR=demo-data
-      Writable directory for collector.log and report.json. With an explicit
-      storage directory, create this report directory before starting too.
+      Writable directory for collector.log and report.json. If storage is
+      outside this directory, the report directory must already exist.
   KRONIKA_STORAGE_DIR=$KRONIKA_DEMO_DIR/segments
       Private collector storage root, a real directory, not a symlink.
   KRONIKA_COLLECTOR_BIN=<kronika-collector beside kronika-demo>
@@ -93,24 +92,24 @@ Optional PostgreSQL workload:
     GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
     \q
 
-  Run from the archive after creating /var/lib/kronika-demo as above. Replace
-  the workload password in the first two DSNs and the monitor password in the
-  third. This generates activity and records both Linux and PostgreSQL:
-    sudo env KRONIKA_DEMO_DIR=/var/lib/kronika-demo \
+  Replace the workload password in the first two DSNs and the monitor
+  password in the third. This generates activity and records both Linux
+  and PostgreSQL:
+    sudo env KRONIKA_DEMO_DIR=demo-data \
       KRONIKA_DEMO_DURATION_S=240 \
       KRONIKA_DEMO_WORKLOAD_DSN='host=127.0.0.1 dbname=kronika_demo user=kronika_demo password=replace-workload-password' \
       KRONIKA_DEMO_WORKLOAD_DIRECT_DSN='host=127.0.0.1 dbname=kronika_demo user=kronika_demo password=replace-workload-password' \
       KRONIKA_PG_DSNS='host=127.0.0.1 dbname=kronika_demo user=kronika_monitor password=replace-monitor-password' \
-      ./kronika-demo
+      kronika-demo
   For PostgreSQL health, also set KRONIKA_POSTGRES_EFFECTIVE_CPUS to that
   server's positive whole effective CPU capacity. It has no default; ordinary
   metrics work without it, but PostgreSQL health is then null. Grant CONNECT
   on the database if PUBLIC access was revoked. Installed pg_stat_statements
   and pg_store_plans extensions supply statement/plan recordings; the harness
   does not install them. Start web for this recording:
-    sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika-demo/segments \
+    sudo env KRONIKA_STORAGE_DIR=demo-data/segments \
       KRONIKA_WEB_SOURCES=3 KRONIKA_WEB_USER=kronika \
-      KRONIKA_WEB_PASSWORD='replace-with-a-random-password' ./kronika-web
+      KRONIKA_WEB_PASSWORD='replace-with-a-random-password' kronika-web
   Use the same URL and login flow as the Linux example. KRONIKA_WEB_SOURCES=3
   declares both families as configured in the catalog; 1 declares Linux,
   2 PostgreSQL, and 0 neither (not useful here). This declaration does not

@@ -9,18 +9,15 @@ Runs in the foreground. Configure it with environment variables; there are no
 collection flags or public subcommands. Only KRONIKA_STORAGE_DIR is required.
 
 FIRST LAUNCH: LINUX ONLY
-  Run these examples from the directory containing the unpacked binaries.
-  Create private shared storage on the Linux machine you want to record:
+  Set KRONIKA_STORAGE_DIR to your chosen recording directory:
 
-  sudo install -d -m 0700 /var/lib/kronika
-  sudo env -u KRONIKA_PG_DSNS -u KRONIKA_POSTGRES_EFFECTIVE_CPUS \
-    KRONIKA_STORAGE_DIR=/var/lib/kronika ./kronika-collector
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
 
   In another terminal, replace the example web password and start the viewer:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika KRONIKA_WEB_SOURCES=1 \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=1 \
     KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    ./kronika-web
+    kronika-web
 
   Open http://127.0.0.1:8080/ and sign in with those web credentials. Web can
   read the active journal immediately; no finished segment is needed. sudo gives
@@ -45,15 +42,15 @@ ADD POSTGRESQL
   Stop the first collector with Ctrl+C. Restart it against local PostgreSQL,
   replacing the DSN password with the one just entered:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
     KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
-    ./kronika-collector
+    kronika-collector
 
   Stop web and restart it declaring both families as configured:
 
-  sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika KRONIKA_WEB_SOURCES=3 \
+  sudo env KRONIKA_STORAGE_DIR=/path/to/recording KRONIKA_WEB_SOURCES=3 \
     KRONIKA_WEB_USER=kronika KRONIKA_WEB_PASSWORD='replace-with-a-random-password' \
-    ./kronika-web
+    kronika-web
 
   The first DSN supplies metrics from all connectable non-template databases on
   that server, starting with its dbname. Additional DSNs discover logs only;
