@@ -42,6 +42,13 @@ async fn index_lock_wait(world: &mut BddWorld, step: &Step) -> Result<()> {
         let mut pool = Pool::new(&postgres.dsn)?;
         let session = pool.session().await?;
         let mut stats = QueryStats::default();
+        assert_timeouts(
+            session,
+            &mut stats,
+            get("statement timeout")?,
+            get("lock timeout")?,
+        )
+        .await?;
         let database = databases::enumerate(session, &mut stats)
             .await?
             .into_iter()
@@ -139,5 +146,29 @@ async fn assert_idle_backend(
         open_transactions == expected_open_transactions,
         "backend has {open_transactions} open transactions"
     );
+    Ok(())
+}
+
+async fn assert_timeouts(
+    session: query::Session<'_>,
+    stats: &mut QueryStats,
+    statement_timeout: &str,
+    lock_timeout: &str,
+) -> Result<()> {
+    for (sql, expected) in [
+        ("SHOW statement_timeout", statement_timeout),
+        ("SHOW lock_timeout", lock_timeout),
+    ] {
+        let rows = query::read_simple_rows(session, sql, stats, |row| {
+            row.get(0)
+                .context("SHOW returned no value")
+                .map(str::to_owned)
+        })
+        .await?;
+        anyhow::ensure!(
+            rows == [expected],
+            "{sql} returned {rows:?}, expected {expected}"
+        );
+    }
     Ok(())
 }

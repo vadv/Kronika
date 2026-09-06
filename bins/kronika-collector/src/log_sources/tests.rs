@@ -59,9 +59,8 @@ impl FakePostgres {
                 while let Some(query) = read_query(&mut stream) {
                     if !configured {
                         assert!(
-                            query.contains(
-                                "SET statement_timeout = '30s'; SET lock_timeout = '1ms'"
-                            ),
+                            query.contains("SET statement_timeout = '30s'")
+                                && query.contains("SET lock_timeout = '100ms'"),
                             "the session timeout must precede monitoring queries"
                         );
                         write_backend(&mut stream, b'C', b"SET\0");

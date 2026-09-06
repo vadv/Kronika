@@ -29,8 +29,8 @@ failure is logged and leaves the earlier batches in storage.
 
 Before the first query, every PostgreSQL monitoring connection, including log
 discovery and each database connection, installs `statement_timeout = '30s'`
-and `lock_timeout = '1ms'` in one Simple Query request. Setup failure closes
-the connection; reconnection installs both limits again. The 1 ms limit applies
+and `lock_timeout = '100ms'` in one Simple Query request. Setup failure closes
+the connection; reconnection installs both limits again. The 100 ms limit applies
 to each lock acquisition wait, not to holding an acquired lock. The overall
 statement deadline remains 30 seconds and the client fetch backstop 35 seconds.
 Lock-wait errors skip the failed read, preserve independent sources and allow

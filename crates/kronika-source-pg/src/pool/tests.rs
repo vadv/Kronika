@@ -138,7 +138,11 @@ async fn session_setup_precedes_the_first_query_and_uses_only_simple_protocol() 
     let messages = server.join().expect("the protocol probe exits");
     assert_eq!(messages[0].0, b'Q');
     assert_eq!(frontend_sql(&messages[0].1), SESSION_SETUP_SQL);
-    assert!(SESSION_SETUP_SQL.contains("SET statement_timeout = '30s'; SET lock_timeout = '1ms'"));
+    let statements: Vec<_> = SESSION_SETUP_SQL.split("; ").collect();
+    assert_eq!(statements.len(), 2);
+    assert!(statements.iter().all(|sql| sql.starts_with("/* kronika:")));
+    assert!(statements[0].ends_with("SET statement_timeout = '30s'"));
+    assert!(statements[1].ends_with("SET lock_timeout = '100ms'"));
     assert_eq!(messages[1].0, b'Q');
     assert_eq!(frontend_sql(&messages[1].1), "SELECT 1");
     assert_eq!(frontend_sql(&messages[2].1), "SELECT 1");

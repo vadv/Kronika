@@ -150,7 +150,7 @@ Sources: [database pool](../../crates/kronika-source-pg/src/pool.rs),
 | --- | --- |
 | Transport | No TLS encryption (`NoTls`); direct PostgreSQL or PgBouncer session pooling. Transaction/statement pooling do not retain the session state required by metric reads. |
 | Protocol | Administrative queries use Simple Query Protocol. Metrics with known field types use a one-shot unnamed query through Extended Protocol. One query at a time per connection. |
-| Session initialization | `SET statement_timeout = '30s'; SET lock_timeout = '1ms'` in one request before any monitoring query, including log discovery; repeated on every new connection. |
+| Session initialization | `SET statement_timeout = '30s'; SET lock_timeout = '100ms'` in one request before any monitoring query, including log discovery; repeated on every new connection. |
 | Client fetch deadline | 35 seconds, then a CancelRequest attempt with a one-second deadline and connection close. |
 | Collector identity | One unique `application_name` per collector process; Activity/Locks exclude that exact name. |
 | Batch bounds | At most 256 rows, targeting 512 KiB of decoded data; the final row, bounded by the SQL query, can exceed the byte target. Each batch reaches the recording journal before the next is read. |
@@ -159,8 +159,8 @@ Sources: [database pool](../../crates/kronika-source-pg/src/pool.rs),
 | SQLSTATE `57014` | Counted as query timeout; session is reusable after `ReadyForQuery`. |
 | Query logs | Debug `pg_query_finish`; warning `pg_query_slow` when fetch exceeds 500 ms; summary about every five minutes and at shutdown. |
 
-`lock_timeout` limits each lock acquisition wait to 1 ms, the smallest positive
-value; zero disables it. It does not limit how long an acquired lock is held.
+`lock_timeout` limits each lock acquisition wait to 100 ms.
+It does not limit how long an acquired lock is held.
 The overall statement deadline remains 30 s (`statement_timeout`). A lock-wait
 error (`55P03`) is logged, independent sources continue, and the read is tried
 again on a later scheduled pass. These limits apply only to Kronika monitoring

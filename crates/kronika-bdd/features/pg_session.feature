@@ -10,6 +10,8 @@ Feature: PostgreSQL monitoring sessions stop waiting for conflicting locks
       | expected index     | bdd_locked_index_pkey |
       | SQLSTATE           | 55P03 |
       | maximum wait ms    | 5000 |
+      | statement timeout  | 30s |
+      | lock timeout       | 100ms |
       | unrelated SQL      | SELECT 1 |
       | unrelated result   | 1 |
       | backend state      | idle |

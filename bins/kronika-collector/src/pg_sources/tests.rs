@@ -787,11 +787,9 @@ fn accept_startup(stream: &mut TcpStream) {
     let mut body = vec![0_u8; body_len];
     stream.read_exact(&mut body).expect("read setup body");
     let sql = body.strip_suffix(&[0]).expect("setup SQL is terminated");
-    assert!(
-        std::str::from_utf8(sql)
-            .expect("setup SQL is UTF-8")
-            .contains("SET statement_timeout = '30s'; SET lock_timeout = '1ms'")
-    );
+    let sql = std::str::from_utf8(sql).expect("setup SQL is UTF-8");
+    assert!(sql.contains("SET statement_timeout = '30s'"));
+    assert!(sql.contains("SET lock_timeout = '100ms'"));
     stream
         .write_all(&[
             b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'Z', 0,
