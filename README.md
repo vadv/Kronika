@@ -66,6 +66,21 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 This is a deployment contract; the DSN address does not establish resource
 scope. Restart web with `KRONIKA_WEB_SOURCES=3` for OS and PostgreSQL.
 
+### Storage
+
+For a PostgreSQL workload with roughly 500 tables and 3,000 indexes, estimate
+**about 200 MB of compressed recordings per day**. Volume depends on collection
+intervals and the number of recorded objects and distinct queries.
+
+`KRONIKA_RETENTION=2147483648` sets the default **2 GiB** storage budget,
+including journals and indexes. When the target is exceeded, the collector
+automatically removes the oldest finished recordings and their indexes.
+For **10 GiB**, set `KRONIKA_RETENTION=10737418240` (raw bytes).
+
+`auto` and `auto:P` instead set a used-space percentage target for the whole
+backing filesystem. See [storage configuration](bins/kronika-collector/README.md#storage)
+for the rotation rules and automatic mode.
+
 ## Recorded data and views
 
 | Domain | Views and values | Reference |
@@ -96,7 +111,7 @@ the preview recording.
 
 The default collection intervals are 5 seconds for processes, 10 seconds for
 core Linux metrics, 30 seconds for PostgreSQL metrics, and 300 seconds for
-relations. The default local retention target is 2 GiB.
+relations.
 [Collector configuration](bins/kronika-collector/README.md) defines source
 scope, intervals, permissions and storage rotation.
 
