@@ -1384,10 +1384,12 @@ dependencies = [
  "anyhow",
  "cucumber",
  "kronika-format",
+ "kronika-source-pg",
  "nix",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

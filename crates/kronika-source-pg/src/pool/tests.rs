@@ -80,7 +80,8 @@ async fn session_setup_precedes_the_first_query_and_uses_only_simple_protocol() 
         .local_addr()
         .expect("read the probe address")
         .port();
-    let (query_seen_tx, query_seen_rx) = tokio::sync::oneshot::channel();
+    let (first_set_tx, first_set_rx) = tokio::sync::oneshot::channel();
+    let (finish_setup_tx, finish_setup_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _peer) = listener.accept().expect("accept the frontend session");
         stream
@@ -88,40 +89,71 @@ async fn session_setup_precedes_the_first_query_and_uses_only_simple_protocol() 
             .expect("bound the cleanup check");
         accept_startup(&mut stream);
         let setup = read_frontend(&mut stream);
+        write_backend(&mut stream, b'C', b"SET\0");
+        stream.flush().expect("flush the first SET completion");
+        first_set_tx
+            .send(())
+            .expect("report the first SET completion");
+        finish_setup_rx.recv().expect("release the remaining setup");
         write_command_ready(&mut stream, "SET");
-        let query = read_frontend(&mut stream);
-        query_seen_tx.send(()).expect("report the monitoring query");
-        [setup, query]
+        let first_query = read_frontend(&mut stream);
+        write_command_ready(&mut stream, "SELECT 0");
+        let reused_query = read_frontend(&mut stream);
+        write_command_ready(&mut stream, "SELECT 0");
+        [setup, first_query, reused_query]
     });
     let mut pool = Pool::new(&format!(
         "host=127.0.0.1 port={port} user=monitor dbname=metrics"
     ))
     .expect("the probe DSN parses");
 
-    let session = pool
-        .session()
-        .await
-        .expect("configure the frontend session");
-    let mut stats = QueryStats::default();
-    let stream = session
-        .simple_stream("SELECT 1", &mut stats)
-        .await
-        .expect("send the first monitoring query");
-    drop(stream);
-    query_seen_rx.await.expect("the query reached the server");
+    let mut opening = tokio::spawn(async move {
+        let generation = pool
+            .session()
+            .await
+            .expect("configure the session")
+            .generation();
+        (pool, generation)
+    });
+    first_set_rx.await.expect("the first SET completed");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut opening)
+            .await
+            .is_err(),
+        "one completed SET must not expose the session"
+    );
+    finish_setup_tx.send(()).expect("finish both SET commands");
+    let (mut pool, generation) = opening.await.expect("the setup task exits");
+    assert_eq!(generation, 1);
+    for _ in 0..2 {
+        let session = pool.session().await.expect("reuse the configured session");
+        assert_eq!(session.generation(), generation);
+        let mut stats = QueryStats::default();
+        crate::query::read_simple_rows(session, "SELECT 1", &mut stats, |_row| Ok(()))
+            .await
+            .expect("complete a monitoring query");
+    }
     pool.close();
 
     let messages = server.join().expect("the protocol probe exits");
     assert_eq!(messages[0].0, b'Q');
     assert_eq!(frontend_sql(&messages[0].1), SESSION_SETUP_SQL);
+    assert!(SESSION_SETUP_SQL.contains("SET statement_timeout = '30s'; SET lock_timeout = '1ms'"));
     assert_eq!(messages[1].0, b'Q');
     assert_eq!(frontend_sql(&messages[1].1), "SELECT 1");
+    assert_eq!(frontend_sql(&messages[2].1), "SELECT 1");
     assert!(messages.iter().all(|(tag, _body)| *tag != b'P'));
     assert!(messages.iter().all(|(tag, _body)| *tag != b'C'));
 }
 
 #[tokio::test]
 async fn rejected_session_setup_is_never_exposed_and_closes_its_driver() {
+    for completed_sets in 0..2 {
+        rejected_setup(completed_sets).await;
+    }
+}
+
+async fn rejected_setup(completed_sets: usize) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the protocol probe");
     let port = listener
         .local_addr()
@@ -135,10 +167,13 @@ async fn rejected_session_setup_is_never_exposed_and_closes_its_driver() {
             .expect("bound the cleanup check");
         accept_startup(&mut stream);
         let setup = read_frontend(&mut stream);
+        for _ in 0..completed_sets {
+            write_backend(&mut stream, b'C', b"SET\0");
+        }
         write_backend(
             &mut stream,
             b'E',
-            b"SERROR\0C42501\0Mstatement_timeout rejected\0\0",
+            b"SERROR\0C42501\0Mmonitoring timeout rejected\0\0",
         );
         write_backend(&mut stream, b'Z', b"I");
         stream.flush().expect("flush the setup error");
@@ -184,6 +219,8 @@ async fn stalled_session_setup_hits_its_deadline_without_exposing_a_generation()
             .expect("bound the cleanup check");
         accept_startup(&mut stream);
         let setup = read_frontend(&mut stream);
+        write_backend(&mut stream, b'C', b"SET\0");
+        stream.flush().expect("flush the first SET completion");
         setup_seen_tx.send(()).expect("report the setup request");
         let mut byte = [0_u8; 1];
         let closed = stream.read(&mut byte).is_ok_and(|read| read == 0);
@@ -232,17 +269,29 @@ async fn secondary_rotates_at_the_age_boundary_and_increments_generation() {
     let server = std::thread::spawn(move || {
         let mut setup_sql = Vec::new();
         let (mut first, _peer) = listener.accept().expect("accept the first session");
-        accept_startup(&mut first);
+        let startup = accept_startup(&mut first);
+        assert!(
+            startup
+                .windows(b"database\0payments\0".len())
+                .any(|field| field == b"database\0payments\0")
+        );
         let first_setup = read_frontend(&mut first);
         setup_sql.push(frontend_sql(&first_setup.1).to_owned());
+        write_backend(&mut first, b'C', b"SET\0");
         write_command_ready(&mut first, "SET");
         let mut byte = [0_u8; 1];
         assert_eq!(first.read(&mut byte).expect("read first session close"), 0);
 
         let (mut second, _peer) = listener.accept().expect("accept the replacement session");
-        accept_startup(&mut second);
+        let startup = accept_startup(&mut second);
+        assert!(
+            startup
+                .windows(b"database\0payments\0".len())
+                .any(|field| field == b"database\0payments\0")
+        );
         let second_setup = read_frontend(&mut second);
         setup_sql.push(frontend_sql(&second_setup.1).to_owned());
+        write_backend(&mut second, b'C', b"SET\0");
         write_command_ready(&mut second, "SET");
         release_rx.recv().expect("the test releases the session");
         setup_sql
@@ -407,7 +456,7 @@ async fn a_dead_client_is_not_reported_as_a_reusable_generation() {
     assert!(pool.open.is_none(), "a dead client must be discarded");
 }
 
-fn accept_startup(stream: &mut TcpStream) {
+fn accept_startup(stream: &mut TcpStream) -> Vec<u8> {
     let mut len = [0_u8; 4];
     stream.read_exact(&mut len).expect("read startup length");
     let body_len = usize::try_from(u32::from_be_bytes(len).saturating_sub(4))
@@ -417,6 +466,7 @@ fn accept_startup(stream: &mut TcpStream) {
     write_backend(stream, b'R', &0_i32.to_be_bytes());
     write_backend(stream, b'Z', b"I");
     stream.flush().expect("flush startup response");
+    body
 }
 
 fn read_frontend(stream: &mut TcpStream) -> (u8, Vec<u8>) {

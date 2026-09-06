@@ -27,6 +27,17 @@ PostgreSQL results and logs are read in bounded batches. Each accepted
 PostgreSQL batch reaches the journal before the next is fetched; a later query
 failure is logged and leaves the earlier batches in storage.
 
+Before the first query, every PostgreSQL monitoring connection, including log
+discovery and each database connection, installs `statement_timeout = '30s'`
+and `lock_timeout = '1ms'` in one Simple Query request. Setup failure closes
+the connection; reconnection installs both limits again. The 1 ms limit applies
+to each lock acquisition wait, not to holding an acquired lock. The overall
+statement deadline remains 30 seconds and the client fetch backstop 35 seconds.
+Lock-wait errors skip the failed read, preserve independent sources and allow
+a later scheduled collection pass to try again. These PostgreSQL settings are
+not sent to the PgBouncer admin console. Source:
+[session setup](crates/kronika-source-pg/src/query.rs).
+
 The web server keeps its configuration and listening socket between requests.
 Each request owns its open segments, decoded sections and working buffers.
 Queries use recorded indexes when their selected fields and time bounds are
