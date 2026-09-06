@@ -2,10 +2,10 @@
 
 [Русская версия](README.ru.md)
 
-Kronika records Linux process and host metrics, PostgreSQL statistics, query
-plans, and PostgreSQL/PgBouncer log events. The collector writes local journals
-and compressed segments; web displays a selected hour, snapshots at a time
-cursor, and object histories.
+Kronika records Linux metrics, PostgreSQL statistics, query plans and events
+from PostgreSQL/PgBouncer logs. The collector runs on the monitored machine and
+saves data to its disk. The web interface shows what happened during a selected
+hour: resource use, individual processes and queries, locks and changes over time.
 
 ![Process CPU activity and the process snapshot for a recorded hour](docs/images/processes.png)
 
@@ -25,7 +25,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-In a second terminal, start web over that directory:
+In a second terminal, start the web server over that data directory:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -36,16 +36,18 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-web
 ```
 
-Open <http://127.0.0.1:8080/> and sign in. Web reads the active journal while
+Open <http://127.0.0.1:8080/> and sign in. The web server reads new data while
 collection runs. `Ctrl+C` stops either process and retains the recording.
 [Systemd units](docs/services.md) run both programs as services.
 
 ### Local and remote PostgreSQL
 
-After [monitoring role setup](INSTALL.md#5-postgresql), stop collector and choose
-its connection. For local PostgreSQL in the same VM or container resource scope,
-omit `KRONIKA_POSTGRES_EFFECTIVE_CPUS`: CPU capacity is calculated from recorded
-CPU snapshots or quota/cpuset.
+After [creating a monitoring role](INSTALL.md#5-postgresql), stop the collector
+and set its connection string (DSN). For PostgreSQL in the same virtual machine
+or cgroup as the collector, leave `KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset:
+the available CPU count is calculated from recorded data. A cgroup is a Linux
+group of processes with shared resource limits; its CPU-time quota and allowed
+set of CPUs are taken into account.
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -63,8 +65,9 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-This is a deployment contract; the DSN address does not establish resource
-scope. Restart web with `KRONIKA_WEB_SOURCES=3` for OS and PostgreSQL.
+The connection address alone does not show whether the programs share resource
+limits. Restart the web server with `KRONIKA_WEB_SOURCES=3` to see both Linux
+and PostgreSQL.
 
 ### Storage
 
@@ -83,18 +86,20 @@ for the rotation rules and automatic mode.
 
 ## Recorded data and views
 
-| Domain | Views and values | Reference |
-| --- | --- | --- |
-| Processes | General, Tree, CPU, Memory, Disk; per-PID counters, rates, command and status; hourly activity and history. | [Linux metrics](docs/metrics-linux.md) |
-| Host | CPU, memory, PSI, network, disk counters, filesystem capacity, mount/device topology; container cgroup CPU, memory, I/O and threads. | [Linux metrics](docs/metrics-linux.md) |
-| PostgreSQL sessions | Overview, Activity, Locks, Vacuum; backend states, waits, blocker chains, transaction/query ages and maintenance progress. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
-| PostgreSQL SQL | Statements and Plans; calls, execution/planning time, buffers, temporary I/O, WAL, recorded SQL and plan text. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
-| PostgreSQL objects | Databases, Tables, Indexes and settings; traffic, size, scans, changes, maintenance counters, transaction ages and database/schema/tablespace groups. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
-| Events | Grouped PostgreSQL/PgBouncer log events, occurrences, durations and recorded context; metric marks. | [Views and controls](docs/features.md) |
-| Time and charts | Calendar hour, cursor, sample selection, interval calculations, heatmaps, totals and percentiles. | [Time and calculations](docs/metrics-time.md) |
+The names below match sections in the interface.
 
-[Views and controls](docs/features.md) defines navigation, lenses, grouping,
-search, sorting, Inspector, charts and Export. The
+| Domain | What you can inspect | Reference |
+| --- | --- | --- |
+| Processes | Command, state and process number (PID), CPU use, memory and disk reads/writes; process tree and hourly activity. | [Linux metrics](docs/metrics-linux.md) |
+| Host | CPU, memory, time waiting for resources (PSI), network and disks, free space and device relationships; container resource limits and use. | [Linux metrics](docs/metrics-linux.md) |
+| PostgreSQL sessions | Overview, Activity, Locks, Vacuum; session states and waits, blocking chains, query/transaction durations and table cleanup progress. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
+| PostgreSQL SQL | Statements and Plans; calls, execution/planning time, page and temporary-file reads, write-ahead log (WAL) output, SQL and plan text. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
+| PostgreSQL objects | Databases, Tables, Indexes and settings; size, reads and changes, maintenance and transaction ages; grouping by database, schema and tablespace. | [PostgreSQL metrics](docs/metrics-postgresql.md) |
+| Events | Grouped PostgreSQL/PgBouncer log events, occurrences, durations and recorded context; metric marks. | [Views and controls](docs/features.md) |
+| Time and charts | Choose an hour and a time within it; view changes, activity maps, totals and the distribution of measurements. | [Time and calculations](docs/metrics-time.md) |
+
+[Views and controls](docs/features.md) explains how to select measurements, group,
+search and sort rows, inspect details in Inspector, view charts and export. The
 [operator guide](docs/operator-guide.md) contains four worked examples from
 the preview recording.
 
@@ -111,18 +116,20 @@ the preview recording.
 
 The default collection intervals are 5 seconds for processes, 10 seconds for
 core Linux metrics, 30 seconds for PostgreSQL metrics, and 300 seconds for
-relations.
+tables and indexes.
 [Collector configuration](bins/kronika-collector/README.md) defines source
-scope, intervals, permissions and storage rotation.
+selection, intervals, access permissions and removal of old recordings.
 
-Web serves the browser, HTTP API and MCP on one listener. The **AI** panel
-provides MCP client connection settings. [MCP tools](docs/features.md#mcp)
-read snapshots, rankings, field definitions, events and complete row details.
+The web server serves the browser, HTTP API and MCP at one address and port.
+MCP is a protocol through which an AI client can read stored data. The **AI**
+panel provides connection settings. [MCP tools](docs/features.md#mcp) return
+values at a chosen time, objects ranked by a measurement, field descriptions,
+events and complete row details.
 
 ## Portable HTML export
 
 **Export** saves a selected interval of your recording as one interactive HTML
-file. It embeds the interface, data and Rust/WebAssembly query engine, which
+file. It embeds the interface, data and Rust/WebAssembly program that processes queries, which
 runs on the browser's main thread. Opening the file requires no server or
 network connection.
 
@@ -131,8 +138,7 @@ network connection.
   <img alt="Export an interval from web or a saved recording into one interactive offline HTML file" src="docs/images/report-export.svg">
 </picture>
 
-[kronika-dump](bins/kronika-dump/README.md) inspects storage and extracts a ZMS
-interval; [kronika-report](bins/kronika-report/README.md) converts a standalone
+[kronika-dump](bins/kronika-dump/README.md) inspects storage and extracts an interval into a standalone ZMS recording; [kronika-report](bins/kronika-report/README.md) converts a standalone
 ZMS into HTML. Offline reports provide local tables, search, charts and heatmaps.
 
 ## Documentation

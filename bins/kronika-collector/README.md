@@ -2,10 +2,15 @@
 
 [Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-Collector reads Linux/PostgreSQL metrics and local PostgreSQL/PgBouncer logs,
-then writes `active.wal` and compressed `.zms` segments. Configuration is read
-once at startup; invalid values terminate startup. `KRONIKA_STORAGE_DIR` is
-required. Sources: [configuration](src/config.rs), [scheduler](src/scheduler.rs),
+The collector saves Linux and PostgreSQL metrics and events from local
+PostgreSQL/PgBouncer logs. New data first goes into a journal, `active.wal`.
+When the recording reaches its configured size or age, the collector saves
+that portion as a compressed `.zms` file, called a segment, and continues.
+
+Set options through environment variables before starting the program.
+`KRONIKA_STORAGE_DIR`, the data directory, is required. Options are read once
+at startup; an invalid value stops startup. Sources:
+[configuration](src/config.rs), [collection schedule](src/scheduler.rs),
 [main loop](src/main.rs).
 
 ## Configuration
@@ -15,93 +20,97 @@ required. Sources: [configuration](src/config.rs), [scheduler](src/scheduler.rs)
 
 | Variable | Default | Accepted value and meaning |
 | --- | --- | --- |
-| `KRONIKA_STORAGE_DIR` | Required | Real data-root directory for journal, segments and writer ownership lock. |
-| `KRONIKA_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Positive unsigned bytes; journal-size threshold for segment publication. |
-| `KRONIKA_SEGMENT_MAX_AGE_S` | `900` | Unsigned seconds; open-segment age threshold. `0` makes publication immediately eligible. |
-| `KRONIKA_JOURNAL_MAX_BYTES` | `1073741824` (1 GiB) | `36..1073741824` bytes; hard journal cap. Reaching it publishes the segment early. |
-| `KRONIKA_RETENTION` | `2147483648` (2 GiB) | Unsigned byte budget, `auto` (= `auto:80`), or `auto:P`, `P=1..99`. |
+| `KRONIKA_STORAGE_DIR` | Required | Directory in which collected data is saved. |
+| `KRONIKA_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Journal size in bytes at which a compressed segment becomes due. Positive whole number. |
+| `KRONIKA_SEGMENT_MAX_AGE_S` | `900` | Seconds after a segment starts before it becomes due. Nonnegative whole number; `0` makes it eligible immediately. |
+| `KRONIKA_JOURNAL_MAX_BYTES` | `1073741824` (1 GiB) | Maximum journal size in bytes: `36..1073741824`. Reaching it saves the segment early. |
+| `KRONIKA_RETENTION` | `2147483648` (2 GiB) | Storage target in bytes, or `auto` (= `auto:80`), or `auto:P`, where `P` is a whole percentage from 1 to 99. |
 
-For fixed retention budget `B` and segment threshold `S`, validation requires
-`B >= 2 × S` (saturating `u64` multiplication). Fixed mode counts `active.wal`,
-finished `.zms`, `.idx` sidecars and recognized temporary files. For `auto:P`, let `F = f_blocks × f_frsize` and
-`U = F − f_bfree × f_frsize` from the backing filesystem's `statvfs`.
-The byte threshold is `floor(F × P / 100)`. Rotation compares it with
-`max(0, U − pending_reclaim)`. `pending_reclaim` accumulates bytes unlinked by
-rotation but not yet reflected in filesystem free space. Each observed fall in
-`U` reduces that pending value, down to zero. This measures the entire filesystem.
+A fixed budget counts the active journal, compressed recordings, their `.idx`
+index files and collector temporary files. It must be at least twice
+`KRONIKA_SEGMENT_MAX_BYTES`. For example, `KRONIKA_RETENTION=10737418240` sets
+10 GiB. With `auto:P`, old recordings are removed when more than `P` percent
+of the entire backing filesystem is used. `auto` means 80 percent; this
+includes space used by other programs.
 
-Rotation runs after a collection cycle publishes segments and on a one-minute
-timer. A collection in progress can delay the timer. Fixed mode recounts files
-hourly to include new web indexes. Deletion order: stale writer ZMS temporaries,
-orphan indexes, then oldest finished segments with their sibling indexes.
-`active.wal`, the newest finished segment and unrelated files are retained.
-If the retained files exceed the target, collection continues and logs
-`rotation_degraded`. Source: [rotation.rs](src/rotation.rs).
+The collector checks after saving segments and on a one-minute timer; a
+collection in progress can delay the check. It removes leftover temporary
+files first, then indexes without a recording, then the oldest finished
+recordings with their indexes. The active journal, newest finished segment
+and unrelated files are retained. If these still exceed the target,
+collection continues and logs `rotation_degraded`. Fixed mode also recounts
+files hourly to include new indexes created by web.
+[Rotation implementation](src/rotation.rs) defines the byte accounting and deletion.
 
 ### Collection intervals
 
-All interval values are unsigned whole seconds. Sources have independent due
-times. A per-source `0` reads on every timer cycle.
+Intervals are nonnegative whole seconds. Each source has its own schedule.
+A source interval of `0` reads on every timer wakeup. A cgroup is a Linux group
+of processes with shared resource limits; PSI measures time spent waiting for
+CPU, memory or I/O resources.
 
 | Variable | Default, s | Data |
 | --- | ---: | --- |
-| `KRONIKA_INTERVAL_S` | 5 | Maximum timer sleep; `0` disables timed collection. Positive source intervals can wake the timer earlier. |
+| `KRONIKA_INTERVAL_S` | 5 | Maximum timer sleep; `0` disables timed collection. A shorter positive source interval can wake the timer earlier. |
 | `KRONIKA_OS_CORE_INTERVAL_S` | 10 | CPU, memory, disks, network, PSI. |
 | `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | Mounts, filesystem capacity and device topology. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | Process counters. |
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | Process status details. |
-| `KRONIKA_OS_CGROUP_INTERVAL_S` | 30 | Container cgroup controller rows for direct live memberships. |
+| `KRONIKA_OS_CGROUP_INTERVAL_S` | 30 | Resource limits and use of cgroups to which running container processes directly belong. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | Process-to-cgroup mappings. |
 | `KRONIKA_LOG_INTERVAL_S` | 10 | Configured PostgreSQL/PgBouncer logs. |
 | `KRONIKA_PG_INTERVAL_S` | 30 | PostgreSQL metrics and settings. |
-| `KRONIKA_PG_RELATIONS_INTERVAL_S` | 300 | Relations; database and extension discovery. |
+| `KRONIKA_PG_RELATIONS_INTERVAL_S` | 300 | Tables and indexes; finding databases and extensions. |
 
 ### Connections and logs
 
+A DSN is a database connection string, written as `key=value` pairs or a URL.
+Separate connection strings and paths with semicolons (`;`).
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KRONIKA_PG_DSNS` | Unset | Semicolon-separated PostgreSQL keyword DSNs or URLs. First DSN enables server metrics; every DSN discovers server log paths/format. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`: explicit CPU capacity of the first PostgreSQL target. Requires `KRONIKA_PG_DSNS`. Unset uses the collector VM/container's recorded CPU capacity for Health and marks. |
-| `KRONIKA_PG_LOGS` | Unset | Optional local PostgreSQL paths or globs separated by `;`; the final component supports `*` and `?`. When unset, every `KRONIKA_PG_DSNS` entry still discovers its current log through `pg_current_logfile()`. Explicit entries add to discovered sources; files must be readable on the collector host. |
-| `KRONIKA_PGBOUNCER_DSNS` | Unset | Semicolon-separated admin-console DSNs (`dbname=pgbouncer`) for `SHOW CONFIG`/`logfile`; account belongs to `stats_users`. |
-| `KRONIKA_PGBOUNCER_LOGS` | Unset | Semicolon-separated local PgBouncer paths or final-component globs. |
+| `KRONIKA_PG_DSNS` | Unset | PostgreSQL connection strings. The first enables server metrics; each locates its server’s current log and format. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Number of CPUs available to the first PostgreSQL server: integer `1..4294967295`. Requires `KRONIKA_PG_DSNS`. When unset, the Health indicator and chart marks use the recorded CPU capacity of the collector’s VM or container. |
+| `KRONIKA_PG_LOGS` | Unset | Additional local PostgreSQL log paths; filenames can use `*` and `?` wildcards. When unset, every `KRONIKA_PG_DSNS` entry still discovers its current log through `pg_current_logfile()`. Explicit entries add to discovered sources; files must be readable on the collector host. |
+| `KRONIKA_PGBOUNCER_DSNS` | Unset | Connections to the administrative console (`dbname=pgbouncer`) to read `SHOW CONFIG`/`logfile`; the account must belong to `stats_users`. |
+| `KRONIKA_PGBOUNCER_LOGS` | Unset | Local PgBouncer log paths; filenames can use `*` and `?` wildcards. |
 
 Blank lists add no explicit entries. Blank entries between semicolons are errors.
 The first PostgreSQL DSN supplies metrics from its initial database and other
-connectable non-template databases on that server. Further DSNs supply log
-discovery only. PostgreSQL metric rows have no server identity column.
+accessible databases other than template databases on that server. Further DSNs supply log
+discovery only. PostgreSQL metric rows have no separate field identifying the server.
 
 ### Other settings
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KRONIKA_LOG_LEVEL` | `info` | Case-insensitive `error`, `warn`/`warning`, `info`, `debug`, `trace`; structured logs on stderr. |
-| `KRONIKA_PROC_ROOT` | `/proc` | procfs root; setting it limits container detection to that root's cgroup file. |
-| `KRONIKA_SYS_ROOT` | `/sys` | sysfs root. |
-| `KRONIKA_STATVFS_FIXTURE` | Unset | Test hook: `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` substitutes `statvfs` values. |
+| `KRONIKA_LOG_LEVEL` | `info` | Logging detail: case-insensitive `error`, `warn`/`warning`, `info`, `debug`, `trace`; messages go to standard error (stderr). |
+| `KRONIKA_PROC_ROOT` | `/proc` | Directory containing process information from procfs; setting it limits container detection to that directory’s cgroup file. |
+| `KRONIKA_SYS_ROOT` | `/sys` | Directory containing kernel device information from sysfs. |
+| `KRONIKA_STATVFS_FIXTURE` | Unset | Filesystem values for tests: `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` substitutes `statvfs` values. |
 
 ## PostgreSQL collection
 
 ### PostgreSQL CPU capacity
 
-For local PostgreSQL in the same VM or container resource scope, leave
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset. At each Activity timestamp, calculation
-uses the latest recorded VM CPU snapshot or the collector's own cgroup effective
-quota/period and cpuset at or before that time. Fractional quotas are preserved:
+For local PostgreSQL in the same virtual machine or cgroup as the collector, leave
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset. For each time shown in Activity, the calculation
+uses the latest recorded VM CPU count or the collector’s cgroup CPU limits
+available at or before that time. The cgroup limits include its CPU-time
+quota and allowed set of CPUs (cpuset). Fractional quotas are preserved:
 `150000/100000` gives `1.5` CPUs.
 
 For remote PostgreSQL or a different cgroup, including one on the same host,
 set the target PostgreSQL capacity as a positive whole number of CPUs. The
-explicit value takes precedence. The DSN address does not establish a shared
-resource scope. Unknown recorded capacity leaves Health null; a known capacity
+explicit value takes precedence. The connection address alone does not show whether the programs share
+resource limits. Unknown recorded capacity leaves Health unavailable (`null`); a known capacity
 can be set manually. [Launch examples](../../INSTALL.md#5-postgresql) and
 [formulas](../../docs/metrics-time.md#health).
 
 <a id="postgresql-role"></a>
 ### PostgreSQL role
 
-[Role creation commands](../../INSTALL.md#5-postgresql) belong to installation.
-Runtime privileges:
+[Create a monitoring role](../../INSTALL.md#5-postgresql) with these privileges:
 
 | Scope | Required privilege |
 | --- | --- |
@@ -122,10 +131,10 @@ role. The explicit `pg_current_logfile()` grant is needed on PostgreSQL 10–16.
 
 | Item | Contract |
 | --- | --- |
-| Database sessions | One reused connection per connectable database, maximum healthy age one hour. Discovery adds/removes databases every relation interval. |
-| Extension inventory | One inventory query per database each discovery pass; cached schema and callable interface. One usable installation of each extension is selected. |
-| `pg_stat_statements` | Supports extension `1.5+` in the `1.x` series; PostgreSQL 14+ requires `1.9+`. Newest compatible layout wins, then current database, then database name. |
-| `pg_store_plans` | Separate OSSC and Datasentinel zero-argument layouts; vadv boolean interface requires its four-key getter and native text converter. Implementation selection uses current database, then database name. |
+| Database sessions | One reused connection per connectable database, replaced after at most one hour while healthy. The database list is refreshed at `KRONIKA_PG_RELATIONS_INTERVAL_S`. |
+| Extension inventory | One query per database on each discovery pass; the schema and available functions are remembered. One usable installation of each extension is selected. |
+| `pg_stat_statements` | Supports extension `1.5+` in the `1.x` series; PostgreSQL 14+ requires `1.9+`. The newest compatible set of fields wins, then current database, then database name. |
+| `pg_store_plans` | OSSC and Datasentinel return different fields through a function with no arguments; the vadv boolean interface requires its four-key plan lookup function and plan-to-text converter. Implementation selection uses current database, then database name. |
 | Info views | `pg_stat_statements_info` and `pg_store_plans_info` are discovered independently of the main readers. |
 | Settings | Read each PostgreSQL tick; full snapshot after first successful read, on change, and in every segment. Latest successful snapshot is reused when other sources open a segment. |
 | Settings exclusions | `primary_conninfo` and `ssl_passphrase_command` are omitted; other command and custom settings are recorded. |
@@ -139,12 +148,12 @@ Sources: [database pool](../../crates/kronika-source-pg/src/pool.rs),
 
 | Item | Value or behavior |
 | --- | --- |
-| Transport | `NoTls`; direct PostgreSQL or PgBouncer session pooling. Transaction/statement pooling do not retain the session state required by metric reads. |
-| Protocol | Administrative reads: Simple Query Protocol. Typed metrics: one-shot unnamed Extended Protocol. One query at a time per connection. |
+| Transport | No TLS encryption (`NoTls`); direct PostgreSQL or PgBouncer session pooling. Transaction/statement pooling do not retain the session state required by metric reads. |
+| Protocol | Administrative queries use Simple Query Protocol. Metrics with known field types use a one-shot unnamed query through Extended Protocol. One query at a time per connection. |
 | Session initialization | One `SET statement_timeout = '30s'` before use. |
 | Client fetch deadline | 35 seconds, then a CancelRequest attempt with a one-second deadline and connection close. |
 | Collector identity | One unique `application_name` per collector process; Activity/Locks exclude that exact name. |
-| Batch bounds | At most 256 rows, targeting 512 KiB decoded logical data; the final SQL-bounded row can exceed the byte target. Each batch reaches WAL before fetching the next. |
+| Batch bounds | At most 256 rows, targeting 512 KiB of decoded data; the final row, bounded by the SQL query, can exceed the byte target. Each batch reaches the recording journal before the next is read. |
 | Text bounds | Statement and plan text limited to 65,536 characters in SQL. |
 | Stream error | Earlier appended batches remain; the remaining read is skipped and independent sources continue. |
 | SQLSTATE `57014` | Counted as query timeout; session is reusable after `ReadyForQuery`. |
@@ -152,7 +161,7 @@ Sources: [database pool](../../crates/kronika-source-pg/src/pool.rs),
 
 `pg_query_summary` records query count/rate, rows, logical bytes, errors,
 timeouts, slow queries, fetch/encoding/WAL times, encoded/appended bytes and
-`peak_rss_kib`. Connection labels are `user@host:port`. Source:
+`peak_rss_kib`, the peak physical memory occupied by the process in KiB. Connection labels are `user@host:port`. Source:
 [query.rs](../../crates/kronika-source-pg/src/query.rs).
 
 ## Log collection
@@ -164,10 +173,10 @@ files; null supplies no automatic file. A relative path is resolved against
 that PostgreSQL server's `data_directory`. The resulting file must be readable
 on the collector host; the collector does not fetch files from a remote server.
 
-`KRONIKA_PG_LOGS` adds local paths/globs to the discovered sources. An identical
+`KRONIKA_PG_LOGS` adds local paths or filename patterns to the discovered sources. An identical
 path is followed once, retaining discovered `system_identifier` and
-`log_line_prefix` when available. Path-only sources below are files absent from
-DSN discovery. Discovery requires the [function privileges](#postgresql-role)
+`log_line_prefix` when available. Files described as “path-only” below were not found through
+a database connection. Discovery requires the [function privileges](#postgresql-role)
 listed above.
 
 | Property | Behavior |
@@ -183,19 +192,22 @@ Sources: [source discovery](src/log_sources.rs), [SQL facts and path resolution]
 [log collector](../../crates/kronika-source-log/src),
 [PostgreSQL parser](../../crates/kronika-source-log/src/postgres.rs).
 
-## Linux scope
+## Linux collection
 
-The recorded environment is established at collection time. Machine/VM runs
-collect no cgroup workload rows. Container runs collect direct live memberships;
-limits, controller paths and resource formulas are defined in the
+The recorded environment is established at collection time. On a physical or virtual machine,
+no cgroup workload rows are collected. In a container, the collector reads
+groups to which running processes directly belong. Their resource limits
+and calculations are defined in the
 [Linux metric reference](../../docs/metrics-linux.md).
 
 Filesystem capacity is queried for `ext2`, `ext3`, `ext4`, `xfs`, `btrfs`,
 `f2fs`, `zfs`, `tmpfs` and `overlay`. Other types retain null capacity fields.
-One helper process handles allowlisted mounts under a single one-second
-deadline. Mount rows record exact mount roots and byte/inode capacity;
-topology records partition/device and layered-device/slave edges. In containers,
-topology is restricted to chains under mounted or cgroup-charged devices.
+One helper process handles supported mounts under a shared one-second
+deadline. Mount rows record their exact roots, space in bytes and available
+file metadata entries (inodes). Device relationships connect partitions to
+devices and layered devices to their underlying devices. In containers, these
+relationships are limited to chains of mounted devices or devices accounted
+for by cgroup I/O statistics.
 
 ## Run and signals
 
@@ -208,4 +220,4 @@ immediately and requests segment publication when the cycle appends data and the
 segment is nonempty. `-h`, `--help` and `--version` exit before
 configuration or storage access. Readiness and segment paths go to stdout;
 structured logs go to stderr. Each `segment_write_finish` records `rss_kib`,
-the process peak resident set size in KiB.
+the peak physical memory occupied by the process in KiB.

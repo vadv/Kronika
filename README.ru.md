@@ -2,12 +2,12 @@
 
 [English version](README.md)
 
-Kronika записывает метрики процессов и хоста Linux, статистику PostgreSQL,
-планы запросов и события логов PostgreSQL/PgBouncer. Collector пишет локальные
-журналы и сжатые сегменты; web показывает выбранный час, snapshots на момент
-курсора и историю объектов.
+Kronika сохраняет метрики Linux, статистику PostgreSQL, планы запросов и
+события из журналов PostgreSQL/PgBouncer. Сборщик работает на наблюдаемой машине
+и пишет данные на её диск. Веб-интерфейс показывает, что происходило в выбранный
+час: нагрузку, отдельные процессы и запросы, блокировки и изменения показателей.
 
-![CPU-активность процессов и snapshot процессов за записанный час](docs/images/processes.png)
+![Использование CPU и значения показателей процессов за записанный час](docs/images/processes.png)
 
 [Открыть интерактивный пример](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html).
 
@@ -25,7 +25,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-Во втором терминале запустите web с тем же каталогом:
+Во втором терминале запустите веб-сервер с тем же каталогом данных:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -36,16 +36,18 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-web
 ```
 
-Откройте <http://127.0.0.1:8080/> и войдите. Web читает активный журнал во время
+Откройте <http://127.0.0.1:8080/> и войдите. Веб-сервер читает данные и во время
 сбора. `Ctrl+C` останавливает любой из процессов и сохраняет запись.
-[Units systemd](docs/services.ru.md) запускают обе программы как сервисы.
+[Службы systemd](docs/services.ru.md) запускают обе программы как сервисы.
 
 ### Локальный и удалённый PostgreSQL
 
-После [настройки monitoring role](INSTALL.ru.md#5-postgresql) остановите
-collector и выберите подключение. Для локального PostgreSQL в той же VM или
-с теми же ограничениями ресурсов контейнера `KRONIKA_POSTGRES_EFFECTIVE_CPUS`
-не задаётся: ёмкость CPU вычисляется по записанным CPU snapshots или quota/cpuset.
+После [создания роли для сбора данных](INSTALL.ru.md#5-postgresql) остановите
+сборщик и задайте строку подключения (DSN). Если PostgreSQL работает в той же
+виртуальной машине или группе cgroup, что и сборщик, не задавайте
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS`: доступное число CPU определяется по записанным
+данным. Cgroup — группа процессов Linux с общими ограничениями ресурсов;
+учитываются квота процессорного времени и разрешённый набор CPU.
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -53,8 +55,8 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-Для удалённого PostgreSQL или PostgreSQL в другом cgroup задайте доступную
-именно ему ёмкость CPU. Пример для PostgreSQL с 4 CPU:
+Для удалённого PostgreSQL или PostgreSQL в другой cgroup задайте число CPU,
+доступных именно ему. Пример для PostgreSQL с 4 CPU:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -63,8 +65,9 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-Режим подключения задаётся этими условиями размещения; адрес DSN их не
-определяет. Перезапустите web с `KRONIKA_WEB_SOURCES=3` для OS и PostgreSQL.
+Адрес подключения сам по себе не показывает, общие ли у программ ограничения
+ресурсов. Перезапустите веб-сервер с `KRONIKA_WEB_SOURCES=3`, чтобы видеть
+и Linux, и PostgreSQL.
 
 ### Место на диске
 
@@ -73,7 +76,7 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 числа записываемых объектов и уникальных запросов.
 
 `KRONIKA_RETENTION=2147483648` задаёт бюджет хранения **2 GiB** по умолчанию,
-включая журналы и индексы. При превышении целевого объёма collector автоматически
+включая журналы и индексы. При превышении целевого объёма сборщик автоматически
 удаляет самые старые завершённые записи вместе с их индексами.
 Для **10 GiB** задайте `KRONIKA_RETENTION=10737418240` (значение в байтах).
 
@@ -83,22 +86,24 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 
 ## Данные и представления
 
-| Область | Представления и значения | Справочник |
+Названия в первом столбце соответствуют разделам интерфейса.
+
+| Область | Что можно посмотреть | Справочник |
 | --- | --- | --- |
-| Processes | General, Tree, CPU, Memory, Disk; counters и rates по PID, команда и status; активность за час и история. | [Метрики Linux](docs/metrics-linux.ru.md) |
-| Host | CPU, memory, PSI, network, counters дисков, ёмкость filesystem, топология mounts/devices; CPU, memory, I/O и threads cgroup контейнера. | [Метрики Linux](docs/metrics-linux.ru.md) |
-| Сессии PostgreSQL | Overview, Activity, Locks, Vacuum; состояния backend, waits, цепочки блокировок, возраст транзакций/запросов и ход maintenance. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
-| SQL PostgreSQL | Statements и Plans; calls, время execution/planning, buffers, temporary I/O, WAL, записанные SQL и текст плана. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
-| Объекты PostgreSQL | Databases, Tables, Indexes и settings; traffic, size, scans, changes, maintenance counters, возраст транзакций и группы по database/schema/tablespace. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
-| Events | Группы событий логов PostgreSQL/PgBouncer, отдельные события, длительности и записанный контекст; metric marks. | [Представления и controls](docs/features.ru.md) |
-| Время и charts | Календарный час, курсор, выбор samples, интервальные вычисления, heatmaps, totals и percentiles. | [Время и вычисления](docs/metrics-time.ru.md) |
+| Processes — процессы | Команда, состояние и номер процесса (PID), использование CPU, память, чтение и запись на диск; дерево процессов и активность за час. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Host — система | CPU, память, ожидание ресурсов (PSI), сеть и диски, свободное место и связи устройств; ограничения и использование ресурсов контейнера. | [Метрики Linux](docs/metrics-linux.ru.md) |
+| Overview, Activity, Locks, Vacuum — работа PostgreSQL | Общая нагрузка, сеансы и ожидания, цепочки блокировок, длительность запросов и транзакций, ход очистки таблиц. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Statements и Plans — запросы и планы | Число вызовов, время выполнения и планирования, чтение страниц и временных файлов, запись журнала WAL, текст SQL и плана. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Databases, Tables, Indexes — объекты PostgreSQL | Размеры, чтение и изменение данных, обслуживание и возраст транзакций; объединение объектов по базе, схеме и табличному пространству. | [Метрики PostgreSQL](docs/metrics-postgresql.ru.md) |
+| Events — события | Сообщения журналов PostgreSQL/PgBouncer, группы похожих сообщений, время и длительность событий. | [Управление интерфейсом](docs/features.ru.md) |
+| Время и графики | Выбор часа и момента внутри него, изменение показателей, карты активности, итоговые значения и распределение измерений. | [Время и вычисления](docs/metrics-time.ru.md) |
 
-[Представления и controls](docs/features.ru.md) определяют навигацию, lenses,
-grouping, поиск, сортировку, Inspector, charts и Export.
-[Руководство оператора](docs/operator-guide.ru.md) содержит четыре расчётных
-примера из записи выше.
+[Руководство по интерфейсу](docs/features.ru.md) описывает выбор показателей,
+группировку, поиск, сортировку, просмотр подробностей (Inspector), графики
+и экспорт. В [руководстве оператора](docs/operator-guide.ru.md) — четыре
+примера с расчётами по записи выше.
 
-![Записанный statement, текст SQL и активность за интервал](docs/images/statements.png)
+![Записанный запрос, текст SQL и активность за интервал](docs/images/statements.png)
 
 ![Записанный план выполнения и связанный SQL](docs/images/plans.png)
 
@@ -106,41 +111,44 @@ grouping, поиск, сортировку, Inspector, charts и Export.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
-  <img alt="Linux и PostgreSQL передают данные collector; web читает запись для браузера и MCP-клиентов" src="docs/images/architecture.svg">
+  <img alt="Сборщик получает данные Linux и PostgreSQL; веб-сервер передаёт запись браузеру и MCP-клиентам" src="docs/images/architecture.svg">
 </picture>
 
 Интервалы сбора по умолчанию: процессы — 5 секунд, основные метрики Linux —
-10 секунд, метрики PostgreSQL — 30 секунд, relations — 300 секунд.
-[Конфигурация collector](bins/kronika-collector/README.ru.md) определяет scope
-источников, интервалы, права и ротацию хранения.
+10 секунд, метрики PostgreSQL — 30 секунд, таблицы и индексы — 300 секунд.
+[Настройки сборщика](bins/kronika-collector/README.ru.md) описывают источники
+данных, интервалы, права доступа и удаление старых записей.
 
-Web обслуживает браузер, HTTP API и MCP на одном listener. Панель **AI**
-содержит параметры подключения MCP-клиентов. [MCP tools](docs/features.ru.md#mcp)
-читают snapshots, rankings, field definitions, events и полные row details.
+Веб-сервер обслуживает браузер, HTTP API и MCP на одном адресе и порту.
+MCP — протокол, через который ИИ-клиент может читать сохранённые данные.
+Панель **AI** содержит настройки такого подключения.
+[Инструменты MCP](docs/features.ru.md#mcp) возвращают значения на выбранный
+момент, списки объектов по величине показателя, описания полей, события
+и подробности строк.
 
 ## Переносимый HTML-экспорт
 
 **Export** сохраняет выбранный интервал вашей записи в один интерактивный
-HTML-файл. Он содержит интерфейс, данные и Rust/WebAssembly query engine,
-который выполняется на основном потоке браузера. Для открытия файла не нужны
+HTML-файл. Он содержит интерфейс, данные и программу обработки запросов
+на Rust/WebAssembly, которая выполняется в основном потоке браузера. Для открытия файла не нужны
 сервер или сетевое подключение.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-dark.svg">
-  <img alt="Экспорт интервала из web или сохранённой записи в один интерактивный offline HTML-файл" src="docs/images/report-export.svg">
+  <img alt="Сохранение интервала записи в интерактивный HTML-файл для просмотра без сервера" src="docs/images/report-export.svg">
 </picture>
 
 [kronika-dump](bins/kronika-dump/README.ru.md) читает хранилище и извлекает
-интервал в ZMS; [kronika-report](bins/kronika-report/README.ru.md) преобразует
-отдельный ZMS в HTML. Offline reports предоставляют локальные таблицы, поиск,
-charts и heatmaps.
+интервал в отдельный файл записи ZMS; [kronika-report](bins/kronika-report/README.ru.md) преобразует
+отдельный ZMS в HTML. Отчёт работает без сервера: в нём доступны таблицы, поиск,
+графики и карты активности.
 
 ## Документация
 
 - Настройка: [Установка](INSTALL.ru.md) · [Архивы и CI](docs/releases.ru.md) · [Сервисы](docs/services.ru.md) · [Сборка](docs/build.ru.md)
-- Справочники: [Controls](docs/features.ru.md) · [Время](docs/metrics-time.ru.md) · [Linux](docs/metrics-linux.ru.md) · [PostgreSQL](docs/metrics-postgresql.ru.md) · [MCP](docs/mcp-clients.ru.md)
-- Программы: [Collector](bins/kronika-collector/README.ru.md) · [Web](bins/kronika-web/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md) · [Report](bins/kronika-report/README.ru.md)
+- Справочники: [Интерфейс](docs/features.ru.md) · [Время](docs/metrics-time.ru.md) · [Linux](docs/metrics-linux.ru.md) · [PostgreSQL](docs/metrics-postgresql.ru.md) · [MCP](docs/mcp-clients.ru.md)
+- Программы: [Сборщик](bins/kronika-collector/README.ru.md) · [Веб-сервер](bins/kronika-web/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md) · [Report](bins/kronika-report/README.ru.md)
 - Записанные поля: [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) · [События PostgreSQL](docs/type-registry/postgresql.md) · [События PgBouncer](docs/type-registry/pgbouncer.md)
-- Устройство: [Контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md) · [Demo для разработки](bins/kronika-demo/README.ru.md)
+- Устройство: [Контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md) · [Демонстрационная нагрузка для разработки](bins/kronika-demo/README.ru.md)
 
 [Лицензия MIT](LICENSE).
