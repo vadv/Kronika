@@ -101,7 +101,9 @@ GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile() TO kronika_monitor;
 database и локальные для database права extension из раздела
 [PostgreSQL role](bins/kronika-collector/README.ru.md#postgresql-role).
 
-Остановите collector через `Ctrl+C`, затем запустите с первым metric DSN:
+Остановите collector через `Ctrl+C`. Для локального PostgreSQL в той же VM
+или с теми же ограничениями ресурсов контейнера запустите без
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS`:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -112,16 +114,26 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | Параметр или подключение | Контракт |
 | --- | --- |
 | `KRONIKA_PG_DSNS` | Первый DSN включает метрики доступных для подключения databases этого сервера. Дополнительные DSNs через `;` обнаруживают логи. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Необязательное целое `1..4294967295`: эффективная CPU capacity наблюдаемого PostgreSQL. Нужно для числового PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Необязательное целое `1..4294967295`: явная ёмкость CPU наблюдаемого PostgreSQL. Без значения используется записанная ёмкость CPU VM/контейнера collector. |
 | Обнаружение extensions | Поддерживаемые интерфейсы `pg_stat_statements` и `pg_store_plans` обнаруживаются в доступных databases. Activity, Locks и статистика relations используют встроенные views PostgreSQL. |
 | Transport | Native client использует `NoTls`; поддерживаются прямое подключение к PostgreSQL и PgBouncer session pooling. Metric sessions сохраняют состояние `SET`. |
 | Пути логов | Обнаружение возвращает пути на машине collector. Смонтированные логи задаются через `KRONIKA_PG_LOGS`; PgBouncer использует `KRONIKA_PGBOUNCER_DSNS` или `KRONIKA_PGBOUNCER_LOGS`. |
 
-PostgreSQL может работать на другой машине или в отдельном cgroup.
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS` задаёт ёмкость CPU, доступную этому
-инстансу PostgreSQL. Если у коллектора 2 CPU, а у наблюдаемого PostgreSQL
-8 CPU, значение параметра — `8`. Метрики OS и cgroup коллектора описывают
-его собственные ресурсы.
+Для удалённого PostgreSQL или другого cgroup укажите ёмкость CPU целевого
+PostgreSQL. Пример для collector с 8 CPU и PostgreSQL с 4 CPU:
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
+```
+
+Без явного значения расчёт предполагает общие ресурсы с collector; адрес DSN
+не проверяет это условие. В VM используются CPU из последнего записанного
+snapshot, в контейнере — его effective quota/period и cpuset. Дробная квота
+`150000/100000` даёт `1.5` CPU. Если записанная ёмкость неизвестна, PostgreSQL
+Health равен null; задайте известную ёмкость вручную. [Формулы и выбор времени](docs/metrics-time.ru.md#health).
 
 Перезапустите web с `KRONIKA_WEB_SOURCES=3`, чтобы отметить OS и PostgreSQL как
 настроенные в его каталоге. Сбор включают DSNs collector; bitset web задаёт

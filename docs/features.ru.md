@@ -72,7 +72,7 @@ schema:shop AND table_name:orders
 | Вход | Значение |
 | --- | --- |
 | Collector `KRONIKA_PG_DSNS` | Настроенные подключения включают сбор PostgreSQL. |
-| Записанный `instance_metadata` | Окружение, частота сбора, флаг включённого PostgreSQL и необязательная эффективная CPU capacity базы. Используется для scope/time/Health. |
+| Записанный `instance_metadata` | Окружение, частота сбора, флаг включённого PostgreSQL и необязательная явная ёмкость CPU базы. Используется для scope/time/Health. |
 | Обязательный web `KRONIKA_WEB_SOURCES` | Беззнаковый bitset catalog: `0` оба configured-флага выключены, `1` OS, `2` PostgreSQL, `3` оба. Обозначает настроенные источники; не фильтрует записи, не управляет сбором, не скрывает вкладки и не рассчитывает Health. |
 | UI-флаг настроенного PostgreSQL | Вместе с наличием записанного PostgreSQL управляет подавлением tooltip об отсутствии PostgreSQL-данных. Настроенный OS-бит не имеет UI-потребителя. |
 | Записанный physical layout | Определяет доступные поля версии PostgreSQL или варианта расширения. |

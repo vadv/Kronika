@@ -61,7 +61,7 @@ times. A per-source `0` reads on every timer cycle.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KRONIKA_PG_DSNS` | Unset | Semicolon-separated PostgreSQL keyword DSNs or URLs. First DSN enables server metrics; every DSN discovers local log paths/format. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`, CPU capacity available to the first PostgreSQL target, including a remote server or a separate cgroup. Requires `KRONIKA_PG_DSNS`; recorded as the operand for PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Unset | Integer `1..4294967295`: explicit CPU capacity of the first PostgreSQL target. Requires `KRONIKA_PG_DSNS`. Unset uses the collector VM/container's recorded CPU capacity for Health and marks. |
 | `KRONIKA_PG_LOGS` | Unset | Semicolon-separated local PostgreSQL paths or globs. Only the final component supports `*` and `?`. |
 | `KRONIKA_PGBOUNCER_DSNS` | Unset | Semicolon-separated admin-console DSNs (`dbname=pgbouncer`) for `SHOW CONFIG`/`logfile`; account belongs to `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Unset | Semicolon-separated local PgBouncer paths or final-component globs. |
@@ -81,6 +81,21 @@ discovery only. PostgreSQL metric rows have no server identity column.
 | `KRONIKA_STATVFS_FIXTURE` | Unset | Test hook: `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` substitutes `statvfs` values. |
 
 ## PostgreSQL collection
+
+### PostgreSQL CPU capacity
+
+For local PostgreSQL in the same VM or container resource scope, leave
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset. At each Activity timestamp, calculation
+uses the latest recorded VM CPU snapshot or the collector's own cgroup effective
+quota/period and cpuset at or before that time. Fractional quotas are preserved:
+`150000/100000` gives `1.5` CPUs.
+
+For remote PostgreSQL or a different cgroup, including one on the same host,
+set the target PostgreSQL capacity as a positive whole number of CPUs. The
+explicit value takes precedence. The DSN address does not establish a shared
+resource scope. Unknown recorded capacity leaves Health null; a known capacity
+can be set manually. [Launch examples](../../INSTALL.md#5-postgresql) and
+[formulas](../../docs/metrics-time.md#health).
 
 <a id="postgresql-role"></a>
 ### PostgreSQL role

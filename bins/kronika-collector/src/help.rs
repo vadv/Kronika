@@ -12,10 +12,15 @@ EXAMPLES
   Linux recording:
     sudo env KRONIKA_STORAGE_DIR=/path/to/recording kronika-collector
 
-  Linux and PostgreSQL recording, using an existing connection:
+  Local PostgreSQL in the same VM/container resource scope, existing connection:
     sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
       KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
       kronika-collector
+
+  Remote PostgreSQL with 4 CPUs, using an existing connection:
+    sudo env KRONIKA_STORAGE_DIR=/path/to/recording \
+      KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+      KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 kronika-collector
 
 REQUIRED ENVIRONMENT
   KRONIKA_STORAGE_DIR
@@ -32,11 +37,15 @@ OPTIONAL POSTGRESQL AND LOG ENVIRONMENT (all unset by default)
       Use an existing monitoring connection, directly or through PgBouncer
       session pooling. Transaction/statement pooling and TLS are unsupported.
   KRONIKA_POSTGRES_EFFECTIVE_CPUS
-      Positive whole CPU count (1..4294967295) available to the monitored
-      PostgreSQL server, including a remote host or a separate cgroup.
-      Requires KRONIKA_PG_DSNS. Health compares the active backend count with
-      twice this recorded capacity. An unset capacity gives null PostgreSQL
-      health. The collector's CPU count does not supply this value.
+      Explicit target PostgreSQL CPU capacity: whole number 1..4294967295.
+      Requires KRONIKA_PG_DSNS. Set for remote PostgreSQL or a different cgroup,
+      including one on the same host. This value overrides automatic capacity.
+      Leave unset for local PostgreSQL in the same VM/container resource scope:
+      use the latest recorded VM CPU snapshot or container quota/period bounded
+      by cpuset at or before each PostgreSQL sample. Fractions are preserved.
+      Unlimited quota uses a positive cpuset; unknown capacity gives null Health.
+      The DSN address does not establish resource scope. Health and active-backend
+      marks compare the active count with twice this capacity.
   KRONIKA_PG_LOGS
       Semicolon-separated local PostgreSQL log paths or globs. Example:
       '/var/log/postgresql/*.csv;/srv/pg-logs/*.json'. Only the last path

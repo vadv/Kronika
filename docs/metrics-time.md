@@ -115,24 +115,52 @@ Health values are integer percentages. Let `E = t₁ − t₀` in microseconds; 
 
 All three PSI components and a positive interval are required; a decreasing component makes that pair null. A null PSI snapshot clears the previous snapshot. Machine recordings use host PSI (`scope = 0`); container recordings use pod/container PSI (`scope = 1` or `3`). The recorded environment and boot identity select the scope and bind predecessor samples. Ambiguous metadata yields unknown health.
 
-Let `A` be the count of recorded `pg_stat_activity` rows whose state is exactly `active`, and `C` be the recorded positive whole CPU capacity `postgresql_effective_cpus`. Every active row contributes, including an active non-client backend. Service slots `K = 2 × C`:
+Let `A` be the count of recorded `pg_stat_activity` rows whose state is exactly
+`active`, and `C` be PostgreSQL CPU capacity in cores. Every active row
+contributes, including an active non-client backend. `C` can be fractional;
+service slots `K = 2 × C`.
 
-`PG penalty = 0` if `A ≤ K`; otherwise `floor((100 × (A − K) + floor(A / 2)) / A)`.
+`PG penalty = 0` if `A = 0`; otherwise `round(100 × max(A − 2 × C, 0) / A)`.
 
 `PostgreSQL health = 100 − PG penalty`.
 
-Capacity comes from `KRONIKA_POSTGRES_EFFECTIVE_CPUS`, recorded by the collector; it has no inferred host/container fallback. `KRONIKA_PG_DSNS` enables PostgreSQL collection. Missing active-count input or missing/zero capacity gives null. Conflicting activity layouts at the same timestamp give an unknown count.
+`round` selects the nearest integer, with halves rounded up. For `C = 8`,
+`A = 16` and `A = 20` give Health `100` and `80`; for `C = 1.5`, `A = 3` and
+`A = 4` give `100` and `75`.
 
-`C` belongs to the monitored PostgreSQL instance. A remote server or a separate
-cgroup can have a different capacity from the collector. The value recorded
-for PostgreSQL is used unchanged when reading WAL, ZMS or an HTML report;
-the CPU count of the machine opening the recording does not enter this formula.
+Capacity is selected at each PostgreSQL sample timestamp in this order:
+
+| Source | Value of `C` |
+| --- | --- |
+| Explicit positive `instance_metadata.postgresql_effective_cpus` | Recorded `KRONIKA_POSTGRES_EFFECTIVE_CPUS` (`1..4294967295`), overriding automatic calculation |
+| Machine/VM, no override | Count of distinct `os_cpu.cpu_id ≥ 0` in the latest complete CPU snapshot at or before the PostgreSQL timestamp; excludes aggregate `cpu_id = −1` |
+| Container, no override | Latest `os_cgroup_context` for collector's own resource scope at or before the PostgreSQL timestamp: positive quota `Q` divided by positive period `P`, capped by positive `cpuset_cpus` when recorded |
+| Container with recorded quota `−1` | Positive `cpuset_cpus`, or `null` when absent |
+| Container with missing or invalid quota/period | `null` |
+
+`Q` and `P` are recorded microseconds; `150000/100000 = 1.5` cores. Context
+already records the tightest visible ancestor quota. A changed quota or CPU
+snapshot affects subsequent PostgreSQL samples only. VM capacity uses neither
+CPUFreq policy count nor a union of CPU IDs over the segment. Unknown container
+capacity stays null.
+
+Omitting the override assigns PostgreSQL the collector's VM/container resource
+scope. Remote PostgreSQL or a different cgroup requires an explicit target
+PostgreSQL capacity, including a different cgroup on the same host. This is a
+deployment contract; DSN, hostname and PID do not verify it. `KRONIKA_PG_DSNS`
+enables PostgreSQL collection. Missing active-count input or capacity gives null.
+Conflicting activity layouts at the same timestamp give an unknown count.
+
+Health and active-backend marks use the same resolved `C`. Calculation reads
+recorded WAL/ZMS facts; resources of the machine opening the recording do not
+participate. An HTML report keeps the query engine embedded when it was generated;
+generate a new report to use a newer calculation.
 
 At each OS health timestamp, overall health uses the latest PostgreSQL health at or before it, no older than recorded `postgresql_interval_seconds`:
 
 `Overall health = max(0, OS health − PG penalty)`.
 
-Disabled PostgreSQL contributes zero penalty. Enabled PostgreSQL with unknown or older input makes overall health null; unknown OS health always makes overall health null. Web source flags do not participate in these formulas. Sources: [integer formulas](../crates/kronika-index/src/health.rs), [scope, activity counts, and time selection](../crates/kronika-index/src/build.rs), [collector metadata](../bins/kronika-collector/src/service_sections.rs).
+Disabled PostgreSQL contributes zero penalty. Enabled PostgreSQL with unknown or older input makes overall health null; unknown OS health always makes overall health null. Web source flags do not participate in these formulas. Sources: [formulas](../crates/kronika-index/src/health.rs), [CPU capacity](../crates/kronika-index/src/cpu_capacity.rs), [scope, activity counts, and time selection](../crates/kronika-index/src/build.rs), [collector metadata](../bins/kronika-collector/src/service_sections.rs).
 
 ## Timeline marks
 
@@ -140,7 +168,7 @@ Each mark stores a source locator: segment, physical layout, row, field, timesta
 
 | Source | Predicate |
 |---|---|
-| Activity | Active-row count `> 2 × recorded postgresql_effective_cpus`; requires a usable capacity and an unambiguous activity layout at that timestamp |
+| Activity | Active-row count `> 2 × C`; requires a usable capacity and an unambiguous activity layout at that timestamp |
 | Locks | Recorded `blocked_by` list is nonempty |
 | Database deadlocks | Later `deadlocks` exceeds the predecessor for the same layout and `datid` |
 | Database checksum failures | Later available `checksum_failures` exceeds the preceding available value for that database/layout; an explicit null breaks the pair |

@@ -9,7 +9,6 @@ Kronika записывает метрики процессов и хоста Lin
 
 ![CPU-активность процессов и snapshot процессов за записанный час](docs/images/processes.png)
 
-Запись синтетической нагрузки: 5 сентября 2026, 19:00–20:00 UTC.
 [Открыть интерактивный пример](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html).
 
 ## Установка и запуск
@@ -39,9 +38,33 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 
 Откройте <http://127.0.0.1:8080/> и войдите. Web читает активный журнал во время
 сбора. `Ctrl+C` останавливает любой из процессов и сохраняет запись.
-[Настройка PostgreSQL](INSTALL.ru.md#5-postgresql) добавляет подключение для
-мониторинга; [units systemd](docs/services.ru.md) запускают обе программы как
-сервисы.
+[Units systemd](docs/services.ru.md) запускают обе программы как сервисы.
+
+### Локальный и удалённый PostgreSQL
+
+После [настройки monitoring role](INSTALL.ru.md#5-postgresql) остановите
+collector и выберите подключение. Для локального PostgreSQL в той же VM или
+с теми же ограничениями ресурсов контейнера `KRONIKA_POSTGRES_EFFECTIVE_CPUS`
+не задаётся: ёмкость CPU вычисляется по записанным CPU snapshots или quota/cpuset.
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  /usr/local/bin/kronika-collector
+```
+
+Для удалённого PostgreSQL или PostgreSQL в другом cgroup задайте доступную
+именно ему ёмкость CPU. Пример для PostgreSQL с 4 CPU:
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
+```
+
+Режим подключения задаётся этими условиями размещения; адрес DSN их не
+определяет. Перезапустите web с `KRONIKA_WEB_SOURCES=3` для OS и PostgreSQL.
 
 ## Данные и представления
 

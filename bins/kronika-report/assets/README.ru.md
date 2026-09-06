@@ -22,8 +22,8 @@ wasm-bindgen создаёт target `web`. Скрипт добавляет огр
 встроенные байты и передаёт `WebAssembly.Module` в `initEmbedded` для асинхронного
 создания экземпляра.
 
-Размер WebAssembly — 9 911 301 байт, gzip — 2 395 786 байт, SHA-256 gzip:
-`d73fd05793b6f9dbdabd11c9ff569133a217c8a1ffa65eadf2c9aa99ccd9e8ae`.
+Размер WebAssembly — 9 910 988 байт, gzip — 2 395 947 байт, SHA-256 gzip:
+`36100b0739d1dd73d373f61f8ab557592b7f2871284037bd4dfc628d5b22dd04`.
 Размер JavaScript binding — 3 885 байт, SHA-256:
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 

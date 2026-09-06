@@ -9,7 +9,6 @@ cursor, and object histories.
 
 ![Process CPU activity and the process snapshot for a recorded hour](docs/images/processes.png)
 
-Recorded synthetic workload: 5 September 2026, 19:00–20:00 UTC.
 [Open the interactive preview](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html).
 
 ## Install and run
@@ -39,8 +38,33 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 
 Open <http://127.0.0.1:8080/> and sign in. Web reads the active journal while
 collection runs. `Ctrl+C` stops either process and retains the recording.
-[PostgreSQL setup](INSTALL.md#5-postgresql) adds the monitoring connection;
-[systemd units](docs/services.md) run both programs as services.
+[Systemd units](docs/services.md) run both programs as services.
+
+### Local and remote PostgreSQL
+
+After [monitoring role setup](INSTALL.md#5-postgresql), stop collector and choose
+its connection. For local PostgreSQL in the same VM or container resource scope,
+omit `KRONIKA_POSTGRES_EFFECTIVE_CPUS`: CPU capacity is calculated from recorded
+CPU snapshots or quota/cpuset.
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  /usr/local/bin/kronika-collector
+```
+
+For remote PostgreSQL or PostgreSQL in a different cgroup, set the CPU capacity
+available to that PostgreSQL server. Example for PostgreSQL with 4 CPUs:
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
+```
+
+This is a deployment contract; the DSN address does not establish resource
+scope. Restart web with `KRONIKA_WEB_SOURCES=3` for OS and PostgreSQL.
 
 ## Recorded data and views
 

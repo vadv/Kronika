@@ -203,10 +203,27 @@ without all three resources.
 
 IDX contains nullable OS, PostgreSQL and combined Health point series on a 0–100
 scale. The query engine computes these from recorded PSI counters,
-`pg_stat_activity` and `instance_metadata`. Metadata records whether PostgreSQL
-collection is enabled, its configured CPU capacity and effective collection
-interval. Disabled PostgreSQL contributes zero penalty; enabled PostgreSQL
-without a usable snapshot or capacity makes combined Health unavailable.
+`pg_stat_activity`, `instance_metadata`, `os_cpu` and `os_cgroup_context`.
+Metadata records whether PostgreSQL collection is enabled, an optional explicit
+CPU capacity override and the effective collection interval. Disabled PostgreSQL
+contributes zero penalty; enabled PostgreSQL without a usable snapshot or
+capacity makes combined Health unavailable.
+
+Health and active-backend marks share one recorded-time capacity resolver for
+`C` at each PostgreSQL sample. A positive `postgresql_effective_cpus` wins.
+Without it, machine/VM uses the distinct `os_cpu.cpu_id ≥ 0` count from the
+latest complete CPU snapshot at or before that time. Container uses its latest
+recorded own-scope `os_cgroup_context` at or before the sample: positive effective
+quota/period bounded by positive cpuset when available. Quota `−1` uses a
+positive cpuset; unknown quota or neither bound gives null. Fractions are
+preserved. Capacity changes apply to subsequent samples only; instance metadata
+remains static.
+
+Without an override, the deployment contract assigns local PostgreSQL the
+collector's VM/container resource scope. Remote PostgreSQL or a different cgroup
+requires an explicit target PostgreSQL capacity. DSN, hostname and PID do not
+establish locality or resource scope. WAL, ZMS and the engine in newly generated
+HTML reports use recorded facts; reader-machine resources do not participate.
 
 The exact operands, rounding, clamping and snapshot-age rules are defined in
 [Health](docs/metrics-time.md#health). Timeline rendering omits a component whose
@@ -255,8 +272,8 @@ The initial exact comparisons are:
 - a local filesystem with exact stored capacity is at least 90% used;
 - overall health is below 50;
 - the host OOM-kill counter or a database deadlock counter increases;
-- active PostgreSQL backends exceed twice the configured positive effective
-  PostgreSQL CPU count;
+- active PostgreSQL backends exceed twice the capacity `C` resolved at that
+  sample by the same calculation as PostgreSQL Health;
 - a recorded `pg_locks` row's `blocked_by` is non-empty;
 - a database's checksum-failure counter increases;
 - the WAL archiver's failed-archive counter increases;
@@ -317,7 +334,7 @@ truncated and its omitted tail may intersect the hour, the filtered count
 covers only returned in-window locators and `truncated` remains true. The hour
 never counts a locator known to be outside its bounds.
 
-`KRNIDX6` is the IDX format shipped in Kronika 1.0.0. IDX is derived data: web
+`KRNIDX6` is the current IDX format. IDX is derived data: web
 discards and rebuilds any other IDX; there is no old-format reader, migration,
 compatibility branch, or dual write.
 

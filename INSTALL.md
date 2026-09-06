@@ -101,7 +101,8 @@ The role needs inherited `pg_monitor` membership, `CONNECT` to each collected
 database and the database-local extension permissions listed in
 [PostgreSQL role](bins/kronika-collector/README.md#postgresql-role).
 
-Stop collector with `Ctrl+C`, then restart with the first metric DSN:
+Stop collector with `Ctrl+C`. For local PostgreSQL in the same VM or container
+resource scope, restart without `KRONIKA_POSTGRES_EFFECTIVE_CPUS`:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -112,16 +113,27 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 | Setting or connection | Contract |
 | --- | --- |
 | `KRONIKA_PG_DSNS` | First DSN enables metrics from that server's connectable databases. Additional semicolon-separated DSNs discover logs. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Optional integer `1..4294967295`: effective CPU capacity of the monitored PostgreSQL server. Required for numeric PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Optional integer `1..4294967295`: explicit CPU capacity of the monitored PostgreSQL server. Unset uses the collector VM/container's recorded CPU capacity. |
 | Extension discovery | Supported `pg_stat_statements` and `pg_store_plans` interfaces are detected in connectable databases. Activity, Locks and relation statistics use PostgreSQL's built-in views. |
 | Transport | Native client uses `NoTls`; direct PostgreSQL and PgBouncer session pooling are supported. Metric sessions retain `SET` state. |
 | Log paths | Discovery returns paths on the collector host. Mounted logs can be named with `KRONIKA_PG_LOGS`; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
 
-PostgreSQL can run on another host or in a separate cgroup. Set
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS` to the CPU capacity available to that
-PostgreSQL instance. For a collector with 2 CPUs monitoring PostgreSQL with
-8 CPUs, the value is `8`. The collector's OS and cgroup metrics describe its
-own resource scope.
+For remote PostgreSQL or a different cgroup, specify the target PostgreSQL
+capacity. Example for a collector with 8 CPUs and PostgreSQL with 4 CPUs:
+
+```sh
+sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
+  KRONIKA_PG_DSNS='host=pg.example.net port=5432 user=kronika_monitor password=replace-with-password dbname=postgres' \
+  KRONIKA_POSTGRES_EFFECTIVE_CPUS=4 \
+  /usr/local/bin/kronika-collector
+```
+
+Omitting the override assumes a shared resource scope with collector; the DSN
+address does not verify that condition. A VM uses its latest recorded CPU
+snapshot; a container uses its effective quota/period and cpuset. A fractional
+quota of `150000/100000` gives `1.5` CPUs. If recorded capacity is unknown,
+PostgreSQL Health is null; set a known capacity manually.
+[Formulas and time selection](docs/metrics-time.md#health).
 
 Restart web with `KRONIKA_WEB_SOURCES=3` to mark both OS and PostgreSQL as
 configured in its catalog. Collection is enabled by collector DSNs; web's

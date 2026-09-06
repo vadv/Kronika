@@ -115,25 +115,52 @@ Health — целочисленные проценты. Пусть `E = t₁ −
 
 Нужны все три PSI-компонента и положительный интервал; уменьшение компонента даёт null для пары. Null PSI snapshot очищает предыдущий snapshot. Machine recordings используют host PSI (`scope = 0`); container recordings — pod/container PSI (`scope = 1` или `3`). Записанные environment и boot identity выбирают scope и связывают predecessor samples. Неоднозначная metadata даёт unknown health.
 
-Пусть `A` — число записанных строк `pg_stat_activity` с состоянием ровно `active`, `C` — записанная положительная целая CPU capacity `postgresql_effective_cpus`. Учитывается каждая active row, включая active non-client backend. Service slots `K = 2 × C`:
+Пусть `A` — число записанных строк `pg_stat_activity` с состоянием ровно
+`active`, `C` — доступная PostgreSQL ёмкость CPU в ядрах. Учитывается каждая
+active row, включая active non-client backend. `C` может быть дробной;
+service slots `K = 2 × C`.
 
-`PG penalty = 0`, если `A ≤ K`; иначе `floor((100 × (A − K) + floor(A / 2)) / A)`.
+`PG penalty = 0`, если `A = 0`; иначе `round(100 × max(A − 2 × C, 0) / A)`.
 
 `PostgreSQL health = 100 − PG penalty`.
 
-Capacity берётся из `KRONIKA_POSTGRES_EFFECTIVE_CPUS` и записывается collector; вычисляемого host/container fallback нет. `KRONIKA_PG_DSNS` включает PostgreSQL collection. Отсутствующий active count или отсутствующая/нулевая capacity дают null. Конфликтующие activity layouts на одном timestamp дают unknown count.
+`round` округляет до ближайшего целого, половину вверх. Например, при `C = 8`
+значения `A = 16` и `A = 20` дают Health `100` и `80`; при `C = 1.5` значения
+`A = 3` и `A = 4` дают `100` и `75`.
 
-`C` относится к наблюдаемому инстансу PostgreSQL. У удалённого сервера или
-отдельного cgroup ёмкость CPU может отличаться от ёмкости коллектора.
-Записанное для PostgreSQL значение одинаково используется при чтении WAL,
-ZMS и HTML-отчёта; число CPU машины, на которой открыта запись, в формулу
-не входит.
+Ёмкость выбирается на timestamp каждого PostgreSQL sample в следующем порядке:
+
+| Источник | Значение `C` |
+| --- | --- |
+| Явное положительное `instance_metadata.postgresql_effective_cpus` | Значение `KRONIKA_POSTGRES_EFFECTIVE_CPUS` (`1..4294967295`), приоритет над автоматическим расчётом |
+| Machine/VM, без явного значения | Число различных `os_cpu.cpu_id ≥ 0` в последнем полном CPU snapshot не позже PostgreSQL timestamp; aggregate `cpu_id = −1` исключается |
+| Container, без явного значения | Последний `os_cgroup_context` собственной области collector не позже PostgreSQL timestamp: при положительных quota `Q` и period `P` — `Q/P`, ограниченное сверху положительным `cpuset_cpus`, если он записан |
+| Container с записанной quota `−1` | Положительный `cpuset_cpus`; без него `null` |
+| Container с отсутствующей или некорректной quota/period | `null` |
+
+`Q` и `P` записаны в микросекундах; `150000/100000 = 1.5` ядра. Context уже
+содержит самую строгую видимую квоту предков. Изменение квоты или CPU snapshot
+влияет только на последующие PostgreSQL samples. Ёмкость VM не использует
+число CPUFreq policies или объединение CPU IDs за весь сегмент. Неизвестная
+ёмкость контейнера остаётся null.
+
+Без явного значения PostgreSQL использует те же ресурсы VM/контейнера, что и
+collector. Для удалённого PostgreSQL или другой cgroup задайте ёмкость целевого
+PostgreSQL явно, даже если он находится на той же машине. Это условие размещения;
+DSN, hostname и PID его не проверяют. `KRONIKA_PG_DSNS` включает сбор PostgreSQL.
+Отсутствующий active count или ёмкость дают null. Конфликтующие activity layouts
+на одном timestamp дают unknown count.
+
+Health и отметки active backends используют один и тот же `C`. Расчёт читает
+записанные факты WAL/ZMS; ресурсы машины, открывающей запись, в нём не участвуют.
+HTML-отчёт содержит query engine на момент генерации; для новой версии расчёта
+нужно сгенерировать новый отчёт.
 
 На каждом OS health timestamp overall health использует последний PostgreSQL health не позже него, возрастом не более записанного `postgresql_interval_seconds`:
 
 `Overall health = max(0, OS health − PG penalty)`.
 
-Отключённый PostgreSQL добавляет нулевой penalty. Включённый PostgreSQL с unknown или более старым sample делает overall health равным null; unknown OS health всегда даёт null. Web source flags в формулах не участвуют. Источники: [целочисленные формулы](../crates/kronika-index/src/health.rs), [scope, activity counts и выбор времени](../crates/kronika-index/src/build.rs), [metadata collector](../bins/kronika-collector/src/service_sections.rs).
+Отключённый PostgreSQL добавляет нулевой penalty. Включённый PostgreSQL с unknown или более старым sample делает overall health равным null; unknown OS health всегда даёт null. Web source flags в формулах не участвуют. Источники: [формулы](../crates/kronika-index/src/health.rs), [ёмкость CPU](../crates/kronika-index/src/cpu_capacity.rs), [scope, activity counts и выбор времени](../crates/kronika-index/src/build.rs), [metadata collector](../bins/kronika-collector/src/service_sections.rs).
 
 ## Timeline marks
 
@@ -141,7 +168,7 @@ ZMS и HTML-отчёта; число CPU машины, на которой от�
 
 | Источник | Predicate |
 |---|---|
-| Activity | Active-row count `> 2 × recorded postgresql_effective_cpus`; нужны пригодная capacity и однозначный activity layout на timestamp |
+| Activity | Active-row count `> 2 × C`; нужны пригодная capacity и однозначный activity layout на timestamp |
 | Locks | Записанный список `blocked_by` непустой |
 | Database deadlocks | Более поздний `deadlocks` превышает predecessor того же layout и `datid` |
 | Database checksum failures | Более поздний доступный `checksum_failures` превышает предыдущее доступное значение database/layout; явный null разрывает пару |

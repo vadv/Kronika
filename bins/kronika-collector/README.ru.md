@@ -61,7 +61,7 @@ ZMS temporaries, orphan indexes, затем старейшие готовые с
 | Переменная | По умолчанию | Значение |
 | --- | --- | --- |
 | `KRONIKA_PG_DSNS` | Не задана | PostgreSQL keyword DSNs или URLs через `;`. Первый DSN включает метрики сервера; каждый DSN обнаруживает локальные пути/формат логов. |
-| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Не задана | Целое `1..4294967295`: ёмкость CPU, доступная первому инстансу PostgreSQL, в том числе на удалённом сервере или в отдельном cgroup. Требует `KRONIKA_PG_DSNS`; записывается для расчёта PostgreSQL health. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Не задана | Целое `1..4294967295`: явная ёмкость CPU первого инстанса PostgreSQL. Требует `KRONIKA_PG_DSNS`. Без значения Health и marks используют записанную ёмкость CPU VM/контейнера collector. |
 | `KRONIKA_PG_LOGS` | Не задана | Локальные PostgreSQL paths или globs через `;`. Только последний компонент поддерживает `*` и `?`. |
 | `KRONIKA_PGBOUNCER_DSNS` | Не задана | Admin-console DSNs (`dbname=pgbouncer`) через `;` для `SHOW CONFIG`/`logfile`; account входит в `stats_users`. |
 | `KRONIKA_PGBOUNCER_LOGS` | Не задана | Локальные PgBouncer paths или final-component globs через `;`. |
@@ -81,6 +81,21 @@ log discovery. PostgreSQL metric rows не содержат server identity colu
 | `KRONIKA_STATVFS_FIXTURE` | Не задана | Test hook: `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` заменяет значения `statvfs`. |
 
 ## Сбор PostgreSQL
+
+### Ёмкость CPU PostgreSQL
+
+Для локального PostgreSQL в той же VM или с теми же ограничениями ресурсов
+контейнера не задавайте `KRONIKA_POSTGRES_EFFECTIVE_CPUS`. На каждом Activity
+timestamp расчёт использует последний записанный CPU snapshot VM или effective
+quota/period и cpuset собственной cgroup collector не позже этого момента.
+Дробные квоты сохраняются: `150000/100000` даёт `1.5` CPU.
+
+Для удалённого PostgreSQL или другой cgroup, в том числе на той же машине,
+задайте доступную целевому PostgreSQL ёмкость CPU положительным целым числом.
+Явное значение имеет приоритет. Адрес DSN не определяет общность ресурсов.
+Если записанная ёмкость неизвестна, Health равен null; известную ёмкость можно
+задать вручную. [Примеры запуска](../../INSTALL.ru.md#5-postgresql) и
+[формулы](../../docs/metrics-time.ru.md#health).
 
 <a id="postgresql-role"></a>
 ### PostgreSQL role

@@ -43,8 +43,11 @@ After [PostgreSQL role setup](../INSTALL.md#5-postgresql), add to `collector.env
 KRONIKA_PG_DSNS="host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres"
 ```
 
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS`, when set, is the monitored PostgreSQL server's
-positive whole CPU capacity. `KRONIKA_WEB_SOURCES=3` marks OS and PostgreSQL
+Leave `KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset for local PostgreSQL in the same
+VM/container resource scope. For remote PostgreSQL or a different cgroup, set
+the target server's positive whole CPU capacity, for example
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS=4`. [Capacity calculation](metrics-time.md#health).
+`KRONIKA_WEB_SOURCES=3` marks OS and PostgreSQL
 configured in the web catalog. All parameters:
 [collector](../bins/kronika-collector/README.md) and
 [web](../bins/kronika-web/README.md).

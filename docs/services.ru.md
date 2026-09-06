@@ -44,8 +44,11 @@ Systemd разбирает эти строки как присваивания e
 KRONIKA_PG_DSNS="host=127.0.0.1 port=5432 user=kronika_monitor password=replace-with-password dbname=postgres"
 ```
 
-`KRONIKA_POSTGRES_EFFECTIVE_CPUS`, если задан, — положительная целая CPU capacity
-наблюдаемого сервера PostgreSQL. `KRONIKA_WEB_SOURCES=3` отмечает OS и PostgreSQL
+Для локального PostgreSQL с теми же ресурсами VM/контейнера не задавайте
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS`. Для удалённого PostgreSQL или другой cgroup
+задайте ёмкость CPU целевого сервера положительным целым числом, например
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS=4`. [Расчёт ёмкости](metrics-time.ru.md#health).
+`KRONIKA_WEB_SOURCES=3` отмечает OS и PostgreSQL
 как настроенные в каталоге web. Все параметры:
 [collector](../bins/kronika-collector/README.ru.md) и
 [web](../bins/kronika-web/README.ru.md).
