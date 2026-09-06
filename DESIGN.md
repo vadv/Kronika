@@ -157,8 +157,9 @@ documentation because they name the excluded machinery:
 | recommend, should | (nothing — state the fact, not the action) |
 | root cause | (nothing — do not name the concept) |
 
-Write plainly. The collector writes a segment. A corrupt journal part is
-damaged and gets set aside. Two snapshots an hour apart are two snapshots.
+Write plainly. The collector writes a segment. A damaged populated journal
+stops collector startup and remains at `active.wal`. Two snapshots an hour apart
+are two snapshots.
 MCP tools read Kronika recordings and return recorded or computed values. They
 do not query the monitored host or PostgreSQL, interpret the values, or
 prescribe action.
@@ -397,8 +398,9 @@ One crate reads segments: `kronika-reader`. It takes a data directory and a
 time range and returns rows. All segment readers use this crate.
 
 A read includes finished `.zms` segments and the current logical segment from
-the valid prefix of `active.wal`. Finished segments are immutable and
-browser-cacheable. Web revalidates the catalog and refreshes append-only active
+a captured, validated boundary of `active.wal`. This boundary fixes the data
+for that read; it is not a salvaged prefix of a damaged journal. Finished
+segments are immutable and browser-cacheable. Web revalidates the catalog and refreshes append-only active
 resources when a user requests current data.
 
 ### Bounded ZMS slices
@@ -1493,23 +1495,24 @@ Collector:
 
 Web:
 
-- Logs opened sources and built indexes with elapsed time and resource counts.
+- Logs catalog and segment reads and loaded or built indexes with elapsed time
+  and counts. Store-scan warnings contain a code; failed HTTP API reads log the
+  underlying error message.
 - Shows `null` for a metric the collector failed to collect. Web does not
   invent or interpolate a value it does not have.
 
 ## Fail fast
 
-A component that cannot return to a known durable state fails immediately and
-visibly: the log carries the full error, and the daemon exits. The next start
-finishes the interrupted operation.
+A collector that cannot complete or roll back a journal operation stops with
+an error. It refuses further use of a poisoned journal handle. On restart it
+validates the stored journal and handles supported interrupted publication or
+reset states. A damaged header or incomplete append can instead prevent startup;
+the file remains unchanged.
 
-Startup recovery is the only recovery path. A crash and a deliberate stop run
-the same code, and the tests exercise it. The journal's poisoned state is this
-rule applied: a reset that cannot complete or roll back refuses further use
-until reopen.
-
-A segment is published before the journal is reset, so a failed reset stops
-without risking collected data.
+A segment is published before the journal is reset. A failed reset therefore
+leaves the published segment available. An ordinary web read failure ends that
+request; it does not stop the server. See [storage failures and recovery](docs/storage-recovery.md)
+for the write boundaries, checks and request-specific behavior.
 
 ## Demo
 

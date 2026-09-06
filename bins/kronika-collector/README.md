@@ -13,6 +13,9 @@ at startup; an invalid value stops startup. Sources:
 [configuration](src/config.rs), [collection schedule](src/scheduler.rs),
 [main loop](src/main.rs).
 
+[Storage failures and recovery](../../docs/storage-recovery.md) explains what
+happens after an abrupt stop or when a recording cannot be read.
+
 ## Configuration
 
 <a id="storage"></a>

@@ -7,6 +7,9 @@ through HTTP API and MCP. It reads the current journal (`active.wal`) and
 finished compressed files (`.zms`), and creates search indexes (`.idx`) in the
 same directory. The reading library is `kronika-reader`.
 
+[Storage failures and recovery](../../docs/storage-recovery.md) explains what
+happens after an abrupt stop or when a recording cannot be read.
+
 ## Configuration
 
 Environment is validated before the listener binds.
