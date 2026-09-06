@@ -45,7 +45,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools shellcheck
+          sudo apt-get install --yes --no-install-recommends musl-tools shellcheck strace
           rustup target add "$TARGET"
       - uses: Swatinem/rust-cache@v2
         with:
@@ -142,7 +142,7 @@ jobs:
         with:
           name: kronika-${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.arch.target }}
           path: archive
-      - name: Verify the same archive in this userspace
+      - name: Verify help and version from the same archive in this userspace
         env:
           IMAGE: ${{ matrix.distro.image }}
           PACKAGES: ${{ matrix.distro.packages }}
@@ -166,7 +166,7 @@ jobs:
               esac
               cat /etc/os-release
               uname -srm
-              exec bash scripts/check-release.sh --versions-only archive/*.tar.gz
+              exec bash scripts/check-release.sh --cli-only archive/*.tar.gz
             ' 2>&1 | tee -a portability.log
       - name: Save image identity and execution results
         if: always()

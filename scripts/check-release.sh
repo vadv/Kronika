@@ -4,11 +4,11 @@ export LC_ALL=C
 
 mode=full
 case "${1:-}" in
-  --versions-only) mode=versions; shift ;;
+  --cli-only) mode=cli; shift ;;
   --no-browser) mode=native; shift ;;
 esac
 if [[ $# -ne 1 || ! -f "$1" ]]; then
-  echo "Usage: scripts/check-release.sh [--versions-only|--no-browser] ARCHIVE.tar.gz" >&2
+  echo "Usage: scripts/check-release.sh [--cli-only|--no-browser] ARCHIVE.tar.gz" >&2
   exit 2
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -76,9 +76,11 @@ for document in package.rglob('*.md'):
         target = (document.parent / unquote(url.path)).resolve()
         assert target.exists(), f'broken bundled link: {document}: {href}'
 print(f'Archive documentation, static ELF and full checksum manifest passed: {len(members)} files')
-subprocess.run([sys.executable, repo / 'scripts/check-cli-versions.py', package],
-               check=True, timeout=120)
-if mode == 'versions':
+cli_check = [sys.executable, repo / 'scripts/check-cli.py', package]
+if mode != 'cli':
+    cli_check.append('--strace')
+subprocess.run(cli_check, check=True, timeout=120)
+if mode == 'cli':
     sys.exit(0)
 env = {k: v for k, v in os.environ.items() if not k.startswith('KRONIKA_')}
 collector = subprocess.run([package / 'kronika-collector'], env=env,

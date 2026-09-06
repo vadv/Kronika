@@ -1,6 +1,7 @@
 //! Standalone Kronika HTML report generator.
 
 mod cli;
+mod help;
 
 use kronika_report::ReportTimeRange;
 #[cfg(test)]
@@ -45,6 +46,9 @@ fn arguments(values: impl IntoIterator<Item = OsString>) -> Result<Arguments, &'
         [_] => return Err("missing HTML output"),
         _ => return Err("expected one ZMS input and one HTML output"),
     };
+    if input.as_encoded_bytes().starts_with(b"-") || output.as_encoded_bytes().starts_with(b"-") {
+        return Err("unknown or misplaced option; use ./ before a path beginning with '-'");
+    }
     Ok(Arguments {
         input: PathBuf::from(input.as_os_str()),
         output: PathBuf::from(output.as_os_str()),
@@ -55,6 +59,10 @@ fn arguments(values: impl IntoIterator<Item = OsString>) -> Result<Arguments, &'
 fn main() -> ExitCode {
     if std::env::args_os().skip(1).eq(["--version"]) {
         println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args_os().skip(1).eq(["--help"]) || std::env::args_os().skip(1).eq(["-h"]) {
+        print!("{}", help::HELP);
         return ExitCode::SUCCESS;
     }
     let arguments = match arguments(std::env::args_os().skip(1)) {

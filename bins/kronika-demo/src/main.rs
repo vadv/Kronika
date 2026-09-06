@@ -1,4 +1,5 @@
 //! Runs the collector and optional demo workload for a bounded measurement window.
+mod help;
 mod report;
 mod sample;
 mod sections;
@@ -109,6 +110,18 @@ fn main() -> Result<()> {
         println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if std::env::args_os().skip(1).eq(["--help"]) || std::env::args_os().skip(1).eq(["-h"]) {
+        print!("{}", help::HELP);
+        return Ok(());
+    }
+    anyhow::ensure!(
+        std::env::args_os().len() == 1,
+        "unexpected argument; use kronika-demo --help"
+    );
+    run_demo()
+}
+
+fn run_demo() -> Result<()> {
     let root = PathBuf::from(env_or("KRONIKA_DEMO_DIR", "demo-data"));
     let storage_dir = resolve_storage_dir(
         &root,

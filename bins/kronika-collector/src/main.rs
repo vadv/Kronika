@@ -18,6 +18,7 @@ static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemall
 mod buffering;
 mod capacity;
 mod config;
+mod help;
 mod log_sources;
 mod logging;
 mod os_sources;
@@ -141,12 +142,27 @@ fn initialize_collector(config: &Config) -> Result<(WriterOwner, Journal, LogSou
 }
 
 fn main() -> Result<()> {
-    if std::env::args_os().skip(1).eq(["--version"]) {
-        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    if capacity::is_helper_invocation() {
-        return capacity::run_helper();
+    let mut arguments = std::env::args_os().skip(1);
+    if let Some(argument) = arguments.next() {
+        anyhow::ensure!(
+            arguments.next().is_none(),
+            "unexpected arguments; use kronika-collector --help"
+        );
+        if argument == "--help" || argument == "-h" {
+            print!("{}", help::HELP);
+            return Ok(());
+        }
+        if argument == "--version" {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        if capacity::is_helper_invocation() {
+            return capacity::run_helper();
+        }
+        anyhow::bail!(
+            "unexpected argument {}; use kronika-collector --help",
+            argument.display()
+        );
     }
     run_collector()
 }

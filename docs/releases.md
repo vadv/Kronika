@@ -170,7 +170,7 @@ compiler builds produce identical executables.
 
 ## Validate more than startup
 
-With Node.js 22 and Chromium or Google Chrome available:
+With `strace`, Node.js 22 and Chromium or Google Chrome available:
 
 ```sh
 scripts/check-release.sh dist/*.tar.gz
@@ -188,6 +188,9 @@ The generated HTML is opened directly from disk by the existing browser smoke,
 which checks interactive reads and absence of external requests. Both native
 build jobs run the collector/dump/report/web checks; x86-64 also runs the browser
 smoke. ARM64 uses `--no-browser` because its runner has no preinstalled Chromium.
-The container matrix uses `--versions-only`, which retains archive, documentation,
-checksum, static ELF, and all-five version checks without running the functional
-workload again. BDD remains a separate CI gate.
+The container matrix uses `--cli-only`, which retains archive, documentation,
+checksum, static ELF, and all-five version/help checks without running the
+functional workload again. Both help aliases run in empty and invalid environments
+as an unprivileged user in a read-only directory. Native package checks also use
+`strace` to reject storage access, logging, thread, process, or network startup
+before help and version output. BDD remains a separate CI gate.
