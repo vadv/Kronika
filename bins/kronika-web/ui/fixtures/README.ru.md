@@ -1,24 +1,28 @@
-# Fixture интерфейса за записанный час
+<a id="fixture-интерфейса-за-записанный-час"></a>
+# Записанный час для тестов интерфейса
 
 [English version](README.md)
 
-`real-hour.json.gz` — data object из автономного HTML-снимка интерфейса.
-Он содержит записанные строки OS processes и PostgreSQL Activity, связи по PID,
-часовые системные ряды и locators отметок. Fixture используется в тестах интерфейса
-и отдельно включаемой автономной demo-сборке; строки fixture не входят в `kronika-web`.
+`real-hour.json.gz` содержит данные, извлечённые из сохранённого автономного
+HTML-интерфейса: строки процессов Linux и PostgreSQL Activity, точные связи
+по PID, системные временные ряды за час и ссылки на строки с отметками.
+Этот набор используется только в тестах интерфейса и отдельно включаемой
+автономной демосборке. Эти строки не входят в поставляемый `kronika-web`.
 
-Файл использует deterministic unnamed gzip. `real-hour.manifest.json` содержит
-source и content hashes. `npm run fixture:check` проверяет структуру, количество
-записей, deterministic compression и сигнатуры credentials/DSN/authorization/keys,
-не выводя command lines или SQL text.
+Файл сжат gzip без сохранения имени исходного файла, с воспроизводимым
+результатом. `real-hour.manifest.json` содержит сведения об источнике и
+контрольные суммы содержимого. Команда `npm run fixture:check` проверяет
+структуру, количество записей, воспроизводимость сжатия и признаки учётных
+данных, строк подключения, заголовков авторизации и ключей. Командные строки
+и SQL при этом не выводятся.
 
-Восстановление fixture из сохранённого HTML:
+Восстановить тестовый набор из сохранённого HTML:
 
 ```sh
 node scripts/real-fixture.mjs --recover /path/to/index.html
 ```
 
-Сборка временного автономного demo из тех же React sources:
+Собрать временную автономную демоверсию из того же кода React:
 
 ```sh
 node scripts/build.mjs --fixture-output /absolute/path/kronika-real-hour.html.gz

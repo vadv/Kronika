@@ -2,9 +2,11 @@
 
 [Русская версия](metrics-linux.ru.md) · [Reference index](features.md) · [Time and heatmaps](metrics-time.md)
 
-`R(x) = (x₁ − x₀) / Δt`, where `Δt` is elapsed recorded seconds. `H` is recorded `clock_ticks_per_sec`; `N(t)` is the number of recorded online host logical CPUs at a sample timestamp; `N_lane` is the distinct CPU-ID count used by the CPU usage lane. Rates and unavailable-value rules are defined [per calculation path](metrics-time.md#pair-rules-and-units).
+Linux metrics describe CPU, memory, storage and network use by a machine, container or process. The tables give each value’s meaning, recorded fields and units. A snapshot records values at one time; a cumulative counter records an increasing total, whose change gives a rate. Let `x₀`, `x₁` be two recorded values and `Δt` their elapsed seconds: `R(x) = (x₁ − x₀) / Δt`. `H` is the recorded accounting ticks per second `clock_ticks_per_sec`. `N(t)` counts recorded online host logical CPUs at time `t`; `N_lane` is the distinct CPU count used by the CPU usage chart, with its separate rule below. [Observation-pair and unavailable-value rules](metrics-time.md#pair-rules-and-units) depend on the calculation.
 
 ## Recorded environment and scope
+
+Scope identifies whose resources a row describes. A cgroup is a Linux process group with shared resource accounting and limits; each controller handles a resource such as CPU or memory.
 
 | Recorded fact | Meaning and use |
 |---|---|
@@ -21,6 +23,8 @@ The collector records no workload cgroup sections on machine/VM. In a container 
 ## Processes
 
 ### Lenses and fields
+
+A lens selects a named set of columns. PID is the numeric process ID; PPID is its parent’s ID. RSS is memory resident in physical RAM; virtual memory is the process address space, and swap is memory moved to the swap area.
 
 | Lens | Columns |
 |---|---|
@@ -72,7 +76,7 @@ Inspector history uses the selected lens's temporal fields. Scheduler settings, 
 
 ## Host CPU and pressure
 
-For the aggregate host `/proc/stat` row, define the eight interval components `u,n,s,i,w,q,f,z` as differences of `user,nice,system,idle,iowait,irq,softirq,steal`. Let `T = u+n+s+i+w+q+f+z` and `B = T−i−w`.
+CPU shares show how processor time was spent between two observations. For the aggregate host `/proc/stat` row, let `u,n,s,i,w,q,f,z` be the changes of `user,nice,system,idle,iowait,irq,softirq,steal`, respectively, in clock ticks. These represent user code, niced user code, kernel code, idle time, I/O wait, hardware interrupts, software interrupts and time taken by the hypervisor. `T = u+n+s+i+w+q+f+z` is total elapsed processor time; `B = T−i−w` excludes idle and I/O wait. The symbol `Σ` below means a sum over the stated rows or policies.
 
 | Display | Formula or recorded field | Unit |
 |---|---|---|
@@ -100,7 +104,7 @@ PSI also records `some_avg60`, `some_avg300`, cumulative `some_total`, and memor
 
 ## Host memory
 
-All following memory gauges come from `/proc/meminfo`, in KiB before display conversion.
+Memory values show how much RAM is used and how much remains available without swapping. Values below come from `/proc/meminfo` in KiB (1,024 bytes) before display conversion.
 
 | Display | Field or formula | Meaning |
 |---|---|---|
@@ -120,7 +124,7 @@ All following memory gauges come from `/proc/meminfo`, in KiB before display con
 
 ### Device I/O
 
-Device identity is recorded `major:minor`, with its device name. Counter source is `/proc/diskstats`; one sector in these calculations is 512 bytes.
+Device metrics describe the number, size and duration of storage operations. Recorded `major:minor` numbers identify the device, alongside its name. Counters come from `/proc/diskstats`; a sector is 512 bytes. `Δreads` and `Δwrites` are increases in completed operations; `Δread_time_ms` and `Δwrite_time_ms` are increases in cumulative operation time, in milliseconds.
 
 | Device field | Formula | Unit |
 |---|---|---|
@@ -136,6 +140,8 @@ Host **Device busy** and **Queue depth** charts take the maximum per-device valu
 Sources: [diskstats parser](../crates/kronika-source-os/src/proc/diskstats.rs), [`SYSTEM_ENTITIES`, `latencyPoints`, `peakDeviceRate`](../bins/kronika-web/ui/src/system-view.tsx), [`read_disk`, `points`](../crates/kronika-query/src/hour/lanes.rs).
 
 ### Mounted filesystems
+
+These values describe storage available through each visible mount. `statvfs` supplies `f_blocks` (total blocks), `f_frsize` (bytes per block), `f_bavail` (blocks available to unprivileged writes), `f_files` (total inode count) and `f_favail` (available inode count). An inode identifies a filesystem object.
 
 | Field | Source/formula | Unit and scope |
 |---|---|---|
@@ -159,6 +165,8 @@ CPU topology lists logical CPU, socket, core, NUMA node, model, and maximum MHz.
 
 ## Network
 
+RX means received traffic; TX means transmitted traffic. The totals cover the recorded network interfaces and their network namespace.
+
 | Display | Source/formula | Unit |
 |---|---|---|
 | Per-interface RX / TX | `R(rx_bytes)`, `R(tx_bytes)` from `/proc/net/dev` | B/s |
@@ -178,11 +186,13 @@ The aggregate sums each timestamp's recorded counters before differentiation. Li
 
 ### Capacity and membership
 
-`os_cgroup_context` records cgroup version, exact collector CPU/memory/I/O paths, effective cpuset count, tightest CPU quota/period ratio on the applicable hierarchy, and effective memory ceiling. With positive quota `Q`, period `P`, and usable cpuset count `S`, CPU capacity is `min(Q/P, S)`; if `S` is absent, it is `Q/P`. A recorded quota of `−1` selects `S`; unknown quota hierarchy leaves capacity null. Memory capacity is the recorded validated hierarchical ceiling. Positive local controller limits and effective ancestor limits are distinct fields.
+`os_cgroup_context` records cgroup version, exact collector CPU/memory/I/O paths, effective cpuset count, tightest CPU quota/period ratio on the applicable hierarchy, and effective memory ceiling. With positive CPU-time quota `Q` and period `P` in microseconds, and usable allowed-CPU count `S` from cpuset, CPU capacity is `min(Q/P, S)`; if `S` is absent, it is `Q/P`. A recorded quota of `−1` selects `S`; unknown quota hierarchy leaves capacity null. Memory capacity is the recorded validated hierarchical ceiling. Positive local controller limits and effective ancestor limits are distinct fields.
 
 Cgroup v2 validates applicable files from configured hierarchy root through exact membership. A missing mount-root control file is accepted as unbounded only for non-root membership; required descendant files must be valid. Cgroup v1 binds an unambiguous controller root; memory uses validated `hierarchical_memory_limit` consistently with the leaf limit. The effective capacity/context is attached only to the table row matching collector path and scope. Sources: [hierarchy reader](../crates/kronika-source-os/src/cgroup.rs), [context contract](../crates/kronika-registry/src/codec/os_cgroup_context.rs), [`cgroup_cpu_capacity`](../crates/kronika-query/src/hour/lanes.rs), [`systemEntityRows`](../bins/kronika-web/ui/src/system-view.tsx).
 
 ### Controller metrics
+
+A controller accounts for its resource across the group. In the formulas, `used_cores` is CPU use in cores, `effective_capacity` is the available cores defined above, `current` is the relevant controller’s current value and `max` its local limit. `effective_memory_max` is the memory limit including ancestor restrictions.
 
 | Display or recorded field | Calculation/source | Unit |
 |---|---|---|

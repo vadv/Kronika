@@ -2,9 +2,13 @@
 
 [Русская версия](mcp-clients.ru.md)
 
-`kronika-web` exposes `POST /mcp`: stateless Streamable HTTP, JSON responses, tools only. With authentication enabled, every request carries `Authorization: Basic <BASE64>` using the web interface credentials. `KRONIKA_WEB_AUTH=disabled` disables verification; `KRONIKA_WEB_USER` and `KRONIKA_WEB_PASSWORD` remain required. Requests carrying `Origin` and URLs with a query string are rejected.
+MCP lets an AI client read saved Kronika snapshots, metric histories and recorded rows. The running `kronika-web` serves this connection at `/mcp`.
+
+It accepts `POST /mcp` using Streamable HTTP, returns JSON and provides MCP tools only. It keeps no MCP sessions. With authentication enabled, every request carries `Authorization: Basic <BASE64>` using the web interface credentials. `KRONIKA_WEB_AUTH=disabled` disables verification; `KRONIKA_WEB_USER` and `KRONIKA_WEB_PASSWORD` remain required. Requests carrying `Origin` and URLs with a query string are rejected.
 
 ## Connection parameters
+
+Replace the angle-bracket placeholders with your connection details.
 
 | Value | Definition |
 | --- | --- |
@@ -17,11 +21,11 @@
 printf '%s' '<USER>:<PASSWORD>' | base64 | tr -d '\n'
 ```
 
-The **Connect an AI agent** panel generates configuration for the selected client. The registration name contains the normalized largest recorded database name and endpoint address, for example `kronika-billing-192-168-0-22-8080`. With authentication disabled, the header is omitted.
+The **Connect an AI agent** panel generates configuration for the selected client. The server name combines the largest database name in the recording with the connection address, for example `kronika-billing-192-168-0-22-8080`. With authentication disabled, the header is omitted.
 
 ## Claude Code
 
-User-level registration:
+To make the connection available in all your projects:
 
 ```bash
 claude mcp add --transport http --scope user kronika '<URL>' \

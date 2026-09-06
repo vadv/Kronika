@@ -2,20 +2,23 @@
 
 [English version](build.md) · [Установка](../INSTALL.ru.md)
 
-Можно установить [готовую сборку](../INSTALL.ru.md) или собрать Kronika из исходников по инструкции ниже.
+Можно установить [готовую сборку](../INSTALL.ru.md) или собрать Kronika из
+исходников по инструкции ниже.
 
-## Toolchain
+<a id="toolchain"></a>
+## Инструменты сборки
 
 | Компонент | Версия или требование |
 | --- | --- |
-| Rust | `1.96.0`, закреплён в [rust-toolchain.toml](../rust-toolchain.toml). Зависимости используют `Cargo.lock`. |
-| Native tools | C compiler, GNU make, `pkg-config`; статическая сборка использует native `musl-gcc`. Пакеты Debian/Ubuntu: `build-essential musl-tools pkg-config`. |
-| Browser assets | Native Cargo builds используют сохранённые в репозитории HTML и WebAssembly assets. |
-| Пересборка assets | Node.js `22.21.1`, `wasm32-unknown-unknown`, закреплённые npm dependencies. |
+| Rust | `1.96.0`, закреплён в [rust-toolchain.toml](../rust-toolchain.toml). Версии зависимостей закреплены в `Cargo.lock`. |
+| Системные инструменты | Компилятор C, GNU make, `pkg-config`; для статической сборки нужен `musl-gcc` вашей архитектуры. Пакеты Debian/Ubuntu: `build-essential musl-tools pkg-config`. |
+| Файлы веб-интерфейса | Готовые HTML и WebAssembly уже хранятся в репозитории и используются при обычной сборке Cargo. |
+| Пересборка веб-интерфейса | Node.js `22.21.1`, `wasm32-unknown-unknown` и закреплённые зависимости npm. |
 
-## Native binaries для Linux
+<a id="native-binaries-для-linux"></a>
+## Программы для Linux
 
-На native x86-64 Linux с установленными rustup и native tools:
+На машине Linux x86-64 с установленными rustup и системными инструментами:
 
 ```sh
 git clone https://github.com/vadv/Kronika.git
@@ -26,12 +29,13 @@ cargo build --release --locked --target x86_64-unknown-linux-musl \
   -p kronika-report
 ```
 
-Результат: `target/x86_64-unknown-linux-musl/release/kronika-{collector,web,dump,report}`.
-Cargo target по умолчанию в [.cargo/config.toml](../.cargo/config.toml) —
-`x86_64-unknown-linux-musl`. Для сборки точной ревизии выполните
-`git checkout FULL_COMMIT` перед `cargo build`.
+Программы появятся в `target/x86_64-unknown-linux-musl/release/` под именами
+`kronika-collector`, `kronika-web`, `kronika-dump` и `kronika-report`.
+По умолчанию Cargo собирает для `x86_64-unknown-linux-musl`, как указано в
+[.cargo/config.toml](../.cargo/config.toml). Для конкретной версии исходного
+кода выполните `git checkout FULL_COMMIT` перед `cargo build`.
 
-На native ARM64 Linux:
+На машине Linux ARM64:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
@@ -43,18 +47,18 @@ cargo build --release --locked --target aarch64-unknown-linux-musl \
   -p kronika-report
 ```
 
-Результат: `target/aarch64-unknown-linux-musl/release/`. C flag создаёт inline
-ARMv8 atomic operations. Раздел [установки](../INSTALL.ru.md#2-установка)
-содержит команды установки binaries.
+Результат находится в `target/aarch64-unknown-linux-musl/release/`. Флаг
+компилятора C встраивает атомарные операции ARMv8 непосредственно в программу.
+Дальше выполните [команды установки](../INSTALL.ru.md#2-установка).
 
-Сборка всех workspace binaries, включая инструменты разработки, с host GNU
-toolchain на x86-64:
+Чтобы собрать все программы репозитория, включая инструменты разработки,
+на машине Linux x86-64 с инструментами GNU:
 
 ```sh
 make build TARGET=x86_64-unknown-linux-gnu
 ```
 
-`make build` по умолчанию использует host target rustc.
+Без явного `TARGET` команда `make build` выбирает платформу установленного rustc.
 
 ## Проверки
 
@@ -63,11 +67,14 @@ export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
 make fmt-check lint test
 ```
 
-`lint` запускает repository/Mordant Dylint rules и workspace Clippy с запретом
-warnings. [Настройка Dylint](../scripts/check-dylints.sh) определяет зависимости.
-`test` запускает unit и integration tests без BDD. BDD выполняется в CI.
+`lint` проверяет код правилами Dylint репозитория и Mordant, а затем Clippy;
+предупреждения считаются ошибками. Зависимости перечислены в
+[настройке Dylint](../scripts/check-dylints.sh). `test` запускает модульные и
+интеграционные тесты. Проверки пользовательских сценариев BDD выполняются
+отдельно в CI — автоматических проверках репозитория.
 
-## Browser assets
+<a id="browser-assets"></a>
+## Пересборка файлов веб-интерфейса
 
 ```sh
 rustup target add wasm32-unknown-unknown --toolchain 1.96.0
@@ -76,17 +83,20 @@ make report-assets REPORT_ASSET_FLAGS=--download-bindgen
 make report-assets-check REPORT_ASSET_FLAGS=--download-bindgen
 ```
 
-Эти targets собирают и воспроизводят сохранённые web HTML, report shell и
-WebAssembly bindings. Query engine отчёта выполняется на основном потоке
-браузера. Определения targets: [Makefile](../Makefile).
+Эти команды собирают страницу веб-интерфейса, интерфейс отчёта и его
+WebAssembly-программу, затем проверяют их соответствие файлам в репозитории.
+Обработка запросов отчёта выполняется в основном потоке браузера. Команды определены в
+[Makefile](../Makefile).
 
 ## Архив
 
-В чистом checkout с сохранёнными commits:
+Сохраните изменения коммитом и убедитесь, что рабочий каталог чист, затем
+запустите:
 
 ```sh
 scripts/package-release.sh --target x86_64-unknown-linux-musl
 ```
 
-[Справочник архивов](releases.ru.md) определяет targets, имена результатов,
-build metadata, checksums, вложенные документы и проверки CI.
+[Руководство по архивам](releases.ru.md) описывает поддерживаемые платформы,
+имена архивов, сведения о сборке, контрольные суммы, вложенные документы и
+автоматические проверки.

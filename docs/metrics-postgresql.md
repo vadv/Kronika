@@ -4,9 +4,11 @@
 
 ## Sources, identity and notation
 
+A snapshot contains the rows read from a source at one collection time. An object’s identity is the set of fields used to match its rows between snapshots. A counter accumulates work; a gauge is a value read at a particular time. A rate measures the counter increase per second between two snapshots. In the notation below, `x₀` and `x₁` are values of the same counter at times `t₀` and `t₁`.
+
 The collector reads the instance named by the first `KRONIKA_PG_DSNS` entry. Database-local views are read through each connectable database; statements and plans come from one discovered installation of each extension. The [layout reference](type-registry/postgresql-metrics.md) gives exact PostgreSQL and extension versions, physical type IDs and collection scopes. The [registry](../crates/kronika-registry/src/codec) defines every stored field.
 
-For samples at Unix microsecond timestamps `t₀ < t₁`, write `Δx = x₁ − x₀`, `d = (t₁ − t₀)/10⁶` seconds and `r(x) = Δx/d`. `x` alone is the recorded gauge or cumulative value at the selected sample. `B` is the positive integer `pg_settings.block_size` in bytes from the cursor snapshot. Buffer columns display `B × r(blocks)` bytes/s; Buffer bytes/call displays `B × blocks_per_call`. Without recorded `B`, these byte conversions are unavailable.
+For samples at Unix microsecond timestamps `t₀ < t₁`, write `Δx = x₁ − x₀`, `d = (t₁ − t₀)/10⁶` seconds and `r(x) = Δx/d`. `x` alone is the recorded gauge or cumulative value at the selected sample. `B` is the positive integer `pg_settings.block_size` in bytes from the snapshot at the selected time (cursor). Buffer columns display `B × r(blocks)` bytes/s; Buffer bytes/call displays `B × blocks_per_call`, where `blocks_per_call` is the number of block accesses per query execution. Without recorded `B`, these byte conversions are unavailable.
 
 Statement/plan interval calculations require matching physical type and identity, positive elapsed time and nondecreasing operands. A missing operand or decreasing counter makes that operand's pair unavailable; subsequent pairs are calculated normally. Ratios require a positive denominator. Recorded `min`, `max`, `mean`, `stddev`, timestamps and ages are gauges, including when adjacent cumulative counters decrease. Relation and Overview reducers have the specific null rules documented below. Source: [interval calculations](../bins/kronika-web/ui/src/postgres-metrics.ts), [byte conversion and column selection](../bins/kronika-web/ui/src/postgres-view.tsx).
 
@@ -22,7 +24,9 @@ Statement/plan interval calculations require matching physical type and identity
 
 ## Activity and Locks
 
-Activity's default table omits `state = idle` and backend types other than `client backend`. **Idle** and **System** include those rows; an explicitly focused row remains visible. Default order is descending query duration, with transaction duration used when both query durations are unavailable. Source: [Activity columns and filters](../bins/kronika-web/ui/src/postgres-view.tsx), [duration functions](../bins/kronika-web/ui/src/postgres-activity.ts).
+Activity shows PostgreSQL processes and their current queries. Locks connects waiting processes to the processes blocking them.
+
+Activity’s default table hides rows with `state = idle`. It also hides system processes: a nonempty `backend_type` other than `client backend`. A missing or empty `backend_type` does not hide a row. **Idle** and **System** include those rows; an explicitly focused row remains visible. Default order is descending query duration, with transaction duration used when both query durations are unavailable. Source: [Activity columns and filters](../bins/kronika-web/ui/src/postgres-view.tsx), [duration functions](../bins/kronika-web/ui/src/postgres-activity.ts).
 
 | Display / field | Definition and unit |
 |---|---|
@@ -57,7 +61,7 @@ A relation name resolves only in the collector connection's database. Root block
 
 ## Overview and Databases
 
-Overview's left number summarizes the loaded hour; its right number resolves the chart at the cursor. Rates are summed by exact later-sample timestamp across identities. The hour total is the sum of each usable counter difference. The reducer skips an unavailable field pair while retaining other usable pairs, and returns null when none exist. Gauge sums/maxima skip null values; an entirely null snapshot stays null. Source: [Overview definitions](../bins/kronika-web/ui/src/postgres-overview.tsx), [reducers](../bins/kronika-web/ui/src/postgres-vitals.ts).
+Overview's left number summarizes the loaded hour; its right number resolves the chart at the selected time (cursor). Rates are summed by exact later-sample timestamp across identities. The hour total is the sum of each usable counter difference. The reducer skips an unavailable field pair while retaining other usable pairs, and returns null when none exist. Gauge sums/maxima skip null values; an entirely null snapshot stays null. Source: [Overview definitions](../bins/kronika-web/ui/src/postgres-overview.tsx), [reducers](../bins/kronika-web/ui/src/postgres-vitals.ts).
 
 In this table, `Σ` sums databases except where another scope is named; **total** means summed hour differences, **peak** means maximum chart point, **last** means latest nonnull chart point.
 
@@ -95,6 +99,8 @@ Timed/requested checkpoint sources prefer `pg_stat_checkpointer.num_timed/num_re
 The **Databases** table shows `numbackends` as a gauge; transaction/session/tuple/buffer/temp/conflict/deadlock counters as adjacent-sample rates; `blk_read_time` and `blk_write_time` in ms/s; `temp_bytes` in bytes/s; `frozen_xid_age = age(pg_database.datfrozenxid)` as a gauge. `blks_read` and `blks_hit` are converted to bytes/s with `B`. `tup_returned` counts tuples returned by scans; `tup_fetched` counts live rows fetched by index scans. `conflicts` counts queries cancelled because of recovery conflicts. `datid = 0` is the shared-object statistics row and is excluded from the database-count display. Source: [database SQL and fields](../crates/kronika-source-pg/src/database.rs), [table columns](../bins/kronika-web/ui/src/postgres-view.tsx).
 
 ## Statements and Plans
+
+Statements groups execution statistics by normalized query; Plans shows statistics for recorded execution plans. The Lens selector chooses which measurements appear as columns. **Exec time/s** measures total execution time per second of observation; **Mean/call** measures the average execution time within the selected interval.
 
 ### Interval metrics
 
@@ -148,6 +154,8 @@ OSSC and Datasentinel `queryid` is the statement query ID. In vadv, `queryid` is
 **Kronika queries** includes the collector's own statements. They are excluded under the default `workload` scope. A nonempty search, statement context or explicitly selected collector statement forces `all` and disables the checkbox. This scope also applies to the statement activity and summary requests. Source: [scope resolver](../bins/kronika-web/ui/src/postgres-view.tsx), [collector statement matching](../crates/kronika-query/src/statement_scope.rs).
 
 ## Tables and Indexes
+
+These tables show how relations are read, changed and maintained, how much storage they occupy, and how often accesses find a block already in PostgreSQL buffers. TOAST stores large values separately from the main table.
 
 ### Grouping, storage and null values
 
@@ -216,6 +224,8 @@ The low-activity selection is interval-local. A zero rate does not mean that the
 
 ## Vacuum progress
 
+This view groups progress snapshots into observed VACUUM runs, called episodes below. It shows each run’s phase, processed blocks and process resource use.
+
 The source is `pg_stat_progress_vacuum`, joined to Activity for `is_autovacuum` and to the connection's catalogs for relation names. Each row identifies `pid, datid, relid`; physical layouts are PostgreSQL 10–16, 17 and 18. Source: [collection](../crates/kronika-source-pg/src/progress_vacuum.rs), [episode calculations](../bins/kronika-web/ui/src/postgres-vacuum.ts), [display](../bins/kronika-web/ui/src/postgres-view.tsx).
 
 | Field / display | Definition |
@@ -246,6 +256,10 @@ Episode key is physical type + PID + database OID + relation OID. A new episode 
 Process load resolves this PID's OS samples at or before the episode's first and last timestamps. With recorded clock rate `H` ticks/s, CPU ms = `1000Δ(utime+stime)/H`; CPU share = `min(100,100 × CPU seconds / OS sample elapsed seconds)`; block-wait ms = `1000Δblkdelay_ticks/H`. Read/write bytes and major faults are `Δread_bytes`, `Δwrite_bytes`, `Δmajflt`. Read share = `min(100,100Δread_bytes/(B × final heap_blks_scanned))`. These deltas include all work performed by that PID between the selected OS samples. Missing clock/block size suppresses only the dependent calculation.
 
 ## Summary strips and value marks
+
+In the formulas below, `count(...)` counts matching objects, `usable` requires a valid value under that metric’s rules, and `AND` requires both conditions.
+
+The strip above each table summarizes the full set of objects at the selected time. It is separate from the table’s current page and text search.
 
 Summary strips resolve a whole-surface snapshot at or before the cursor, independently of table pagination and text search. Statement and plan summaries use the selected statement scope. Each ratio includes only objects with the required operand pair; numerators and denominators are accumulated together. Here `ΣΔ` denotes these admitted differences at the selected summary snapshot, not an hour total. Source: [summary stream](../crates/kronika-query/src/hour/postgres_summary.rs), [formula implementation](../crates/kronika-query/src/hour/postgres_summary/facts.rs).
 

@@ -20,6 +20,8 @@ The collector retains one connection per database between cycles. Database and e
 
 ## Native server views
 
+`type_id` selects the section’s field layout. `snapshot_full` records a full snapshot on each collection; `conditional_full` records a full snapshot on cycles when the source’s collection condition holds; `on_change` records a changed state or a scheduled refresh. Additional settings emission rules appear below.
+
 | `type_id` | Section | PostgreSQL | Collection scope | Semantics |
 |---|---|---|---|---|
 | `1_001_001` | `pg_stat_activity` | 10–12 | instance | `snapshot_full` |

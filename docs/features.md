@@ -16,6 +16,8 @@ Kronika records Linux snapshots, PostgreSQL statistics and parsed log events. Th
 
 ## Controls
 
+A snapshot is a set of values recorded during one source poll. The cursor selects a time; each table chooses its source snapshot for that time. A view selects the kind of object, such as processes or events. A Lens selects columns and initial sorting. The Inspector is the selected row’s panel: Detail shows fields and Chart shows history.
+
 | Control | State or operation |
 | --- | --- |
 | Day/hour; previous/next hour | Selected calendar hour in Browser time or UTC. Charts retain the full hour domain. |
@@ -24,8 +26,8 @@ Kronika records Linux snapshots, PostgreSQL statistics and parsed log events. Th
 | ← / →; previous/next observation | Previous/next member of the sorted distinct recorded timestamps loaded for the current view, including different source cadences. Buttons, text inputs, selects and editable content retain their own arrow keys. |
 | Refresh | Reload catalog and selected view. Current visible hour refreshes 15 seconds after completion; visibility restoration refreshes immediately. Historical hours do not poll. Pinned cursor stays fixed; following cursor advances to the latest observation. The selected hour remains fixed. |
 | View | Processes, Host, PostgreSQL or Events. |
-| Lens | Column set and default ordering for one surface; metric definitions remain those in the domain reference. |
-| Column heading | Sort the complete eligible result before pagination; hierarchy controls retain tree/chain order. |
+| Lens | Column set and default ordering for one table; metric definitions remain those in the domain reference. |
+| Column heading | Sort the complete eligible result before splitting into pages; hierarchy controls retain tree/chain order. |
 | Search; Apply / Enter | Commit a valid expression. Invalid drafts keep the previous applied result and URL. Chips remove individual applied terms. |
 | Load more / Retry | Fetch the next page / retry the failed request. Pending/error status applies to retained rows until the request completes. |
 | Row; Inspector Detail / Chart | Select identity; show recorded facts or selected history metric. Related tabs depend on the row type. |
@@ -35,13 +37,13 @@ Kronika records Linux snapshots, PostgreSQL statistics and parsed log events. Th
 | Activity heading | Load/open whole-hour ranking. Compact view keeps eight ranked rows and folds remaining contributions into Other; full screen offers Top 10/25/50/100, initially 25. |
 | Global / Per row | Heatmap colour denominator: common maximum / each row's maximum. Total always has its own scale. |
 | Heatmap cell | Set cursor to `cell.to − 1 µs`; the table then selects its source snapshots. |
-| Activity entity label | Apply the owning surface's entity/group filter where supported; move to its busiest interval when absent at the cursor. Cgroup labels have no table-filter action. |
+| Activity entity label | Apply the corresponding table’s entity/group filter where supported; move to its busiest interval when absent at the cursor. Cgroup labels have no table-filter action. |
 | `?`; field help; Esc | Open general help / metric definition; close an open panel or selection. |
 | Copy exact value | Copy the unrounded value; fallback selects the exact text. |
 | Language; theme | EN/RU; light/dark. Stored in browser preferences, together with Activity open state and Inspector width. |
 | Sign out | End the live web session. |
 
-The URL carries hour/cursor, view, lens, sort, search and supported row selection. Back/Forward restores them. Ordinary navigation between search surfaces clears `find`; related-object navigation supplies the target expression and preserves time.
+The URL carries hour/cursor, view, lens, sort, search and supported row selection. Back/Forward restores them. Ordinary navigation between object types clears `find`; related-object navigation supplies the target expression and preserves time.
 
 Sources: [address and navigation](../bins/kronika-web/ui/src/address.ts), [keyboard](../bins/kronika-web/ui/src/keyboard.ts), [refresh](../bins/kronika-web/ui/src/refresh.ts), [Activity](../bins/kronika-web/ui/src/activity.tsx), [Inspector](../bins/kronika-web/ui/src/inspector.tsx).
 
@@ -49,14 +51,14 @@ Sources: [address and navigation](../bins/kronika-web/ui/src/address.ts), [keybo
 
 | Syntax | Meaning |
 | --- | --- |
-| Plain text | Surface text search. |
+| Plain text | Text search in the current table. |
 | `field:value` | Named string/identity predicate; quotes protect spaces, `*` and `?` match string patterns. |
 | `field>quantity`, `field<quantity` | Strict comparison in the field's accepted units; null does not match a quantity. |
 | `AND`, `OR`, parentheses | Case-insensitive operators, `AND` precedence above `OR`; maximum 8 predicates, 31 tokens, 4 nested groups and 1024 characters. |
 | `MB`, `MiB`, `/s` | Decimal bytes, binary bytes, per-second quantities. Unit spelling is case-sensitive. |
 | Grouped Tables/Indexes | Names filter members before aggregation; quantities filter reduced groups. `AND` joins those phases; an `OR` mixing phases is rejected. |
 
-`NOT`, implicit boolean operators, `=`, `==`, `!=`, `>=` and `<=` are rejected. Search help lists each surface's accepted fields and units, including fields outside the current lens. Filters apply before sort and pagination.
+`NOT`, implicit boolean operators, `=`, `==`, `!=`, `>=` and `<=` are rejected. Search help lists each table’s accepted fields and units, including fields outside the current lens. Filters apply before sort and pagination.
 
 ```text
 command:postgres* AND rss>100MiB
@@ -104,7 +106,7 @@ Optional sums/maxima retain null if no member supplies a value. Earliest represe
 
 `(nodb)` and `(nouser)` are literal PgBouncer connection-context values for an unset database/user. The collector preserves them; a missing context field is null. Host strips the connection port. PgBouncer contributes console groups without shared-timeline marks.
 
-The source/type digest filters groups; Search matches displayed title/chips with `text`, `kind`, `source`, `category`. Expand shows group metrics; representative selection fetches its complete recorded row. A timeline cluster selects its interval and sources; Show all restores the hour. Threshold and sharp-rise marks occupy a separate list. `pg_log_temp_files` is available through MCP `occurrences`, outside the grouped console.
+The source/type summary filters groups; Search matches displayed title/chips with `text`, `kind`, `source`, `category`. Expand shows group metrics; representative selection fetches its complete recorded row. A timeline cluster selects its interval and sources; Show all restores the hour. Threshold and sharp-rise marks occupy a separate list. `pg_log_temp_files` is available through MCP `occurrences`, outside the grouped console.
 
 Sources: [event query and fields](../crates/kronika-query/src/events.rs), [group reductions](../crates/kronika-query/src/events/group.rs), [console controls](../bins/kronika-web/ui/src/events-view.tsx), [PgBouncer parser](../crates/kronika-source-log/src/pgbouncer.rs).
 
@@ -129,9 +131,9 @@ Sources: [event query and fields](../crates/kronika-query/src/events.rs), [group
 | `kronika_find_events` | `from`, `to`, `limit`; `representation=groups` (default) or `occurrences`; optional `sources` | `groups` or `occurrences` plus `truncated`; range at most one hour. Missing/null sources selects supported sources; `[]` selects none. Temp files require occurrences. |
 | `kronika_get_row_detail` | Required unchanged `detail_ref` | Complete stored row; text objects contain `stored_text`, decimal `full_len`, `truncated`, `sha256`. |
 
-Common finder inputs: optional `at` (default latest timestamp across storage), optional `filters` and `sort:{field,direction}`, required `limit` 1–5000. Direction is `asc`/`desc`, nulls last; omitted sort keeps identity order. Output is `{rows,truncated}` without pagination cursors. Row detail references identify physical recorded objects; aggregates without one underlying row omit them.
+Common inputs for the nine point-in-time find tools: optional `at` (default latest timestamp across storage), optional `filters` and `sort:{field,direction}`, required `limit` 1–5000. Direction is `asc`/`desc`, nulls last; omitted sort keeps identity order. Output is `{rows,truncated}` without pagination cursors. Row detail references identify physical recorded objects; aggregates without one underlying row omit them.
 
-Typed filters contain `field`, `op` and `value`, or `values` for `in`. Up to eight filters combine with AND; `in` contains 1–8 values combined with OR. Text accepts case-insensitive `eq`, literal `contains`, `in`; identifiers accept `eq`/`in` with integer or exact decimal-string values; quantities accept strict `gt`/`lt` with nonnegative JSON integers in the field's documented base unit. `tools/list` supplies surface-specific field names and units.
+Typed filters contain `field`, `op` and `value`, or `values` for `in`. Up to eight filters combine with AND; `in` contains 1–8 values combined with OR. Text accepts case-insensitive `eq`, literal `contains`, `in`; identifiers accept `eq`/`in` with integer or exact decimal-string values; quantities accept strict `gt`/`lt` with nonnegative JSON integers in the field's documented base unit. `tools/list` supplies field names for each object type and units.
 
 Time inputs accept Unix-microsecond integers or canonical signed decimal strings, timezone-qualified RFC 3339, `now`, and `now-Nus/ms/s/m/h/d/w`. `now` is request time. Range tools use `[from,to)`; finders resolve observations at or before `at` using section cadence. Finder/Events/ranking encoded arguments are limited to 65,536 bytes. Errors carry `isError`, `record="error"`, `message` and, where applicable, `valid_options` or `ranking_index`.
 

@@ -4,7 +4,7 @@
 
 ## Time and selection
 
-Recorded `ts` values are Unix microseconds. Let `t₀` and `t₁` be two actual sample timestamps, `Δt = (t₁ − t₀) / 1,000,000` seconds, `Δx = x(t₁) − x(t₀)`, and `R(x) = Δx / Δt`. A gauge uses the recorded value at its selected timestamp. A counter rate uses the pair selected by its own query path.
+A snapshot contains values collected at one time. A gauge, such as process RSS (memory resident in physical RAM), describes that moment. A cumulative counter, such as bytes read, gives a rate when two observations are compared. Recorded `ts` values are Unix microseconds. Let `t₀` and `t₁` be the observation times, `x₀ = x(t₀)` and `x₁ = x(t₁)` their field values. Then `Δt = (t₁ − t₀) / 1,000,000` is elapsed seconds, `Δx = x₁ − x₀` is the change, and `R(x) = Δx / Δt` is change per second. Each calculation selects its own observation pair, as described below.
 
 | Control or value | Definition |
 |---|---|
@@ -14,7 +14,7 @@ Recorded `ts` values are Unix microseconds. Let `t₀` and `t₁` be two actual 
 | Previous/next sample | Moves through the merged, sorted, distinct observation timestamps of the current surface. The selected timeline lane does not set the navigation cadence. |
 | Chart hover/readout | Reads recorded chart points. Chart selection updates the common cursor. A null chart point remains null and terminates the corresponding drawn path. |
 | Heatmap cell click | Sets the cursor to the cell's exclusive upper boundary minus one microsecond; the table then applies its snapshot selection. |
-| Entity row | Selects an identity and its inspector. A history metric button selects the plotted field for that identity; changing the lens changes available fields. |
+| Entity row | Selects an entity and its Inspector detail panel. A history button selects its plotted field; a lens is a named set of fields such as CPU or Memory. |
 | Live refresh | The visible current hour refreshes every 15 seconds. A hidden document stops the timer; visibility restoration refreshes the current hour. A cursor following the newest point advances; a manually selected cursor stays fixed. Completed hours have no periodic refresh. |
 
 Sources: [snapshot selection](../crates/kronika-query/src/snapshot/mod.rs), [surface selector](../crates/kronika-query/src/snapshot/selector.rs), [cursor timestamps](../bins/kronika-web/ui/src/cursor-timestamps.ts), [refresh](../bins/kronika-web/ui/src/refresh.ts), [heatmap cursor](../bins/kronika-web/ui/src/activity.tsx).
@@ -39,7 +39,7 @@ Sources: [scheduler defaults](../bins/kronika-collector/src/scheduler.rs), [conf
 
 | Calculation path | Pair and unavailable result |
 |---|---|
-| Process snapshot rates | Same numeric PID in the preceding process snapshot, with equal recorded `starttime`. Missing predecessor, changed `starttime`, absent optional value, decreasing counter, or nonpositive `Δt` gives null for the affected rate. Equal counters give zero. |
+| Process snapshot rates | Same numeric process ID (PID) in the preceding process snapshot, with equal recorded `starttime`. Missing predecessor, changed `starttime`, absent optional value, decreasing counter, or nonpositive `Δt` gives null for the affected rate. Equal counters give zero. |
 | Process summary | Sums usable per-process rates at each process snapshot. Gauges sum present values. A metric with no contributing value is null; process/runnable/PostgreSQL counts can be zero. |
 | Process inspector history | Adjacent recorded observations of the selected PID and field. An explicit null clears its predecessor; a negative difference or nonpositive elapsed time produces null. This history calculation does not test `starttime`. |
 | Host/container rate lanes | Adjacent entries of that lane's counter series. A negative difference produces null for that pair. Explicit null in a nullable series clears the predecessor. |
@@ -64,19 +64,19 @@ Formatting is applied after calculation. Source: [formatters](../bins/kronika-we
 
 ## Chart statistics
 
-For each line, the statistics input is the finite numeric values in that line's rendered chart frame; nulls and nonfinite values are excluded. Each sample has one vote. With ascending values `x₁ … xₙ`, nearest-rank `p(q) = x[max(1, ceil(q × n))]`, for `q = 0.50, 0.90, 0.99`. `Min = x₁`, `Max = xₙ`; `Last` is the final finite sample in chart time order. There is no interpolation or duration weighting. An empty input produces no statistics row. Source: [`seriesStats`, `chartStatsRows`](../bins/kronika-web/ui/src/uplot-chart.tsx).
+Chart statistics describe the distribution of each drawn line. Only its finite numeric values in the rendered frame participate; null, NaN and infinite values are excluded. Every observation has equal weight, regardless of time to the next observation. Let `n` be the number of values and `x₁ … xₙ` those values sorted ascending. The percentile at fraction `q` is `p(q) = x[max(1, ceil(q × n))]`, where `ceil` rounds upward and `q = 0.50, 0.90, 0.99` selects P50, P90 or P99. `Min = x₁`, `Max = xₙ`; `Last` is the final finite value in time order. There is no interpolation or duration weighting. An empty input produces no statistics row. Source: [`seriesStats`, `chartStatsRows`](../bins/kronika-web/ui/src/uplot-chart.tsx).
 
 ## Heatmaps
 
 ### Cells and ranking
 
-The UI uses 60 columns per hour for Processes, Statements, Plans, databases, cgroup CPU and cgroup I/O; Tables and Indexes use 12. For `C` columns, boundary `bⱼ = h + floor(j × 3,600,000,000 / C)`, so cell `j` represents `[bⱼ, bⱼ₊₁)`.
+An activity heatmap shows each entity’s contribution over the selected hour and when it was busiest. Processes, Statements, Plans, databases, cgroup CPU and cgroup I/O use 60 columns; Tables and Indexes use 12. Let `h` be the hour start in Unix microseconds, `C` the column count and `j` a boundary number from 0 to `C`. The boundary is `bⱼ = h + floor(j × 3,600,000,000 / C)`, where `floor` rounds down. Cell `j` covers `[bⱼ, bⱼ₊₁)`, including its start and excluding its end.
 
 The engine assigns an observation to the column containing the midpoint between that observation and its previous observation for the identity; the first observation uses its own timestamp. A counter entering a new column carries the previous observation into the column's calculation. It allocates the interval to one column; it does not split the counter difference proportionally over every crossed boundary.
 
 | Value | Counter | Gauge |
 |---|---|---|
-| Entity cell | `(last − first) / elapsed_seconds` from the observations accumulated in the cell, including its carried predecessor | Last observation accumulated in the cell |
+| Entity cell | `(last − first) / elapsed_seconds` where `first`/`last` are the first/last observations in the cell, including its carried predecessor, and `elapsed_seconds` is their elapsed time | Last observation accumulated in the cell |
 | Entity ranking and right summary | Last minus first counter over the requested range | Maximum observed value over the range, except RSS Grid below |
 | Group ranking | Sum of member entity summaries | Sum of member entity summaries |
 | Group cell | Sum of available member cells | Sum of available member cells |
@@ -105,11 +105,11 @@ Processes group by recorded `comm`; clicking a group label applies that text to 
 | Cgroup CPU | CPU: `usage_usec`; Throttled: `throttled_usec` |
 | Cgroup I/O | Read/write bytes: `rbytes`, `wbytes`; Read/write operations: `rios`, `wios` |
 
-Positive heatmap intensity is `min(6, max(1, ceil(6 × sqrt(value / scaleMax))))`; zero has intensity zero and null draws no cell. Global scale uses the maximum cell across displayed rows and Other. Row scale uses the maximum within that row. Total always uses its own maximum. These controls change color thresholds, not the calculated values. Sources: [cuts](../bins/kronika-web/ui/src/activity-cuts.ts), [grouping and controls](../bins/kronika-web/ui/src/activity.tsx), [color scale](../bins/kronika-web/ui/src/heatmap.ts).
+For a positive cell value `value` and scale maximum `scaleMax`, heatmap intensity is `min(6, max(1, ceil(6 × sqrt(value / scaleMax))))`; `sqrt` is the square root and `ceil` rounds upward. Zero has intensity zero and null draws no cell. Global scale uses the maximum cell across displayed rows and Other. Row scale uses the maximum within that row. Total always uses its own maximum. These controls change color thresholds, not the calculated values. Sources: [cuts](../bins/kronika-web/ui/src/activity-cuts.ts), [grouping and controls](../bins/kronika-web/ui/src/activity.tsx), [color scale](../bins/kronika-web/ui/src/heatmap.ts).
 
 ## Health
 
-Health values are integer percentages. Let `E = t₁ − t₀` in microseconds; `Sᵣ` is the difference in PSI `some_total` for CPU, memory, or I/O. Define `W = min(E, max(S_cpu, S_memory, S_io))`.
+Health is an integer percentage describing the recorded load inputs. Its OS component uses time when tasks waited for CPU, memory or I/O. PSI is the kernel’s record of this waiting time. Let `E = t₁ − t₀` be elapsed microseconds and `S_cpu`, `S_memory`, `S_io` the increases of each resource’s PSI `some_total`, also in microseconds. The largest increase is capped at the elapsed time: `W = min(E, max(S_cpu, S_memory, S_io))`. In the formula below, `floor` rounds down.
 
 `OS health = 100 − floor((100 × W + floor(E / 2)) / E)`.
 

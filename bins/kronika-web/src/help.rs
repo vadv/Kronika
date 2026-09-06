@@ -24,18 +24,20 @@ KRONIKA_WEB_SOURCES (required; no default)
   2  PostgreSQL declared configured (bit 1).
   3  Linux OS and PostgreSQL declared configured.
 
-  The bitset supplies configured source flags in the catalog. Browser
-  PostgreSQL configuration or recorded PostgreSQL data suppresses its no-data
-  tooltip. The OS flag remains catalog metadata. All recorded sections remain
-  queryable for every bitset value. Health uses recorded instance_metadata.
+  This setting tells the API catalog which sources are configured. The browser
+  hides the PostgreSQL no-data tooltip when PostgreSQL is marked configured or
+  PostgreSQL data has been recorded. The Linux OS flag is only API metadata.
+  All recorded data remains available for every value. Health uses instance
+  information saved by the collector.
   KRONIKA_PG_DSNS on kronika-collector enables PostgreSQL metric collection.
 
 REQUIRED ENVIRONMENT
   KRONIKA_STORAGE_DIR
-      No default. Shared data root: active.wal and YYYY/MM/DD/<segment-id>.zms.
-      Use the collector's directory, not an individual ZMS or a flat collection
-      of segment files. The directory must exist and be writable by web for
-      derived .idx sidecars and index ownership locks.
+      No default. Use the collector's recording directory, containing active.wal
+      and YYYY/MM/DD/<segment-id>.zms. An individual ZMS file or a flat directory
+      of segment files is not accepted. The directory must exist. Web needs
+      write access to save search indexes (.idx files) and locks that prevent
+      two processes from building the same index at once.
   KRONIKA_WEB_USER
       No default. Nonempty login name, used by browser login and HTTP Basic auth.
   KRONIKA_WEB_PASSWORD
@@ -54,7 +56,7 @@ OPTIONAL ENVIRONMENT
       permits unauthenticated access.
       Setting disabled does not remove the required user/password configuration.
   KRONIKA_WEB_DEMO     unset by default; the only set value is synthetic
-      Marks the configured recording as synthetic in catalog responses.
+      Tells API catalog clients that the recording contains generated demo data.
   TMPDIR              default the system temporary directory (normally /tmp)
       Temporary ZMS and HTML files during browser exports. Requires write
       access and capacity for both files. Files are removed when closed.

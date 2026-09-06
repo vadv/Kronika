@@ -2,9 +2,10 @@
 
 [Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-Web reads `active.wal` and finished `.zms` segments through `kronika-reader`.
-It serves the embedded browser interface, HTTP API and MCP, and writes derived
-`.idx` files in the recording directory.
+`kronika-web` lets you browse the history recorded by collector and read it
+through HTTP API and MCP. It reads the current journal (`active.wal`) and
+finished compressed files (`.zms`), and creates search indexes (`.idx`) in the
+same directory. The reading library is `kronika-reader`.
 
 ## Configuration
 

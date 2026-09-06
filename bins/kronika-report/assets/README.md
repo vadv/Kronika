@@ -2,7 +2,7 @@
 
 [Русская версия](README.ru.md)
 
-The UI shell is built from the production React sources in
+The interface shell is built from the main React sources in
 `bins/kronika-web/ui`. The JavaScript bindings and compressed WebAssembly are
 built from `crates/kronika-report-wasm` with the repository-pinned Rust and
 wasm-bindgen versions. Repository checks reproduce these files byte-for-byte.

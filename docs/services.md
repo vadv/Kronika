@@ -2,9 +2,11 @@
 
 [Русская версия](services.ru.md) · [Install](../INSTALL.md)
 
-These units use binaries in `/usr/local/bin`, root-owned storage and a loopback
-HTTP listener. Each storage root permits one collector writer and one web index
-owner. Stop foreground instances before starting the units.
+Systemd starts collector and web automatically and restarts them after a
+failure. These service files use programs in `/usr/local/bin`, root-owned
+storage and a web server accepting local connections only. Each recording
+directory permits one collector and one web process that creates indexes.
+Stop any copies running in terminals before starting the services.
 
 ## Environment files
 

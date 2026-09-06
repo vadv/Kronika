@@ -2,11 +2,13 @@
 
 [Русская версия](INSTALL.ru.md) · [README](README.md)
 
-The archive contains four static executables. Collector writes the recording;
-web reads it and creates indexes. Dump and report operate on saved data.
-Runtime requirements: Linux on the archive's architecture and access to the
-recording directory. PostgreSQL collection additionally requires a monitoring
-connection.
+Use `kronika-collector` to record your machine and `kronika-web` to view its
+history in a browser. The archive also includes `kronika-dump` to inspect or
+extract part of a recording and `kronika-report` to create an HTML report.
+
+Choose the archive for your Linux machine's architecture. The programs need
+access to the recording directory. PostgreSQL collection also needs a server
+connection with monitoring permissions.
 
 ## 1. Download and extract
 
@@ -48,10 +50,12 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-The storage root is a real directory. Root can read protected process I/O and
-local logs. The default process/core intervals are 5/10 seconds; the segment
-age threshold is 900 seconds. Web can read `active.wal` before it becomes a
-finished segment. `Ctrl+C` stops collection and retains the journal; the same
+Use a real storage directory, not a symlink. Root can read protected process
+I/O counters and local logs. Processes are sampled every 5 seconds and core
+Linux metrics every 10 seconds. When the accumulated recording reaches
+900 seconds of age, it is saved as a finished compressed file called a segment.
+A size limit can finish the segment earlier. Web can read `active.wal` before
+it becomes a finished segment. `Ctrl+C` stops collection and retains the journal; the same
 command reopens the recording.
 
 `KRONIKA_RETENTION` defaults to `2147483648` bytes (2 GiB). For a fixed 10 GiB
@@ -73,7 +77,8 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 ```
 
 Open <http://127.0.0.1:8080/> and sign in. Web requires write access to the
-recording directory for `.idx` files and its index ownership lock. This
+recording directory to create search indexes (`.idx`) and a lock file that
+prevents concurrent index rebuilds. This
 example runs both programs as root with private storage.
 
 For access from another machine, run on that machine:
@@ -112,14 +117,14 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 
 | Setting or connection | Contract |
 | --- | --- |
-| `KRONIKA_PG_DSNS` | First DSN enables metrics from that server's connectable databases. Additional semicolon-separated DSNs discover logs. |
+| `KRONIKA_PG_DSNS` | The first connection string (DSN) enables metrics from that server's connectable databases. Additional semicolon-separated DSNs discover logs. |
 | `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | Optional integer `1..4294967295`: explicit CPU capacity of the monitored PostgreSQL server. Unset uses the collector VM/container's recorded CPU capacity. |
 | Extension discovery | Supported `pg_stat_statements` and `pg_store_plans` interfaces are detected in connectable databases. Activity, Locks and relation statistics use PostgreSQL's built-in views. |
 | Transport | Native client uses `NoTls`; direct PostgreSQL and PgBouncer session pooling are supported. Metric sessions retain `SET` state. |
 | Log paths | Each `KRONIKA_PG_DSNS` entry discovers its current log through `pg_current_logfile()` even with `KRONIKA_PG_LOGS` unset. The server path must be readable on the collector host. `KRONIKA_PG_LOGS` adds local paths/globs; PgBouncer uses `KRONIKA_PGBOUNCER_DSNS` or `KRONIKA_PGBOUNCER_LOGS`. |
 
-For remote PostgreSQL or a different cgroup, specify the target PostgreSQL
-capacity. Example for a collector with 8 CPUs and PostgreSQL with 4 CPUs:
+For remote PostgreSQL or a different cgroup (a group of processes with shared
+resource limits), specify the target PostgreSQL CPU capacity. Example for a collector with 8 CPUs and PostgreSQL with 4 CPUs:
 
 ```sh
 sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
@@ -128,16 +133,17 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
   /usr/local/bin/kronika-collector
 ```
 
-Omitting the override assumes a shared resource scope with collector; the DSN
-address does not verify that condition. A VM uses its latest recorded CPU
-snapshot; a container uses its effective quota/period and cpuset. A fractional
+Leaving this value unset assumes PostgreSQL and collector share the same
+resources; the connection address does not verify that condition. A VM uses its latest recorded CPU
+snapshot; a container uses its CPU-time quota, quota period and allowed CPU set
+(`cpuset`). A fractional
 quota of `150000/100000` gives `1.5` CPUs. If recorded capacity is unknown,
 PostgreSQL Health is null; set a known capacity manually.
 [Formulas and time selection](docs/metrics-time.md#health).
 
 Restart web with `KRONIKA_WEB_SOURCES=3` to mark both OS and PostgreSQL as
-configured in its catalog. Collection is enabled by collector DSNs; web's
-bitset supplies catalog metadata. User and password remain required with
+configured in its catalog. The collector connection strings enable
+collection; this web setting only reports which sources are configured. User and password remain required with
 `KRONIKA_WEB_AUTH=disabled`.
 
 [Service configuration](docs/services.md) stores DSNs and web credentials in

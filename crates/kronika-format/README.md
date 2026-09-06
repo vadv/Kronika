@@ -70,7 +70,7 @@ handle:
 
 ## From collection windows to a segment
 
-The collector keeps one string interner for the open segment and creates fresh
+The collector keeps one string dictionary (interner) for the open segment and creates fresh
 row buffers for each non-empty collection cycle. The registry sorts each
 snapshot section by its contract key and encodes it. The writer adds the
 current window's dictionary records, builds a ZMS part, wraps it in a `ZMSP`

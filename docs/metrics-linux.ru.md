@@ -1,249 +1,285 @@
 # Справочник метрик Linux
 
-[English version](metrics-linux.md) · [Указатель справочника](features.ru.md) · [Время и heatmaps](metrics-time.ru.md)
+[English version](metrics-linux.md) · [Указатель справочника](features.ru.md) · [Время и карты активности](metrics-time.ru.md)
 
-`R(x) = (x₁ − x₀) / Δt`, где `Δt` — записанное время между samples в секундах. `H` — записанный `clock_ticks_per_sec`; `N(t)` — число записанных online host logical CPUs на timestamp sample; `N_lane` — число уникальных CPU IDs для CPU usage lane. Правила rates и недоступных значений определены [для каждого пути расчёта](metrics-time.ru.md#правила-пар-и-единицы).
+Метрики Linux показывают использование CPU, памяти, хранилища и сети машиной, контейнером или отдельным процессом. Для каждой метрики ниже указаны смысл, исходные поля и единицы. Снимок — значения, собранные в определённый момент. Накопительный счётчик хранит итог с начала учёта; скорость показывает его прирост за секунду. В формулах `x₀` и `x₁` — два записанных значения, `Δt` — время между ними в секундах, `R(x) = (x₁ − x₀) / Δt`. `H` — записанное число учётных тактов в секунду `clock_ticks_per_sec`. `N(t)` — число включённых логических CPU машины в момент `t`; `N_lane` — число различных CPU, используемое графиком CPU usage, с отдельным правилом ниже. [Правила выбора снимков и недоступных значений](metrics-time.ru.md#правила-пар-и-единицы) зависят от расчёта.
 
-## Записанные environment и scope
+<a id="записанные-environment-и-scope"></a>
+
+## Записанное окружение и принадлежность ресурсов
 
 | Записанный факт | Значение и использование |
 |---|---|
-| `instance_metadata.environment` | Записанный collector environment machine/container. Управляет наличием container resource rows и cgroup collection. VM относится к machine. |
-| OS `scope` | `0`: host; `1`: pod; `2`: pod network namespace; `3`: container; `4`: unknown. |
-| Host CPU, memory, pressure, block devices | Значения kernel, видимые через настроенные procfs/sysfs roots. Container recordings сохраняют host context там, где эти файлы его предоставляют. |
-| Process table | Живые PID, видимые через настроенный procfs root; identity — числовой PID в выбранном часе. |
-| Network в container | Interfaces и traffic, видимые в network namespace, записанные с pod-network scope. |
-| Cgroup resource lanes | Точный путь membership collector для соответствующего controller и совпадающий записанный scope. Workload tables могут содержать другие непосредственно населённые cgroups, видимые collector. |
-| Filesystems | Data mounts, видимые в mount namespace collector; capacity читается через `statvfs` по видимому mount path. |
+| `instance_metadata.environment` | Вид окружения сборщика: машина (`machine`) или контейнер (`container`). Виртуальная машина (VM) считается машиной. Поле определяет сбор cgroup и наличие строк ресурсов контейнера. |
+| OS `scope` | Кому относятся данные: `0` — машина; `1` — pod; `2` — сетевое пространство имён pod; `3` — контейнер; `4` — неизвестно. Pod — группа контейнеров, которая может совместно использовать сеть. |
+| CPU, память, ожидание ресурсов и диски машины | Значения ядра из настроенных каталогов procfs/sysfs. В контейнере сохраняются и данные машины, если эти файлы их предоставляют. |
+| Таблица процессов | Живые PID, видимые в настроенном procfs. В выбранном часе процесс определяется числовым PID. |
+| Сеть контейнера | Интерфейсы и трафик его сетевого пространства имён: изолированного набора сетевых устройств и настроек. Записаны с признаком сети pod. |
+| Показатели cgroup | Точный путь группы сборщика для контроллера и совпадающая принадлежность ресурсов. Таблицы могут содержать и другие видимые группы с живыми процессами. |
+| Файловые системы | Видимые сборщику точки монтирования с данными. Их ёмкость читается вызовом `statvfs` по видимому пути. |
 
-На machine/VM collector не записывает workload cgroup sections. В container он опрашивает paths, непосредственно содержащие видимые живые процессы, с пределами 512 controller/path candidates, 512 KiB текста paths и 1,024 cgroup/device I/O rows за tick. Превышение предела candidates исключает workload sections этого tick; превышение предела I/O исключает I/O. Источники: [scope](../crates/kronika-source-os/src/scope.rs), [collection](../bins/kronika-collector/src/os_sources/cgroups.rs), [cgroup reader](../crates/kronika-source-os/src/cgroup.rs), [UI environment](../bins/kronika-web/ui/src/system-view.tsx).
+Cgroup — группа процессов Linux с общим учётом и ограничениями ресурсов; контроллер cgroup отвечает за один ресурс, например CPU или память. На обычной или виртуальной машине сборщик не записывает секции таких групп. В контейнере он читает группы, непосредственно содержащие видимые живые процессы. За один проход допускаются 512 пар «контроллер/путь», 512 KiB текста путей и 1,024 строки «cgroup/устройство» для ввода-вывода. Превышение первых двух пределов оставляет весь проход без секций cgroup; превышение предела строк ввода-вывода исключает только эту секцию. Источники: [принадлежность ресурсов](../crates/kronika-source-os/src/scope.rs), [сбор](../bins/kronika-collector/src/os_sources/cgroups.rs), [чтение cgroup](../crates/kronika-source-os/src/cgroup.rs), [вид окружения в интерфейсе](../bins/kronika-web/ui/src/system-view.tsx).
 
-## Processes
+<a id="processes"></a>
 
-### Lenses и поля
+## Процессы
 
-| Lens | Колонки |
+<a id="lenses-и-поля"></a>
+
+### Линзы и поля
+
+| Линза — набор колонок | Что показывает |
 |---|---|
-| General | PID, command, PPID, real/effective user, GID/EGID, threads, TTY, exit signal, state |
-| CPU | PID, command, user/system CPU, run delay, block delay, voluntary/involuntary context switches, CPU number, nice, priority, real-time priority, scheduling policy, state |
-| Memory | PID, command, RSS, virtual memory, swap, minor/major faults, state |
-| Disk | PID, command, read/write bytes, read/write syscalls, logical read/write bytes, cancelled writes, block delay, state |
-| Tree | Real user, PID, CPU %, memory %, virtual memory, RSS, TTY, STAT, start time, cumulative CPU TIME, command tree с родителями перед потомками |
+| General | PID, команду, родительский PID, реального/эффективного пользователя, GID/EGID, потоки, терминал, сигнал завершения и состояние |
+| CPU | PID, команду, пользовательское/системное время CPU, ожидание CPU и диска, переключения контекста, номер CPU и настройки планировщика |
+| Memory | PID, команду, RSS, виртуальную память, swap, малые/большие страничные промахи и состояние |
+| Disk | PID, команду, байты хранилища, системные вызовы и логические байты чтения/записи, отменённую запись, ожидание диска и состояние |
+| Tree | Дерево команд с родителями перед потомками: пользователя, PID, доли CPU и памяти, виртуальную память, RSS, терминал, STAT, время запуска и накопленное время CPU TIME |
 
-Источники: [`LENS_FIELDS`](../bins/kronika-web/ui/src/process-table.tsx), [поля истории inspector](../bins/kronika-web/ui/src/detail.tsx), [tree](../bins/kronika-web/ui/src/process-tree.ts).
+Источники: [`LENS_FIELDS`](../bins/kronika-web/ui/src/process-table.tsx), [поля истории панели подробностей](../bins/kronika-web/ui/src/detail.tsx), [дерево процессов](../bins/kronika-web/ui/src/process-tree.ts).
 
 | Поле или отображаемая метрика | Записанный источник и расчёт | Единица и значение |
 |---|---|---|
-| PID, PPID | `/proc/PID/stat`: `pid`, `ppid` | Числовая identity процесса/родителя |
-| Command | `/proc/PID/cmdline`; fallback `/proc/PID/comm` | Записанный текст команды |
-| Real/effective user | Real/effective UID из `/proc/PID/status`; passwd mapping collector | Записанный username; числовой UID при отсутствии имени. GID/EGID — real/effective group IDs. |
-| State | `/proc/PID/stat.state` | Kernel state letter; `R` runnable, `S` sleeping, `D` uninterruptible sleep, `Z` zombie, `T` stopped, `I` idle kernel thread |
-| Threads | `num_threads` | Текущее число threads |
-| TTY, exit signal | `tty_nr`, `exit_signal` из `stat` | Код controlling terminal и сигнал завершения |
-| User CPU / System CPU | `R(utime) / H`, `R(stime) / H` | Core equivalents: 1 означает одну CPU second на wall second |
-| Run delay | `R(rundelay_ns)` из `/proc/PID/schedstat` | ns/s ожидания CPU; форматируется как duration на секунду |
-| Block delay | `R(blkdelay_ticks)` из `stat.delayacct_blkio_ticks` | Jiffies/s в таблице/истории; structured-search quantity `block_io_delay` преобразует в `1,000 × R(blkdelay_ticks) / H` ms/s |
-| Voluntary / Involuntary switches | `R(nvcsw)`, `R(nivcsw)` из `status` | Switches/s |
-| CPU, nice, priority, RT priority, policy | `curcpu`, `nice`, `prio`, `rtprio`, `policy` из `stat` | Текущий/последний CPU number и записанные scheduler settings |
-| RSS | `rmem_kb × 1,024` | Resident bytes; shared resident pages входят в каждый отображающий их процесс |
-| Virtual memory | `vmem_kb × 1,024` | Bytes виртуального address space |
-| Swap | `vswap_kb × 1,024` из `status.VmSwap` | Swap bytes процесса |
-| Minor / Major faults | `R(minflt)`, `R(majflt)` из `stat` | Faults/s; minor faults не требуют storage read, major faults требуют page-in I/O |
-| Read / Write | `R(read_bytes)`, `R(write_bytes)` из `/proc/PID/io` | Bytes/s, учтённые как storage I/O |
-| Read / Write syscalls | `R(syscr)`, `R(syscw)` из `io` | Calls/s |
-| Logical read / write | `R(rchar)`, `R(wchar)` из `io` | Bytes/s учтённых read/write operations, включая traffic через cache |
-| Cancelled writes | `R(cancelled_write_bytes)` из `io` | Bytes/s отменённой записи dirty pages |
-| Tree CPU % | `100 × (R(utime) + R(stime)) / H` | Процент одного logical CPU; может превышать 100% |
-| Tree memory % | `100 × rmem_kb / mem_total` | Доля записанного host `MemTotal`; нужен положительный знаменатель |
-| Tree TIME | `(utime + stime) / H` из cumulative `cpu_time_ticks` | CPU seconds за жизнь процесса, формат clock duration |
-| Tree start / STAT | Записанный Unix start timestamp; state, затем `<` при negative nice, `N` при positive nice, `l` при нескольких threads | Наблюдаемые start time и flags; порядок родителей использует выбранный process snapshot |
+| PID, PPID | `/proc/PID/stat`: `pid`, `ppid` | Номера процесса и родительского процесса |
+| Command | `/proc/PID/cmdline`; при отсутствии — `/proc/PID/comm` | Записанная команда; при отсутствии командной строки используется имя процесса |
+| Real/effective user | Реальный/эффективный UID из `/proc/PID/status`; записанные имена из passwd | Имя из записанного справочника пользователей; без имени — числовой UID. GID/EGID — номера реальной и эффективной группы |
+| State | `/proc/PID/stat.state` | Буква состояния ядра: `R` — готов к работе, `S` — сон, `D` — непрерываемое ожидание, `Z` — зомби, `T` — остановлен, `I` — простаивающий поток ядра |
+| Threads | `num_threads` | Текущее число потоков |
+| TTY, exit signal | `tty_nr`, `exit_signal` из `stat` | Код управляющего терминала и сигнал завершения |
+| User CPU / System CPU | `R(utime) / H`, `R(stime) / H` | Занятые ядра: 1 означает секунду работы CPU за секунду прошедшего времени |
+| Run delay | `R(rundelay_ns)` из `/proc/PID/schedstat` | Наносекунды ожидания CPU за секунду; отображаются как длительность за секунду |
+| Block delay | `R(blkdelay_ticks)` из `stat.delayacct_blkio_ticks` | Такты в секунду в таблице и истории. Условие поиска `block_io_delay` использует `1,000 × R(blkdelay_ticks) / H` миллисекунд за секунду |
+| Voluntary / Involuntary switches | `R(nvcsw)`, `R(nivcsw)` из `status` | Переключения контекста за секунду |
+| CPU, nice, priority, RT priority, policy | `curcpu`, `nice`, `prio`, `rtprio`, `policy` из `stat` | Текущий или последний номер CPU, значение nice, приоритет, приоритет реального времени и политика планировщика |
+| RSS | `rmem_kb × 1,024` | Резидентная память в байтах — страницы в RAM. Общие страницы учитываются у каждого процесса, которому они отображены |
+| Virtual memory | `vmem_kb × 1,024` | Размер виртуального адресного пространства в байтах |
+| Swap | `vswap_kb × 1,024` из `status.VmSwap` | Память процесса в области подкачки, байты |
+| Minor / Major faults | `R(minflt)`, `R(majflt)` из `stat` | Промахи за секунду: малые не требуют чтения хранилища, большие требуют загрузки страницы |
+| Read / Write | `R(read_bytes)`, `R(write_bytes)` из `/proc/PID/io` | Байты в секунду, начисленные процессу за работу с хранилищем |
+| Read / Write syscalls | `R(syscr)`, `R(syscw)` из `io` | Вызовы за секунду |
+| Logical read / write | `R(rchar)`, `R(wchar)` из `io` | Байты в секунду через учитываемые операции чтения/записи, включая обслуживание из кэша |
+| Cancelled writes | `R(cancelled_write_bytes)` из `io` | Байты в секунду отменённой записи изменённых страниц |
+| Tree CPU % | `100 × (R(utime) + R(stime)) / H` | Доля одного логического CPU в процентах; может превышать 100% |
+| Tree memory % | `100 × rmem_kb / mem_total` | Доля общей памяти машины `MemTotal`; знаменатель должен быть положительным |
+| Tree TIME | `(utime + stime) / H` из накопленного `cpu_time_ticks` | Накопленные секунды CPU за жизнь процесса, в формате длительности |
+| Tree start / STAT | Записанное время запуска Unix и буква состояния с признаками `<`, `N`, `l` | Время запуска и признаки: состояние, `<` при отрицательном nice, `N` при положительном, `l` при нескольких потоках. Порядок дерева относится к выбранному снимку |
 
-Поля `/proc/PID/io` nullable. Collector пробует filesystem credentials процесса и собственные исходные credentials; ошибка доступа оставляет counters недоступными. В успешно прочитанном I/O file отсутствующие или ошибочные numeric entries получают ноль. Нечитаемый `schedstat` записывает нулевой run delay; отсутствующие status counters сохраняют defaults parser. Источники: [process registry](../crates/kronika-registry/src/codec/os_process.rs), [proc parser](../crates/kronika-source-os/src/proc/process/parse.rs), [process reader](../crates/kronika-source-os/src/proc/process.rs), [I/O reader](../crates/kronika-source-os/src/proc/process/process_io.rs), [tree calculations](../bins/kronika-web/ui/src/process-tree.ts).
+Счётчики `/proc/PID/io` могут отсутствовать. Сборщик пробует права доступа к файловой системе выбранного процесса и свои исходные права; если чтение запрещено, счётчики недоступны. Если файл прочитан, отсутствующие или ошибочные числовые строки получают ноль. Нечитаемый `schedstat` даёт нулевое ожидание CPU; отсутствующие счётчики состояния сохраняют значения по умолчанию разборщика. Источники: [поля процессов](../crates/kronika-registry/src/codec/os_process.rs), [разбор procfs](../crates/kronika-source-os/src/proc/process/parse.rs), [чтение процесса](../crates/kronika-source-os/src/proc/process.rs), [чтение ввода-вывода](../crates/kronika-source-os/src/proc/process/process_io.rs), [расчёты дерева](../bins/kronika-web/ui/src/process-tree.ts).
 
-`rchar` измеряет logical read traffic; `read_bytes` — storage traffic, учтённый для процесса. Process lenses показывают оба rate отдельно.
+`rchar` учитывает логическое чтение, в том числе обслуженное из кэша; `read_bytes` — чтение хранилища, начисленное процессу. В таблице эти скорости показаны отдельно.
 
-### Summary и история
+<a id="summary-и-история"></a>
 
-Summary обрабатывает полный process snapshot независимо от страницы таблицы и поиска. General и Tree показывают число процессов, сумму threads, число `state = R` и число PID, присутствующих в последнем записанном PostgreSQL activity snapshot не позже process timestamp. CPU показывает суммы user/system cores, run delay в ms/s и voluntary плюс involuntary switches/s. Memory — суммы RSS, virtual memory, swap и major faults/s. Disk — суммы read/write bytes/s и read/write calls/s.
+### Сводка и история
 
-Каждый rate вычисляется по PID перед суммированием. Rate добавляет только PID, присутствующий в непосредственно предыдущем process snapshot с тем же `starttime`. Доступные значения добавляются независимо; сумма без доступных значений равна null. Суммарный RSS учитывает shared pages для каждого записанного process mapping. Источник: [`summaries`, `add_row`, `ExactSum`, `RateSum`](../crates/kronika-query/src/hour/process_summary.rs).
+Сводка над таблицей относится ко всему снимку процессов, независимо от поиска и открытой страницы. General и Tree показывают число процессов, сумму потоков, число процессов в состоянии `R` и число PID из последнего снимка активности PostgreSQL не позже снимка процессов. CPU складывает ядра, занятые пользовательским кодом/ядром ОС, ожидание CPU в миллисекундах за секунду и добровольные/вынужденные переключения контекста за секунду. Memory складывает RSS, виртуальную память, swap и большие страничные промахи за секунду. Disk складывает байты и системные вызовы чтения/записи за секунду.
 
-Inspector history использует temporal fields выбранного lens. Scheduler settings, identities и command text — reference fields. CPU history также содержит minor/major faults; Tree — поля CPU, memory и disk history. Process activity heatmaps группируются по `comm`; CPU ранжируется по приросту CPU time, RSS — по [среднему с общим множеством timestamps](metrics-time.ru.md#среднее-rss-grid).
+Скорость сначала вычисляется для каждого PID, затем складывается. Для неё PID должен присутствовать в непосредственно предыдущем снимке процессов с тем же временем запуска `starttime`. Каждое доступное значение добавляется независимо; без доступных слагаемых результат равен `null`. Общая страница памяти входит в суммарный RSS каждого процесса, которому она отображена. Источник: [`summaries`, `add_row`, `ExactSum`, `RateSum`](../crates/kronika-query/src/hour/process_summary.rs).
 
-## Host CPU и pressure
+В Inspector — панели подробностей — история строится для изменяющихся показателей выбранной линзы. Настройки планировщика, поля идентификации и текст команды остаются справочными сведениями. В истории CPU также доступны малые и большие страничные промахи; в Tree — история CPU, памяти и диска. Карта активности объединяет процессы по имени команды `comm`: CPU упорядочивается по приросту времени CPU, RSS — по [среднему с общим набором времён](metrics-time.ru.md#среднее-rss-grid).
 
-Для aggregate host row `/proc/stat` обозначим восемь компонентов интервала `u,n,s,i,w,q,f,z` как разности `user,nice,system,idle,iowait,irq,softirq,steal`. Пусть `T = u+n+s+i+w+q+f+z`, `B = T−i−w`.
+<a id="host-cpu-и-pressure"></a>
+
+## CPU машины и ожидание ресурсов
+
+Доли CPU показывают, на что ушло процессорное время между двумя снимками. Для общей строки машины из `/proc/stat` обозначим приросты `user,nice,system,idle,iowait,irq,softirq,steal` через `u,n,s,i,w,q,f,z` соответственно. Это время пользовательского кода, кода с изменённым nice, ядра, простоя, ожидания ввода-вывода, аппаратных и программных прерываний, а также время, отнятое гипервизором. Все величины записаны в тактах. `T = u+n+s+i+w+q+f+z` — общий прирост; `B = T−i−w` — прирост без простоя и ожидания ввода-вывода. Знак `Σ` ниже означает сумму по указанным строкам или группам.
 
 | Метрика | Формула или записанное поле | Единица |
 |---|---|---|
-| CPU usage / USE Busy | `100 × R(user+nice+system+irq+softirq+steal) / (H × N_lane)` | % host CPU capacity |
-| CPU used, cores | `N(t) × B / T` | Core equivalents |
-| CPU cores | Число записанных уникальных nonnegative `cpu_id` на timestamp, host scope | Logical CPUs |
-| User CPU | `100 × (u+n) / T` | % |
-| System CPU | `100 × s / T` | % |
-| IRQ | `100 × (q+f) / T` | % |
-| I/O wait / Steal / Idle | `100 × w/T`, `100 × z/T`, `100 × i/T` | % |
-| Actual frequency | `Σ(actual_frequency_hz × online_cpus) / Σonline_cpus / 10⁶` | MHz, взвешено по CPUFreq policies |
-| Scaling frequency | Та же взвешенная формула для `scaling_cur_freq_hz` | MHz |
-| Procs running / Procs blocked | `/proc/stat.procs_running`, `procs_blocked` | Gauges runnable / I/O-blocked processes |
-| Context switches | `R(ctxt)` из `/proc/stat` | Switches/s |
-| Load 1m / 5m / 15m | `/proc/loadavg`: `load1`, `load5`, `load15` | Kernel load averages для runnable и uninterruptible tasks |
-| Runnable tasks / Tasks | `/proc/loadavg`: `running`, `total` | Текущие scheduler task counts |
-| CPU / Memory / I/O PSI, 10s | `/proc/pressure/{cpu,memory,io}`: `some_avg10` | Записанный kernel % времени с хотя бы одним stalled task, среднее 10 секунд |
-| CPU PSI / I/O PSI interval lane | `100 × Δsome_total / (10⁶ × Δt)` | % фактического интервала samples |
+| CPU usage / USE Busy | `100 × R(user+nice+system+irq+softirq+steal) / (H × N_lane)` | % доступного CPU машины |
+| CPU used, cores | `N(t) × B / T` | Занятые ядра |
+| CPU cores | Число различных неотрицательных `cpu_id` машины в этот момент | Логические CPU |
+| User CPU | `100 × (u+n) / T` | % пользовательского времени, включая nice |
+| System CPU | `100 × s / T` | % времени ядра |
+| IRQ | `100 × (q+f) / T` | % времени аппаратных и программных прерываний |
+| I/O wait / Steal / Idle | `100 × w/T`, `100 × z/T`, `100 × i/T` | % ожидания ввода-вывода / времени гипервизора / простоя |
+| Actual frequency | `Σ(actual_frequency_hz × online_cpus) / Σonline_cpus / 10⁶` | МГц; вес группы CPUFreq равен числу её включённых CPU |
+| Scaling frequency | Та же средняя с весами для `scaling_cur_freq_hz` | МГц; то же взвешивание для заявленной частоты |
+| Procs running / Procs blocked | `/proc/stat.procs_running`, `procs_blocked` | Число готовых к работе процессов / процессов в ожидании ввода-вывода |
+| Context switches | `R(ctxt)` из `/proc/stat` | Переключения контекста за секунду |
+| Load 1m / 5m / 15m | `/proc/loadavg`: `load1`, `load5`, `load15` | Средняя нагрузка ядра за 1, 5 или 15 минут: готовые к работе и непрерываемо ожидающие задачи |
+| Runnable tasks / Tasks | `/proc/loadavg`: `running`, `total` | Текущее число готовых и всех задач планировщика |
+| CPU / Memory / I/O PSI, 10s | `/proc/pressure/{cpu,memory,io}`: `some_avg10` | Средняя доля времени ожидания хотя бы одной задачи за 10 секунд, % |
+| CPU PSI / I/O PSI interval lane | `100 × Δsome_total / (10⁶ × Δt)` | Доля фактического интервала между снимками, % |
 
-CPU composition требует все восемь неотрицательных разностей и положительный `T`. Used cores дополнительно требует положительный `N(t)`. CPU usage lane использует recorded clock rate и host CPU count; composition использует сумму восьми counters в знаменателе. Actual frequency требует значение и online count каждой policy, положительный total online count и одинаковый записанный hardware source у всех policies. Reader предпочитает `cpuinfo_avg_freq`, затем `cpuinfo_cur_freq`; scaling frequency отдельно читает `scaling_cur_freq`. Источники: [host formulas](../bins/kronika-web/ui/src/system-view.tsx), [USE/timeline lanes](../crates/kronika-query/src/hour/lanes.rs), [CPUFreq](../crates/kronika-source-os/src/cpufreq.rs).
+Для долей CPU нужны все восемь неотрицательных разностей и положительный `T`. Для числа занятых ядер также нужен положительный `N(t)`. График CPU usage использует частоту тактов и число CPU машины; состав CPU делит на сумму восьми счётчиков. Средняя фактическая частота требует частоту и число включённых CPU каждой группы CPUFreq, положительную сумму этих чисел и один и тот же аппаратный источник частоты у всех групп. CPUFreq объединяет CPU, частотой которых ядро управляет совместно. Сборщик предпочитает `cpuinfo_avg_freq`, затем `cpuinfo_cur_freq`; заявленная частота `scaling_cur_freq` читается отдельно. Источники: [формулы машины](../bins/kronika-web/ui/src/system-view.tsx), [метрики USE и шкалы](../crates/kronika-query/src/hour/lanes.rs), [CPUFreq](../crates/kronika-source-os/src/cpufreq.rs).
 
-Для CPU usage lane `N_lane` — размер множества всех уникальных nonnegative `cpu_id`, встреченных в source segment; множество заполняется до проверок scope и timestamp строки. CPU composition и CPU cores gauge считают CPU на каждом timestamp. PSI chart за 10 секунд выбирает `os_psi` по resource; запрос не добавляет scope filter. Host/container interval PSI lanes используют явный выбор scope.
+Для графика CPU usage величина `N_lane` равна числу различных неотрицательных `cpu_id` во всём исходном сегменте: множество собирается до проверки принадлежности ресурсов и времени строки. Состав CPU и показатель CPU cores считают CPU отдельно на каждый момент. График PSI со средним за 10 секунд выбирает `os_psi` по ресурсу без дополнительного фильтра принадлежности машине или контейнеру. Интервальные графики PSI машины и контейнера применяют такой фильтр явно.
 
-PSI также записывает `some_avg60`, `some_avg300`, cumulative `some_total`, а для memory/I/O — `full_avg10/60/300`, `full_total`. `some` считает время ожидания хотя бы одного task; `full` — время ожидания всех non-idle tasks. Записанные averages — kernel gauges; interval lanes и [health](metrics-time.ru.md#health) вычисляются из cumulative `some_total`. Источник: [PSI reader](../crates/kronika-source-os/src/proc/pressure.rs).
+PSI показывает время, когда задачи не могли продолжить работу из-за нехватки ресурса. `some` означает ожидание хотя бы одной задачи; `full` — ожидание всех задач, которые не простаивают. Помимо `some_avg10` записываются средние за 60 и 300 секунд `some_avg60`, `some_avg300` и накопленное время `some_total`; для памяти и ввода-вывода — также `full_avg10/60/300` и `full_total`. Средние вычисляет ядро. Интервальные графики и [Health](metrics-time.ru.md#health) используют прирост накопленного `some_total`. Источник: [чтение PSI](../crates/kronika-source-os/src/proc/pressure.rs).
 
-## Host memory
+<a id="host-memory"></a>
 
-Все memory gauges ниже берутся из `/proc/meminfo`, в KiB до преобразования отображения.
+## Память машины
+
+Показатели памяти отвечают на вопрос, какая часть RAM занята и сколько ещё доступно без подкачки. Значения ниже берутся из `/proc/meminfo` и до перевода для отображения измеряются в KiB — по 1,024 байта.
 
 | Метрика | Поле или формула | Значение |
 |---|---|---|
-| In use | `100 × (mem_total − mem_available) / mem_total` | Host memory utilization; total должен быть положительным |
-| MemTotal / MemAvailable / MemFree | `mem_total`, `mem_available`, `mem_free` | Usable physical memory / оценка kernel доступной памяти без swapping / неиспользуемая память |
-| AnonPages | `anon_pages` | Anonymous pages |
-| Page cache | `cached + buffers` | File cache и block-device buffers |
-| Reclaimable slab / Unreclaimable slab | `s_reclaimable`, `s_unreclaim` | Reclaimable / currently unreclaimable slab |
-| Other memory | `mem_total − mem_free − cached − buffers − anon_pages − s_reclaimable − s_unreclaim` | Остаток; null при отсутствующем operand или отрицательном результате |
-| Free swap / Total swap | `swap_free`, `swap_total` | Свободный / настроенный swap |
-| Swapped pages | `R(pswpin + pswpout)` из `/proc/vmstat` | Pages/s в обоих направлениях |
-| OOM kills | `R(oom_kill)` из `/proc/vmstat` | Kills/s |
+| In use | `100 × (mem_total − mem_available) / mem_total` | Использованная память машины, %; общий объём должен быть положительным |
+| MemTotal / MemAvailable / MemFree | `mem_total`, `mem_available`, `mem_free` | Физическая память / оценка доступной без подкачки / неиспользуемая память |
+| AnonPages | `anon_pages` | Анонимные страницы памяти процессов |
+| Page cache | `cached + buffers` | Файловый кэш и буферы блочных устройств |
+| Reclaimable slab / Unreclaimable slab | `s_reclaimable`, `s_unreclaim` | Память структур ядра, которую можно / сейчас нельзя освободить |
+| Other memory | `mem_total − mem_free − cached − buffers − anon_pages − s_reclaimable − s_unreclaim` | Остаток; `null` при отсутствии исходного значения или отрицательном результате |
+| Free swap / Total swap | `swap_free`, `swap_total` | Свободный и общий объём подкачки |
+| Swapped pages | `R(pswpin + pswpout)` из `/proc/vmstat` | Страницы в секунду, перенесённые в обоих направлениях |
+| OOM kills | `R(oom_kill)` из `/proc/vmstat` | Завершения процессов из-за нехватки памяти за секунду |
 
-`MemAvailable` пересекается с reclaimable memory categories и не является дополнительным компонентом memory composition. Источники: [memory parser](../crates/kronika-source-os/src/proc/meminfo.rs), [VM counters](../crates/kronika-source-os/src/proc/vmstat.rs), [composition](../bins/kronika-web/ui/src/system-view.tsx).
+`MemAvailable` включает память, которую ядро может освободить. Она пересекается с освобождаемыми составляющими диаграммы и не добавляется к ним ещё раз. Источники: [разбор памяти](../crates/kronika-source-os/src/proc/meminfo.rs), [счётчики виртуальной памяти](../crates/kronika-source-os/src/proc/vmstat.rs), [состав памяти](../bins/kronika-web/ui/src/system-view.tsx).
 
-## Storage и filesystems
+<a id="storage-и-filesystems"></a>
 
-### Device I/O
+## Хранилище и файловые системы
 
-Identity устройства — записанный `major:minor` с device name. Источник counters — `/proc/diskstats`; один sector в расчётах равен 512 bytes.
+<a id="device-io"></a>
+
+### Ввод-вывод устройств
+
+Метрики устройства показывают объём, число и длительность операций хранилища. Устройство определяется записанными номерами `major:minor` и именем. Счётчики берутся из `/proc/diskstats`; сектор в этих расчётах всегда равен 512 байтам. `Δreads`, `Δwrites` — приросты числа завершённых операций; `Δread_time_ms`, `Δwrite_time_ms` — приросты накопленного времени этих операций в миллисекундах.
 
 | Поле устройства | Формула | Единица |
 |---|---|---|
-| Reads / Writes | `R(reads)`, `R(writes)` | Завершённые operations/s |
-| Read / Write bytes | `512 × R(read_sectors)`, `512 × R(write_sectors)` | B/s |
-| Read / Write latency | `Δread_time_ms / Δreads`, `Δwrite_time_ms / Δwrites` | ms/operation; null при нуле операций |
-| Device busy | `100 × Δio_time_ms / (1,000 × Δt)` | % интервала с активным I/O |
-| Queue depth | `Δio_weighted_time_ms / (1,000 × Δt)` | Среднее число active или waiting requests |
-| Active I/O | `io_in_progress` | Текущие requests |
+| Reads / Writes | `R(reads)`, `R(writes)` | Завершённые операции за секунду |
+| Read / Write bytes | `512 × R(read_sectors)`, `512 × R(write_sectors)` | Байты в секунду |
+| Read / Write latency | `Δread_time_ms / Δreads`, `Δwrite_time_ms / Δwrites` | Миллисекунды на операцию; при нуле операций `null` |
+| Device busy | `100 × Δio_time_ms / (1,000 × Δt)` | Доля интервала с активным вводом-выводом, % |
+| Queue depth | `Δio_weighted_time_ms / (1,000 × Δt)` | Среднее число выполняемых или ожидающих запросов |
+| Active I/O | `io_in_progress` | Текущее число запросов |
 
-Host charts **Device busy** и **Queue depth** берут максимальное значение устройства на каждом timestamp. Breakdown lines показывают отдельные devices; устройства с нулевыми значениями весь час скрываются, если есть хотя бы одно активное. USE Storage cells используют `min(100, 100 × R(Σio_time_ms)/1,000)` и `R(Σio_weighted_time_ms)/1,000`. **Active I/O** в host overview — `Σio_in_progress`; **Block devices** — число записанных device rows.
+Общие графики **Device busy** и **Queue depth** показывают максимум среди устройств в каждый момент. Отдельные линии относятся к устройствам; полностью нулевые за час линии скрываются, если есть активное устройство. Ячейки Storage таблицы USE используют другие итоги: `min(100, 100 × R(Σio_time_ms)/1,000)` и `R(Σio_weighted_time_ms)/1,000`, где суммы берутся по устройствам. **Active I/O** в обзоре машины — сумма `Σio_in_progress`, а **Block devices** — число записанных строк устройств.
 
-Источники: [diskstats parser](../crates/kronika-source-os/src/proc/diskstats.rs), [`SYSTEM_ENTITIES`, `latencyPoints`, `peakDeviceRate`](../bins/kronika-web/ui/src/system-view.tsx), [`read_disk`, `points`](../crates/kronika-query/src/hour/lanes.rs).
+Источники: [разбор diskstats](../crates/kronika-source-os/src/proc/diskstats.rs), [`SYSTEM_ENTITIES`, `latencyPoints`, `peakDeviceRate`](../bins/kronika-web/ui/src/system-view.tsx), [`read_disk`, `points`](../crates/kronika-query/src/hour/lanes.rs).
 
-### Mounted filesystems
+<a id="mounted-filesystems"></a>
 
-| Поле | Источник/формула | Единица и scope |
+### Смонтированные файловые системы
+
+Показатели описывают место, доступное через каждую видимую точку монтирования. Вызов `statvfs` возвращает `f_blocks` — число блоков, `f_frsize` — байты в блоке, `f_bavail` — блоки для обычной записи без специальных прав, `f_files` — общее число inode и `f_favail` — доступное число inode. Inode — индексный дескриптор объекта файловой системы.
+
+| Поле | Источник/формула | Единица и принадлежность ресурсов |
 |---|---|---|
-| Mount point, root, source, type, device | `/proc/self/mountinfo` | Identity видимого mount; root — subtree filesystem, доступное через mount |
-| Total bytes | `f_blocks × f_frsize` | Bytes |
-| Free bytes / Available | Записанный `free_bytes = f_bavail × f_frsize` | Bytes для unprivileged writes; reserved free blocks исключены |
-| Available % | `100 × free_bytes / total_bytes` | Нужен положительный total |
-| Used bytes в paired chart | `total_bytes − free_bytes` | Bytes за пределами available portion |
-| Total / available inodes | `f_files`, `f_favail` | Inode/file-serial counts |
-| Available inode % | `100 × available_inodes / total_inodes` | Нужен положительный total |
-| Used inodes в paired chart | `total_inodes − available_inodes` | Inodes за пределами available portion |
-| Minimum filesystem free | Минимальный available-byte percentage среди записанных mounts на timestamp | %; отсутствие необходимого mount value делает aggregate недоступным |
-| Filesystems | Число записанных mount rows | Count |
-| Kubernetes infrastructure | `is_k8s_infra` из записанного mount path | Классификация известных infrastructure bind mounts |
+| Mount point, root, source, type, device | `/proc/self/mountinfo` | Видимая точка монтирования; root — подкаталог файловой системы, открытый через неё |
+| Total bytes | `f_blocks × f_frsize` | Байты |
+| Free bytes / Available | Записанный `free_bytes = f_bavail × f_frsize` | Байты, доступные обычной записи без специальных прав; зарезервированные свободные блоки исключены |
+| Available % | `100 × free_bytes / total_bytes` | Доля доступных байтов, %; общий объём должен быть положительным |
+| Used bytes в парном графике | `total_bytes − free_bytes` | Байты вне доступной части |
+| Total / available inodes | `f_files`, `f_favail` | Число индексных дескрипторов файлов (inode) |
+| Available inode % | `100 × available_inodes / total_inodes` | Доля доступных inode, %; общий счётчик должен быть положительным |
+| Used inodes в парном графике | `total_inodes − available_inodes` | Число inode вне доступной части |
+| Minimum filesystem free | Минимальная доля доступных байтов среди записанных точек монтирования в этот момент | %; отсутствие необходимого значения точки монтирования делает общий минимум недоступным |
+| Filesystems | Число записанных точек монтирования | Число записанных точек монтирования |
+| Kubernetes infrastructure | `is_k8s_infra` из записанного пути монтирования | Признак известных служебных точек монтирования Kubernetes |
 
-Reader исключает pseudo filesystems и mounts внутри `/proc` или `/sys`; data-bearing `tmpfs` и `overlay` остаются eligible. Произведения `statvfs` ограничиваются `i64::MAX`. Источники: [filesystem capacity](../crates/kronika-source-os/src/fs.rs), [выбор mounts](../crates/kronika-source-os/src/mount.rs), [paired charts](../bins/kronika-web/ui/src/system-view.tsx).
+Чтение исключает псевдофайловые системы и точки монтирования внутри `/proc` и `/sys`; `tmpfs` и `overlay` с данными могут учитываться. Произведения значений `statvfs` ограничиваются сверху `i64::MAX`. Источники: [ёмкость файловых систем](../crates/kronika-source-os/src/fs.rs), [выбор точек монтирования](../crates/kronika-source-os/src/mount.rs), [парные графики](../bins/kronika-web/ui/src/system-view.tsx).
 
-### Topology reference
+<a id="topology-reference"></a>
 
-CPU topology содержит logical CPU, socket, core, NUMA node, model и maximum MHz. CPUFreq reference — policy membership, driver, actual-frequency source и hardware limits. Storage topology связывает `major:minor` devices, partition/stack edges, parent/slave relationships и видимые mounts. Это identity/configuration records, выбранные на cursor; topology fields не становятся history metrics. Источники: [CPU topology](../crates/kronika-source-os/src/proc/cpuinfo.rs), [block topology](../crates/kronika-source-os/src/block_topology.rs), [reference views](../bins/kronika-web/ui/src/system-view.tsx).
+### Справочник топологии
 
-## Network
+Топология описывает связи оборудования. Для CPU это логический номер, сокет, ядро, узел NUMA, модель и максимальная частота в МГц. CPUFreq добавляет состав групп управления частотой, драйвер, источник фактической частоты и аппаратные пределы. Топология хранилища связывает устройства `major:minor`, разделы, составные устройства, нижележащие устройства и видимые точки монтирования. Это справочные записи, выбранные на время курсора; для самих связей график истории не строится. Источники: [топология CPU](../crates/kronika-source-os/src/proc/cpuinfo.rs), [топология хранилища](../crates/kronika-source-os/src/block_topology.rs), [справочные экраны](../bins/kronika-web/ui/src/system-view.tsx).
+
+<a id="network"></a>
+
+## Сеть
 
 | Метрика | Источник/формула | Единица |
 |---|---|---|
-| RX / TX interface | `R(rx_bytes)`, `R(tx_bytes)` из `/proc/net/dev` | B/s |
-| RX / TX packets | `R(rx_packets)`, `R(tx_packets)` | Packets/s |
-| RX / TX errors | `R(rx_errs)`, `R(tx_errs)` | Errors/s |
-| RX / TX drops | `R(rx_drop)`, `R(tx_drop)` | Packets/s |
-| Speed / duplex | Записанные sysfs link speed `speed_mbit`, `duplex` | Mbit/s и duplex setting; reference fields |
-| Host/namespace RX / TX | `R(Σrx_bytes)`, `R(Σtx_bytes)` | B/s по записанным interfaces |
-| Net errors | `R(Σ(rx_errs + tx_errs))` | Errors/s |
-| Drops chart | `R(Σ(rx_drop + tx_drop))` | Drops/s |
-| USE Drops | `R(Σ(rx_drop + tx_drop + rx_fifo + tx_fifo))` | Drops/FIFO errors на секунду |
-| Interfaces | Число записанных interface rows | Count |
+| RX / TX interface | `R(rx_bytes)`, `R(tx_bytes)` из `/proc/net/dev` | Байты в секунду на интерфейсе |
+| RX / TX packets | `R(rx_packets)`, `R(tx_packets)` | Пакеты в секунду |
+| RX / TX errors | `R(rx_errs)`, `R(tx_errs)` | Ошибки в секунду |
+| RX / TX drops | `R(rx_drop)`, `R(tx_drop)` | Потерянные пакеты в секунду |
+| Speed / duplex | Записанные в sysfs скорость соединения `speed_mbit`, `duplex` | Мбит/с и режим одновременной передачи/приёма; справочные поля |
+| Host/namespace RX / TX | `R(Σrx_bytes)`, `R(Σtx_bytes)` | Байты в секунду по всем записанным интерфейсам |
+| Net errors | `R(Σ(rx_errs + tx_errs))` | Ошибки в секунду |
+| Drops chart | `R(Σ(rx_drop + tx_drop))` | Потери в секунду |
+| USE Drops | `R(Σ(rx_drop + tx_drop + rx_fifo + tx_fifo))` | Потери и ошибки очереди FIFO за секунду |
+| Interfaces | Число записанных интерфейсов | Число интерфейсов |
 
-Aggregate суммирует записанные counters каждого timestamp перед дифференцированием. Link speed не переводит RX/TX в проценты. Источники: [network parser](../crates/kronika-source-os/src/proc/net_dev.rs), [aggregate charts](../bins/kronika-web/ui/src/system-view.tsx), [USE network lanes](../crates/kronika-query/src/hour/lanes.rs).
+RX — приём, TX — передача. Общая скорость сети получается из суммы записанных счётчиков всех интерфейсов в каждый момент, затем из прироста этой суммы за секунду. Скорость соединения не переводит RX/TX в проценты. Источники: [разбор сети](../crates/kronika-source-os/src/proc/net_dev.rs), [общие графики сети](../bins/kronika-web/ui/src/system-view.tsx), [метрики сети USE](../crates/kronika-query/src/hour/lanes.rs).
 
-## Container cgroups
+<a id="container-cgroups"></a>
 
-### Capacity и membership
+## Группы ресурсов контейнера
 
-`os_cgroup_context` записывает cgroup version, точные CPU/memory/I/O paths collector, effective cpuset count, минимальное применимое CPU quota/period ratio в hierarchy и effective memory ceiling. При положительных quota `Q`, period `P` и пригодном cpuset count `S` CPU capacity равна `min(Q/P, S)`; при отсутствии `S` — `Q/P`. Записанная quota `−1` выбирает `S`; unknown quota hierarchy оставляет capacity равной null. Memory capacity — записанный validated hierarchical ceiling. Положительные local controller limits и effective ancestor limits — отдельные поля.
+<a id="capacity-и-membership"></a>
 
-Cgroup v2 проверяет применимые files от настроенного hierarchy root до точного membership. Отсутствующий mount-root control file считается unbounded только для non-root membership; необходимые descendant files должны быть валидными. Cgroup v1 использует однозначный controller root; memory проверяет `hierarchical_memory_limit` совместно с leaf limit. Effective capacity/context добавляется только к строке таблицы с совпадающими collector path и scope. Источники: [hierarchy reader](../crates/kronika-source-os/src/cgroup.rs), [context contract](../crates/kronika-registry/src/codec/os_cgroup_context.rs), [`cgroup_cpu_capacity`](../crates/kronika-query/src/hour/lanes.rs), [`systemEntityRows`](../bins/kronika-web/ui/src/system-view.tsx).
+### Доступные ресурсы и принадлежность группе
 
-### Controller metrics
+Доступные ресурсы контейнера определяются ограничениями его cgroup и родительских групп. `os_cgroup_context` хранит версию cgroup, точные пути сборщика для CPU, памяти и ввода-вывода, число разрешённых CPU, самую строгую квоту CPU и итоговый предел памяти. Пусть `Q` — квота времени CPU, `P` — её период, оба в микросекундах; `S` — положительное число разрешённых CPU из cpuset. При положительных `Q` и `P` доступно `min(Q/P, S)` ядра, а без `S` — `Q/P`. Квота `−1` означает отсутствие ограничения квотой: используется `S`. Неизвестные ограничения родительских групп дают `null`. Предел памяти также учитывает родителей. Локальные ограничения группы и итоговые ограничения всей цепочки записываются отдельно.
+
+В cgroup v2 проверяются файлы от настроенного корня до точной группы сборщика. Отсутствие управляющего файла в самом корне считается отсутствием ограничения только при принадлежности группе ниже корня; необходимые файлы потомков должны быть корректны. В cgroup v1 выбирается один однозначный корень контроллера; `hierarchical_memory_limit` проверяется вместе с локальным пределом памяти конечной группы. Итоговые ограничения добавляются только к строке таблицы, чей путь и принадлежность ресурсов совпадают со сборщиком. Источники: [чтение иерархии](../crates/kronika-source-os/src/cgroup.rs), [поля контекста](../crates/kronika-registry/src/codec/os_cgroup_context.rs), [`cgroup_cpu_capacity`](../crates/kronika-query/src/hour/lanes.rs), [`systemEntityRows`](../bins/kronika-web/ui/src/system-view.tsx).
+
+<a id="controller-metrics"></a>
+
+### Показатели контроллеров
+
+Контроллер учитывает расход своего ресурса всей группой. В формулах `used_cores` — занятые ядра, `effective_capacity` — доступные ядра из раздела выше, `current` — текущее значение соответствующего контроллера, `max` — его локальный предел. `effective_memory_max` — предел памяти с учётом родительских групп.
 
 | Метрика или записанное поле | Расчёт/источник | Единица |
 |---|---|---|
-| CPU used / user / system | `R(usage_usec) / 10⁶`, `R(user_usec) / 10⁶`, `R(system_usec) / 10⁶` | Core equivalents; v2 `cpu.stat`, v1 `cpuacct` |
-| Other CPU | `R(usage_usec − user_usec − system_usec) / 10⁶`, из трёх разностей | Cores; null при отрицательной разности компонента или остатке |
-| CPU share | `100 × used_cores / effective_capacity` | %; недоступно без capacity |
-| CPU quota / period | `quota_usec`, `period_usec`; quota cores отображаются как `Q/P` при положительных operands | Local controller ceiling; quota `−1` — unlimited |
-| Throttled | `100 × R(throttled_usec) / 10⁶` | % wall interval; без деления на capacity и ограничения 100% |
-| Throttling events | Записанный cumulative `nr_throttled` | Count; cgroup CPU record |
-| CPU / memory / I/O PSI | `100 × R(some_total) / 10⁶` для pressure collector cgroup | % интервала samples |
-| Memory current | v2 `memory.current`; v1 `memory.usage_in_bytes` | Bytes |
-| Memory share | `100 × current / effective_memory_max` | % положительного hierarchical ceiling |
-| Local memory max | v2 `memory.max`; v1 `memory.limit_in_bytes` | Bytes; unlimited представлен null |
-| Anon / File / Slab | `anon`, `file`, `slab` из `memory.stat` | Bytes |
-| Other kernel | `kernel − slab` | Bytes; null при отсутствующем operand или отрицательной разности |
-| Unclassified memory | `current − anon − file − kernel` | Bytes; null при отсутствующем operand или отрицательной разности |
-| Shared memory, если записана | `shmem` в новом memory layout | Bytes, включённые в `file` |
-| Memory events | Cumulative `low_events`, `high_events`, `max_events`, `oom_events`, `oom_kill`; v1 `memory.failcnt` записывается в `max_events` | Counts; OOM lane — `R(oom_kill)` kills/s |
-| I/O read/write | `R(rbytes)`, `R(wbytes)` из v2 `io.stat` или v1 blkio service-byte files | B/s на cgroup и device |
-| I/O operations | `R(rios)`, `R(wios)` | Operations/s на cgroup и device |
-| Потоки (TID) / Локальный pids.max | Прямые `pids.current`, `pids.max` | Threads (TIDs) в cgroup subtree и local subtree limit |
-| К pids.max | `100 × current / max` при положительном local max | %; literal `max` записывается как null unlimited limit |
+| CPU used / user / system | `R(usage_usec) / 10⁶`, `R(user_usec) / 10⁶`, `R(system_usec) / 10⁶` | Занятые ядра; v2 `cpu.stat`, v1 `cpuacct` |
+| Other CPU | `R(usage_usec − user_usec − system_usec) / 10⁶`, из трёх разностей | Ядра; `null` при отрицательном приросте компонента или остатке |
+| CPU share | `100 × used_cores / effective_capacity` | Доля доступных ядер, %; без известного числа ядер недоступна |
+| CPU quota / period | `quota_usec`, `period_usec`; доступные по квоте ядра равны `Q/P` при положительных исходных значениях | Локальный предел CPU; квота `−1` означает отсутствие ограничения |
+| Throttled | `100 × R(throttled_usec) / 10⁶` | Доля прошедшего времени, %; без деления на число ядер и без ограничения 100% |
+| Throttling events | Записанный накопленный `nr_throttled` | Накопленное число ограничений CPU квотой |
+| CPU / memory / I/O PSI | `100 × R(some_total) / 10⁶` для ожидания ресурсов cgroup сборщика | Доля интервала ожидания, % |
+| Memory current | v2 `memory.current`; v1 `memory.usage_in_bytes` | Байты |
+| Memory share | `100 × current / effective_memory_max` | Доля положительного предела всей цепочки групп, % |
+| Local memory max | v2 `memory.max`; v1 `memory.limit_in_bytes` | Байты; отсутствие ограничения записано как `null` |
+| Anon / File / Slab | `anon`, `file`, `slab` из `memory.stat` | Байты анонимной памяти / файлов / структур ядра |
+| Other kernel | `kernel − slab` | Байты; `null` при отсутствии исходного значения или отрицательном результате |
+| Unclassified memory | `current − anon − file − kernel` | Байты; `null` при отсутствии исходного значения или отрицательном результате |
+| Shared memory, если записана | `shmem` в новой структуре записи памяти | Байты общей памяти, уже включённые в `file` |
+| Memory events | Накопленные `low_events`, `high_events`, `max_events`, `oom_events`, `oom_kill`; v1 `memory.failcnt` записывается в `max_events` | Накопленные события; график OOM использует `R(oom_kill)` завершений за секунду |
+| I/O read/write | `R(rbytes)`, `R(wbytes)` из v2 `io.stat` или файлов v1 blkio с байтами обслуживания | Байты в секунду для пары cgroup/устройство |
+| I/O operations | `R(rios)`, `R(wios)` | Операции в секунду для пары cgroup/устройство |
+| Потоки (TID) / Локальный pids.max | Прямые `pids.current`, `pids.max` | Число потоков группы и потомков; локальный предел этого поддерева |
+| К pids.max | `100 × current / max` при положительном локальном max | Доля локального положительного предела, %; буквальное `max` означает отсутствие предела и записывается как `null` |
 
-Cgroup I/O lane суммирует device counters точного I/O path collector перед вычислением read/write rates. Каждый I/O counter может оставаться доступным независимо. Device table содержит `major:minor`, stacked-device chain, visible mount associations и свёрнутые lower-layer counters в inspector. Associations сохраняют записанный cgroup/device scope. Число `pids.current` включает descendants и main thread каждого процесса; число process rows имеет другую единицу. Для записи строки потоков нужны валидные `pids.current` и `pids.max`. Источники: [controller parsing](../crates/kronika-source-os/src/cgroup.rs), [CPU](../crates/kronika-registry/src/codec/os_cgroup_cpu.rs), [memory](../crates/kronika-registry/src/codec/os_cgroup_memory.rs), [I/O](../crates/kronika-registry/src/codec/os_cgroup_io.rs), [Потоки](../crates/kronika-registry/src/codec/os_cgroup_pids.rs), [device associations](../bins/kronika-web/ui/src/cgroup-device.ts).
+Общий график ввода-вывода cgroup сначала складывает счётчики устройств точного пути сборщика, затем вычисляет скорости чтения и записи. Доступность каждого счётчика независима. Таблица сохраняет `major:minor`, цепочку составного устройства, видимые точки монтирования и счётчики нижележащих уровней в Inspector; все связи относятся к записанной паре cgroup/устройство. `pids.current` считает потоки, включая потомков и главный поток каждого процесса; это не число строк процессов. Строка потоков записывается только при корректных `pids.current` и `pids.max`. Источники: [разбор контроллеров](../crates/kronika-source-os/src/cgroup.rs), [CPU](../crates/kronika-registry/src/codec/os_cgroup_cpu.rs), [память](../crates/kronika-registry/src/codec/os_cgroup_memory.rs), [ввод-вывод](../crates/kronika-registry/src/codec/os_cgroup_io.rs), [потоки](../crates/kronika-registry/src/codec/os_cgroup_pids.rs), [связи устройств](../bins/kronika-web/ui/src/cgroup-device.ts).
 
-## USE table и verdicts
+<a id="use-table-и-verdicts"></a>
 
-Колонки USE — Utilization (U), Saturation (S), Errors (E). Cells читают lane не позже cursor. Resource rows используют следующие значения:
+## Таблица USE и её итоги
 
-| Resource | U | S | E |
+Таблица USE сопоставляет использование ресурса (Utilization, U), нехватку ресурса или ожидание (Saturation, S) и ошибки (Errors, E). Ячейка выбирает последнее значение своего ряда не позже курсора. Для ресурсов используются следующие показатели:
+
+| Ресурс | U — использование | S — ожидание/нехватка | E — ошибки |
 |---|---|---|---|
-| Host CPU | CPU usage % | CPU PSI interval % | Недоступно |
-| Host memory | In use % | Swapped pages/s | OOM kills/s |
-| Host storage | Capped summed busy % | Summed average queue | Недоступно |
-| Host/namespace network | RX и TX B/s | Drops включая FIFO/s | RX + TX errors/s |
-| Cgroup CPU | Capacity share %, fallback used cores | Throttled % и CPU PSI % | Недоступно |
-| Cgroup memory | Effective-limit share %, fallback current bytes | Memory PSI % | OOM kills/s |
-| Cgroup I/O | Read и write B/s | I/O PSI % | Недоступно |
-| Cgroup Потоки | Local-limit share %, fallback current count | Недоступно | Недоступно |
+| CPU машины | CPU usage, % | Интервальный CPU PSI, % | Недоступно |
+| Память машины | In use, % | Страницы подкачки за секунду | Завершения по OOM за секунду |
+| Хранилище машины | Суммарная занятость, не более 100% | Суммарная средняя очередь | Недоступно |
+| Сеть машины/пространства имён | RX и TX, байты/с | Потери с учётом FIFO за секунду | Ошибки RX + TX за секунду |
+| CPU cgroup | Доля доступных ядер, %; без неё — занятые ядра | Ограничение квотой Throttled, % и CPU PSI, % | Недоступно |
+| Память cgroup | Доля итогового лимита, %; без неё — текущие байты | Memory PSI, % | Завершения по OOM за секунду |
+| Ввод-вывод cgroup | Чтение и запись, байты/с | I/O PSI, % | Недоступно |
+| Потоки cgroup | Доля локального лимита, %; без неё — текущее число | Недоступно | Недоступно |
 
-| Verdict | Точный reducer |
+| Итог над таблицей | Расчёт |
 |---|---|
-| U | Наибольшая доступная U cell в процентах на cursor. Byte/count fallbacks и network throughput не участвуют. При равенстве выбирается первый resource в порядке строк. |
-| S | Показывает каждый положительный максимум выбранного часа из доступных S lanes, включая secondary lanes. Ссылка ведёт к resource с наибольшим percentage maximum; lanes в других units используют comparison value `−1`. Доступные полностью нулевые lanes дают Quiet; отсутствие доступных S lanes даёт `—`. |
-| E | Для каждой error lane суммирует `rate(tᵢ) × (tᵢ−tᵢ₋₁)/10⁶` по отсортированным points, затем суммирует resources. Null/nonfinite current rate ничего не добавляет. Результат отображается как округлённое число events. Ссылка ведёт к resource с наибольшим положительным integrated count. Доступные нулевые totals дают Quiet; отсутствие error lane даёт `—`. |
+| U | Наибольшая доступная ячейка U в процентах на время курсора. Байты, число объектов и скорость сети не участвуют. При равенстве берётся первый ресурс по порядку строк. |
+| S | Все положительные максимумы доступных рядов S за час, включая дополнительные ряды. Ссылка ведёт к ресурсу с наибольшим максимумом в процентах; для величин в других единицах сравнивается служебное значение `−1`. Полностью нулевые доступные ряды дают Quiet («Спокойно»), отсутствие доступных рядов — `—`. |
+| E | Для каждого ряда ошибок складывается `rate(tᵢ) × (tᵢ−tᵢ₋₁)/10⁶`, затем результаты складываются по ресурсам. Здесь `tᵢ` — упорядоченные времена точек в микросекундах, `rate(tᵢ)` — события за секунду. `null`, NaN и бесконечная текущая скорость не добавляются. Выводится округлённое число событий; ссылка ведёт к наибольшему положительному итогу. Доступные нулевые итоги дают Quiet, отсутствие рядов ошибок — `—`. |
 
 Источник: [`USE_RESOURCES`, `resolveCell`, `ledgerVerdicts`, `integrateRate`](../bins/kronika-web/ui/src/use-table.tsx).
 
-Выбор primary или fallback U lane зависит от наличия хотя бы одного конечного sample за весь час. Если primary lane содержит sample часа, но равна null на cursor, cell остаётся null. Secondary S lane участвует только после разрешения primary lane. Порядок resources: cgroup CPU, memory, I/O, Потоки, затем host CPU, memory, storage, network; недоступные container rows исключаются. Строгие сравнения сохраняют этот порядок при равенстве verdict values.
+Если у основного показателя U есть хотя бы одно конечное значение за весь час, используется он; иначе выбирается запасной показатель. При наличии основного значения за час, но `null` у курсора, ячейка остаётся `null`. Дополнительный показатель S учитывается только после получения основного. Порядок ресурсов: CPU, память, ввод-вывод и потоки cgroup; затем CPU, память, хранилище и сеть машины. Недоступные строки контейнера отсутствуют. При равных итогах выбирается первый ресурс в этом порядке.
 
-## Фиксированные marks и цвета cells
+<a id="фиксированные-marks-и-цвета-cells"></a>
 
-Linux и overall-health timeline marks используют следующие predicates для поддерживаемых записанных layouts:
+## Фиксированные отметки и цвета ячеек
 
-| Mark | Predicate |
+Отметки шкалы указывают на записанные значения, пересёкшие фиксированный порог. Для Linux и общей оценки Health действуют следующие условия:
+
+| Отметка | Условие |
 |---|---|
-| Host CPU | `100 × B ≥ 80 × T`, при положительном `T` и неотрицательных разностях восьми counters |
-| Host load | `load1 ≥ 2 × online_CPU_count` на том же timestamp |
-| Host memory | `100 × MemAvailable ≤ 10 × MemTotal`, валидные `0 ≤ available ≤ total`, положительный total |
-| Host filesystem | `100 × (total_bytes − free_bytes) ≥ 90 × total_bytes`, валидные bounds, положительный total |
-| Host / cgroup OOM | Более поздний записанный `oom_kill` превышает предыдущее значение для scope/identity |
-| Overall health | Известное значение `< 50`; overall-health chart также рисует threshold 50 |
+| CPU машины | `100 × B ≥ 80 × T`, положительный `T` и неотрицательные приросты восьми счётчиков; `B` и `T` определены в разделе CPU |
+| Нагрузка машины | `load1 ≥ 2 × online_CPU_count` в один момент, где `online_CPU_count` — число включённых CPU |
+| Память машины | `100 × MemAvailable ≤ 10 × MemTotal`, при `0 ≤ available ≤ total` и положительном общем объёме |
+| Файловая система машины | `100 × (total_bytes − free_bytes) ≥ 90 × total_bytes`, при корректных границах и положительном общем объёме |
+| OOM машины/cgroup | Позднее значение `oom_kill` больше предыдущего для того же объекта и принадлежности ресурсов |
+| Overall health | Известная общая оценка `< 50`; на её графике также показана линия 50 |
 
-Цвета process cells задаются отдельно: state `R` good, `D` warning, `Z` critical, `I` inactive; Tree CPU — warning при `≥50%`, critical при `≥90%`; нулевой rate — inactive. Источники: [фиксированные predicates](../crates/kronika-index/src/detect/direct.rs), [cell tones](../bins/kronika-web/ui/src/value-tone.ts), [health chart threshold](../bins/kronika-web/ui/src/timeline.tsx).
+Цвет ячейки процесса рассчитывается отдельно: `R` — нормальное состояние, `D` — предупреждение, `Z` — критическое, `I` — неактивное. CPU дерева получает предупреждение при `≥50%`, критический цвет при `≥90%`; нулевая скорость имеет неактивный цвет. Источники: [условия отметок](../crates/kronika-index/src/detect/direct.rs), [цвета ячеек](../bins/kronika-web/ui/src/value-tone.ts), [порог графика Health](../bins/kronika-web/ui/src/timeline.tsx).

@@ -10,13 +10,13 @@ from source using the instructions below.
 | Component | Version or requirement |
 | --- | --- |
 | Rust | `1.96.0`, pinned by [rust-toolchain.toml](../rust-toolchain.toml). Dependencies use `Cargo.lock`. |
-| Native tools | C compiler, GNU make, `pkg-config`; static builds use native `musl-gcc`. Debian/Ubuntu packages: `build-essential musl-tools pkg-config`. |
-| Browser assets | Committed HTML and WebAssembly assets are used by native Cargo builds. |
-| Asset rebuild | Node.js `22.21.1`, `wasm32-unknown-unknown`, locked npm dependencies. |
+| Build tools | C compiler, GNU make, `pkg-config`; static builds use `musl-gcc` for the host architecture. Debian/Ubuntu packages: `build-essential musl-tools pkg-config`. |
+| Browser interface | Cargo uses the HTML and WebAssembly files already stored in the repository; building the Linux programs does not require Node.js. |
+| Rebuilding the browser interface | Node.js `22.21.1`, `wasm32-unknown-unknown`, and the npm dependencies selected by the lockfile. |
 
 ## Native Linux binaries
 
-On native x86-64 Linux with rustup and the native tools installed:
+On an x86-64 Linux machine with rustup and the build tools installed:
 
 ```sh
 git clone https://github.com/vadv/Kronika.git
@@ -32,7 +32,7 @@ The default Cargo target in [.cargo/config.toml](../.cargo/config.toml) is
 `x86_64-unknown-linux-musl`. To build an exact revision, run
 `git checkout FULL_COMMIT` before `cargo build`.
 
-On native ARM64 Linux:
+On an ARM64 Linux machine:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
@@ -48,8 +48,8 @@ Outputs: `target/aarch64-unknown-linux-musl/release/`. The C flag emits inline
 ARMv8 atomic operations. [Install](../INSTALL.md#2-install) provides the binary
 installation commands.
 
-To build every workspace binary, including development tooling, with the host
-GNU toolchain on x86-64:
+To build all programs, including the development demo, for an x86-64 Linux
+machine using the GNU tools:
 
 ```sh
 make build TARGET=x86_64-unknown-linux-gnu
@@ -66,7 +66,8 @@ make fmt-check lint test
 
 `lint` runs repository/Mordant Dylint rules and workspace Clippy with warnings
 denied. [Dylint setup](../scripts/check-dylints.sh) defines its dependencies.
-`test` runs non-BDD unit and integration tests. BDD runs in CI.
+`test` runs unit and integration tests. Behavior tests (BDD) run separately in
+GitHub Actions.
 
 ## Browser assets
 
@@ -77,8 +78,8 @@ make report-assets REPORT_ASSET_FLAGS=--download-bindgen
 make report-assets-check REPORT_ASSET_FLAGS=--download-bindgen
 ```
 
-These targets build and reproduce the committed web HTML, report shell and
-WebAssembly bindings. The report's query engine executes on the browser's main
+These commands rebuild the web page, the HTML report interface and its
+WebAssembly engine, then check that they match the files in the repository. The report's query engine executes on the browser's main
 thread. Target definitions: [Makefile](../Makefile).
 
 ## Archive

@@ -44,8 +44,8 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 ### Локальный и удалённый PostgreSQL
 
 После [создания роли для сбора данных](INSTALL.ru.md#5-postgresql) остановите
-сборщик и задайте строку подключения (DSN). Если PostgreSQL работает в той же
-виртуальной машине или группе cgroup, что и сборщик, не задавайте
+сборщик и задайте строку подключения (DSN). Если локальный PostgreSQL использует те же
+ограничения CPU, что и сборщик, не задавайте
 `KRONIKA_POSTGRES_EFFECTIVE_CPUS`: доступное число CPU определяется по записанным
 данным. Cgroup — группа процессов Linux с общими ограничениями ресурсов;
 учитываются квота процессорного времени и разрешённый набор CPU.
@@ -111,8 +111,8 @@ sudo env KRONIKA_STORAGE_DIR=/var/lib/kronika \
 ## Сбор и доступ
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
-  <img alt="Сборщик получает данные Linux и PostgreSQL; веб-сервер передаёт запись браузеру и MCP-клиентам" src="docs/images/architecture.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-ru-dark.svg">
+  <img alt="Сборщик получает данные Linux и PostgreSQL; веб-сервер передаёт запись браузеру и MCP-клиентам" src="docs/images/architecture-ru.svg">
 </picture>
 
 Интервалы сбора по умолчанию: процессы — 5 секунд, основные метрики Linux —
@@ -135,8 +135,8 @@ HTML-файл. Он содержит интерфейс, данные и про�
 сервер или сетевое подключение.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-dark.svg">
-  <img alt="Сохранение интервала записи в интерактивный HTML-файл для просмотра без сервера" src="docs/images/report-export.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-export-ru-dark.svg">
+  <img alt="Сохранение интервала записи в интерактивный HTML-файл для просмотра без сервера" src="docs/images/report-export-ru.svg">
 </picture>
 
 [kronika-dump](bins/kronika-dump/README.ru.md) читает хранилище и извлекает
@@ -149,7 +149,7 @@ HTML-файл. Он содержит интерфейс, данные и про�
 - Настройка: [Установка](INSTALL.ru.md) · [Архивы и CI](docs/releases.ru.md) · [Сервисы](docs/services.ru.md) · [Сборка](docs/build.ru.md)
 - Справочники: [Интерфейс](docs/features.ru.md) · [Время](docs/metrics-time.ru.md) · [Linux](docs/metrics-linux.ru.md) · [PostgreSQL](docs/metrics-postgresql.ru.md) · [MCP](docs/mcp-clients.ru.md)
 - Программы: [Сборщик](bins/kronika-collector/README.ru.md) · [Веб-сервер](bins/kronika-web/README.ru.md) · [Dump](bins/kronika-dump/README.ru.md) · [Report](bins/kronika-report/README.ru.md)
-- Записанные поля: [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) · [События PostgreSQL](docs/type-registry/postgresql.md) · [События PgBouncer](docs/type-registry/pgbouncer.md)
+- Записанные поля: [Linux](docs/type-registry/os.ru.md) · [Метрики PostgreSQL](docs/type-registry/postgresql-metrics.ru.md) · [События PostgreSQL](docs/type-registry/postgresql.ru.md) · [События PgBouncer](docs/type-registry/pgbouncer.ru.md)
 - Устройство: [Контракты](DESIGN.ru.md) · [Формат сегмента](crates/kronika-format/README.ru.md) · [Демонстрационная нагрузка для разработки](bins/kronika-demo/README.ru.md)
 
 [Лицензия MIT](LICENSE).

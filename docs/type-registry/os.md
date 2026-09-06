@@ -2,12 +2,9 @@
 
 [Русская версия](os.ru.md)
 
-OS sources occupy `1_100_001`–`1_299_999`. The schemas and semantics are
-declared in
-[`crates/kronika-registry/src/codec`](../../crates/kronika-registry/src/codec).
-This reference lists each section's purpose, source, and collection limits.
+This reference maps recorded Linux measurements to their source files and read limits. Each data type occupies a section in a segment. OS type IDs occupy `1_100_001`–`1_299_999`; their exact fields are defined in the [registry](../../crates/kronika-registry/src/codec). Display calculations are explained in the [Linux reference](../metrics-linux.md). A cgroup is a Linux process group with shared resource accounting and limits.
 
-Every row carries `scope`:
+Each row carries `scope`, identifying the machine, pod or container whose resources it describes:
 
 | Code | Scope |
 | ---: | --- |
@@ -24,6 +21,8 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 `/proc`) and `KRONIKA_SYS_ROOT` (default `/sys`).
 
 ## Registered types
+
+`snapshot_full` records a complete section snapshot at collection time; `on_change` records a change. The sort key orders rows within a section; `ts` is the Unix timestamp in microseconds.
 
 | `type_id` | Source | Semantics | Sort key |
 |-----------|--------|-----------|----------|
@@ -95,7 +94,7 @@ root alone means an unbounded true root; every descendant is required. Other
 root errors are not ignored, and root membership requires a readable root file.
 Cgroup v1 binds one unambiguous CPU-controller root at the membership leaf,
 then reads `cpu.cfs_quota_us` and `cpu.cfs_period_us` from that same root at
-every ancestor. Ratio ordering uses cross multiplication: `Q₁ × P₂ < Q₂ × P₁`.
+every ancestor. For quotas `Q₁`, `Q₂` and periods `P₁`, `P₂`, comparison avoids division: `Q₁ × P₂ < Q₂ × P₁`. All four quantities are recorded microseconds.
 
 `effective_memory_max` stores the smallest finite v2 `memory.max` across the
 same exact hierarchy and applies the same v2 mount-root rule. On cgroup v1, the
@@ -121,13 +120,7 @@ The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
 [collector README](../../bins/kronika-collector/README.md).
 
-CPUFreq is policy-scoped. `1_121_001` stores exact `related_cpus`, the scaling
-driver, the selected actual-frequency attribute, and hardware min/max in
-integer hertz. `1_122_001` stores one temporal row per policy. The collector
-uses the first successfully parsed actual-frequency attribute on every
-observation, preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`. If
-neither can be read, the value and source are null. `scaling_cur_freq` records the policy-reported/requested operating frequency.
-Each temporal row belongs to one policy.
+A CPUFreq policy is a group of CPUs whose frequency the kernel controls together. `1_121_001` stores its `related_cpus` list, driver, selected actual-frequency source and hardware limits in integer hertz. `1_122_001` stores one observation per policy. At each observation the collector prefers a successfully parsed `cpuinfo_avg_freq`, then `cpuinfo_cur_freq`; if neither is readable, the value and source are null. `scaling_cur_freq` separately records the frequency reported or requested by the policy.
 
 ## Bounds
 

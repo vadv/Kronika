@@ -6,7 +6,7 @@ Sections occupy `2_001_001`–`2_099_999`. The [codec](../../crates/kronika-regi
 
 ## Sources and formats
 
-`KRONIKA_PG_DSNS` discovers files through `pg_current_logfile()`; `KRONIKA_PG_LOGS` supplies paths and patterns. A file reached by both methods is read once. A previously unread file starts at its beginning; a known file resumes at its saved offset.
+Using the connections in `KRONIKA_PG_DSNS`, the collector discovers log files through `pg_current_logfile()`. Paths and patterns in `KRONIKA_PG_LOGS` add files to that set. The collector reads the files locally; they must be accessible on its host. A file reached by both methods is read once. A previously unread file starts at its beginning; a known file resumes at its saved offset.
 
 | Format by filename | Parsing |
 | --- | --- |
@@ -21,6 +21,8 @@ In stderr, `DETAIL:`, `HINT:`, `CONTEXT:`, `STATEMENT:` and `QUERY:` lines attac
 Text log times are parsed in the collector host's local timezone; the printed zone designation is skipped. An ambiguous clock resolves to its first occurrence. If the timestamp is absent or unparseable, the PostgreSQL parser uses collection time. Fractional seconds retain microsecond precision. Correct text-log timing requires `log_timezone` to match the collector host zone.
 
 ## Registered types
+
+`event_stream` denotes events or grouped repetitions, rather than a complete state snapshot. `type_id` selects the section’s field layout.
 
 | `type_id` | Section | Semantics | Sort key |
 |-----------|---------|-----------|----------|

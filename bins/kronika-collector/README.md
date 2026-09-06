@@ -20,7 +20,7 @@ at startup; an invalid value stops startup. Sources:
 
 | Variable | Default | Accepted value and meaning |
 | --- | --- | --- |
-| `KRONIKA_STORAGE_DIR` | Required | Directory in which collected data is saved. |
+| `KRONIKA_STORAGE_DIR` | Required | Directory in which collected data is saved; use a directory, not a symbolic link. |
 | `KRONIKA_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Journal size in bytes at which a compressed segment becomes due. Positive whole number. |
 | `KRONIKA_SEGMENT_MAX_AGE_S` | `900` | Seconds after a segment starts before it becomes due. Nonnegative whole number; `0` makes it eligible immediately. |
 | `KRONIKA_JOURNAL_MAX_BYTES` | `1073741824` (1 GiB) | Maximum journal size in bytes: `36..1073741824`. Reaching it saves the segment early. |
@@ -77,8 +77,8 @@ Separate connection strings and paths with semicolons (`;`).
 
 Blank lists add no explicit entries. Blank entries between semicolons are errors.
 The first PostgreSQL DSN supplies metrics from its initial database and other
-accessible databases other than template databases on that server. Further DSNs supply log
-discovery only. PostgreSQL metric rows have no separate field identifying the server.
+accessible databases on that server, excluding template databases. Further
+DSNs supply log discovery only. PostgreSQL metric rows have no separate field identifying the server.
 
 ### Other settings
 
@@ -93,7 +93,7 @@ discovery only. PostgreSQL metric rows have no separate field identifying the se
 
 ### PostgreSQL CPU capacity
 
-For local PostgreSQL in the same virtual machine or cgroup as the collector, leave
+When local PostgreSQL shares the collector’s CPU limits, leave
 `KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset. For each time shown in Activity, the calculation
 uses the latest recorded VM CPU count or the collector’s cgroup CPU limits
 available at or before that time. The cgroup limits include its CPU-time

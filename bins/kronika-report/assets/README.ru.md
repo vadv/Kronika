@@ -1,33 +1,37 @@
-# Генерируемые ресурсы отчёта
+<a id="генерируемые-ресурсы-отчёта"></a>
+# Собранные файлы отчёта
 
 [English version](README.md)
 
-UI shell собирается из production React sources в `bins/kronika-web/ui`.
-JavaScript bindings и сжатый WebAssembly собираются из `crates/kronika-report-wasm`
-версиями Rust и wasm-bindgen, зафиксированными в репозитории. Проверка воспроизводимости
-сравнивает полученные файлы побайтно с файлами репозитория.
+Оболочка интерфейса собирается из основного кода React в `bins/kronika-web/ui`.
+Связующий JavaScript и сжатый WebAssembly собираются из
+`crates/kronika-report-wasm` версиями Rust и wasm-bindgen, закреплёнными в
+репозитории. Проверка воспроизводимости побайтово сравнивает результат с
+файлами репозитория.
 
 Команда `scripts/report-assets.sh build` использует `WASM_BINDGEN` — путь к
 исполняемому файлу `wasm-bindgen 0.2.127`. Параметр `--download-bindgen` загружает
-зафиксированный static x86_64 Linux musl release и проверяет SHA-256 перед запуском.
-`scripts/report-assets.sh check` сравнивает новую сборку с сохранёнными JavaScript
-и deterministic gzip. `CARGO_BIN` и `NODE_BIN` задают пути к Cargo и Node вместо
-поиска в `PATH`. Сборка фиксирует remap путей репозитория и Cargo home, seed
-`const-random` и идентификатор C compiler для воспроизводимости между хостами.
+закреплённую статическую сборку для x86_64 Linux musl и проверяет её SHA-256
+перед запуском. `scripts/report-assets.sh check` сравнивает новую сборку с
+сохранёнными JavaScript и gzip-файлами. `CARGO_BIN` и `NODE_BIN` задают пути к
+Cargo и Node вместо поиска в `PATH`. Чтобы сборки на разных машинах совпадали,
+скрипт задаёт одинаковые замены путей репозитория и каталога Cargo, начальное
+значение генератора `const-random` и идентификатор компилятора C.
 
-wasm-bindgen создаёт target `web`. Скрипт добавляет ограниченную точку входа
-`initEmbedded` по фиксированным маркерам сгенерированного кода; esbuild сохраняет
-`initEmbedded` и `ReportSession` в classic-script global `KronikaReportWasm`.
-Сохранённый binding не содержит URL или сетевого загрузчика. Отчёт компилирует
-встроенные байты и передаёт `WebAssembly.Module` в `initEmbedded` для асинхронного
-создания экземпляра.
+wasm-bindgen создаёт вариант для платформы `web`. Скрипт вставляет точку входа
+`initEmbedded` в отмеченные места сгенерированного кода. Затем esbuild оставляет
+`initEmbedded` и `ReportSession` в глобальном объекте `KronikaReportWasm`
+обычного скрипта браузера. Этот связующий код не содержит адресов загрузки или
+сетевого загрузчика. Отчёт компилирует встроенные байты в `WebAssembly.Module`
+и передаёт его в `initEmbedded`, который асинхронно создаёт исполняемый экземпляр.
 
 Размер WebAssembly — 9 910 988 байт, gzip — 2 395 947 байт, SHA-256 gzip:
 `f2d246ed04e6239b27a93e9069e3662bcf740e6480746d52160c9b3aaadaa144`.
-Размер JavaScript binding — 3 885 байт, SHA-256:
+Размер связующего JavaScript — 3 885 байт, SHA-256:
 `4635ae734e8c1e1aeb463ae1096f4fdc2a65d98e715b55cee9fe46956f29cba8`.
 
-Сгенерированный binding один раз копирует каждый входной `Uint8Array` в linear
-memory WebAssembly. Rust принимает эти allocations как `Vec<u8>` и передаёт их
-в сохраняемый `ReportEngine` без дополнительной полной копии ZMS или IDX.
-NDJSON собирается из потока записей и один раз копируется из WebAssembly в JavaScript.
+Связующий код один раз копирует каждый входной `Uint8Array` в память
+WebAssembly. Rust принимает выделенные области как `Vec<u8>` и передаёт их
+в сохраняемый `ReportEngine` без дополнительного полного копирования ZMS или
+IDX. Ответ NDJSON собирается из потока записей и один раз копируется из
+WebAssembly в JavaScript.

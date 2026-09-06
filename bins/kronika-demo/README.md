@@ -2,9 +2,10 @@
 
 [Русская версия](README.ru.md)
 
-This source/Compose fixture starts PostgreSQL 15, PgBouncer, collector, web and
-synthetic workloads in one service. `kronika-demo` is development tooling.
-Product archives contain collector, web, dump and report.
+Build this demo from source to explore the interface or develop Kronika.
+Docker Compose starts PostgreSQL 15, PgBouncer, collector, web and synthetic
+workloads in one service. The `kronika-demo` program is not included in prebuilt
+archives; those contain collector, web, dump and report.
 
 ## Start and inspect
 
@@ -63,10 +64,12 @@ pinned base images, locked Cargo dependencies, and the exact pg_store_plans
 source revision. Normal runtime does not require network access beyond the
 browser connecting to the published loopback port.
 
-## `kronika-demo` binary
+<a id="kronika-demo-binary"></a>
+## The `kronika-demo` program
 
-The binary runs `kronika-collector` for a bounded window and reports segment
-size, journal size, peak RSS, and CPU time. The image uses it as the supervisor
+The program runs `kronika-collector` for a configured duration and reports
+compressed recording size, current journal size, peak process memory (RSS),
+and CPU time. The image uses it as the supervisor
 for the collector, the default system workload, and the optional PostgreSQL
 workload.
 

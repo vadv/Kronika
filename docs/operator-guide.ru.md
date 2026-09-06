@@ -1,122 +1,125 @@
 # Работа с записанным часом
 
-[English version](operator-guide.md) · [Контролы](features.ru.md#контролы) · [Справочник метрик](features.ru.md)
+[English version](operator-guide.md) · [Элементы управления](features.ru.md#контролы) · [Справочник метрик](features.ru.md)
 
-Четыре примера используют записанную demo-нагрузку Linux/PostgreSQL за **5 сентября 2026, 19:00–20:00 UTC**. Иллюстрации получены из указанного HTML; отображаемые числа округлены. [Установка и запись собственного host](../INSTALL.ru.md).
+Четыре примера используют записанную демонстрационную нагрузку Linux/PostgreSQL за **5 сентября 2026, 19:00–20:00 UTC**. Иллюстрации получены из указанного HTML; отображаемые числа округлены. [Установка и запись собственной машины](../INSTALL.ru.md).
 
 ## Выбрать время и объект
 
-1. Выбрать **UTC**, затем записанный день/час.
-2. Установить cursor через timeline или ←/→. Диапазон графика — выбранный час; каждый источник выбирает своё наблюдение по [правилам времени](metrics-time.ru.md).
-3. Выбрать view и lens. Применить Search через Enter; выбрать строку для Detail или Chart. Метрика графика задаёт ординату; cursor выбирает её чтение.
-4. Открыть Activity для ranking полного часа. Global использует общий максимум интенсивности, Per row — максимум строки. Ячейка выбирает `cell.to−1 µs`; поддерживаемое имя строки применяет фильтр объекта/группы.
+1. Выберите **UTC**, затем день и час записи.
+2. Установите курсор на временной шкале или стрелками ←/→. Курсор — момент, для которого таблицы показывают данные. Графики охватывают весь выбранный час; каждый источник выбирает своё наблюдение по [правилам времени](metrics-time.ru.md).
+3. Выберите раздел и режим таблицы (**Lens**): режим задаёт столбцы и начальную сортировку. Введите условие в **Search** и нажмите Enter. Выбор строки открывает **Inspector** — панель со сведениями **Detail** и историей **Chart**. Показатель задаёт вертикальную ось графика, курсор — момент чтения значения.
+4. Откройте панель **Activity**: она упорядочивает объекты по их вкладу за полный час. **Global** использует общую цветовую шкалу, **Per row** — максимум каждой строки. Выбор ячейки переводит курсор к `cell.to−1 µs`, последней микросекунде её интервала. Нажатие имени строки применяет фильтр объекта или группы, если раздел это поддерживает.
 
-| Операция | Полученный выбор |
+| Операция | Результат |
 | --- | --- |
-| Processes → строка → Activity | Ближайший к cursor PostgreSQL sample для этого точного PID. |
-| Statements → Query ID / Open plans | Plans с фильтром database, role и public Query ID при тех же часе/cursor. |
-| Plans → Related statements | Statements с фильтром database, role и записанного связанного Query ID. |
-| Tables → Indexes | Indexes выбранного записанного relation. |
-| Locks → строка | Blocker PIDs, lock target и backend context в Inspector. |
-| Events → группа → представительная запись | Полная записанная строка журнала и её timestamp. |
+| Processes → строка → Activity | Ближайший к курсору снимок PostgreSQL для выбранного номера процесса (PID). |
+| Statements → Query ID / Open plans | Планы с теми же базой, ролью и публичным Query ID; час и курсор сохраняются. |
+| Plans → Related statements | Запросы с теми же базой, ролью и записанным идентификатором связанного запроса. |
+| Tables → Indexes | Индексы выбранной записанной таблицы. |
+| Locks → строка | PID блокирующих процессов, объект блокировки и сведения о сеансе в Inspector. |
+| Events → группа → запись для просмотра | Полная строка журнала и время её возникновения. |
 
-## 1. Знаменатели ресурсов container и host
+<a id="1-знаменатели-ресурсов-container-и-host"></a>
+## 1. Ресурсы контейнера и машины: от чего считается процент
 
 [Host, 19:00:33 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788634833931637&view=host)
 
-![Чтения Container, Network namespace и Host](images/host-scopes.png)
+![Показатели контейнера, сетевого пространства имён и машины](images/host-scopes.png)
 
-1. Открыть **Host → Container → CPU**. Прочитать использование CPU и записанный effective CPU limit; выбрать историю CPU.
-2. Открыть **Host → CPU**, затем Container Memory и Host Memory. Каждый выбранный показатель имеет свою область измерения и знаменатель.
-3. Открыть **Network namespace** для RX/TX у того же cursor.
+1. Откройте **Host → Container → CPU**. Сопоставьте использование CPU с записанной доступной ёмкостью CPU контейнера; выберите историю CPU.
+2. Откройте **Host → CPU**, затем память контейнера и машины. У каждой области свои измерения и знаменатель процента.
+3. Откройте **Network namespace**: это приём RX и передача TX в записанном сетевом пространстве имён у того же курсора.
 
-| Чтение | Расчёт / область |
+| Показание | Расчёт и область измерения |
 | --- | --- |
-| Container CPU **66.8%** | `100 × used cgroup cores / effective cgroup CPU capacity`. |
-| Host CPU **17.5%** | `100 × R(user+nice+system+irq+softirq+steal)/(H×N)`, с записанными ticks/s `H` и числом online CPU `N`. |
-| Container memory **53.8%** | `100 × memory.current / effective memory limit`. |
-| Host memory **12.9%** | Доля использованной памяти host; операнды в [Linux](metrics-linux.ru.md). |
-| Throttled **34.9%** | Время throttling cgroup / наблюдаемый интервал реального времени × 100. |
-| CPU PSI **4.3%** | Интервальная разность CPU `some_total` cgroup / наблюдаемый интервал реального времени × 100. |
-| RX **284 KiB/s**, TX **284 KiB/s** | Отдельные rates byte counters записанного network namespace. |
+| Container CPU **66.8%** | `100 × used cgroup cores / effective cgroup CPU capacity`: занятые ядра группы процессов контейнера с общими ограничениями ресурсов (cgroup), делённые на доступное ей число CPU. |
+| Host CPU **17.5%** | `100 × R(user+nice+system+irq+softirq+steal)/(H×N)`. `R` — прирост тиков счётчика в секунду, `H` — записанное число тиков в секунде, `N` — число активных логических CPU. |
+| Container memory **53.8%** | `100 × memory.current / effective memory limit`: занятая память контрольной группы, делённая на действующий лимит. |
+| Host memory **12.9%** | Доля использованной памяти машины; состав в [справочнике Linux](metrics-linux.ru.md). |
+| Throttled **34.9%** | Время ограничения CPU контрольной группы, делённое на наблюдаемый интервал реального времени, × 100. |
+| CPU PSI **4.3%** | Прирост `some_total` CPU контрольной группы, делённый на длительность интервала в тех же единицах, × 100. Это доля времени с ожидающими CPU задачами. |
+| RX **284 KiB/s**, TX **284 KiB/s** | Отдельные скорости прироста счётчиков принятых и переданных байтов в записанном сетевом пространстве имён. |
 
-[Справочник Linux](metrics-linux.ru.md) определяет effective ceilings, единицы PSI, identities устройств и агрегацию USE.
+[Справочник Linux](metrics-linux.ru.md) определяет действующие лимиты, единицы PSI, идентификаторы устройств и расчёты сводки USE.
 
 ## 2. Вклад команды и отдельный PID
 
 [Processes CPU, 19:03:39 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788635019201666&lens=cpu)
 
-![Activity команд за час и Processes CPU](images/processes.png)
+![Вклад команд за час и таблица CPU процессов](images/processes.png)
 
-1. Открыть **Processes → CPU → Activity → CPU time** со шкалой **Global**.
-2. Нажать `postgres` для фильтра команды. Удалить chip, выбрать PID **64**, command `/usr/local/bin/kronika-demo`, открыть его историю CPU.
-3. Выбрать **Activity → RSS** для средних команд; **Memory** для значения PID 64 у cursor. Выбрать **Disk** для его counters storage/logical I/O.
+1. Откройте **Processes → CPU → Activity → CPU time** со шкалой **Global**.
+2. Нажмите `postgres`, чтобы отобрать эту команду. Удалите условие поиска, выберите PID **64** с командой `/usr/local/bin/kronika-demo` и откройте его историю CPU.
+3. Выберите **Activity → RSS** для среднего объёма физической памяти команд за час, затем **Memory** для памяти PID 64 у курсора. **Disk** показывает его обращения к хранилищу и логический ввод-вывод.
 
-| Чтение | Расчёт / набор объектов |
+| Показание | Расчёт и набор процессов |
 | --- | --- |
-| `postgres`: **517 PIDs**, **9.44 min** | Уникальные числовые PID под этой командой за час; сумма разностей counters CPU процессов, делённая на записанные clock ticks/s. |
-| `kronika-demo`: **4.75 min**; Total **14.6 min** | Сумма CPU команды; Total включает все команды. |
-| Ячейка `postgres` **953 ms/s**, `kronika-demo` **79.8 ms/s** | CPU seconds за наблюдаемый интервал ячейки: отображаемые rates соответствуют примерно **0.953** и **0.0798** занятого ядра. |
-| PID 64 user **0.12 cores**, system **0.006 cores** | Соседние same-PID/same-starttime `Δutime/(HZ×Δt)` и `Δstime/(HZ×Δt)`; сумма отображаемого вклада ≈ **0.126 cores**. |
-| RSS **Average** | Сумма записанного RSS команды по всем process snapshot timestamps, делённая на их общее количество. |
+| `postgres`: **517 PIDs**, **9.44 min** | Число различных PID этой команды за час; сумма изменений CPU-счётчиков процессов, делённая на записанную частоту тиков. |
+| `kronika-demo`: **4.75 min**; Total **14.6 min** | Суммарное время CPU команды; Total включает все команды. |
+| Ячейка `postgres` **953 ms/s**, `kronika-demo` **79.8 ms/s** | Время CPU на секунду наблюдаемого интервала. Это примерно **0.953** и **0.0798** занятого ядра. |
+| PID 64 user **0.12 cores**, system **0.006 cores** | `Δutime/(HZ×Δt)` и `Δstime/(HZ×Δt)` по соседним снимкам с теми же PID и временем старта. `HZ` — частота тиков, `Δt` — секунды между снимками. Сумма ≈ **0.126 cores**. |
+| RSS **Average** | Средняя память команды: сумма её записанных значений RSS, делённая на общее число меток времени с пригодными значениями RSS процессов. |
 
-Сводка команды охватывает час; таблица PID использует его соседнюю пару наблюдений. [Операнды heatmap и RSS](metrics-time.ru.md).
+Сводка команды охватывает час; строка PID использует соседнюю пару наблюдений. Точный набор меток и правила суммирования определены в [описании тепловой карты и RSS](metrics-time.ru.md).
 
-## 3. Интервал statement и записанный plan
+<a id="3-интервал-statement-и-записанный-plan"></a>
+## 3. Интервальные показатели запроса и записанный план
 
 [Statements, 19:00:33 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788634833931637&view=pg.statements)
 
-1. Открыть **Activity → Execution time**. Применить `query_id:-665077864269413128`; выбрать поиск заказов клиента.
+1. Откройте **Activity → Execution time**. Примените `query_id:-665077864269413128` и выберите запрос заказов клиента.
 
 ```sql
 select id, status, total_cents from shop.orders
 where customer_id = $1 order by placed_at desc limit $2
 ```
 
-![SQL statement, интервальные rates и вклад за час](images/statements.png)
+![SQL, интервальные показатели и вклад запроса за час](images/statements.png)
 
-| Чтение | Формула |
+| Показание | Формула |
 | --- | --- |
-| Вклад execution за час **16.7 min** | Накопленная разность `total_exec_time`, переведённая из миллисекунд в минуты. |
-| Интервал **19:00:28 → 19:00:33** | Два записанных наблюдения statement; точные timestamps определяют `Δt`. |
-| **120 calls/s** | `Δcalls / Δt`. |
-| **1.42 s/s** | `Δtotal_exec_time / (1000×Δt)`. Параллельные длительности исполнения складываются. |
-| **11.9 ms/call** | `Δtotal_exec_time / Δcalls`; рассчитывается перед округлением для отображения. |
+| Время выполнения за час **16.7 min** | Изменение накопленного `total_exec_time`, переведённое из миллисекунд в минуты. |
+| Интервал **19:00:28 → 19:00:33** | Два записанных наблюдения запроса; точные метки определяют `Δt` в секундах. |
+| **120 calls/s** | `Δcalls / Δt`: число выполнений в секунду. |
+| **1.42 s/s** | `Δtotal_exec_time / (1000×Δt)`: секунды выполнения на секунду реального времени. Длительности параллельных выполнений складываются. |
+| **11.9 ms/call** | `Δtotal_exec_time / Δcalls`: среднее время одного выполнения на этом интервале, до округления. |
 
-2. Выбрать **Per call**, **I/O**, **Resources** для интервальных величин. **Stability** показывает записанные Mean/Min/Max/Stddev и их CV за статистический период расширения; [все операнды](metrics-postgresql.ru.md).
-3. Нажать **Open plans** и выбрать Plan ID **`1544266440`**. Inspector содержит `Parallel Seq Scan on orders`, `Sort` по `placed_at DESC`, `Gather Merge`, `Limit`, `Workers Planned: 1` и `(customer_id = 4244)`.
-4. Использовать **Related statements** или Back браузера. Открыть **Tables**, применить `schema:shop AND table_name:orders`, выбрать **Access**, **Size and buffers**, затем Indexes relation.
+2. Переключите **Per call**, **I/O**, **Resources** для показателей одного выполнения, ввода-вывода и ресурсов. **Stability** показывает записанные среднее, минимум, максимум, стандартное отклонение и коэффициент вариации (стандартное отклонение / среднее) за период статистики расширения; [определения и формулы](metrics-postgresql.ru.md).
+3. Нажмите **Open plans** и выберите Plan ID **`1544266440`**. В Inspector записаны `Parallel Seq Scan on orders`, `Sort` по `placed_at DESC`, `Gather Merge`, `Limit`, `Workers Planned: 1` и `(customer_id = 4244)`.
+4. Нажмите **Related statements** или Назад в браузере. Откройте **Tables**, примените `schema:shop AND table_name:orders`, выберите **Access**, **Size and buffers**, затем индексы таблицы.
 
-![Записанный plan text и связанный query](images/plans.png)
+![Текст записанного плана и связанный SQL](images/plans.png)
 
-## 4. Цепочка blockers и состояние backend
+<a id="4-цепочка-blockers-и-состояние-backend"></a>
+## 4. Цепочка блокировок и состояние сеанса
 
 [Locks, 19:00:33 UTC](https://vadv.github.io/kronika-reports/reports/kronika-demo-hour-b3ac3ee.html?at=1788634833931637&view=pg.locks)
 
-![Корневой holder и два waiters](images/locks.png)
+![Исходный блокирующий процесс и два ожидающих](images/locks.png)
 
 | Записанное поле | Значение |
 | --- | --- |
-| Корневой PID / state | **3765**, `idle in transaction`. |
-| Waiting PIDs / state | **4761**, **4762**, `active`. |
-| Wait type / event | `Lock` / `transactionid`. |
-| Mode / target | `ShareLock` / transaction **4700**. |
-| Wait starts | **19:00:19** у обоих waiters. |
-| Application | `checkout-api`. |
+| Исходный блокирующий PID / состояние | **3765**, `idle in transaction`. |
+| Ожидающие PID / состояние | **4761**, **4762**, `active`. |
+| Тип / событие ожидания | `Lock` / `transactionid`. |
+| Режим / объект блокировки | `ShareLock` / транзакция **4700**. |
+| Начало ожидания | **19:00:19** у обоих процессов. |
+| Приложение | `checkout-api`. |
 
-1. Выбрать waiting-строку PID 4761; прочитать точные blocker PIDs, target и backend text в Inspector. Выбрать корневую строку для её state/context.
-2. Открыть **Activity** вручную при сохранённом cursor и применить `pid:4761`. Query time = `sample−query_start` для `active`; transaction time = `sample−xact_start`; time in state = `sample−state_change`, кроме точного `idle`.
-3. Открыть **Events**, выбрать lock waits и представительную запись с logged wait duration в миллисекундах и текстом holder PIDs.
-4. Перейти к следующему записанному моменту через →. Activity и Locks выбирают наблюдения своих источников.
+1. Выберите строку ожидания PID 4761. В Inspector показаны блокирующие PID, объект блокировки и текст запроса сеанса. Выберите исходный блокирующий процесс, чтобы увидеть его состояние и сведения о подключении.
+2. Откройте **Activity** при сохранённом курсоре и примените `pid:4761`. Query time = `sample−query_start` для `active`; transaction time = `sample−xact_start`; time in state = `sample−state_change`, кроме точного `idle`. Здесь `sample` — время записанного снимка, остальные поля — время начала запроса, транзакции и состояния. Все метки выражены в микросекундах Unix; разность даёт микросекунды, для миллисекунд она делится на 1000.
+3. Откройте **Events**, выберите ожидания блокировок и запись для просмотра. Журнал содержит длительность ожидания в миллисекундах и список PID держателей блокировки.
+4. Перейдите к следующему записанному моменту через →. Activity и Locks выбирают наблюдения своих источников.
 
 ## Дополнительные операции
 
-| Последовательность | Точное чтение |
+| Последовательность | Что показывает |
 | --- | --- |
-| Tables → schema/database/tablespace group → объект → Maintenance / Freeze | Агрегация групп и counters обслуживания, timestamps, XID ages каждой таблицы; [формулы PostgreSQL](metrics-postgresql.ru.md). |
-| Vacuum → episode → phase / Process | Записанные серии фаз, доля просканированного heap и разности процесса с привязкой к границам episode. |
-| Host → Storage → I/O / Filesystems / Topology | Rates counters устройства, gauges ёмкости mount, записанные связи устройств. |
-| PostgreSQL → Overview → `pg_wal` | Текущий размер каталога с историей; генерация WAL имеет отдельный counter rate. |
-| Events → источник → группа → minute strip | Суммарный вес occurrences этой минуты, затем представительный текст. |
-| Export → This hour / From / To → Download | Включительный диапазон целых секунд и автономный HTML, [входы Export](features.ru.md#export). |
-| Connect an AI agent → клиент → Copy | Конфигурация подключения клиента к MCP записанных данных, [входы tools](features.ru.md#mcp). |
+| Tables → группа схемы/базы/табличного пространства → объект → Maintenance / Freeze | Групповые показатели, счётчики и время обслуживания таблиц, возраст идентификаторов транзакций; [формулы PostgreSQL](metrics-postgresql.ru.md). |
+| Vacuum → запуск → phase / Process | Записанные фазы, доля просканированной таблицы и изменения счётчиков процесса между границами запуска. |
+| Host → Storage → I/O / Filesystems / Topology | Скорости ввода-вывода устройств, ёмкость файловых систем и записанные связи устройств. |
+| PostgreSQL → Overview → `pg_wal` | Текущий размер каталога и его история. Скорость генерации WAL рассчитывается отдельно. |
+| Events → источник → группа → минутная полоса | Число событий в минуте, затем полная выбранная запись журнала. |
+| Export → This hour / From / To → Download | Выгрузка автономного HTML за включительный диапазон целых секунд; [параметры Export](features.ru.md#export). |
+| Connect an AI agent → клиент → Copy | Настройки подключения клиента к инструментам чтения записей через MCP; [параметры инструментов](features.ru.md#mcp). |

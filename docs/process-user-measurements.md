@@ -2,10 +2,7 @@
 
 [Русская версия](process-user-measurements.ru.md)
 
-Historical measurements of `os_user` and its `dict.strings` sections on Linux
-6.17.10-100.fc41.x86_64, AMD Ryzen 9 8945HS, optimized build, process CPU clock
-100 Hz. The measurement date, source revision, compiler version, repeated-run
-count, and variability were not recorded with these results.
+The `os_user` section maps user IDs (UIDs) to names; `dict.strings` stores the name strings. These measurements show their disk space and recording cost on Linux 6.17.10-100.fc41.x86_64, AMD Ryzen 9 8945HS, using an optimized build and a 100 Hz process CPU-time counter. The measurement date, source revision, compiler version, repeat count and result variation were not recorded.
 
 Current reproduction, using the repository toolchain:
 
@@ -23,10 +20,7 @@ absent. Source: [`user_cost_artifact` and the measurement test](../bins/kronika-
 | Several ordinary UIDs | 16 | 16 | 1,343 B | 648 B | 2,151 B | 694 B | 428 B | 1,186 B | 1,230 B |
 | Maximum distinct observed UIDs and names | 4,096 | 4,096 | 55,368 B | 43,684 B | 99,212 B | 42,414 B | 43,219 B | 85,697 B | 85,741 B |
 
-`Marginal finished bytes = finished os_user body + finished dictionary body + 2 × catalog_entry_bytes`.
-For the shared UID: `517 + 245 + 2 × 32 = 826 B`; the complete ZMS is `870 B`.
-The 120,000 UID observations produce one mapping row. WAL and complete ZMS
-sizes include file framing and metadata.
+Additional finished bytes equal the finished user-reference body plus the finished string dictionary plus two catalog entries: `Marginal finished bytes = finished os_user body + finished dictionary body + 2 × catalog_entry_bytes`. One catalog entry is `catalog_entry_bytes = 32 B`. For the shared UID, `517 + 245 + 2 × 32 = 826 B`; the whole ZMS is `870 B`. The 120,000 UID observations produce one mapping row. WAL and whole-ZMS sizes also include file headers and metadata.
 
 | Measurement | Shared UID | 16 UIDs | 4,096 UIDs |
 |---|---:|---:|---:|
@@ -41,9 +35,7 @@ plus final segment writing. Reader/dictionary validation runs after this timed
 writer block. The 100 Hz clock describes the separate process CPU-time counter;
 it does not set the resolution of `Instant` elapsed measurements.
 
-Peak RSS is the test-process high-water mark, including the harness, allocator
-state retained from earlier cases, and Parquet writer. The 25,600 KiB value in
-the project design is the collector RSS budget, not a runtime memory cap.
+RSS is the process memory resident in physical RAM. The peak here belongs to the whole test process, including the test harness, memory kept by the allocator after earlier cases, and the Parquet writer. The design budget of 25,600 KiB is a target for collector RSS, not an enforced runtime memory limit.
 
 The test asserts one row per recorded UID, no row for an unresolved UID, and
 rejection of an oversized passwd source. A malformed passwd line can coexist

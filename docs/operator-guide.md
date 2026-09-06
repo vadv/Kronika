@@ -8,12 +8,12 @@ The four cases use the recorded Linux/PostgreSQL demo workload on **5 September 
 
 1. Select **UTC**, then the recorded day/hour.
 2. Set the cursor using the timeline or ←/→. The chart domain is the selected hour; each source resolves its own observation as described in [Time](metrics-time.md).
-3. Select the view and lens. Apply Search with Enter; select a row for Detail or Chart. A chart metric chooses the ordinate; the cursor chooses its readout.
-4. Open Activity for whole-hour ranking. Global uses a common intensity scale, Per row uses each row's maximum. A cell selects `cell.to−1 µs`; a supported row label applies the object/group filter.
+3. Select the view and table mode (Lens), which chooses columns and initial sorting. Apply Search with Enter; select a row to open its Inspector panel. Detail shows recorded fields and Chart shows history. The chart metric sets the vertical axis; the cursor selects the time to read.
+4. Open Activity to rank objects by their contribution over the whole hour. Global uses a common intensity scale, Per row uses each row's maximum. A cell selects `cell.to−1 µs`; a supported row label applies the object/group filter.
 
 | Operation | Resulting selection |
 | --- | --- |
-| Processes → row → Activity | PostgreSQL sample nearest to the cursor for this exact PID. |
+| Processes → row → Activity | PostgreSQL sample nearest to the cursor for this exact process number (PID). |
 | Statements → Query ID / Open plans | Plans filtered by database, role and public Query ID at the same hour/cursor. |
 | Plans → Related statements | Statements filtered by database, role and recorded related Query ID. |
 | Tables → Indexes | Indexes for the selected recorded relation. |
@@ -50,7 +50,7 @@ The [Linux reference](metrics-linux.md) defines effective ceilings, PSI units, d
 
 1. Open **Processes → CPU → Activity → CPU time** with **Global** scale.
 2. Click `postgres` to apply its command filter. Clear the chip, select PID **64**, command `/usr/local/bin/kronika-demo`, and open its CPU history.
-3. Select **Activity → RSS** for command means; select **Memory** for PID 64's cursor value. Select **Disk** for its storage/logical I/O counters.
+3. Select **Activity → RSS** for mean memory per command; select **Memory** for PID 64's cursor value. Select **Disk** for its storage/logical I/O counters.
 
 | Readout | Calculation / population |
 | --- | --- |
@@ -58,7 +58,7 @@ The [Linux reference](metrics-linux.md) defines effective ceilings, PSI units, d
 | `kronika-demo`: **4.75 min**; Total **14.6 min** | Command CPU sum; Total includes all commands. |
 | Cell `postgres` **953 ms/s**, `kronika-demo` **79.8 ms/s** | CPU seconds per observed cell interval: displayed rates equal about **0.953** and **0.0798** used cores. |
 | PID 64 user **0.12 cores**, system **0.006 cores** | Adjacent same-PID/same-starttime `Δutime/(HZ×Δt)` and `Δstime/(HZ×Δt)`; combined displayed contribution ≈ **0.126 cores**. |
-| RSS **Average** | Sum of recorded command RSS over all process snapshot timestamps divided by their shared timestamp count. |
+| RSS **Average** | Sum of recorded command RSS divided by the shared count of timestamps containing usable process RSS values. |
 
 The command summary spans the hour; the PID table uses its adjacent observation pair. [Heatmap and RSS operands](metrics-time.md).
 

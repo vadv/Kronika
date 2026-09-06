@@ -2,8 +2,9 @@
 
 [Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-`kronika-dump` inspects a recording directory or extracts an interval into one
-standalone ZMS. Sources: [inspection parser](src/main.rs), [slice command](src/slice.rs),
+`kronika-dump` shows the times, data sections and rows in a recording. Its
+`slice` command extracts an interval into one `.zms` file that `kronika-report`
+can turn into an HTML report. Sources: [inspection parser](src/main.rs), [slice command](src/slice.rs),
 [parameter help](src/help.rs).
 
 ## Inspect

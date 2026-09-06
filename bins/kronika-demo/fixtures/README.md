@@ -30,4 +30,4 @@ disk in Chromium.
 Captured on 5 September 2026 with the demo workload running throughout the
 requested hour. The 2,360,449-byte ZMS has 52 physical sections; its retained
 snapshots span 18:59:58.821275–20:00:03.308629 UTC. These surrounding snapshots
-provide context; the visible report interval remains exactly 19:00–20:00 UTC.
+support interval calculations; the visible report interval remains exactly 19:00–20:00 UTC.

@@ -16,7 +16,7 @@ Examples:
   kronika-dump /path/to/recording --index
   kronika-dump /path/to/recording --section 1100001 --limit 10
 
-DIR is the real storage directory used by kronika-collector, containing
+DIR is the real recording directory used by kronika-collector, containing
 YYYY/MM/DD/*.zms and, while collecting, active.wal. A standalone .zms file,
 a flat directory of arbitrary .zms files, or a symlink is not a storage root.
 Both finished segments and the committed current journal are readable while
@@ -24,13 +24,15 @@ the collector runs. Inspection requires read access to the storage root
 and has no environment configuration.
 
 Inspection options:
-  No display option   List each segment's time bounds, physical section IDs,
-                      row counts, section bytes, and physical overhead bytes.
-  --section ID        Decode rows of one physical numeric type_id, resolving
-                      dictionary references. IDs are listed in default output.
+  No display option   List each file's time bounds, section IDs, row counts,
+                      bytes per section, and bytes used by the file structure.
+  --section ID        Print rows from one section, selected by its numeric
+                      type_id. Replace stored dictionary IDs with their values.
+                      Section IDs are listed in default output.
                       Example: 1100001 is the OS process section.
-  --index             Print derived series/index summaries. With --json, emit
-                      their individual points and finding locators. Cannot be
+  --index             Summarize calculated time series and searchable entries.
+                      With --json, print individual points and the locations of
+                      matching records. Cannot be
                       combined with --section; does not write an .idx file.
   --json              One JSON object per line (NDJSON), instead of text tables.
   --limit N           Rows per segment for --section only. Default: 20.
@@ -82,8 +84,8 @@ of nearby samples on each side for interval calculations. On success, stdout
 reports bytes, rows, sections, and requested/actual bounds in Unix microseconds.
 The requested_to_exclusive value is one second after the requested --to.
 
-Scratch and temporary output files are created beside --out, on its filesystem;
+Work files and temporary output are created beside --out, on its filesystem;
 TMPDIR does not move them. Required capacity includes both work files and result.
-The completed ZMS is validated before publication. The command exits when done;
+The completed ZMS is checked before it is saved to the requested path. The command exits when done;
 errors go to stderr and return nonzero. Ctrl-C interrupts a running command.
 ";

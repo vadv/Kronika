@@ -4,18 +4,22 @@
 
 ## Доступные сборки
 
-Публичный [релиз v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
-содержит collector, web, dump и demo; в нём ещё нет `--help`, `--version`, dump
-slice, report и HTML-экспорта. Текущая версия исходников остаётся `1.0.0`.
-Текущий пакет из четырёх программ доступен как Actions artifact
-[Release package](../.github/workflows/release-package.yml) с commit в имени
-и сроком хранения 14 дней. Workflow создаёт архивы без tags и releases.
+Опубликованный [релиз v1.0.0](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
+содержит `kronika-collector`, `kronika-web`, `kronika-dump` и `kronika-demo`. В нём ещё нет `--help`, `--version`,
+команды `dump slice`, программы report и HTML-экспорта. Версия в текущих
+исходниках по-прежнему равна `1.0.0`, поэтому различайте сборки по коммиту —
+идентификатору версии исходного кода.
+
+Текущий архив с четырьмя программами можно скачать из результатов автоматической
+сборки [Release package](../.github/workflows/release-package.yml) в GitHub
+Actions. Имя архива содержит коммит, результаты хранятся 14 дней. Сборка
+создаёт архивы, но не публикует релиз и не создаёт тег.
 
 <a id="download"></a>
 ## Скачивание
 
-С авторизованным [GitHub CLI](https://cli.github.com/manual/gh_run_download)
-выберите успешный запуск workflow:
+Войдите в учётную запись через [GitHub CLI](https://cli.github.com/manual/gh_run_download)
+и выберите успешный запуск автоматической сборки:
 
 ```sh
 gh run list --repo vadv/Kronika --workflow release-package.yml --status success --limit 10
@@ -28,9 +32,11 @@ gh run download "$run_id" --repo vadv/Kronika \
 cd kronika-download
 ```
 
-Для ARM64 задайте `target=aarch64-unknown-linux-musl`. `gh run view` показывает
-оба native build jobs и 22 проверки userspace. Скачанный artifact содержит
-`.tar.gz` и `.tar.gz.sha256`; продолжите [распаковку и установку](../INSTALL.ru.md#1-скачивание-и-распаковка).
+Для ARM64 задайте `target=aarch64-unknown-linux-musl`. Команда `gh run view`
+показывает две сборки для соответствующих архитектур и 22 проверки запуска
+в разных дистрибутивах. Результат загрузки содержит архив `.tar.gz` и его
+контрольную сумму `.tar.gz.sha256`. Затем выполните
+[распаковку и установку](../INSTALL.ru.md#1-скачивание-и-распаковка).
 
 ## Состав и идентификация
 
@@ -43,32 +49,36 @@ kronika-<cargo-version>-<12-character-commit>-<target>/
   docs/              bins/        crates/       licenses/
 ```
 
-Четыре исполняемых файла — статические Linux ELF. Документация включает парные
-руководства, реальные PNG-иллюстрации, светлые/тёмные SVG-схемы, редактируемые
-исходники draw.io и license notices. `bins/` и `crates/` содержат связанные
-руководства. Ссылки на исходники вне архива ведут на commit упаковки в GitHub.
+Четыре программы собраны в формате Linux ELF со встроенными библиотеками
+(статическая сборка). Вместе с ними находятся руководства на двух языках,
+PNG-иллюстрации, светлые и тёмные SVG-схемы, редактируемые исходники draw.io и
+уведомления о лицензиях. В `bins/` и `crates/` лежат связанные руководства.
+Ссылки на исходники, которых нет в архиве, открывают соответствующий коммит
+на GitHub.
 
 | Файл или поле | Значение |
 | --- | --- |
-| Имя архива | Версия workspace, первые 12 hexadecimal characters commit упаковки, target. |
-| `BUILDINFO.package_source_revision` | Полный commit чистого checkout упаковки. |
-| `BUILDINFO.build_mode` | `source`: компиляция командой упаковки. `prebuilt`: binaries переданы через `--bin-dir`; этот режим не записывает source/compiler identity binaries. |
-| `BUILDINFO.source_date_epoch` | Timestamp commit упаковки, Unix seconds. |
-| Поля `BUILDINFO` при сборке из исходников | Build command, Rust compiler, Rust flags и C flags. |
-| `SHA256SUMS` | SHA-256 каждого файла, кроме самого manifest. |
+| Имя архива | Версия проекта, первые 12 шестнадцатеричных символов коммита упаковки и целевая платформа. |
+| `BUILDINFO.package_source_revision` | Полный идентификатор коммита, из которого упакован архив. Рабочий каталог при упаковке не содержит несохранённых изменений. |
+| `BUILDINFO.build_mode` | `source`: программы скомпилированы командой упаковки. `prebuilt`: готовые программы переданы через `--bin-dir`; их исходная ревизия и компилятор в этом режиме не определяются. |
+| `BUILDINFO.source_date_epoch` | Время коммита упаковки в Unix-секундах. |
+| Поля `BUILDINFO` при сборке из исходников | Команда сборки, компилятор Rust, параметры компиляции Rust и C. |
+| `SHA256SUMS` | Контрольная сумма SHA-256 каждого файла, кроме самого списка сумм. |
 | `<archive>.sha256` | SHA-256 сжатого архива. |
 
-## Native targets и матрица userspace
+<a id="native-targets-и-матрица-userspace"></a>
+## Архитектуры и проверенные дистрибутивы
 
-| Target | Native build runner | CPU target |
+| Целевая платформа | Машина сборки | Набор инструкций CPU |
 | --- | --- | --- |
 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` | `x86-64` |
 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `generic` |
 
-Каждый job собирает четыре исполняемых файла один раз. Его архив используется
-во всех userspaces той же архитектуры:
+Каждая сборка выполняется на машине своей архитектуры и создаёт четыре
+программы один раз. Один и тот же архив затем проверяется в окружениях
+перечисленных дистрибутивов:
 
-| Userspace | Образ контейнера | Архитектуры |
+| Дистрибутив | Образ контейнера | Архитектуры |
 | --- | --- | --- |
 | Ubuntu 22.04 LTS | `ubuntu:22.04` | x86-64, ARM64 |
 | Ubuntu 24.04 LTS | `ubuntu:24.04` | x86-64, ARM64 |
@@ -82,26 +92,28 @@ kronika-<cargo-version>-<12-character-commit>-<target>/
 | Rocky Linux 9 | `rockylinux/rockylinux:9` | x86-64, ARM64 |
 | openSUSE Leap 16.0 | `registry.opensuse.org/opensuse/leap:16.0` | x86-64, ARM64 |
 
-Каждая строка проверяет checksums архива/файлов, состав документации, архитектуру
-ELF, отсутствие `INTERP`/`NEEDED`, help/version и обработку аргументов четырёх
-программ. Artifact `portability-*` записывает resolved image digest,
-`/etc/os-release`, kernel/architecture и вывод проверки. Контейнеры используют
-ядро native runner; матрица проверяет запуск в этих userspaces с этим ядром.
-Определение матрицы: [release-package.yml](../.github/workflows/release-package.yml).
+Для каждой строки проверяются контрольные суммы архива и файлов, наличие
+документации, архитектура ELF и отсутствие внешнего загрузчика и динамических
+библиотек (`INTERP`/`NEEDED`). Все четыре программы запускаются для проверки
+справки, версии и обработки аргументов. В результатах `portability-*`
+сохраняются точный хеш образа, `/etc/os-release`, ядро, архитектура и вывод
+проверки. Контейнеры используют ядро машины сборки: здесь проверяется
+окружение дистрибутива с этим ядром, а не каждое возможное ядро Linux.
+Список проверок: [release-package.yml](../.github/workflows/release-package.yml).
 
 ## Упаковка
 
-Требования: чистый checkout с сохранёнными commits, native Linux,
-[закреплённый build toolchain](build.ru.md), GNU tar, gzip, binutils и Python 3.11+.
+Требования: рабочая копия без несохранённых изменений, Linux нужной архитектуры,
+[указанные инструменты сборки](build.ru.md), GNU tar, gzip, binutils и Python 3.11+.
 
 ```sh
 scripts/package-release.sh --target x86_64-unknown-linux-musl
 ```
 
-На native ARM64 используйте `--target aarch64-unknown-linux-musl`. Target по
-умолчанию: `x86_64-unknown-linux-musl`. Каталог результата по умолчанию: `dist`.
+На машине ARM64 используйте `--target aarch64-unknown-linux-musl`. Платформа
+по умолчанию — `x86_64-unknown-linux-musl`, каталог результата — `dist`.
 
-Упаковка готовых статических binaries:
+Чтобы упаковать уже собранные статические программы:
 
 ```sh
 scripts/package-release.sh --target x86_64-unknown-linux-musl \
@@ -109,13 +121,15 @@ scripts/package-release.sh --target x86_64-unknown-linux-musl \
   --output-dir dist-review
 ```
 
-Скрипт отклоняет dirty checkouts, неподдерживаемые targets, динамические
-исполняемые файлы, другую архитектуру и существующие выходные пути.
-Dependency notices проверяются по `licenses/dependency-inputs.sha256`.
+Скрипт отклоняет рабочие копии с несохранёнными изменениями, неподдерживаемые
+платформы, программы с динамическими библиотеками, неверную архитектуру и
+существующие выходные пути. Уведомления о зависимостях сверяются с
+`licenses/dependency-inputs.sha256`.
 
-Порядок файлов, permissions, owner/group, timestamps и gzip metadata
-фиксированы. Одинаковые bytes binaries/documents, source revision и build mode
-дают одинаковые архивы. CI побайтово сравнивает две упаковки одних binaries.
+Порядок файлов, права, владелец и группа, время и метаданные gzip фиксированы.
+При одинаковых программах, документах, ревизии исходников и режиме сборки
+получаются побайтово одинаковые архивы. Автоматическая проверка сравнивает
+две упаковки одних и тех же программ.
 Исходник: [package-release.sh](../scripts/package-release.sh).
 
 ## Проверки
@@ -128,12 +142,13 @@ scripts/check-release.sh dist/kronika-1.0.0-REPLACE_WITH_COMMIT-x86_64-unknown-l
 
 | Режим | Проверки |
 | --- | --- |
-| По умолчанию | Проверка архива; CLI; реальный сбор OS и чтение dump; срез fixture; два одинаковых HTML reports; web catalog с аутентификацией; MCP discovery; интерактивность и сетевые запросы HTML, открытого с диска. |
-| `--no-browser` | Все проверки по умолчанию, кроме browser step; используется native ARM64 CI. |
-| `--cli-only` | Проверки архива и CLI; используется каждой строкой userspace. |
+| По умолчанию | Проверка архива и команд; сбор настоящих данных Linux и чтение через dump; вырезание тестовой записи; два одинаковых HTML-отчёта; доступ к каталогу данных веб-сервера с аутентификацией; список инструментов MCP; работа HTML с диска и его сетевые запросы. |
+| `--no-browser` | Все проверки, кроме браузерной; используется при сборке на ARM64. |
+| `--cli-only` | Проверки архива и командной строки; используется для каждого дистрибутива. |
 
-CLI checks запускают непривилегированные процессы в read-only рабочем каталоге
-с пустым и некорректным environment, deadlines и точными проверками stdout,
-stderr и exit status. Native modes также трассируют help/version на обращения
-к хранилищу, запуск логирования, threads, processes и сети. Исходники:
+Проверки командной строки запускают программы без привилегий в каталоге только
+для чтения, с пустыми и некорректными настройками окружения. Проверяются время
+завершения, точное содержимое stdout и stderr, а также код завершения. При
+проверке на машине сборки `strace` отслеживает, не начинают ли справка и версия
+читать хранилище, вести журнал, создавать потоки, процессы или подключения. Исходники:
 [check-release.sh](../scripts/check-release.sh), [check-cli.py](../scripts/check-cli.py).

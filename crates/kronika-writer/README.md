@@ -4,7 +4,7 @@
 
 `kronika-writer` turns one or more bounded collection windows into a durable
 ZMS segment. It maintains in-memory section buffers, per-segment string
-interning, the version-1 `active.wal` journal, recovery, and finished-segment
+interning (replacing repeated strings with dictionary references), the version-1 `active.wal` journal, recovery, and finished-segment
 publication. Other crates handle source queries, format bytes, and the
 data-directory grammar.
 
@@ -22,7 +22,8 @@ A successful flush empties the row buffers.
 
 ## Interner
 
-`Interner` maintains dictionary identity for one open segment. The current
+`Interner` maps each value to a dictionary identifier within one open segment.
+Data rows store that identifier instead of repeating the value. The current
 window keeps full stored bytes under `DictLimits`. After the caller successfully
 writes a window, `flush_window` replaces those bytes with compact metadata for
 collision detection, deduplication, and final placement. Flushed value bytes do

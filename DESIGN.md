@@ -7,27 +7,20 @@ repository rather than what is being built.
 
 ## Components
 
-Kronika records Linux snapshots, PostgreSQL statistics and parsed local logs.
-The four product executables have these duties:
+Kronika records Linux values and PostgreSQL statistics at collection times, and parses local logs. A finished recording file is called a segment. The four shipped programs have these duties:
 
 | Program | Operation |
 | --- | --- |
-| `kronika-collector` | Foreground daemon; schedules collection, appends the local journal, publishes segments and applies local retention. |
-| `kronika-web` | Resident HTTP listener; reads recordings for the UI/API/MCP and releases decoded data after each request. |
-| `kronika-dump` | Inspects storage or extracts one standalone ZMS interval. |
+| `kronika-collector` | Runs in the foreground; schedules source reads, appends the journal, writes segments and removes old files under the retention rules. |
+| `kronika-web` | Serves HTTP requests for the interface, API and MCP; reads recordings and releases decoded data after each request. |
+| `kronika-dump` | Inspects the recording directory or extracts one time range into a standalone ZMS file. |
 | `kronika-report` | Converts one standalone ZMS into interactive HTML. |
 
 ## Resource requirements
 
-The collector's ordinary-host peak RSS budget is 25 MiB; segment-write logs
-record `rss_kib`. Ordinary OS snapshots retain all source rows. Large
-PostgreSQL results and logs are streamed in bounded batches. Each accepted
-PostgreSQL batch reaches the journal before the next fetch; a later query
-failure leaves earlier appended batches in storage and is logged.
+The collector targets a peak RSS of 25 MiB on an ordinary host. RSS is its memory resident in physical RAM; segment-write logs record it as `rss_kib`. Ordinary OS snapshots retain all source rows. Large PostgreSQL results and logs are read in bounded batches. Each accepted PostgreSQL batch reaches the journal before the next is fetched; a later query failure is logged and leaves the earlier batches in storage.
 
-Web retains its listener/configuration between requests. Segment handles,
-decoded sections and query buffers are request-owned. Query processing uses
-recorded indexes where its selected fields and boundaries permit them.
+The web server keeps its configuration and listening socket between requests. Each request owns its open segments, decoded sections and working buffers. Queries use recorded indexes when their selected fields and time bounds are supported.
 
 ## Storage format
 
@@ -43,6 +36,14 @@ ZMS framing and catalogs locate sections independently. Registry field kinds,
 units and identity definitions are compiled with the programs.
 [The format reference](crates/kronika-format/README.md) defines offsets,
 checksums, section bounds and writer profiles.
+
+### Removing old files
+
+With a fixed byte budget `B`, the collector counts the journal, finished ZMS files, their IDX files and recognized temporary files. Let `S` be `KRONIKA_SEGMENT_MAX_BYTES`, in bytes. Startup requires `B ≥ min(2 × S, u64::MAX)`: multiplication saturates at the largest unsigned 64-bit value. This validates the setting; the active journal and newest finished segment are never removed.
+
+For `auto:P`, the threshold applies to the whole filesystem containing the data directory, including unrelated files. One `fstatvfs` call on the open directory supplies `f_blocks` (block count), `f_frsize` (bytes per block) and `f_bfree` (free blocks). Total bytes are `F = f_blocks × f_frsize`; free bytes are `L = f_bfree × f_frsize`; both products saturate at `u64::MAX`. Used bytes are `U = max(0, F − L)`. The percentage threshold is `floor(F × P / 100)`, where `floor` rounds down.
+
+An unlinked file can still occupy space while a reader holds it open. `pending_reclaim` counts bytes removed by rotation whose physical release has not appeared in filesystem usage yet. The compared size is `max(0, U − pending_reclaim)`. Each observed fall in `U` reduces this pending count, stopping at zero. Sources: [budget validation](bins/kronika-collector/src/config.rs), [rotation](bins/kronika-collector/src/rotation.rs), [filesystem measurement](crates/kronika-layout/src/root.rs).
 
 ## Metric registry
 

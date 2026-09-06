@@ -43,8 +43,8 @@ collection runs. `Ctrl+C` stops either process and retains the recording.
 ### Local and remote PostgreSQL
 
 After [creating a monitoring role](INSTALL.md#5-postgresql), stop the collector
-and set its connection string (DSN). For PostgreSQL in the same virtual machine
-or cgroup as the collector, leave `KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset:
+and set its connection string (DSN). When local PostgreSQL shares the collector’s CPU limits,
+leave `KRONIKA_POSTGRES_EFFECTIVE_CPUS` unset:
 the available CPU count is calculated from recorded data. A cgroup is a Linux
 group of processes with shared resource limits; its CPU-time quota and allowed
 set of CPUs are taken into account.
@@ -129,8 +129,8 @@ events and complete row details.
 ## Portable HTML export
 
 **Export** saves a selected interval of your recording as one interactive HTML
-file. It embeds the interface, data and Rust/WebAssembly program that processes queries, which
-runs on the browser's main thread. Opening the file requires no server or
+file. It embeds the interface, data and a Rust/WebAssembly program to process
+queries on the browser’s main thread. Opening the file requires no server or
 network connection.
 
 <picture>
@@ -138,8 +138,10 @@ network connection.
   <img alt="Export an interval from web or a saved recording into one interactive offline HTML file" src="docs/images/report-export.svg">
 </picture>
 
-[kronika-dump](bins/kronika-dump/README.md) inspects storage and extracts an interval into a standalone ZMS recording; [kronika-report](bins/kronika-report/README.md) converts a standalone
-ZMS into HTML. Offline reports provide local tables, search, charts and heatmaps.
+[kronika-dump](bins/kronika-dump/README.md) inspects storage and extracts an
+interval into a standalone ZMS recording; [kronika-report](bins/kronika-report/README.md)
+converts that recording into HTML. Offline reports provide tables, search,
+charts and activity maps.
 
 ## Documentation
 

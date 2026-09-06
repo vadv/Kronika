@@ -2,8 +2,9 @@
 
 [Русская версия](README.ru.md) · [Install](../../INSTALL.md)
 
-`kronika-report` converts one finished standalone ZMS into an interactive HTML
-file. Sources: [command and argument validation](src/main.rs),
+`kronika-report` turns a `.zms` recording into an interactive HTML report you
+can open directly in a browser. Use a finished collector segment or a file
+created by `kronika-dump slice`. Sources: [command and argument validation](src/main.rs),
 [parameter help](src/help.rs).
 
 ```sh

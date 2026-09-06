@@ -1,6 +1,6 @@
 //! Report parameter reference.
 
-pub(crate) const HELP: &str = r"kronika-report - create one self-contained interactive HTML recording
+pub(crate) const HELP: &str = r"kronika-report - turn a recording into one interactive HTML file
 
 Usage:
   kronika-report <INPUT.zms> <OUTPUT.html>
@@ -12,7 +12,8 @@ Usage:
 Example:
   kronika-report incident.zms incident.html
 
-The HTML embeds the interface, recorded data, fonts and WASM query engine.
+The HTML contains the interface, recorded data, fonts and a WebAssembly (WASM)
+engine that reads the data.
 It opens as a local file; queries run on the browser main thread. The visible
 recording is fixed, with local tables, search, charts and heatmaps.
 
@@ -22,7 +23,8 @@ Input and output:
                      A storage directory or active.wal is not a report input.
   OUTPUT.html        Exact output path; the .html suffix is required. Its parent
                      directory must exist and be writable. The completed HTML
-                     atomically REPLACES an existing output file.
+                     REPLACES an existing output file in one operation, after
+                     the new HTML is complete.
 
 Options:
   --from MICROSECONDS          Inclusive beginning of the visible report window.
@@ -49,7 +51,7 @@ Environment and completion:
   No environment variables are required or read as report configuration.
   KRONIKA_STORAGE_DIR and web credentials are not used by kronika-report.
   Temporary HTML is written beside OUTPUT.html; TMPDIR does not change this.
-  No .idx sidecar is created. Required capacity includes old and new HTML.
+  No separate search index (.idx file) is created. Required capacity includes old and new HTML.
   Success exits 0 without writing to stdout; errors go to stderr and exit
   nonzero. Ctrl-C interrupts a running conversion.
 ";

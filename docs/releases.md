@@ -7,9 +7,10 @@
 The public [v1.0.0 release](https://github.com/vadv/Kronika/releases/tag/v1.0.0)
 contains collector, web, dump and demo; it predates `--help`, `--version`, dump
 slice, report and HTML export. The current source version remains `1.0.0`.
-The current four-program package is available as a commit-qualified
-[Release package](../.github/workflows/release-package.yml) Actions artifact,
-retained for 14 days. This workflow creates archives without tags or releases.
+The current four-program archive is a downloadable result of the
+[Release package](../.github/workflows/release-package.yml) build in GitHub
+Actions. Its name identifies the source commit, and the download is kept for
+14 days. This workflow creates archives without tags or releases.
 
 <a id="download"></a>
 ## Download
@@ -29,10 +30,11 @@ cd kronika-download
 ```
 
 For ARM64, set `target=aarch64-unknown-linux-musl`. `gh run view` lists both
-native build jobs and the 22 userspace checks. The downloaded artifact contains
+builds on their matching architectures and the 22 distribution checks. The downloaded artifact contains
 `.tar.gz` and `.tar.gz.sha256`; continue with [extraction and installation](../INSTALL.md#1-download-and-extract).
 
-## Members and identity
+<a id="members-and-identity"></a>
+## Archive contents and build version
 
 ```text
 kronika-<cargo-version>-<12-character-commit>-<target>/
@@ -58,15 +60,16 @@ files outside the archive resolve to the packaging commit on GitHub.
 | `SHA256SUMS` | SHA-256 of every file except the manifest itself. |
 | `<archive>.sha256` | SHA-256 of the compressed archive. |
 
-## Native targets and userspace matrix
+<a id="native-targets-and-userspace-matrix"></a>
+## Architectures and distribution checks
 
 | Target | Native build runner | CPU target |
 | --- | --- | --- |
 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` | `x86-64` |
 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `generic` |
 
-Each job builds the four executables once. Its archive is reused for every
-userspace of that architecture:
+Each build runs on its matching architecture and builds the four programs
+once. That same archive is checked in the following distribution environments:
 
 | Userspace | Container image | Architectures |
 | --- | --- | --- |
@@ -86,13 +89,14 @@ Each row checks archive/member checksums, documentation membership, ELF
 architecture, absence of `INTERP`/`NEEDED`, and the four programs' help/version
 and argument handling. The `portability-*` artifact records the resolved image
 digest, `/etc/os-release`, kernel/architecture and checker output. Containers
-use the native runner's kernel; the matrix measures execution in these
-userspaces, with that kernel. Matrix definition:
+use the build machine's kernel; these checks establish execution in the listed
+distribution environments with that kernel, not with every Linux kernel. Matrix definition:
 [release-package.yml](../.github/workflows/release-package.yml).
 
 ## Package
 
-Requirements: clean committed checkout, native Linux, the
+Requirements: a working copy with all changes committed, Linux on the target
+architecture, the
 [pinned build toolchain](build.md), GNU tar, gzip, binutils and Python 3.11+.
 
 ```sh
