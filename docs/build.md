@@ -2,10 +2,12 @@
 
 [Русская версия](build.ru.md) · [Install a binary archive](../INSTALL.md)
 
-Use a portable archive to record a machine. Source builds are useful for
-working on Kronika or compiling a particular revision. The repository pins
-Rust **1.96.0** and locks its dependencies. The web interface and report engine
-are committed build assets: a normal native build needs no Node.js.
+You can install a [prebuilt binary archive](../INSTALL.md) or build Kronika
+from source using the instructions below.
+
+The repository pins Rust **1.96.0** and locks its dependencies. The web
+interface and report engine are committed build assets: a normal native
+build needs no Node.js.
 
 ## Native Linux binaries
 
